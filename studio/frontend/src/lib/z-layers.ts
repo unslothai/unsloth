@@ -47,6 +47,14 @@ export const Z_LAYER = {
    */
   WINDOW_RESIZE_EDGE: 9050,
   /**
+   * The custom titlebar's window controls, which the north-east grip's 12x12 corner lands
+   * on: `right-1` plus `px-1` leaves Close's right edge 8px in, and a 30px button centred
+   * in the band puts its top a couple of px down. They were `z-[80]`, which beat the grips
+   * at `z-[70]` and lost to the stack at 9000; both of those were the wrong way round, so
+   * they move up with the grips rather than being left behind by them.
+   */
+  WINDOW_CONTROLS: 9060,
+  /**
    * Floating panels: the Live resource monitor and the API monitor overlay.
    * Above the stack because a window the user is dragging, resizing and
    * closing outranks a status card that happened to land on top of it.

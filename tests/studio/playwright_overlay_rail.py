@@ -615,45 +615,150 @@ def run_hit_testing(page) -> None:
         f"an emptied rail still answers clicks in the corner: {hit['rows']}",
     )
 
-    # The window's own resize targets. Unlike the Live monitor these are in-page chrome on
-    # Tailwind's z scale, so they are *under* the rail and lose whatever it covers. The rail
-    # reaches them across, because -mx-3 puts its border box 4px from the window edge while
-    # `right-4` holds its margin edge at 16, and the gutter is what brings it down to them.
-    room = configure(page, cards = [INDICATOR])["geometry"]["maxHeight"]
-    configure(page, cards = [{"height": room + 200, "floor": room + 200}])
-    for target in ("resize-southeast", "resize-south"):
-        taken = page.evaluate(
-            """([id]) => {
-          const rail = document.querySelector('[data-testid="overlay-rail"]');
-          const grip = document.querySelector(`[data-testid="${id}"]`);
-          const g = grip.getBoundingClientRect();
-          const r = rail.getBoundingClientRect();
-          let mine = 0, total = 0;
-          for (let x = Math.ceil(g.left); x < g.right; x += 1) {
-            for (let y = Math.ceil(g.top); y < g.bottom; y += 1) {
-              total += 1;
-              const el = document.elementFromPoint(x, y);
-              if (el === rail || (el && el.closest
-                  && el.closest('[data-testid="overlay-rail"]'))) mine += 1;
-            }
-          }
-          return {
-            mine, total,
-            grip: {top: g.top, bottom: g.bottom, left: g.left, right: g.right},
-            railBox: {top: r.top, bottom: r.bottom, left: r.left, right: r.right},
-          };
-        }""",
-            [target],
-        )
-        info(
-            f"{target}: the rail takes {taken['mine']} of {taken['total']} px "
-            f"(rail box to {taken['railBox']['bottom']:.0f},{taken['railBox']['right']:.0f}; "
-            f"grip {taken['grip']['top']:.0f}..{taken['grip']['bottom']:.0f})"
-        )
+    run_reach_and_capture(page)
+
+
+# Everything the rail's box can land on that is not protected by a layer above it: the
+# window's own eight resize targets, and the composer, which is ordinary in-page chrome.
+CAPTURE_TARGETS = [
+    "resize-north", "resize-south", "resize-west", "resize-east",
+    "resize-northwest", "resize-northeast", "resize-southwest", "resize-southeast",
+    "obstacle-composer",
+]
+# Raising the grips must not cost the window controls their own hit area, so they are
+# measured the same way, against the grips rather than against the rail.
+CONTROLS = ["control-minimize", "control-maximize", "control-close"]
+
+REACH = """
+([ids]) => {
+  const rail = document.querySelector('[data-testid="overlay-rail"]');
+  const r = rail.getBoundingClientRect();
+  const mine = (el) =>
+    el === rail || Boolean(el && el.closest && el.closest('[data-testid="overlay-rail"]'));
+  const out = {};
+  for (const id of ids) {
+    const node = document.querySelector(`[data-testid="${id}"]`);
+    if (!node) continue;
+    const g = node.getBoundingClientRect();
+    // Geometric reach first, so a target the rail lands on is visible in the report even
+    // when a layer above the rail is what stops it taking the pixels.
+    const overlapW = Math.max(0, Math.min(g.right, r.right) - Math.max(g.left, r.left));
+    const overlapH = Math.max(0, Math.min(g.bottom, r.bottom) - Math.max(g.top, r.top));
+    let taken = 0, total = 0;
+    for (let x = Math.ceil(g.left); x < g.right; x += 1) {
+      for (let y = Math.ceil(g.top); y < g.bottom; y += 1) {
+        total += 1;
+        if (mine(document.elementFromPoint(x, y))) taken += 1;
+      }
+    }
+    out[id] = {
+      reach: Math.round(overlapW * overlapH),
+      taken, total,
+      box: {top: g.top, bottom: g.bottom, left: g.left, right: g.right},
+    };
+  }
+  out.__rail = {top: r.top, bottom: r.bottom, left: r.left, right: r.right};
+  return out;
+}
+"""
+
+
+def report_capture(page, label: str) -> dict:
+    """Which unprotected surfaces the rail's box lands on, and which it actually takes."""
+    seen = page.evaluate(REACH, [CAPTURE_TARGETS])
+    rail = seen.pop("__rail")
+    reached = {k: v for k, v in seen.items() if v["reach"] > 0}
+    info(
+        f"[{label}] rail box "
+        f"{rail['left']:.0f},{rail['top']:.0f}..{rail['right']:.0f},{rail['bottom']:.0f}; "
+        f"reaches {sorted(reached) or 'nothing'}"
+    )
+    for name, v in sorted(reached.items()):
+        info(f"    {name}: reach {v['reach']}px2, takes {v['taken']} of {v['total']}")
         check(
-            taken["mine"] == 0,
-            f"a scrolling rail covers {taken['mine']} of the {target} target's "
-            f"{taken['total']}px, so a window resize started there hits the rail",
+            v["taken"] == 0,
+            f"{label}: a scrolling rail takes {v['taken']} of the {name} target's "
+            f"{v['total']}px, so input started there lands on the rail",
+        )
+    return seen
+
+
+def run_reach_and_capture(page) -> None:
+    """The taller, pointer-active box must take nothing that is not already the rail's.
+
+    Three states, because reach depends on the rail's width and on where it is placed: a
+    card is `w-[calc(100vw-2rem)]` up to its max, so a narrow window puts the rail across
+    nearly the whole width, and a lifted placement puts its lower gutter over the box it
+    just dodged.
+    """
+    room = configure(page, cards = [INDICATOR])["geometry"]["maxHeight"]
+    tall = {"height": room + 200, "floor": room + 200}
+
+    page.set_viewport_size({"width": 1280, "height": 800})
+    configure(page, cards = [tall])
+    report_capture(page, "1280x800, scrolling")
+
+    # Narrow enough that the card is the window's width less 2rem, so the rail spans it.
+    page.set_viewport_size({"width": 420, "height": 760})
+    narrow_room = configure(page, cards = [INDICATOR])["geometry"]["maxHeight"]
+    configure(
+        page,
+        cards = [{"height": narrow_room + 200, "floor": narrow_room + 200}],
+    )
+    report_capture(page, "420x760, scrolling")
+
+    # Lifted over the composer: liftOver puts the cards STACK_GAP above its top edge, and
+    # the gutter hangs below the cards.
+    page.set_viewport_size({"width": 1280, "height": 800})
+    lifted = configure(
+        page,
+        # Tall enough to overrun the lifted cap, so the rail really is pointer-active.
+        cards = [{"height": 300, "floor": 300}] * 3,
+        obstacles = obstacles_for("composer", 1280, 800),
+    )
+    check(
+        lifted["geometry"]["overflowing"],
+        "the lifted deck does not overflow, so the rail is click-through and the "
+        "composer check proves nothing",
+    )
+    info(f"    lifted: bottom={lifted['geometry']['bottom']} "
+         f"overflowing={lifted['geometry']['overflowing']}")
+    report_capture(page, "lifted over the composer")
+
+    # And the controls the grips now sit next to keep every pixel of their own.
+    taken = page.evaluate(
+        """([ids]) => {
+      // Only pixels taken by a grip or by the rail count. A rounded button's own corners
+      // answer as its container, which is the button's shape rather than a lost hit area.
+      const stolen = (el) =>
+        Boolean(el) && (
+          el.closest('[data-testid="overlay-rail"]') !== null ||
+          (el.dataset && typeof el.dataset.testid === "string"
+            && el.dataset.testid.startsWith("resize-"))
+        );
+      const out = {};
+      for (const id of ids) {
+        const node = document.querySelector(`[data-testid="${id}"]`);
+        if (!node) continue;
+        const b = node.getBoundingClientRect();
+        let lost = 0, total = 0;
+        for (let x = Math.ceil(b.left); x < b.right; x += 1) {
+          for (let y = Math.ceil(b.top); y < b.bottom; y += 1) {
+            total += 1;
+            if (stolen(document.elementFromPoint(x, y))) lost += 1;
+          }
+        }
+        out[id] = { lost, total };
+      }
+      return out;
+    }""",
+        [CONTROLS],
+    )
+    for name, v in sorted(taken.items()):
+        info(f"    {name}: {v['lost']} of {v['total']}px taken by a grip or the rail")
+        check(
+            v["lost"] == 0,
+            f"{name} lost {v['lost']} of its {v['total']}px to the raised grips",
         )
 
 

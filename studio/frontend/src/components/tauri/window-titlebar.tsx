@@ -414,6 +414,9 @@ export function WindowTitlebar({
         />
         <div
           className="pointer-events-auto absolute right-1 top-0 flex h-full items-center gap-0.5 px-1"
+          // Above the grips, which are now above the overlay stack. Close's corner and
+          // the north-east grip overlap, and the button is what a click there means.
+          style={{ zIndex: Z_LAYER.WINDOW_CONTROLS }}
           role="toolbar"
           aria-label="Window controls"
         >
@@ -459,14 +462,19 @@ export function WindowTitlebar({
       </header>
       <div
         aria-hidden="true"
-        className="pointer-events-auto fixed inset-x-2 top-0 z-[70] h-1 cursor-n-resize"
+        className="pointer-events-auto fixed inset-x-2 top-0 h-1 cursor-n-resize"
+        style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
         onPointerDown={handleResizePointerDown("North")}
       />
-      {/* The two along the bottom carry a named layer, not z-[70]: the overlay stack is
-          anchored to that corner and reaches them once it reserves a shadow gutter, and it
-          hit-tests its whole box while it scrolls. The other six stay where they are; a
-          stack in the bottom-right cannot reach them, and the north-east grip would take
-          the corner of the window controls, which are z-[80] and win today. */}
+      {/* All eight carry a named layer rather than z-[70], because the overlay stack out-
+          ranks that band and hit-tests its whole box while it scrolls. Anchored to the
+          bottom-right it still reaches five of them: `-mx-3` puts its border box 4px from
+          the right edge, the bottom gutter drops it to the floor, the top gutter lifts it
+          to 8px from the ceiling, and a card is `w-[calc(100vw-2rem)]`, so on a narrow
+          window it spans nearly the full width and the left-hand corners come into range
+          too. Measured, not reasoned: south-west 80 of 144px, north-east and north-west 32
+          of 144px each. The controls move up with them so the north-east corner does not
+          cost Close any of its own hit area. */}
       <div
         aria-hidden="true"
         className="pointer-events-auto fixed inset-x-2 bottom-0 h-1 cursor-s-resize"
@@ -475,27 +483,32 @@ export function WindowTitlebar({
       />
       <div
         aria-hidden="true"
-        className="pointer-events-auto fixed inset-y-2 left-0 z-[70] w-1 cursor-w-resize"
+        className="pointer-events-auto fixed inset-y-2 left-0 w-1 cursor-w-resize"
+        style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
         onPointerDown={handleResizePointerDown("West")}
       />
       <div
         aria-hidden="true"
-        className="pointer-events-auto fixed inset-y-2 right-0 z-[70] w-1 cursor-e-resize"
+        className="pointer-events-auto fixed inset-y-2 right-0 w-1 cursor-e-resize"
+        style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
         onPointerDown={handleResizePointerDown("East")}
       />
       <div
         aria-hidden="true"
-        className="pointer-events-auto fixed left-0 top-0 z-[70] size-3 cursor-nw-resize"
+        className="pointer-events-auto fixed left-0 top-0 size-3 cursor-nw-resize"
+        style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
         onPointerDown={handleResizePointerDown("NorthWest")}
       />
       <div
         aria-hidden="true"
-        className="pointer-events-auto fixed right-0 top-0 z-[70] size-3 cursor-ne-resize"
+        className="pointer-events-auto fixed right-0 top-0 size-3 cursor-ne-resize"
+        style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
         onPointerDown={handleResizePointerDown("NorthEast")}
       />
       <div
         aria-hidden="true"
-        className="pointer-events-auto fixed bottom-0 left-0 z-[70] size-3 cursor-sw-resize"
+        className="pointer-events-auto fixed bottom-0 left-0 size-3 cursor-sw-resize"
+        style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
         onPointerDown={handleResizePointerDown("SouthWest")}
       />
       <div

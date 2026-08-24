@@ -25,6 +25,10 @@ on:
       - 'tests/studio/probe_dismiss_guard.py'
       - 'tests/studio/playwright_settings_tabs.py'
       - 'tests/studio/playwright_stream_pacing.py'
+      # studio-ui-smoke.yml also triggers on tests/studio/**, but its step loops over
+      # firefox and webkit only, so without this a PR touching just this driver would
+      # never run it under Chromium.
+      - 'tests/studio/playwright_overlay_rail.py'
       - 'tests/studio/playwright_code_block_flicker.py'
       - 'tests/studio/_code_block_flicker_analysis.py'
       - 'tests/studio/test_code_block_flicker_contract.py'

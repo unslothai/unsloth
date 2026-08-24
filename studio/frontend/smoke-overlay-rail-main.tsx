@@ -196,27 +196,67 @@ function Obstacles() {
 }
 
 /**
- * The desktop window's own resize targets, copied from
- * src/components/tauri/window-titlebar.tsx. Only the two the rail can reach are here: the
- * rail is anchored to that corner, `-mx-3` puts its border box 4px from the window edge and
- * the gutter drops it the last 16px to the floor, so a scrolling rail's box lands on both.
+ * All eight of the desktop window's resize targets, copied from
+ * src/components/tauri/window-titlebar.tsx, so the driver can ask which ones a rail's box
+ * can actually reach rather than being told. The rail is anchored to the bottom-right, but
+ * a card is `w-[calc(100vw-2rem)]` up to its max, so on a narrow window the rail spans
+ * nearly the full width and the left-hand targets come into range too.
  */
+// Each carries the layer the app gives it, so the driver can ask which targets the rail's
+// box reaches (geometry, whatever the z) and which it actually takes (hit testing). A target
+// the rail reaches but does not take is one the named layer is already covering.
+const RESIZE_TARGETS = [
+  ["resize-north", "fixed inset-x-2 top-0 h-1 cursor-n-resize"],
+  ["resize-south", "fixed inset-x-2 bottom-0 h-1 cursor-s-resize"],
+  ["resize-west", "fixed inset-y-2 left-0 w-1 cursor-w-resize"],
+  ["resize-east", "fixed inset-y-2 right-0 w-1 cursor-e-resize"],
+  ["resize-northwest", "fixed top-0 left-0 size-3 cursor-nw-resize"],
+  ["resize-northeast", "fixed top-0 right-0 size-3 cursor-ne-resize"],
+  ["resize-southwest", "fixed bottom-0 left-0 size-3 cursor-sw-resize"],
+  ["resize-southeast", "fixed right-0 bottom-0 size-3 cursor-se-resize"],
+] as const;
+
 function WindowResizeTargets() {
   return (
     <>
-      <div
-        aria-hidden="true"
-        data-testid="resize-south"
-        className="pointer-events-auto fixed inset-x-2 bottom-0 h-1 cursor-s-resize"
-        style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
-      />
-      <div
-        aria-hidden="true"
-        data-testid="resize-southeast"
-        className="pointer-events-auto fixed right-0 bottom-0 size-3 cursor-se-resize"
-        style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
-      />
+      {RESIZE_TARGETS.map(([id, shape]) => (
+        <div
+          key={id}
+          aria-hidden="true"
+          data-testid={id}
+          className={cn("pointer-events-auto", shape)}
+          style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
+        />
+      ))}
     </>
+  );
+}
+
+/**
+ * The window controls, whose corner the north-east grip lands on. Shaped like the toolbar in
+ * window-titlebar.tsx: `right-1` plus `px-1` leaves the Close button's right edge 8px in,
+ * and a 30px button centred in the titlebar band puts its top a couple of px down, so the
+ * grip's 12x12 corner and the button's corner overlap. The driver asks whether raising the
+ * grips costs the button any of its hit area.
+ */
+function WindowControls() {
+  return (
+    <div
+      className="pointer-events-auto absolute right-1 top-0 flex h-[34px] items-center gap-0.5 px-1"
+      role="toolbar"
+      aria-label="Window controls"
+      style={{ zIndex: Z_LAYER.WINDOW_CONTROLS }}
+    >
+      {["minimize", "maximize", "close"].map((name) => (
+        <button
+          key={name}
+          type="button"
+          data-testid={`control-${name}`}
+          aria-label={name}
+          className="relative z-[80] inline-flex size-[30px] items-center justify-center rounded-[10px]"
+        />
+      ))}
+    </div>
   );
 }
 
@@ -225,6 +265,7 @@ function Harness() {
     <>
       <Obstacles />
       <WindowResizeTargets />
+      <WindowControls />
       <Rail />
     </>
   );

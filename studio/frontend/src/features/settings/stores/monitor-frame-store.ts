@@ -215,9 +215,23 @@ function reachesStack(
   return roomBelow(frame, viewportHeight, bottomInset) < Math.max(1, wanted);
 }
 
+/**
+ * The clearance a lift leaves over the box it is dodging. The gap the cards want, or the
+ * room the rail carries under them, whichever is larger.
+ *
+ * `STACK_GAP` alone is what the cards need to look clear of it, and it was enough while the
+ * rail's box ended where its cards did. The box now hangs `STACK_SHADOW_GUTTER_BOTTOM`
+ * lower, and a scrolling rail hit-tests all of it, so at a gap of 8 the lower 8px of that
+ * gutter sat on the composer it had just dodged and took its top edge: 1088px2 of it at
+ * 1280x800, measured. Nothing protects the composer the way `FLOATING_PANEL` protects the
+ * Live monitor, since it is ordinary in-page chrome and the stack is meant to paint over
+ * that; the placement is what has to keep off it.
+ */
+const LIFT_CLEARANCE = Math.max(STACK_GAP, STACK_SHADOW_GUTTER_BOTTOM);
+
 /** The inset that clears this box's top edge, whether or not it fits there. */
 function liftOver(frame: MonitorFrame, viewportHeight: number): number {
-  return viewportHeight - frame.top + STACK_GAP;
+  return viewportHeight - frame.top + LIFT_CLEARANCE;
 }
 
 /**
