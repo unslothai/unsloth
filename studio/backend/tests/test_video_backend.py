@@ -4482,6 +4482,29 @@ def test_download_plan_swaps_the_dense_encoder_for_the_precast_checkpoint(monkey
     assert plan["total_bytes"] == sum(e["bytes"] for e in plan["entries"])
 
 
+def test_download_plan_keeps_dense_encoder_for_a_custom_family_pipeline(monkeypatch):
+    _cuda_bf16_target(monkeypatch)
+    custom = "someone/custom-ltx-2"
+    _plan_api(
+        monkeypatch,
+        {
+            custom: _LTX_BASE_SIBLINGS,
+            "unsloth/LTX-2-FP8": _LTX2_FP8_SIBLINGS,
+        },
+    )
+
+    plan = VideoBackend().download_plan(
+        custom,
+        model_kind = "pipeline",
+        family_override = "ltx-2",
+        text_encoder_quant = "fp8",
+    )
+
+    by_repo = {entry["repo_id"]: entry for entry in plan["entries"]}
+    assert "unsloth/LTX-2-FP8" not in by_repo
+    assert any(name.startswith("text_encoder/") for name in by_repo[custom]["files"])
+
+
 def test_download_plan_keeps_the_dense_encoder_without_an_fp8_request(monkeypatch):
     # No fp8 request means the dense encoder IS the encoder: dropping it would break the load.
     _cuda_bf16_target(monkeypatch)

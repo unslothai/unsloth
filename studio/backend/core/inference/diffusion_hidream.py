@@ -92,9 +92,16 @@ def hidream_te4_kwargs(
     if fp8_engages and fam is not None:
         from .diffusion_te_prequant import (
             load_prequant_text_encoder,
-            resolve_te_prequant_source,
+            te_prequant_sources_for_base,
         )
-        source = resolve_te_prequant_source(fam, "text_encoder_4", "fp8")
+        source = te_prequant_sources_for_base(
+            fam,
+            HIDREAM_LLAMA_REPO,
+            te_quant_mode = te_quant_mode,
+            target = target,
+            components = ("text_encoder_4",),
+            standalone_component_bases = {"text_encoder_4": HIDREAM_LLAMA_REPO},
+        ).get("text_encoder_4")
         if source is not None:
             encoder = load_prequant_text_encoder(
                 HIDREAM_LLAMA_REPO,
@@ -110,6 +117,7 @@ def hidream_te4_kwargs(
                     "output_hidden_states": True,
                     "output_attentions": True,
                 },
+                local_files_only = local_files_only,
             )
             if encoder is not None:
                 return {"text_encoder_4": encoder, "tokenizer_4": tokenizer_4}

@@ -25,8 +25,16 @@ from core.inference.diffusion_te_prequant import (
 )
 
 
-def _fam(te_prequant_repos = (), name = "ltx-2"):
-    return types.SimpleNamespace(name = name, te_prequant_repos = te_prequant_repos)
+def _fam(
+    te_prequant_repos = (),
+    name = "ltx-2",
+    base_repo = "Lightricks/LTX-2",
+):
+    return types.SimpleNamespace(
+        name = name,
+        base_repo = base_repo,
+        te_prequant_repos = te_prequant_repos,
+    )
 
 
 # ── resolution ───────────────────────────────────────────────────────────────
@@ -152,6 +160,30 @@ def test_load_missing_file_returns_none(monkeypatch, tmp_path):
     assert out is None
 
 
+def test_hosted_lookup_honors_cache_only_and_the_active_root(monkeypatch, tmp_path):
+    import huggingface_hub
+    from utils import hf_cache_settings
+
+    seen: dict = {}
+
+    def fake_download(**kwargs):
+        seen.update(kwargs)
+        raise FileNotFoundError("not cached")
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_download)
+    monkeypatch.setattr(hf_cache_settings, "active_hf_hub_cache", lambda: str(tmp_path))
+    out = tpq.load_prequant_text_encoder(
+        "Lightricks/LTX-2",
+        "text_encoder",
+        TePrequantSource(kind = "repo", location = "org/hosted", filename = "encoder.pt"),
+        dtype = None,
+        local_files_only = True,
+    )
+    assert out is None
+    assert seen["local_files_only"] is True
+    assert seen["cache_dir"] == str(tmp_path)
+
+
 # ── pipeline-assembly injection gating ───────────────────────────────────────
 def _target():
     return types.SimpleNamespace(device = "cuda", dtype = None)
@@ -230,6 +262,28 @@ def test_pipe_kwargs_injects_loaded_encoder(monkeypatch):
     assert seen["source"].location == "org/hosted"
 
 
+def test_pipe_kwargs_does_not_download_a_checkpoint_for_a_custom_base(monkeypatch):
+    import core.inference.diffusion_precision as precision
+
+    fam = _fam(te_prequant_repos = (("fp8", "text_encoder", "org/hosted"),))
+    monkeypatch.setattr(precision, "te_quant_supported", lambda target, mode: True)
+
+    def unexpected_load(*_args, **_kwargs):
+        raise AssertionError("an incompatible hosted checkpoint must not be opened")
+
+    monkeypatch.setattr(tpq, "load_prequant_text_encoder", unexpected_load)
+    assert (
+        te_prequant_pipe_kwargs(
+            fam,
+            "someone/custom-ltx-2",
+            te_quant_mode = "fp8",
+            target = _target(),
+            dtype = None,
+        )
+        == {}
+    )
+
+
 def test_pipe_kwargs_empty_when_load_fails(monkeypatch):
     import core.inference.diffusion_precision as precision
 
@@ -263,7 +317,7 @@ def test_pipe_kwargs_injects_every_hosted_component(monkeypatch):
         lambda base, component, source, **kw: markers[component],
     )
     out = te_prequant_pipe_kwargs(
-        fam, "some/base", te_quant_mode = "fp8", target = _target(), dtype = None
+        fam, "Lightricks/LTX-2", te_quant_mode = "fp8", target = _target(), dtype = None
     )
     assert out == markers
 
@@ -441,6 +495,7 @@ def test_hidream_te4_prefers_precast_checkpoint(monkeypatch):
         calls["component"] = component
         calls["config_subfolder"] = kwargs.get("config_subfolder")
         calls["config_overrides"] = kwargs.get("config_overrides")
+        calls["local_files_only"] = kwargs.get("local_files_only")
         return precast
 
     monkeypatch.setattr(tpq, "load_prequant_text_encoder", _fake_load)
@@ -448,13 +503,21 @@ def test_hidream_te4_prefers_precast_checkpoint(monkeypatch):
         te_prequant_repos = (("fp8", "text_encoder_4", "unsloth/HiDream-I1-Full-FP8"),),
         name = "hidream-i1",
     )
-    out = dh.hidream_te4_kwargs(None, None, fam = fam, te_quant_mode = "fp8", target = _target())
+    out = dh.hidream_te4_kwargs(
+        None,
+        None,
+        fam = fam,
+        te_quant_mode = "fp8",
+        target = _target(),
+        local_files_only = True,
+    )
     assert out["text_encoder_4"] is precast
     assert calls["base"] == "unsloth/Meta-Llama-3.1-8B-Instruct"
     assert calls["component"] == "text_encoder_4"
     # Standalone repo: config at the root, forward flags the pipeline needs applied.
     assert calls["config_subfolder"] == ""
     assert calls["config_overrides"] == {"output_hidden_states": True, "output_attentions": True}
+    assert calls["local_files_only"] is True
     # The dense Llama download never ran.
     assert ("llama_from_pretrained", "unsloth/Meta-Llama-3.1-8B-Instruct") not in recorder
 
@@ -643,6 +706,15 @@ def test_budget_scale_applies_only_when_a_pre_cast_checkpoint_resolves(monkeypat
     assert (
         tpq.te_prequant_budget_scale(hosted, te_quant_mode = "fp8", target = _target())
         == tpq.TE_PREQUANT_BUDGET_SCALE
+    )
+    assert (
+        tpq.te_prequant_budget_scale(
+            hosted,
+            te_quant_mode = "fp8",
+            target = _target(),
+            base = "someone/custom-ltx-2",
+        )
+        == 1.0
     )
     # No hosted checkpoint: the encoder is downloaded dense and cast in place AFTER assembly, so
     # its peak is bf16 and the budget must stay bf16.

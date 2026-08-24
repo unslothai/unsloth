@@ -2339,9 +2339,8 @@ class DiffusionBackend:
 
             from .diffusion_te_prequant import (
                 TE_PREQUANT_COMPONENTS,
-                te_base_equivalent,
                 te_prequant_hub_files,
-                te_prequant_sources,
+                te_prequant_sources_for_base,
             )
 
             source_kwargs = {
@@ -2353,25 +2352,16 @@ class DiffusionBackend:
                     else resolve_diffusion_device_target(ordinal = gpu_ordinal)
                 ),
             }
+            standalone_component_bases = None
             if getattr(fam, "name", None) == HIDREAM_FAMILY_NAME:
                 source_kwargs["components"] = (*TE_PREQUANT_COMPONENTS, "text_encoder_4")
-            sources = te_prequant_sources(fam, **source_kwargs)
-            if base_repo:
-                compatible = {}
-                for component, source in sources.items():
-                    external_te4 = (
-                        getattr(fam, "name", None) == HIDREAM_FAMILY_NAME
-                        and component == "text_encoder_4"
-                    )
-                    checkpoint_base = (
-                        HIDREAM_LLAMA_REPO
-                        if external_te4
-                        else str(getattr(fam, "base_repo", "") or "")
-                    )
-                    selected_base = HIDREAM_LLAMA_REPO if external_te4 else base_repo
-                    if checkpoint_base and te_base_equivalent(checkpoint_base, selected_base):
-                        compatible[component] = source
-                sources = compatible
+                standalone_component_bases = {"text_encoder_4": HIDREAM_LLAMA_REPO}
+            sources = te_prequant_sources_for_base(
+                fam,
+                base_repo or str(getattr(fam, "base_repo", "") or ""),
+                standalone_component_bases = standalone_component_bases,
+                **source_kwargs,
+            )
             if not sources:
                 return {}
             files = te_prequant_hub_files(sources, HfApi(token = hf_token or None), logger)
@@ -3966,7 +3956,11 @@ class DiffusionBackend:
                                         # that fits is declined on bytes never materialised.
                                         companion_override_mib = (
                                             self._precast_scaled_companions_mib(
-                                                prequant_candidate, fam, target, text_encoder_quant
+                                                prequant_candidate,
+                                                fam,
+                                                base,
+                                                target,
+                                                text_encoder_quant,
                                             )
                                         ),
                                     ),
@@ -4038,7 +4032,11 @@ class DiffusionBackend:
                                     ),
                                     # Same pre-cast encoder pricing as the fit check above.
                                     companion_override_mib = self._precast_scaled_companions_mib(
-                                        retry_candidate, fam, target, text_encoder_quant
+                                        retry_candidate,
+                                        fam,
+                                        base,
+                                        target,
+                                        text_encoder_quant,
                                     ),
                                 )
                                 if retry_candidate is not None
@@ -4186,6 +4184,7 @@ class DiffusionBackend:
                                     dtype = dtype,
                                     hf_token = hf_token,
                                     logger = logger,
+                                    local_files_only = local_files_only,
                                 ).get("text_encoder"),
                             )
                         elif fam.name == IDEOGRAM4_FAMILY_NAME:
@@ -4221,6 +4220,7 @@ class DiffusionBackend:
                                     dtype = dtype,
                                     hf_token = hf_token,
                                     logger = logger,
+                                    local_files_only = local_files_only,
                                 )
                             )
                             # The prefetched snapshot dir keeps from_pretrained off the hub (24 GB per FLUX.1 otherwise).
@@ -4286,6 +4286,7 @@ class DiffusionBackend:
                                     dtype = dtype,
                                     hf_token = hf_token,
                                     logger = logger,
+                                    local_files_only = local_files_only,
                                 ).get("text_encoder"),
                             )
                         else:
@@ -4319,6 +4320,7 @@ class DiffusionBackend:
                                     dtype = dtype,
                                     hf_token = hf_token,
                                     logger = logger,
+                                    local_files_only = local_files_only,
                                 )
                             )
                             pipe = pipeline_cls.from_pretrained(
@@ -4883,6 +4885,7 @@ class DiffusionBackend:
                     dtype = dtype,
                     hf_token = hf_token,
                     logger = logger,
+                    local_files_only = local_files_only,
                 ).get("text_encoder")
             pipe = load_krea2_pipeline(
                 base_local_dir or base,
@@ -4927,6 +4930,7 @@ class DiffusionBackend:
                     dtype = dtype,
                     hf_token = hf_token,
                     logger = logger,
+                    local_files_only = local_files_only,
                 )
             )
         pipe = pipeline_cls.from_pretrained(base_local_dir or base, **pipe_kwargs)
@@ -4935,7 +4939,11 @@ class DiffusionBackend:
 
     @staticmethod
     def _precast_scaled_companions_mib(
-        candidate: Any, fam: DiffusionFamily, target: Any, text_encoder_quant: Optional[str]
+        candidate: Any,
+        fam: DiffusionFamily,
+        base: str,
+        target: Any,
+        text_encoder_quant: Optional[str],
     ) -> Optional[int]:
         """``candidate.companions_mib`` with the text-encoder share priced at the PRE-CAST size
         when this pick takes its encoder from a hosted fp8 checkpoint.
@@ -4953,7 +4961,12 @@ class DiffusionBackend:
         try:
             from .diffusion_te_prequant import te_prequant_budget_scale
 
-            scale = te_prequant_budget_scale(fam, te_quant_mode = text_encoder_quant, target = target)
+            scale = te_prequant_budget_scale(
+                fam,
+                te_quant_mode = text_encoder_quant,
+                target = target,
+                base = base,
+            )
             encoders = int(getattr(candidate, "text_encoders_mib", 0) or 0)
             if scale == 1.0 or encoders <= 0:
                 return int(companions)
@@ -5032,7 +5045,10 @@ class DiffusionBackend:
             from .diffusion_te_prequant import te_prequant_budget_scale
 
             te_scale = te_prequant_budget_scale(
-                fam, te_quant_mode = text_encoder_quant, target = target
+                fam,
+                te_quant_mode = text_encoder_quant,
+                target = target,
+                base = base,
             )
             transformer_gb, text_encoders_gb, vae_gb = table
             resident_gb = transformer_gb + text_encoders_gb * te_scale + vae_gb
