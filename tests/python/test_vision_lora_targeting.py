@@ -395,3 +395,27 @@ def test_tying_needs_the_input_embedding_saved():
     assert _effective_weight_tying(untied, ["embed_tokens", "lm_head"], True) is False
     # An explicit False always wins.
     assert _effective_weight_tying(tied, ["embed_tokens", "lm_head"], False) is False
+
+
+class _Composite(torch.nn.Module):
+    """Audio tower and language model both expose an embed_tokens leaf."""
+
+    def __init__(self, two_embeddings):
+        super().__init__()
+        self.language_model = torch.nn.Module()
+        self.language_model.embed_tokens = torch.nn.Embedding(8, 4)
+        if two_embeddings:
+            self.audio_tower = torch.nn.Module()
+            self.audio_tower.embed_tokens = torch.nn.Embedding(8, 4)
+        self.config = _Cfg(True)
+
+
+def test_a_qualified_name_is_not_widened_on_a_composite_model():
+    """PEFT suffix-matches, so the bare leaf would wrap the audio tower's embedding too."""
+    from unsloth.models._utils import _drop_tied_output_module
+
+    pair = ["language_model.embed_tokens", "lm_head"]
+    # Two candidates: keep the caller's scope, and keep the head trainable with it.
+    assert _drop_tied_output_module(_Composite(True), list(pair), True) == pair
+    # One candidate: rewriting is safe and peft 0.18 needs the bare name to retie.
+    assert _drop_tied_output_module(_Composite(False), list(pair), True) == ["embed_tokens"]

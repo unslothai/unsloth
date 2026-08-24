@@ -98,6 +98,7 @@ __all__ = [
     "_embedding_leaves",
     "_model_ties_embeddings",
     "_effective_weight_tying",
+    "_embedding_name_is_unambiguous",
     "_redirect_embedding_targets",
     "_raise_if_no_lora_targets_left",
     "_resolve_ensure_weight_tying",
@@ -4591,6 +4592,28 @@ def _resolve_ensure_weight_tying(model, modules_to_save, requested):
     return _model_ties_embeddings(model)
 
 
+def _embedding_name_is_unambiguous(model, name):
+    """Whether `name` and its bare leaf select the same single module.
+
+    On a composite model (audio tower plus language model, encoder-decoder) two modules
+    can share the embed_tokens leaf, and PEFT suffix-matches, so the bare name would wrap
+    both. Only safe to rewrite a qualified name when exactly one module matches.
+    """
+    leaf = _embedding_leaf(name)
+    if leaf is None:
+        return False
+    named_modules = getattr(model, "named_modules", None)
+    if named_modules is None:
+        return True
+    found = 0
+    for module_name, _ in named_modules():
+        if module_name == leaf or module_name.endswith("." + leaf):
+            found += 1
+            if found > 1:
+                return False
+    return found == 1
+
+
 def _effective_weight_tying(model, modules_to_save, requested):
     """Whether PEFT will really retie, not just whether it was asked to.
 
@@ -4625,7 +4648,19 @@ def _drop_tied_output_module(model, modules_to_save, ensure_weight_tying):
     # `modules_to_save` entries, so a qualified `model.embed_tokens` matches nothing there
     # and it reconstructs no output module, leaving the head frozen. PEFT resolves the
     # bare name by suffix on every version, so normalizing is safe.
-    return [_embedding_leaf(x) or x for x in modules_to_save if _embedding_leaf(x) != "lm_head"]
+    kept = [x for x in modules_to_save if _embedding_leaf(x) != "lm_head"]
+    normalized = []
+    for entry in kept:
+        leaf = _embedding_leaf(entry)
+        if leaf is None or entry == leaf:
+            normalized.append(entry)
+        elif _embedding_name_is_unambiguous(model, entry):
+            normalized.append(leaf)
+        else:
+            # Rewriting would widen the caller's scope to another subtree's embedding.
+            # Keep both entries instead: two copies beats a silently frozen head.
+            return modules_to_save
+    return normalized
 
 
 def _raise_if_fast_inference_modules_to_save(model, modules_to_save):
