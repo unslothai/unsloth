@@ -247,9 +247,138 @@ def test_the_launch_charges_the_cpu_pinned_drafter_to_the_fit():
     assert compact.index("_cpu_draft_path=_mtp_draft_for_budget") < compact.index(
         "if_draft_on_cpu:_mtp_draft_for_budget=None"
     )
-    # ... and charged to the footprint, abstaining when it cannot be priced.
-    assert "mtp_bytes=_mtp_bytes(effective_ctx)+(_cpu_draft_fit_bytesor0)" in compact
+    # ... and charged to the footprint as a HOST-ONLY term (free VRAM cannot pay for
+    # an allocation the child only ever makes in RAM), abstaining when unpriceable.
+    assert "host_only_bytes=_cpu_draft_fit_bytesor0" in compact
     assert "or_cpu_draft_fit_bytesisNone" in compact
+
+
+def test_a_cpu_pinned_drafter_is_not_paid_for_out_of_vram(monkeypatch):
+    """8 GiB target and a 3 GiB CPU-pinned drafter against a 24 GiB card with 4 GiB
+    of RAM. Pooled, the card covers all 11 GiB and the fit reads as real; but
+    ``-ngld 0`` means those 3 GiB can only be allocated in host RAM, where 4 GiB
+    minus the 2 GiB headroom does not hold them, and ``none`` would make them
+    anonymous instead of a mapping the OS can page."""
+    monkeypatch.setattr(hardware, "is_apple_silicon", lambda: False)
+    stub = _Stub(4 * 1024)
+
+    def _fit(**kwargs):
+        return LlamaCppBackend._fit_derived_load_mode(
+            stub,
+            model_size = 8 * GIB,
+            gpus = [(0, 24 * 1024)],
+            avail_mib = 4 * 1024,
+            **kwargs,
+        )
+
+    assert _fit() == FIT_MODE
+    assert _fit(host_only_bytes = 3 * GIB) is None
+    # Same bytes on the GPU side of the ledger DO fit the card, which is the
+    # difference this term draws.
+    assert _fit(mtp_bytes = 3 * GIB) == FIT_MODE
+    # And with RAM that can hold them, the host-only term is satisfied too.
+    stub._avail_mib = 16 * 1024
+    assert (
+        LlamaCppBackend._fit_derived_load_mode(
+            stub,
+            model_size = 8 * GIB,
+            gpus = [(0, 24 * 1024)],
+            avail_mib = 16 * 1024,
+            host_only_bytes = 3 * GIB,
+        )
+        == FIT_MODE
+    )
+
+
+# ------------------------------------------- the fitter's own VRAM margin
+
+
+def test_the_fitters_margin_is_not_credited_to_the_fit(monkeypatch):
+    """23 GiB free on a 24 GiB card and a 22.5 GiB footprint, with 2 GiB of RAM.
+
+    Raw free VRAM covers it, but a launch that leaves ``--fit on`` runs llama.cpp's
+    fitter, which keeps ``--fit-target`` (default 1024 MiB, "target margin per device
+    for --fit") free on every device and spills the rest to host RAM instead. Those
+    weights would then be anonymous under ``none``, on RAM nobody priced.
+    """
+    monkeypatch.setattr(hardware, "is_apple_silicon", lambda: False)
+    stub = _Stub(2 * 1024)
+    rows = [(0, 23 * 1024)]
+    footprint = int(22.5 * GIB)
+
+    def _fit(margin):
+        return LlamaCppBackend._fit_derived_load_mode(
+            stub,
+            model_size = footprint,
+            gpus = rows,
+            fit_margin_mib = margin,
+            avail_mib = 2 * 1024,
+        )
+
+    # --fit off (Studio proved the placement): no fitter, no margin, the card pays.
+    assert _fit(0.0) == FIT_MODE
+    # --fit on: the last 1 GiB is the fitter's, so 0.5 GiB of weights spill, and
+    # 2 GiB of RAM is exactly the headroom, so nothing is left to hold them.
+    assert _fit(1024.0) is None
+
+
+def test_the_margin_is_charged_per_device():
+    """--fit-target is per device, so two cards keep two margins."""
+    stub = _Stub(None)  # host RAM unreadable: the VRAM term has to settle it
+    rows = [(0, 12 * 1024), (1, 12 * 1024)]
+    # 23 GiB fits 24 GiB of raw free, but not 24 - 2 x 1 GiB.
+    assert stub._fits_without_paging(23 * GIB, rows, avail_mib = None) is True
+    assert stub._fits_without_paging(23 * GIB, rows, vram_margin_mib = 1024.0, avail_mib = None) is None
+    assert stub._fits_without_paging(21 * GIB, rows, vram_margin_mib = 1024.0, avail_mib = None) is True
+
+
+@pytest.mark.parametrize(
+    "auto_fit,delta,supports,expected",
+    [
+        # Legacy auto path, untouched slider: llama.cpp's own default.
+        (False, 0.0, True, 1024.0),
+        # Manual + Auto starts from the tighter floor.
+        (True, 0.0, True, 512.0),
+        # A lowered VRAM budget raises the margin Studio asks the fitter to keep.
+        (False, 2048.0, True, 3072.0),
+        # ...and never below the 512 MiB floor.
+        (True, -4096.0, True, 512.0),
+        # Too old for the flag: the child still keeps its own 1024 MiB.
+        (True, 0.0, False, 1024.0),
+    ],
+)
+def test_the_fit_and_the_flag_read_the_same_margin(auto_fit, delta, supports, expected):
+    got = LlamaCppBackend._fit_target_margin_mib(
+        auto_fit = auto_fit,
+        fit_target_delta_mib = delta,
+        supports_fit_target = supports,
+    )
+    assert got == expected
+    # And the emitted flag is that same number, so the margin the child is told to
+    # keep and the margin the fit refuses to spend cannot drift.
+    flags = LlamaCppBackend._ctx_integrity_flags(
+        1,
+        True,
+        auto_fit,
+        0,
+        0,
+        {"supports_fit_target": supports},
+    )
+    if "--fit-target" in flags:
+        assert flags[flags.index("--fit-target") + 1] == str(int(expected))
+
+
+def test_the_launch_charges_the_fitters_margin_only_when_fit_stays_on():
+    """Checked at the source: reaching this call needs a real GPU probe."""
+    import inspect
+
+    from core.inference.llama_cpp import LlamaCppBackend as B
+
+    compact = "".join(inspect.getsource(B.load_model).split())
+    call = compact[compact.index("_fit_load_mode=self._fit_derived_load_mode(") :]
+    call = call[: call.index("exceptExceptionase:")]
+    assert "fit_margin_mib=(self._fit_target_margin_mib(" in call
+    assert "ifuse_fitelse0.0" in call
 
 
 # ------------------------------------------------------- the policy chain
@@ -499,6 +628,11 @@ def test_the_fit_on_retry_drops_the_fits_load_mode():
     retry = retry[: retry.index("_did_fit_retry = True")]
     assert "_fit_load_mode_flags" in retry
     assert "_without_subsequence" in retry
+    # ...but the RECORD stays: this retry rewrites its own argv, not `cmd`, and a
+    # kernel-image crash reaches it first (it excludes only the split-axis and
+    # HIP/ROCr cases), so the arch-crash respawn below still has to be able to name
+    # the tokens `cmd` is carrying. Clearing here would leave it stripping nothing.
+    assert "self._fit_load_mode_flags = []" not in retry
 
 
 def test_the_arch_crash_retry_voids_the_fit_the_weights_only_floor_still_allows():
@@ -540,6 +674,9 @@ def test_the_arch_crash_retry_drops_the_fits_load_mode():
     retry = retry[: retry.index('label = "-archfallback"')]
     assert "_without_subsequence(cmd, self._fit_load_mode_flags)" in retry
     assert "self._fit_load_mode_flags = []" in retry
+    # The record is dropped ONLY where `cmd` itself was rewritten. Anywhere else it
+    # would disarm this strip for a respawn that still carries the tokens.
+    assert src.count("self._fit_load_mode_flags = []") == 1
 
 
 # ------------------------------------ pass-through args that move the weights

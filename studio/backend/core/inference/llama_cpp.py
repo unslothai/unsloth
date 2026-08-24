@@ -8662,6 +8662,8 @@ class LlamaCppBackend:
         *,
         gpu_indices: Optional[Iterable[int]] = None,
         shared_gpu_ids: Iterable[int] = (),
+        host_only_bytes: int = 0,
+        vram_margin_mib: float = 0.0,
         avail_mib: Optional[int] = None,
         headroom_mib: int = _HOST_RAM_HEADROOM_MIB,
     ) -> Optional[bool]:
@@ -8682,25 +8684,43 @@ class LlamaCppBackend:
         narrows the VRAM term to the devices this launch actually pins; unpinned cards
         hold nothing for it. Unreadable RAM answers None rather than guessing, which
         keeps the caller on llama.cpp's own default.
+
+        ``host_only_bytes`` is the part of ``footprint_bytes`` that CANNOT be satisfied
+        out of VRAM however much is free -- a drafter the launch pinned to the CPU is
+        the case -- so it is subtracted from what VRAM may cover and added to the RAM
+        requirement instead. Pooling it would let free VRAM pay for bytes that can only
+        ever be allocated in host RAM.
+
+        ``vram_margin_mib`` is the free VRAM llama.cpp's own fitter keeps PER DEVICE
+        and will not allocate into (``--fit-target``, default 1024 MiB, "target margin
+        per device for --fit"; common/arg.cpp, common/common.h). Under ``--fit on``
+        the child spills weights to host RAM rather than dip into it, so those bytes
+        are not credit this launch may spend. Zero on the proved path, which emits
+        ``-ngl -1 --fit off`` and runs no fitter at all.
         """
         if not footprint_bytes or footprint_bytes <= 0:
             return None
+        host_only = max(0, int(host_only_bytes or 0))
         shared = set(shared_gpu_ids or ())
         pinned = None if gpu_indices is None else {int(idx) for idx in gpu_indices}
+        margin_mib = max(0.0, float(vram_margin_mib or 0.0))
         free_vram_mib = sum(
-            max(0, row[1])
+            max(0, row[1] - margin_mib)
             for row in (detected_gpus or ())
             if row[0] not in shared and (pinned is None or row[0] in pinned)
         )
-        free_vram_bytes = free_vram_mib * 1024 * 1024
-        if footprint_bytes <= free_vram_bytes:
+        free_vram_bytes = int(free_vram_mib * 1024 * 1024)
+        # What VRAM may pay for, then what host RAM is left holding: the spill of the
+        # GPU-eligible part PLUS every byte that could only ever be host resident.
+        spill = max(0, max(0, footprint_bytes - host_only) - free_vram_bytes) + host_only
+        if spill <= 0:
             return True
         avail = self._available_system_memory_mib() if avail_mib is None else avail_mib
         if avail is None:
             return None
         # Same headroom the host-offload refusal keeps free for the rest of the system:
         # filling RAM to the last byte is the paging case this is trying to avoid.
-        return (footprint_bytes - free_vram_bytes) <= max(0, avail - headroom_mib) * 1024 * 1024
+        return spill <= max(0, avail - headroom_mib) * 1024 * 1024
 
     def _fit_derived_load_mode(
         self,
@@ -8711,12 +8731,14 @@ class LlamaCppBackend:
         kv_sized: bool = True,
         mtp_bytes: int = 0,
         mtp_unsized: bool = False,
+        host_only_bytes: int = 0,
         compute_buffer_flat: int = 0,
         compute_buffer_ctx: int = 0,
         soft_overhead: int = 0,
         gpus: Optional[Iterable[tuple]] = None,
         gpu_indices: Optional[Iterable[int]] = None,
         shared_gpu_ids: Iterable[int] = (),
+        fit_margin_mib: float = 0.0,
         is_vulkan_backend: bool = False,
         avail_mib: Optional[int] = None,
         extra_args: Optional[Iterable[str]] = None,
@@ -8739,6 +8761,11 @@ class LlamaCppBackend:
         drafter engaged but unsized, which the placement itself covers with a flat
         cushion rather than a number.
 
+        ``host_only_bytes`` is the slice of that footprint no amount of free VRAM can
+        hold (a drafter pinned to the CPU with ``-ngld 0``): counted in the total, but
+        charged to host RAM alone, because free VRAM cannot pay for an allocation the
+        child only ever makes on the host.
+
         Apple Silicon abstains outright. Metal is the one backend where
         ``buffer_from_host_ptr`` IS supported, so mmap wraps the weights in a Metal
         buffer in place, zero copy and file backed; ``none`` would allocate the same
@@ -8759,6 +8786,11 @@ class LlamaCppBackend:
         abstaining keeps the answer for the case that is still provable: a load host
         RAM holds WHOLE is safe wherever those flags end up putting it. The same
         predicates the Model Memory host-residency gate uses, so the two cannot drift.
+
+        ``fit_margin_mib`` is what llama.cpp's fitter keeps free per device when this
+        launch leaves ``--fit on``, i.e. VRAM this load may not spend; see
+        ``_fits_without_paging``. The caller reads it off ``_fit_target_margin_mib``,
+        the same number ``_ctx_integrity_flags`` emits.
         """
         from utils.hardware import is_apple_silicon
 
@@ -8784,6 +8816,9 @@ class LlamaCppBackend:
             + max(0, kv_cache_bytes)
             # Carries the drafter's own weights and KV.
             + max(0, mtp_bytes)
+            # Resident, but only ever in host RAM: priced whole here and charged to
+            # the RAM term alone below.
+            + max(0, host_only_bytes)
             + max(0, compute_buffer_flat)
             + max(0, compute_buffer_ctx)
             + max(0, soft_overhead)
@@ -8802,6 +8837,8 @@ class LlamaCppBackend:
             rows,
             gpu_indices = gpu_indices,
             shared_gpu_ids = shared,
+            host_only_bytes = max(0, host_only_bytes),
+            vram_margin_mib = fit_margin_mib,
             avail_mib = avail_mib,
         ):
             logger.info(
@@ -18315,17 +18352,35 @@ class LlamaCppBackend:
                         mmproj_pinned_bytes = _mmproj_pinned_bytes,
                         kv_cache_bytes = kv_cache_bytes,
                         kv_sized = self._can_estimate_kv(),
-                        mtp_bytes = _mtp_bytes(effective_ctx) + (_cpu_draft_fit_bytes or 0),
+                        mtp_bytes = _mtp_bytes(effective_ctx),
                         mtp_unsized = bool(
                             (_flat_mtp_engages and mtp_overhead_fn is None)
                             or _cpu_draft_fit_bytes is None
                         ),
+                        # Host-only, not pooled: -ngld 0 puts the drafter in RAM, and
+                        # free VRAM cannot pay for an allocation the child makes on
+                        # the host.
+                        host_only_bytes = _cpu_draft_fit_bytes or 0,
                         compute_buffer_flat = _compute_buffer_pipeline,
                         compute_buffer_ctx = _cc_bytes(effective_ctx, _fit_devices),
                         soft_overhead = _soft_overhead,
                         gpus = gpus,
                         gpu_indices = gpu_indices,
                         shared_gpu_ids = _shared_gpu_ids,
+                        # Leaving --fit on hands the placement to llama.cpp's fitter,
+                        # which keeps --fit-target free on every device it uses and
+                        # spills the rest to host RAM rather than dip into it. That
+                        # margin is not VRAM this fit may spend. The proved path
+                        # (-ngl -1 --fit off) runs no fitter, so it spends everything.
+                        fit_margin_mib = (
+                            self._fit_target_margin_mib(
+                                auto_fit = (gpu_memory_mode == "manual" and gpu_layers < 0),
+                                fit_target_delta_mib = _fit_target_delta_mib,
+                                supports_fit_target = bool(server_caps.get("supports_fit_target")),
+                            )
+                            if use_fit
+                            else 0.0
+                        ),
                         is_vulkan_backend = is_vulkan_backend,
                         # The extras as the child really gets them: a gpu_ids pin
                         # drops the device flags below, so classifying on them
@@ -20009,7 +20064,13 @@ class LlamaCppBackend:
                             # tokens; a user's --load-mode is untouched.
                             if self._fit_load_mode_flags:
                                 _run = _without_subsequence(_run, self._fit_load_mode_flags)
-                                self._fit_load_mode_flags = []
+                                # The record is NOT cleared: it describes `cmd`, which
+                                # this retry never touched, and the arch-crash and CPU
+                                # fallbacks respawn from `cmd`. A kernel-image crash
+                                # reaches this arm first (it excludes only the split-axis
+                                # and HIP/ROCr cases), so clearing here would leave those
+                                # respawns carrying a --load-mode none they can no longer
+                                # name. Stripping an already-stripped argv is a no-op.
                                 logger.info(
                                     "Load mode: dropping the fit's --load-mode none "
                                     "for the --fit on retry; the fit it was derived "
@@ -23177,6 +23238,26 @@ class LlamaCppBackend:
         return False
 
     @staticmethod
+    def _fit_target_margin_mib(
+        *,
+        auto_fit: bool,
+        fit_target_delta_mib: float = 0.0,
+        supports_fit_target: bool = True,
+    ) -> float:
+        """Free VRAM per device llama.cpp's fitter keeps for itself under ``--fit on``.
+
+        One reader for the flag and for the load-mode fit, so the margin the child is
+        told to keep and the margin the fit refuses to spend cannot drift. A server
+        too old for ``--fit-target`` still keeps llama.cpp's own 1024 MiB default
+        (common/common.h, ``fit_params_target``), which is also what the legacy path
+        deliberately stays silent about.
+        """
+        if not supports_fit_target:
+            return _LLAMA_FIT_TARGET_DEFAULT_MIB
+        base = _VRAM_FLOOR_RESERVE_MIB if auto_fit else _LLAMA_FIT_TARGET_DEFAULT_MIB
+        return max(_VRAM_FLOOR_RESERVE_MIB, base + fit_target_delta_mib)
+
+    @staticmethod
     def _ctx_integrity_flags(
         n_parallel: int,
         use_fit: bool,
@@ -23220,8 +23301,10 @@ class LlamaCppBackend:
             # The budget moves that margin from where the path already sits, so the
             # default changes neither, and a raise stops at the same 512 floor every
             # other reserve here respects.
-            _base = _VRAM_FLOOR_RESERVE_MIB if auto_fit else _LLAMA_FIT_TARGET_DEFAULT_MIB
-            _target = max(_VRAM_FLOOR_RESERVE_MIB, _base + fit_target_delta_mib)
+            _target = LlamaCppBackend._fit_target_margin_mib(
+                auto_fit = auto_fit,
+                fit_target_delta_mib = fit_target_delta_mib,
+            )
             # The legacy path stays silent when it would only restate llama.cpp's
             # own default, so an untouched slider leaves the command unchanged.
             if auto_fit or _target != _LLAMA_FIT_TARGET_DEFAULT_MIB:
