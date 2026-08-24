@@ -1303,6 +1303,7 @@ def test_one_probed_session_makes_the_clean_cells_beside_it_unscorable(tmp_path)
     assert PROBE in str(excinfo.value)
     assert "refusing to score" in str(excinfo.value)
 
+
 def test_a_fresh_run_into_a_new_directory_archives_nothing(tmp_path):
     paths = Paths.under(tmp_path / "out")
     assert archive_payload(paths, log = lambda *_a: None) is None
