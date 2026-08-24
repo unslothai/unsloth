@@ -1434,6 +1434,7 @@ export function ChatProvidersSettings({
                     <Input
                       id="provider-api-key"
                       type={showApiKey ? "text" : "password"}
+                      data-reload-snapshot-sensitive
                       value={apiKey}
                       onChange={(event) => {
                         setApiKey(event.target.value);

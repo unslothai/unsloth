@@ -720,7 +720,11 @@ def test_the_manual_splice_appends_the_fallback_swept_partial():
 
 # ── Non-streaming tool loop: the prefill mode belongs to the turn that produced the text ──
 
-_THINK_TEMPLATE = "{% if x %}<think>\n{% endif %}</think>"
+# R1/QwQ shape: the generation prompt opens an unclosed <think>.
+_THINK_TEMPLATE = (
+    "{% for m in messages %}<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>\n{% endfor %}"
+    "{% if add_generation_prompt %}<|im_start|>assistant\n<think>\n{% endif %}"
+)
 # A resumed turn that calls a tool: the kept text is the POST-tool turn, which rendered
 # an ordinary generation prompt, so its output opens inside the template's <think>.
 _RESUMED_TOOL_EVENTS = [
