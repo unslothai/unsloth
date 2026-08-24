@@ -394,7 +394,9 @@ def _open_stable_partial(path: Path) -> Optional[Any]:
                     # stock writer creates a file of its own and does not need this one at all.
                     logger.warning(
                         "Cannot open the download partial at %s (%s); leaving it alone and "
-                        "letting the stock writer fetch the file.", path, exc,
+                        "letting the stock writer fetch the file.",
+                        path,
+                        exc,
                     )
                     return None
             else:
