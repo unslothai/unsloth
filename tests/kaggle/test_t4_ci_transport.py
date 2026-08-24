@@ -2350,6 +2350,7 @@ def test_the_shared_wheels_are_the_specs_every_leg_holds_in_common():
         extra_args = (),
         per_run_timeout = 60,
         skip_reference = True,
+        shared_wheels = True,
     )
     src = "".join("".join(c["source"]) for c in driver["cells"])
     specs = re.search(r"SHARED_WHEEL_SPECS = (.+)", src).group(1)
@@ -2394,6 +2395,68 @@ def test_every_leg_gets_its_own_torch_and_triton_cache(tmp_path):
         assert len(values) == len(
             driven["stub"].papermill
         ), f"{key} is shared between legs: {sorted(values)}"
+
+
+def test_two_dispatches_can_hold_the_two_kaggle_slots_at_once():
+    """One concurrency group cannot express "at most two", and one was used.
+
+    A Kaggle account allows 2 concurrent GPU sessions and this job takes one,
+    so the cap is 2 -- but GitHub concurrency is 1 per group. The single group
+    did not merely serialise: only ONE run may be PENDING in a group, so a
+    second queued run CANCELS the first instead of queueing behind it. That
+    killed run 32674255736 and made an A/B impossible to run at all, which is
+    how two "different" configurations came to be compared against each other
+    while executing the same schedule.
+
+    Bounded by construction is the property worth guarding: the input offers
+    exactly two slots, so the account can never be asked for a third session.
+    """
+    source = NOTEBOOK_WORKFLOW.read_text(encoding = "utf-8")
+    workflow = yaml.safe_load(source)
+    slot = workflow[True]["workflow_dispatch"]["inputs"]["slot"]
+    assert slot["type"] == "choice", slot
+    assert slot["options"] == ["1", "2"], (
+        f"the slot input offers {slot['options']}, so the account could be "
+        f"asked for more than its 2 concurrent sessions"
+    )
+    assert slot.get("default") == "1", slot
+
+    group = workflow["jobs"]["t4-smoke"]["concurrency"]["group"]
+    assert "inputs.slot" in group, group
+    # A non-dispatch event has no input and must land in a single shared slot,
+    # or every push would get a session of its own.
+    assert "'1'" in group, group
+    assert workflow["jobs"]["t4-smoke"]["concurrency"]["cancel-in-progress"] is False
+
+
+def test_the_shared_wheel_build_is_opt_in():
+    """Measured once, attributable to nothing, so it ships behind a flag.
+
+    On run 32689629906 the wheels helped the leg that runs ALONE (gpt-oss
+    install 191.2s -> 152.6s) and cost the three that run CONCURRENTLY
+    (149-163s -> 319-334s). That run also changed the torch/triton cache
+    layout, so neither effect can be attributed to either change. A default-on
+    optimisation resting on that would be a guess wearing a measurement's
+    clothes.
+    """
+    source = NOTEBOOK_WORKFLOW.read_text(encoding = "utf-8")
+    workflow = yaml.safe_load(source)
+    inputs = workflow[True]["workflow_dispatch"]["inputs"]
+    assert inputs["shared_wheels"].get("default") is False, inputs["shared_wheels"]
+    build = source.split("build_kernel.py")[1].split("- name:")[0]
+    assert "$SHARED_WHEELS" in build, build
+    assert "'--shared-wheels'" in source
+
+    # Off means no wheel build in the kernel at all, not merely an unused one.
+    off = build_kernel.build_kernel(
+        SMOKE_DIR, ALL_FOUR, unsloth_ref = "R", zoo_ref = "R",
+        extra_args = (), per_run_timeout = 60, skip_reference = True,
+    )
+    src = "".join("".join(c["source"]) for c in off["cells"])
+    assert "SHARED_WHEEL_SPECS = ()" in src, (
+        "wheels are off but the kernel still carries specs, so it would spend "
+        "the build time and change nothing"
+    )
 
 
 def test_the_workflow_can_actually_reach_studio_concurrent():

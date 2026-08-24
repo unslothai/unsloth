@@ -1312,6 +1312,7 @@ def build_kernel(
     studio: dict | None = None,
     prefetch_repos: tuple[str, ...] = (),
     after_gpu_concurrent: bool = False,
+    shared_wheels: bool = False,
 ) -> dict:
     payloads = {}
     isolation = {}
@@ -1340,7 +1341,11 @@ def build_kernel(
     # they are what the cards are freed FOR, not more work to schedule onto
     # them.
     expected_gpus = min(len(payloads), SESSION_GPUS)
-    shared_wheel_specs = _shared_vcs_specs(leg_groups)
+    # Opt in. On run 32689629906 the wheels helped the leg that runs ALONE and
+    # cost the three that run concurrently, and that run moved the caches at the
+    # same time, so the effect is not yet attributable to either. Off by default
+    # until one variable at a time says otherwise.
+    shared_wheel_specs = _shared_vcs_specs(leg_groups) if shared_wheels else ()
     cpu_lane = after_gpu = None
     if studio:
         payloads.update(studio_payloads(**studio))
@@ -1435,6 +1440,12 @@ def main() -> int:
     )
     ap.add_argument("--per-run-timeout", type = int, default = 2400)
     ap.add_argument(
+        "--shared-wheels",
+        action = "store_true",
+        help = "build unsloth and unsloth_zoo once up front and install every "
+               "leg from the wheel instead of resolving the git spec per leg",
+    )
+    ap.add_argument(
         "--studio-concurrent",
         action = "store_true",
         help = "let the Studio GPU half share a card with a light training leg "
@@ -1515,6 +1526,7 @@ def main() -> int:
             # justification is that it is free.
             prefetch_repos = () if args.no_prefetch else PREFETCH_REPOS,
             after_gpu_concurrent = args.studio_concurrent,
+            shared_wheels = args.shared_wheels,
         )
         out.parent.mkdir(parents = True, exist_ok = True)
         out.write_text(json.dumps(driver, indent = 1), encoding = "utf-8")

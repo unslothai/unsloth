@@ -300,6 +300,15 @@ on:
         description: 'unslothai/unsloth ref to install and test'
         type: string
         default: ''
+      slot:
+        description: 'Which of the accounts two Kaggle session slots to occupy. Two dispatches naming different slots run side by side; anything else takes slot 1'
+        type: choice
+        options: ['1', '2']
+        default: '1'
+      shared_wheels:
+        description: 'Build unsloth and unsloth_zoo once up front and install every leg from the wheel, instead of each leg resolving the git spec itself'
+        type: boolean
+        default: false
       studio_concurrent:
         description: 'Let the Studio GPU half share a card with a small leg instead of waiting for the queue to drain. Costs the both-T4s-visible coverage, so it is off by default and is an experiment rather than the shape'
         type: boolean
@@ -510,7 +519,22 @@ jobs:
     # x one kernel is exactly Kaggle's 2-session cap, with no headroom, so the
     # capacity handling on the push path is load bearing rather than defensive.
     concurrency:
-      group: kaggle-t4-account-notebook
+      # SLOTTED, because one group cannot express "at most two".
+      #
+      # A Kaggle account allows 2 concurrent GPU sessions and this job takes
+      # one, so the cap has to be 2 and GitHub concurrency only offers 1 per
+      # group. A single group therefore serialised everything -- and worse than
+      # serialised: only ONE run may be PENDING in a group, so a second queued
+      # run CANCELS the first rather than queueing behind it. That is what
+      # killed run 32674255736, and it makes an A/B impossible to run at all.
+      #
+      # Two slots, chosen explicitly by the dispatcher, is the whole mechanism.
+      # It is bounded by construction (the input offers 1 or 2 and nothing
+      # else), so the account can never be asked for a third session, and two
+      # dispatches that name different slots genuinely run side by side.
+      # Everything that is not a dispatch has an empty input and lands in slot
+      # 1, which is exactly the old behaviour for pushes and pull requests.
+      group: kaggle-t4-account-notebook-${{ inputs.slot || '1' }}
       cancel-in-progress: false
     steps:
       # FIRST, ahead of even the audit hardening, and it is an `echo` so there
@@ -804,6 +828,16 @@ jobs:
           # control's schedule and the A/B compared a configuration against
           # itself. test_the_workflow_can_actually_reach_studio_concurrent is
           # what stops that recurring.
+          # Off unless asked for. Measured on run 32689629906 the wheels helped
+          # the leg that runs ALONE (gpt-oss install 191.2s -> 152.6s) and cost
+          # the three that run CONCURRENTLY (149-163s -> 319-334s). That run
+          # changed the caches at the same time, so neither effect is
+          # attributable yet, which is why this is a flag rather than a
+          # decision.
+          SHARED_WHEELS=''
+          if [ "${{ inputs.shared_wheels }}" = "true" ]; then
+            SHARED_WHEELS='--shared-wheels'
+          fi
           STUDIO_CONCURRENT=''
           if [ "${{ inputs.studio_concurrent }}" = "true" ]; then
             STUDIO_CONCURRENT='--studio-concurrent'
@@ -820,6 +854,7 @@ jobs:
             --studio-args "--max-steps 8" \
             --per-run-timeout 3900 \
             $STUDIO_CONCURRENT \
+            $SHARED_WHEELS \
             $SKIP
 
       # kernel-timeout-sec is passed to Kaggle at push time as a BACKSTOP, not
