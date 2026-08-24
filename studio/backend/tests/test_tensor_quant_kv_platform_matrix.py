@@ -184,9 +184,10 @@ def test_asymmetric_axes_reach_every_platform_unchanged(
         assert "--split-mode" not in cmd
 
 
-@pytest.mark.parametrize("platform,accelerator", [
-    pytest.param(p, a, id = f"{p[0]}-{a[0]}") for p in PLATFORMS for a in ACCELERATORS
-])
+@pytest.mark.parametrize(
+    "platform,accelerator",
+    [pytest.param(p, a, id = f"{p[0]}-{a[0]}") for p in PLATFORMS for a in ACCELERATORS],
+)
 def test_an_inherited_quantized_kv_env_survives_on_every_platform(
     tmp_path, monkeypatch, platform, accelerator
 ):
@@ -222,9 +223,10 @@ def test_an_inherited_quantized_kv_env_survives_on_every_platform(
     assert backend.cache_type_kv is None
 
 
-@pytest.mark.parametrize("platform,accelerator", [
-    pytest.param(p, a, id = f"{p[0]}-{a[0]}") for p in PLATFORMS for a in ACCELERATORS
-])
+@pytest.mark.parametrize(
+    "platform,accelerator",
+    [pytest.param(p, a, id = f"{p[0]}-{a[0]}") for p in PLATFORMS for a in ACCELERATORS],
+)
 def test_a_quantized_cache_survives_the_tensor_to_layer_downgrade(
     tmp_path, monkeypatch, platform, accelerator
 ):
@@ -329,9 +331,10 @@ def test_the_load_intent_gained_no_field(tmp_path):
 # ── An inherited cache type llama.cpp cannot parse must not kill both attempts ──
 
 
-@pytest.mark.parametrize("platform,accelerator", [
-    pytest.param(p, a, id = f"{p[0]}-{a[0]}") for p in PLATFORMS for a in ACCELERATORS
-])
+@pytest.mark.parametrize(
+    "platform,accelerator",
+    [pytest.param(p, a, id = f"{p[0]}-{a[0]}") for p in PLATFORMS for a in ACCELERATORS],
+)
 @pytest.mark.parametrize("bad", ["q3_K", "typo", ""])
 def test_an_unparseable_inherited_cache_type_is_dropped(
     tmp_path, monkeypatch, platform, accelerator, bad
@@ -355,9 +358,10 @@ def test_an_unparseable_inherited_cache_type_is_dropped(
     assert env["LLAMA_ARG_CACHE_TYPE_V"] == "q8_0"
 
 
-@pytest.mark.parametrize("platform,accelerator", [
-    pytest.param(p, a, id = f"{p[0]}-{a[0]}") for p in PLATFORMS for a in ACCELERATORS
-])
+@pytest.mark.parametrize(
+    "platform,accelerator",
+    [pytest.param(p, a, id = f"{p[0]}-{a[0]}") for p in PLATFORMS for a in ACCELERATORS],
+)
 def test_a_miscased_inherited_cache_type_is_normalised_not_dropped(
     tmp_path, monkeypatch, platform, accelerator
 ):

@@ -1764,26 +1764,32 @@ class TestLegacyBuildQuantizedKvInTensorMode:
             doomed = self._doomed(cmd)
             if doomed:
                 backend._stdout_lines = [self._REJECTION, "srv load_model: failed to load model"]
-            return type("Process", (), {
-                "pid": 123,
-                "stdout": (),
-                "returncode": 1 if doomed else None,
-                "poll": lambda _self, _d = doomed: 1 if _d else None,
-                "terminate": lambda _self: None,
-                "wait": lambda _self, timeout = None: 1 if doomed else 0,
-                "kill": lambda _self: None,
-            })()
+            return type(
+                "Process",
+                (),
+                {
+                    "pid": 123,
+                    "stdout": (),
+                    "returncode": 1 if doomed else None,
+                    "poll": lambda _self, _d = doomed: 1 if _d else None,
+                    "terminate": lambda _self: None,
+                    "wait": lambda _self, timeout = None: 1 if doomed else 0,
+                    "kill": lambda _self: None,
+                },
+            )()
 
         backend._wait_for_health = lambda timeout: not self._doomed(spawns[-1])
         error: list[BaseException] = []
         with patch.object(subprocess, "Popen", side_effect = fake_popen):
             try:
-                backend.load_model(GgufLoadIntent(
-                    gguf_path = str(gguf),
-                    model_identifier = "test",
-                    tensor_parallel = True,
-                    cache_type_kv = "q8_0",
-                ))
+                backend.load_model(
+                    GgufLoadIntent(
+                        gguf_path = str(gguf),
+                        model_identifier = "test",
+                        tensor_parallel = True,
+                        cache_type_kv = "q8_0",
+                    )
+                )
             except BaseException as exc:  # noqa: BLE001
                 error.append(exc)
         return backend, gguf, spawns, (error[0] if error else None)
@@ -1816,9 +1822,7 @@ class TestLegacyBuildQuantizedKvInTensorMode:
         """Without this the doomed attempt repeats on every load, forever."""
         backend, gguf, _spawns, _error = self._run(tmp_path, monkeypatch)
 
-        assert LlamaCppBackend._tensor_split_aborts(
-            "/fake/llama-server", "test", ("q8_0", "q8_0")
-        )
+        assert LlamaCppBackend._tensor_split_aborts("/fake/llama-server", "test", ("q8_0", "q8_0"))
         # And ONLY for that pair: f16 runs fine under a tensor split on a
         # pre-b9455 binary, so latching the model wholesale would take tensor
         # mode away from a config that works.
@@ -1843,9 +1847,7 @@ class TestLegacyBuildQuantizedKvInTensorMode:
             tmp_path, vulkan = False, memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)]
         )
         backend._tensor_split_aborts = lambda *a, **k: False
-        cmd = placement._launch(
-            backend, gguf, tensor_parallel = True, cache_type_kv = "q8_0"
-        )["cmd"]
+        cmd = placement._launch(backend, gguf, tensor_parallel = True, cache_type_kv = "q8_0")["cmd"]
 
         assert cmd[cmd.index("--split-mode") + 1] == "tensor"
         assert cmd[cmd.index("--cache-type-k") + 1] == "q8_0"

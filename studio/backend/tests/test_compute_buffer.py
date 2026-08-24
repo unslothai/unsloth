@@ -1297,9 +1297,7 @@ class TestScratchTakesTheLighterAxis:
     def test_extras_beat_the_managed_field_per_axis(self):
         """Extras are appended last and win per axis, so the scratch must follow
         them, not the field the UI sent."""
-        assert _planned_scratch_cache_type(
-            "f16", ["--cache-type-k", "q4_0"]
-        ) == "q4_0"
+        assert _planned_scratch_cache_type("f16", ["--cache-type-k", "q4_0"]) == "q4_0"
 
     def test_it_reads_the_inherited_env_when_nothing_else_sets_a_type(self):
         env = {"LLAMA_ARG_CACHE_TYPE_K": "q4_0", "LLAMA_ARG_CACHE_TYPE_V": "f16"}
@@ -1329,7 +1327,14 @@ class TestTensorFitPricesTheQuantizedAxis:
     optimistic context OOMs at startup instead of spilling."""
 
     @staticmethod
-    def _plan(b, cache_type, scratch_type, ub, ngpu = 4, per_gpu = 48_000):
+    def _plan(
+        b,
+        cache_type,
+        scratch_type,
+        ub,
+        ngpu = 4,
+        per_gpu = 48_000,
+    ):
         return b._plan_tensor_parallel(
             gpus = [(i, per_gpu) for i in range(ngpu)],
             model_size = 60 * 1024**3,
