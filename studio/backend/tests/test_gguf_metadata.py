@@ -580,6 +580,7 @@ def test_declared_audio_false_is_not_an_audio_claim(tmp_path: Path):
 def test_is_gguf_embedding_architecture_recognises_encoder_arches():
     assert is_gguf_embedding_architecture("nomic-bert")
     assert is_gguf_embedding_architecture("NOMIC-BERT-MOE")
+    assert not is_gguf_embedding_architecture("bert")
     assert not is_gguf_embedding_architecture("llama")
     assert not is_gguf_embedding_architecture(None)
 
@@ -641,19 +642,21 @@ def test_is_gguf_embedding_model_excludes_reranker_without_pooling(tmp_path: Pat
     )
 
 
-def test_is_gguf_embedding_model_accepts_generic_bert_without_classifier_head(tmp_path: Path):
+def test_is_gguf_embedding_model_rejects_generic_bert_without_pooling(tmp_path: Path):
     p = _write_synthetic_gguf(
-        tmp_path / "model.gguf",
-        {"general.architecture": "bert", "general.name": "Bert Encoder"},
+        tmp_path / "bge-small-en-v1.5.gguf",
+        {"general.architecture": "bert", "general.name": "Bge Small Encoder"},
     )
-    assert is_gguf_embedding_model(str(p), model_identifier = "local/model") is True
+    # No classifier head proves this is not a reranker, but it cannot tell us
+    # whether the missing pooling strategy should be CLS or MEAN.
+    assert is_gguf_embedding_model(str(p), model_identifier = "local/bge-small") is False
 
 
-def test_is_gguf_embedding_model_excludes_unnamed_bert_classifier_heads(tmp_path: Path):
+def test_is_gguf_embedding_model_excludes_unnamed_encoder_classifier_heads(tmp_path: Path):
     for index, classifier_tensor in enumerate(("cls.weight", "cls.output.weight")):
         p = _write_synthetic_gguf(
             tmp_path / f"model-{index}.gguf",
-            {"general.architecture": "bert", "general.name": "MS MARCO MiniLM L6 v2"},
+            {"general.architecture": "modern-bert", "general.name": "MS MARCO Encoder"},
             tensor_names = (classifier_tensor,),
         )
         assert is_gguf_embedding_model(str(p), model_identifier = "local/model") is False
@@ -662,11 +665,11 @@ def test_is_gguf_embedding_model_excludes_unnamed_bert_classifier_heads(tmp_path
 def test_is_gguf_embedding_model_checks_every_split_for_classifier_head(tmp_path: Path):
     first = _write_synthetic_gguf(
         tmp_path / "model-00001-of-00002.gguf",
-        {"general.architecture": "bert"},
+        {"general.architecture": "modern-bert"},
     )
     _write_synthetic_gguf(
         tmp_path / "model-00002-of-00002.gguf",
-        {"general.architecture": "bert"},
+        {"general.architecture": "modern-bert"},
         tensor_names = ("cls.weight",),
     )
     assert is_gguf_embedding_model(str(first), model_identifier = "local/model") is False

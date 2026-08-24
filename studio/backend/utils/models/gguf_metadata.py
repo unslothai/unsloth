@@ -662,12 +662,13 @@ def pairing_score(
     return 0
 
 
-# GGUF ``general.architecture`` values that can serve embeddings in llama.cpp.
+# GGUF ``general.architecture`` values that intrinsically identify embedding
+# models in llama.cpp. Generic ``bert`` is deliberately absent: without
+# pooling_type its required CLS/MEAN pooling cannot be recovered safely.
 # A ``cls.*`` tensor makes an encoder a sequence-classification/reranker model
 # instead, so architecture matches are gated on the tensor table below.
 GGUF_EMBEDDING_ARCHITECTURES: frozenset[str] = frozenset(
     {
-        "bert",
         "modern-bert",
         "nomic-bert",
         "nomic-bert-moe",
@@ -733,6 +734,11 @@ def is_gguf_embedding_model(
         return False
 
     arch = (architecture or meta.get("general.architecture") or "").strip().lower()
+    if arch == "bert":
+        # A classifier head can prove that generic BERT is a reranker, but its
+        # absence cannot recover the missing pooling strategy. llama-server
+        # otherwise defaults to NONE and /v1/embeddings returns HTTP 400.
+        return False
     if is_gguf_embedding_architecture(arch):
         # Generic BERT-family architectures also back cross-encoder rerankers.
         # Their standardized cls.* tensors are intrinsic evidence of that role;
