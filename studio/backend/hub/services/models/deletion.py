@@ -626,6 +626,17 @@ def _delete_gguf_variant_from_repos(
         removed_snapshots += removed
         deleted_bytes += freed
         failures.extend(unlink_failures)
+        # The same barrier the companion phase below relies on, for this repo's own blobs. One
+        # refused entry does not stop the loop, so its siblings' links are already gone and the
+        # reference scan would read their blobs as unreferenced -- unlinking the other shards of
+        # the very variant we just declined to delete. Put the links back and commit no blob
+        # here: the delete stays all-or-nothing, and the retry still sees a whole variant.
+        if unlink_failures:
+            for links in removed_links.values():
+                restored, restore_failures = _restore_snapshot_links(links)
+                removed_snapshots -= restored
+                failures.extend(restore_failures)
+            continue
 
         for _snap, blob, _name in matched:
             if blob is None:
@@ -652,8 +663,8 @@ def _delete_gguf_variant_from_repos(
         ):
             companion_targets.append((target_repo, repo_dir))
 
-    # A locked main blob restores its snapshot link before this barrier, leaving every shared
-    # companion intact for the retry.
+    # A main entry that would not unlink, and a locked main blob, both restore their snapshot
+    # links before this barrier, leaving every shared companion intact for the retry.
     if not failures:
         for target_repo, repo_dir in companion_targets:
             companion_matches = _repo_file_matches(
@@ -706,14 +717,22 @@ def _delete_gguf_variant_from_repos(
             ),
             None,
         )
+        # "fully" says a delete got half done, which is now the uncommon case: the main phase
+        # rolls its snapshot links back and commits no blob when an entry refuses to unlink, so
+        # the ordinary in-use refusal leaves the variant exactly as it was. Read it off the
+        # counters rather than the branch -- a rollback that itself failed, an unrestorable
+        # direct copy, and a companion phase that ran after the main one committed are all
+        # genuinely partial, and each of those leaves a count behind.
+        committed = removed_snapshots > 0 or deleted_blobs > 0
         raise HTTPException(
             status_code = 409,
             detail = (
                 f"Couldn't fully delete {variant} for {repo_id}: {reference_failure}"
                 if reference_failure is not None
                 else (
-                    f"Couldn't fully delete {variant} for {repo_id}: "
+                    f"Couldn't {'fully ' if committed else ''}delete {variant} for {repo_id}: "
                     f"{len(failures)} file(s) are in use. "
+                    f"{'' if committed else 'Nothing was removed. '}"
                     "Unload the model and try again."
                 )
             ),
