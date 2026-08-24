@@ -20,31 +20,25 @@ import pytest
 import torch
 
 cuda_available = torch.cuda.is_available()
-sm90 = cuda_available and torch.cuda.get_device_capability(0)[0] == 9
 
 
-def _has_blockwise_fbgemm():
-    if not sm90:
+def _fbgemm_block_selected():
+    # Ask unsloth's own import-time probe rather than checking for sm_90: that is
+    # exactly when the kernel path is reachable, and future arches enable themselves.
+    if not cuda_available:
         return False
     try:
-        import fbgemm_gpu
+        from unsloth.kernels import fp8
 
-        try:
-            import fbgemm_gpu.experimental.gen_ai  # noqa: F401
-        except Exception:
-            pass
-        from packaging.version import Version
-
-        if Version(fbgemm_gpu.__version__) < Version("1.4.0"):
-            return False  # <=1.3.0 corrupts some shapes; unsloth gates it off
+        return fp8.fp8_block_quant_linear is fp8.fp8_fbgemm_block_linear
     except Exception:
         return False
-    return hasattr(torch.ops.fbgemm, "f8f8bf16_blockwise")
 
 
-pytestmark = pytest.mark.skipif(
-    not _has_blockwise_fbgemm(),
-    reason = "needs sm_90 CUDA and fbgemm f8f8bf16_blockwise",
+# Only the kernel battery needs fbgemm; the fallback tests below never reach it.
+pytestmark = pytest.mark.skipif(not cuda_available, reason = "needs CUDA")
+needs_fbgemm = pytest.mark.skipif(
+    not _fbgemm_block_selected(), reason = "needs fbgemm f8f8bf16_blockwise",
 )
 
 
@@ -89,9 +83,11 @@ def _check_grad(X, out, Wq, scale, block):
 
 
 def _rel_err(out, ref):
-    return float((out.float() - ref.float()).abs().mean() / ref.float().abs().mean())
+    out, ref = out.detach().float(), ref.detach().float()
+    return float((out - ref).abs().mean() / ref.abs().mean())
 
 
+@needs_fbgemm
 def test_output_tile_grid_battery_matches_reference():
     # Shapes cover both dispatch buckets' former failure zones plus safe ones.
     # On fbgemm <=1.3.0 the failing ones returned whole outputs at ~0.7 relative

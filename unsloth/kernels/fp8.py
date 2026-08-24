@@ -582,9 +582,10 @@ class FP8_fbgemm_block_linear(torch.autograd.Function):
         with _fp8_triton_device_context(X):
             # X is (tokens, K): its blocks are (bs_m, bs_k), not (bs_m, bs_n).
             xq, xs = triton_quantize_fp8_block(X, bs_m, bs_k, None)
+        # f8f8bf16 always returns bf16; cast so both branches return X.dtype.
         output = torch.ops.fbgemm.f8f8bf16_blockwise(
             xq, weight.contiguous(), xs, weight_scale.contiguous(), bs_m, bs_n, bs_k
-        )
+        ).to(X.dtype)
         output = output + bias if bias is not None else output
 
         output = output.view(*orig_shape[:-1], -1)
