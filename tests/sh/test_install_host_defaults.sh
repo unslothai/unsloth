@@ -323,6 +323,8 @@ assert_detects "shell-prompt prefix"                '$ unsloth studio -H 0.0.0.0
 assert_detects "inline env assignment prefix"       "PW='x' unsloth studio -H 0.0.0.0"             detected
 assert_detects "indented inside a fenced block"     '    unsloth studio -H 0.0.0.0'                detected
 assert_detects "quoted inside a printf"             'printf "%s" "unsloth studio -p 1 -H 0.0.0.0"' detected
+# The fixture is the literal text a launcher script CONTAINS, so the `$` must not expand.
+# shellcheck disable=SC2016
 assert_detects "launched through a variable"        'exec "$UNSLOTH_EXE" studio -H 0.0.0.0'        detected
 assert_detects "wildcard with a port suffix"        'unsloth studio -H 0.0.0.0:8888'               detected
 assert_detects "the IPv6 wildcard"                  'unsloth studio -H [::]'                       detected
@@ -342,6 +344,8 @@ echo "=== install.sh launcher template ==="
 # Extract the heredoc that generates ~/.local/share/unsloth/launch-studio.sh.
 # The terminator is read off the `<<` that opens it, so renaming the delimiter
 # cannot silently truncate the window to nothing.
+# Same reason: install.sh contains the literal `$_css_launcher`, it is not ours to expand.
+# shellcheck disable=SC2016
 _launcher_delim=$(grep -m1 'cat > "\$_css_launcher" <<' "$INSTALL_SH" \
     | sed -E "s/.*<<-?[[:space:]]*[\"']?([A-Za-z_][A-Za-z0-9_]*)[\"']?.*/\1/")
 _launcher=$(awk -v delim="$_launcher_delim" \
