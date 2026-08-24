@@ -1471,8 +1471,7 @@ def get_settings(current_subject: str = Depends(get_current_subject)):
 
 @router.post("/settings/compare-and-set", response_model = ConditionalChatSettingsResponse)
 def compare_and_set_settings(
-    payload: ConditionalChatSettingsPayload,
-    current_subject: str = Depends(get_current_subject),
+    payload: ConditionalChatSettingsPayload, current_subject: str = Depends(get_current_subject)
 ):
     try:
         settings, applied = upsert_chat_settings_merge_if_current(

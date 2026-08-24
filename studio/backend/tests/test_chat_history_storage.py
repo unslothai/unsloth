@@ -475,9 +475,7 @@ def test_settings_compare_and_set_rejects_a_newer_nested_edit(tmp_path, monkeypa
     _reset_studio_db(tmp_path, monkeypatch)
     original = {"inferenceParams": {"temperature": 0.6, "presencePenalty": 0.0}}
     studio_db.upsert_chat_settings_merge(original)
-    studio_db.upsert_chat_settings_merge(
-        {"inferenceParams": {"presencePenalty": 0.4}}
-    )
+    studio_db.upsert_chat_settings_merge({"inferenceParams": {"presencePenalty": 0.4}})
 
     settings, applied = studio_db.upsert_chat_settings_merge_if_current(
         original,
@@ -500,10 +498,7 @@ def test_settings_compare_and_set_atomically_applies_a_matching_patch(tmp_path, 
     )
 
     assert applied is True
-    assert settings["inferenceParams"] == {
-        "temperature": 0.6,
-        "presencePenalty": 1.5,
-    }
+    assert settings["inferenceParams"] == {"temperature": 0.6, "presencePenalty": 1.5}
 
 
 def test_settings_merge_keeps_each_model_s_remembered_params(tmp_path, monkeypatch):
