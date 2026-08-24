@@ -59,7 +59,7 @@ def _fake_file_download(monkeypatch, *, xet_available = False):
 
     monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
     monkeypatch.setitem(sys.modules, "huggingface_hub.file_download", module)
-    monkeypatch.setattr(rp, "_exclusion_is_provable", lambda: True)
+    monkeypatch.setattr(rp, "_exclusion_is_provable", lambda _c = None: True)
     return module, calls
 
 
@@ -86,7 +86,7 @@ def test_only_the_versions_that_need_it_and_that_it_has_been_read_against(
 
 def test_a_filesystem_that_grants_the_lock_twice_keeps_the_stock_writer(monkeypatch):
     _fake_file_download(monkeypatch)
-    monkeypatch.setattr(rp, "_exclusion_is_provable", lambda: False)
+    monkeypatch.setattr(rp, "_exclusion_is_provable", lambda _c = None: False)
     assert rp.can_restore_partials() is False
     assert rp.restore_resumable_partials() is False
 
@@ -99,7 +99,7 @@ def test_a_hub_missing_the_pieces_is_left_alone(monkeypatch):
 
 def test_the_lock_probe_reports_a_working_lock(tmp_path, monkeypatch):
     """The real probe, on the real filesystem the tests run on."""
-    monkeypatch.setattr(rp, "_probe_dir", lambda: tmp_path)
+    monkeypatch.setattr(rp, "_probe_dir", lambda _c = None: tmp_path)
     monkeypatch.setattr(rp, "_filesystem_is_local", lambda _d: True)
     assert rp._exclusion_is_provable() is True
     assert not list(tmp_path.iterdir()), "the probe left its file behind"
@@ -130,9 +130,9 @@ def test_moving_the_cache_re_probes_rather_than_reusing_the_old_verdict(tmp_path
     )
 
     first, second = tmp_path / "one", tmp_path / "two"
-    monkeypatch.setattr(rp, "_probe_dir", lambda: first)
+    monkeypatch.setattr(rp, "_probe_dir", lambda _c = None: first)
     rp._exclusion_is_provable()
-    monkeypatch.setattr(rp, "_probe_dir", lambda: second)
+    monkeypatch.setattr(rp, "_probe_dir", lambda _c = None: second)
     rp._exclusion_is_provable()
 
     assert probed == [str(first), str(second)]
@@ -152,7 +152,7 @@ def test_a_network_cache_keeps_the_stock_writer(tmp_path, monkeypatch):
 
 def test_a_network_cache_stands_down_even_where_the_lock_probe_would_pass(tmp_path, monkeypatch):
     """Locality gates the probe, not the other way round: on NFS the probe passes and lies."""
-    monkeypatch.setattr(rp, "_probe_dir", lambda: tmp_path)
+    monkeypatch.setattr(rp, "_probe_dir", lambda _c = None: tmp_path)
     monkeypatch.setattr(rp, "_lock_is_honoured_at", lambda _d: True)
     monkeypatch.setattr(rp, "_filesystem_is_local", lambda _d: False)
     assert rp._exclusion_is_provable() is False
@@ -169,6 +169,62 @@ def test_a_local_disk_is_local(tmp_path):
     """The filesystem the tests actually run on."""
     rp.invalidate_probe_cache()
     assert rp._filesystem_is_local(str(tmp_path)) is True
+
+
+def test_an_unrecognised_mount_type_is_not_treated_as_local(tmp_path, monkeypatch):
+    """Locality is an allowlist, because a FUSE daemon picks its own name.
+
+    Unless it negotiates FUSE_FLOCK_LOCKS the kernel answers flock locally (libfuse
+    fuse_lowlevel.h), so a cache on object storage passes the same-host probe while excluding no
+    other client. A blank fstype says nothing either. Neither may read as local.
+    """
+    for fstype in ("fuse.rclone", "fuse.s3fs", "fuse.gocryptfs", "somethingnew", ""):
+        rp.invalidate_probe_cache()
+        monkeypatch.setattr(rp, "_mounts", lambda: [(str(tmp_path), fstype)], raising = False)
+        assert rp._filesystem_is_local(str(tmp_path)) is False, fstype
+
+
+def test_the_known_local_filesystems_are_local(tmp_path, monkeypatch):
+    """The allowlist still has to admit the disks people actually keep a cache on."""
+    for fstype in ("ext4", "xfs", "btrfs", "zfs", "apfs", "NTFS", "tmpfs", "overlay"):
+        rp.invalidate_probe_cache()
+        monkeypatch.setattr(rp, "_mounts", lambda: [(str(tmp_path), fstype)], raising = False)
+        assert rp._filesystem_is_local(str(tmp_path)) is True, fstype
+
+
+def test_each_cache_root_is_judged_on_its_own_filesystem(tmp_path, monkeypatch):
+    """Studio remembers several cache roots and they need not lock alike.
+
+    One global verdict taken from the selected cache would have the boot sweep delete a local
+    cache's still-appendable partials whenever the selected one sits on a network mount.
+    """
+    from hub.utils import hf_cache_state
+
+    local_root, network_root = tmp_path / "local", tmp_path / "network"
+    local_root.mkdir()
+    network_root.mkdir()
+    # Past the version gate, so the filesystem is what is left to decide.
+    monkeypatch.setattr("huggingface_hub.__version__", "1.28.0", raising = False)
+    monkeypatch.setattr(rp, "_hub_is_patchable", lambda: True)
+    monkeypatch.setattr(
+        rp,
+        "_mounts",
+        lambda: [(str(local_root), "ext4"), (str(network_root), "nfs4")],
+        raising = False,
+    )
+    hf_cache_state.invalidate_partial_resumability()
+
+    partial = f"{'a' * 40}.incomplete"
+    assert hf_cache_state.partial_is_resumable(partial, local_root) is True
+    assert hf_cache_state.partial_is_resumable(partial, network_root) is False
+    hf_cache_state.invalidate_partial_resumability()
+
+
+def test_a_named_root_that_is_gone_is_not_recreated(tmp_path):
+    """Asking about a detached cache must not bring it back, nor claim it locks."""
+    missing = tmp_path / "unplugged"
+    assert rp._probe_dir(missing) is None
+    assert not missing.exists()
 
 
 def test_only_contention_counts_as_a_working_lock(tmp_path, monkeypatch):
@@ -246,12 +302,12 @@ def test_changing_the_cache_home_invalidates_the_verdict(monkeypatch):
     """The one place the root can move at runtime must drop both cached answers."""
     from hub.utils import hf_cache_state
 
-    monkeypatch.setattr(rp, "can_restore_partials", lambda: True)
+    monkeypatch.setattr(rp, "can_restore_partials", lambda _c = None: True)
     monkeypatch.setattr("huggingface_hub.__version__", "1.28.0", raising = False)
     hf_cache_state.hf_partials_are_resumable.cache_clear()
     assert hf_cache_state.hf_partials_are_resumable() is True
 
-    monkeypatch.setattr(rp, "can_restore_partials", lambda: False)
+    monkeypatch.setattr(rp, "can_restore_partials", lambda _c = None: False)
     assert hf_cache_state.hf_partials_are_resumable() is True, "cached, as the hot path needs"
 
     hf_cache_state.invalidate_partial_resumability()
@@ -397,11 +453,11 @@ def test_the_ui_is_told_partials_are_resumable_again(monkeypatch):
 
     _fake_file_download(monkeypatch)
     hf_cache_state.hf_partials_are_resumable.cache_clear()
-    monkeypatch.setattr(rp, "can_restore_partials", lambda: True)
+    monkeypatch.setattr(rp, "can_restore_partials", lambda _c = None: True)
     assert hf_cache_state.hf_partials_are_resumable() is True
 
     hf_cache_state.hf_partials_are_resumable.cache_clear()
-    monkeypatch.setattr(rp, "can_restore_partials", lambda: False)
+    monkeypatch.setattr(rp, "can_restore_partials", lambda _c = None: False)
     assert hf_cache_state.hf_partials_are_resumable() is False
     hf_cache_state.hf_partials_are_resumable.cache_clear()
 

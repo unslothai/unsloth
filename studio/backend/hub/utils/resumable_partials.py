@@ -52,36 +52,48 @@ MAX_SUPPORTED_MAJOR = 1
 # not flock; ENOLCK and EOPNOTSUPP mean this filesystem cannot lock at all.
 _CONTENDED = frozenset({errno.EWOULDBLOCK, errno.EAGAIN})
 
-# Mounts whose locking, if any, is a matter between clients rather than something a probe on one
-# host can settle. Anything not listed is judged local.
-_NETWORK_FSTYPES = frozenset(
+# Filesystems backed by storage attached to this host, so a lock taken here is the only lock.
+# An allowlist rather than a list of network types: a FUSE mount reports whatever name its daemon
+# chose, and unless it negotiates FUSE_FLOCK_LOCKS the kernel answers flock locally (libfuse
+# fuse_lowlevel.h), so fuse.rclone or fuse.s3fs over shared object storage passes the probe while
+# excluding nobody. Naming the ones we know instead means an unrecognised or blank type keeps the
+# stock writer rather than silently re-enabling a shared one.
+_LOCAL_FSTYPES = frozenset(
     {
-        "9p",
-        "afpfs",
-        "afs",
-        "beegfs",
-        "ceph",
-        "cifs",
-        "coda",
-        "davfs",
-        "davfs2",
-        "fuse.cephfs",
-        "fuse.glusterfs",
-        "fuse.sshfs",
-        "gfs2",
-        "glusterfs",
-        "gpfs",
-        "lustre",
-        "ncpfs",
-        "nfs",
-        "nfs3",
-        "nfs4",
-        "panfs",
-        "smb",
-        "smb2",
-        "smb3",
-        "smbfs",
-        "webdav",
+        # Linux
+        "bcachefs",
+        "btrfs",
+        "ext2",
+        "ext3",
+        "ext4",
+        "f2fs",
+        "jfs",
+        "nilfs2",
+        "reiser4",
+        "reiserfs",
+        "xfs",
+        "zfs",
+        # Block-backed FUSE (ntfs-3g and friends), container and memory-backed roots
+        "fuseblk",
+        "overlay",
+        "overlayfs",
+        "ramfs",
+        "tmpfs",
+        # Removable and cross-platform volumes
+        "exfat",
+        "fat",
+        "fat32",
+        "msdos",
+        "vfat",
+        # macOS
+        "apfs",
+        "hfs",
+        "hfsplus",
+        "ufs",
+        # Windows, where psutil reports the volume format
+        "ntfs",
+        "ntfs3",
+        "refs",
     }
 )
 
@@ -106,20 +118,26 @@ def _hub_version() -> tuple[int, ...]:
     return tuple(parts)
 
 
-def _probe_dir() -> Optional[Path]:
-    """The cache the worker will use, not the one this process booted with.
+def _probe_dir(hub_cache: Optional[Path | str] = None) -> Optional[Path]:
+    """The cache whose filesystem decides, defaulting to the one the worker will use.
 
     ``constants.HF_HUB_CACHE`` is resolved at import and moving the cache in Settings does not
     rewrite the live process (see ``hub/services/download_lifecycle.py``), so probing it would
     judge a different filesystem than the partial lands on. The constant is the fallback for
     callers outside Studio.
+
+    *hub_cache* names a specific root instead. Studio remembers several, and a partial sitting in
+    one of them is governed by that root's filesystem, not by whichever is currently selected.
     """
     root = None
-    try:
-        from utils.hf_cache_settings import active_hf_hub_cache
-        root = Path(active_hf_hub_cache())
-    except Exception as exc:  # noqa: BLE001 - outside Studio, fall back to the library's own view
-        logger.debug("resumable partials: no Studio cache setting (%s)", exc)
+    if hub_cache is not None:
+        root = Path(hub_cache)
+    else:
+        try:
+            from utils.hf_cache_settings import active_hf_hub_cache
+            root = Path(active_hf_hub_cache())
+        except Exception as exc:  # noqa: BLE001 - outside Studio, use the library's own view
+            logger.debug("resumable partials: no Studio cache setting (%s)", exc)
     if root is None:
         try:
             from huggingface_hub import constants
@@ -127,6 +145,10 @@ def _probe_dir() -> Optional[Path]:
         except Exception as exc:  # noqa: BLE001 - an unreadable cache is not a lock guarantee
             logger.debug("resumable partials: no hub cache to probe (%s)", exc)
             return None
+    if hub_cache is not None:
+        # Asked about a named root, so only report on one that is there. Creating it would
+        # resurrect a cache the user detached, and an absent root holds no partials to judge.
+        return root if root.is_dir() else None
     try:
         root.mkdir(parents = True, exist_ok = True)
         return root
@@ -165,12 +187,12 @@ def _filesystem_is_local(directory: str) -> bool:
     if fstype is None:
         logger.debug("resumable partials: no mount found for %s", path)
         return False
-    if fstype in _NETWORK_FSTYPES:
+    if fstype not in _LOCAL_FSTYPES:
         logger.info(
-            "Download partials stay unresumable: %s is on %s, where locking is between clients "
-            "and cannot be established from this host.",
+            "Download partials stay unresumable: %s is on %s, which is not a filesystem this host "
+            "can prove it locks alone.",
             path,
-            fstype,
+            fstype or "an unnamed type",
         )
         return False
     return True
@@ -233,18 +255,17 @@ def _lock_is_honoured_at(directory: str) -> bool:
             pass
 
 
-def _exclusion_is_provable() -> bool:
-    """Whether a shared partial under the cache in force can only have one writer."""
+def _exclusion_is_provable(hub_cache: Optional[Path | str] = None) -> bool:
+    """Whether a shared partial under *hub_cache* (default: the cache in force) has one writer."""
+    directory = _probe_dir(hub_cache)
+    if directory is None:
+        return False
     try:
         import fcntl  # noqa: F401
     except ImportError:
         # No fcntl on Windows, where huggingface_hub locks via msvcrt: mandatory rather than
         # advisory. A network share still cannot be spoken for, which the locality check catches.
-        directory = _probe_dir()
-        return os.name == "nt" and directory is not None and _filesystem_is_local(str(directory))
-    directory = _probe_dir()
-    if directory is None:
-        return False
+        return os.name == "nt" and _filesystem_is_local(str(directory))
     return _filesystem_is_local(str(directory)) and _lock_is_honoured_at(str(directory))
 
 
@@ -258,16 +279,18 @@ def _hub_is_patchable() -> bool:
     return all(hasattr(file_download, name) for name in needed)
 
 
-def can_restore_partials() -> bool:
-    """Whether :func:`restore_resumable_partials` would take effect here.
+def can_restore_partials(hub_cache: Optional[Path | str] = None) -> bool:
+    """Whether the shared-name writer is safe for partials under *hub_cache*.
 
     Read by the server to decide what to tell the UI and by the worker before it patches, so both
-    answer the same.
+    answer the same. Default is the cache in force, which is the one a download will write; pass a
+    root to ask about partials already sitting in a different remembered cache, whose filesystem
+    may lock differently from the selected one.
     """
     version = _hub_version()
     if not version or version <= LAST_STOCK_RESUMABLE_VERSION or version[0] > MAX_SUPPORTED_MAJOR:
         return False
-    return _hub_is_patchable() and _exclusion_is_provable()
+    return _hub_is_patchable() and _exclusion_is_provable(hub_cache)
 
 
 def restore_resumable_partials() -> bool:

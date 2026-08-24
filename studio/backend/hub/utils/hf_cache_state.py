@@ -59,8 +59,8 @@ _LAST_RESUMABLE_PARTIAL_VERSION = (1, 17)
 ABANDONED_PARTIAL_SECONDS = 120
 
 
-@lru_cache(maxsize = 1)
-def hf_partials_are_resumable() -> bool:
+@lru_cache(maxsize = 8)
+def hf_partials_are_resumable(hub_cache: Optional[str] = None) -> bool:
     """Whether an interrupted download leaves bytes the next attempt can reuse.
 
     Up to 1.17 huggingface_hub appended to a shared ``<etag>.incomplete`` and restarted from
@@ -74,6 +74,10 @@ def hf_partials_are_resumable() -> bool:
 
     On 1.18+ this also asks whether the download worker will put the 1.17 writer back
     (:mod:`hub.utils.resumable_partials`), since a restored resumer makes partials reusable again.
+    That half turns on the filesystem the partial is on, so *hub_cache* names the root being asked
+    about. Studio remembers several and they need not lock alike: without it, a selected cache on a
+    network mount would condemn a local cache's partials to the abandoned-partial sweep. Omitting it
+    asks about the cache in force, which is where a new download lands.
     """
     try:
         from huggingface_hub import __version__ as hf_version
@@ -93,7 +97,7 @@ def hf_partials_are_resumable() -> bool:
         return True
     try:
         from hub.utils.resumable_partials import can_restore_partials
-        return can_restore_partials()
+        return can_restore_partials(hub_cache)
     except Exception:  # noqa: BLE001 - no restoration is just the stock answer
         from loggers import get_logger
         get_logger(__name__).debug(
@@ -159,17 +163,20 @@ def blob_download_lock_held(entry: Path, blob_hash: str) -> bool:
         return True
 
 
-def partial_is_resumable(name: str) -> bool:
+def partial_is_resumable(name: str, hub_cache: Optional[Path | str] = None) -> bool:
     """Whether any later attempt could append to this particular partial.
 
     Two conditions, and the layout half matters on its own: a nonce partial is private to the
     process that created it, so even a legacy writer will not reopen it. That combination is
     reachable whenever caches are shared across environments, which this repo's own pins
     produce (Python 3.10+ takes hub >= 1.23, older takes 0.36.2, one cache between them).
+
+    *hub_cache* is the root the partial lives under. Callers walking more than one cache must pass
+    it, since the answer is partly a property of that root's filesystem.
     """
     if partial_is_process_unique(name):
         return False
-    return hf_partials_are_resumable()
+    return hf_partials_are_resumable(str(hub_cache) if hub_cache is not None else None)
 
 
 def _safe_is_dir(path: Path, scan_errors: Optional[list] = None) -> bool:
