@@ -414,13 +414,11 @@ export function WindowTitlebar({
         />
         <div
           className="pointer-events-auto absolute right-1 top-0 flex h-full items-center gap-0.5 px-1"
-          // No z-index here. The header above is positioned and numbered, so it is a
+          // No z-index here: the header above is positioned and numbered, so it is a
           // stacking context and anything written here is compared inside it, never against
-          // the grips outside it. The overlap that invites one -- the north edge strip and
-          // the north-east corner cross the buttons, costing Close 92px and the other two
-          // 60px each -- is the same before and after this PR, because the grips were equal
-          // to the header at z-[70] and came after it, and are above it now. Moving it is
-          // the titlebar's own question; see tests/studio/playwright_overlay_rail.py.
+          // the grips. The overlap that invites one costs Close 92px and the other two 60px
+          // each, and measures the same before and after this PR; see
+          // tests/studio/playwright_overlay_rail.py.
           role="toolbar"
           aria-label="Window controls"
         >

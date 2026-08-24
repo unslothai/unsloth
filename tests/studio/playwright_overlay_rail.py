@@ -3,29 +3,24 @@
 
 """The overlay rail's shadow gutter must cost the cards nothing.
 
-The rail reserves room around its cards so its own `overflow-y-auto` clip does not cut their
-shadows off, and pays for it by dropping its box and growing its cap by the same amounts. Every
-part of that arrangement lives in the browser: the block padding is an inline style, the
-compensation is arithmetic on the hook's output, and the discount that keeps the measurement
-honest is a `getComputedStyle` read of that same padding.
+The rail reserves room around its cards so its `overflow-y-auto` clip does not cut their
+shadows off, and pays for it by dropping its box and growing its cap by the same amounts. All
+of that lives in the browser -- an inline style, arithmetic on the hook's output, and a
+`getComputedStyle` read -- so the node suite cannot reach it, and the suites that boot the app
+assert the horizontal gutter and the cap but never the block one.
 
-None of it is reachable from the node suite, which has no DOM. The suites that boot the whole
-app can reach it, but they assert the horizontal gutter and the cap, so a block gutter that
-drifted from its compensation would move every card and none of them would notice.
+Drives the real `useStackGeometry` against a bare vite entry. What it holds:
 
-This drives the real `useStackGeometry` against a bare vite entry, so no backend, no auth and
-no update endpoints are involved. What it holds:
-
-  - the reserved room is in pixels, at any root font size, so a rem cannot move the cards;
-  - the rail's own edge and cap carry the gutter, and the cards' band is unchanged by it;
-  - the clip really does have that much room around the cards afterwards;
-  - both `scrollHeight` probes see the padding exactly once, so the cards measure as cards;
+  - the reserved room is in pixels at any root font size, so a rem cannot move the cards;
+  - the rail's edge and cap carry the gutter, and the cards' band is unchanged by it;
+  - the clip really has that much room around the cards afterwards;
+  - both `scrollHeight` probes see the padding exactly once;
   - a rail sized against a cap it overflows still says so, even where an engine leaves the
     block-end padding out of its scrollable overflow;
   - the taller pointer box takes no input that was not already the rail's.
 
-Run: SMOKE_PORT, SMOKE_BASE_URL, PW_ART_DIR and STUDIO_PLAYWRIGHT_BROWSER as the other smokes
-take them.
+Run: SMOKE_PORT, SMOKE_BASE_URL, PW_ART_DIR and STUDIO_PLAYWRIGHT_BROWSER, as the other
+smokes take them.
 """
 
 from __future__ import annotations
@@ -50,22 +45,19 @@ PORT = int(os.environ.get("SMOKE_PORT", "5197"))
 BASE_URL = os.environ.get("SMOKE_BASE_URL", "").rstrip("/")
 ART = Path(os.environ.get("PW_ART_DIR", "logs/playwright-overlay-rail"))
 ENTRY = "smoke-overlay-rail.html"
-# Vite's SPA fallback answers 200 with index.html for a path it cannot resolve, so readiness
-# is matched on the module specifier rather than on the status.
+# Vite's SPA fallback answers 200 for a path it cannot resolve, so readiness is matched on
+# the module specifier, not the status.
 ENTRY_MODULE = "smoke-overlay-rail-main.tsx"
 PLAYWRIGHT_BROWSER = os.environ.get("STUDIO_PLAYWRIGHT_BROWSER", "chromium").lower()
 if PLAYWRIGHT_BROWSER not in ("chromium", "firefox", "webkit"):
     raise SystemExit(f"unknown STUDIO_PLAYWRIGHT_BROWSER: {PLAYWRIGHT_BROWSER!r}")
 
-# `right-4` and `gap-2` are spacing utilities, so both resolve through `--spacing` in rem and
-# are worth one quarter and one eighth of the root font size. Neither is what this PR pinned
-# in pixels, and neither is read back from a constant here: the driver takes both off the
-# node, so a root size other than 16 is measured rather than assumed.
+# `right-4` and `gap-2` resolve through `--spacing` in rem, so the driver reads both off the
+# node rather than mirroring them here: a root size other than 16 is measured, not assumed.
 STORE_STACK_GAP = 8
 # `STACK_GAP`, the clearance the placement leaves between the cards and a box it dodges.
 CARD_TO_MONITOR_GAP = 8
-# Layout is fractional under zoom and at a device pixel ratio other than 1, so equality is
-# to within a CSS pixel throughout.
+# Layout is fractional under zoom and at DPR != 1, so equality is to within a CSS pixel.
 EPS = 1.0
 
 failures: list[str] = []
@@ -135,8 +127,8 @@ MEASURE = """
 }
 """
 
-# The rail measures itself and changes its own cap, so a reading has to be taken after the
-# observers have stopped producing new ones rather than after a fixed wait.
+# The rail measures itself and changes its own cap, so read after the observers go quiet
+# rather than after a fixed wait.
 SETTLE = """
 async () => {
   const rail = document.querySelector('[data-testid="overlay-rail"]');
@@ -193,10 +185,9 @@ def configure(
 def report_gap(m: dict) -> None:
     """The rail's own gap against the one the store's floor arithmetic assumes.
 
-    `gap-2` is a spacing utility and `STACK_GAP` is a literal 8, so the two agree only at a
-    16px root. That predates the shadow gutter and is not what this suite gates on, but it is
-    the same shape of drift the gutter was pinned in pixels to avoid, so it is printed rather
-    than left to be rediscovered.
+    `gap-2` is a rem and `STACK_GAP` a literal 8, so they agree only at a 16px root. That
+    predates the gutter and is not gated here, but it is the drift the gutter was pinned in
+    pixels to avoid, so it is printed rather than left to be rediscovered.
     """
     if abs(m["rowGap"] - STORE_STACK_GAP) > 0.01:
         info(
@@ -211,8 +202,7 @@ def assert_invariants(m: dict, label: str, *, fitting: bool) -> None:
         return
     top, bottom = m["gutter"]["top"], m["gutter"]["bottom"]
 
-    # The room is in pixels. A spacing utility would resolve through --spacing in rem and
-    # disagree with the compensation at any root font size but 16.
+    # In pixels: a spacing utility would be a rem and disagree with the compensation.
     check(
         abs(m["padding"]["top"] - top) < 0.01 and abs(m["padding"]["bottom"] - bottom) < 0.01,
         f"{label}: block padding is {m['padding']['top']}/{m['padding']['bottom']}, "
@@ -236,9 +226,8 @@ def assert_invariants(m: dict, label: str, *, fitting: bool) -> None:
         f"{label}: cap {m['maxHeight']} less the gutter is not the placed band "
         f"{m['geometry']['maxHeight']}; the gutter is being taken out of the cards",
     )
-    # The clip is at the padding box, so this is the room the shadows have. Only meaningful
-    # at rest: a rail that scrolls has cards below the fold by construction, and its own
-    # gutter is then reachable by scrolling to the end, which run_observer_and_scroll holds.
+    # The clip is at the padding box, so this is the room the shadows have. Only at rest: a
+    # scrolling rail has cards below the fold, and run_observer_and_scroll covers that end.
     if fitting and m["cardCount"] > 0:
         check(
             m["rail"]["bottom"] - m["last"]["bottom"] >= bottom - 0.6,
@@ -266,9 +255,7 @@ def assert_invariants(m: dict, label: str, *, fitting: bool) -> None:
             f"the padding is counted a number of times other than once",
         )
     if fitting and m["cardCount"] > 0 and m["dir"] == "ltr":
-        # Nothing about the block gutter may touch where the cards sit across. `right-4` is
-        # a spacing utility and so is worth a quarter of `--spacing`'s rem, i.e. the root
-        # font size; that is what it was before this PR too.
+        # The block gutter may not touch where the cards sit across.
         check(
             abs((m["innerWidth"] - m["last"]["right"]) - m["rightInset"]) <= EPS,
             f"{label}: the cards' right inset is "
@@ -326,8 +313,7 @@ def obstacles_for(name: str, width: int, height: int) -> dict:
             }
         }
     if name == "monitor-tall":
-        # Tall enough that the lift does not fit, which is the branch that seats the stack
-        # inside the panel and reserves room for its resize grip.
+        # Too tall to lift over, so the stack seats inside the panel instead.
         return {
             "monitor": {
                 "left": width - 288,
@@ -381,7 +367,6 @@ def run_cap_boundary(page) -> None:
     """Crossing the cap must flip the rail's overflow state once, not oscillate over it."""
     print("[matrix] cap boundary", flush = True)
     page.set_viewport_size({"width": 1280, "height": 800})
-    # One card, grown a quarter pixel at a time through the room the rail has.
     probe = configure(page, cards = [INDICATOR])
     room = probe["geometry"]["maxHeight"]
     transitions = 0
@@ -417,14 +402,12 @@ def run_cap_boundary(page) -> None:
 def run_short_cap(page) -> None:
     """A cap that lands a little short of a card must show it whole, not shear its corners.
 
-    The clip is at the padding box, so the gutter is slack: a card that overruns the band by
-    less than the room reserved under it is still painted in full. This is the sheared-corner
-    half of the report, and the only way to see it is to put a card in a rail whose cap is a
-    known few pixels short of it.
+    The clip is at the padding box, so the gutter is slack: a card overrunning the band by
+    less than the room reserved under it is still painted in full. The sheared-corner half of
+    the report.
     """
     print("[matrix] a cap short of the card", flush = True)
-    # With no obstacle the band is the viewport less both insets, so a card that tall plus a
-    # few pixels is a cap short of a card, exactly and without depending on the dodge logic.
+    # No obstacle, so the band is the viewport less both insets and the shortfall is exact.
     height = 400
     page.set_viewport_size({"width": 1280, "height": height})
     band = height - 2 * 16
@@ -446,17 +429,14 @@ def run_short_cap(page) -> None:
           };
         }"""
         )
-        # The cards sit against the top of the band, so the slack a short cap can spend is
-        # the room reserved under them, not the room reserved around them.
+        # Cards sit against the top of the band, so the slack is the room under them only.
         reserved = m["gutter"]["bottom"]
         info(
             f"cap short by {short:2d}: {sliced['sliced']:5.2f}px of the card is clipped, "
             f"{sliced['room']:5.2f}px left under it "
             f"(cap {m['geometry']['maxHeight']}, card {card}, {reserved}px reserved)"
         )
-        # The slack is spent, not free: a card overrunning the band by k eats k of the room
-        # under it. Pinned rather than left to the docstring, because the room is what the
-        # gutter exists for and "a short cap costs nothing" is only true of the card.
+        # Spent, not free: overrunning the band by k eats k of the room under the card.
         check(
             abs(sliced["room"] - (reserved - short)) <= 0.6,
             f"a cap {short}px short leaves {sliced['room']:.2f}px under the card, "
@@ -469,7 +449,6 @@ def run_short_cap(page) -> None:
                 f"with {reserved}px reserved under it",
             )
         else:
-            # Past the slack it clips again, by exactly what it overran the slack by.
             check(
                 abs(sliced["sliced"] - (short - reserved)) <= 0.6,
                 f"a cap {short}px short slices {sliced['sliced']:.2f}px, expected "
@@ -480,11 +459,10 @@ def run_short_cap(page) -> None:
 def run_stale_block_end_padding(page) -> None:
     """An engine that leaves the block-end padding out of its scrollable overflow.
 
-    Chromium has always reserved it and Gecko now does, but the CSSWG only settled the
-    question after both had shipped, and a Linux desktop build runs whatever WebKitGTK the
-    distribution carries. Under that reading `collapsed` comes back 16px short, which would
-    silently stop the rail scrolling; the live `scrollHeight > clientHeight` fallback beside
-    it is what has to hold.
+    Chromium always reserved it and Gecko now does, but the CSSWG settled it after both had
+    shipped and a Linux build runs whatever WebKitGTK the distribution carries. Under that
+    reading `collapsed` is 16px short and the rail would stop scrolling, so the live
+    `scrollHeight > clientHeight` fallback beside it is what has to hold.
     """
     print("[matrix] block-end padding left out of the overflow region", flush = True)
     page.set_viewport_size({"width": 1280, "height": 800})
@@ -555,7 +533,6 @@ def run_hit_testing(page) -> None:
     page.set_viewport_size({"width": 1280, "height": 800})
     gutter = page.evaluate("() => window.__railSmoke.gutter()")
 
-    # Fitting: the whole rail is click-through, gutters included.
     m = configure(page, cards = [INDICATOR])
     check(
         m["pointerEvents"] == "none",
@@ -567,8 +544,8 @@ def run_hit_testing(page) -> None:
         f"a fitting rail answers a click in its gutter: {hit['rows']}",
     )
 
-    # Scrolling, seated inside a tall monitor: the panel outranks the rail, so the gutter
-    # cannot reach the panel's resize grip however far down the rail's box now goes.
+    # Seated inside a tall monitor: the panel outranks the rail, so however far down the
+    # box goes the gutter cannot reach the panel's grip.
     room = configure(page, cards = [INDICATOR])["geometry"]["maxHeight"]
     m = configure(
         page,
@@ -606,8 +583,7 @@ def run_hit_testing(page) -> None:
         f"answers: {sorted(set(grip['answers']))}"
     )
 
-    # Emptied after scrolling: whatever the rail's state, an empty rail must not hold the
-    # corner. Its box is the gutter now, so this is worth a row of its own.
+    # Emptied after scrolling: its box is the gutter now, and must not hold the corner.
     m = configure(page, cards = [])
     hit = page.evaluate(HIT, [gutter])
     check(
@@ -618,8 +594,7 @@ def run_hit_testing(page) -> None:
     run_reach_and_capture(page)
 
 
-# Everything the rail's box can land on that is not protected by a layer above it: the
-# window's own eight resize targets, and the composer, which is ordinary in-page chrome.
+# What the rail's box can land on unprotected: the eight resize targets and the composer.
 CAPTURE_TARGETS = [
     "resize-north",
     "resize-south",
@@ -631,8 +606,7 @@ CAPTURE_TARGETS = [
     "resize-southeast",
     "obstacle-composer",
 ]
-# Raising the grips must not cost the window controls their own hit area, so they are
-# measured the same way, against the grips rather than against the rail.
+# Measured the same way, but against the grips rather than against the rail.
 CONTROLS = ["control-minimize", "control-maximize", "control-close"]
 
 CONTROL_LOSS = """
@@ -720,10 +694,9 @@ def report_capture(page, label: str) -> dict:
 def run_reach_and_capture(page) -> None:
     """The taller, pointer-active box must take nothing that is not already the rail's.
 
-    Three states, because reach depends on the rail's width and on where it is placed: a
-    card is `w-[calc(100vw-2rem)]` up to its max, so a narrow window puts the rail across
-    nearly the whole width, and a lifted placement puts its lower gutter over the box it
-    just dodged.
+    Three states, because reach depends on width and placement: a card is
+    `w-[calc(100vw-2rem)]` up to its max, so a narrow window spans the rail across nearly
+    everything, and a lifted placement puts its lower gutter over the box it just dodged.
     """
     room = configure(page, cards = [INDICATOR])["geometry"]["maxHeight"]
     tall = {"height": room + 200, "floor": room + 200}
@@ -732,7 +705,6 @@ def run_reach_and_capture(page) -> None:
     configure(page, cards = [tall])
     report_capture(page, "1280x800, scrolling")
 
-    # Narrow enough that the card is the window's width less 2rem, so the rail spans it.
     page.set_viewport_size({"width": 420, "height": 760})
     narrow_room = configure(page, cards = [INDICATOR])["geometry"]["maxHeight"]
     configure(
@@ -741,12 +713,10 @@ def run_reach_and_capture(page) -> None:
     )
     report_capture(page, "420x760, scrolling")
 
-    # Lifted over the composer: liftOver puts the cards STACK_GAP above its top edge, and
-    # the gutter hangs below the cards.
+    # Lifted over the composer, so the gutter hangs below the cards and over its top edge.
     page.set_viewport_size({"width": 1280, "height": 800})
     lifted = configure(
         page,
-        # Tall enough to overrun the lifted cap, so the rail really is pointer-active.
         cards = [{"height": 300, "floor": 300}] * 3,
         obstacles = obstacles_for("composer", 1280, 800),
     )
@@ -761,31 +731,28 @@ def run_reach_and_capture(page) -> None:
     )
     report_capture(page, "lifted over the composer")
 
-    # And the controls the grips now sit next to lose nothing to the rail. What they lose to
-    # a grip is the titlebar's own business and is measured against the pre-PR titlebar in
-    # run_titlebar_stacking, which can tell an inherited overlap from a new one.
+    # The controls lose nothing to the rail. What they lose to a grip belongs to the
+    # titlebar, and run_titlebar_stacking measures that against the pre-PR shape.
     taken = page.evaluate(CONTROL_LOSS, [CONTROLS])
     for name, v in sorted(taken.items()):
         info(f"    {name}: {v['lost']} of {v['total']}px taken by a grip or the rail")
 
 
 def run_titlebar_stacking(page, base: str) -> None:
-    """Whether the window controls lose anything to the grips, and to whom the answer belongs.
+    """Whether the controls lose anything to the grips, and to whom the answer belongs.
 
-    The controls sit inside a positioned header that carries its own z-index, and by CSS that
-    makes the header a stacking context: every z-index below it, the toolbar's included, is
-    compared inside the header and never against the grips outside it. So a number on the
-    toolbar cannot lift the controls over a grip, and one written there would read as
-    protection while doing nothing.
+    The controls sit inside a positioned, numbered header, which by CSS is a stacking
+    context: every z-index inside it, the toolbar's included, is compared there and never
+    against the grips outside. A number on the toolbar therefore reads as protection and
+    gives none.
 
-    Three shapes, so the report can say who owns the overlap rather than guess. Whatever the
-    grips are numbered, they are later siblings of the header, so the pre-PR pair at equal
-    z-index already resolved in the grips' favour by document order. If the three agree, the
-    Close corner is the titlebar's inherited arrangement and not something this PR moved.
+    Three shapes, so the report can say who owns the overlap. The grips are later siblings of
+    the header, so the pre-PR pair at equal z-index already resolved in their favour by
+    document order; if the three agree, the Close corner is inherited, not moved by this PR.
     """
     print("[matrix] titlebar stacking", flush = True)
-    # Equal z-indexes are resolved by document order, so the whole comparison below is only
-    # meaningful while the harness keeps the app's order: header first, grips after it.
+    # Document order decides between equal z-indexes, so the comparison below holds only
+    # while the harness keeps the app's order: header first, grips after.
     order = page.evaluate(
         """() => {
       const header = document.querySelector('[data-testid="titlebar-header"]');
@@ -832,7 +799,6 @@ def run_titlebar_stacking(page, base: str) -> None:
         f"{before} -> {head}",
     )
 
-    # Restore the default shape for anything that runs after this.
     page.goto(f"{base}/{ENTRY}?nostrict", wait_until = "domcontentloaded")
     page.wait_for_function("() => Boolean(window.__railSmoke)", timeout = 30_000)
 
@@ -848,7 +814,6 @@ def run_observer_and_scroll(page) -> None:
     )
     room = configure(page, cards = [INDICATOR])["geometry"]["maxHeight"]
 
-    # Cross the threshold repeatedly: each configure settles or reports that it did not.
     for step in (-4, 4, -1, 1, -12, 12):
         height = room + step
         settle = page.evaluate(SETTLE)
@@ -860,8 +825,8 @@ def run_observer_and_scroll(page) -> None:
         )
     check(not loops, f"ResizeObserver loop errors: {loops[:3]}")
 
-    # Scroll to the bottom, force a remeasure, and require the position and the reach of the
-    # last card to survive the none -> 0px -> cap probe.
+    # The scroll position and the last card's reach must survive the none -> 0px -> cap
+    # probe.
     tall = room + 240
     configure(page, cards = [{"height": tall, "floor": tall}, INDICATOR])
     state = page.evaluate(
@@ -955,8 +920,8 @@ def main() -> int:
             echo_browser_errors(page, info)
             wait_for_smoke_page(url, ENTRY_MODULE, proc = server, info = info)
             page.goto(url, wait_until = "domcontentloaded")
-            # Attached, not visible: an empty rail is a zero-height box before the gutter
-            # gives it one, and waiting on visibility would hang there.
+            # Attached, not visible: an empty rail is a zero-height box, so waiting on
+            # visibility would hang.
             page.wait_for_selector(
                 '[data-testid="overlay-rail"]',
                 state = "attached",
@@ -983,8 +948,8 @@ def main() -> int:
         for line in failures[:40]:
             print(f"  - {line}", flush = True)
         ART.mkdir(parents = True, exist_ok = True)
-        # Named, not the platform default: this report is read back on the Windows shard,
-        # where a failure message carrying a non-ASCII byte would otherwise not round-trip.
+        # Named, not the platform default: read back on the Windows shard, where a
+        # non-ASCII byte would otherwise not round-trip.
         (ART / f"failures-{PLAYWRIGHT_BROWSER}.json").write_text(
             json.dumps(failures, indent = 2),
             encoding = "utf-8",

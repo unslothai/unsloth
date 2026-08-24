@@ -85,14 +85,12 @@ export const useMonitorFrameStore = create<MonitorFrameState>((set) => ({
 // The corner stack's own inset, and the gap left between it and the monitor.
 const STACK_INSET = 16;
 const STACK_GAP = 8;
-// Room the rail keeps around its cards, so its overflow clip does not cut their
-// shadows off. Sized off the rendered blur, not the radius: dark's
-// 0 8px 28px -6px still paints 36px below the card, but by 16px it is one level
-// of #181818, and light's 0 2px 8px -2px is one level of white by 8px. Above,
-// light is the one that shows and it ends by 6px, dark is under a level by 8px.
-// railCardsHeight discounts both from the measurement, and provider.tsx sets
-// the rail's block padding from them: a rem utility would drift from these px
-// at any root font size but 16.
+// Room the rail keeps around its cards so its overflow clip does not cut their
+// shadows off. Sized off the rendered blur, not the radius: below, dark's
+// 0 8px 28px -6px is one level of #181818 by 16px and light's is one level of
+// white by 8px; above, light ends by 6px and dark is under a level by 8px.
+// railCardsHeight discounts both, and provider.tsx sets the rail's block
+// padding from them: a rem utility would drift at any root size but 16.
 export const STACK_SHADOW_GUTTER_BOTTOM = 16;
 export const STACK_SHADOW_GUTTER_TOP = 8;
 
@@ -126,14 +124,10 @@ const MONITOR_GRIP = 16;
  * in Chromium the padding moved the card instead of the box.
  *
  * The dropped edge does reach into what `dodgeInset` reserves for the Live
- * monitor's resize grip when the stack is seated inside a tall one: the cards
- * stay 24px above `frame.bottom`, the rail's box ends 8px above it. That costs
- * nothing, and not by luck. The rail is `Z_LAYER.OVERLAY_STACK` and the monitor
- * is `Z_LAYER.FLOATING_PANEL`, so the panel hit-tests above the rail wherever
- * the two meet, which is the resolution z-layers.ts states for exactly this
- * case: the stack keeps clear geometrically where it can, and loses where it
- * cannot. Measured down every row of the grip band in all three engines with
- * the rail scrolling and pointer-active; the panel answers all of them.
+ * monitor's grip when the stack is seated inside a tall one, and costs nothing:
+ * the monitor is `FLOATING_PANEL` and the rail `OVERLAY_STACK`, so the panel
+ * hit-tests above it wherever they meet, which is what z-layers.ts states for
+ * this case. Measured down every row of the grip band in all three engines.
  */
 export function railBottomOffset(cardsInset: number): number {
   return cardsInset - STACK_SHADOW_GUTTER_BOTTOM;
@@ -145,14 +139,12 @@ export function railBottomOffset(cardsInset: number): number {
  * at the padding box, so a cap landing a few px short of a card shows it whole
  * rather than taking its corners off.
  *
- * The slack is the room below, not both, since the cards sit against the top of
- * the band. It is spent, not free: a card overrunning the band by k eats k of
- * the room under it, so a cap short by k leaves `16 - k` for the shadow and one
- * short by more than 16 clips the card again, by the excess. Measured in all
- * three engines. Growing the cap by k as well would hand the cards more room
- * than the placement allotted, which is the composer the cap exists to dodge,
- * so this is the trade and not an oversight. The rail scrolls in that state and
- * the full room is at the end of its scroll, where the padding sits.
+ * The slack is the room below only, since the cards sit against the top of the
+ * band, and it is spent rather than free: a cap short by k leaves `16 - k` for
+ * the shadow, and one short by more than 16 clips the card by the excess.
+ * Measured in all three engines. Growing the cap by k too would hand the cards
+ * more room than the placement allotted, which is the composer the cap exists
+ * to dodge, so this is the trade and not an oversight.
  */
 export function railMaxHeight(cardsRoom: number): number {
   return cardsRoom + STACK_SHADOW_GUTTER_BOTTOM + STACK_SHADOW_GUTTER_TOP;
@@ -219,13 +211,11 @@ function reachesStack(
  * The clearance a lift leaves over the box it is dodging. The gap the cards want, or the
  * room the rail carries under them, whichever is larger.
  *
- * `STACK_GAP` alone is what the cards need to look clear of it, and it was enough while the
- * rail's box ended where its cards did. The box now hangs `STACK_SHADOW_GUTTER_BOTTOM`
- * lower, and a scrolling rail hit-tests all of it, so at a gap of 8 the lower 8px of that
- * gutter sat on the composer it had just dodged and took its top edge: 1088px2 of it at
- * 1280x800, measured. Nothing protects the composer the way `FLOATING_PANEL` protects the
- * Live monitor, since it is ordinary in-page chrome and the stack is meant to paint over
- * that; the placement is what has to keep off it.
+ * `STACK_GAP` was enough while the rail's box ended where its cards did. It now hangs
+ * `STACK_SHADOW_GUTTER_BOTTOM` lower and a scrolling rail hit-tests all of it, so at a gap
+ * of 8 the lower 8px sat on the composer it had just dodged and took its top edge: 1088px2
+ * at 1280x800, measured. Nothing protects the composer the way `FLOATING_PANEL` protects
+ * the Live monitor, so the placement is what has to keep off it.
  */
 const LIFT_CLEARANCE = Math.max(STACK_GAP, STACK_SHADOW_GUTTER_BOTTOM);
 
@@ -567,12 +557,11 @@ export function useStackGeometry(): StackPlacement {
   const ref = useCallback((node: HTMLElement | null) => {
     if (node === null || typeof ResizeObserver === "undefined") return;
     const measure = () => {
-      // An empty stack asks for nothing, so nothing is dodged for it. Every reading it
-      // published is cleared, the overflow one included: a rail whose last card goes while
-      // it is scrolling would otherwise stay latched to that reading, and `overflowing` is
-      // what decides whether the rail takes pointer input. Before the gutter that cost
-      // nothing, since an empty rail was a zero-height box and there was nothing to click;
-      // it now has the gutter's own height and would hold the corner.
+      // An empty stack asks for nothing. Every reading is cleared, the overflow one
+      // included: a rail whose last card goes while scrolling would stay latched to it, and
+      // `overflowing` decides whether the rail takes pointer input. That cost nothing while
+      // an empty rail was a zero-height box; it now has the gutter's height and would hold
+      // the corner.
       if (node.childElementCount === 0) {
         setNeededRoom((current) => (current === 0 ? current : 0));
         setFloorRoom((current) => (current === 0 ? current : 0));

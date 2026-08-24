@@ -245,17 +245,15 @@ test("the rail scrolls rather than spilling its cards", () => {
     // was.
     assert.match(rules, /\bpx-3\b/);
     assert.match(rules, /-mx-3/);
-    // scrollHeight spans that padding, so the gutter has to be discounted or the
-    // stack asks for room it does not occupy and lifts over the composer for
-    // nothing. The cap stays on this node, since measure() lifts it here.
+    // scrollHeight spans that padding, so discount it or the stack asks for room
+    // it does not occupy and lifts over the composer for nothing.
     assert.match(
       STORE,
       /const natural = railCardsHeight\(node\.scrollHeight, gutter\)/,
       "the natural height counts the rail's own padding as cards",
     );
-    // Both totals, since the squeezed one is what `overflowing` compares
-    // against the cards' own cap. The per-card readings beside it are border
-    // boxes and carry no padding of the rail's.
+    // Both totals: the squeezed one is what `overflowing` compares against the
+    // cards' cap, and the per-card readings are border boxes.
     assert.match(
       STORE,
       /const collapsed = railCardsHeight\(node\.scrollHeight, gutter\)/,
@@ -264,9 +262,9 @@ test("the rail scrolls rather than spilling its cards", () => {
   }
 });
 
-// Reserved, not taken: the cards keep the band they had without the gutter, and
-// the padding hangs below it. A negative margin cannot do this, since `bottom`
-// anchors the margin edge and the padding would move the cards instead.
+// Reserved, not taken: the cards keep their band and the padding hangs below
+// it. A negative margin cannot do this -- `bottom` anchors the margin edge, so
+// the padding would move the cards instead.
 test("the rail's block gutter costs the cards no room", () => {
   const rails = PROVIDER.split('"fixed right-4 ');
   assert.equal(rails.length - 1, 2, "the rail count changed");
@@ -283,9 +281,8 @@ test("the rail's block gutter costs the cards no room", () => {
       /maxHeight: railMaxHeight\(stack\.maxHeight\)/,
       "the gutter is spent on the cards' cap",
     );
-    // From the same constants, not from pb-4/pt-2. Those resolve through
-    // --spacing in rem, so at a root font size other than 16px the padding and
-    // the compensation drift apart: the cards move and their band changes size.
+    // From the same constants, not pb-4/pt-2: those are rem, so at any root size
+    // but 16px the padding and the compensation drift apart.
     assert.match(
       style,
       /paddingTop: STACK_SHADOW_GUTTER_TOP/,
@@ -296,19 +293,16 @@ test("the rail's block gutter costs the cards no room", () => {
       /paddingBottom: STACK_SHADOW_GUTTER_BOTTOM/,
       "the bottom gutter can drift from the offset that pays for it",
     );
-    // Every surface here offsets its shadow downwards, so flush against the
-    // clip edge the bottom card loses all of it and reads as cut off, which is
-    // how the llama.cpp toast was reported. A zero gutter is that bug again.
+    // Every surface offsets its shadow downwards, so flush against the clip
+    // edge the bottom card loses all of it. A zero gutter is that bug again.
     assert.doesNotMatch(rules, /\bp[byt]-/, "a rem gutter is back on the rail");
-  // The gutter drops the rail's box to the window's floor, and `-mx-3` already put it 4px
-  // from the right edge, so a scrolling rail's box lands on the window's own resize grips.
-  // Those are under it on Tailwind's scale, so they need the named layer to win. All eight,
-  // because a card is the window's width less 2rem up to its max: on a narrow window the
-  // rail spans nearly the whole width and reaches the north and west targets too.
+  // The gutter drops the rail's box to the floor and `-mx-3` put it 4px from the right
+  // edge, so a scrolling rail lands on the window's resize grips, which are under it on
+  // Tailwind's scale. All eight: a narrow window spans the rail across the north and west
+  // targets too.
   const TITLEBAR = read("components/tauri/window-titlebar.tsx");
-  // A z-index on the window-controls toolbar would read as protection from the grips and
-  // give none: the toolbar sits inside a positioned, numbered header, so that header is a
-  // stacking context and a number inside it is never compared with the grips outside it.
+  // A z-index on the toolbar would read as protection and give none: it sits inside a
+  // positioned, numbered header, which is a stacking context.
   const toolbar = TITLEBAR.slice(
     TITLEBAR.lastIndexOf("<div", TITLEBAR.indexOf('aria-label="Window controls"')),
     TITLEBAR.indexOf('aria-label="Window controls"'),

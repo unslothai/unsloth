@@ -34,24 +34,17 @@ export const Z_LAYER = {
    */
   OVERLAY_STACK: 9000,
   /**
-   * The custom titlebar's window-resize targets along the bottom edge, which
-   * the notification stack reaches: `right-4` holds its margin edge 16px in,
-   * but `-mx-3` puts its border box 4px from the window edge, and the shadow
-   * gutter drops that box the last 16px to the floor. A scrolling stack is
-   * pointer-active over the whole box, so without a number here it takes two
-   * thirds of the corner grip and the strip along the bottom.
+   * The custom titlebar's window-resize targets, which the notification stack
+   * reaches: `-mx-3` puts its border box 4px from the window edge and the
+   * shadow gutter drops it the last 16px to the floor, and a scrolling stack is
+   * pointer-active over the whole box. All eight, not just the bottom two: a
+   * card is `w-[calc(100vw-2rem)]` up to its max, so a narrow window brings the
+   * north and west targets into range as well.
    *
-   * All eight, not just the bottom two: a card is `w-[calc(100vw-2rem)]` up to
-   * its max, so a narrow window puts the rail across nearly the whole width and
-   * the north and west targets come into range as well.
-   *
-   * This does not move the grips relative to the window controls, which is the
-   * other thing they touch. The controls sit inside a positioned, numbered
-   * `header`, so that header is a stacking context and the grips are compared
-   * against it rather than against the buttons inside it; the grips were equal
-   * to it at `z-[70]` and came later in document order, so they were already
-   * above it. The overlap this leaves -- the north edge strip and the corner
-   * cross the buttons -- measures the same either way.
+   * This does not move them relative to the window controls. Those sit inside a
+   * positioned, numbered `header`, so the grips are compared against that
+   * header rather than the buttons inside it, and they were already above it at
+   * equal z-index by document order.
    */
   WINDOW_RESIZE_EDGE: 9050,
   /**

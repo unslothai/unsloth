@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The bottom-right overlay rail clips at its padding box. With no padding under
-// the bottom card that card lost its shadow, every bit of which falls below it,
-// and the llama.cpp update toast was reported as "the bottom is cut off".
+// The rail clips at its padding box, so with no padding under the bottom card
+// that card lost its shadow, all of which falls below it: the llama.cpp toast
+// was reported as "the bottom is cut off".
 //
-// The rule pinned here: the gutter is reserved under the cards and added on top
-// of the band they may fill, so they stay where they were and a cap a few px
-// short of a card no longer slices one.
+// Pinned here: the gutter is reserved under the cards and added on top of the
+// band they may fill, so they stay put and a cap a few px short no longer
+// slices one.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -26,9 +26,8 @@ const GUTTER = STACK_SHADOW_GUTTER_BOTTOM + STACK_SHADOW_GUTTER_TOP;
 const INSET = 16;
 
 test("the gutters clear the shadows the rail carries", () => {
-  // Measured off the rendered blur: the light shadow is down to one level of
-  // white 8px below the card and gone 6px above it, and the dark one is down to
-  // one level of #181818 16px below and 8px above.
+  // Off the rendered blur: light is one level of white 8px below and gone 6px
+  // above; dark is one level of #181818 16px below and 8px above.
   assert.ok(STACK_SHADOW_GUTTER_BOTTOM >= 16, "the shadow below is clipped");
   assert.ok(STACK_SHADOW_GUTTER_TOP >= 8, "the shadow above is clipped");
 });

@@ -42,13 +42,12 @@ test("floating panels paint over the notification stack", () => {
   assert.ok(Z_LAYER.FLOATING_PANEL > Z_LAYER.OVERLAY_STACK);
 });
 
-// The stack reaches the window's bottom edge once it reserves a shadow gutter
-// there, and it is pointer-active whenever it scrolls. A status card must not
-// be what a drag on the window's own corner grip lands on.
+// The stack reaches the window's bottom edge once it reserves a gutter there,
+// and is pointer-active whenever it scrolls. A status card must not be what a
+// drag on the window's own grip lands on.
 test("the window's bottom resize grips outrank the notification stack", () => {
   assert.ok(Z_LAYER.WINDOW_RESIZE_EDGE > Z_LAYER.OVERLAY_STACK);
-  // And stay under a panel the user is dragging, which is where they were
-  // relative to one before, so nothing about that pairing changes.
+  // And stay under a panel being dragged, as they were before.
   assert.ok(Z_LAYER.WINDOW_RESIZE_EDGE < Z_LAYER.FLOATING_PANEL);
 });
 
