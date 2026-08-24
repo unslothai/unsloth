@@ -35,6 +35,52 @@ from core.inference.openai_auto_download import preferred_quant
 from utils.api_errors import install_api_error_handlers
 
 
+def _a_real_video_family(name = "wan2.2-ti2v-5b"):
+    """A genuine ``VideoFamily`` off the registry, for tests that only need the load route to
+    have something family-shaped to carry.
+
+    A bare ``object()`` or a two-field SimpleNamespace stands in for a frozen dataclass with
+    forty fields, so the first route step to read a field nobody hand-copied fails on an
+    AttributeError that says nothing about what the test was checking. The registry entry
+    always has every field the route can ask for, because it is the thing the route gets.
+    """
+    from core.inference.video_families import detect_video_family
+
+    # Resolved by NAME rather than by repo id: which tokens a repo id matches is its own rule,
+    # tested elsewhere, and not something these tests should be able to break.
+    fam = detect_video_family("", override = name)
+    assert fam is not None, f"the video family registry no longer has {name!r}"
+    return fam
+
+
+def _video_load_backend(**overrides):
+    """A video backend double for the LOAD route, built from the real class.
+
+    A real ``VideoBackend`` with the one or two methods each caller's assertion is about
+    replaced, rather than a class re-declaring that surface by hand: every OTHER call the
+    route makes then runs the real implementation, which for the load route's preflight and
+    reservation helpers is pure resolution over the family registry -- no hub, no GPU, no
+    weights. ``__init__`` allocates locks and empty state and touches nothing else.
+
+    A hand-rolled stub has to be extended by hand every time the route grows a call, and
+    until someone does, unrelated tests fail on a missing attribute rather than on what they
+    assert. That is exactly how PR #9599's reservation preflight turned these two red.
+
+    ``overrides`` are checked against the real class, so a stub for a method that does not
+    exist (a typo, or one that has since been renamed) fails loudly here instead of quietly
+    never being called.
+    """
+    from core.inference.video import VideoBackend
+
+    unknown = sorted(name for name in overrides if not hasattr(VideoBackend, name))
+    assert not unknown, f"not part of the video backend's surface: {unknown}"
+
+    backend = VideoBackend()
+    for name, impl in overrides.items():
+        setattr(backend, name, impl)
+    return backend
+
+
 def _info(
     model_id,
     path,
@@ -1134,20 +1180,49 @@ def test_a_local_video_pipeline_is_still_planned(h3_modular, enabled, backend, l
     assert loads == []
 
 
+def test_every_backend_call_the_video_route_makes_exists_on_the_backend():
+    """``backend.<name>`` in routes/video.py must name something ``VideoBackend`` has.
+
+    The route reaches the backend through ``get_video_backend()``, which is untyped at the
+    call site, so a method renamed on the class or misspelled in the route is not a syntax
+    error, not a lint finding, and not visible to any test whose double happens to stub the
+    old name. It is an AttributeError on a real load, and the route's own tests mock the
+    backend out, so nothing here would have caught it.
+
+    Read out of the parse tree rather than the text: the rule is which names the route asks
+    the backend for, not how they are spelled across lines.
+    """
+    import ast
+    import inspect
+
+    import routes.video as video_route
+    from core.inference.video import VideoBackend
+
+    tree = ast.parse(inspect.getsource(video_route))
+    asked = {
+        node.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "backend"
+        and isinstance(node.ctx, ast.Load)
+    }
+    assert asked, "no backend calls found -- the route was restructured, so this guard is blind"
+    missing = sorted(name for name in asked if not hasattr(VideoBackend, name))
+    assert not missing, f"routes/video.py calls backend methods that do not exist: {missing}"
+
+
 def test_the_video_load_route_records_provenance_without_raising(monkeypatch):
     # The provenance call is made positionally from both load routes, so a signature that drifts
     # from them 500s every load after the background work has already been accepted.
     import core.inference.video as video_module
     from routes.video import router as video_router
 
-    class _Backend:
-        def validate_load_request(self, *a, **k):
-            return object()
-
-        def begin_load(self, *a, **k):
-            return {"loaded": False, "repo_id": None}
-
-    monkeypatch.setattr(video_module, "get_video_backend", lambda: _Backend())
+    backend = _video_load_backend(
+        validate_load_request = lambda *a, **k: _a_real_video_family(),
+        begin_load = lambda *a, **k: {"loaded": False, "repo_id": None},
+    )
+    monkeypatch.setattr(video_module, "get_video_backend", lambda: backend)
     monkeypatch.setattr(video_module, "resolve_video_model_kind", lambda *a, **k: "gguf")
     monkeypatch.setattr(video_module, "assert_video_precision_available", lambda *a, **k: None)
     monkeypatch.setattr("routes.video._guard_video_load_against_training", lambda: None)
@@ -2436,22 +2511,29 @@ def _capture_begin_load(monkeypatch, route):
     """Record the local_files_only begin_load is called with, for either media route."""
     seen: list = []
 
-    class _Backend:
-        def validate_load_request(self, *a, **k):
-            return types.SimpleNamespace(name = "z-image", base_repo = None)
-
-        def begin_load(self, *a, **k):
-            seen.append(k.get("local_files_only"))
-            return {"loaded": False, "repo_id": None}
+    def _begin_load(*a, **k):
+        seen.append(k.get("local_files_only"))
+        return {"loaded": False, "repo_id": None}
 
     if route == "images":
         import core.inference.diffusion_engine_router as router_module
+
+        class _Backend:
+            def validate_load_request(self, *a, **k):
+                return types.SimpleNamespace(name = "z-image", base_repo = None)
+
+            begin_load = staticmethod(_begin_load)
+
         monkeypatch.setattr(router_module, "select_and_activate_engine", lambda *a, **k: _Backend())
         monkeypatch.setattr(router_module, "get_active_diffusion_engine", lambda: _Backend())
     else:
         import core.inference.video as video_module
 
-        monkeypatch.setattr(video_module, "get_video_backend", lambda: _Backend())
+        backend = _video_load_backend(
+            validate_load_request = lambda *a, **k: _a_real_video_family(),
+            begin_load = _begin_load,
+        )
+        monkeypatch.setattr(video_module, "get_video_backend", lambda: backend)
         monkeypatch.setattr(video_module, "resolve_video_model_kind", lambda *a, **k: "gguf")
         monkeypatch.setattr(video_module, "assert_video_precision_available", lambda *a, **k: None)
         monkeypatch.setattr("routes.video._guard_video_load_against_training", lambda: None)
