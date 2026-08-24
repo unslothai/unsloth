@@ -256,15 +256,17 @@ jobs:
         # base against the PR head SHA so the range is the PR's own commits and
         # not every base commit since the branch point.
         #
-        # --diff-filter=ACM, not M: a bad resolution can just as easily land in a
-        # file the PR adds.
+        # --diff-filter=ACMR, not M: a bad resolution can just as easily land in a
+        # file the PR adds, and a rename that also edits the file is reported as R
+        # (R093 and so on), which an ACM filter would drop.
         #
-        # A finding only fails if it sits on a line THIS diff added. One that was
-        # already in the file is printed and ignored, so the gate blocks the branch
-        # that creates a duplicate without blocking an unrelated branch that
-        # happens to edit the same file. There are ~29 such pre-existing findings
-        # on main today; they are a separate cleanup, not a reason to leave the
-        # gate off.
+        # The verifier scans BOTH revisions and compares findings by identity, so a
+        # duplicate that was already in the file is printed and ignored while one
+        # this PR introduced fails. Comparing added LINES instead would miss the
+        # case where the new copy is inserted ABOVE the old one, since the finding
+        # is reported at the second, unchanged definition. There are 33 pre-existing
+        # findings on main today; they are a separate cleanup, not a reason to leave
+        # the gate off.
         if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -274,10 +276,22 @@ jobs:
             "repos/${{ github.repository }}/compare/${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}" \
             --jq .merge_base_commit.sha)
           git fetch --no-tags --depth=1 origin "$MERGE_BASE"
+          # refs/pull/N/head moves. On a rerun of an older run, or if the branch
+          # advanced since the event, that ref is no longer $HEAD_SHA, and a depth-1
+          # clone would not have the pinned commit at all. Fetch the ref first (it is
+          # what makes the SHA reachable on a fork PR), then the SHA itself, then
+          # REFUSE to continue if it is still missing. The old shape hid exactly this:
+          # git diff failed, the pipeline's `|| true` produced an empty file list, and
+          # the step reported success having checked nothing.
           git fetch --no-tags --depth=1 origin \
             "refs/pull/${{ github.event.pull_request.number }}/head"
+          git fetch --no-tags --depth=1 origin "$HEAD_SHA" 2>/dev/null || true
+          if ! git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
+            echo "::error::head commit $HEAD_SHA is not available locally; refusing to skip the check"
+            exit 1
+          fi
           mapfile -t CHANGED < <(
-            git diff --name-only --diff-filter=ACM \
+            git diff --name-only --diff-filter=ACMR \
               "$MERGE_BASE" "$HEAD_SHA" -- '*.py' \
               | grep -vE '(^|/)(unsloth_compiled_cache|node_modules|build|dist)/' || true
           )

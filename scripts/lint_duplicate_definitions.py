@@ -46,9 +46,10 @@ Run from repo root:
   python3 scripts/lint_duplicate_definitions.py unsloth studio        # paths or dirs
   python3 scripts/lint_duplicate_definitions.py --before SHA --after SHA FILE.py [FILE.py ...]
 
-In --before/--after mode a finding fails only if it sits on a line this diff ADDED. A
-duplicate that was already there is printed and does not fail, so the gate blocks the
-branch that creates one without blocking an unrelated branch that touches the same file.
+In --before/--after mode both revisions are scanned and their findings compared by identity,
+so a finding fails only if the diff INTRODUCED it. A duplicate that was already there is
+printed and does not fail, which keeps the gate on the branch that creates one without
+blocking an unrelated branch that touches the same file.
 """
 
 from __future__ import annotations
@@ -58,13 +59,30 @@ import ast
 import re
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
+from typing import NamedTuple
+
+
+class Finding(NamedTuple):
+    """`key` identifies WHICH duplicate this is, independently of where it sits.
+
+    Compare mode needs that. Gating on "is this line new" is not sound: a merge that inserts
+    the FIRST copy above an existing definition reports on the SECOND, unchanged line, and a
+    duplicate alias added to a multi-line import reports at the statement's opening line.
+    Both are the exact bug this gate exists for, and both would read as pre-existing. So the
+    before and after revisions are scanned and their finding keys compared.
+    """
+
+    line: int
+    key: str
+    message: str
+
 
 OVERLOAD_DECORATORS = {"overload", "typing.overload", "typing_extensions.overload"}
 PROPERTY_DECORATORS = {"property", "cached_property", "functools.cached_property"}
 PROPERTY_ATTRS = {"setter", "deleter", "getter"}
 SKIP_DIRS = re.compile(r"(^|/)(unsloth_compiled_cache|node_modules|build|dist|\.git|\.venv)/")
-HUNK = re.compile(r"^@@ -\S+ \+(\d+)(?:,(\d+))? @@")
 
 
 def _decorator_name(node) -> str:
@@ -98,15 +116,21 @@ def _defined_name(node):
         return None if _is_exempt_def(node) else (node.name, "def")
     if isinstance(node, ast.ClassDef):
         return (node.name, "class")
+    # `X: int = 1` is an AnnAssign, not an Assign, and a typed module-level constant is
+    # common in this repo (MAX_FUSED_SIZE: int = 65536). Duplicating one is the same bug.
     if isinstance(node, ast.Assign) and len(node.targets) == 1:
-        target = node.targets[0]
-        if isinstance(target, ast.Name) and target.id.isupper():
-            # `X = frozenset(X)` / `X = X + (...)` transforms a constant rather than
-            # redefining it. Only a value computed WITHOUT the old one replaces it.
-            for sub in ast.walk(node.value):
-                if isinstance(sub, ast.Name) and sub.id == target.id:
-                    return None
-            return (target.id, "constant")
+        target, value = node.targets[0], node.value
+    elif isinstance(node, ast.AnnAssign) and node.value is not None:
+        target, value = node.target, node.value
+    else:
+        return None
+    if isinstance(target, ast.Name) and target.id.isupper():
+        # `X = frozenset(X)` / `X = X + (...)` transforms a constant rather than
+        # redefining it. Only a value computed WITHOUT the old one replaces it.
+        for sub in ast.walk(value):
+            if isinstance(sub, ast.Name) and sub.id == target.id:
+                return None
+        return (target.id, "constant")
     return None
 
 
@@ -120,8 +144,9 @@ def _scope_duplicates(body, scope, out) -> None:
             if name in seen:
                 first_line, first_kind = seen[name]
                 out.append(
-                    (
+                    Finding(
                         node.lineno,
+                        f"def:{scope}{name}",
                         f"{scope}{name} is defined twice "
                         f"({first_kind} at line {first_line}, {kind} here)",
                     )
@@ -132,42 +157,63 @@ def _scope_duplicates(body, scope, out) -> None:
             _scope_duplicates(node.body, f"{scope}{node.name}.", out)
 
 
-def _import_duplicates(tree, out) -> None:
-    """A name imported twice within one statement, or twice from the same module."""
+def _import_duplicates(body, scope, out) -> None:
+    """A name imported twice within one statement, or twice from the same module.
+
+    Keyed on the name each alias BINDS, not on the name it comes from: `from m import x as v`
+    followed by `from m import y as v` binds `v` twice and the second silently wins, which is
+    the dead-binding this is here to catch. Plain `import a.b` keeps the full dotted path as
+    its key, since `import urllib.parse` beside `import urllib.request` is correct.
+    """
     seen = {}
-    for node in tree.body:
+    for node in body:
         if isinstance(node, ast.ImportFrom):
             # `level` carries the leading dots, so `from .a` and `from ..a` stay distinct.
             module = f"{'.' * node.level}{node.module or ''}"
         elif isinstance(node, ast.Import):
             module = None
         else:
+            # Class bodies are scanned too: two `from m import x` inside one class bind x
+            # twice in that scope exactly as they would at module level.
+            if isinstance(node, ast.ClassDef):
+                _import_duplicates(node.body, f"{scope}{node.name}.", out)
             continue
         for alias in node.names:
             if alias.name == "*":
                 continue
-            key = (module, alias.name, alias.asname)
             bound = alias.asname or alias.name
+            # `from m import x as v` and `from m import y as v` both bind v, so a
+            # from-import is keyed on what it binds. A plain import is keyed on the full
+            # dotted path AND the alias: `import sys as _sys` beside `import sys` binds two
+            # different names and is correct, and so is `import urllib.parse` beside
+            # `import urllib.request`.
+            key = (module, bound) if module is not None else (None, alias.name, alias.asname)
             if key in seen:
                 where = (
                     "twice in this statement"
                     if seen[key] == node.lineno
                     else f"twice from the same module (first at line {seen[key]})"
                 )
-                out.append((node.lineno, f"{bound} is imported {where}"))
+                out.append(
+                    Finding(
+                        node.lineno,
+                        f"import:{scope}{module}:{bound}",
+                        f"{scope}{bound} is imported {where}",
+                    )
+                )
             else:
                 seen[key] = node.lineno
 
 
 def scan_source(source: str, filename: str = "<unknown>"):
-    """[(line, message)] for one Python source string. A file that does not parse is a finding."""
+    """Findings for one Python source string. A file that does not parse is itself a finding."""
     try:
         tree = ast.parse(source, filename = filename)
     except SyntaxError as exc:
-        return [(exc.lineno or 0, f"does not parse ({exc.msg})")]
+        return [Finding(exc.lineno or 0, "parse", f"does not parse ({exc.msg})")]
     found = []
     _scope_duplicates(tree.body, "", found)
-    _import_duplicates(tree, found)
+    _import_duplicates(tree.body, "", found)
     return sorted(found)
 
 
@@ -175,19 +221,31 @@ def _git(args, cwd = None):
     return subprocess.run(["git", *args], cwd = cwd, capture_output = True, text = True)
 
 
-def _added_lines(before: str, after: str, path: str):
-    """Line numbers of `path` in `after` that this diff introduced, or None if unknown."""
-    result = _git(["diff", "-U0", before, after, "--", path])
-    if result.returncode != 0:
+def _revision_findings(revision: str, path: str):
+    """Findings for `path` at `revision`, or None if the file does not exist there."""
+    shown = _git(["show", f"{revision}:{path}"])
+    if shown.returncode != 0:
         return None
-    lines = set()
-    for line in result.stdout.splitlines():
-        match = HUNK.match(line)
-        if match:
-            start = int(match.group(1))
-            count = 1 if match.group(2) is None else int(match.group(2))
-            lines.update(range(start, start + count))
-    return lines
+    return scan_source(shown.stdout, f"{revision}:{path}")
+
+
+def _rename_map(before: str, after: str):
+    """{new path: old path} for the renames in this range.
+
+    The changed-file sweep reports a renamed file under its NEW name, so looking the before
+    side up under that name finds nothing and every finding in it reads as introduced. A
+    branch that only moves a file carrying one of the duplicates already on main would then
+    be blocked for a duplicate it did not write.
+    """
+    listed = _git(["diff", "--name-status", "-M", "--diff-filter=R", before, after])
+    if listed.returncode != 0:
+        return {}
+    renames = {}
+    for line in listed.stdout.splitlines():
+        fields = line.split("\t")
+        if len(fields) == 3 and fields[0].startswith("R"):
+            renames[fields[2]] = fields[1]
+    return renames
 
 
 def _iter_paths(targets):
@@ -222,6 +280,15 @@ _SELF_TEST_CASES = [
     (1, "def go():  # takes (a, b\n    pass\n\n\ndef go():\n    pass\n"),
     # 7. A conflict marker left in the tree does not parse, and that is a finding.
     (1, "<<<<<<< HEAD\ndef go():\n    pass\n"),
+    # 8. A typed constant is an AnnAssign, and duplicating one is the same bug.
+    (1, "MAX_FUSED_SIZE: int = 65536\nMAX_FUSED_SIZE: int = 131072\n"),
+    (1, "REGISTRY: dict = {}\nOTHER = 1\nREGISTRY = {'a': 1}\n"),
+    # 9. Two aliases from one module landing on the same bound name: the second wins and
+    #    the first is dead, which is the silent half of this bug.
+    (1, "from m import x as value\nfrom m import y as value\n"),
+    (1, "from m import x as value, y as value\n"),
+    # 10. A class body is a scope too, for imports as well as for defs.
+    (1, "class A:\n    from m import x\n    from m import x\n"),
     # Negative controls: each of these is correct code and must report nothing.
     (0, "if FAST:\n    def go():\n        pass\nelse:\n    def go():\n        pass\n"),
     (0, "try:\n    from fast import x\nexcept ImportError:\n    from slow import x\n"),
@@ -236,8 +303,12 @@ _SELF_TEST_CASES = [
         "    @v.setter\n    def v(self, x):\n        self._v = x\n",
     ),
     (0, "import urllib.parse\nimport urllib.request\n"),
+    (0, "import sys as _sys\nimport sys\n"),
     (0, "from a import x\nfrom b import x\n"),
     (0, "NAMES = ['a']\nNAMES = frozenset(n.lower() for n in NAMES)\n"),
+    (0, "COUNT: int = 1\nCOUNT = COUNT + 1\n"),
+    (0, "REGISTRY: dict\nREGISTRY = {}\n"),  # a bare annotation binds nothing
+    (0, "from m import x\nfrom m import x as other\n"),
     (0, "ROWS = (1,)\nROWS = ROWS + (2,)\n"),
     (0, "value = 1\nvalue = 2\n"),
     (0, "import os\nfrom a import b\n\nX = 1\n\n\ndef go():\n    return os, b, X\n"),
@@ -267,7 +338,7 @@ def main() -> int:
     )
     parser.add_argument("targets", nargs = "*", help = "Python files or directories to scan")
     parser.add_argument("--self-test", action = "store_true", help = "check the rule, scan nothing")
-    parser.add_argument("--before", help = "base revision; findings on unchanged lines only warn")
+    parser.add_argument("--before", help = "base revision; only findings this diff adds fail")
     parser.add_argument("--after", help = "head revision, used with --before")
     args = parser.parse_args()
 
@@ -282,30 +353,33 @@ def main() -> int:
 
     paths = list(_iter_paths(args.targets))
     blocking, existing = [], []
+    renames = _rename_map(args.before, args.after) if args.before else {}
     for path in paths:
-        added = None
         if args.before:
-            # Read the AFTER revision out of git rather than the working tree. On a
-            # pull_request event the checkout is refs/pull/N/merge, whose line numbers
-            # do not have to match the head SHA the diff is measured against, and the
-            # added-line gate is only meaningful if both ends agree on numbering.
-            shown = _git(["show", f"{args.after}:{path}"])
-            if shown.returncode != 0:
+            # Read both revisions out of git rather than the working tree. On a
+            # pull_request event the checkout is refs/pull/N/merge, which is neither end
+            # of the range being judged.
+            after = _revision_findings(args.after, str(path))
+            if after is None:
                 continue  # not present at the head revision (deleted, or renamed away)
-            source = shown.stdout
-            added = _added_lines(args.before, args.after, str(path))
+            before = _revision_findings(args.before, renames.get(str(path), str(path)))
+            # A file the branch ADDS has no before side, so every finding in it is new.
+            was = Counter(f.key for f in (before or []))
+            for finding in after:
+                text = f"{path}:{finding.line}: {finding.message}"
+                if was[finding.key] > 0:
+                    was[finding.key] -= 1
+                    existing.append(text)
+                else:
+                    blocking.append(text)
         else:
             try:
                 source = path.read_text(encoding = "utf-8")
             except (OSError, UnicodeDecodeError) as exc:
                 blocking.append(f"{path}: unreadable ({exc})")
                 continue
-        for line, message in scan_source(source, str(path)):
-            finding = f"{path}:{line}: {message}"
-            if added is None or line in added:
-                blocking.append(finding)
-            else:
-                existing.append(finding)
+            for finding in scan_source(source, str(path)):
+                blocking.append(f"{path}:{finding.line}: {finding.message}")
 
     if existing:
         print(f"pre-existing in files this diff touches ({len(existing)}; not failing):")
