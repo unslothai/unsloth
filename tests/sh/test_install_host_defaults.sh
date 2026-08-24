@@ -394,6 +394,12 @@ echo "=== README.md launch commands ==="
 
 _readme_facts=$(python3 "$PROBE" readme "$README" "$STUDIO_CLI")
 
+# The probe crashing is a different failure from the README being wrong, and it
+# should not arrive as a bare `set -e` abort halfway down the output.
+assert_contains \
+    "README: the structural probe reported its facts" \
+    "$_readme_facts" "commands"
+
 # Three canaries before the two real assertions. Each one is a way the parse
 # could come back empty or wrong, and an empty parse is exactly how a negative
 # assertion passes while guarding nothing.
