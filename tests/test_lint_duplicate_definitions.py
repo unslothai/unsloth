@@ -138,9 +138,7 @@ def test_a_file_declaring_a_non_utf8_source_encoding_is_read_not_crashed_on(repo
     accept, and on an edit that had nothing to do with it. Decoded properly the file is ordinary
     source, so the duplicate in it is found like any other.
     """
-    (repo / "mod.py").write_bytes(
-        b'# coding: cp1252\nS = "caf\xe9"\n\n\ndef go():\n    return 1\n'
-    )
+    (repo / "mod.py").write_bytes(b'# coding: cp1252\nS = "caf\xe9"\n\n\ndef go():\n    return 1\n')
     before = _commit(repo, "base")
     (repo / "mod.py").write_bytes(
         b'# coding: cp1252\nS = "caf\xe9"\n\n\ndef go():\n    return 1\n\n\ndef go():\n    return 2\n'

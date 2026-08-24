@@ -237,8 +237,8 @@ def _import_duplicates(body, scope, out) -> None:
     the dead-binding this is here to catch. Plain `import a.b` keeps the full dotted path in
     its key too, since `import urllib.parse` beside `import urllib.request` is correct.
     """
-    seen_implicit: dict = {}   # (bound name, source) -> line; a name nobody chose
-    seen_explicit: dict = {}   # bound name -> line; a name the author wrote after `as`
+    seen_implicit: dict = {}  # (bound name, source) -> line; a name nobody chose
+    seen_explicit: dict = {}  # bound name -> line; a name the author wrote after `as`
     for node in body:
         if isinstance(node, ast.ImportFrom):
             # `level` carries the leading dots, so `from .a` and `from ..a` stay distinct.
