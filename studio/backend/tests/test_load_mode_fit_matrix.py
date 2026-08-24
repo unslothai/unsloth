@@ -407,7 +407,11 @@ def test_the_effective_fitter_state_reads_the_launchs_own_fit_flag():
     assert '_fitter_runs=fit_is_effectively_on(["--fit","on"ifuse_fitelse"off",' in compact
 
     # The synthetic prefix the call site builds, exercised directly.
-    def _runs(use_fit, extras, env = None):
+    def _runs(
+        use_fit,
+        extras,
+        env = None,
+    ):
         return fit_is_effectively_on(["--fit", "on" if use_fit else "off", *extras], env)
 
     assert _runs(False, []) is False  # proved path: no fitter
@@ -441,7 +445,6 @@ def test_the_effective_fitter_state_reads_the_launchs_own_fit_flag():
 )
 def test_a_pass_through_fit_target_is_the_margin_the_child_really_keeps(extras, env, expected):
     from core.inference.llama_server_args import fit_target_margin_in
-
     assert fit_target_margin_in(extras, env) == expected
 
 
