@@ -4091,8 +4091,7 @@ def upsert_chat_settings_merge_if_current(
         matches_expected = _chat_settings_match_expected(current, expected)
         has_new_expected_field = any(key in current for key in expected_absent)
         has_new_expected_path = any(
-            _chat_settings_path_exists(current, path)
-            for path in expected_absent_paths
+            _chat_settings_path_exists(current, path) for path in expected_absent_paths
         )
         if has_new_expected_field or has_new_expected_path or not matches_expected:
             conn.commit()
