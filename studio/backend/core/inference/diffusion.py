@@ -71,6 +71,8 @@ from .diffusion_ideogram4 import ideogram4_repo_is_fp8, load_ideogram4_pipeline
 from .diffusion_hidream import HIDREAM_FAMILY_NAME, hidream_te4_kwargs
 from .diffusion_krea2 import KREA2_FAMILY_NAME, load_krea2_pipeline
 from .diffusion_memory import (
+    DEFAULT_IMAGE_HEIGHT,
+    DEFAULT_IMAGE_WIDTH,
     MEMORY_MODE_BALANCED,
     MEMORY_MODE_LOW_VRAM,
     OFFLOAD_NONE,
@@ -111,6 +113,7 @@ from .diffusion_attention import (
 from . import diffusion_compile_cache as compile_cache
 from . import diffusion_cond_cache as cond_cache
 from . import diffusion_gguf_compile as gguf_compile
+from . import diffusion_preview
 from .diffusion_batched import (
     chunk_jobs,
     is_oom_error,
@@ -839,6 +842,9 @@ class _GenState:
     first_step_at: float = 0.0
     # Computed once per step (in the callback) so it's stable between polls.
     eta_seconds: Optional[float] = None
+    # Latest latent thumbnail (base64 JPEG data URL), None until the first one renders.
+    preview: Optional[str] = None
+    preview_at: float = 0.0
 
 
 def _estimate_eta(total_steps: int, step: int, first_step_at: float, now: float) -> Optional[float]:
@@ -5735,10 +5741,45 @@ class DiffusionBackend:
                     # Preempt a long denoise on unload/superseding load (diffusers checks _interrupt).
                     if cancel.is_set():
                         pipe._interrupt = True
+                        return callback_kwargs
+                    if (
+                        preview_vae is not None
+                        and now - gen.preview_at >= diffusion_preview.MIN_INTERVAL_S
+                    ):
+                        gen.preview_at = now
+                        rendered = diffusion_preview.render(
+                            callback_kwargs.get("latents"),
+                            preview_vae,
+                            preview_width,
+                            preview_height,
+                            torch,
+                            logger = logger,
+                        )
+                        if rendered is not None:
+                            gen.preview = rendered
                     return callback_kwargs
 
+                try:
+                    preview_width, preview_height = _compile_shape_dims(
+                        workflow, init_pil, width, height
+                    )
+                except Exception:  # noqa: BLE001 -- previews must never block a generation
+                    preview_width, preview_height = (
+                        width or DEFAULT_IMAGE_WIDTH,
+                        height or DEFAULT_IMAGE_HEIGHT,
+                    )
+                preview_vae = (
+                    getattr(state.pipe, "vae", None)
+                    if diffusion_preview.previews_enabled()
+                    else None
+                )
                 if "callback_on_step_end" in call_params:
                     kwargs["callback_on_step_end"] = _on_step
+                    tensor_inputs = "callback_on_step_end_tensor_inputs" in call_params
+                    if preview_vae is not None and tensor_inputs:
+                        kwargs["callback_on_step_end_tensor_inputs"] = ["latents"]
+                    else:
+                        preview_vae = None
 
                 # Re-check an AUTO cache decision against the ACTUAL step count; explicit choices never toggle.
                 if state.cache_auto:
@@ -5903,6 +5944,7 @@ class DiffusionBackend:
                 "total_steps": 0,
                 "fraction": 0.0,
                 "eta_seconds": None,
+                "preview": None,
             }
         return {
             "active": True,
@@ -5910,6 +5952,7 @@ class DiffusionBackend:
             "total_steps": gen.total_steps,
             "fraction": gen.step / gen.total_steps,  # step is 1..total, never over 1.0
             "eta_seconds": gen.eta_seconds,
+            "preview": gen.preview,
         }
 
     def cancel_generate(self) -> bool:

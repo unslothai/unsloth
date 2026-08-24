@@ -2254,7 +2254,13 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           return;
         }
         setGenStep((prev) => {
-          if (prev && prev.step === p.step && prev.eta_seconds === p.eta_seconds) return prev;
+          if (
+            prev &&
+            prev.step === p.step &&
+            prev.eta_seconds === p.eta_seconds &&
+            prev.preview === p.preview
+          )
+            return prev;
           return p;
         });
       } catch {
@@ -4307,7 +4313,13 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
 
         <div className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden @[50rem]:min-h-0">
           <div className="hover-scrollbar relative flex flex-1 items-center justify-center overflow-auto p-6 px-10 @[50rem]:pt-[60px]">
-            {selected && selectedSrc ? (
+            {busy === "generating" && genStep?.preview ? (
+              <img
+                src={genStep.preview}
+                alt="Generation preview"
+                className="max-h-full max-w-full object-contain shadow-sm"
+              />
+            ) : selected && selectedSrc ? (
               <>
                 <img
                   src={selectedSrc}
@@ -4378,7 +4390,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
               <div
                 className={cn(
                   "pointer-events-none absolute flex justify-center px-4",
-                  selectedSrc ? "inset-x-0 bottom-4" : "inset-0 items-center",
+                  selectedSrc || genStep?.preview
+                    ? "inset-x-0 bottom-4"
+                    : "inset-0 items-center",
                 )}
               >
                 <div className="w-72 max-w-full rounded-xl bg-background/85 p-3 shadow-lg ring-1 ring-border backdrop-blur">
