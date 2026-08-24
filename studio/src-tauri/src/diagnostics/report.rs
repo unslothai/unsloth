@@ -484,6 +484,19 @@ fn newest_server_logs_in(dir: &Path, max: usize, warnings: &mut Vec<String>) -> 
             ));
             continue;
         }
+        // `metadata` is `stat`, which needs no permission on the file itself, so a
+        // log we cannot read still looks like a candidate here and would spend a slot
+        // that `read_tail` only refuses afterwards. A backend once started under sudo
+        // leaves exactly that behind. Safe to open now: non-regular files are already
+        // out, so this cannot be the FIFO that blocks.
+        if let Err(error) = File::open(&path) {
+            warnings.push(format!(
+                "ignored unreadable backend session log: {} ({})",
+                path.display(),
+                error
+            ));
+            continue;
+        }
         let Ok(modified) = metadata.modified() else {
             continue;
         };
@@ -820,6 +833,46 @@ mod tests {
         #[cfg(unix)]
         assert!(warnings.iter().any(|w| w.contains("symlink")));
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A regular file we cannot open is the same defect wearing different clothes:
+    /// `stat` needs no permission on the file, so it survives every check above and
+    /// spends a slot. A backend once started under sudo leaves two of these behind.
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_log_never_takes_a_slot_from_a_readable_one() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = server_log_dir("unreadable");
+        fs::write(
+            dir.join("server-20260101-000000-pid1.log"),
+            b"Current thread 0x1 (most recent call first):\n",
+        )
+        .unwrap();
+        let locked: Vec<PathBuf> = [
+            "server-20260102-000000-pid2.log",
+            "server-20260103-000000-pid3.log",
+        ]
+        .iter()
+        .map(|name| {
+            let path = dir.join(name);
+            fs::write(&path, b"locked\n").unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+            path
+        })
+        .collect();
+
+        let (names, warnings) = collect_names(&dir, 2);
+        // Restore before asserting, so a failure still leaves a removable directory.
+        for path in &locked {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(names, vec!["server-20260101-000000-pid1.log"]);
+        assert_eq!(
+            warnings.iter().filter(|w| w.contains("unreadable")).count(),
+            2
+        );
     }
 
     /// A newline in the name forges `key=value` lines in a report a maintainer then
