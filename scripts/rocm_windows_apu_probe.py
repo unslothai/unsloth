@@ -112,7 +112,7 @@ def read_counters() -> dict[str, Any]:
 
 
 def _usage_totals_gb(counters: dict[str, Any]) -> tuple[float, float]:
-    """Summed Dedicated and Shared usage across adapters, as a stability key.
+    """Summed Dedicated and Shared usage across adapters.
 
     Both, not just Dedicated: past the carve-out Dedicated plateaus while Shared
     is still climbing, so a dedicated-only test calls that sample settled in the
@@ -123,6 +123,32 @@ def _usage_totals_gb(counters: dict[str, Any]) -> tuple[float, float]:
         sum(a["dedicated_gb"] or 0.0 for a in per),
         sum(a["shared_gb"] or 0.0 for a in per),
     )
+
+
+def _usage_by_adapter(counters: dict[str, Any]) -> dict[str, tuple[float, float]]:
+    """Per-adapter (dedicated, shared), which is what stability is tested on.
+
+    Not the sums: one adapter rising while another drains leaves the totals flat
+    inside the tolerance while both readings are still moving, and the report is
+    built from per-adapter deltas. An instance appearing or leaving between
+    samples counts as motion too, since a missing row is not a stable one.
+    """
+    return {
+        a["instance"]: (a["dedicated_gb"] or 0.0, a["shared_gb"] or 0.0)
+        for a in counters.get("per_adapter", [])
+    }
+
+
+def _adapters_stable(window: list[dict[str, tuple[float, float]]], tol_gb: float) -> bool:
+    keys = {k for sample in window for k in sample}
+    if any(set(sample) != keys for sample in window):
+        return False  # the instance set itself moved
+    for k in keys:
+        for col in range(2):
+            vals = [sample[k][col] for sample in window]
+            if max(vals) - min(vals) > tol_gb:
+                return False
+    return True
 
 
 def read_counters_settled(
@@ -161,6 +187,7 @@ def read_counters_settled(
     import time
 
     samples: list[tuple[float, float]] = []
+    keyed: list[dict[str, tuple[float, float]]] = []
     counters = read_counters()
     started = time.monotonic()
     deadline = started + timeout_s
@@ -170,14 +197,15 @@ def read_counters_settled(
     while True:
         d, s = _usage_totals_gb(counters)
         samples.append((round(d, 3), round(s, 3)))
+        keyed.append(_usage_by_adapter(counters))
         if baseline is not None and not moved:
             moved = any(abs(now - was) >= threshold for now, was in zip((d, s), baseline))
-        window = samples[-need_stable:]
+        window = keyed[-need_stable:]
         if (
             moved
             and time.monotonic() - started >= min_wait_s
             and len(window) >= need_stable
-            and all(max(col) - min(col) <= tol_gb for col in zip(*window))
+            and _adapters_stable(window, tol_gb)
         ):
             settled = True
             break
@@ -304,7 +332,29 @@ def read_studio(repo: Path) -> dict[str, Any]:
     return obs
 
 
-def allocate(gib: float) -> dict[str, Any]:
+def _unified_ordinal() -> tuple[Optional[int], str]:
+    """The ordinal of a unified part, and why that one.
+
+    ``device="cuda"`` is the DEFAULT device, normally ordinal 0. On a mixed host
+    that is as likely to be a discrete card, and since the counter instances have
+    no mapping back to torch ordinals the report would then be presenting a
+    discrete GPU's behaviour as evidence about unified memory.
+    """
+    import torch
+
+    integrated = []
+    for i in range(torch.cuda.device_count()):
+        props = torch.cuda.get_device_properties(i)
+        if bool(getattr(props, "is_integrated", 0)):
+            integrated.append((i, props.name))
+    if len(integrated) == 1:
+        return integrated[0][0], f"ordinal {integrated[0][0]} ({integrated[0][1]}), is_integrated"
+    if not integrated:
+        return None, "no visible device reports is_integrated; pass --device to override"
+    return None, f"{len(integrated)} integrated devices ({integrated}); pass --device"
+
+
+def allocate(gib: float, ordinal: Optional[int] = None) -> dict[str, Any]:
     """Hold `gib` on the GPU so the counters can be re-read against it.
 
     This is the experiment for the open question. Studio reads Dedicated Usage;
@@ -313,14 +363,22 @@ def allocate(gib: float) -> dict[str, Any]:
     """
     import torch
 
+    why = f"ordinal {ordinal} (given with --device)"
+    if ordinal is None:
+        ordinal, why = _unified_ordinal()
+        if ordinal is None:
+            raise RuntimeError(f"refusing to allocate on an unidentified device: {why}")
     n = int(gib * GB)
-    buf = torch.empty(n, dtype = torch.uint8, device = "cuda")
+    buf = torch.empty(n, dtype = torch.uint8, device = f"cuda:{ordinal}")
     buf.fill_(1)
-    torch.cuda.synchronize()
+    torch.cuda.synchronize(ordinal)
     return {
         "held_gb": round(n / GB, 3),
-        "torch_allocated_gb": round(torch.cuda.memory_allocated() / GB, 3),
-        "torch_reserved_gb": round(torch.cuda.memory_reserved() / GB, 3),
+        "device_ordinal": ordinal,
+        "device_choice": why,
+        "device_name": torch.cuda.get_device_properties(ordinal).name,
+        "torch_allocated_gb": round(torch.cuda.memory_allocated(ordinal) / GB, 3),
+        "torch_reserved_gb": round(torch.cuda.memory_reserved(ordinal) / GB, 3),
         "_buf": buf,  # keep alive; stripped before serialising
     }
 
@@ -409,6 +467,7 @@ def render(obs: dict[str, Any]) -> str:
         a = obs["allocation"]
         L.append(
             f"Held {a['held_gb']} GB on the GPU "
+            f"on {a.get('device_name')} [{a.get('device_choice')}] "
             f"(torch allocated {a['torch_allocated_gb']} GB, "
             f"reserved {a['torch_reserved_gb']} GB)."
         )
@@ -510,6 +569,10 @@ def main() -> int:
     )
     ap.add_argument("--json", type = Path, default = None, help = "also write raw JSON here")
     ap.add_argument(
+        "--device", type = int, default = None,
+        help = "torch ordinal to allocate on; default is the one reporting is_integrated",
+    )
+    ap.add_argument(
         "--settle-timeout",
         type = float,
         default = 90.0,
@@ -553,7 +616,7 @@ def main() -> int:
     held = None
     if args.allocate > 0:
         try:
-            held = allocate(args.allocate)
+            held = allocate(args.allocate, args.device)
             obs["allocation"] = {k: v for k, v in held.items() if k != "_buf"}
             # The reading climbs for a while after the allocation lands, so the
             # "after" needs settling every bit as much as the "before".
