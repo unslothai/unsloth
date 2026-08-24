@@ -174,6 +174,8 @@ import {
   registerQueuedChatRunSettings,
   releasePreStreamRunReservation,
   reservePreStreamRun,
+  claimThreadProject,
+  useChatProjectScope,
   shouldAbortPendingQueueForModelBoundary,
   shouldAbortPendingQueueForSettingsChange,
   snapshotQueuedChatRunSettings,
@@ -3073,6 +3075,9 @@ const Composer: FC<{
     ({ threadListItem }) => threadListItem.remoteId,
   );
   const referenceThreadId = threadId ?? activeThreadId ?? null;
+  // The project this composer's provider is showing, read at Send time so a send that
+  // materializes after a project switch is still filed where it was made.
+  const projectScope = useChatProjectScope();
   const promptQueueThreadIds = compactIds([
     threadListItemId,
     threadListItemRemoteId,
@@ -4054,6 +4059,12 @@ const Composer: FC<{
     preStreamRunReservationRef.current = reservationToken;
     try {
       const sentText = aui.composer().getState().text;
+      // Stamp the send with the project it was made from, BEFORE send() starts awaiting.
+      // It empties the composer and then awaits every incomplete attachment through the
+      // adapter, so a document send reaches handleSend -- and the adapter's initialize()
+      // -- seconds later, by which time the shared provider may be showing a different
+      // project. See utils/chat-thread-project-claim.ts.
+      claimThreadProject(preStreamThreadIds, projectScope);
       aui.composer().send();
       // Empty texts are dropped, so an attachment-only send still clears.
       armJustSent(sentText, ...alsoGuard);
@@ -4067,7 +4078,7 @@ const Composer: FC<{
           error instanceof Error ? error.message : "Please retry the send.",
       });
     }
-  }, [aui, armJustSent, preStreamThreadIds, referenceThreadId]);
+  }, [aui, armJustSent, preStreamThreadIds, projectScope, referenceThreadId]);
 
   // Gate for both form submit and the Send button. Returns true when it handled
   // the event (blocked or queued) so callers stop.

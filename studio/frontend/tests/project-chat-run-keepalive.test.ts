@@ -354,6 +354,35 @@ test("no restore path puts a deleted chat back on screen", () => {
   );
 });
 
+test("a delayed first send is filed in the project it was sent from", () => {
+  // The adapter is rebuilt every render and handed to the core through
+  // __internal_setOptions, so initialize() reads the provider's LATEST projectId.
+  // assistant-ui's send() empties the composer and then awaits every incomplete
+  // attachment through the adapter before handleSend, and Studio's PDF/DOCX/text adapters
+  // do their extraction there -- so with the provider surviving a project switch, a
+  // document send materializes in whichever project is on screen by then.
+  const thread = readFileSync(
+    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    thread,
+    /claimThreadProject\(preStreamThreadIds, projectScope\);\s*aui\.composer\(\)\.send\(\);/,
+    "the stamp has to be taken before send() starts awaiting, not after",
+  );
+  // Per SEND, not per thread creation: switchToNewThread() reuses an untouched blank
+  // thread, so the same local id can be the current new thread in two projects in a row.
+  assert.doesNotMatch(provider, /claimThreadProject\(/);
+  assert.match(
+    provider,
+    /const claim = readThreadProjectClaim\(threadId\);\s*const projectIdAtSend = claim \? claim\.projectId : projectId;/,
+  );
+  // A claim OF null is a send from outside any project and must win over the provider's
+  // current one; `claim?.projectId ?? projectId` would read it as no claim at all.
+  assert.doesNotMatch(provider, /claim\?\.projectId \?\? projectId/);
+  assert.match(provider, /projectId: projectIdAtSend,/);
+});
+
 test("compare lists its threads once before it waits on any run", () => {
   // Two constraints that a single boolean cannot carry.
   //

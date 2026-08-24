@@ -120,6 +120,8 @@ export {
   releasePreStreamRunReservation,
   reservePreStreamRun,
 } from "./utils/pre-stream-run-reservation";
+export { claimThreadProject } from "./utils/chat-thread-project-claim";
+export { useChatProjectScope } from "./chat-project-scope";
 // Audio swaps the same llama-server Chat decodes on, so it needs the same confirmation.
 export {
   confirmStopRunningChatsIfNeeded,

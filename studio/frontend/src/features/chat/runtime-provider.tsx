@@ -76,6 +76,11 @@ import {
   useResearchRunStore,
 } from "./stores/research-run-store";
 import { ToolPaneScopeContext, toolPaneScope } from "./tool-output-scope";
+import { ChatProjectScopeContext } from "./chat-project-scope";
+import {
+  readThreadProjectClaim,
+  releaseThreadProjectClaim,
+} from "./utils/chat-thread-project-claim";
 import type { MessageRecord, ModelType, ThreadRecord } from "./types";
 import {
   chatContentPartAttachmentIdFromSignature,
@@ -819,12 +824,21 @@ function createStudioDbAdapter(
       const incognitoAtInit = runtimeStateAtInit.incognito;
       const modelIdAtInit = runtimeStateAtInit.params.checkpoint ?? "";
       const createdAtInit = Date.now();
+      // The project the SEND was made from, not the one on screen now. This adapter is
+      // rebuilt every render and handed to the core through __internal_setOptions, so
+      // `projectId` below is the provider's LATEST -- and send() awaits document
+      // extraction before handleSend, while the shared provider survives a project
+      // switch, so those are no longer the same project. A claim of null still wins:
+      // it means the send was made from outside any project.
+      const claim = readThreadProjectClaim(threadId);
+      const projectIdAtSend = claim ? claim.projectId : projectId;
+      releaseThreadProjectClaim(threadId);
       trackStoredChatThreadRecord(threadId, () =>
         ensureThreadRecord({
           threadId,
           modelType,
           pairId,
-          projectId,
+          projectId: projectIdAtSend,
           incognito: incognitoAtInit,
           modelId: modelIdAtInit,
           createdAt: createdAtInit,
@@ -2714,6 +2728,7 @@ export function ChatRuntimeProvider({
       {/* Pane identity for the tool-output store maps: the adapter prefixes its
           keys with this scope so concurrent panes with colliding tool ids
           ("call_0") can't bleed live output into each other's cards. */}
+      <ChatProjectScopeContext.Provider value={projectId ?? null}>
       <ToolPaneScopeContext.Provider value={toolPaneScope(modelType, pairId)}>
         <ActiveThreadSync
           enabled={
@@ -2776,6 +2791,7 @@ export function ChatRuntimeProvider({
             stays attached and the stream alive; unmounting aborts generation. */}
         {children}
       </ToolPaneScopeContext.Provider>
+      </ChatProjectScopeContext.Provider>
     </AssistantRuntimeProvider>
   );
 }
