@@ -1978,20 +1978,24 @@ class MLXInferenceBackend:
             self._processor = None
             self._is_vlm = False
 
-        # Auto was pinned against a cache that did not hold this target yet, so a comparison
+        # The pin was made against a cache that did not hold this target yet, so a comparison
         # needing the target's own files could not be made. The load above supplied them, so it
-        # is asked once more here -- before the record below reports what Auto settled on, and
-        # before the drafter is chosen from it.
-        if requested_speculative_mode == "auto" and mlx_speculative_reason_is_unproven(
-            resolution.reason
-        ):
+        # is asked once more here -- before the record below reports the answer, and before the
+        # drafter is chosen from it. Every mode, not only Auto: comparing tokenizers is not
+        # something attaching the drafter does, so an explicit request left unasked would draft
+        # against token ids nothing checked.
+        if mlx_speculative_reason_is_unproven(resolution.reason):
             resolution = resolve_mlx_speculative_request(
                 model_name,
-                "auto",
+                requested_speculative_mode,
                 mlx_draft_model,
                 is_vision = is_vision,
                 is_lora = is_lora,
             )
+        # An explicitly named method is the point of the load, so a pairing the settlement above
+        # rules out fails it. Raised where the drafter would be built, so it leaves through the
+        # same teardown as a drafter that will not load rather than stranding the target.
+        settled_refusal = resolution.reason if requested_speculative_mode != "auto" else None
 
         _audio_type = _classify_mlx_audio_type(
             model,
@@ -2108,6 +2112,8 @@ class MLXInferenceBackend:
             if block_size is None and requested_speculative_mode == "auto":
                 block_size = mlx_auto_draft_block_size(resolution.method)
             try:
+                if settled_refusal is not None:
+                    raise ValueError(settled_refusal)
                 self._load_speculative_drafter(
                     resolution.method,
                     resolution.draft_model,
@@ -2143,11 +2149,10 @@ class MLXInferenceBackend:
                     mlx_speculative_effective_block_size = self._draft_block_size,
                     mlx_speculative_materialization_bytes = self._draft_materialization_bytes,
                 )
-                # Attaching the drafter is the comparison the preflight could not make. Keeping
-                # the verdict it could not reach would report a failure against a runtime that
-                # is drafting.
-                if mlx_speculative_reason_is_unproven(model_record["mlx_speculative_reason"]):
-                    model_record["mlx_speculative_reason"] = None
+                # The deferred comparison was made above, once the target's files were on disk,
+                # so what the record carries is that answer rather than the verdict the preflight
+                # could not reach.
+                model_record["mlx_speculative_reason"] = resolution.reason
 
         self.active_model_name = model_name
         self.models[model_name] = model_record
@@ -2999,12 +3004,17 @@ class MLXInferenceBackend:
                         # after the interpreter has begun tearing modules down.
                         try:
                             self._draft_model.reset(self._model)
+                        except Exception as exc:
+                            logger.warning("MLX speculative request cleanup failed: %s", exc)
+                        try:
                             import mlx.core as mx
-
                             _drain_generation_streams(mx)
                             mx.clear_cache()
                         except Exception as exc:
-                            logger.warning("MLX speculative request cleanup failed: %s", exc)
+                            # Separately, so a drafter that would not reset still frees what it
+                            # held: the import is here too, since a closing generator can run it
+                            # after the interpreter has begun tearing modules down.
+                            logger.warning("MLX speculative cache release failed: %s", exc)
 
         yield from normalize_reasoning_snapshots(
             _stream_vlm_snapshots(),

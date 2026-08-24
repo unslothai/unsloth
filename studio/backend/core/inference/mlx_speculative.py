@@ -495,25 +495,6 @@ def _snapshot_weight_bytes(repo_id: str) -> int:
     return _snapshot_weight_bytes_at(config_path.parent)
 
 
-# MLX 4-bit holds 4 bits per weight plus an fp16 scale and bias for every group of 64, so a
-# bf16 checkpoint loads at roughly 4.5/16 of its files. Rounded up, for headroom.
-_RUNTIME_QUANTIZED_WEIGHT_RATIO = 0.3
-
-
-def _target_runtime_weight_bytes(repo_id: str) -> int:
-    """The target's weights as the load will hold them, not as they sit on disk.
-
-    A full-precision checkpoint is quantized while it loads, so charging its files would
-    refuse a drafter beside a target whose runtime leaves room to spare.
-    """
-    on_disk = _snapshot_weight_bytes(repo_id)
-    if on_disk <= 0:
-        return on_disk
-    config = _read_config(repo_id)
-    already_quantized = isinstance(config, dict) and bool(config.get("quantization_config"))
-    return on_disk if already_quantized else int(on_disk * _RUNTIME_QUANTIZED_WEIGHT_RATIO)
-
-
 def _snapshot_weight_bytes_at(snapshot: Path) -> int:
     try:
         return sum(
@@ -2009,7 +1990,7 @@ def _builtin_candidate_rows(target_id, target_config, caps, enabled):
 
     upstream_ready = bool(caps["methods"].get("mtp"))
     locally_ready = "mtp" in enabled
-    estimated_memory_bytes = _target_runtime_weight_bytes(target_id)
+    estimated_memory_bytes = _snapshot_weight_bytes(target_id)
     if not upstream_ready:
         reason = caps["reason"] or "method_runtime_unavailable"
     elif not locally_ready:
@@ -2069,9 +2050,7 @@ def _recommended_candidate_rows(target_id, target_config, caps, enabled, native_
         )
         upstream_ready = bool(caps["methods"].get(seed.method))
         locally_ready = seed.method in enabled
-        estimated_memory_bytes = (
-            _target_runtime_weight_bytes(target_id) + seed.approximate_size_bytes
-        )
+        estimated_memory_bytes = _snapshot_weight_bytes(target_id) + seed.approximate_size_bytes
         if target_config is None:
             reason = "target_config_unavailable"
         elif not target_matches:
@@ -2106,7 +2085,7 @@ def _recommended_candidate_rows(target_id, target_config, caps, enabled, native_
 
 def _cached_candidate_rows(target_id, target_config, caps, enabled):
     """One row per snapshot directory, so the merge — not this source — picks the revision."""
-    target_bytes = _target_runtime_weight_bytes(target_id)
+    target_bytes = _snapshot_weight_bytes(target_id)
     for repo_id, draft_config, snapshot, weight_bytes in _active_cached_drafter_configs():
         method = _drafter_method(draft_config)
         if method is None:
@@ -2257,14 +2236,18 @@ def mlx_speculative_request_reason(
     if mode in {"off", "auto"}:
         return None
     return resolve_mlx_speculative_request(
-        target_id, mode, draft_model, is_vision = is_vision, is_lora = is_lora
+        target_id,
+        mode,
+        draft_model,
+        is_vision = is_vision,
+        is_lora = is_lora,
     ).reason
 
 
 # Comparing tokenizers reads the target's own, which a target being loaded for the first time
 # has not downloaded yet. The verifier contract is not in this set: it is read from the cached
 # drafter alone, so fetching the target cannot decide it.
-_UNPROVEN_REASONS = frozenset({"tokenizer_contract_unavailable"})
+_UNPROVEN_REASONS = frozenset({"tokenizer_contract_unavailable", "target_config_unavailable"})
 
 
 def mlx_speculative_reason_is_unproven(reason: Optional[str]) -> bool:
@@ -2396,7 +2379,10 @@ def resolve_mlx_speculative_request(
         # offers none and would be refused for having none -- and the preflights run before the
         # fetch. The load resolves again once the configuration is there, and pins that answer.
         if reason == "checkpoint_not_compatible" and not available and target_config is None:
-            return MlxSpeculativeResolution(requested, draft_model)
+            # Named, so the load still builds it -- but carrying why it is unjudged, or the
+            # settlement after the download has nothing to recognise and the drafter attaches
+            # without the comparison this deferred.
+            return MlxSpeculativeResolution(requested, draft_model, "target_config_unavailable")
         return MlxSpeculativeResolution(requested, pinned, reason)
 
     # No readable configuration is a different answer from having matched no drafter.

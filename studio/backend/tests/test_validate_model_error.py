@@ -174,22 +174,22 @@ def test_a_comparison_the_target_cannot_answer_yet_is_not_a_refusal(monkeypatch)
     assert _drive_validate(monkeypatch, is_gguf = False, mlx_speculative_mode = "mtp")
 
 
-def test_the_pairing_is_judged_again_once_the_target_configuration_arrives(monkeypatch):
-    # The preflight defers a target whose configuration is not fetched yet, so the pairing is
-    # judged after the fetch: here, where a refusal costs the caller nothing, rather than at
-    # /load once the switch has been committed to.
+def test_the_pairing_is_judged_once_the_target_configuration_arrives(monkeypatch):
+    # Judged after the fetch, and only then: asked earlier it would answer from whatever
+    # revision happened to be cached, which is not the one the load goes on to use.
     asked = []
 
     def _reason(*_a, **_k):
         asked.append(1)
-        return "checkpoint_not_compatible" if len(asked) > 1 else None
+        return "checkpoint_not_compatible"
 
     monkeypatch.setattr(inf, "mlx_speculative_request_reason", _reason)
     with pytest.raises(HTTPException) as excinfo:
         _drive_validate(monkeypatch, is_gguf = False, mlx_speculative_mode = "mtp")
     assert excinfo.value.status_code == 400
-    # Asked once before the fetch and once after, and answered on the second.
-    assert len(asked) == 2
+    # Once, and only after the fetch: a second, earlier ask would answer from the cached
+    # revision instead of the one this load resolved.
+    assert len(asked) == 1
     assert "vision-language" not in excinfo.value.detail
 
 

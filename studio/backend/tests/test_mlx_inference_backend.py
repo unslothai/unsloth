@@ -761,6 +761,21 @@ def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
         4,
     )
     assert reset == [backend._model]
+    # A drafter that will not reset must still not keep what it held: the release is what the
+    # next load has to work within, so it cannot be conditional on the reset succeeding.
+    cleared = []
+    _install_fake_mlx(monkeypatch)
+    sys.modules["mlx.core"].clear_cache = lambda: cleared.append(1)
+
+    def _explode(_target):
+        raise RuntimeError("reset failed")
+
+    backend._draft_model = SimpleNamespace(reset = _explode)
+    doomed = backend._generate_vlm(*args)
+    assert next(doomed) == "ok"
+    doomed.close()
+    assert cleared == [1]
+    backend._draft_model = drafter
     assert calls["stream"][-1][0][2] == "<image> healthy generic"
     state["generic"] = "generic prompt"
     text_messages = [{"role": "user", "content": "hello"}]
@@ -4264,7 +4279,7 @@ def test_auto_says_which_way_a_target_failed_to_get_its_own_head(
             _spec_candidate("org/A", loadable = companion is True,
                             reason = None if companion is True else companion)
         )
-    monkeypatch.setattr(spec, "mlx_speculative_options", lambda _t: {"candidates": rows})
+    monkeypatch.setattr(spec, "mlx_speculative_options", lambda _t, **_k: {"candidates": rows})
     monkeypatch.setattr(spec, "_read_config", lambda _t: config)
     _stub_fitting_revisions(monkeypatch)
     resolved = spec.resolve_mlx_speculative_request("org/target", "auto", None)
@@ -4331,7 +4346,7 @@ def test_a_target_too_small_to_gain_from_drafting_is_left_undrafted(monkeypatch,
     rows = [_spec_candidate("org/A")]
     if config.pop("builtin", None):
         rows.insert(0, _spec_candidate("builtin://mtp", source = "builtin"))
-    monkeypatch.setattr(spec, "mlx_speculative_options", lambda _t: {"candidates": rows})
+    monkeypatch.setattr(spec, "mlx_speculative_options", lambda _t, **_k: {"candidates": rows})
     _stub_fitting_revisions(monkeypatch)
     monkeypatch.setattr(spec, "_read_config", lambda _t: config)
     resolved = spec.resolve_mlx_speculative_request("org/target", "auto", None)
@@ -4398,7 +4413,7 @@ def test_auto_ranks_the_revision_a_load_would_take(monkeypatch, revisions, expec
     monkeypatch.setattr(spec, "_drafter_method", lambda _c: "mtp")
     monkeypatch.setattr(spec, "_dynamic_candidate_config_matches",
                         lambda _m, _t, _tc, config, *a: config.get("fits", True))
-    monkeypatch.setattr(spec, "mlx_speculative_options", lambda _t: {"candidates": [
+    monkeypatch.setattr(spec, "mlx_speculative_options", lambda _t, **_k: {"candidates": [
         _spec_candidate("org/A"), _spec_candidate("org/B")]})
     monkeypatch.setattr(spec, "_read_config", lambda _t: {"model_type": "qwen3_5"})
     resolved = spec.resolve_mlx_speculative_request("org/target", "auto", None)
@@ -4425,7 +4440,7 @@ def test_a_pinned_drafter_does_not_outrank_the_rules_that_rule_out_drafting(
     from core.inference import mlx_speculative as spec
 
     rows = [_spec_candidate("builtin://mtp", source = "builtin"), _spec_candidate("org/A")]
-    monkeypatch.setattr(spec, "mlx_speculative_options", lambda _t: {"candidates": rows})
+    monkeypatch.setattr(spec, "mlx_speculative_options", lambda _t, **_k: {"candidates": rows})
     monkeypatch.setattr(spec, "_read_config", lambda _t: dict(config))
     resolved = spec.resolve_mlx_speculative_request("org/target", mode, pinned)
     assert (resolved.method, resolved.draft_model, resolved.reason) == expected
@@ -4639,7 +4654,7 @@ def test_auto_names_the_target_the_way_the_drafters_were_matched(monkeypatch):
     asked = []
     monkeypatch.setattr(spec, "_canonical_target_id",
                         lambda t: t if "/" in t else f"unsloth/{t}")
-    monkeypatch.setattr(spec, "mlx_speculative_options", lambda _t: {"candidates": [
+    monkeypatch.setattr(spec, "mlx_speculative_options", lambda _t, **_k: {"candidates": [
         _spec_candidate("org/A"), _spec_candidate("org/B")]})
     monkeypatch.setattr(spec, "_read_config", lambda _t: {"model_type": "qwen3_5"})
     monkeypatch.setattr(
@@ -4663,7 +4678,7 @@ def test_a_drafter_with_no_revision_that_fits_is_not_pinned(monkeypatch):
     from core.inference import mlx_speculative as spec
     from pathlib import Path as _Path
 
-    monkeypatch.setattr(spec, "mlx_speculative_options", lambda _t: {"candidates": [
+    monkeypatch.setattr(spec, "mlx_speculative_options", lambda _t, **_k: {"candidates": [
         _spec_candidate("org/A"), _spec_candidate("org/B")]})
     monkeypatch.setattr(spec, "_read_config", lambda _t: {"model_type": "qwen3_5"})
     monkeypatch.setattr(
@@ -4692,7 +4707,7 @@ def test_auto_ranks_a_drafter_that_declares_its_width_beside_its_config(monkeypa
     revisions = {"org/A": ({}, beside), "org/B": ({}, tmp_path / "B")}
     monkeypatch.setattr(spec, "_fitting_cached_revision",
                         lambda repo_id, *_a: revisions[repo_id])
-    monkeypatch.setattr(spec, "mlx_speculative_options", lambda _t: {"candidates": [
+    monkeypatch.setattr(spec, "mlx_speculative_options", lambda _t, **_k: {"candidates": [
         _spec_candidate("org/A"), _spec_candidate("org/B")]})
     monkeypatch.setattr(spec, "_read_config", lambda _t: {"model_type": "qwen3_5"})
     resolved = spec.resolve_mlx_speculative_request("org/target", "auto", None)
@@ -4764,7 +4779,7 @@ def test_auto_pins_one_drafter_or_falls_back_to_ordinary_generation(
     # Auto resolves a concrete method before the worker launches, and never fails a load.
     from core.inference import mlx_speculative as spec
 
-    monkeypatch.setattr(spec, "mlx_speculative_options", lambda _t: {"candidates": candidates})
+    monkeypatch.setattr(spec, "mlx_speculative_options", lambda _t, **_k: {"candidates": candidates})
     monkeypatch.setattr(spec, "_read_config", lambda _t: {"model_type": "qwen3_5"})
     _stub_fitting_revisions(monkeypatch)
     resolved = spec.resolve_mlx_speculative_request("org/target", "auto", preferred)
@@ -4870,7 +4885,7 @@ def test_a_load_reuses_the_drafter_its_caller_pinned(
 
     scanned = []
 
-    def _scan(target_id, requested, draft_model = None,):
+    def _scan(target_id, requested, draft_model = None, **_kwargs,):
         scanned.append(target_id)
         return spec.MlxSpeculativeResolution("mtp", "org/Scanned", None)
 
@@ -4900,7 +4915,7 @@ def test_a_request_is_ruled_out_on_the_terms_its_own_load_will_apply(
     # Auto reloads forever for a drafter the load drops, and explicit requests fail after teardown.
     from core.inference import mlx_speculative as spec
 
-    monkeypatch.setattr(spec, "mlx_speculative_options", lambda _t: {"candidates": [
+    monkeypatch.setattr(spec, "mlx_speculative_options", lambda _t, **_k: {"candidates": [
         _spec_candidate("builtin://mtp", source = "builtin")]})
     monkeypatch.setattr(spec, "_read_config", lambda _t: {"model_type": "qwen3_5"})
 
@@ -4927,7 +4942,7 @@ def test_an_accepted_drafter_name_is_pinned_to_the_one_the_loader_resolves(
     from core.inference import mlx_speculative as spec
 
     monkeypatch.setattr(spec, "ENABLED_MLX_SPECULATIVE_METHODS", frozenset({"mtp"}))
-    monkeypatch.setattr(spec, "mlx_speculative_options", lambda _t: {"candidates": [
+    monkeypatch.setattr(spec, "mlx_speculative_options", lambda _t, **_k: {"candidates": [
         {"repo_id": "org/Drafter", "method": "mtp", "reason": None},
         {"repo_id": spec.BUILTIN_MTP_ID, "method": "mtp", "reason": None},
     ]})
@@ -4941,7 +4956,7 @@ def test_an_accepted_drafter_name_is_pinned_to_the_one_the_loader_resolves(
     assert sentinel.draft_model == spec.BUILTIN_MTP_ID
 
     # A repository offered for another method is not this method's pin.
-    monkeypatch.setattr(spec, "mlx_speculative_options", lambda _t: {"candidates": [
+    monkeypatch.setattr(spec, "mlx_speculative_options", lambda _t, **_k: {"candidates": [
         {"repo_id": "org/Drafter", "method": "dflash", "reason": None},
     ]})
     assert spec.resolve_mlx_speculative_request(
@@ -4969,9 +4984,15 @@ def test_an_unfetched_target_defers_an_explicit_request_rather_than_refusing_it(
     from core.inference import mlx_speculative as spec
 
     monkeypatch.setattr(spec, "ENABLED_MLX_SPECULATIVE_METHODS", frozenset({"mtp"}))
-    monkeypatch.setattr(spec, "mlx_speculative_options", lambda _t: {"candidates": []})
+    monkeypatch.setattr(spec, "mlx_speculative_options", lambda _t, **_k: {"candidates": []})
     monkeypatch.setattr(spec, "_read_config", lambda _t: None)
-    assert spec.mlx_speculative_request_reason("org/unfetched", "mtp", "org/Drafter") is None
+    deferred = spec.mlx_speculative_request_reason("org/unfetched", "mtp", "org/Drafter")
+    # Deferred rather than approved: the load refuses nothing for this, but it settles the
+    # comparison once the configuration is on disk instead of attaching an unjudged drafter.
+    assert spec.mlx_speculative_reason_is_unproven(deferred)
+    assert spec.mlx_speculative_refusal(
+        "mtp", spec.MlxSpeculativeResolution("mtp", "org/Drafter", deferred)
+    ) is None
 
     # A target that is readable and simply carries no drafter is still refused.
     monkeypatch.setattr(spec, "_read_config", lambda _t: {"model_type": "qwen3_5"})
@@ -4989,7 +5010,7 @@ def test_an_explicit_method_carries_its_own_reason_into_the_resolution(monkeypat
     from core.inference import mlx_speculative as spec
 
     monkeypatch.setattr(spec, "ENABLED_MLX_SPECULATIVE_METHODS", frozenset({"mtp"}))
-    monkeypatch.setattr(spec, "mlx_speculative_options", lambda _t: {"candidates": [
+    monkeypatch.setattr(spec, "mlx_speculative_options", lambda _t, **_k: {"candidates": [
         {"repo_id": "org/A", "method": "mtp", "reason": reason},
     ]})
     resolved = spec.resolve_mlx_speculative_request("org/target", "mtp", "org/A")
@@ -5184,7 +5205,7 @@ def test_the_options_endpoint_reports_the_drafters_the_sources_found(monkeypatch
     monkeypatch.setattr(spec, "_read_config",
                         lambda t: _MTP_TARGET if t == "org/Target" else None)
     # A row already refused keeps the reason the sources gave it.
-    monkeypatch.setattr(inf_mod, "mlx_speculative_options", lambda _t: {
+    monkeypatch.setattr(inf_mod, "mlx_speculative_options", lambda _t, **_k: {
         "target_model": "org/Target", "experimental": True, "runtime_supported": True,
         "runtime_reason": None,
         "candidates": [_spec_candidate("builtin://mtp", source = "builtin", loadable = False,
@@ -5544,16 +5565,23 @@ def test_auto_is_asked_again_when_its_answer_needed_the_target_that_just_loaded(
 
 
 @pytest.mark.parametrize(
-    "pinned_reason, reported",
+    "pinned_reason, settled_reason, reported, loads",
     [
-        ("tokenizer_contract_unavailable", None),
-        (None, None),
+        # The deferred comparison is made once the files are here, and its answer is what the
+        # record carries -- attaching the drafter does not compare tokenizers.
+        ("tokenizer_contract_unavailable", None, None, True),
+        # Settled against: an explicitly named method fails its load rather than drafting on it.
+        ("tokenizer_contract_unavailable", "checkpoint_not_compatible", None, False),
+        # Nothing was deferred, so nothing is asked again.
+        (None, None, None, True),
     ],
 )
-def test_a_drafter_that_attached_reports_no_unmet_comparison(monkeypatch, pinned_reason, reported):
-    """The preflight defers the tokenizer comparison to this load, and attaching the drafter is
-    that comparison. Reporting the deferred verdict afterwards names a failure against a runtime
-    that is drafting."""
+def test_a_deferred_comparison_is_settled_before_the_drafter_is_chosen(
+    monkeypatch, pinned_reason, settled_reason, reported, loads
+):
+    """The preflight defers a comparison that needs the target's own files. The load supplies
+    them, so the answer is reached here rather than assumed from a drafter that attached: the
+    runtime compatibility check reads architecture and dimensions, never token ids."""
     _install_fake_mlx(monkeypatch)
     _install_fake_fast_mlx(monkeypatch, [])
     from types import SimpleNamespace
@@ -5566,45 +5594,32 @@ def test_a_drafter_that_attached_reports_no_unmet_comparison(monkeypatch, pinned
         "mlx_speculative_load_resolution",
         lambda *_a, **_k: spec.MlxSpeculativeResolution("mtp", "org/A", pinned_reason),
     )
+    asked = []
+
+    def _settle(*_a, **_k):
+        asked.append(1)
+        return spec.MlxSpeculativeResolution("mtp", "org/A", settled_reason)
+
+    monkeypatch.setattr(spec, "resolve_mlx_speculative_request", _settle)
     backend = MLXInferenceBackend()
     monkeypatch.setattr(backend, "_load_speculative_drafter", lambda *_a, **_k: None)
     config = SimpleNamespace(identifier = "fake/vlm", is_vision = True, is_lora = False)
 
+    if not loads:
+        with pytest.raises(ValueError, match = settled_reason):
+            backend.load_model(config, mlx_speculative_mode = "mtp")
+        # The target is already resident when this is settled, so the refusal leaves through
+        # the same teardown a drafter that will not load does. Left behind it would hold MLX
+        # memory that no record accounts for.
+        assert backend._model is None
+        assert backend._tokenizer is None
+        assert backend._processor is None
+        assert backend.models == {}
+        return
     assert backend.load_model(config, mlx_speculative_mode = "mtp") is True
     assert backend.models["fake/vlm"]["mlx_speculative_reason"] == reported
-
-
-@pytest.mark.parametrize(
-    "config, charged_on_disk",
-    [
-        ({"model_type": "qwen3"}, False),
-        ({"model_type": "qwen3", "quantization_config": {"bits": 4, "group_size": 64}}, True),
-    ],
-)
-def test_a_target_is_sized_at_the_precision_the_load_will_hold(
-    monkeypatch, config, charged_on_disk
-):
-    """The load quantizes a full-precision checkpoint, so charging its files would refuse a
-    drafter beside a target whose runtime fits with room to spare. A checkpoint that is already
-    quantized is loaded as it sits, so its files are what it costs."""
-    from core.inference import mlx_speculative as spec
-
-    on_disk = 100_000_000_000
-    monkeypatch.setattr(spec, "_snapshot_weight_bytes", lambda _r: on_disk)
-    monkeypatch.setattr(spec, "_read_config", lambda _r: config)
-
-    charged = spec._target_runtime_weight_bytes("org/target")
-    assert (charged == on_disk) is charged_on_disk
-    assert 0 < charged <= on_disk
-
-
-def test_a_target_that_is_not_cached_is_charged_nothing(monkeypatch):
-    """No snapshot means no measurement, and a guess would refuse pairs on a number nothing
-    supports."""
-    from core.inference import mlx_speculative as spec
-
-    monkeypatch.setattr(spec, "_snapshot_weight_bytes", lambda _r: 0)
-    assert spec._target_runtime_weight_bytes("org/target") == 0
+    # Asked again only for a comparison that was deferred.
+    assert bool(asked) is (pinned_reason is not None)
 
 
 def _drafter_snapshot(tmp_path, name, config):
