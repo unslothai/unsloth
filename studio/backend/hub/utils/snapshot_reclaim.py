@@ -157,18 +157,12 @@ def _ensure_real_directory(path: Path, expected: Path, label: str) -> Path:
 
 
 def _refs_staging_directory(repo_dir: Path) -> Path:
-    """Return the promotion scratch directory that sits beside ``refs`` in *repo_dir*.
+    """Promotion scratch directory, a sibling of ``refs`` in *repo_dir*.
 
-    Promotion scratch files must never live inside ``refs`` itself. Third-party
-    readers enumerate ``refs`` with ``glob("**/*")`` -- which matches dotfiles --
-    and treat every entry as a real ref, so a transient or crash-orphaned scratch
-    file is read as a ref that pins a stale revision, or trips the reader with a
-    partially written value. Staging beside ``refs`` keeps the scratch files in
-    the same repo directory, hence on the same filesystem, so the hardlink and
-    no-replace rename paths behave exactly as they do within ``refs``.
-
-    A directory left behind by an interrupted promotion is reused as-is; its
-    contents are never reclaimed here because a stale scratch file is now inert.
+    Scratch must not live in ``refs``: third-party readers glob it, dotfiles
+    included, and read every entry as a ref. A sibling keeps the same filesystem,
+    so the hardlink and no-replace rename paths are unaffected. A directory left
+    by an interrupted promotion is reused; its contents are inert.
     """
     return _ensure_real_directory(
         repo_dir / _REFS_STAGING_DIRECTORY_NAME,
@@ -180,11 +174,9 @@ def _refs_staging_directory(repo_dir: Path) -> Path:
 def _open_staged_temporary(repo_dir: Path) -> tuple[Path, Path, int]:
     """Create the staging directory plus an exclusive scratch ref inside it.
 
-    Cache maintenance prunes empty directories across a repo without taking the
-    main-ref lock, so a staging directory is only safe from that prune once it
-    holds a file. Retry the mkdir-then-open window rather than failing an
-    otherwise valid promotion; once the scratch ref exists the directory stays
-    non-empty for the rest of the promotion.
+    Cache maintenance rmdirs empty directories without the main-ref lock, so
+    retry the mkdir-then-open window rather than fail a valid promotion. Once the
+    scratch exists the directory stays non-empty.
     """
     for attempt in range(len(_REFS_STAGING_RETRY_DELAYS_SECONDS) + 1):
         try:
@@ -201,10 +193,9 @@ def _open_staged_temporary(repo_dir: Path) -> tuple[Path, Path, int]:
 
 
 def _discard_refs_staging_directory(staging: Path) -> None:
-    """Drop the staging directory once it is empty; never fail a promotion for it.
+    """Drop the staging directory if empty; never fail a promotion for it.
 
-    ``rmdir`` only succeeds on an empty directory, so a displaced previous ref
-    that a failed rollback deliberately left behind is preserved.
+    ``rmdir`` needs it empty, so a deliberately kept displaced ref survives.
     """
     try:
         staging.rmdir()
@@ -317,6 +308,11 @@ def capture_previous_main_ref(repo_id: str, *, repo_type: str = "model") -> Prev
             return PreviousMainRef(repo_dir, None, True)
         if is_redirect_stat(main_stat) or not stat.S_ISREG(main_stat.st_mode):
             return PreviousMainRef(repo_dir, None, False, "refs/main is not a regular file")
+        if main_stat.st_size == 0:
+            # Debris from a promotion that died between the exclusive create and the
+            # write. Treating it as absent keeps the repo pinned: the next promotion
+            # reclaims it, where reading it as invalid would let the download run unpinned.
+            return PreviousMainRef(repo_dir, None, True)
         if main_stat.st_size > 256:
             return PreviousMainRef(
                 repo_dir,
@@ -449,23 +445,14 @@ def _read_stable_ref_bytes(
 
 
 def _is_os_metadata_dropping(path: Path) -> bool:
-    """True for a file an OS file browser dropped into ``refs``, which is not a ref.
+    """True for a file browser dropping in ``refs``, which is not a ref.
 
-    Finder writes ``.DS_Store`` into every directory a user opens -- a real one
-    is kilobytes long, so it trips the ref size guard and fails the whole scan --
-    and Explorer writes ``Thumbs.db`` and ``desktop.ini``. None of them is a ref,
-    so both counting one as a revision and refusing to reclaim over one are wrong.
-
-    ``._`` companions are settled by their magic bytes, never by the prefix
-    alone, because a ref could legitimately be named that way on a volume where
-    macOS has never written a companion.
-
-    A ``.icloud`` placeholder is deliberately NOT listed. It is what remains when
-    iCloud evicts a file, so ``refs/.main.icloud`` still stands for a live ref
-    whose bytes are merely offline. Skipping it would drop the revision it pins
-    out of the referenced set and let reclamation delete a snapshot that is in
-    use; left unskipped it fails the commit-shape check and blocks the reclaim,
-    which is the safe direction for a placeholder we cannot read.
+    A real ``.DS_Store`` is kilobytes, so it trips the size guard and fails the
+    whole scan; ``Thumbs.db`` and ``desktop.ini`` are the Explorer equivalents.
+    ``._`` companions are settled by magic bytes, not the prefix, since a ref
+    could be named that way. ``.icloud`` is deliberately absent: it is an evicted
+    ref, still pinning a revision, so skipping it would let reclaim delete a
+    live snapshot. Unskipped it fails the commit-shape check and blocks reclaim.
     """
     if path.name.casefold() in _OS_METADATA_REF_NAMES:
         return True
@@ -710,89 +697,85 @@ def _assert_created_ref(path: Path, created_stat: os.stat_result) -> None:
         raise ConcurrentMainRefError("refs/main changed during promotion")
 
 
-def _write_staged_ref_copy(
-    repo_dir: Path, payload: bytes, mode: int
-) -> tuple[Path, os.stat_result]:
-    """Build a complete, durable copy of *payload* in the staging directory.
+def _reclaim_empty_main_ref(main: Path) -> bool:
+    """Drop a zero-length ``refs/main``, which only a crashed promotion leaves.
 
-    The copy carries the source ref's permission bits and is fsynced before it
-    is returned, so the caller only ever moves a finished value into ``refs``.
+    No writer publishes an empty ref, so removing it lets the next promotion
+    through instead of stranding the repo on a ref that can never parse.
     """
-    _staging, scratch, fd = _open_staged_temporary(repo_dir)
     try:
+        current = main.lstat()
+    except OSError:
+        return False
+    if not stat.S_ISREG(current.st_mode) or current.st_size:
+        return False
+    try:
+        os.unlink(main)
+    except OSError:
+        return False
+    return True
+
+
+def _copy_main_ref_exclusively(refs: Path, payload: bytes, mode: int) -> None:
+    """Create ``refs/main`` exclusively and write *payload* into it.
+
+    Last resort for a cache with neither usable hard links nor a no-replace
+    rename (FAT/exFAT, SMB, some FUSE). The exclusive create is the only atomic
+    claim left there, so it is what stops a foreign writer's ref being
+    overwritten. A crash before the write leaves an empty ref, reclaimed below
+    and read as absent by capture rather than silently unpinning the repo.
+    """
+    main = refs / "main"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+    for attempt in range(len(_MAIN_REF_CHANGE_RETRY_DELAYS_SECONDS) + 1):
+        try:
+            fd = os.open(main, flags, mode)
+            break
+        except FileExistsError:
+            # Only our own crash debris is reclaimable; a real ref still wins.
+            if not _reclaim_empty_main_ref(main):
+                raise
+            fd = os.open(main, flags, mode)
+            break
+        except PermissionError:
+            if not _IS_WINDOWS or attempt == len(_MAIN_REF_CHANGE_RETRY_DELAYS_SECONDS):
+                raise
+            time.sleep(_MAIN_REF_CHANGE_RETRY_DELAYS_SECONDS[attempt])
+            _assert_main_unchanged(refs, None)
+
+    created_stat = os.fstat(fd)
+    try:
+        _assert_created_ref(main, created_stat)
         written = os.write(fd, payload)
         if written != len(payload):
             raise OSError(errno.EIO, "Could not write the complete refs/main value")
         fchmod = getattr(os, "fchmod", None)
         if fchmod is not None:
             fchmod(fd, mode)
-        else:
-            os.chmod(scratch, mode)
         os.fsync(fd)
-        staged_stat = os.fstat(fd)
-        os.close(fd)
-    except BaseException:
+        _assert_created_ref(main, created_stat)
+    except BaseException as operation_error:
+        close_error = None
         try:
             os.close(fd)
-        except OSError:
-            pass
+        except OSError as exc:
+            close_error = exc
         try:
-            scratch.unlink()
-        except OSError:
-            pass
+            _unlink_created_ref(main, created_stat)
+        except _MainRefCleanupError as cleanup_error:
+            raise cleanup_error from operation_error
+        if close_error is not None:
+            raise close_error from operation_error
         raise
-    return scratch, staged_stat
-
-
-def _copy_main_ref_exclusively(refs: Path, payload: bytes, mode: int) -> None:
-    """Publish *payload* at ``refs/main`` without ever creating the ref incrementally.
-
-    This is the last-resort path, taken only when the cache sits on a filesystem
-    with neither usable hard links nor a no-replace rename (FAT/exFAT, SMB, some
-    FUSE mounts used as ``HF_HOME``). Creating ``refs/main`` here with
-    ``O_CREAT | O_EXCL`` and writing into it afterwards publishes a zero-length
-    ref for the length of the write, and a crash inside that window leaves an
-    empty ``refs/main`` behind: it never parses again, so the ref cannot be
-    captured, and the next download of that repo silently runs unpinned -- the
-    one guarantee this module exists to provide. Assemble the value in the
-    staging directory and move it in instead, so ``refs/main`` is only ever
-    observable as absent, the previous value, or the complete new one.
-
-    ``os.replace`` is not exclusive the way the exclusive create was, so the
-    absence of ``refs/main`` is checked immediately before the move and reported
-    as ``FileExistsError`` exactly as before. Our own promotions are serialised
-    by the main-ref lock; what remains is a foreign writer creating ``refs/main``
-    inside the microseconds before the move, which then loses to this verified
-    value -- a complete ref for a snapshot that was just verified on disk, and a
-    far smaller hazard than a crash-truncated one.
-    """
-    main = refs / "main"
-    scratch, staged_stat = _write_staged_ref_copy(refs.parent, payload, mode)
-    published = False
-    try:
-        if _lstat_or_none(main) is not None:
-            raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), str(main))
-
-        def publish() -> None:
-            nonlocal published
-            os.replace(scratch, main)
-            published = True
-
-        _retry_main_ref_change(publish, refs, None)
-        _assert_created_ref(main, staged_stat)
-    except BaseException as operation_error:
-        if published:
+    else:
+        try:
+            os.close(fd)
+        except OSError as close_error:
             try:
-                _unlink_created_ref(main, staged_stat)
+                _unlink_created_ref(main, created_stat)
             except _MainRefCleanupError as cleanup_error:
-                raise cleanup_error from operation_error
-        raise
-    finally:
-        if not published:
-            try:
-                scratch.unlink()
-            except OSError:
-                pass
+                raise cleanup_error from close_error
+            raise
 
 
 def _create_main_ref(refs: Path, source: Path, *, try_hardlink: bool) -> None:

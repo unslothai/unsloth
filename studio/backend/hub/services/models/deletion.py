@@ -626,11 +626,9 @@ def _delete_gguf_variant_from_repos(
         removed_snapshots += removed
         deleted_bytes += freed
         failures.extend(unlink_failures)
-        # The same barrier the companion phase below relies on, for this repo's own blobs. One
-        # refused entry does not stop the loop, so its siblings' links are already gone and the
-        # reference scan would read their blobs as unreferenced -- unlinking the other shards of
-        # the very variant we just declined to delete. Put the links back and commit no blob
-        # here: the delete stays all-or-nothing, and the retry still sees a whole variant.
+        # One refused entry leaves its siblings' links already gone, so the reference scan
+        # would read their blobs as unreferenced and unlink the other shards of the variant we
+        # just declined to delete. Restore and commit no blob: the delete stays all-or-nothing.
         if unlink_failures:
             for links in removed_links.values():
                 restored, restore_failures = _restore_snapshot_links(links)
@@ -691,9 +689,8 @@ def _delete_gguf_variant_from_repos(
             removed_snapshots += removed
             deleted_bytes += freed
             failures.extend(unlink_failures)
-            # Same barrier as the main phase above. A companion set is deleted together or not
-            # at all: one refused entry means something still has it open, and committing the
-            # rest would unlink the mmproj or drafter the surviving companions are read with.
+            # Same barrier as the main phase: a refused entry means something still has the
+            # set open, so committing the rest would unlink a live mmproj or drafter.
             if unlink_failures:
                 for links in companion_links.values():
                     restored, restore_failures = _restore_snapshot_links(links)

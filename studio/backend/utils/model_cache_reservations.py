@@ -177,6 +177,12 @@ class ModelCacheOperations:
             )
             if conflict is not None:
                 return conflict, "repository_owned"
+            # A terminal worker still sweeping partials and markers is a live writer, even
+            # though its job already reads as finished, so the active-writer callback below
+            # reports nothing. Every other admission path already refuses on this hold.
+            conflict = next((repo for repo in scopes if self._writer_cleanups.get(repo)), None)
+            if conflict is not None:
+                return conflict, "downloading"
             if self._active_writer_state is not None:
                 for repo, scope in scopes.items():
                     state = self._active_writer_state(repo, scope)
