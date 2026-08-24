@@ -319,8 +319,12 @@ assert_detects "bare wildcard bind"                 'unsloth studio -H 0.0.0.0' 
 assert_detects "long flag"                          'unsloth studio --host 0.0.0.0'                detected
 assert_detects "long flag with ="                   'unsloth studio --host=0.0.0.0'                detected
 assert_detects "flags between studio and the bind"  'unsloth studio -p 8888 -H 0.0.0.0'            detected
+assert_detects "trailing flags after the bind"      'unsloth studio -H 0.0.0.0 -p 8888'            detected
 assert_detects "shell-prompt prefix"                '$ unsloth studio -H 0.0.0.0'                  detected
 assert_detects "inline env assignment prefix"       "PW='x' unsloth studio -H 0.0.0.0"             detected
+# The exact shape #9654 found getting past a line-start-anchored detector. Kept
+# verbatim rather than paraphrased, because it is the one that was actually let through.
+assert_detects "the prefixed shape from #9654"      "UNSLOTH_STUDIO_PASSWORD='x' unsloth studio --host=0.0.0.0" detected
 assert_detects "indented inside a fenced block"     '    unsloth studio -H 0.0.0.0'                detected
 assert_detects "quoted inside a printf"             'printf "%s" "unsloth studio -p 1 -H 0.0.0.0"' detected
 # The fixture is the literal text a launcher script CONTAINS, so the `$` must not expand.
@@ -332,7 +336,9 @@ assert_detects "loopback default"                   'unsloth studio'            
 assert_detects "an explicit loopback bind"          'unsloth studio -H 127.0.0.1'                  ignored
 assert_detects "IPv6 loopback is not the wildcard"  'unsloth studio -H ::1'                        ignored
 assert_detects "a longer address starting 0.0.0.0"  'unsloth studio -H 0.0.0.0.5'                  ignored
+assert_detects "an address that merely begins 0.0.0.0" 'unsloth studio -H 0.0.0.01'                ignored
 assert_detects "another program's wildcard bind"    'llama-server --host 0.0.0.0'                  ignored
+assert_detects "another program, another flag"      'jupyter lab --ip 0.0.0.0'                     ignored
 assert_detects "prose naming the opt-in"            'add -H 0.0.0.0 for LAN / cloud access'        ignored
 assert_detects "a trailing comment naming it"       'unsloth studio  # add -H 0.0.0.0 for LAN'     ignored
 assert_detects "a path, not the subcommand"         'unsloth-studio-launcher -H 0.0.0.0'           ignored
