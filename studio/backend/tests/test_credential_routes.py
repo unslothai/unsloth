@@ -1301,9 +1301,17 @@ def test_codex_proof_rollback_leaves_a_concurrent_save_alone(monkeypatch):
 
     update_provider_config suspends between committing the row and recording the proof:
     remember_catalog_account awaits a 30s file lock, and the failure the rollback exists
-    for is exactly the one where that lock was contended. A save the user makes during
-    those seconds commits in between. Restoring the whole pre-request snapshot would put
-    the row back to before *both* requests and erase the second one's successful edit.
+    for is exactly the one where that lock was contended. Another write to the row lands
+    in between. Restoring the whole pre-request snapshot would put the row back to before
+    *both* writes and erase the second one's successful edit.
+
+    The interleaved write goes at providers_db directly rather than through a second
+    update_provider_config call. serialize_provider_config holds a per-provider
+    asyncio.Lock across the whole handler, so a second call on the same provider cannot
+    run while this one is parked -- awaiting one from inside this test deadlocks the
+    event loop, since the await that would release the gate sits behind it. What the
+    rollback actually defends against is the row moving under the handler, which any
+    writer can do, so the row write is both the reachable shape and the one under test.
     """
     import json
 
@@ -1344,10 +1352,13 @@ def test_codex_proof_rollback_leaves_a_concurrent_save_alone(monkeypatch):
     codex_client._catalog_accounts[provider_id] = "acct-1"
 
     gate = asyncio.Event()
+    parked = asyncio.Event()
 
     async def _blocked_then_busy(_provider_id, _account_id):
         # Stands in for provider_oauth_write_guard's flock acquire: a real suspension
-        # point, then the timeout it raises.
+        # point, then the timeout it raises. `parked` is the handshake, so the test
+        # resumes on the suspension itself rather than on a count of loop turns.
+        parked.set()
         await gate.wait()
         raise codex_auth.CodexAuthError("ChatGPT credential update is busy. Please retry.")
 
@@ -1364,20 +1375,14 @@ def test_codex_proof_rollback_leaves_a_concurrent_save_alone(monkeypatch):
                 via_api_key = False,
             )
         )
-        for _ in range(100):
-            await asyncio.sleep(0)
-            if gate._waiters:
-                break
+        await asyncio.wait_for(parked.wait(), timeout = 10)
         # Its row is committed and it is now parked in remember_catalog_account.
         assert providers_db.get_provider(provider_id)["models"] == ["gpt-5.4", listed]
 
-        # The user saves again while that one hangs. This one has no selection of its
-        # own, so it records no proof and completes.
-        await providers_route.update_provider_config(
-            provider_id,
-            ProviderUpdate(display_name = "Renamed while the first save hung"),
-            credential = ("alice", None),
-            via_api_key = False,
+        # Another write renames the row while that one hangs. It touches a column the
+        # parked request never wrote, so there is nothing of its own to undo there.
+        providers_db.update_provider(
+            id = provider_id, display_name = "Renamed while the first save hung"
         )
 
         gate.set()

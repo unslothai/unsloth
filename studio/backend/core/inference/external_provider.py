@@ -6314,6 +6314,7 @@ class ExternalProviderClient:
         model: str,
         language: Optional[str] = None,
         response_format: str = "json",
+        timestamp_granularities: Optional[list[str]] = None,
     ) -> tuple[bytes, str]:
         """Post audio to an OpenAI-compatible transcription endpoint."""
         data = {
@@ -6322,6 +6323,9 @@ class ExternalProviderClient:
         }
         if language:
             data["language"] = language
+        if timestamp_granularities:
+            # Repeated field, so httpx wants the list under the bracketed name OpenAI uses.
+            data["timestamp_granularities[]"] = list(timestamp_granularities)
         headers = self._auth_headers()
         headers.pop("Content-Type", None)
         response = await _http_client.post(

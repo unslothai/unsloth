@@ -95,6 +95,15 @@ class TestDiffusionArchitectures:
         assert "cannot run" in msg.lower()
         assert "enough memory" not in msg.lower()
 
+    @pytest.mark.parametrize("arch", sorted(LlamaCppBackend._SPEECH_ARCHES))
+    def test_every_speech_arch_routes_to_the_audio_page(self, arch):
+        out = f"error loading model: unknown model architecture: '{arch}'"
+        msg = _classify(out, f"/models/{arch}.gguf", f"local/{arch}")
+        assert "text-to-speech" in msg.lower()
+        assert "Audio page" in msg
+        assert "Images page" not in msg
+        assert arch in msg
+
     def test_media_arch_sets_are_disjoint_and_cover_the_union(self):
         sets = (
             LlamaCppBackend._IMAGE_ARCHES,

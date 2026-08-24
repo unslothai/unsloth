@@ -52,6 +52,9 @@ function load(
           };
         },
       },
+      "../search-images/search-images": {
+        stripSearchImageTokens: (text: string) => text,
+      },
       "../stores/external-providers-store": {
         useExternalProvidersStore: {
           getState: () => ({

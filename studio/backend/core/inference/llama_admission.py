@@ -796,6 +796,9 @@ class LlamaAdmissionQueue:
                     # raising here would both mask their exception and skip the
                     # release below, stranding the slot for the process lifetime.
                     pass
+            # A cancel frees no slot and no tokens, so nothing else re-runs
+            # admission for the waiters this one was blocking.
+            self._grant_waiters_locked()
         if lease_to_release is not None:
             lease_to_release.release()
 

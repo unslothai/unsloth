@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { RecipeStudioPage, type RecipePayload } from "@/features/recipe-studio";
 import { useNavigate } from "@tanstack/react-router";
 import type { ReactElement } from "react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getCachedRecipe, getRecipe, primeRecipeCache, saveRecipe } from "../data/recipes-db";
 import type { RecipeRecord } from "../types";
 
@@ -44,6 +44,7 @@ function RecipeLoadState({
 
 export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement {
   const navigate = useNavigate();
+  const reloadReadySent = useRef(false);
   const [loadState, setLoadState] = useState<LoadState>(() => {
     const cachedRecipe = getCachedRecipe(recipeId);
     if (cachedRecipe) {
@@ -76,6 +77,14 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
       active = false;
     };
   }, [recipeId]);
+
+  useEffect(() => {
+    if (loadState.status === "loading" || reloadReadySent.current) {
+      return;
+    }
+    reloadReadySent.current = true;
+    window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+  }, [loadState.status]);
 
   const handlePersist = useCallback(
     async (input: { id: string | null; name: string; payload: RecipePayload }) => {

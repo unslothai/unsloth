@@ -121,6 +121,7 @@ export function ProjectsPage() {
   const [extraCount, setExtraCount] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
+  const reloadReadySent = useRef(false);
   const pinnedProjectIds = usePinnedProjectsStore((s) => s.pinnedIds);
   const togglePinProject = usePinnedProjectsStore((s) => s.togglePin);
   const pinnedProjectIdSet = useMemo(
@@ -255,6 +256,14 @@ export function ProjectsPage() {
     ? sortedProjects
     : sortedProjects.slice(0, visibleCount);
   const hasMore = !isSearching && sortedProjects.length > visibleCount;
+
+  useEffect(() => {
+    if (!hasLoaded || reloadReadySent.current) {
+      return;
+    }
+    reloadReadySent.current = true;
+    window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+  }, [hasLoaded]);
 
   // Estimate how many rows fit below the list's top so the first page fills the
   // screen without loading everything up front.
@@ -743,7 +752,15 @@ export function ProjectsPage() {
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
             Choose where to import{" "}
-            <span className="font-medium text-foreground">{importFile?.name}</span>:
+            {/* A picked local file, and the dialog portals out of any marked
+                ancestor, so the name needs its own marker. */}
+            <span
+              data-reload-snapshot-sensitive
+              className="font-medium text-foreground"
+            >
+              {importFile?.name}
+            </span>
+            :
           </p>
           <Select
             value={importTargetId ?? "__recents__"}
