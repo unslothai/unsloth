@@ -510,6 +510,11 @@ def _read_config(repo_id: str) -> Optional[dict[str, Any]]:
     return _config_from_path(path) if path is not None else None
 
 
+def mlx_target_config_is_cached(target_id: str) -> bool:
+    """Whether this target's configuration is already on disk, so reading it needs no Hub call."""
+    return _cached_config_path(target_id) is not None
+
+
 def _snapshot_weight_bytes(repo_id: str) -> int:
     config_path = _cached_config_path(repo_id)
     if config_path is None:

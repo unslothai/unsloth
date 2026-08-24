@@ -5279,6 +5279,63 @@ def test_the_options_endpoint_reports_the_drafters_the_sources_found(monkeypatch
     assert spec.mlx_speculative_options("org/target")["candidates"] == []
 
 
+@pytest.mark.parametrize(
+    "config_cached, raw_verdict, probes",
+    [
+        # Cached and vision: answered from the file on disk, with no Hub call at all.
+        (True, True, [True]),
+        # Cached and not vision: the raw reader's negative is the one the online probe can
+        # overturn for a latest-tier architecture it predates, so it is asked rather than assumed.
+        (True, False, [True, False]),
+        # Never seen: the fetch this probe exists for, which the scan then pairs against.
+        (False, False, [False]),
+    ],
+)
+def test_the_options_probe_asks_the_hub_for_every_verdict_the_cache_cannot_settle(
+    monkeypatch, config_cached, raw_verdict, probes
+):
+    """Revalidating a cached configuration costs seconds of Hub round trips on an endpoint the
+    picker calls for every model it shows. A positive read off disk is the one answer the online
+    probe never contradicts, so it is the only one taken without asking."""
+    import asyncio
+    import os
+    import sys
+
+    from core.inference import mlx_speculative as spec
+
+    tests_dir = os.path.dirname(__file__)
+    if tests_dir not in sys.path:
+        sys.path.insert(0, tests_dir)
+    from test_active_generations import _route_gate
+
+    _route_gate()
+    import utils.models.model_config as model_config_mod
+
+    import routes.inference as inf_mod
+
+    asked = []
+
+    def _probe(_name, **kwargs):
+        offline = bool(kwargs.get("local_files_only"))
+        asked.append(offline)
+        # Online, this target is a VLM whichever way the cached file reads.
+        return raw_verdict if offline else True
+
+    monkeypatch.setattr(spec, "_canonical_target_id", lambda _t: "org/Target")
+    monkeypatch.setattr(spec, "mlx_target_config_is_cached", lambda _t: config_cached)
+    monkeypatch.setattr(model_config_mod, "is_vision_model", _probe)
+    monkeypatch.setattr(inf_mod, "mlx_speculative_target_is_adapter", lambda _t: False)
+    monkeypatch.setattr(inf_mod, "mlx_speculative_options", lambda _t, **_k: {
+        "target_model": "org/Target", "experimental": True, "runtime_supported": True,
+        "runtime_reason": None, "candidates": []})
+
+    served = asyncio.run(inf_mod.get_mlx_speculative_options("target", "tester"))
+
+    assert asked == probes
+    # Whatever route it took, the endpoint reports the verdict the load would reach.
+    assert served.runtime_supported is True
+
+
 def _fake_safetensors(path, header, *, declared_length = None,):
     import struct
     blob = json.dumps(header).encode()

@@ -13106,7 +13106,7 @@ async def get_mlx_speculative_options(
 ):
     """Return the speculative drafters that can serve one MLX target."""
     del current_subject
-    from core.inference.mlx_speculative import _canonical_target_id
+    from core.inference.mlx_speculative import _canonical_target_id, mlx_target_config_is_cached
     from utils.models.model_config import is_vision_model
 
     # The name the scan and the load both match on; the request's own spelling may name nothing.
@@ -13117,7 +13117,21 @@ async def get_mlx_speculative_options(
     # scan would otherwise pair against and freeze an empty list.
     # With the caller's token: a gated target the probe cannot read caches no configuration,
     # and the scan then pairs against nothing and offers no drafter at all.
-    target_is_vision = await asyncio.to_thread(is_vision_model, canonical_target, hf_token = hf_token)
+    # Asked offline first when that configuration is already here, which is the fetch this probe
+    # exists for: revalidating a cached file against the Hub costs seconds of round trips on an
+    # endpoint the picker calls for every model it shows. Only a positive is taken from it. A
+    # negative is the answer the online probe can still overturn, by escalating a raw config with
+    # no vision_config to the latest tier's sidecar, so that one is asked for rather than assumed.
+    target_config_cached = await asyncio.to_thread(mlx_target_config_is_cached, canonical_target)
+    target_is_vision = False
+    if target_config_cached:
+        target_is_vision = await asyncio.to_thread(
+            is_vision_model, canonical_target, hf_token = hf_token, local_files_only = True
+        )
+    if not target_is_vision:
+        target_is_vision = await asyncio.to_thread(
+            is_vision_model, canonical_target, hf_token = hf_token
+        )
     target_is_adapter = await asyncio.to_thread(mlx_speculative_target_is_adapter, canonical_target)
     options = await asyncio.to_thread(mlx_speculative_options, target_model)
     ineligible = mlx_speculative_target_ineligible(
