@@ -324,6 +324,20 @@ def _vlm_messages_have_tool_history(messages):
     )
 
 
+def _mlx_config_field(model, name):
+    """Read a config field in either shape a loaded MLX model exposes it in.
+
+    A checkpoint's config is a dict on some models and an object on others, under
+    ``config`` or ``_config`` -- the same spread ``_mlx_vlm_model_config`` walks to
+    find a model_type. A getattr-only read silently misses the dict half.
+    """
+    for cfg in (getattr(model, "config", None), getattr(model, "_config", None)):
+        value = cfg.get(name) if isinstance(cfg, dict) else getattr(cfg, name, None)
+        if value is not None:
+            return value
+    return None
+
+
 def _mlx_stop_token_ids(tokenizer, model = None):
     """Ids the runtime actually stops on, as a tuple.
 
@@ -335,7 +349,7 @@ def _mlx_stop_token_ids(tokenizer, model = None):
     """
     for source in (
         getattr(getattr(tokenizer, "stopping_criteria", None), "eos_token_ids", None),
-        getattr(getattr(model, "config", None), "eos_token_id", None),
+        _mlx_config_field(model, "eos_token_id"),
         getattr(tokenizer, "eos_token_ids", None),
         getattr(tokenizer, "eos_token_id", None),
     ):

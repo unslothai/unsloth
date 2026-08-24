@@ -3022,6 +3022,40 @@ def test_mlx_processors_penalize_in_range_ids_and_route_strays_away(
         assert float(out[0, token]) == pytest.approx(value), token
 
 
+@pytest.mark.parametrize(
+    "model",
+    [
+        SimpleNamespace(config = {"model_type": "generic_vlm", "eos_token_id": [1, 2]}),
+        SimpleNamespace(config = SimpleNamespace(eos_token_id = [1, 2])),
+        SimpleNamespace(_config = {"eos_token_id": [1, 2]}),
+        SimpleNamespace(_config = SimpleNamespace(eos_token_id = [1, 2])),
+        SimpleNamespace(config = {"model_type": "g"}, _config = {"eos_token_id": [1, 2]}),
+    ],
+    ids = ["dict-config", "object-config", "dict-_config", "object-_config", "config-then-_config"],
+)
+def test_eos_ids_are_read_from_every_shape_a_config_arrives_in(model):
+    """A checkpoint's config is a dict on some models and an object on others,
+    under config or _config -- the spread _mlx_vlm_model_config already walks. A
+    getattr-only read silently fell through to the tokenizer, which is the source
+    the priority order exists to outrank, so an EOS sampled on the last allowed
+    token was reported as truncation."""
+    from core.inference.mlx_inference import _mlx_finish_reason, _mlx_stop_token_ids
+
+    tokenizer = SimpleNamespace(eos_token_id = 9)  # disagrees with the config
+    stop_ids = _mlx_stop_token_ids(tokenizer, model)
+    assert stop_ids == (1, 2)
+    at_cap = SimpleNamespace(finish_reason = None, token = 2)
+    assert _mlx_finish_reason(at_cap, stop_ids, 10, 10) == "stop"
+
+
+def test_the_tokenizer_is_still_the_fallback_when_no_config_carries_eos():
+    from core.inference.mlx_inference import _mlx_stop_token_ids
+
+    tokenizer = SimpleNamespace(eos_token_id = 9)
+    assert _mlx_stop_token_ids(tokenizer, SimpleNamespace(config = {"model_type": "g"})) == (9,)
+    assert _mlx_stop_token_ids(tokenizer, None) == (9,)
+
+
 def test_finish_reason_separates_truncation_from_natural_end():
     """At the limit the count alone is ambiguous -- a stop token sampled as the
     final allowed token looks identical to exhaustion -- so the last token
