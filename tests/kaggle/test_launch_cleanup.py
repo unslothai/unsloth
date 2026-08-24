@@ -17,6 +17,7 @@ about process death and nothing weaker would show it.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import signal
@@ -50,13 +51,28 @@ def _fake_kaggle(bin_dir: Path, record: Path) -> None:
     shim.chmod(0o755)
 
 
+# Arm faulthandler against a FILE, not stderr.
+#
+# PYTHONFAULTHANDLER sends the dump to fd 2, and every launcher here has fd 2 redirected
+# onto the stdout pipe. One of these tests deliberately fills that pipe and stops draining
+# it, which is exactly the hang worth diagnosing, and a raw write bypasses Python's io
+# lock but not pipe backpressure: SIGABRT would kill the child with nothing written and
+# the failure message would be as empty as before. A file has no reader to block on.
+_FAULT_PREAMBLE = """\
+import faulthandler as _faulthandler, os as _os
+_fault_dump = open(_os.environ["LAUNCH_FAULT_DUMP"], "w", buffering = 1)
+_faulthandler.enable(file = _fault_dump)
+"""
+
+
 def _runner(tmp_path: Path, body: str) -> subprocess.Popen:
     """Run `body` against the real launch module, with a fake kaggle CLI."""
     record = tmp_path / "kaggle_calls.txt"
     _fake_kaggle(tmp_path / "bin", record)
     script = tmp_path / "runner.py"
     script.write_text(
-        textwrap.dedent(f"""\
+        _FAULT_PREAMBLE
+        + textwrap.dedent(f"""\
         import sys, time
         sys.path.insert(0, {str(CI_DIR)!r})
         import launch
@@ -65,7 +81,7 @@ def _runner(tmp_path: Path, body: str) -> subprocess.Popen:
         """),
         encoding = "utf-8",
     )
-    env = {**os.environ, "PATH": f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}"}
+    env = _child_env(tmp_path / "bin")
     return subprocess.Popen(
         [sys.executable, str(script)],
         env = env,
@@ -96,20 +112,59 @@ def _await_ready(proc: subprocess.Popen) -> None:
     raise AssertionError("the runner never reached its READY point")
 
 
-def _wait_for_death(proc: subprocess.Popen) -> None:
-    """Wait out the budget, and say what the launcher logged if it never dies.
+def _fault_dump(tmp_path: Path) -> Path:
+    """Where the child writes its stacks. One per test, beside its other artefacts."""
+    return tmp_path / "fault.txt"
+
+
+def _child_env(bin_dir: Path) -> dict:
+    """The launcher's environment, pointing faulthandler at a file.
+
+    `_wait_for_death` sends SIGABRT before it kills a launcher that overstayed its
+    budget, and faulthandler turns that into every thread's stack. The destination is a
+    FILE rather than stderr: fd 2 is redirected onto the stdout pipe here, one of these
+    tests deliberately fills that pipe and stops draining it, and a raw write bypasses
+    Python's io lock but not pipe backpressure. Dumping there would block, the child
+    would die with nothing written, and the failure message would be as empty as the one
+    this exists to replace. A file has no reader to block on.
+    """
+    return {
+        **os.environ,
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "LAUNCH_FAULT_DUMP": str(_fault_dump(bin_dir.parent)),
+    }
+
+
+def _wait_for_death(proc: subprocess.Popen, tmp_path: Path | None = None) -> None:
+    """Wait out the budget, and say where the launcher was if it never dies.
 
     A hang and a wrong exit status are different faults, and the bare TimeoutExpired
     named neither. Killing first is what lets the pipe reach EOF so the tail reads.
+
+    SIGABRT before SIGKILL, because the tail on its own has already proved too coarse:
+    CI produced "(nothing logged after READY)" on this file, which is the same output
+    whether the handler never ran, ran and was refused the pipe, or ran and blocked
+    inside a delete. With faulthandler armed in the child, SIGABRT writes the stack it
+    is actually stuck on to a file, and then ends the process, so the answer costs
+    nothing extra when the hang does not happen.
+
+    The file matters rather than being an implementation detail: the pipe is one of the
+    things that can be the hang, so a diagnostic that travels down it can be silenced by
+    the very fault it is describing.
     """
     try:
         proc.wait(timeout = _DEATH_BUDGET_SEC)
     except subprocess.TimeoutExpired:
-        proc.kill()
+        with contextlib.suppress(Exception):
+            proc.send_signal(signal.SIGABRT)
+            proc.wait(timeout = 10)
+        if proc.poll() is None:
+            proc.kill()
         proc.wait(timeout = 30)
         raise AssertionError(
             f"the launcher was still alive {_DEATH_BUDGET_SEC}s after its signal. "
-            f"Launcher said: {_tail(proc)}"
+            f"Launcher said: {_tail(proc)}\n"
+            f"Stack at the abort: {_stacks(tmp_path)}"
         ) from None
 
 
@@ -127,6 +182,16 @@ def _tail(proc: subprocess.Popen) -> str:
         return (proc.stdout.read() or "").strip() or "(nothing logged after READY)"
     except Exception as exc:  # noqa: BLE001 -- a diagnostic must not mask the failure
         return f"(could not read the launcher's output: {type(exc).__name__}: {exc})"
+
+
+def _stacks(tmp_path: Path | None) -> str:
+    """The child's own stacks, written by faulthandler on the SIGABRT above."""
+    if tmp_path is None:
+        return "(not requested: this call site passed no tmp_path)"
+    dump = _fault_dump(tmp_path)
+    if not dump.is_file():
+        return "(no dump: the child died before faulthandler could write, or never armed it)"
+    return dump.read_text(encoding = "utf-8", errors = "replace").strip() or "(dump empty)"
 
 
 def _deletions(tmp_path: Path) -> list[str]:
@@ -418,6 +483,45 @@ def _waiting_launcher(outdir: Path) -> str:
     )
 
 
+def _flooding_launcher(outdir: Path) -> str:
+    """A launcher parked inside a write to a stdout nobody is draining.
+
+    Two things differ from `_waiting_launcher`. It writes until the pipe is full instead
+    of sleeping, so when the signal lands the main thread is asleep in the kernel holding
+    the buffer lock rather than merely idle. And its delete logs on the way through, so
+    the handler meets a blocking `_log` it did not call itself: `delete_kernel` reports a
+    refused delete through the ordinary path, and a stall there is a stall before the
+    retry and before the `finally` that re-raises the signal. A fake deletion that
+    succeeds silently never reaches that.
+    """
+    return (
+        _waiting_launcher(outdir)
+        .replace(
+            "            time.sleep(%d)" % _STALL_SEC,
+            "\n".join(
+                [
+                    "            while True:",
+                    "                sys.stdout.write('x' * 65536)",
+                    "                sys.stdout.flush()",
+                ]
+            ),
+        )
+        .replace(
+            "        launch.main()",
+            "\n".join(
+                [
+                    "        _real_delete = launch.delete_kernel",
+                    "        def _noisy_delete(slug):",
+                    "            launch._log(f'deleting {slug}')",
+                    "            return _real_delete(slug)",
+                    "        launch.delete_kernel = _noisy_delete",
+                    "        launch.main()",
+                ]
+            ),
+        )
+    )
+
+
 @pytest.mark.parametrize("signame", ["SIGINT", "SIGTERM"])
 def test_a_signalled_launcher_deletes_its_kernels(tmp_path, signame):
     """SIGTERM is what `kill` and an Actions cancel send; SIGINT is Ctrl-C.
@@ -427,7 +531,7 @@ def test_a_signalled_launcher_deletes_its_kernels(tmp_path, signame):
     try:
         _await_ready(proc)
         proc.send_signal(getattr(signal, signame))
-        _wait_for_death(proc)
+        _wait_for_death(proc, tmp_path)
     finally:
         if proc.poll() is None:
             proc.kill()
@@ -453,7 +557,7 @@ def test_the_exit_status_still_says_it_was_killed(tmp_path):
     try:
         _await_ready(proc)
         proc.send_signal(signal.SIGTERM)
-        _wait_for_death(proc)
+        _wait_for_death(proc, tmp_path)
     finally:
         if proc.poll() is None:
             proc.kill()
@@ -495,7 +599,7 @@ def test_the_exit_status_survives_a_release_that_fails(tmp_path):
     try:
         _await_ready(proc)
         proc.send_signal(signal.SIGTERM)
-        _wait_for_death(proc)
+        _wait_for_death(proc, tmp_path)
     finally:
         if proc.poll() is None:
             proc.kill()
@@ -521,6 +625,275 @@ def test_the_stall_outlasts_the_death_budget():
     )
 
 
+def test_the_handler_survives_its_own_logging_failing(tmp_path):
+    """The reentrancy that a contended runner produced, made deterministic.
+
+    A signal handler runs on the main thread wherever it was, and if that was inside a
+    write to stdout the interpreter refuses the second one: ``RuntimeError: reentrant
+    call inside <_io.BufferedWriter name='<stdout>'>``. Captured on a staging runner,
+    where it escaped the handler before it could re-raise the signal and the launcher
+    exited 1. Nothing about the timing is reproduced here; the failure it causes is,
+    by making the handler's own log call raise.
+    """
+    proc = _runner(
+        tmp_path,
+        _waiting_launcher(tmp_path / "out").replace(
+            "        launch.main()",
+            "\n".join(
+                [
+                    "        _real_emit = launch._emit",
+                    "        def _reentrant(line):",
+                    "            if 'received signal' in line:",
+                    "                raise RuntimeError(",
+                    '                    "reentrant call inside <_io.BufferedWriter "',
+                    "                    \"name='<stdout>'>\")",
+                    "            _real_emit(line)",
+                    "        launch._emit = _reentrant",
+                    "        launch.main()",
+                ]
+            ),
+        ),
+    )
+    try:
+        _await_ready(proc)
+        proc.send_signal(signal.SIGTERM)
+        _wait_for_death(proc, tmp_path)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    assert proc.returncode == -signal.SIGTERM, (
+        f"a log call that raised inside the handler turned SIGTERM into returncode "
+        f"{proc.returncode}. Launcher said: {_tail(proc)}"
+    )
+    # And the kernel is still deleted: the logging is what failed, not the cleanup.
+    assert any("me/k-1" in c for c in _deletions(tmp_path))
+
+
+def test_the_handler_survives_a_stdout_nobody_is_draining(tmp_path):
+    """Raising is not the only way a log line stops the handler; blocking is the other.
+
+    stdout in CI is a pipe. If whatever collects it stops reading, the pipe fills and a
+    write goes to sleep in the kernel instead of failing, so no ``except`` and no
+    ``finally`` runs. The handler announces itself BEFORE calling ``release()``, so the
+    kernels would keep billing until something killed the launcher from outside, which is
+    the one outcome this file exists to prevent. The same backpressure is what makes the
+    reentrancy above likely, so the two arrive together.
+
+    Reproduced exactly: the launcher writes until the pipe is full and this test never
+    reads a byte of it, so the main thread is asleep inside a write, holding the buffer
+    lock, when the signal lands. Both the buffered path and the raw descriptor are then
+    unavailable, and the line has to be dropped rather than waited on.
+    """
+    proc = _runner(tmp_path, _flooding_launcher(tmp_path / "out"))
+    try:
+        _await_ready(proc)
+        time.sleep(2)  # long enough for the pipe to fill and the write to park
+        proc.send_signal(signal.SIGTERM)
+        _wait_for_death(proc, tmp_path)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    assert any("me/k-1" in c for c in _deletions(tmp_path)), (
+        "a full stdout pipe stopped the handler before release(), so the kernel stayed up "
+        "and billed. The diagnostic must be dropped rather than blocked on."
+    )
+    assert json.loads((tmp_path / "inflight.json").read_text()) == []
+    assert proc.returncode == -signal.SIGTERM, (
+        f"the launcher exited {proc.returncode} rather than dying of SIGTERM after its "
+        f"logging blocked"
+    )
+
+
+def test_a_reentrant_log_inside_the_delete_retries_does_not_abandon_them(tmp_path):
+    """The transitive path, where a dropped line costs a whole retry budget.
+
+    ``delete_kernel`` reports a refused delete through the ordinary ``_log``. If that
+    raises the reentrancy above, the exception propagates out of ``delete_kernel`` and
+    out of ``release()``, so a kernel Kaggle would have accepted on the third attempt is
+    never asked a third time. Distinct from the handler's own lines, which were already
+    wrapped, and from a full pipe, which drops rather than raises.
+
+    Here the shim refuses twice and accepts on the third, and every ``_emit`` raises
+    while the handler is running, so the retries only complete if the failure is
+    swallowed where it happens.
+    """
+    record = tmp_path / "kaggle_calls.txt"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents = True, exist_ok = True)
+    shim = bin_dir / "kaggle"
+    shim.write_text(
+        textwrap.dedent(f"""\
+        #!{sys.executable}
+        import sys, pathlib
+        record = pathlib.Path({str(record)!r})
+        record.open("a").write(" ".join(sys.argv[1:]) + "\\n")
+        seen = sum(1 for l in record.read_text().splitlines() if l.startswith("kernels delete"))
+        if seen < 3:            # refuse the first two, accept the third
+            sys.stderr.write("500 Server Error\\n")
+            sys.exit(1)
+        """),
+        encoding = "utf-8",
+    )
+    shim.chmod(0o755)
+
+    script = tmp_path / "runner.py"
+    script.write_text(
+        _FAULT_PREAMBLE
+        + textwrap.dedent(f"""\
+        import sys, time
+        sys.path.insert(0, {str(CI_DIR)!r})
+        import launch
+        launch.INFLIGHT = __import__("pathlib").Path({str(tmp_path / "inflight.json")!r})
+        launch.DELETE_BACKOFF_SEC = 0
+        _real_emit = launch._emit
+        def _reentrant(line):
+            if launch._IN_SIGNAL_HANDLER:
+                raise RuntimeError(
+                    "reentrant call inside <_io.BufferedWriter name='<stdout>'>")
+            _real_emit(line)
+        launch._emit = _reentrant
+        def release():
+            if launch.delete_kernel("me/k-1"):
+                launch._inflight_drop("me/k-1")
+        launch._inflight_add("me/k-1")
+        launch._install_release_handlers(release)
+        print("READY", flush=True)
+        time.sleep({_STALL_SEC})
+    """),
+        encoding = "utf-8",
+    )
+    env = _child_env(bin_dir)
+    proc = subprocess.Popen(
+        [sys.executable, str(script)],
+        env = env,
+        stdout = subprocess.PIPE,
+        stderr = subprocess.STDOUT,
+        text = True,
+    )
+    try:
+        _await_ready(proc)
+        proc.send_signal(signal.SIGTERM)
+        _wait_for_death(proc, tmp_path)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+
+    attempts = _deletions(tmp_path)
+    assert len(attempts) >= 3, (
+        f"only {len(attempts)} delete attempts were made. A log line raising inside "
+        f"delete_kernel abandoned the retries, so a kernel Kaggle would have released "
+        f"on the third attempt keeps billing. Launcher said: {_tail(proc)}"
+    )
+    assert json.loads((tmp_path / "inflight.json").read_text()) == []
+
+
+def test_the_leaked_kernel_warning_does_not_strand_the_handler(tmp_path):
+    """The branch that only opens when cleanup has already failed.
+
+    ``release()`` ends by warning about kernels it could not delete. That line is
+    emitted on exactly the path where a kernel is still billing, so a raw write there
+    blocks on a full pipe before the ``finally`` can re-raise the signal: the launcher
+    neither dies nor reports, and the kernel runs on. Every other test in this file has
+    a deletion that eventually succeeds, which leaves the warning unreached.
+    """
+    record = tmp_path / "kaggle_calls.txt"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents = True, exist_ok = True)
+    shim = bin_dir / "kaggle"
+    shim.write_text(
+        textwrap.dedent(f"""\
+        #!{sys.executable}
+        import sys, pathlib
+        pathlib.Path({str(record)!r}).open("a").write(" ".join(sys.argv[1:]) + "\\n")
+        sys.stderr.write("500 Server Error\\n")
+        sys.exit(1)
+        """),
+        encoding = "utf-8",
+    )
+    shim.chmod(0o755)
+
+    body = _flooding_launcher(tmp_path / "out").replace(
+        "        launch.main()", "        launch.DELETE_BACKOFF_SEC = 0\n        launch.main()"
+    )
+    script = tmp_path / "runner.py"
+    script.write_text(
+        _FAULT_PREAMBLE
+        + textwrap.dedent(f"""\
+        import sys, time
+        sys.path.insert(0, {str(CI_DIR)!r})
+        import launch
+        launch.INFLIGHT = __import__("pathlib").Path({str(tmp_path / "inflight.json")!r})
+        {body}
+    """),
+        encoding = "utf-8",
+    )
+    env = _child_env(bin_dir)
+    proc = subprocess.Popen(
+        [sys.executable, str(script)],
+        env = env,
+        stdout = subprocess.PIPE,
+        stderr = subprocess.STDOUT,
+        text = True,
+    )
+    try:
+        _await_ready(proc)
+        time.sleep(2)  # let the pipe fill and the write park
+        proc.send_signal(signal.SIGTERM)
+        _wait_for_death(proc, tmp_path)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    assert proc.returncode == -signal.SIGTERM, (
+        f"the launcher exited {proc.returncode} rather than dying of SIGTERM. Its "
+        f"warning about the kernel it could not delete is the last thing it writes, "
+        f"and on a full pipe that write is where it stopped."
+    )
+    # It really did reach the branch, so the assertion above is not vacuous.
+    assert _deletions(tmp_path), "no delete was attempted, so nothing could leak"
+
+
+def _failing_kaggle(bin_dir: Path, record: Path) -> None:
+    """A `kaggle` that records the call and then refuses it, so nothing is ever
+    released and release() reaches its leaked-kernel warning."""
+    bin_dir.mkdir(parents = True, exist_ok = True)
+    shim = bin_dir / "kaggle"
+    shim.write_text(
+        textwrap.dedent(f"""\
+        #!{sys.executable}
+        import sys, pathlib
+        pathlib.Path({str(record)!r}).open("a").write(" ".join(sys.argv[1:]) + "\\n")
+        sys.stderr.write("500 Server Error\\n")
+        sys.exit(1)
+        """),
+        encoding = "utf-8",
+    )
+    shim.chmod(0o755)
+
+
+def test_the_leaked_warning_is_still_a_github_annotation(tmp_path, monkeypatch, capsys):
+    """Routing it through the safe writer must not add the [launch] prefix.
+
+    GitHub matches an annotation from the START of the line, so a prefixed one is an
+    ordinary log line that nothing surfaces, and this warning exists precisely to be
+    surfaced: it is the only thing that tells a human a kernel is still billing.
+
+    Driven through main() with a kaggle that always refuses, so this reads what
+    release() actually wrote. Calling the writer directly would pass whatever the call
+    site does, which is the thing that can regress.
+    """
+    _run_main(tmp_path, monkeypatch, push_impl = _push_ok("me/k-1"), kaggle = _failing_kaggle)
+    lines = capsys.readouterr().out.splitlines()
+    warnings = [l for l in lines if "Kaggle kernels may still be running" in l]
+    assert warnings, (
+        f"release() never warned about the kernel it could not delete. Output was: " f"{lines[-8:]}"
+    )
+    assert warnings[0].startswith("::warning"), (
+        f"the annotation was written as {warnings[0]!r}. GitHub matches ::warning at the "
+        f"start of the line, so a prefix silently demotes the one message that says a "
+        f"kernel is still billing into an ordinary log line nobody sees."
+    )
+
+
 def test_an_unhandled_exception_still_deletes(tmp_path):
     """atexit covers the path no signal handler sees.
 
@@ -542,7 +915,7 @@ def test_an_unhandled_exception_still_deletes(tmp_path):
         raise RuntimeError("boom")
     """,
     )
-    _wait_for_death(proc)
+    _wait_for_death(proc, tmp_path)
     assert any("me/k-1" in c for c in _deletions(tmp_path))
     assert json.loads((tmp_path / "inflight.json").read_text()) == []
 
@@ -562,7 +935,7 @@ def test_kill_9_leaves_it_for_the_sweep(tmp_path):
     try:
         assert proc.stdout.readline().strip() == "READY"
         proc.send_signal(signal.SIGKILL)
-        _wait_for_death(proc)
+        _wait_for_death(proc, tmp_path)
     finally:
         if proc.poll() is None:
             proc.kill()
@@ -692,7 +1065,7 @@ def test_a_kernel_pushed_before_the_signal_is_still_deleted(tmp_path):
     try:
         _await_ready(proc)
         proc.send_signal(signal.SIGTERM)
-        _wait_for_death(proc)
+        _wait_for_death(proc, tmp_path)
     finally:
         if proc.poll() is None:
             proc.kill()

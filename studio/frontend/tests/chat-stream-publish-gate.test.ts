@@ -294,7 +294,11 @@ test("the gate paces the publish, not the bookkeeping before it", () => {
   // only the yield to assistant-ui is coalesced. Pacing the interpretation too
   // is what dragged reasoning timing, split tags, server summaries and replay
   // metadata into a change that is about paint cost.
-  const append = loop.indexOf("cumulativeText += delta");
+  // The append goes through `appendCumulative`, which is what keeps the
+  // delta-fed think tracker, placeholder watch and incremental parse in step
+  // with the reply. What this test cares about is unchanged: it happens in the
+  // loop, on every arrival, before the rebuild reads it.
+  const append = loop.indexOf("appendCumulative(delta)");
   const rebuild = loop.indexOf(
     "const assistantContent = liveAssistantContent()",
   );

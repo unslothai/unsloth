@@ -106,7 +106,6 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
-          cache: 'pip'
 
       - name: Install validator deps
         run: |
@@ -215,7 +214,7 @@ jobs:
           path: notebooks
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-        with: { python-version: '3.12', cache: 'pip' }
+        with: { python-version: '3.12' }
       - name: Install
         run: pip install -U pip
       - name: Diff Colab oracle vs committed snapshots (--strict on cron)
@@ -280,7 +279,22 @@ jobs:
           path: notebooks
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-        with: { python-version: '3.12', cache: 'pip' }
+        # This job pins its dependencies inline below rather than in a requirements
+        # file, so the workflow IS the dependency spec and hashing it is what makes the
+        # key describe the payload. Unscoped, setup-python hashes dependency files
+        # repo-wide, so one unrelated edit invalidates ~700MB per interpreter.
+        with:
+          python-version: '3.12'
+
+      - name: Restore the pip cache
+        id: pip-cache
+        # ./ resolves from GITHUB_WORKSPACE, and this job checks the repo out
+        # under `unsloth/`, so the unprefixed path is a directory that does not
+        # exist and the step fails with "Can't find 'action.yml'".
+        uses: ./unsloth/.github/actions/pip-cache-restore
+        with:
+          key-files: |
+            unsloth/.github/workflows/notebooks-ci.yml
 
       - name: Install CPU torch + pinned unsloth + trl + converter deps
         run: |
@@ -354,6 +368,17 @@ jobs:
               --converted-dir _converted \
               --surface _api_surface.json
 
+      - name: Save the pip cache
+        if: always()
+        # ./ resolves from GITHUB_WORKSPACE, and this job checks the repo out
+        # under `unsloth/`, so the unprefixed path is a directory that does not
+        # exist and the step fails with "Can't find 'action.yml'".
+        uses: ./unsloth/.github/actions/pip-cache-save
+        with:
+          dir: ${{ steps.pip-cache.outputs.dir }}
+          key: ${{ steps.pip-cache.outputs.key }}
+          cache-hit: ${{ steps.pip-cache.outputs.cache-hit }}
+
   smoke-install:
     name: smoke install (Colab-shaped venv, opt-in)
     if: ${{ github.event.inputs.include_smoke == 'true' || github.event_name == 'schedule' }}
@@ -395,6 +420,25 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with: { python-version: '3.12' }
+
+      - name: Restore the pip cache
+        id: pip-cache
+        # ./ resolves from GITHUB_WORKSPACE, and this job checks the repo out
+        # under `unsloth/`, so the unprefixed path is a directory that does not
+        # exist and the step fails with "Can't find 'action.yml'".
+        uses: ./unsloth/.github/actions/pip-cache-restore
+        with:
+          # The freeze is the pin set, so it is what the downloads depend on. The
+          # workflow comes too because the seed step rewrites those pins in place
+          # -- CPU index mapping, skips, spoofs -- so an edit there changes what
+          # gets installed without touching the freeze.
+          #
+          # api-introspect above keys on the workflow alone because it pins inline.
+          # This job does not, and keying it on the workflow alone would rebuild
+          # 709 downloads for an unrelated edit to any other job in this file.
+          key-files: |
+            unsloth/scripts/data/colab_pip_freeze.gpu.txt
+            unsloth/.github/workflows/notebooks-ci.yml
 
       - name: Seed Colab-shaped venv from pip-freeze (CPU-mapped)
         run: |
@@ -453,6 +497,17 @@ jobs:
                 echo "::warning::pin failed: $spec"
             done < /tmp/seed_pins.txt
           fi
+
+      - name: Save the pip cache
+        if: always()
+        # always(), because the fallback path is exactly when the cache is worth
+        # most: it installs 709 pins one at a time, and a partial download set is
+        # still a head start on the next run.
+        uses: ./unsloth/.github/actions/pip-cache-save
+        with:
+          dir: ${{ steps.pip-cache.outputs.dir }}
+          key: ${{ steps.pip-cache.outputs.key }}
+          cache-hit: ${{ steps.pip-cache.outputs.cache-hit }}
 
       - name: Run install cell
         run: |

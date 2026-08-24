@@ -2,8 +2,10 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import functools
+import hashlib
 import re
 import threading
+import time
 from typing import Any, Literal, Optional, get_args
 from urllib.parse import unquote, urlsplit
 
@@ -64,6 +66,9 @@ from utils.vram_budget_settings import (
 from utils.openai_auto_switch_settings import (
     BATCH_SIZE_MAX,
     BATCH_SIZE_MIN,
+    CACHE_RAM_MAX_MIB,
+    CACHE_RAM_MIN_MIB,
+    CTX_CHECKPOINTS_MAX,
     DEFAULT_AUTO_UNLOAD_API_ONLY,
     DEFAULT_AUTO_UNLOAD_KEEP_KV,
     DEFAULT_MEDIA_AUTO_SWITCH_ENABLED,
@@ -74,6 +79,7 @@ from utils.openai_auto_switch_settings import (
     PARALLEL_SLOTS_MAX,
     PARALLEL_SLOTS_MIN,
     cached_repo_alias_keys,
+    is_cache_load_path_key,
     get_auto_unload_api_only,
     get_auto_unload_idle_seconds,
     get_auto_unload_keep_kv,
@@ -95,6 +101,12 @@ from utils.preview_sharing_settings import (
     get_preview_sharing_enabled,
     set_preview_sharing_enabled,
 )
+from utils.lan_access_settings import (
+    lan_access_status,
+    set_lan_access_auto_start,
+    start_lan_access,
+    stop_lan_access,
+)
 from utils.remote_access_settings import (
     DEFAULT_REMOTE_ACCESS_AUTO_START,
     remote_access_status,
@@ -112,6 +124,11 @@ from utils.embedding_model_settings import (
     validate_embedding_model,
 )
 from utils.hf_cache_settings import cache_status, get_hf_cache_paths, set_hf_cache_home
+from utils.llama_cpp_path_settings import (
+    MAX_CUSTOM_LLAMA_CPP_PATH_LENGTH,
+    custom_llama_cpp_path_status,
+    set_custom_llama_cpp_path,
+)
 from utils.media_generation_preset_settings import (
     delete_media_generation_preset,
     get_media_generation_preset_settings,
@@ -618,6 +635,20 @@ class HuggingFaceCacheResponse(BaseModel):
     environment_variable: Optional[str] = None
 
 
+class LlamaCppPathPayload(BaseModel):
+    path: Optional[str] = Field(default = None, max_length = MAX_CUSTOM_LLAMA_CPP_PATH_LENGTH)
+
+
+class LlamaCppPathResponse(BaseModel):
+    path: Optional[str] = None
+    source: Literal["default", "studio", "environment"]
+    editable: bool
+    available: bool
+    resolved_binary: Optional[str] = None
+    environment_variable: Optional[str] = None
+    reload_required: bool = False
+
+
 class OpenAIAutoSwitchPayload(BaseModel):
     enabled: bool
     # None leaves the stored value untouched (partial updates can't clobber it).
@@ -660,6 +691,9 @@ _MAX_VARIANT_SUFFIX_LEN = 64
 # A limit under PATH_MAX would 422 the server sync while the local save succeeded.
 MAX_MODEL_OVERRIDE_KEY_LEN = 4096 + 1 + _MAX_VARIANT_SUFFIX_LEN
 
+# GgufVariantDetail.quant may be a path-qualified variant key, not just a quant suffix.
+MAX_GGUF_VARIANT_KEY_LEN = 4096
+
 # A list longer than MAX_GPU_ID cannot name a device the normalizer would store, so bound it
 # here and reject an oversized array at the boundary instead of walking it.
 MAX_GPU_IDS = MAX_GPU_ID + 1
@@ -691,7 +725,27 @@ class ModelOverridePayload(BaseModel):
     # prompt batch sizes (--batch-size / --ubatch-size), gguf-only; none = llama.cpp defaults
     n_batch: Optional[int] = Field(default = None, ge = BATCH_SIZE_MIN, le = BATCH_SIZE_MAX)
     n_ubatch: Optional[int] = Field(default = None, ge = BATCH_SIZE_MIN, le = BATCH_SIZE_MAX)
+    # The remaining llama-server tuning the picker remembers. model_override_load_kwargs
+    # already applies all four off a stored row, so a route that drops them leaves the
+    # setting reaching a picker load and nothing else, and the panel reads the gap back
+    # as unset. Load mode is a discrete set, left to the normalizer like the KV dtype.
+    load_mode: Optional[str] = Field(default = None, max_length = 32)
+    spec_draft_cache_type: Optional[str] = Field(default = None, max_length = 32)
+    # Stored on "is not None", not on truth: 0 checkpoints and a 0 or -1 cache are
+    # meaningful values (none kept; cache disabled; no limit). Bounds mirror LoadRequest.
+    ctx_checkpoints: Optional[int] = Field(default = None, ge = 0, le = CTX_CHECKPOINTS_MAX)
+    cache_ram: Optional[int] = Field(default = None, ge = CACHE_RAM_MIN_MIB, le = CACHE_RAM_MAX_MIB)
+    # Does this client know the four above exist? A save REPLACES the entry, so an
+    # omission from a build that predates them is indistinguishable from a user
+    # clearing them, and during an upgrade -- a cached bundle, or another LAN client
+    # still on the old build -- that silently deletes settings it never sent. Only a
+    # client that sets this may clear by omission; for anyone else the stored values
+    # are carried over. Default False so an old payload, which cannot set it, is the
+    # safe case. Not a blanket carry-over: that would make clearing impossible for
+    # everyone, trading a mixed-version window for a permanent bug.
+    mirrors_server_tuning: bool = False
     tensor_parallel: bool = False
+    disable_vision: bool = False
     # Validated in bytes below: pydantic counts characters, so a multi-byte template would pass.
     chat_template_override: Optional[str] = None
     gpu_memory_mode: Optional[Literal["auto", "manual"]] = None
@@ -726,6 +780,8 @@ class ModelOverridePayload(BaseModel):
         "n_parallel",
         "n_batch",
         "n_ubatch",
+        "ctx_checkpoints",
+        "cache_ram",
         "gpu_layers",
         "n_cpu_moe",
         "gpu_ids",
@@ -894,6 +950,27 @@ def _hugging_face_cache_response() -> HuggingFaceCacheResponse:
     return HuggingFaceCacheResponse(**cache_status(get_hf_cache_paths()))
 
 
+def _llama_cpp_path_reload_required() -> bool:
+    """Whether a running or pending GGUF server predates the path selection."""
+    try:
+        from routes.inference import get_llama_cpp_backend
+
+        backend = get_llama_cpp_backend()
+        pending = getattr(backend, "_binary_revision_pending", None)
+        if pending is not None:
+            return backend._binary_changed_since_revision(pending)
+        return bool(backend.is_active and backend._binary_changed_since_launch())
+    except Exception:
+        return False
+
+
+def _llama_cpp_path_response() -> LlamaCppPathResponse:
+    return LlamaCppPathResponse(
+        **custom_llama_cpp_path_status(),
+        reload_required = _llama_cpp_path_reload_required(),
+    )
+
+
 @router.get("/hugging-face-cache", response_model = HuggingFaceCacheResponse)
 def get_hugging_face_cache(
     current_subject: str = Depends(get_current_subject),
@@ -912,6 +989,35 @@ def update_hugging_face_cache(
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
     return _hugging_face_cache_response()
+
+
+@router.get("/llama-cpp-path", response_model = LlamaCppPathResponse)
+def get_llama_cpp_path(current_subject: str = Depends(get_current_subject)) -> LlamaCppPathResponse:
+    return _llama_cpp_path_response()
+
+
+@router.put("/llama-cpp-path", response_model = LlamaCppPathResponse)
+def update_llama_cpp_path(
+    payload: LlamaCppPathPayload,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> LlamaCppPathResponse:
+    # Only the interactive Studio UI may change this executable setting.
+    require_ui_session(via_api_key)
+    try:
+        set_custom_llama_cpp_path(payload.path)
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            # Validator messages are safe to expose to the UI.
+            str(exc),
+            event = "settings.update_llama_cpp_path_failed",
+            log = logger,
+        ) from exc
+    return _llama_cpp_path_response()
 
 
 @router.get("/upload-limit", response_model = UploadLimitResponse)
@@ -983,6 +1089,109 @@ def update_model_memory(
             log = logger,
         ) from exc
     return _model_memory_response()
+
+
+LAST_LOCAL_MODEL_SETTING_KEY = "last_local_model_load"
+_LAST_LOCAL_MODEL_LOCK = threading.Lock()
+
+
+def _last_local_model_key(subject: str) -> str:
+    """Per-subject key: one shared row would hand user B user A's last model."""
+    subject = (subject or "").strip()
+    if not subject:
+        return LAST_LOCAL_MODEL_SETTING_KEY
+    # Hashed so an arbitrary subject cannot collide with another key.
+    digest = hashlib.sha256(subject.encode("utf-8")).hexdigest()[:32]
+    return f"{LAST_LOCAL_MODEL_SETTING_KEY}:{digest}"
+
+
+def _read_last_local_model(subject: str) -> "dict | None":
+    """The subject's record, falling back to the pre-scoping shared row so an
+    upgrade keeps the model the install already remembered."""
+    from storage.studio_db import get_app_setting
+
+    stored = get_app_setting(_last_local_model_key(subject), None)
+    if not isinstance(stored, dict):
+        stored = get_app_setting(LAST_LOCAL_MODEL_SETTING_KEY, None)
+    return stored if isinstance(stored, dict) else None
+
+
+# Clients stamp loads, so cap how far ahead of server time a client clock may claim.
+_LAST_LOCAL_MODEL_CLOCK_SLACK_MS = 5 * 60 * 1000
+
+
+class LastLocalModelPayload(BaseModel):
+    id: str = Field(..., min_length = 1, max_length = MAX_MODEL_OVERRIDE_KEY_LEN)
+    kind: Literal["gguf", "model"]
+    gguf_variant: Optional[str] = Field(default = None, max_length = MAX_GGUF_VARIANT_KEY_LEN)
+    # Epoch ms of the load; orders writes from surfaces that keep their own local shadow.
+    loaded_at: Optional[int] = Field(default = None, ge = 0)
+    # The client clock when the request was sent: the skew (server_now - client_now)
+    # translates loaded_at into the server frame. Never persisted.
+    client_now: Optional[int] = Field(default = None, ge = 0)
+
+
+class LastLocalModelResponse(BaseModel):
+    id: Optional[str] = None
+    kind: Optional[Literal["gguf", "model"]] = None
+    gguf_variant: Optional[str] = None
+    loaded_at: Optional[int] = None
+    # Lets the client translate loaded_at back into its own clock frame.
+    server_now: Optional[int] = None
+
+
+@router.get("/last-local-model", response_model = LastLocalModelResponse)
+def get_last_local_model(
+    current_subject: str = Depends(get_current_subject),
+) -> LastLocalModelResponse:
+    stored = _read_last_local_model(current_subject)
+    _now = int(time.time() * 1000)
+    if stored is None:
+        return LastLocalModelResponse(server_now = _now)
+    try:
+        payload = LastLocalModelPayload(**stored)
+    except Exception:
+        return LastLocalModelResponse(server_now = _now)
+    return LastLocalModelResponse(**payload.model_dump(exclude = {"client_now"}), server_now = _now)
+
+
+@router.put("/last-local-model", response_model = LastLocalModelResponse)
+def update_last_local_model(
+    payload: LastLocalModelPayload, current_subject: str = Depends(get_current_subject)
+) -> LastLocalModelResponse:
+    from storage.studio_db import upsert_app_settings
+
+    # loaded_at orders stamped writes so a delayed older PUT cannot overwrite a newer
+    # load; the stored record is returned. Unstamped writes stay last-write-wins.
+    _server_now = int(time.time() * 1000)
+    _key = _last_local_model_key(current_subject)
+    with _LAST_LOCAL_MODEL_LOCK:
+        if payload.loaded_at is not None:
+            if payload.client_now is not None:
+                # Into the server frame: fresh loads land near now, re-issued shadows stay old.
+                _shifted = payload.loaded_at + (_server_now - payload.client_now)
+                payload = payload.model_copy(update = {"loaded_at": max(0, _shifted)})
+            _cap = _server_now + _LAST_LOCAL_MODEL_CLOCK_SLACK_MS
+            if payload.loaded_at > _cap:
+                payload = payload.model_copy(update = {"loaded_at": _cap})
+            stored = _read_last_local_model(current_subject)
+            if stored is not None:
+                try:
+                    current = LastLocalModelPayload(**stored)
+                except Exception:
+                    current = None
+                if (
+                    current is not None
+                    and current.loaded_at is not None
+                    and payload.loaded_at < current.loaded_at
+                ):
+                    return LastLocalModelResponse(
+                        **current.model_dump(exclude = {"client_now"}), server_now = _server_now
+                    )
+        upsert_app_settings({_key: payload.model_dump(exclude = {"client_now"})})
+    return LastLocalModelResponse(
+        **payload.model_dump(exclude = {"client_now"}), server_now = _server_now
+    )
 
 
 @router.get("/vram-budget", response_model = VramBudgetResponse)
@@ -1265,18 +1474,34 @@ def update_openai_auto_switch_override(
             raise ValueError("fill_absent_fields cannot be combined with remove.")
         # Only model_id is the documented "remove"; otherwise omitted flags carry over.
         requested_extra_args = payload.llama_extra_args
-        # fill_absent_fields is a write mode, not a saved field: leaving it in would make
-        # every payload look non-empty and break the legacy "no fields means remove".
+        # fill_absent_fields and mirrors_server_tuning are write modes, not saved fields:
+        # leaving either in would make every payload look non-empty (they are bools, so
+        # exclude_none does not drop them) and break the legacy "no fields means remove".
         saved_fields = payload.model_dump(
-            exclude = {"model_id", "llama_extra_args", "remove", "fill_absent_fields"},
+            exclude = {
+                "model_id",
+                "llama_extra_args",
+                "remove",
+                "fill_absent_fields",
+                "mirrors_server_tuning",
+            },
             exclude_none = True,
         )
         if payload.remove is not None:
             is_removal = payload.remove
         else:
-            is_removal = not payload.tensor_parallel and not {
-                key: value for key, value in saved_fields.items() if key != "tensor_parallel"
-            }
+            # Both booleans are carried, not just counted: they are stored only when
+            # true, so an override whose one setting is either of them has no other
+            # saved field and would otherwise read as a removal and be deleted.
+            is_removal = (
+                not payload.tensor_parallel
+                and not payload.disable_vision
+                and not {
+                    key: value
+                    for key, value in saved_fields.items()
+                    if key not in ("tensor_parallel", "disable_vision")
+                }
+            )
         if requested_extra_args is None and not is_removal:
             stored = get_model_override(payload.model_id)
             # A fill keeps the stored flags without echoing them back through validation: one
@@ -1319,6 +1544,51 @@ def update_openai_auto_switch_override(
                 )
         else:
             extra_args = validate_extra_args(requested_extra_args)
+        # Same shape as the extra-args carry-over above, for the same reason: a save
+        # replaces the entry, so a field the caller never knew about must survive it.
+        # A client that declares it mirrors these clears by omission as usual; an
+        # older one keeps whatever is stored. On a remove the whole entry goes, so
+        # there is nothing to preserve.
+        # Gated on is_removal, not on payload.remove: the documented legacy contract is a
+        # payload carrying only model_id, which leaves remove None while is_removal is
+        # true. Carrying anything over there would rebuild a non-empty row and the clear
+        # would silently do nothing.
+        _tuning_fields = ("load_mode", "spec_draft_cache_type", "ctx_checkpoints", "cache_ram")
+        _kept_tuning = {name: getattr(payload, name) for name in _tuning_fields}
+        if not payload.mirrors_server_tuning and not is_removal:
+            # The same spellings the extra-args carry-over walks, and in the same order.
+            # A cached repo is not an ordinary folded match, so a save under the repo id
+            # while the row sits under the snapshot path finds nothing here and then
+            # retires that alias below, taking the tuning with it.
+            _alias_ids = [payload.model_id]
+            for _candidate in (
+                _bare_model_id(payload.model_id),
+                _legacy_standalone_gguf_key(payload.model_id),
+                *cached_repo_alias_keys(payload.model_id),
+            ):
+                if _candidate and _candidate not in _alias_ids:
+                    _alias_ids.append(_candidate)
+            # Load order, not the order they were collected in. A lookup reads the
+            # concrete load path before the advertised repo id, so on a cache upgraded
+            # from a build that keyed rows by path, the snapshot row is the one that
+            # applies and the one the retirement block below clears. Reading the repo
+            # row first would adopt tuning no load has ever used and drop the tuning
+            # that was live. Stable, so every other spelling keeps its position.
+            _alias_ids.sort(key = lambda _key: not is_cache_load_path_key(_key))
+            # Taken as a unit from the first row that exists, not field by field down
+            # the list. A load stops at the first non-empty row (resolve_override_for_load)
+            # rather than merging, so tuning in a row that never wins is dormant, and
+            # filling a gap in the winner from a loser would switch it on as a side effect
+            # of saving something unrelated. Single-valued above, so the distinction only
+            # shows up here.
+            for _alias_id in _alias_ids:
+                _stored_tuning = get_model_override(_alias_id)
+                if not _stored_tuning:
+                    continue
+                for name in _tuning_fields:
+                    if _kept_tuning[name] is None:
+                        _kept_tuning[name] = _stored_tuning.get(name)
+                break
         if payload.remove is True:
             # An explicit remove wins over any other field. Remove the key a load resolves to,
             # not the literal one sent (the browser normalizes casing), and every spelling:
@@ -1391,7 +1661,12 @@ def update_openai_auto_switch_override(
                 n_parallel = payload.n_parallel,
                 n_batch = payload.n_batch,
                 n_ubatch = payload.n_ubatch,
+                load_mode = _kept_tuning["load_mode"],
+                spec_draft_cache_type = _kept_tuning["spec_draft_cache_type"],
+                ctx_checkpoints = _kept_tuning["ctx_checkpoints"],
+                cache_ram = _kept_tuning["cache_ram"],
                 tensor_parallel = payload.tensor_parallel,
+                disable_vision = payload.disable_vision,
                 chat_template_override = payload.chat_template_override,
                 gpu_memory_mode = payload.gpu_memory_mode,
                 gpu_layers = payload.gpu_layers,
@@ -1799,6 +2074,82 @@ def update_remote_access_auto_start(
         payload.enabled,
     )
     return _remote_access_response(request)
+
+
+class LanAccessAutoStartPayload(BaseModel):
+    enabled: StrictBool
+
+
+class LanAccessResponse(BaseModel):
+    state: Literal["off", "online", "error"]
+    urls: list[str] = []
+    public_urls: list[str] = []
+    error: Optional[str] = None
+    auto_start: bool
+    managed_by: Optional[Literal["launch", "settings"]] = None
+    can_start: bool
+    can_stop: bool
+    block_reason: Optional[str] = None
+    serves_web_ui: bool = True
+
+
+def _lan_access_response(request: Request) -> LanAccessResponse:
+    return LanAccessResponse(**lan_access_status(request.app))
+
+
+@router.get("/lan-access", response_model = LanAccessResponse)
+def get_lan_access(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> LanAccessResponse:
+    return _lan_access_response(request)
+
+
+@router.post("/lan-access/start", response_model = LanAccessResponse)
+def start_lan_access_route(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> LanAccessResponse:
+    try:
+        response = LanAccessResponse(**start_lan_access(request.app))
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    logger.info("settings.lan_access_start_requested subject=%s", current_subject)
+    return response
+
+
+@router.post("/lan-access/stop", response_model = LanAccessResponse)
+def stop_lan_access_route(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> LanAccessResponse:
+    try:
+        response = LanAccessResponse(**stop_lan_access(request.app))
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    logger.info("settings.lan_access_stop_requested subject=%s", current_subject)
+    return response
+
+
+@router.put("/lan-access/auto-start", response_model = LanAccessResponse)
+def update_lan_access_auto_start(
+    request: Request,
+    payload: LanAccessAutoStartPayload,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> LanAccessResponse:
+    if bool(getattr(request.app.state, "lan_access_is_colab", False)):
+        raise HTTPException(status_code = 409, detail = "colab")
+    set_lan_access_auto_start(payload.enabled)
+    logger.info(
+        "settings.lan_access_auto_start_updated subject=%s enabled=%s",
+        current_subject,
+        payload.enabled,
+    )
+    return _lan_access_response(request)
 
 
 @router.get("/preview-sharing", response_model = PreviewSharingResponse)

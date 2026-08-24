@@ -359,9 +359,32 @@ def test_tensor_split_abort_raises_early_to_layer_fallback():
     src = inspect.getsource(LlamaCppBackend.load_model)
     raise_idx = src.find("(split-axis geometry); retrying with layer split")
     assert raise_idx != -1, "the split-axis abort must raise to trigger a layer retry"
-    # raises before both the flash-attn-off retry and the text-only mmproj strip
-    assert raise_idx < src.find("_with_flash_attn_off")
-    assert raise_idx < src.find("_strip_mmproj_args(_last_spawn_cmd)")
+
+    # Raises before both the flash-attn-off retry and the text-only mmproj strip.
+    #
+    # Each landmark is required to exist before it is ordered. A bare
+    # `raise_idx < src.find(x)` reads as an ordering check but is really two
+    # claims, and it fails with "assert 249423 < -1" -- which says the ordering
+    # broke when what actually happened is that the landmark moved. This test
+    # went red on main that way when #9173 renamed the strip's argument from
+    # _last_spawn_cmd to _vision_gpu_cmd, a rename with no behavioural content.
+    #
+    # The strip is matched on the call, not on what is passed to it. What this
+    # test is about is that the abort raises BEFORE the projector is thrown
+    # away; which command the strip reads from is that code's own business.
+    for label, needle in (
+        ("the flash-attn-off retry", "_with_flash_attn_off"),
+        ("the text-only mmproj strip", "_strip_mmproj_args("),
+    ):
+        idx = src.find(needle)
+        assert idx != -1, (
+            f"{label} is no longer in load_model, so the ordering below asserts "
+            f"nothing. If it moved, point this at where it moved to."
+        )
+        assert raise_idx < idx, (
+            f"the split-axis abort no longer raises before {label}, so the layer "
+            f"retry runs after the projector has already been discarded (#6659)"
+        )
     # gated on the marker-plus-crash helper, which also drives the record just above
     guard = src[max(0, raise_idx - 600) : raise_idx]
     assert "_should_record_tensor_split_abort" in guard

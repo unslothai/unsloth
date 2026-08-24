@@ -4,25 +4,30 @@
 import {
   AUTH_SESSION_CLEARED_EVENT,
   AUTH_SESSION_MARK_KEY,
+  AUTH_TOKEN_KEY,
   getAuthSessionEpoch,
 } from "@/features/auth";
 import { useEffect, useRef, useState } from "react";
 import {
-  batchListChatMessages,
   CHAT_HISTORY_REVISION_KEY,
   CHAT_HISTORY_UPDATED_EVENT,
+  batchListChatMessages,
 } from "../api/chat-api";
 import type { MessageRecord } from "../types";
+import { isCoalescedHistoryEvent } from "../utils/chat-history-revision";
 import {
   listStoredChatMessages,
   listStoredChatThreads,
 } from "../utils/chat-history-storage";
-import { isCoalescedHistoryEvent } from "../utils/chat-history-revision";
 import {
   chatSearchHadRows,
   forgetChatSearchHasRows,
   rememberChatSearchHasRows,
 } from "../utils/chat-search-history-hint";
+import {
+  formatMcpToolName,
+  mcpServerFromProvenance,
+} from "../utils/mcp-tool-name";
 import { attachmentsPastedText } from "../utils/pasted-text.ts";
 
 export interface ChatSearchItem {
@@ -111,19 +116,35 @@ function extractText(message: MessageRecord): string {
   for (const part of content) {
     if (!part || typeof part !== "object") continue;
     const p = part as Record<string, unknown>;
-    if ((p.type === "text" || p.type === "reasoning") && typeof p.text === "string") {
+    if (
+      (p.type === "text" || p.type === "reasoning") &&
+      typeof p.text === "string"
+    ) {
       parts.push(p.text);
     } else if (p.type === "thinking") {
       const t = typeof p.thinking === "string" ? p.thinking : p.text;
       if (typeof t === "string") parts.push(t);
     } else if (p.type === "tool-call") {
       if (typeof p.toolName === "string") parts.push(p.toolName);
-      const args = searchableText(typeof p.argsText === "string" ? p.argsText : p.args);
+      const mcpServer = mcpServerFromProvenance(p.provenance);
+      if (mcpServer) {
+        parts.push(mcpServer);
+        // Index the rendered "Server · tool" label too, so pasting it matches.
+        const label =
+          typeof p.toolName === "string"
+            ? formatMcpToolName(p.toolName, mcpServer)
+            : null;
+        if (label) parts.push(label);
+      }
+      const args = searchableText(
+        typeof p.argsText === "string" ? p.argsText : p.args,
+      );
       if (args) parts.push(args);
       const result = searchableText(p.result);
       if (result) parts.push(result);
     } else if (p.type === "source") {
-      for (const v of [p.title, p.url]) if (typeof v === "string") parts.push(v);
+      for (const v of [p.title, p.url])
+        if (typeof v === "string") parts.push(v);
     }
   }
   return parts.join(" ").replace(/\s+/g, " ").trim();
@@ -190,10 +211,13 @@ async function buildIndex(): Promise<ChatSearchItem[]> {
   );
   if (missingThreadIds.length > 0) {
     const legacyEntries = await Promise.all(
-      missingThreadIds.map(async (threadId) => [
-        threadId,
-        await listStoredChatMessages(threadId).catch(() => []),
-      ] as const),
+      missingThreadIds.map(
+        async (threadId) =>
+          [
+            threadId,
+            await listStoredChatMessages(threadId).catch(() => []),
+          ] as const,
+      ),
     );
     messagesByThread = new Map(messagesByThread);
     for (const [threadId, messages] of legacyEntries) {
@@ -284,7 +308,10 @@ if (typeof window !== "undefined") {
     // An account switch elsewhere arrives as a storage write alone: the epoch and its events
     // are both this document's. The mark moves on a session boundary and not on an hourly
     // refresh, which must not cost a warm cache.
-    if (event.key === AUTH_SESSION_MARK_KEY) {
+    if (
+      event.key === AUTH_SESSION_MARK_KEY ||
+      (event.key === AUTH_TOKEN_KEY && event.newValue === null)
+    ) {
       writeCachedIndex(null);
       // Shared by every account on the origin, so it cannot answer for the new one.
       forgetChatSearchHasRows();
@@ -320,7 +347,9 @@ export function useChatSearchIndex(enabled: boolean): {
   items: ChatSearchItem[];
   loading: boolean;
 } {
-  const [items, setItems] = useState<ChatSearchItem[]>(() => readCachedIndex() ?? []);
+  const [items, setItems] = useState<ChatSearchItem[]>(
+    () => readCachedIndex() ?? [],
+  );
   const [loading, setLoading] = useState(false);
   const requestSeqRef = useRef(0);
 

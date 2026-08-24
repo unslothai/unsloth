@@ -16,7 +16,11 @@ const { store } = installLocalStorageFake();
 // The shared fake's addEventListener is a no-op, so the module-level listeners would register
 // into nothing. Swapped before the import below registers them. dispatchEvent routes by type,
 // since the storage listener re-raises the history event through it.
-type Listener = (event: { key?: string | null; type?: string }) => void;
+type Listener = (event: {
+  key?: string | null;
+  newValue?: string | null;
+  type?: string;
+}) => void;
 const listeners = new Map<string, Set<Listener>>();
 Object.assign(globalThis.window as object, {
   addEventListener: (type: string, fn: Listener) => {
@@ -32,10 +36,14 @@ Object.assign(globalThis.window as object, {
     return true;
   },
 });
-const fire = (type: string, event: { key?: string | null } = {}) => {
+const fire = (
+  type: string,
+  event: { key?: string | null; newValue?: string | null } = {},
+) => {
   for (const fn of listeners.get(type) ?? []) fn({ type, ...event });
 };
-const fireStorage = (key: string | null) => fire("storage", { key });
+const fireStorage = (key: string | null, newValue: string | null = "value") =>
+  fire("storage", { key, newValue });
 
 const { chatSearchIndexHasRows, writeCachedIndex } = await import(
   "../src/features/chat/hooks/use-chat-search-index.ts"
@@ -242,6 +250,37 @@ test("a token refresh in another tab costs nothing", () => {
     );
     assert.equal(sessionChanges, 0);
   } finally {
+    win.removeEventListener("unsloth-chat-search-session-changed", onSession);
+  }
+});
+
+test("a legacy session logout in another tab drops cached rows", () => {
+  store.clear();
+  setAuthSessionEpochForTest(0);
+  writeCachedIndex([row]);
+
+  let rebuilds = 0;
+  const onHistory = () => {
+    rebuilds += 1;
+  };
+  let sessionChanges = 0;
+  const onSession = () => {
+    sessionChanges += 1;
+  };
+  const win = globalThis.window as Window;
+  win.addEventListener(CHAT_HISTORY_UPDATED_EVENT, onHistory);
+  win.addEventListener("unsloth-chat-search-session-changed", onSession);
+  try {
+    fireStorage(AUTH_TOKEN_KEY, null);
+    assert.equal(
+      chatSearchIndexHasRows(),
+      null,
+      "a session created before the marker existed still clears on logout",
+    );
+    assert.equal(rebuilds, 1);
+    assert.equal(sessionChanges, 1);
+  } finally {
+    win.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, onHistory);
     win.removeEventListener("unsloth-chat-search-session-changed", onSession);
   }
 });

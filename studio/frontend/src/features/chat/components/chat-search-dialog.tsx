@@ -8,8 +8,13 @@ import {
   CommandGroup,
   CommandList,
 } from "@/components/ui/command";
+import { useShortcut } from "@/features/settings/hooks/use-shortcut";
 import { cn } from "@/lib/utils";
-import { Cancel01Icon, Message01Icon, Search01Icon } from "@hugeicons/core-free-icons";
+import {
+  Cancel01Icon,
+  Message01Icon,
+  Search01Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { Command as CommandPrimitive } from "cmdk";
@@ -45,7 +50,9 @@ export function selectVisibleChats<
 >(items: T[], search: string): T[] {
   const tokens = queryTokens(search);
   if (tokens.length === 0) return items;
-  const userHits = items.filter((it) => haystackMatches(it.userSearchText, tokens));
+  const userHits = items.filter((it) =>
+    haystackMatches(it.userSearchText, tokens),
+  );
   if (userHits.length > 0) return userHits;
   return items.filter((it) => haystackMatches(it.searchText, tokens));
 }
@@ -88,7 +95,9 @@ export function ChatSearchDialog() {
       setRowLimit(INITIAL_ROW_COUNT);
       setCompactList(isCompactChatSearchList(true, chatSearchIndexHasRows()));
     }
-  } else if (compactList !== isCompactChatSearchList(compactList, items.length > 0)) {
+  } else if (
+    compactList !== isCompactChatSearchList(compactList, items.length > 0)
+  ) {
     // Backstop for an open with no hint at all: the fixed height is taken when the first
     // build lands.
     setCompactList(false);
@@ -108,18 +117,11 @@ export function ChatSearchDialog() {
     return () => clearTimeout(timer);
   }, [isOpen]);
 
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== "k") return;
-      const el = document.activeElement as HTMLElement | null;
-      const tag = el?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || el?.isContentEditable) return;
-      e.preventDefault();
-      useChatSearchStore.getState().open();
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, []);
+  // skipInTextFields keeps the composer's own ⌘K (and any browser find) intact
+  // while the user is typing, as the hand-rolled handler did.
+  useShortcut("searchChats", () => useChatSearchStore.getState().open(), {
+    skipInTextFields: true,
+  });
 
   return (
     <CommandDialog
@@ -149,7 +151,11 @@ export function ChatSearchDialog() {
             className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
             aria-label="Close"
           >
-            <HugeiconsIcon icon={Cancel01Icon} strokeWidth={2} className="size-4" />
+            <HugeiconsIcon
+              icon={Cancel01Icon}
+              strokeWidth={2}
+              className="size-4"
+            />
           </button>
         </div>
         <CommandList
@@ -187,11 +193,15 @@ export function ChatSearchDialog() {
                       item.type === "single"
                         ? {
                             thread: item.id,
-                            ...(item.projectId ? { project: item.projectId } : {}),
+                            ...(item.projectId
+                              ? { project: item.projectId }
+                              : {}),
                           }
                         : {
                             compare: item.id,
-                            ...(item.projectId ? { project: item.projectId } : {}),
+                            ...(item.projectId
+                              ? { project: item.projectId }
+                              : {}),
                           },
                   });
                   close();
