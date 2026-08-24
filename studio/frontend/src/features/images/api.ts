@@ -655,6 +655,10 @@ export interface DiffusionTrainableFamily {
     train_steps?: number;
     train_batch_size?: number;
     mixed_precision?: "bf16" | "fp16" | "no";
+    // The LR ramp, as one pair: a warmup count only ramps under a scheduler that reads it, so
+    // the backend advertises both or neither. Absent on a backend older than that pairing.
+    lr_scheduler?: string;
+    lr_warmup_steps?: number;
   } | null;
   vram_note?: string | null;
   gated?: boolean | null;

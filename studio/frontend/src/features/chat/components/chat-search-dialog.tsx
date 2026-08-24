@@ -8,6 +8,7 @@ import {
   CommandGroup,
   CommandList,
 } from "@/components/ui/command";
+import { useShortcut } from "@/features/settings/hooks/use-shortcut";
 import { Cancel01Icon, Message01Icon, Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
@@ -66,18 +67,11 @@ export function ChatSearchDialog() {
     if (!isOpen) setQuery("");
   }, [isOpen]);
 
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== "k") return;
-      const el = document.activeElement as HTMLElement | null;
-      const tag = el?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || el?.isContentEditable) return;
-      e.preventDefault();
-      useChatSearchStore.getState().open();
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, []);
+  // skipInTextFields keeps the composer's own ⌘K (and any browser find) intact
+  // while the user is typing, as the hand-rolled handler did.
+  useShortcut("searchChats", () => useChatSearchStore.getState().open(), {
+    skipInTextFields: true,
+  });
 
   return (
     <CommandDialog

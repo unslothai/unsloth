@@ -55,7 +55,10 @@ import argparse
 import json
 import os
 import re
+import select
+import atexit
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -64,6 +67,7 @@ import time
 import urllib.parse
 import urllib.request
 import uuid
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -212,8 +216,84 @@ def worst_case_seconds(max_wait: int, kernels: int) -> int:
     )
 
 
+_STDOUT_FD = 1
+
+# Set once, on entry to the signal handler, and never cleared: the process is dying.
+# Below it, NO line written to stdout may either block or raise, and both have to be
+# handled here rather than at the handler's own call sites. release() reports a refused
+# delete and warns about a kernel it could not delete through the ordinary path, so those
+# lines are reached transitively, and either failure strands the cleanup: a block never
+# reaches the retry or the `finally`, and a raise propagates out of delete_kernel() and
+# abandons the remaining delete attempts for a kernel that is still billing.
+_IN_SIGNAL_HANDLER = False
+
+
+def _writable(fd: int) -> bool:
+    """Whether a write to ``fd`` can proceed without blocking, asked without writing.
+
+    A regular file or a terminal always answers yes; a pipe answers no exactly when it
+    has backed up, which is the case worth avoiding. Any error answers no: a closed or
+    unselectable descriptor is not somewhere to risk a stall from a signal handler.
+    """
+    try:
+        return bool(select.select([], [fd], [], 0)[1])
+    except BaseException:  # noqa: BLE001
+        return False
+
+
+def _line_from_signal(line: str) -> None:
+    """One line out, from a context where the ordinary path can raise OR block.
+
+    It can RAISE: a handler runs on the main thread wherever that thread happened to be,
+    and if it was inside a write to stdout the interpreter refuses the second one
+    outright, ``RuntimeError: reentrant call inside <_io.BufferedWriter name='<stdout>'>``.
+    That is not hypothetical; it was captured on a loaded CI runner, where it escaped the
+    handler and left a cancelled launcher exiting 1 instead of dying of its signal.
+    ``os.write`` goes straight to the descriptor and takes no lock the interrupted frame
+    could already hold, which is what makes it usable as the fallback.
+
+    It can also BLOCK, which raising does not cover and no ``except`` or ``finally``
+    catches. stdout in CI is a pipe, and if the collector stops draining it both the
+    buffered flush and the raw write sleep in the kernel. That backpressure is also what
+    leaves the main thread parked mid-write, so the two arrive together. Asking first
+    turns the stall into a dropped line: POSIX reports a pipe writable only when at least
+    PIPE_BUF bytes fit, and these lines are far shorter than that.
+    """
+    if not _writable(_STDOUT_FD):
+        return
+    try:
+        _emit(line)
+    except BaseException:  # noqa: BLE001 -- a log line may never decide whether we die
+        try:
+            os.write(_STDOUT_FD, (line + "\n").encode("utf-8", "replace"))
+        except BaseException:  # noqa: BLE001
+            pass
+
+
+def _emit(line: str) -> None:
+    print(line, flush = True)
+
+
+def _write_line(line: str) -> None:
+    """Every line this script puts on stdout goes through here.
+
+    Unconditional on the ordinary path, which is everything before something kills us:
+    nothing dropped, nothing swallowed, no syscall added.
+    """
+    if not _IN_SIGNAL_HANDLER:
+        _emit(line)
+        return
+    _line_from_signal(line)
+
+
 def _log(msg: str) -> None:
-    print(f"[launch] {msg}", flush = True)
+    _write_line(f"[launch] {msg}")
+
+
+def _log_from_signal(msg: str) -> None:
+    """``_log`` for the handler's own lines. Kept as its own name because the handler
+    runs before the flag it sets can matter to anything else reading this."""
+    _line_from_signal(f"[launch] {msg}")
 
 
 def _out(key: str, value: str) -> None:
@@ -238,6 +318,120 @@ def _api():
     api = KaggleApi()
     api.authenticate()
     return api
+
+
+# A kernel this process pushed but has not yet deleted is recorded here, so a
+# LATER launch can reclaim it. This is the only cover for `kill -9`, where no
+# handler of ours ever runs. Deliberately keyed on pid: an entry whose owner
+# is still alive belongs to a run in progress and must not be touched, or one
+# launcher would delete a concurrent launcher's kernel and report its absence
+# as a failure of the code under test.
+INFLIGHT = (
+    Path(os.environ.get("UNSLOTH_WORKSPACE") or Path(__file__).resolve().parents[3])
+    / "logs"
+    / "kaggle_inflight.json"
+)
+
+
+def _inflight_read() -> list[dict]:
+    try:
+        data = json.loads(INFLIGHT.read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _inflight_write(entries: list[dict]) -> None:
+    try:
+        INFLIGHT.parent.mkdir(parents = True, exist_ok = True)
+        INFLIGHT.write_text(json.dumps(entries, indent = 1), encoding = "utf-8")
+    except OSError:
+        pass  # bookkeeping only; never fail a run over it
+
+
+def _inflight_add(slug: str) -> None:
+    entries = [e for e in _inflight_read() if e.get("slug") != slug]
+    entries.append({"slug": slug, "pid": os.getpid(), "at": time.time()})
+    _inflight_write(entries)
+
+
+def _inflight_drop(slug: str) -> None:
+    _inflight_write([e for e in _inflight_read() if e.get("slug") != slug])
+
+
+def _inflight_mark_kept(slug: str) -> None:
+    """Flag a kernel as deliberately retained, so no later sweep reclaims it.
+
+    ``--keep-kernel`` leaves the kernel up on purpose. Its registry entry
+    still names this process, and this process is about to exit, so the next
+    launcher would see a dead owner, call it an orphan and delete the very
+    thing the flag asked to keep.
+    """
+    entries = _inflight_read()
+    for entry in entries:
+        if entry.get("slug") == slug:
+            entry["keep"] = True
+    _inflight_write(entries)
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists, owned by someone else
+    except (OSError, TypeError):
+        return True  # unknown: assume alive, deleting is the costly error
+    return True
+
+
+def sweep_orphans() -> list[str]:
+    """Delete kernels left behind by a launcher that was killed outright.
+
+    Only entries whose owning process is gone are eligible, so a concurrent
+    run is never disturbed. Returns the slugs reclaimed.
+    """
+    entries = _inflight_read()
+    if not entries:
+        return []
+    keep: list[dict] = []
+    reclaimed: list[str] = []
+    for entry in entries:
+        slug, pid = entry.get("slug"), entry.get("pid")
+        if not slug:
+            continue
+        if entry.get("keep"):
+            # --keep-kernel asked for this one to stay up.
+            keep.append(entry)
+            continue
+        if isinstance(pid, int) and _pid_alive(pid) and pid != os.getpid():
+            keep.append(entry)
+            continue
+        if pid == os.getpid():
+            keep.append(entry)
+            continue
+        try:
+            proc = subprocess.run(
+                ["kaggle", "kernels", "delete", slug, "-y"],
+                capture_output = True,
+                text = True,
+                timeout = 180,
+            )
+        except Exception:  # noqa: BLE001
+            keep.append(entry)  # try again next time rather than forget it
+            continue
+        # A nonzero exit does NOT raise, so the return code is the only thing
+        # that separates "reclaimed" from "Kaggle refused and the kernel is
+        # still running and still billing". Forgetting the entry there is how
+        # one bills to its ceiling unnoticed.
+        if proc.returncode == 0:
+            reclaimed.append(slug)
+        else:
+            _log(f"could not delete orphan {slug} (rc={proc.returncode}); keeping the record")
+            keep.append(entry)
+    _inflight_write(keep)
+    return reclaimed
 
 
 def _pushed(ok: bool, reason: str, out: str, attempted: list[str]) -> dict:
@@ -367,10 +561,19 @@ def push(
                 # that is what it is, Kaggle under load, so the retry applies.
                 out = f"push subprocess exceeded {PUSH_SUBPROCESS_TIMEOUT_SEC}s and was killed; timed out"
                 _log(f"push timed out after {PUSH_SUBPROCESS_TIMEOUT_SEC}s ({attempted[-1]})")
+                # Also recorded on disk. release() covers the paths this process
+                # gets to run; the registry covers the one it does not, a kill
+                # between here and cleanup, by leaving the slug for the next
+                # launcher's sweep.
+                _inflight_add(attempted[-1])
             lowered = out.lower()
             if "successfully pushed" in lowered:
                 if "does not resolve to the specified id" in lowered:
                     return _pushed(False, "slug_mismatch", out, attempted)
+                # Recorded the instant it exists, before anything can go
+                # wrong downstream: a kernel that is billing but unknown to
+                # the registry is exactly the case the registry is for.
+                _inflight_add(attempted[-1])
                 return {"ok": True, "slug": attempted[-1], "attempts": attempted}
             if any(m in lowered for m in CAPACITY_MARKERS):
                 return _pushed(False, "at_capacity", out, attempted)
@@ -725,7 +928,7 @@ def fetch_evidence(
     }
 
 
-def _flatten_log(raw: str) -> str:
+def flatten_kernel_log(raw: str) -> str:
     """A kernel log as flat text, whichever shape Kaggle returned it in.
 
     ``kernels/output`` returns the log as a JSON array of
@@ -787,8 +990,75 @@ def extract_reports(outdir: Path) -> list[dict]:
                     text = "".join(text)
                 _consume(text)
     for log_path in sorted(outdir.rglob("kernel.log")):
-        _consume(_flatten_log(log_path.read_text(encoding = "utf-8", errors = "replace")))
+        raw = log_path.read_text(encoding = "utf-8", errors = "replace")
+        _consume(flatten_kernel_log(raw))
     return reports
+
+
+def _install_release_handlers(release: Callable[[], None]) -> None:
+    """Make release survive the ways this process actually dies.
+
+        normal return / handled error   finish() calls it directly
+        unhandled exception             atexit
+        Ctrl-C, kill, Actions cancel    the signal handlers here
+        kill -9                         nothing in-process can; the orphan
+                                        sweep at the next launch reclaims it
+
+    Before this, only the first row worked: `finish()` is reached only on
+    paths that RETURN, KeyboardInterrupt was re-raised past it, and the
+    default SIGTERM disposition exits without running atexit or finally. A
+    cancelled workflow therefore left its kernel running.
+    """
+    atexit.register(release)
+
+    def _release_and_die(signum, _frame):
+        # First, and outside the try: from here on every _log in this process drops a
+        # line rather than stalling on a stdout nobody is draining. release() logs
+        # through the ordinary path -- delete_kernel() reports a refused delete that way
+        # -- and a stall there is a stall before the retry and before the `finally`.
+        global _IN_SIGNAL_HANDLER
+        _IN_SIGNAL_HANDLER = True
+        # Everything before the `finally` is best effort. The death is not: a handler
+        # that returns normally leaves the process exiting on whatever code main()
+        # computes, and a cancelled job then reads as a completed one.
+        try:
+            _log_from_signal(f"received signal {signum}; deleting kernels before exiting")
+            release()
+        except BaseException as exc:  # noqa: BLE001
+            # A raise here used to propagate into the main thread, where main()'s
+            # `except BaseException` caught it and finish() called release() again.
+            # A transient first failure (the observed one: an OSError from a
+            # subprocess spawn on a loaded runner) therefore ended in main
+            # RETURNING 0, and the cancelled job read as completed. Deleting is
+            # best effort, the exit status is not. Retried once, since the kernel
+            # is billing meanwhile.
+            _log_from_signal(f"release() failed under signal {signum}: {type(exc).__name__}: {exc}")
+            try:
+                release()
+            except BaseException as retry_exc:  # noqa: BLE001
+                # Nothing more to try in-process: the slug stays in the registry
+                # for the next launch's orphan sweep, as after a kill -9.
+                _log_from_signal(
+                    f"release() failed again: {type(retry_exc).__name__}: {retry_exc}. "
+                    f"The kernels stay in the registry for the next launcher's sweep"
+                )
+        finally:
+            # Die of the original signal rather than exiting 0, so the status
+            # still reads "killed by signal N". A CI system treats a 0 from a
+            # cancelled job as a completed one. In a `finally` because anything
+            # above can raise -- including the logging, which is how this was found.
+            signal.signal(signum, signal.SIG_DFL)
+            os.kill(os.getpid(), signum)
+
+    for _sig in (signal.SIGINT, signal.SIGTERM, getattr(signal, "SIGHUP", None)):
+        if _sig is None:
+            continue
+        try:
+            signal.signal(_sig, _release_and_die)
+        except (ValueError, OSError, AttributeError):
+            # No SIGHUP on Windows, and signal() only works on the main
+            # thread. One handler failing must not stop the others.
+            pass
 
 
 def main() -> int:
@@ -861,6 +1131,12 @@ def main() -> int:
         rather than quietly counted as cleaned up.
         """
         if args.keep_kernel:
+            # Flagged, not just skipped: the registry entry still names this
+            # process, and the next launcher would read a dead owner as an
+            # orphan and delete the very kernel the flag asked to keep.
+            for entry in result.get("kernels") or []:
+                for slug in _slugs_filed(entry):
+                    _inflight_mark_kept(slug)
             return
         leaked: list[str] = []
         for entry in result.get("kernels") or []:
@@ -870,6 +1146,7 @@ def main() -> int:
                     continue
                 if delete_kernel(slug):
                     done.add(slug)
+                    _inflight_drop(slug)
                 else:
                     leaked.append(slug)
                     _log(f"could not delete {slug}; it may keep billing")
@@ -877,13 +1154,21 @@ def main() -> int:
             entry["released"] = all(s in done for s in _slugs_filed(entry))
         result["unreleased"] = leaked
         if leaked:
-            print(
+            # _write_line, not _log: the [launch] prefix would stop GitHub parsing
+            # this as an annotation. Not print: release() runs from the signal handler
+            # too, and this line is emitted on exactly the path where a kernel is still
+            # billing, so a raw write here blocks or raises before the handler can
+            # re-raise its signal.
+            _write_line(
                 "::warning title=Kaggle kernels may still be running::"
                 + ", ".join(leaked)
                 + " could not be deleted, so they may keep billing accelerator "
-                "quota until they hit their own ceiling. Delete them by hand.",
-                flush = True,
+                "quota until they hit their own ceiling. Delete them by hand."
             )
+
+    # From here on release() is reachable from a signal and from atexit too,
+    # not only from finish(): a cancelled workflow used to leave its kernel up.
+    _install_release_handlers(release)
 
     def finish(code: int = 0) -> int:
         release()
@@ -954,6 +1239,12 @@ def main() -> int:
         result["reason"] = f"kaggle auth failed: {type(exc).__name__}"
         return finish()
 
+    # Reclaim anything a previous launcher was killed outright before it
+    # could delete. Done BEFORE pushing, so the freed session slots are
+    # available to this run -- Kaggle allows only two GPU sessions at once,
+    # and an orphan holds one until its ceiling.
+    for _slug in sweep_orphans():
+        _log(f"reclaimed orphaned kernel {_slug} from a killed launcher")
     # AGAIN, now that authentication is paid for and the next thing is a push.
     # The check above is not enough on its own: authenticate() reaches the
     # network -- with KAGGLE_API_TOKEN, which is the only credential this

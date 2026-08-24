@@ -1275,6 +1275,23 @@ _SCALED_FLOOR_TAURI = "min-h-[calc(117px+93px*var(--ui-font-scale,1))]"
 _NARROW_FLOOR_TAURI = "max-[383px]:min-h-[calc(24px+224px*var(--ui-font-scale,1))]"
 
 
+def _capped_stacks(provider: str) -> int:
+    """How many overlay stacks cap themselves to the measured geometry.
+
+    Matched on the value being derived from `stack.maxHeight`, not on the literal
+    `maxHeight: stack.maxHeight`, because the cap is allowed to be wrapped: the
+    shadow-gutter work passes it through `railMaxHeight(...)` so the rail keeps
+    room under its bottom card. That is the same cap, plus a constant.
+
+    Pinning the bare expression made a wrapper read as a missing cap, which is the
+    mistake this file already made once with the z-index and fixed the same way --
+    see "counted by the layer they sit on, not by a literal z-index" below. What
+    the tests are about is that EVERY stack is capped; how the number is spelled is
+    that code's business. A cap that stops reading stack.maxHeight still fails.
+    """
+    return len(re.findall(r"maxHeight:\s*(?:[A-Za-z_$][\w$]*\(\s*)?stack\.maxHeight", provider))
+
+
 def _overlay_stacks(provider: str) -> int:
     """How many bottom-right overlay stacks the provider renders."""
     return len(re.findall(r"z-\[9998\][^\"]*flex flex-col items-end gap-2", provider))
@@ -1290,7 +1307,7 @@ def test_the_overlay_stack_fits_the_viewport():
     stacks = provider.count("zIndex: Z_LAYER.OVERLAY_STACK")
     assert stacks, "the bottom-right overlay stack is gone"
     # Counted, not merely present: capping only one of the stacks is the bug here.
-    assert provider.count("maxHeight: stack.maxHeight") == stacks, "every stack is capped"
+    assert _capped_stacks(provider) == stacks, "every stack is capped"
     panel = (FRONTEND / "features/hub/download-manager/download-manager-panel.tsx").read_text(
         encoding = "utf-8"
     )
@@ -1308,7 +1325,7 @@ def test_the_desktop_stack_is_capped_like_the_browser_one():
     """The download panel shares the desktop stack, left uncapped before now."""
     provider = (FRONTEND / "app/provider.tsx").read_text(encoding = "utf-8")
     assert provider.count("useStackGeometry()") == 2, "both stacks measure themselves"
-    assert provider.count("maxHeight: stack.maxHeight") == 2, "both stacks are capped"
+    assert _capped_stacks(provider) == 2, "both stacks are capped"
     tauri = TAURI_BANNER.read_text(encoding = "utf-8")
     assert _SCALED_FLOOR_TAURI in tauri, "the floor is fixed, so it is wrong at other type sizes"
     assert _NARROW_FLOOR_TAURI in tauri, "the floor misses the narrow card's extra button row"
@@ -1516,7 +1533,7 @@ def test_the_download_panel_can_shrink_inside_the_capped_stack():
     # Counted by the layer they sit on, not by a literal z-index: the
     # overlay rail reads its depth from Z_LAYER now.
     stacks = provider.count("zIndex: Z_LAYER.OVERLAY_STACK")
-    assert provider.count("maxHeight: stack.maxHeight") == stacks, "the cap this has to absorb"
+    assert _capped_stacks(provider) == stacks, "the cap this has to absorb"
 
 
 @pytest.fixture(scope="module")

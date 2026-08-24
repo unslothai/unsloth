@@ -572,7 +572,9 @@ _AUTO_ALIASES = frozenset({"auto", ""})
 def _resolve_auto() -> str:
     """Pick a backend for ``auto``: sentence-transformers when a CUDA/ROCm GPU is
     present (torch fp16 wins bulk indexing), else the torch-free GGUF llama-server
-    -- or ST if its binary is missing. GPU check is torch-free (nvidia-smi)."""
+    -- or ST if its binary is missing. The GPU check goes through an smi tool
+    (nvidia-smi, then amd-smi), so it costs no CUDA/HIP context unless neither
+    is installed."""
     from core.inference.llama_cpp import LlamaCppBackend
 
     # Unfiltered probe on purpose: the winner here runs under PyTorch, so the

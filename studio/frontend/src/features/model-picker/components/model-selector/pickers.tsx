@@ -56,12 +56,18 @@ import {
   hfApiToken,
   isHiddenModelId,
   jobKeyOf,
+  scanFolderStatusCopy,
   useDownloadManagerStore,
   useHfTokenStore,
   useOnlineStatus,
 } from "@/features/hub";
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
-import { useDebouncedValue, useGpuInfo, useInferenceGpuInfo } from "@/hooks";
+import {
+  useDebouncedValue,
+  useGpuInfo,
+  useHostClass,
+  useInferenceGpuInfo,
+} from "@/hooks";
 import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
 import { extractParamLabel } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
@@ -107,6 +113,7 @@ import {
   type CommunityModelPolicy,
   allowedHiddenModelIdMatches,
   audioPickIsRoutable,
+  localAudioRowIsUndecodableGguf,
   communityAudioRowIsRunnable,
   curatedAudioInventoryMatches,
   curatedAudioInventoryTask,
@@ -135,6 +142,8 @@ import {
   curatedTotalParamsFor,
   groupForRepoId,
 } from "./model-catalog";
+import { curatedArtifactIsOfferable } from "./host-artifact-policy";
+import { localGgufKindFor } from "./local-gguf-policy";
 import { ModelDeleteAction } from "./model-delete-action";
 import { ModelLoadSettingsAction } from "./model-load-settings-action";
 import { ModelRowMenu } from "./model-row-menu";
@@ -2689,8 +2698,14 @@ export function HubModelPicker({
     () => pickerInventory.localModels.filter((m) => m.source === "models_dir"),
     [pickerInventory.localModels],
   );
+  // Ollama rows list alongside custom folders: both are user-managed stores
+  // outside ./models, and an Ollama root added as a custom folder is where
+  // the missing rows were expected (#9226).
   const customFolderModels = useMemo(
-    () => pickerInventory.localModels.filter((m) => m.source === "custom"),
+    () =>
+      pickerInventory.localModels.filter(
+        (m) => m.source === "custom" || m.source === "ollama",
+      ),
     [pickerInventory.localModels],
   );
   useEffect(() => {
@@ -2883,6 +2898,7 @@ export function HubModelPicker({
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const deviceType = usePlatformStore((s) => s.deviceType);
   const isMac = deviceType === "mac";
+  const hostClass = useHostClass();
 
   // Drop models Unsloth cannot run for chat. A task-scoped picker wants exactly the tasks the chat classifier calls unsupported, so it gates on the task.
   const isChatSupported = useCallback(
@@ -3016,8 +3032,25 @@ export function HubModelPicker({
   // raw repo id exactly as before.
   const curatedRow = useCallback(
     (id: string) =>
-      (catalog && curatedRowLabelFor(id, catalog)) ?? { name: id, tags: [] as string[] },
-    [catalog],
+      (catalog && curatedRowLabelFor(id, catalog, hostClass)) ?? {
+        name: id,
+        tags: [] as string[],
+      },
+    [catalog, hostClass],
+  );
+
+  /** Whether this host can run a curated id at all, as opposed to whether it has room for it.
+   *  Browse rows only: an id already on disk keeps its row wherever it came from. */
+  const curatedOfferable = useCallback(
+    (id: string) => {
+      if (!catalog) return true;
+      // Downloaded weights keep their row. They may have been pulled on a machine that could run
+      // them, and hiding what is already on disk reads as Studio having lost the model.
+      if (downloadedSet.has(id.toLowerCase())) return true;
+      const hit = artifactForRepoId(id, catalog);
+      return hit ? curatedArtifactIsOfferable(hit.artifact.repoId, hostClass) : true;
+    },
+    [catalog, downloadedSet, hostClass],
   );
 
   // Paint curated rows before any request, so a task-scoped picker whose models
@@ -3027,6 +3060,7 @@ export function HubModelPicker({
     return dedupe(models.map((model) => model.id))
       .filter((id) => !isMobileVariant(id))
       .filter((id) => !isImageEditModel(id))
+      .filter(curatedOfferable)
       .filter((id) => {
         const isG = isKnownGgufRepo(id);
         return taskCatalogFormatMatches(
@@ -3047,7 +3081,7 @@ export function HubModelPicker({
         // other source for its param chip, and most curated ids carry no "<n>B" token.
         totalParams: catalog ? curatedTotalParamsFor(id, catalog) : undefined,
       }));
-  }, [catalog, models, formatFilter, isKnownGgufRepo, task]);
+  }, [catalog, models, formatFilter, isKnownGgufRepo, task, curatedOfferable]);
 
   /** The catalog's own fit verdict for a curated artifact, or undefined where it has none.
    *  Every list that judges a row against the device goes through this, so a badge and the
@@ -3100,6 +3134,7 @@ export function HubModelPicker({
     };
     const keep = (r: HfModelResult) =>
       keepCommon(r) &&
+      curatedOfferable(r.id) &&
       // Task pages load single-file GGUF, plus curated artifacts in any format.
       (!task ||
         r.isGguf ||
@@ -3156,6 +3191,7 @@ export function HubModelPicker({
     task,
     catalog,
     catalogFit,
+    curatedOfferable,
     communityRecommendedEnabled,
     communityBrowse.results,
     isLoadableCommunityRepo,
@@ -3390,14 +3426,26 @@ export function HubModelPicker({
   const sortedCachedGguf = useMemo(
     () =>
       sortCachedRepos(
-        cachedGguf.filter((c) =>
-          passesTaskGate(
-            c.task,
-            c.repo_id,
-            task,
-            catalog,
-            activeCatalogArtifactIds,
-          ),
+        cachedGguf.filter(
+          (c) =>
+            passesTaskGate(
+              c.task,
+              c.repo_id,
+              task,
+              catalog,
+              activeCatalogArtifactIds,
+            ) &&
+            // A speech GGUF no backend here can decode (CSM) would otherwise be listed as
+            // a chat model and only fail in llama-server. Non-audio rows always pass.
+            audioPickIsRoutable({
+              id: c.repo_id,
+              task: c.task,
+              isGguf: true,
+              isCurated: artifactForRepoId(c.repo_id, AUDIO_CATALOG) !== null,
+              // _repo_gguf_task reads these off the arch too, so the same rule holds: a
+              // speech tag means llama-csm even when the repo id names another family.
+              taskFromGgufArch: true,
+            }),
         ),
         downloadedSort,
         loadTimes,
@@ -3490,6 +3538,18 @@ export function HubModelPicker({
         lmStudioModels.filter(
           (m) =>
             filesystemRowsSupportedForTask(task, m.task) &&
+            // The same speech gate the cached GGUF rows get: a CSM file found in LM
+            // Studio, ./models or a scan folder is just as undecodable, and routing it to
+            // Audio evicts the chat model before the row is reported unsupported.
+            audioPickIsRoutable({
+              id: m.model_id ?? m.id,
+              task: m.task,
+              isGguf: localModelIsGguf(m),
+              isCurated: artifactForRepoId(m.model_id ?? m.id, AUDIO_CATALOG) !== null,
+              // These rows are tasked by _local_model_task reading the GGUF's own arch,
+              // so a text-to-speech tag here means llama-csm, whatever the file is named.
+              taskFromGgufArch: true,
+            }) &&
             // The backend tags every local model with its task for exactly this: on the Images/Video pages a chat GGUF must not be offered.
             passesTaskGate(
               m.task,
@@ -3524,6 +3584,18 @@ export function HubModelPicker({
         localDirModels.filter(
           (m) =>
             filesystemRowsSupportedForTask(task, m.task) &&
+            // The same speech gate the cached GGUF rows get: a CSM file found in LM
+            // Studio, ./models or a scan folder is just as undecodable, and routing it to
+            // Audio evicts the chat model before the row is reported unsupported.
+            audioPickIsRoutable({
+              id: m.model_id ?? m.id,
+              task: m.task,
+              isGguf: localModelIsGguf(m),
+              isCurated: artifactForRepoId(m.model_id ?? m.id, AUDIO_CATALOG) !== null,
+              // These rows are tasked by _local_model_task reading the GGUF's own arch,
+              // so a text-to-speech tag here means llama-csm, whatever the file is named.
+              taskFromGgufArch: true,
+            }) &&
             passesTaskGate(
               m.task,
               m.model_id ?? m.id,
@@ -3561,6 +3633,18 @@ export function HubModelPicker({
         customFolderModels.filter(
           (m) =>
             filesystemRowsSupportedForTask(task, m.task) &&
+            // The same speech gate the cached GGUF rows get: a CSM file found in LM
+            // Studio, ./models or a scan folder is just as undecodable, and routing it to
+            // Audio evicts the chat model before the row is reported unsupported.
+            audioPickIsRoutable({
+              id: m.model_id ?? m.id,
+              task: m.task,
+              isGguf: localModelIsGguf(m),
+              isCurated: artifactForRepoId(m.model_id ?? m.id, AUDIO_CATALOG) !== null,
+              // These rows are tasked by _local_model_task reading the GGUF's own arch,
+              // so a text-to-speech tag here means llama-csm, whatever the file is named.
+              taskFromGgufArch: true,
+            }) &&
             passesTaskGate(
               m.task,
               m.model_id ?? m.id,
@@ -3686,6 +3770,18 @@ export function HubModelPicker({
   const fineTunedRows = useMemo(() => {
     const needle = normalizeForSearch(debouncedQuery.trim());
     return loraModels
+      .filter(
+        (m) =>
+          // A CSM export in a GGUF container loads nowhere: llama.cpp has no decoder and the
+          // Audio page does not list speech GGUFs either. audioType comes off the checkpoint,
+          // so it catches an exported row regardless of path; local rows have no audioType
+          // and are refused at load instead.
+          !localAudioRowIsUndecodableGguf({
+            audioType: m.audioType,
+            exportType: m.exportType,
+            isDirectGguf: m.isDirectGguf,
+          }),
+      )
       .filter((m) => {
         const text = normalizeForSearch(
           `${m.name} ${m.baseModel ?? ""} ${m.id}`,
@@ -4050,6 +4146,11 @@ export function HubModelPicker({
         .map((result) => result.id)
         .filter((id) => !isHiddenModelId(id))
         .filter(owned)
+        // Search reaches the live Hub, so without this a query re-lands the exact curated row the
+        // seed and Recommended filters just dropped: the Mac format check below admits
+        // safetensors, so MiniMaxAI/MiniMax-H3 would come back clickable and still be refused at
+        // load. Same predicate as the other two lists, downloaded exception included.
+        .filter(curatedOfferable)
         .filter((id) => !recommendedSet.has(id))
         // Chat-only keeps runnable formats: GGUF anywhere, plus MLX/safetensors
         // on Mac (matches the empty Recommended view so search stays consistent).
@@ -4072,6 +4173,7 @@ export function HubModelPicker({
       downloadedSet,
       searchRowFits,
       isMac,
+      curatedOfferable,
     ],
   );
 
@@ -5527,34 +5629,47 @@ export function HubModelPicker({
 
                     {/* Folder paths */}
                     {!customFoldersCollapsed &&
-                      scanFolders.map((f) => (
-                        <div
-                          key={f.id}
-                          className="group flex items-center gap-1.5 px-2.5 py-0.5"
-                        >
-                          <HugeiconsIcon
-                            icon={Folder02Icon}
-                            className="size-3 shrink-0 text-muted-foreground/40"
-                          />
-                          <span
-                            className="min-w-0 flex-1 truncate font-mono text-ui-10 text-muted-foreground/70"
-                            title={f.path}
-                          >
-                            {f.path}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => handleRemoveFolder(f.id)}
-                            aria-label={`Remove folder ${f.path}`}
-                            className="shrink-0 rounded p-1 text-foreground/70 transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive"
+                      scanFolders.map((f) => {
+                        const problem = scanFolderStatusCopy(f.status);
+                        return (
+                          <div
+                            key={f.id}
+                            className="group flex items-center gap-1.5 px-2.5 py-0.5"
                           >
                             <HugeiconsIcon
-                              icon={Cancel01Icon}
-                              className="size-3"
+                              icon={Folder02Icon}
+                              className="size-3 shrink-0 text-muted-foreground/40"
                             />
-                          </button>
-                        </div>
-                      ))}
+                            <div className="min-w-0 flex-1">
+                              <span
+                                className="block truncate font-mono text-ui-10 text-muted-foreground/70"
+                                title={f.path}
+                              >
+                                {f.path}
+                              </span>
+                              {problem ? (
+                                <span
+                                  className="block truncate text-ui-10 text-amber-600 dark:text-amber-500"
+                                  title={problem.hint}
+                                >
+                                  {problem.title}
+                                </span>
+                              ) : null}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveFolder(f.id)}
+                              aria-label={`Remove folder ${f.path}`}
+                              className="shrink-0 rounded p-1 text-foreground/70 transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive"
+                            >
+                              <HugeiconsIcon
+                                icon={Cancel01Icon}
+                                className="size-3"
+                              />
+                            </button>
+                          </div>
+                        );
+                      })}
 
                     {/* Recommended folders */}
                     {!customFoldersCollapsed &&
@@ -5674,9 +5789,12 @@ export function HubModelPicker({
                         // folders) in addition to name/path so the row classifies
                         // and loads through the same GGUF path as the filter.
                         const isGguf = localModelIsGguf(m);
-                        // Single .gguf files (e.g. Ollama blobs) load directly;
-                        // GGUF repos/directories expand to pick a variant.
-                        const isDirectGguf = isGgufFile;
+                        // Single .gguf files load directly; GGUF repos and
+                        // directories expand to pick a variant. An Ollama
+                        // manifest reference names one blob, so it is direct
+                        // too: POST /load materializes its .gguf link.
+                        const isDirectGguf =
+                          isGgufFile || m.source === "ollama";
                         const optionKey = makeModelOptionKey(
                           "custom-folder",
                           m.id,
@@ -5697,7 +5815,9 @@ export function HubModelPicker({
                                     loadedModelId,
                                     activeGgufVariant,
                                     m.id,
-                                    isGgufFile
+                                    // Direct loads set no active variant, so
+                                    // requiring one never reads as loaded.
+                                    isDirectGguf
                                       ? "ignore"
                                       : isGguf
                                         ? "required"
@@ -6501,8 +6621,12 @@ function FineTunedRows({
         const isExportedGguf = isExported && isGguf;
         const canDelete = canDeleteLoraModel(adapter);
         const isTrainingFull = isTraining && isMerged;
-        const isLocalGgufDir =
-          isLocal && (isGgufRepo(adapter.id) || isGgufRepo(adapter.name));
+        const localGgufKind = localGgufKindFor(
+          adapter,
+          isGgufRepo(adapter.id) || isGgufRepo(adapter.name),
+        );
+        const isLocalGgufDir = localGgufKind === "variants";
+        const isLocalDirectGguf = localGgufKind === "direct";
         // A checkpoint that fine-tunes a TTS/STT model has to reach the Audio page:
         // chat/completions cannot serve it and reports the adapter as "not downloaded".
         // The pipeline tag is what onSelect routes on, so carry the detected codec as one.
@@ -6510,13 +6634,13 @@ function FineTunedRows({
           source: isLocal ? "local" : isExported ? "exported" : "lora",
           isLora: !isLocal && !isMerged && !isGguf,
           isDownloaded: true,
-          isGguf: false,
+          isGguf: isLocalDirectGguf,
           pipelineTag: audioPipelineTagFor(adapter.audioType, true),
         };
         const canConfigure = !(isLocalGgufDir || isExportedGguf);
         const optionKey = makeModelOptionKey("lora", adapter.id);
         const tag = isLocal
-          ? isLocalGgufDir
+          ? isLocalGgufDir || isLocalDirectGguf
             ? "GGUF"
             : "Local"
           : isGguf
@@ -6529,7 +6653,7 @@ function FineTunedRows({
                   : "LoRA"
                 : "LoRA";
         const meta = isLocal
-          ? isLocalGgufDir
+          ? isLocalGgufDir || isLocalDirectGguf
             ? "GGUF"
             : "Local"
           : isTrainingFull
@@ -6549,7 +6673,11 @@ function FineTunedRows({
                     loadedModelId,
                     activeGgufVariant,
                     adapter.id,
-                    isLocalGgufDir || isExportedGguf ? "required" : "none",
+                    isLocalDirectGguf
+                      ? "ignore"
+                      : isLocalGgufDir || isExportedGguf
+                        ? "required"
+                        : "none",
                   )}
                   optionProps={loraModelList.getOptionProps(
                     optionKey,

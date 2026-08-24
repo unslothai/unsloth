@@ -9,9 +9,11 @@ compiled cache landed in the launcher's CWD, and a deleted chat left its folder
 behind. Verified on Windows, macOS and Linux.
 """
 
+import functools
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -22,6 +24,55 @@ import platform
 from pathlib import Path
 
 import pytest
+
+
+_FRONTEND_SRC = Path(__file__).resolve().parents[2] / "frontend" / "src"
+
+
+@functools.lru_cache(maxsize = None)
+def _frontend_text(*rel: str) -> str:
+    """The named frontend sources concatenated, read once per distinct scope.
+
+    Two scopes, deliberately different sizes. A promise the dialog MUST make is looked for where
+    user-visible copy legitimately lives, so an unrelated occurrence elsewhere cannot satisfy it;
+    a promise it must NOT make is looked for everywhere, where breadth only makes the check
+    stricter. The cache matters because the wide scope is ~1200 files.
+    """
+    paths: list[Path] = []
+    for r in rel:
+        target = _FRONTEND_SRC / r
+        if target.is_dir():
+            paths += [p for p in sorted(target.rglob("*")) if p.suffix in (".ts", ".tsx")]
+        else:
+            paths.append(target)
+    return "\n".join(p.read_text(encoding = "utf-8") for p in paths if p.is_file())
+
+
+def _frontend_copy_text() -> str:
+    """Where the sidebar's user-visible strings live: the locales, and the component itself."""
+    return _frontend_text("i18n/locales", "components/app-sidebar.tsx")
+
+
+def _frontend_src_text() -> str:
+    """Every frontend source file, for asserting a string is absent from all of them."""
+    return _frontend_text(".")
+
+
+def _sidebar_function_body(name: str) -> str:
+    """The body of a top-level `function <name>(...) {...}` in app-sidebar.tsx, brace-matched so
+    reformatting does not change what is read, and so unrelated edits elsewhere cannot fail it."""
+    sidebar = (_FRONTEND_SRC / "components" / "app-sidebar.tsx").read_text(encoding = "utf-8")
+    start = sidebar.index(f"function {name}(")
+    open_brace = sidebar.index("{", start)
+    depth = 0
+    for i in range(open_brace, len(sidebar)):
+        if sidebar[i] == "{":
+            depth += 1
+        elif sidebar[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return sidebar[open_brace : i + 1]
+    raise AssertionError(f"unbalanced braces reading {name} out of app-sidebar.tsx")
 
 
 # ---------------------------------------------------------------------------
@@ -695,7 +746,8 @@ def test_a_symlinked_session_cannot_serve_files_outside_the_sandbox(tmp_path, mo
 
 def test_the_executor_leaves_nothing_in_the_sandbox(tmp_path, monkeypatch):
     """Its scratch script lives outside the sandbox, so a chat whose tools only
-    printed is still an empty folder and removable without the opt-in."""
+    printed holds just our bookkeeping and the empty TMPDIR dir, and is
+    removable without the opt-in."""
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
 
     from core.inference import tools
@@ -703,10 +755,36 @@ def test_the_executor_leaves_nothing_in_the_sandbox(tmp_path, monkeypatch):
     tools._workdirs.clear()
     workdir = Path(tools.get_sandbox_workdir("__LOCALID_scratch"))
     tools._python_exec("print('hi')", session_id = "__LOCALID_scratch")
-    assert [p.name for p in workdir.iterdir()] == [tools._SANDBOX_MARKER]
+    assert sorted(p.name for p in workdir.iterdir()) == [
+        tools._SANDBOX_MARKER,
+        tools._SANDBOX_TEMP_DIRNAME,
+    ]
+    assert list((workdir / tools._SANDBOX_TEMP_DIRNAME).iterdir()) == []
 
     assert tools.remove_session_sandbox("__LOCALID_scratch") is True
     assert not workdir.exists()
+
+
+def test_a_file_under_the_scratch_dir_is_listed_and_blocks_removal(tmp_path, monkeypatch):
+    """On Windows the scratch dir is what /tmp resolves to, so /tmp/report.csv
+    lands here and has to keep its listing and its delete prompt."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+    from routes import inference
+
+    tools._workdirs.clear()
+    session = "__LOCALID_scratch3"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    scratch = Path(tools._sandbox_temp_dir(str(workdir)))
+    (scratch / "report.csv").write_text("x")
+
+    assert inference._sandbox_listing_names(str(workdir)) == [
+        f"{tools._SANDBOX_TEMP_DIRNAME}/report.csv"
+    ]
+    assert tools.session_sandbox_has_files(session) is True
+    assert tools.remove_session_sandbox(session) is False
+    assert (scratch / "report.csv").is_file()
 
 
 def test_a_real_file_still_blocks_removal(tmp_path, monkeypatch):
@@ -722,6 +800,62 @@ def test_a_real_file_still_blocks_removal(tmp_path, monkeypatch):
 
     assert tools.remove_session_sandbox("__LOCALID_keepit") is False
     assert (workdir / "sales.csv").is_file()
+
+
+def test_the_download_route_serves_the_full_depth_under_the_scratch_dir(tmp_path, monkeypatch):
+    """The card and the route enforce the same segment cap, so the route has to
+    discount the scratch container exactly as the snapshot walk does."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from fastapi import HTTPException
+
+    from core.inference import tools
+    from routes.inference import _contained_sandbox_path
+
+    tools._workdirs.clear()
+    session = "__LOCALID_depth1"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    scratch = Path(tools._sandbox_temp_dir(str(workdir)))
+    (scratch / "a/b/c").mkdir(parents = True)
+    (scratch / "a/b/c/result.csv").write_bytes(b"x")
+
+    _, path = _contained_sandbox_path(session, f"{tools._SANDBOX_TEMP_DIRNAME}/a/b/c/result.csv")
+    assert Path(path) == scratch / "a/b/c/result.csv"
+    with pytest.raises(HTTPException):
+        _contained_sandbox_path(session, f"{tools._SANDBOX_TEMP_DIRNAME}/a/b/c/d/toodeep.csv")
+
+
+def test_only_the_real_scratch_dir_skips_a_path_segment(tmp_path, monkeypatch):
+    """The walks read the stored spelling off os.walk and never follow links, so
+    the discount is the resolved directory's, not the name's. A model-made link
+    would otherwise serve a file neither walk lists, as a wrong-case entry does
+    on NTFS or APFS."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from fastapi import HTTPException
+
+    from core.inference import tools
+    from routes import inference
+
+    tools._workdirs.clear()
+    session = "__LOCALID_depth2"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    (workdir / "out/a/b/c").mkdir(parents = True)
+    (workdir / "out/a/b/c/deep.csv").write_bytes(b"x")
+    (workdir / "out/a/b/shallow.csv").write_bytes(b"x")
+    try:
+        (workdir / tools._SANDBOX_TEMP_DIRNAME).symlink_to(
+            workdir / "out", target_is_directory = True
+        )
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable (Windows without developer mode)")
+
+    name = tools._SANDBOX_TEMP_DIRNAME
+    assert f"{name}/a/b/c/deep.csv" not in inference._sandbox_listing_names(str(workdir))
+    with pytest.raises(HTTPException):
+        inference._contained_sandbox_path(session, f"{name}/a/b/c/deep.csv")
+    # Only the extra segment is withdrawn; four still resolve through the link.
+    inference._contained_sandbox_path(session, f"{name}/a/b/shallow.csv")
 
 
 def test_the_listing_drops_a_directory_the_route_would_refuse(tmp_path, monkeypatch):
@@ -1182,7 +1316,9 @@ def test_a_user_python_file_is_never_executor_scratch(tmp_path, monkeypatch):
     workdir = Path(tools.get_sandbox_workdir(session))
     # The executor left nothing of its own behind.
     assert sorted(
-        p.name for p in workdir.iterdir() if p.name not in tools._INTERNAL_SANDBOX_FILES
+        p.name
+        for p in workdir.iterdir()
+        if p.name not in tools._INTERNAL_SANDBOX_FILES and p.name != tools._SANDBOX_TEMP_DIRNAME
     ) == ["studio_exec_results.py"]
     assert inference._sandbox_listing_names(str(workdir)) == ["studio_exec_results.py"]
     # And a delete without the opt-in will not quietly take it.
@@ -1273,7 +1409,9 @@ def test_the_scratch_script_is_never_reported_as_a_file(tmp_path, monkeypatch):
     workdir = Path(tools.get_sandbox_workdir(session))
     # Only the user's file is left; the executor cleaned up after itself.
     assert sorted(
-        p.name for p in workdir.iterdir() if p.name not in tools._INTERNAL_SANDBOX_FILES
+        p.name
+        for p in workdir.iterdir()
+        if p.name not in tools._INTERNAL_SANDBOX_FILES and p.name != tools._SANDBOX_TEMP_DIRNAME
     ) == ["studio_exec_results.py"]
     assert json.loads(files) == [{"name": "studio_exec_results.py", "size": 5}]
 
@@ -1928,11 +2066,13 @@ def test_a_case_variant_chat_gets_its_own_directory(tmp_path, monkeypatch):
 def test_the_delete_switch_does_not_promise_project_files():
     """A chat moved back to Recents wrote its earlier files into the project
     workspace, which chat deletion does not touch."""
-    sidebar = (
-        Path(__file__).resolve().parents[2] / "frontend" / "src" / "components" / "app-sidebar.tsx"
-    ).read_text(encoding = "utf-8")
-    assert "This chat's own sandbox folder is removed from disk." in sidebar
-    assert "Anything this chat's tools wrote is removed from disk." not in sidebar
+    # The copy is the contract, not where it lives: #8932 moved these strings into the locale file
+    # unchanged and broke a grep of app-sidebar.tsx.
+    # The promise it must make: looked for where the sidebar's user-visible copy lives, not
+    # across the whole tree, or an occurrence in an unrelated file would satisfy it.
+    assert "This chat's own sandbox folder is removed from disk." in _frontend_copy_text()
+    # The promise it must not make: looked for everywhere, where breadth only tightens it.
+    assert "Anything this chat's tools wrote is removed from disk." not in _frontend_src_text()
 
 
 def test_a_tool_cannot_forge_its_way_into_owning_a_folder(tmp_path, monkeypatch):
@@ -2213,11 +2353,33 @@ def test_an_unowned_cache_of_trainers_is_not_put_on_sys_path(tmp_path, monkeypat
 def test_the_delete_switch_reaches_a_chat_moved_into_a_project():
     """Anything it wrote before the move is in its own folder, and the backend
     never touches the project workspace."""
-    sidebar = (
-        Path(__file__).resolve().parents[2] / "frontend" / "src" / "components" / "app-sidebar.tsx"
-    ).read_text(encoding = "utf-8")
-    assert 'return target.kind === "project" || target.kind === "chat";' in sidebar
-    assert "!target.item.projectId" not in sidebar
+    # Read the decision out of deleteTargetHasFiles rather than pinning one spelling: #8932 added
+    # bulk targets and rewrote the body to `target.kind !== "run"`, same answer for chats and
+    # projects. The contract is that a run has no sandbox and project membership is never
+    # consulted, so assert exactly that.
+    body = _sidebar_function_body("deleteTargetHasFiles")
+    assert "projectId" not in body, (
+        "a chat moved into a project still owns the sandbox it wrote before the move, "
+        "so the switch must not be gated on project membership"
+    )
+    # Negative checks alone did not establish this. `return target.kind === "run";` -- the exact
+    # inversion, hiding the switch for every chat and project -- mentions "run", mentions no
+    # projectId, and contains neither prohibited expression, so it passed all of them. Pin the
+    # DIRECTION: run is the kind that is excluded, never the one that is included.
+    assert re.search(r'kind\s*!==\s*"run"', body) or all(
+        f'"{kind}"' in body for kind in ("chat", "chats", "project", "projects")
+    ), (
+        "the body must either exclude run by negation or name every kind that keeps its sandbox; "
+        "as written it does neither, so it cannot say which targets reach the switch"
+    )
+    assert not re.search(r'return\s+target\.kind\s*===\s*"run"\s*;', body), (
+        "inverted: this returns the delete switch for training runs only, and hides it for "
+        "every chat and project"
+    )
+    for kind in ('"chat"', '"project"'):
+        assert (
+            f"kind !== {kind}" not in body and f"kind === {kind} ? false" not in body
+        ), f"{kind} targets must keep reaching the delete switch"
 
 
 def test_a_persisted_files_value_that_is_not_a_list_is_not_a_wrapper():
@@ -2394,10 +2556,12 @@ def test_clearing_every_chat_reports_what_it_deleted(tmp_path, monkeypatch):
     from routes import chat_history
     from storage import studio_db
 
-    source = inspect.getsource(studio_db.clear_chat_history)
+    # The body lives in the _with_replay_status variant; clear_chat_history drops its
+    # third element for callers that do not need it. Same transaction either way.
+    source = inspect.getsource(studio_db.clear_chat_history_with_replay_status)
     assert "SELECT id FROM chat_threads" in source
     assert source.index("SELECT id FROM chat_threads") < source.index("DELETE FROM chat_threads")
-    assert "return removed, active_runs" in source
+    assert "return removed, active_runs, False" in source
 
     route = inspect.getsource(chat_history.clear_history)
     assert "cleared, cleared_runs = clear_chat_history()" in route
@@ -4165,7 +4329,7 @@ def test_clearing_every_chat_cancels_the_research_it_removed():
     from routes import chat_history
     from storage import studio_db
 
-    storage = inspect.getsource(studio_db.clear_chat_history)
+    storage = inspect.getsource(studio_db.clear_chat_history_with_replay_status)
     assert "SELECT id FROM research_runs" in storage
     assert storage.index("SELECT id FROM research_runs") < storage.index("DELETE FROM chat_threads")
 

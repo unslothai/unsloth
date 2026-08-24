@@ -46,7 +46,12 @@ export type {
 export { useMonitorOverlayStore } from "./stores/monitor-overlay-store";
 export {
   type MonitorFrame,
+  STACK_SHADOW_GUTTER_BOTTOM,
+  STACK_SHADOW_GUTTER_TOP,
   type StackGeometry,
+  railBottomOffset,
+  railCardsHeight,
+  railMaxHeight,
   stackBottomInset,
   stackGeometry,
   stackMaxHeight,
@@ -58,6 +63,12 @@ export type {
   PersonalizationAppearance,
   PersonalizationProfile,
 } from "./api/personalization";
+export { useShortcut, useShortcutLabel } from "./hooks/use-shortcut";
+export {
+  currentBinding,
+  useKeyboardShortcutsStore,
+} from "./stores/keyboard-shortcuts-store";
+export type { ShortcutId } from "./lib/keyboard-shortcuts";
 export { useSettingsDialogStore } from "./stores/settings-dialog-store";
 export type { SettingsTab } from "./stores/settings-dialog-store";
 export type { Palette, ResolvedTheme, Theme } from "./stores/theme-store";

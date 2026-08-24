@@ -24,6 +24,35 @@ RRF_K = int(os.environ.get("RAG_RRF_K", "60"))
 THREAD_WHOLE_DOC = os.environ.get("RAG_THREAD_WHOLE_DOC", "1") == "1"
 WHOLE_DOC_MAX_TOKENS = int(os.environ.get("RAG_WHOLE_DOC_MAX_TOKENS", "6000"))
 
+# Conversation archive: turns evicted by the rolling context window go to a per-thread
+# searchable scope and the relevant ones are recalled on the turn that evicted them. Off,
+# evicted turns are simply dropped again, and the recall reserve is not taken. Only applies
+# once the window evicts, which is itself opt-in per request via
+# context_overflow="truncate_oldest".
+#
+# It does NOT turn the rolling window back into what it was before: the compaction headroom
+# and the sticky boundary belong to the window, not to the archive, and have their own knob
+# (ROLLING_COMPACTION_HEADROOM_RATIO). Gating them here instead would make a host without
+# sqlite-vec silently compact differently.
+CONVERSATION_ARCHIVE = os.environ.get("RAG_CONVERSATION_ARCHIVE", "1") == "1"
+CONVERSATION_ARCHIVE_TOP_K = int(os.environ.get("RAG_CONVERSATION_ARCHIVE_TOP_K", "4"))
+# Room held back during the fit for the turns recalled straight after it. Sized to
+# CONVERSATION_ARCHIVE_TOP_K * CHUNK_TOKENS with slack for the wrapper text.
+CONVERSATION_RECALL_RESERVE_TOKENS = int(
+    os.environ.get("RAG_CONVERSATION_RECALL_RESERVE_TOKENS", "2048")
+)
+# Shape the archive's lexical query: require identifier-like tokens first, drop function
+# words from the fallback. Off restores the plain OR-of-every-token other scopes use.
+CONVERSATION_QUERY_FOCUS = os.environ.get("RAG_CONVERSATION_QUERY_FOCUS", "1") == "1"
+# "chronological" presents recalled turns oldest first, labelled, with later superseding
+# earlier; "relevance" restores the previous rendering. Presentation only: neither changes
+# which turns are selected.
+CONVERSATION_RECALL_ORDER = os.environ.get("RAG_CONVERSATION_RECALL_ORDER", "chronological")
+# Cosine floor for the automatic recall only, never for a search the model asked for.
+# Default 0.0 (off): a weak match is often still the right turn in one's own conversation.
+# Raise it when the automatic block does more harm than good.
+CONVERSATION_FORCED_MIN_SCORE = float(os.environ.get("RAG_CONVERSATION_FORCED_MIN_SCORE", "0.0"))
+
 UPLOAD_EXTS = {".pdf", ".txt", ".md", ".markdown", ".docx", ".html", ".htm"}
 # Reject uploads larger than this, so one pathological file can't drive unbounded parse
 # + vision work at ingest. 0 disables the cap. Default 200 MB.

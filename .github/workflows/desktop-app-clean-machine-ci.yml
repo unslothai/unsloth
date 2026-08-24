@@ -25,6 +25,8 @@ on:
   pull_request:
     paths:
       - '.github/workflows/desktop-app-clean-machine-ci.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
+
       - '.github/scripts/resolve-desktop-release.py'
       - '.github/scripts/clean-machine-env.sh'
       - '.github/scripts/clean-machine-assert.sh'
@@ -35,6 +37,7 @@ on:
       - 'tests/security/test_release_desktop_appimage.py'
       - 'tests/studio/appimage_test_support.py'
       - 'tests/studio/appimage_portability_smoke.py'
+      - 'tests/studio/appimage_media_pipeline_probe.py'
       - 'tests/studio/appimage_model_download_webdriver.py'
   workflow_dispatch:
     inputs:
@@ -58,10 +61,10 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  # Latest-only on branches, never on main. Pushes to main land in bursts, so
-  # cancelling superseded runs there throws away the run that would have
-  # reported a regression, and the run that writes the shared caches. Same
-  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  # Latest-only on a PR branch. On main this does less than it reads like: it stops
+  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
+  # the moment a newer one is queued, so a merge burst still leaves only the tip.
+  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
@@ -282,7 +285,14 @@ jobs:
             cp "$f" logs/ 2>/dev/null || true
             tail -60 "$f"
             # The two fields the bug report turned on.
-            grep -E "disposition=|can_auto_repair=|Xcode Command Line|ModuleNotFoundError" "$f" || true
+            # "Managed preflight" is not decoration. The disposition is the symptom;
+            # the reason is the diagnosis, and it is logged on a separate line that
+            # `tail -60` above scrolls away the moment the backend starts chattering.
+            # On 2026-08-19 this went red on all four platforms and printed nothing
+            # but "saw: ManagedStale"; the reason that actually explained it,
+            # studio_install_requirements_changed, had to be recovered by hand from
+            # the uploaded artifact.
+            grep -E "disposition=|can_auto_repair=|Managed preflight|Xcode Command Line|ModuleNotFoundError" "$f" || true
             found=1
             if grep -qE "desktop_preflight completed disposition=" "$f"; then disposition=1; fi
             dispositions="${dispositions:-} $(grep -oE 'desktop_preflight completed disposition=[A-Za-z]+' "$f" | sed 's/.*disposition=//' | tr '\n' ' ')"
@@ -396,12 +406,18 @@ jobs:
           bash .github/scripts/clean-machine-assert.sh absent
 
       - name: Install with NO dev tooling, only runtime libs
+        # The apt preamble below is bounded by the shared helper; the `.deb` install
+        # after it deliberately is not, because whether that package resolves its own
+        # dependencies is the question this job asks. A step budget bounds it anyway,
+        # so a stall there names this step instead of cancelling the job silently.
+        timeout-minutes: 25
         run: |
           # Deliberately no build-essential/cmake/git: a user installing a .deb has none.
           # Xvfb and WebKit are runtime requirements and apt pulls the .deb's declared
           # deps, so a wrong dependency list fails here.
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends xvfb
+          RETRY_ATTEMPTS=2 RETRY_ATTEMPT_TIMEOUT=360 \
+            bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get install -y -qq --no-install-recommends xvfb || { apt-get update -qq && apt-get install -y -qq --no-install-recommends xvfb; }'
           if [ "${{ matrix.kind }}" = "deb" ]; then
             sudo apt-get install -y ./dl/*.deb || {
               echo "::error::the .deb does not declare its runtime dependencies correctly"
@@ -521,7 +537,14 @@ jobs:
           for f in "$UNSLOTH_STUDIO_HOME/tauri.log" "$HOME/.unsloth/studio/tauri.log"; do
             [ -f "$f" ] || continue
             echo "=== $f ==="; cp "$f" logs/ 2>/dev/null || true; tail -60 "$f"
-            grep -E "disposition=|can_auto_repair=|ModuleNotFoundError" "$f" || true
+            # "Managed preflight" is not decoration. The disposition is the symptom;
+            # the reason is the diagnosis, and it is logged on a separate line that
+            # `tail -60` above scrolls away the moment the backend starts chattering.
+            # On 2026-08-19 this went red on all four platforms and printed nothing
+            # but "saw: ManagedStale"; the reason that actually explained it,
+            # studio_install_requirements_changed, had to be recovered by hand from
+            # the uploaded artifact.
+            grep -E "disposition=|can_auto_repair=|Managed preflight|ModuleNotFoundError" "$f" || true
             found=1
             if grep -qE "desktop_preflight completed disposition=" "$f"; then disposition=1; fi
             dispositions="${dispositions:-} $(grep -oE 'desktop_preflight completed disposition=[A-Za-z]+' "$f" | sed 's/.*disposition=//' | tr '\n' ' ')"
@@ -564,8 +587,7 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
-  # Build the checked-out PR once without signing or release credentials. Every
-  # PR artifact test below consumes this exact file, including fork PRs.
+  # Build the PR AppImage once for every artifact test below.
   appimage-pr-build:
     if: github.event_name == 'pull_request'
     name: Build PR AppImage
@@ -579,11 +601,13 @@ jobs:
           persist-credentials: false
 
       - name: Install AppImage build dependencies
+        timeout-minutes: 15
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '360'
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq \
-            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
-            libxdo-dev libssl-dev patchelf xdg-utils
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get install -y -qq libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf xdg-utils fonts-noto-color-emoji gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav || { apt-get update -qq && apt-get install -y -qq libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf xdg-utils fonts-noto-color-emoji gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav; }'
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
@@ -591,7 +615,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
 
-      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           save-if: false
           workspaces: 'studio/src-tauri -> target'
@@ -638,8 +662,7 @@ jobs:
           if-no-files-found: error
 
 
-  # Complete AppImage portability is separate from the native .deb lane above:
-  # these images deliberately have no host GTK/WebKitGTK/JavaScriptCore/AppIndicator.
+  # These images deliberately omit host GTK, WebKitGTK, and AppIndicator.
   appimage-portability:
     needs: appimage-pr-build
     if: >-
@@ -656,10 +679,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {label: ubuntu-22.04, image: 'ubuntu:22.04', display_backend: x11}
-          - {label: ubuntu-24.04-wayland, image: 'ubuntu:24.04', display_backend: wayland}
-          - {label: debian-12, image: 'debian:12', display_backend: x11}
-          - {label: fedora-44, image: 'fedora:44', display_backend: x11}
+          - {label: ubuntu-22.04, image: 'ubuntu:22.04', display_backend: x11, install_gles: true}
+          - {label: ubuntu-22.04-no-gles, image: 'ubuntu:22.04', display_backend: x11, install_gles: false}
+          - {label: ubuntu-24.04-wayland, image: 'ubuntu:24.04', display_backend: wayland, install_gles: true}
+          - {label: debian-12, image: 'debian:12', display_backend: x11, install_gles: true}
+          - {label: fedora-44, image: 'fedora:44', display_backend: x11, install_gles: true}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -667,24 +691,52 @@ jobs:
           persist-credentials: false
 
       - name: Install only generic display and graphics prerequisites
+        timeout-minutes: 15
         run: |
           set -euo pipefail
           if command -v apt-get >/dev/null 2>&1; then
-            apt-get update -qq
-            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-              ca-certificates python3 xvfb xauth binutils libgles2 libgl1 libegl1 libgbm1 \
-              libwayland-client0 libharfbuzz0b libnghttp2-14 fontconfig libfribidi0
-            if [[ "${{ matrix.display_backend }}" == "wayland" ]]; then
-              DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends weston
-            fi
+            RETRY_ATTEMPTS=2 RETRY_ATTEMPT_TIMEOUT=360 \
+              bash .github/scripts/retry-with-apt-lock.sh bash -c '
+                set -euo pipefail
+                apt-get update -qq
+                alsa_package=libasound2
+                if apt-cache policy "$alsa_package" | grep -q "Candidate: (none)"; then
+                  alsa_package=libasound2t64
+                fi
+                DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+                  ca-certificates python3 xvfb xauth binutils libgl1 libegl1 libgbm1 \
+                  libwayland-client0 libwayland-cursor0 libwayland-egl1 libwayland-server0 \
+                  libx11-6 libx11-xcb1 libxcb1 libxcb-randr0 libxcb-render0 libxcb-shm0 \
+                  libxext6 libxrandr2 libxi6 libxcursor1 libxfixes3 libxrender1 \
+                  libxcomposite1 libxdamage1 libxinerama1 libxau6 libxdmcp6 libxshmfence1 \
+                  "$alsa_package" libpulse0 libharfbuzz0b libnghttp2-14 fontconfig libfribidi0
+                if [[ "${{ matrix.install_gles }}" == "true" ]]; then
+                  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libgles2
+                fi
+                if [[ "${{ matrix.display_backend }}" == "wayland" ]]; then
+                  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends weston
+                fi
+              '
             forbidden="$(dpkg-query -W -f='${binary:Package}\n' 2>/dev/null | \
               grep -Ei 'webkit|javascriptcore|appindicator|libgtk-3' || true)"
           else
             dnf install -y -q ca-certificates python3 binutils xorg-x11-server-Xvfb xorg-x11-xauth \
-              mesa-libGLES mesa-libEGL mesa-libgbm mesa-dri-drivers mesa-libGL \
-              libwayland-client libnghttp2 harfbuzz fontconfig fribidi procps-ng findutils
+              mesa-libEGL mesa-libgbm mesa-dri-drivers mesa-libGL \
+              libwayland-client libwayland-cursor libwayland-egl libwayland-server \
+              libX11 libX11-xcb libxcb libXext libXrandr libXi libXcursor libXfixes \
+              libXrender libXcomposite libXdamage libXinerama libXau libXdmcp libxshmfence \
+              alsa-lib pulseaudio-libs libnghttp2 harfbuzz fontconfig fribidi procps-ng findutils
+            if [[ "${{ matrix.install_gles }}" == "true" ]]; then
+              dnf install -y -q mesa-libGLES
+            fi
             forbidden="$(rpm -qa | grep -Ei 'webkit|javascriptcore|appindicator|gtk3' || true)"
           fi
+          if [[ "${{ matrix.install_gles }}" == "false" ]] && \
+             ldconfig -p | grep -q 'libGLESv2\.so\.2'; then
+            echo "::error::no-GLES portability lane unexpectedly provides libGLESv2.so.2"
+            exit 1
+          fi
+
           if [ -n "$forbidden" ]; then
             echo "::error::portability image unexpectedly contains a host desktop runtime"
             printf '%s\n' "$forbidden"
@@ -770,6 +822,8 @@ jobs:
         run: |
           set -euo pipefail
           studio/src-tauri/linux/verify-complete-appimage.sh "$APPIMAGE_PATH"
+          # Check bundled plugin loadability on each target host.
+          python3 tests/studio/appimage_media_pipeline_probe.py
           python3 tests/studio/appimage_portability_smoke.py
 
       - name: Upload portability evidence
@@ -782,9 +836,7 @@ jobs:
           if-no-files-found: warn
 
 
-  # WebDriver needs the host's driver package. PR runs consume the same unsigned
-  # branch-built AppImage as the portability matrix; other events test the shipped artifact.
-  # a rendered window is not enough unless WebKit can start and cancel a model download.
+  # WebDriver uses the same PR artifact to exercise a real model download request.
   appimage-model-download:
     needs: appimage-pr-build
     if: >-
@@ -802,13 +854,21 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
 
       - name: Install WebDriver prerequisites
+        timeout-minutes: 20
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '360'
+        run: |
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get install -y -qq --no-install-recommends python3 xvfb xauth webkit2gtk-driver libgles2 libgl1 libegl1 libgbm1 libwayland-client0 libharfbuzz0b libnghttp2-14 fontconfig libfribidi0 libasound2 libpulse0 || { apt-get update -qq && apt-get install -y -qq --no-install-recommends python3 xvfb xauth webkit2gtk-driver libgles2 libgl1 libegl1 libgbm1 libwayland-client0 libharfbuzz0b libnghttp2-14 fontconfig libfribidi0 libasound2 libpulse0; }'
+          cargo install tauri-driver --version 2.0.6 --locked
+      - name: Fetch the digest-pinned COLRv1 regression font
         run: |
           set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends \
-            python3 xvfb xauth webkit2gtk-driver libgles2 libgl1 libegl1 libgbm1 \
-            libwayland-client0 libharfbuzz0b libnghttp2-14 fontconfig libfribidi0
-          cargo install tauri-driver --version 2.0.6 --locked
+          url='https://raw.githubusercontent.com/googlefonts/noto-emoji/8998f5dd683424a73e2314a8c1f1e359c19e8742/fonts/Noto-COLRv1.ttf'
+          output="$RUNNER_TEMP/Noto-COLRv1.ttf"
+          curl -fsSL --retry 3 --retry-all-errors "$url" -o "$output"
+          echo '0ae57fe58645638523ba35f388d93739d292539a9acb84df5700c81b1e1a28d2  '"$output" | sha256sum -c -
 
       - name: Download the AppImage built from this PR
         if: github.event_name == 'pull_request'
@@ -847,6 +907,8 @@ jobs:
         env:
           APPIMAGE_PATH: ${{ github.workspace }}/dl/Unsloth.AppImage
           APPIMAGE_E2E_ART_DIR: ${{ github.workspace }}/logs/appimage-model-download
+          APPIMAGE_COLRV1_FONT: ${{ runner.temp }}/Noto-COLRv1.ttf
+          APPIMAGE_COLRV1_FONT_SHA256: 0ae57fe58645638523ba35f388d93739d292539a9acb84df5700c81b1e1a28d2
         run: |
           set -euo pipefail
           appimage="$(find dl -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
@@ -1103,7 +1165,9 @@ jobs:
               Write-Host "=== $f ==="
               Copy-Item $f logs/ -ErrorAction SilentlyContinue
               Get-Content $f -Tail 60
-              Select-String -Path $f -Pattern 'disposition=|can_auto_repair=|ModuleNotFoundError' `
+              # See the Linux job: the reason line is what explains a disposition,
+              # and Get-Content -Tail 60 above scrolls it away.
+              Select-String -Path $f -Pattern 'disposition=|can_auto_repair=|Managed preflight|ModuleNotFoundError' `
                 -ErrorAction SilentlyContinue
               $found = $true
               $hits = @(Select-String -Path $f -Pattern 'desktop_preflight completed disposition=(\w+)')

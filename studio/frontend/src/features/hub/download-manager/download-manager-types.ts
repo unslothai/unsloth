@@ -14,6 +14,13 @@ export interface ManagedDownload {
   variant: string | null;
   state: DownloadJobState;
   downloadedBytes: number;
+  /** False when the last poll HELD `downloadedBytes` rather than measuring it
+   * (see `resolveProgressUpdate`). A held figure belongs to the previous
+   * reading's total, so a surface that subtracts it from the current
+   * `expectedBytes` is mixing two plans and should fall back to the backend's
+   * own remainder. Undefined on a job that has not polled yet, which has no held
+   * bytes to forward. */
+  measuredTransfer?: boolean;
   // Finalized bytes on disk (excludes the in-progress `.incomplete` portion in
   // `downloadedBytes`). The completion fallback keys off this so a partial can't
   // be marked complete.
@@ -23,6 +30,8 @@ export interface ManagedDownload {
   expectedBytes: number;
   fraction: number;
   bytesPerSec: number;
+  /** Seconds remaining, from the same estimator as {@link bytesPerSec}; 0 hides it. */
+  etaSeconds: number;
   error: string | null;
   startedAt: number;
   serverGeneration?: number;
@@ -92,6 +101,12 @@ export interface JobRuntime {
   watchdog: number | null;
   /** Rolling byte samples behind the stability-gated rate/ETA. */
   speedSamples: TransferSample[];
+  /**
+   * A generation change seen on a status-only tick, held until a progress poll
+   * consumes it. Status polls twice as often as progress, so the change is
+   * usually observed on a tick that returns before reaching the progress path.
+   */
+  pendingGenerationChange?: boolean;
   idleSinceMs: number | null;
   lastProgressPollAt: number | null;
   pollFailureStartedAt: number | null;

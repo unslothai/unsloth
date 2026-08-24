@@ -14,7 +14,6 @@ import structlog
 from loggers import get_logger
 
 from utils.models.model_config import load_model_defaults
-from utils.paths import is_local_path, normalize_path
 
 logger = get_logger(__name__)
 
@@ -71,38 +70,26 @@ def get_family_inference_params(model_id: str) -> Dict[str, Any]:
 
 
 def _has_specific_yaml(model_identifier: str) -> bool:
-    """Check if a model has its own YAML config (not just default.yaml)."""
-    from utils.models.model_config import _REVERSE_MODEL_MAPPING
+    """Check if a model has its own YAML config (not just default.yaml).
+
+    Shares defaults_lookup_names with load_model_defaults so this answer cannot disagree with
+    the config it actually loaded -- disagreeing would let family defaults override a model's
+    own inference params.
+    """
+    from utils.models.model_config import _REVERSE_MODEL_MAPPING, defaults_lookup_names
 
     script_dir = Path(__file__).parent.parent.parent
     defaults_dir = script_dir / "assets" / "configs" / "model_defaults"
 
-    if model_identifier.lower() in _REVERSE_MODEL_MAPPING:
+    names = defaults_lookup_names(model_identifier)
+    if any(name.lower() in _REVERSE_MODEL_MAPPING for name in names):
         return True
 
-    # For local paths, normalize backslashes so Path().parts splits correctly,
-    # then match the last 1-2 components against the registry (mirrors load_model_defaults).
-    _is_local = is_local_path(model_identifier)
-    _normalized = normalize_path(model_identifier) if _is_local else model_identifier
-
-    if _is_local:
-        parts = Path(_normalized).parts
-        for depth in (2, 1):
-            if len(parts) >= depth:
-                suffix = "/".join(parts[-depth:])
-                if suffix.lower() in _REVERSE_MODEL_MAPPING:
-                    return True
-        _lookup = Path(_normalized).name
-    else:
-        _lookup = model_identifier
-
-    # Exact filename match (basename for local paths; absolute paths break rglob on Windows).
-    model_filename = _lookup.replace("/", "_") + ".yaml"
-    for config_path in defaults_dir.rglob(model_filename):
-        if config_path.is_file():
-            return True
-
-    return False
+    return any(
+        config_path.is_file()
+        for name in names
+        for config_path in defaults_dir.rglob(name.replace("/", "_") + ".yaml")
+    )
 
 
 def load_inference_config(model_identifier: str) -> Dict[str, Any]:

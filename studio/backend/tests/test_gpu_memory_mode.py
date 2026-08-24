@@ -718,7 +718,10 @@ def test_remote_vulkan_diffusion_preflight_runs_before_teardown(monkeypatch):
     preflight = src.index("_preflight_model_path = self._download_gguf(")
     teardown = src.index("# ── Phase 1: kill old process")
     assert preflight < teardown
-    assert "model_path = _preflight_model_path or self._download_gguf(" in src
+    # Phase 2 uses the preflight result before falling back to a download.
+    phase_two = src.index("model_path = _preflight_model_path", teardown)
+    download = src.index("model_path = self._download_gguf(", teardown)
+    assert phase_two < download
 
 
 def test_local_vulkan_diffusion_preflight_runs_before_teardown():
@@ -1377,25 +1380,30 @@ def test_zero_vram_chat_load_only_for_a_deliberate_cpu_only_offload(not_vulkan):
     # Manual + gpu_layers=0 is the one shape that launches with the GPUs hidden from the child, so it is the one shape allowed
     # to skip the GPU arbiter. Auto (or any pinned layer count) puts the model on the GPU and must still evict a pipeline.
     zero = llama_cpp_module.zero_vram_chat_load
-    assert zero("manual", 0) is True
-    assert zero("auto", 0) is False
-    assert zero("manual", 1) is False
-    assert zero("manual", -1) is False
+    # Speculation named explicitly off: an ABSENT mode resolves to auto everywhere else
+    # in the module, so it is GPU-bearing and covered by its own test below.
+    assert zero("manual", 0, [], False, "off") is True
+    assert zero("auto", 0, [], False, "off") is False
+    assert zero("manual", 1, [], False, "off") is False
+    assert zero("manual", -1, [], False, "off") is False
 
 
 def test_zero_vram_chat_load_refuses_every_gpu_companion(not_vulkan):
     # The launch-time mask keeps the GPUs visible for a device pin, tensor mode, an mmproj or a drafter, so those loads DO hold
     # VRAM. --mmproj and --model-draft are added by the backend, so their intent arrives as flags.
     zero = llama_cpp_module.zero_vram_chat_load
-    assert zero("manual", 0, ["--device", "CUDA0"]) is False
-    assert zero("manual", 0, ["-dev", "CUDA0"]) is False
-    assert zero("manual", 0, ["--split-mode", "tensor"]) is False
-    assert zero("manual", 0, ["--model-draft", "/tmp/draft.gguf"]) is False
-    assert zero("manual", 0, [], True) is False
+    assert zero("manual", 0, ["--device", "CUDA0"], False, "off") is False
+    assert zero("manual", 0, ["-dev", "CUDA0"], False, "off") is False
+    assert zero("manual", 0, ["--split-mode", "tensor"], False, "off") is False
+    assert zero("manual", 0, ["--model-draft", "/tmp/draft.gguf"], False, "off") is False
+    assert zero("manual", 0, [], True, "off") is False
     assert zero("manual", 0, [], False, "model") is False
     # A CPU-pinned device and a CPU-forced drafter keep it zero-VRAM.
-    assert zero("manual", 0, ["--device", "none"]) is True
-    assert zero("manual", 0, ["--model-draft", "/tmp/d.gguf", "--spec-draft-ngl", "0"]) is True
+    assert zero("manual", 0, ["--device", "none"], False, "off") is True
+    assert (
+        zero("manual", 0, ["--model-draft", "/tmp/d.gguf", "--spec-draft-ngl", "0"], False, "off")
+        is True
+    )
 
 
 def test_zero_vram_chat_load_exempts_disabled_speculation(not_vulkan):
@@ -1404,7 +1412,9 @@ def test_zero_vram_chat_load_exempts_disabled_speculation(not_vulkan):
     zero = llama_cpp_module.zero_vram_chat_load
     assert zero("manual", 0, [], False, "off") is True
     assert zero("manual", 0, [], False, " OFF ") is True
-    assert zero("manual", 0, [], False, "") is True
+    # Empty is NOT off: it canonicalizes to None like an omitted mode, and every
+    # consumer resolves that to auto, which may launch a drafter on the GPU.
+    assert zero("manual", 0, [], False, "") is False
     assert zero("manual", 0, [], False, "auto") is False
     assert zero("manual", 0, [], False, "mtp") is False
     assert zero("manual", 0, [], False, "default") is False
@@ -1462,3 +1472,20 @@ def test_cmd_companion_ignores_a_projector_pinned_off_the_gpu():
     # llama.cpp assigns rather than accumulates for this one, so the last flag wins.
     cmd = ["llama-server", "--mmproj", "p.gguf", "--no-mmproj-offload", "--mmproj-offload"]
     assert has(cmd, {}) is True
+
+
+def test_zero_vram_chat_load_treats_an_absent_mode_as_auto(not_vulkan):
+    # _canonicalize_spec_mode returns None for None, "" and whitespace alike, and every
+    # consumer resolves that to "auto" (`... or "auto"` in load_model), where a remote or
+    # local sidecar can be discovered and launched with its default GPU offload. Reading
+    # an absent mode as "off" here let an API or defaulted load skip acquire_for(CHAT)
+    # while the launch-time mask, which reads the finished argv and so sees the drafter
+    # that got added, kept the GPUs visible: no arbiter, real VRAM, free to land on a
+    # resident image/video pipeline and OOM both.
+    zero = llama_cpp_module.zero_vram_chat_load
+    assert zero("manual", 0) is False
+    assert zero("manual", 0, [], False, None) is False
+    assert zero("manual", 0, [], False, "") is False
+    assert zero("manual", 0, [], False, "   ") is False
+    # Only the canonical spelling still exempts it.
+    assert zero("manual", 0, [], False, "off") is True

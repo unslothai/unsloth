@@ -12,8 +12,18 @@ fi
 tools_dir="$1"
 mkdir -p "$tools_dir"
 
-APPRUN_URL="https://github.com/tauri-apps/binary-releases/releases/download/apprun-old/AppRun-x86_64"
-APPRUN_SHA256="f30140a43a0a59e46db21bdefdf749b9e9f2c6946e92afabbacf98b8ae73fb4f"
+script_dir="$(cd -- "$(dirname -- "$0")" && pwd -P)"
+
+safe_emoji_font="/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf"
+safe_emoji_license="/usr/share/doc/fonts-noto-color-emoji/copyright"
+[[ -f "$safe_emoji_font" ]] || {
+  echo "fonts-noto-color-emoji is required: $safe_emoji_font" >&2
+  exit 1
+}
+[[ -f "$safe_emoji_license" ]] || {
+  echo "fonts-noto-color-emoji license is required: $safe_emoji_license" >&2
+  exit 1
+}
 LINUXDEPLOY_URL="https://github.com/tauri-apps/binary-releases/releases/download/linuxdeploy/linuxdeploy-x86_64.AppImage"
 LINUXDEPLOY_SHA256="e762bea85c8eb0d4b3508d46e5c1f037f717d0f9303ae3b4aafc8b04991fa1ef"
 GTK_PLUGIN_URL="https://raw.githubusercontent.com/tauri-apps/linuxdeploy-plugin-gtk/b5eb8d05b4c0ed40107fe2158c5d8527f94568ef/linuxdeploy-plugin-gtk.sh"
@@ -31,48 +41,83 @@ fetch() {
   chmod +x "$dest"
 }
 
-fetch "$APPRUN_URL" "$APPRUN_SHA256" AppRun-x86_64
 fetch "$LINUXDEPLOY_URL" "$LINUXDEPLOY_SHA256" linuxdeploy-x86_64.AppImage
 fetch "$GTK_PLUGIN_URL" "$GTK_PLUGIN_SHA256" linuxdeploy-plugin-gtk.sh
 fetch "$GSTREAMER_PLUGIN_URL" "$GSTREAMER_PLUGIN_SHA256" linuxdeploy-plugin-gstreamer.sh
 fetch "$APPIMAGE_PLUGIN_URL" "$APPIMAGE_PLUGIN_SHA256" linuxdeploy-plugin-appimage.AppImage
 
+# Replace Tauri's global LD_LIBRARY_PATH launcher to avoid #7953.
+install -m 755 "$script_dir/appimage-apprun.sh" "$tools_dir/AppRun-x86_64"
 
-# The pinned GTK plugin predates the repaired Wayland runtime boundary and
-# unconditionally forces X11. Let GTK follow the session (or an explicit
-# GDK_BACKEND) so the same artifact can run natively on Wayland and under X11.
+# Run the finalizer after the GTK plugin deploys its dependencies.
+install -m 755 \
+  "$script_dir/finalize-complete-appimage.sh" \
+  "$tools_dir/finalize-complete-appimage.sh"
+
+install -m 644 "$script_dir/appimage-fonts.conf" "$tools_dir/unsloth-appimage-fonts.conf"
+install -m 644 "$safe_emoji_font" "$tools_dir/UnslothSafeEmoji.ttf"
+install -m 644 "$safe_emoji_license" "$tools_dir/UnslothSafeEmoji.LICENSE"
+
+# Let GTK select X11 or Wayland instead of forcing X11.
 sed -i '/export GDK_BACKEND=x11/d' "$tools_dir/linuxdeploy-plugin-gtk.sh"
 
-# Keep host-loaded display, networking, and C++ libraries on the host side of
-# the ABI boundary. Ubuntu 22.04 copies of these break Ubuntu 24.04/Mint 22 GIO,
-# curl, and Mesa modules when the host loads them after bundled WebKitGTK.
+# Remove host module paths from the generated AppRun hook (#7953).
 cat >> "$tools_dir/linuxdeploy-plugin-gtk.sh" <<'SH'
-rm -f \
-  "$APPDIR"/usr/lib/libwayland-client.so* \
-  "$APPDIR"/usr/lib/libnghttp2.so* \
-  "$APPDIR"/usr/lib/libcurl*.so* \
-  "$APPDIR"/usr/lib/libstdc++.so* \
-  "$APPDIR"/usr/lib/libgcc_s.so*
+# Canonicalize the relative APPDIR used by APPIMAGE_EXTRACT_AND_RUN.
+sed -i '2i\
+case "${APPDIR:-}" in\
+  /*) ;;\
+  *) APPDIR="$(dirname "$(realpath "$0")")" ;;\
+esac\
+export APPDIR
+' "$HOOKFILE"
 
-# GIO_EXTRA_MODULES is additive, so inherited host entries must be removed.
-# Pin the default module directory to the bundled modules; otherwise host proxy
-# and dconf modules can be loaded into the bundled GLib process.
-gio_module_dir="$(find "$APPDIR"/usr/lib -type d -path '*/gio/modules' -print -quit)"
-if [[ -z "$gio_module_dir" ]]; then
-  echo "Complete AppImage has no bundled GIO module directory" >&2
+# Remove foreign-architecture GIO modules copied from multilib hosts.
+while IFS= read -r -d '' gio_module; do
+  machine="$(LC_ALL=C readelf -h "$gio_module" 2>/dev/null |
+    sed -n 's/^[[:space:]]*Machine:[[:space:]]*//p')"
+  [[ "$machine" == "Advanced Micro Devices X86-64" ]] || rm -f "$gio_module"
+done < <(find "$APPDIR"/usr/lib* -path '*/gio/modules/*' -type f -print0)
+
+# Pin GIO to the bundled modules that survived the architecture sweep.
+mapfile -t gio_module_dirs < <(
+  find "$APPDIR"/usr/lib* -path '*/gio/modules/*' -type f -printf '%h\n' | sort -u
+)
+if [[ ${#gio_module_dirs[@]} -ne 1 ]]; then
+  echo "Complete AppImage needs exactly one bundled GIO module directory," \
+    "found: ${gio_module_dirs[*]:-none}" >&2
   exit 1
 fi
-gio_module_rel="${gio_module_dir#"$APPDIR"/}"
 cat >> "$HOOKFILE" <<EOF
 unset GIO_EXTRA_MODULES
-export GIO_MODULE_DIR="\$APPDIR/$gio_module_rel"
+export GIO_MODULE_DIR="\$APPDIR/${gio_module_dirs[0]#"$APPDIR"/}"
 EOF
 
-# Tauri writes .DirIcon as an absolute build-machine symlink, so it dangles on
-# every user's machine and desktop integration shows no icon. Relink relative.
-# Tauri points it at "$APPDIR/<product>.png", so the basename is the whole fix.
+# Pin GTK_PATH so GTK_MODULES cannot load host modules into bundled GTK.
+mapfile -t gtk_module_dirs < <(
+  find "$APPDIR"/usr/lib* -maxdepth 2 -type d -name 'gtk-[0-9]*' | sort -u
+)
+if [[ ${#gtk_module_dirs[@]} -ne 1 ]]; then
+  echo "Complete AppImage needs exactly one bundled GTK module directory," \
+    "found: ${gtk_module_dirs[*]:-none}" >&2
+  exit 1
+fi
+cat >> "$HOOKFILE" <<EOF
+export GTK_PATH="\$APPDIR/${gtk_module_dirs[0]#"$APPDIR"/}"
+EOF
+
+# Replace Tauri's build-machine .DirIcon target with a relative link.
 dir_icon_target="$(readlink "$APPDIR/.DirIcon" 2>/dev/null || true)"
 if [[ "$dir_icon_target" == /* ]]; then
   ln -sfn "${dir_icon_target##*/}" "$APPDIR/.DirIcon"
 fi
 SH
+
+# Append the idempotent finalizer because linuxdeploy does not guarantee plugin order.
+for plugin in linuxdeploy-plugin-gtk.sh linuxdeploy-plugin-gstreamer.sh; do
+  cat >> "$tools_dir/$plugin" <<'SH'
+
+plugin_dir="$(cd -- "$(dirname -- "$0")" && pwd -P)"
+"$plugin_dir/finalize-complete-appimage.sh" "$APPDIR"
+SH
+done
