@@ -3198,17 +3198,10 @@ class FastLlamaModel:
             # Tying is not in check_parameters and leaves both lists looking the same, so
             # compare it separately. On what it actually does, not what was asked: on an
             # untied model the request changes nothing either way.
-            _requested_tie = _resolve_ensure_weight_tying(
+            _requested_ties = _effective_weight_tying(
                 model,
                 requested_saved,
                 ensure_weight_tying,
-            )
-            # PEFT ties whenever the flag is on and a tied member is saved, even if only
-            # one side was named, so ask that rather than whether lm_head was removed.
-            _requested_ties = bool(
-                _requested_tie
-                and _model_ties_embeddings(model)
-                and _embedding_leaves(requested_saved)
             )
             _stored_ties = bool(getattr(model.peft_config["default"], "modules_to_tie", None))
             check_all = check_all and (_requested_ties == _stored_ties)
@@ -3364,7 +3357,7 @@ class FastLlamaModel:
             _moved_embedding_modules,
             target_parameters,
         )
-        ensure_weight_tying = _resolve_ensure_weight_tying(
+        ensure_weight_tying = _effective_weight_tying(
             model,
             modules_to_save,
             ensure_weight_tying,

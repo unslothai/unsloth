@@ -376,3 +376,22 @@ def test_tying_normalizes_the_saved_embedding_to_its_bare_name():
         ["model.embed_tokens", "lm_head", "custom.score"],
         True,
     ) == ["embed_tokens", "custom.score"]
+
+
+def test_tying_needs_the_input_embedding_saved():
+    """PEFT rebuilds the output from the input embedding's wrapper, so saving only
+    lm_head cannot tie: peft 0.18 raises AttributeError, later versions tie nothing."""
+    from unsloth.models._utils import _effective_weight_tying
+
+    tied, untied = _Model(tie = True), _Model(tie = False)
+    assert _effective_weight_tying(tied, ["embed_tokens", "lm_head"], None) is True
+    assert _effective_weight_tying(tied, ["embed_tokens"], True) is True
+    assert _effective_weight_tying(tied, ["model.embed_tokens"], True) is True
+    # No input embedding to tie from.
+    assert _effective_weight_tying(tied, ["lm_head"], True) is False
+    assert _effective_weight_tying(tied, None, True) is False
+    assert _effective_weight_tying(tied, ["score"], True) is False
+    # Nothing to reconstruct on an untied model, however it is asked for.
+    assert _effective_weight_tying(untied, ["embed_tokens", "lm_head"], True) is False
+    # An explicit False always wins.
+    assert _effective_weight_tying(tied, ["embed_tokens", "lm_head"], False) is False

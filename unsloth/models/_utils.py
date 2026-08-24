@@ -97,6 +97,7 @@ __all__ = [
     "_embedding_leaf",
     "_embedding_leaves",
     "_model_ties_embeddings",
+    "_effective_weight_tying",
     "_redirect_embedding_targets",
     "_raise_if_no_lora_targets_left",
     "_resolve_ensure_weight_tying",
@@ -4588,6 +4589,20 @@ def _resolve_ensure_weight_tying(model, modules_to_save, requested):
     if not EMBEDDING_MODULES <= _embedding_leaves(modules_to_save):
         return False
     return _model_ties_embeddings(model)
+
+
+def _effective_weight_tying(model, modules_to_save, requested):
+    """Whether PEFT will really retie, not just whether it was asked to.
+
+    Tying rebuilds the output from the INPUT embedding's wrapper, so that one has to be
+    saved: peft 0.18 raises AttributeError when only lm_head is, and later versions
+    quietly tie nothing. Untied models have no counterpart to rebuild either.
+    """
+    if not _resolve_ensure_weight_tying(model, modules_to_save, requested):
+        return False
+    if not _model_ties_embeddings(model):
+        return False
+    return "embed_tokens" in _embedding_leaves(modules_to_save)
 
 
 def _drop_tied_output_module(model, modules_to_save, ensure_weight_tying):
