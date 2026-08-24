@@ -121,3 +121,74 @@ export function deriveDefaultMapping(
   }
   return {};
 }
+
+export type ViewerColumnSelection = {
+  column: string;
+  label: string;
+  source: "auto" | "manual";
+};
+
+const VIEWER_ROLE_LABELS: Record<string, string> = {
+  image: "Image",
+  text: "Assistant response",
+  user: "User instruction",
+  messages: "Conversation",
+};
+
+export function deriveViewerMapping(
+  data: CheckFormatResponse,
+  isVlm: boolean,
+  manualMapping: Record<string, string>,
+): Record<string, string> {
+  const detected = deriveDefaultMapping(data, isVlm);
+  if (data.chat_column) {
+    detected[data.chat_column] = "messages";
+  }
+  const current = { ...detected };
+  for (const [manualColumn, manualRole] of Object.entries(manualMapping)) {
+    for (const [column, role] of Object.entries(current)) {
+      if (role === manualRole) {
+        delete current[column];
+      }
+    }
+    current[manualColumn] = manualRole;
+  }
+  return current;
+}
+
+export function getViewerColumnSelections(
+  data: CheckFormatResponse,
+  isVlm: boolean,
+  manualMapping: Record<string, string>,
+): ViewerColumnSelection[] {
+  const detected = deriveViewerMapping(data, isVlm, {});
+  const current = deriveViewerMapping(data, isVlm, manualMapping);
+  return Object.entries(current)
+    .filter(([, role]) => role in VIEWER_ROLE_LABELS)
+    .map(([column, role]) => ({
+      column,
+      label: VIEWER_ROLE_LABELS[role],
+      source:
+        manualMapping[column] !== undefined &&
+        manualMapping[column] !== detected[column]
+          ? "manual"
+          : "auto",
+    }));
+}
+
+export function getUnselectedInstructionColumns(
+  data: CheckFormatResponse,
+  selections: ViewerColumnSelection[],
+): string[] {
+  const selected = new Set(selections.map(({ column }) => column));
+  const instructionNames = new Set([
+    "question",
+    "query",
+    "prompt",
+    "instruction",
+    "user_prompt",
+  ]);
+  return data.columns.filter(
+    (column) => instructionNames.has(column) && !selected.has(column),
+  );
+}

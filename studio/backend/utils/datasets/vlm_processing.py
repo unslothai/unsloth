@@ -14,6 +14,22 @@ from itertools import islice
 VLM_INSTRUCTION_COLUMNS = ("question", "query", "prompt", "instruction", "user_prompt")
 
 
+def detect_vlm_instruction_column(sample) -> str | None:
+    """Return the first supported instruction column with non-empty sample content."""
+    if not isinstance(sample, dict):
+        return None
+    return next(
+        (
+            column
+            for column in VLM_INSTRUCTION_COLUMNS
+            if column in sample
+            and sample.get(column)
+            and str(sample[column]).strip()
+        ),
+        None,
+    )
+
+
 def generate_smart_vlm_instruction(
     dataset,
     text_column = "text",
@@ -42,18 +58,15 @@ def generate_smart_vlm_instruction(
 
     # ===== LEVEL 1: Explicit Instruction Columns =====
     # Columns that hold per-sample instructions
-    for col in VLM_INSTRUCTION_COLUMNS:
-        if col in column_names:
-            # Use it only if it has non-empty content
-            sample_content = sample[col]
-            if sample_content and str(sample_content).strip():
-                return {
-                    "instruction": None,  # use column content
-                    "instruction_column": col,
-                    "instruction_type": "explicit",
-                    "uses_dynamic_instruction": True,
-                    "confidence": 1.0,
-                }
+    instruction_column = detect_vlm_instruction_column(sample)
+    if instruction_column:
+        return {
+            "instruction": None,  # use column content
+            "instruction_column": instruction_column,
+            "instruction_type": "explicit",
+            "uses_dynamic_instruction": True,
+            "confidence": 1.0,
+        }
 
     # ===== LEVEL 2: Infer from Column Names + Content =====
     text_col_lower = text_column.lower()
