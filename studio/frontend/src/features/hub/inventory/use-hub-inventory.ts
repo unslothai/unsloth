@@ -215,6 +215,7 @@ function liveDownloadInventoryRows(
                 ? "transformers"
                 : "unknown",
           size_bytes: job.displayBytes,
+          last_modified: job.startedAt,
           partial: true,
           partial_transport: null,
           optimistic: true,

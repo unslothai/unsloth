@@ -223,12 +223,7 @@ export function buildCachedInventoryRow(
     bytes: row.size_bytes,
     cachePath: row.cache_path ?? null,
     loadCachePath: row.load_cache_path ?? null,
-    lastModified:
-      typeof row.last_modified === "number" &&
-      Number.isFinite(row.last_modified) &&
-      row.last_modified > 0
-        ? row.last_modified
-        : null,
+    lastModified: normalizeTimestamp(row.last_modified),
     partial: row.partial ?? false,
     partialTransport: row.partial_transport ?? null,
     partialResumable: row.partial_resumable === true,
