@@ -3666,9 +3666,9 @@ def assert_anthropic_stream_conformant(lines):
         if name == "content_block_start":
             assert not saw_message_delta, "content_block_start after message_delta"
             assert open_index is None, f"block {open_index} still open"
-            assert data["index"] == next_index, (
-                f"index {data['index']} out of sequence, expected {next_index}"
-            )
+            assert (
+                data["index"] == next_index
+            ), f"index {data['index']} out of sequence, expected {next_index}"
             block = data["content_block"]
             if block["type"] == "thinking":
                 assert block.get("thinking") == ""
@@ -3686,9 +3686,9 @@ def assert_anthropic_stream_conformant(lines):
                 "signature_delta": "thinking",
                 "input_json_delta": "tool_use",
             }[delta["type"]]
-            assert blocks[open_index]["type"] == expected, (
-                f"{delta['type']} inside a {blocks[open_index]['type']} block"
-            )
+            assert (
+                blocks[open_index]["type"] == expected
+            ), f"{delta['type']} inside a {blocks[open_index]['type']} block"
             blocks[open_index]["text"] += delta.get("text") or delta.get("thinking") or ""
         elif name == "content_block_stop":
             assert open_index is not None, "content_block_stop with no open block"
