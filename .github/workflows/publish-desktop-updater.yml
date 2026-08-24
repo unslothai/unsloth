@@ -53,6 +53,7 @@ jobs:
         id: gate
         env:
           GH_TOKEN: ${{ github.token }}
+          REPAIR_POINTER: ${{ inputs.repair_pointer }}
         run: |
           set -euo pipefail
           asset_names="$RUNNER_TEMP/release-asset-names.txt"
@@ -74,8 +75,13 @@ jobs:
           if grep -Fxq 'latest.json' "$asset_names" && [ "$stable_count" -eq "${#stable_names[@]}" ]; then
             echo "proceed=true" >> "$GITHUB_OUTPUT"
           elif grep -Fxq 'latest.json' "$asset_names"; then
-            echo "${RELEASE_TAG} has updater metadata but only ${stable_count}/${#stable_names[@]} stable downloads; refusing a partial publication." >&2
-            exit 1
+            if [ "$REPAIR_POINTER" = 'true' ] && [ "$stable_count" -eq 0 ]; then
+              echo "${RELEASE_TAG} carries only updater metadata from an earlier repair."
+              echo "proceed=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "${RELEASE_TAG} has updater metadata but only ${stable_count}/${#stable_names[@]} stable downloads; refusing a partial publication." >&2
+              exit 1
+            fi
           else
             echo "${RELEASE_TAG} carries no complete Desktop publication yet; nothing to validate."
             echo "proceed=false" >> "$GITHUB_OUTPUT"
@@ -108,6 +114,18 @@ jobs:
           semver = re.compile(r'^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?$')
           releases = json.loads(pathlib.Path(sys.argv[1]).read_text())
 
+          def has_complete_downloads(release):
+              names = {asset.get('name') for asset in release.get('assets', [])}
+              version = re.sub(
+                  r'[^0-9A-Za-z]+', '_', release.get('tag_name', '').removeprefix('v')
+              ).strip('_')
+              prefixes = ('Unsloth-Desktop', f'Unsloth-Desktop-{version}')
+              suffixes = ('MacOS.dmg', 'Linux.AppImage', 'Ubuntu.deb', 'Windows.exe')
+              return any(
+                  {'latest.json', *(f'{prefix}-{suffix}' for suffix in suffixes)}.issubset(names)
+                  for prefix in prefixes
+              )
+
           # /releases/latest never resolves to a draft or prerelease. Read the target
           # from this listing because /releases/tags/{tag} returns 404 for a draft,
           # which has no git tag until publication.
@@ -136,13 +154,7 @@ jobs:
               if semver.fullmatch(release.get('tag_name') or '')
               and release.get('tag_name') != os.environ['RELEASE_TAG']
               and not release.get('draft') and not release.get('prerelease')
-              and {
-                  'latest.json',
-                  'Unsloth-Desktop-MacOS.dmg',
-                  'Unsloth-Desktop-Linux.AppImage',
-                  'Unsloth-Desktop-Ubuntu.deb',
-                  'Unsloth-Desktop-Windows.exe',
-              }.issubset({asset.get('name') for asset in release.get('assets', [])})
+              and has_complete_downloads(release)
           ]
           # Newest by publish time, matching the release users would have reached
           # before the bundleless release moved the repository-wide pointer.

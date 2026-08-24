@@ -67,8 +67,18 @@ def _release(
     draft = False,
     prerelease = False,
     published_at = "2026-01-01T00:00:00Z",
+    legacy = False,
 ):
     assets = [{"name": name} for name in ("latest.json", *STABLE_ASSETS)]
+    if legacy:
+        version = tag.removeprefix("v").replace(".", "_").replace("-", "_")
+        assets = [
+            {"name": "latest.json"},
+            *(
+                {"name": f"Unsloth-Desktop-{version}-{suffix}"}
+                for suffix in ("MacOS.dmg", "Linux.AppImage", "Ubuntu.deb", "Windows.exe")
+            ),
+        ]
     if not complete:
         assets = [{"name": "notes.txt"}]
     return {
@@ -123,7 +133,6 @@ def _run(
     manifest_fixture.write_text(json.dumps(manifest), encoding = "utf-8")
     log = tmp_path / "commands.log"
     log.write_text("", encoding = "utf-8")
-
     env = os.environ.copy()
     env.update(
         {
@@ -179,6 +188,22 @@ def test_the_newest_complete_desktop_release_is_restored_without_copying_assets(
     summary = (tmp_path / "step-summary.md").read_text(encoding = "utf-8")
     assert "points back to v0.1.52-beta" in summary
     assert "404" in summary
+
+
+def test_legacy_downloads_are_restored_during_migration(tmp_path):
+    result, commands = _run(
+        tmp_path,
+        release_tag = "v0.1.802-beta",
+        releases = [
+            _release("v0.1.802-beta", release_id = 802, complete = False),
+            _release("v0.1.801-beta", release_id = 801, legacy = True),
+        ],
+        manifest = _manifest("v0.1.801-beta"),
+        latest_tag = "v0.1.801-beta",
+    )
+    assert result.returncode == 0, result.stderr
+    assert "gh release download v0.1.801-beta --pattern latest.json" in "\n".join(commands)
+    assert any("releases/801 -f make_latest=true" in line for line in commands)
 
 
 def test_incomplete_draft_and_prerelease_releases_are_never_restored(tmp_path):
