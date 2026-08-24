@@ -488,6 +488,152 @@ def test_pipeline_estimate_uses_selected_components_and_default_variant(
     assert total == 20 * MIB + 600
 
 
+def test_gated_pipeline_manifest_is_read_from_the_fetch_mirror(monkeypatch, tmp_path):
+    upstream = "black-forest-labs/FLUX.2-dev"
+    mirror = "unsloth/FLUX.2-dev"
+    manifest = tmp_path / "model_index.json"
+    manifest.write_text(
+        json.dumps({"transformer": ["diffusers", "Flux2Transformer2DModel"]}),
+        encoding = "utf-8",
+    )
+    mirror_siblings = [
+        _ManifestSibling("model_index.json", 100),
+        _ManifestSibling("transformer/diffusion_pytorch_model.safetensors", 20 * MIB),
+    ]
+    info_calls: list = []
+    download_calls: list = []
+
+    class _Api:
+        def model_info(self, repo_id, **_kwargs):
+            info_calls.append(repo_id)
+            assert repo_id == mirror
+            return types.SimpleNamespace(siblings = mirror_siblings, sha = "b" * 40)
+
+    def fake_download(repo_id, filename, **kwargs):
+        download_calls.append((repo_id, filename, kwargs.get("revision")))
+        assert repo_id == mirror
+        return str(manifest)
+
+    monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
+    monkeypatch.setattr(
+        diffusion_mod,
+        "prefer_ungated_mirror",
+        lambda repo_id, *_a, **_k: mirror if repo_id == upstream else repo_id,
+    )
+    resident: dict = {}
+    revisions: dict = {}
+    fetch_repos: dict = {}
+    _total, _files = DiffusionBackend._estimate_download_bytes(
+        upstream,
+        None,
+        upstream,
+        None,
+        kind = "pipeline",
+        resident_file_sizes_out = resident,
+        revisions_out = revisions,
+        fetch_repos_out = fetch_repos,
+    )
+
+    assert info_calls == [mirror]
+    assert download_calls == [(mirror, "model_index.json", "b" * 40)]
+    assert resident[upstream] == {"transformer/diffusion_pytorch_model.safetensors": 20 * MIB}
+    assert revisions == {mirror: "b" * 40}
+    assert fetch_repos == {upstream: mirror}
+
+
+def test_pipeline_listing_restarts_when_the_exact_scope_selects_the_mirror(monkeypatch, tmp_path):
+    upstream = "black-forest-labs/FLUX.2-dev"
+    mirror = "unsloth/FLUX.2-dev"
+    upstream_manifest = tmp_path / "upstream-model-index.json"
+    upstream_manifest.write_text(
+        json.dumps({"transformer": ["diffusers", "Flux2Transformer2DModel"]}),
+        encoding = "utf-8",
+    )
+    mirror_manifest = tmp_path / "mirror-model-index.json"
+    mirror_manifest.write_text(
+        json.dumps(
+            {
+                "transformer": ["diffusers", "Flux2Transformer2DModel"],
+                "vae": ["diffusers", "AutoencoderKL"],
+            }
+        ),
+        encoding = "utf-8",
+    )
+    listings = {
+        upstream: types.SimpleNamespace(
+            siblings = [
+                _ManifestSibling("model_index.json", 100),
+                _ManifestSibling("transformer/diffusion_pytorch_model.safetensors", 20 * MIB),
+            ],
+            sha = "a" * 40,
+        ),
+        mirror: types.SimpleNamespace(
+            siblings = [
+                _ManifestSibling("model_index.json", 101),
+                _ManifestSibling("transformer/diffusion_pytorch_model.safetensors", 21 * MIB),
+                _ManifestSibling("vae/diffusion_pytorch_model.safetensors", 3 * MIB),
+            ],
+            sha = "b" * 40,
+        ),
+    }
+    info_calls: list = []
+    download_calls: list = []
+
+    class _Api:
+        def model_info(self, repo_id, **_kwargs):
+            info_calls.append(repo_id)
+            return listings[repo_id]
+
+    def fake_download(repo_id, filename, **kwargs):
+        download_calls.append((repo_id, filename, kwargs.get("revision")))
+        return str(upstream_manifest if repo_id == upstream else mirror_manifest)
+
+    def fake_prefer(
+        repo_id,
+        *_args,
+        files = None,
+        **_kwargs,
+    ):
+        assert repo_id == upstream
+        return upstream if tuple(files or ()) == ("model_index.json",) else mirror
+
+    monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
+    monkeypatch.setattr(diffusion_mod, "prefer_ungated_mirror", fake_prefer)
+    resident: dict = {}
+    revisions: dict = {}
+    fetch_repos: dict = {}
+    total, files = DiffusionBackend._estimate_download_bytes(
+        upstream,
+        None,
+        upstream,
+        None,
+        kind = "pipeline",
+        resident_file_sizes_out = resident,
+        revisions_out = revisions,
+        fetch_repos_out = fetch_repos,
+    )
+
+    assert info_calls == [upstream, mirror]
+    assert download_calls == [
+        (upstream, "model_index.json", "a" * 40),
+        (mirror, "model_index.json", "b" * 40),
+    ]
+    assert set(files) == {
+        "model_index.json",
+        "transformer/diffusion_pytorch_model.safetensors",
+        "vae/diffusion_pytorch_model.safetensors",
+    }
+    assert total == 24 * MIB + 101
+    assert resident[upstream] == {
+        "transformer/diffusion_pytorch_model.safetensors": 21 * MIB,
+        "vae/diffusion_pytorch_model.safetensors": 3 * MIB,
+    }
+    assert revisions == {mirror: "b" * 40}
+    assert fetch_repos == {upstream: mirror}
+
+
 @pytest.mark.parametrize(
     ("family", "included"),
     [

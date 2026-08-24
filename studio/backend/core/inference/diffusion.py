@@ -2146,6 +2146,7 @@ class DiffusionBackend:
             )
             declared_sizes: dict[str, dict[str, int]] = {}
             resident_sizes: dict[str, dict[str, int]] = {}
+            fetch_repos: dict[str, str] = {}
             expected, base_files = self._estimate_download_bytes(
                 kwargs["repo_id"],
                 kwargs.get("gguf_filename"),
@@ -2174,6 +2175,7 @@ class DiffusionBackend:
                 local_files_only = local_files_only,
                 file_sizes_out = declared_sizes,
                 resident_file_sizes_out = resident_sizes,
+                fetch_repos_out = fetch_repos,
             )
             # Only shards this prefetch staged may be materialised by the dense fallback, so read it
             # off the staged list: a failed size estimate drops every base file too. A LOCAL base
@@ -2184,7 +2186,9 @@ class DiffusionBackend:
             ) or _local_base_transformer_present(base)
             # ONE mirror decision per load, taken with the staged file list in hand and carried into
             # load_pipeline: per-call-site, one repo could be staged and the other assembled from.
-            fetch_base = prefer_ungated_mirror(base, kwargs.get("hf_token"), files = base_files)
+            fetch_base = fetch_repos.get(base) or prefer_ungated_mirror(
+                base, kwargs.get("hf_token"), files = base_files
+            )
             kwargs["_fetch_base"] = fetch_base
             # Same preflight the plan runs: catch a gated base here, not 15 GiB into the prefetch.
             # Runs on ``fetch_base``, once it is decided, so it probes the repo the pull will read:
@@ -2506,6 +2510,7 @@ class DiffusionBackend:
         file_sizes_out: Optional[dict[str, dict[str, int]]] = None,
         resident_file_sizes_out: Optional[dict[str, dict[str, int]]] = None,
         revisions_out: Optional[dict[str, str]] = None,
+        fetch_repos_out: Optional[dict[str, str]] = None,
         skip_te_components: tuple[str, ...] = (),
         failures_out: Optional[list] = None,
         local_files_only: bool = False,
@@ -2519,6 +2524,8 @@ class DiffusionBackend:
         weight variant, which is the set that ``from_pretrained`` materialises in memory.
         ``revisions_out`` records the commit each lookup described, so a cache probe can ask
         about the SAME revision the sizes came from instead of whatever ``main`` is locally.
+        ``fetch_repos_out`` records the repo that supplied pipeline metadata, so staging reads
+        that same pinned file set instead of making a second mirror choice after the estimate.
 
         For a ``pipeline`` load the whole repo IS the pipeline (``base_repo`` is the
         repo itself), so the transformer/ subfolder is INCLUDED -- unlike the GGUF /
@@ -2564,54 +2571,64 @@ class DiffusionBackend:
 
         try:
             if kind == "pipeline":
-                info = api.model_info(repo_id, files_metadata = True, token = hf_token)
-                components = _pipeline_components_from_index(
-                    repo_id,
-                    info,
-                    hf_token,
-                    explicit_components = pipeline_components,
-                    failures_out = failures_out,
-                )
-                picked = [
-                    s
-                    for s in info.siblings
-                    if _pipeline_file_downloaded(s.rfilename)
-                    and not _dense_te_shard(s.rfilename)
-                    and (components is None or _pipeline_selected_file(s.rfilename, components))
-                ]
-                # diffusers prefers safetensors: drop a .bin whose dir also has a picked .safetensors.
-                st_dirs = {
-                    s.rfilename.rsplit("/", 1)[0]
-                    for s in picked
-                    if s.rfilename.endswith(".safetensors")
-                }
-                for s in picked:
-                    if s.rfilename.endswith(".bin") and s.rfilename.rsplit("/", 1)[0] in st_dirs:
-                        continue
-                    base_files.append(s.rfilename)
-                    total += s.size or 0
-                if sizes_out is not None:
-                    sizes_out[repo_id] = total
-                if file_sizes_out is not None:
-                    file_sizes_out[repo_id] = {
-                        s.rfilename: int(s.size or 0)
-                        for s in picked
+
+                def _pipeline_listing(metadata_repo: str) -> tuple[Any, Any, list[Any]]:
+                    info = api.model_info(metadata_repo, files_metadata = True, token = hf_token)
+                    components = _pipeline_components_from_index(
+                        metadata_repo,
+                        info,
+                        hf_token,
+                        explicit_components = pipeline_components,
+                        failures_out = failures_out,
+                    )
+                    candidates = [
+                        s
+                        for s in info.siblings
+                        if _pipeline_file_downloaded(s.rfilename)
+                        and not _dense_te_shard(s.rfilename)
+                        and (components is None or _pipeline_selected_file(s.rfilename, components))
+                    ]
+                    # diffusers prefers safetensors: drop a .bin whose dir also has a picked
+                    # .safetensors.
+                    st_dirs = {
+                        s.rfilename.rsplit("/", 1)[0]
+                        for s in candidates
+                        if s.rfilename.endswith(".safetensors")
+                    }
+                    picked = [
+                        s
+                        for s in candidates
                         if not (
                             s.rfilename.endswith(".bin")
                             and s.rfilename.rsplit("/", 1)[0] in st_dirs
                         )
-                    }
+                    ]
+                    return info, components, picked
+
+                metadata_repo = prefer_ungated_mirror(
+                    repo_id, hf_token, files = ("model_index.json",)
+                )
+                info, components, picked = _pipeline_listing(metadata_repo)
+                base_files = [s.rfilename for s in picked]
+                fetch_repo = prefer_ungated_mirror(repo_id, hf_token, files = base_files)
+                if fetch_repo.lower() != metadata_repo.lower():
+                    metadata_repo = fetch_repo
+                    info, components, picked = _pipeline_listing(metadata_repo)
+                    base_files = [s.rfilename for s in picked]
+                total = sum(s.size or 0 for s in picked)
+                if fetch_repos_out is not None:
+                    fetch_repos_out[repo_id] = metadata_repo
+                if sizes_out is not None:
+                    sizes_out[repo_id] = total
+                if file_sizes_out is not None:
+                    file_sizes_out[repo_id] = {s.rfilename: int(s.size or 0) for s in picked}
                 if resident_file_sizes_out is not None and components is not None:
                     resident_file_sizes_out[repo_id] = {
                         s.rfilename: int(s.size or 0)
                         for s in picked
                         if _pipeline_resident_weight(s.rfilename, components)
-                        and not (
-                            s.rfilename.endswith(".bin")
-                            and s.rfilename.rsplit("/", 1)[0] in st_dirs
-                        )
                     }
-                _record_revision(revisions_out, repo_id, info)
+                _record_revision(revisions_out, metadata_repo, info)
                 return total, base_files
             # Skip the Hub size lookup for a LOCAL gguf path: model_info raises on a filesystem path.
             if gguf_filename and not Path(repo_id).expanduser().exists():
@@ -2740,6 +2757,7 @@ class DiffusionBackend:
         file_sizes: dict[str, dict[str, int]] = {}
         resident_file_sizes: dict[str, dict[str, int]] = {}
         revisions: dict[str, str] = {}
+        fetch_repos: dict[str, str] = {}
         plan_failures: list = []
         required_total, base_files = self._estimate_download_bytes(
             repo_id,
@@ -2770,6 +2788,7 @@ class DiffusionBackend:
             file_sizes_out = file_sizes,
             resident_file_sizes_out = resident_file_sizes,
             revisions_out = revisions,
+            fetch_repos_out = fetch_repos,
             skip_te_components = tuple(te_files),
             failures_out = plan_failures,
         )
@@ -2777,7 +2796,9 @@ class DiffusionBackend:
         # answers model_info anonymously, so the plan would otherwise be confident and the 401 land
         # mid-download. Probing any id but the one staged would refuse a load that works. The route
         # maps ValueError -> 400. Nothing above downloads, so the reorder costs nothing.
-        fetch_base = prefer_ungated_mirror(base, hf_token, files = base_files)
+        fetch_base = fetch_repos.get(base) or prefer_ungated_mirror(
+            base, hf_token, files = base_files
+        )
         _assert_base_repo_accessible(fetch_base, hf_token)
         entries: list[dict[str, Any]] = []
         checkpoint_bytes = 0

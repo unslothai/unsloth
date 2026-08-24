@@ -6895,14 +6895,15 @@ def test_download_plan_flags_a_mirrored_pipeline_as_the_checkpoint(monkeypatch):
     # The page used to derive the label by comparing those two ids, which made every file of the
     # selected model read as "Required assets". Only the planner knows about the swap.
     gated = "black-forest-labs/FLUX.1-dev"
-    _fake_hf_api(monkeypatch, {gated: _FLUX_BASE_SIBLINGS})
+    mirror = "unsloth/FLUX.1-dev"
+    _fake_hf_api(monkeypatch, {gated: _FLUX_BASE_SIBLINGS, mirror: _FLUX_BASE_SIBLINGS})
     _no_cache(monkeypatch)
 
     plan = DiffusionBackend().download_plan(gated, model_kind = "pipeline")
 
     assert len(plan["entries"]) == 1
     entry = plan["entries"][0]
-    assert entry["repo_id"] == "unsloth/FLUX.1-dev" != gated
+    assert entry["repo_id"] == mirror != gated
     assert entry["checkpoint"] is True
 
 
