@@ -849,7 +849,14 @@ def test_a_nudge_retry_that_never_reported_is_not_billed_twice(monkeypatch):
         def __init__(self):
             super().__init__(lambda m, t: ['<tool_call>{"name":"lookup"'])
 
-        def generate_chat_response(self, *, messages, tools = None, stats_holder = None, **kwargs):
+        def generate_chat_response(
+            self,
+            *,
+            messages,
+            tools = None,
+            stats_holder = None,
+            **kwargs,
+        ):
             self.calls.append({"messages": messages, "tools": tools, **kwargs})
             if len(self.calls) > 1:
                 raise RuntimeError("retry blew up before reporting anything")
@@ -878,7 +885,9 @@ def test_cached_prompt_tokens_reach_the_usage_details(monkeypatch):
     # OpenAI field must see the same count rather than a flat zero.
     stats = {
         "usage": {
-            "prompt_tokens": 1200, "completion_tokens": 4, "total_tokens": 1204,
+            "prompt_tokens": 1200,
+            "completion_tokens": 4,
+            "total_tokens": 1204,
             "prompt_tokens_details": {"cached_tokens": 1100},
         }
     }
@@ -892,8 +901,13 @@ def test_cached_prompt_tokens_reach_the_usage_details(monkeypatch):
 def test_cached_tokens_never_exceed_the_prompt_they_describe(monkeypatch):
     # Two choices can report different prompt counts (the nudge rebuilds a longer
     # prompt), so the count and its details must come from the same choice.
-    rich = {"usage": {"prompt_tokens": 1200, "completion_tokens": 4,
-                      "prompt_tokens_details": {"cached_tokens": 1100}}}
+    rich = {
+        "usage": {
+            "prompt_tokens": 1200,
+            "completion_tokens": 4,
+            "prompt_tokens_details": {"cached_tokens": 1100},
+        }
+    }
     lean = {"usage": {"prompt_tokens": 1000, "completion_tokens": 4}}
     backend = _ScriptedBackend(_fixed("hi"), stats = [rich, lean])
     body = _json_body(_call(_request(stream = False, n = 2), monkeypatch, backend))
