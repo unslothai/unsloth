@@ -1774,9 +1774,9 @@ def test_a_legacy_sibling_install_is_read_from_its_own_root(tmp_path, monkeypatc
     monkeypatch.setattr(sdmod, "install", lambda **kw: installs.append(kw))
 
     assert bk.ensure_sd_server_binary(accelerator = "cuda") == str(server)
-    assert installs == [], (
-        "the CUDA build recorded in the legacy root is already what was asked for"
-    )
+    assert (
+        installs == []
+    ), "the CUDA build recorded in the legacy root is already what was asked for"
 
 
 def test_asking_for_the_cpu_build_never_reinstalls(tmp_path, monkeypatch):
@@ -2597,9 +2597,9 @@ def test_a_generation_cannot_start_inside_the_install_window(tmp_path, monkeypat
     generator = threading.Thread(target = _try_generate, daemon = True)
     generator.start()
     generator.join(1.0)
-    assert generator.is_alive(), (
-        "a generation must not be admitted while the tree is being replaced"
-    )
+    assert (
+        generator.is_alive()
+    ), "a generation must not be admitted while the tree is being replaced"
     assert admitted_during_install == []
 
     release.set()
