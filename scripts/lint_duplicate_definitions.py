@@ -183,8 +183,7 @@ def _branch_bodies(node):
 def _is_overload_def(node, overloads) -> bool:
     """True for `@overload`, the one family where any number of copies is legitimate."""
     return any(
-        _decorator_name(decorator) in overloads
-        for decorator in getattr(node, "decorator_list", [])
+        _decorator_name(decorator) in overloads for decorator in getattr(node, "decorator_list", [])
     )
 
 
@@ -602,7 +601,10 @@ _SELF_TEST_CASES = [
     ),
     # Each control-flow branch scanned on its own: duplicated INSIDE one branch is merge damage,
     # one per branch is the conditional idiom.
-    (1, "import os\nif os.name:\n    def go():\n        return 1\n    def go():\n        return 2\n"),
+    (
+        1,
+        "import os\nif os.name:\n    def go():\n        return 1\n    def go():\n        return 2\n",
+    ),
     (
         0,
         "import os\nif os.name:\n    def go():\n        return 1\nelse:\n"
