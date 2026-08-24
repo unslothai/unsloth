@@ -23,6 +23,12 @@ Run it from a checkout, with the Studio venv's python if you have one:
     python scripts/rocm_windows_apu_probe.py
     python scripts/rocm_windows_apu_probe.py --allocate 8
 
+`GPU Adapter Memory` lags by tens of seconds, so both readings wait for it to
+stop moving first and the report says whether it did. Without that, a run
+started while an earlier one is still draining reads an inflated baseline and a
+still-climbing "after", and the delta can be wrong by enough to blame the wrong
+counter. `--no-settle` skips the wait and is only for seeing that effect.
+
 Nothing is uploaded. It prints a report to paste into the PR, and `--json`
 writes the same data as JSON.
 """
@@ -99,6 +105,51 @@ def read_counters() -> dict[str, Any]:
             }
             for n in names
         ],
+    }
+
+
+def _dedicated_total_gb(counters: dict[str, Any]) -> float:
+    return sum(a["dedicated_gb"] or 0.0 for a in counters.get("per_adapter", []))
+
+
+def read_counters_settled(
+    timeout_s: float = 90.0,
+    tol_gb: float = 0.25,
+    need_stable: int = 3,
+    interval_s: float = 3.0,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Poll until `Dedicated Usage` stops moving, then take the reading.
+
+    These counters lag badly: a `GPU Process Memory` instance has been observed
+    still reporting 47 GB for a pid that had already exited, and an adapter
+    reading takes tens of seconds to fall back to idle. Reading them cold gives a
+    "before" that is already inflated by whatever ran last and an "after" that is
+    still climbing, and the resulting delta can be wrong by enough to argue for
+    the wrong counter entirely. So the baseline is established rather than
+    assumed, and whether it settled is reported either way: a contaminated run
+    has to be visible as contaminated instead of looking like an answer.
+    """
+    import time
+
+    samples: list[float] = []
+    counters = read_counters()
+    deadline = time.monotonic() + timeout_s
+    settled = False
+    while True:
+        samples.append(round(_dedicated_total_gb(counters), 3))
+        window = samples[-need_stable:]
+        if len(window) >= need_stable and (max(window) - min(window)) <= tol_gb:
+            settled = True
+            break
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(interval_s)
+        counters = read_counters()
+    return counters, {
+        "settled": settled,
+        "samples_gb": samples,
+        "tolerance_gb": tol_gb,
+        "waited_s": round((len(samples) - 1) * interval_s, 1),
     }
 
 
@@ -282,7 +333,18 @@ def render(obs: dict[str, Any]) -> str:
             )
             L.append(f"- {when}: no reading ({why})")
             continue
+        s = obs.get("settle_before" if label == "counters_before" else "settle_after")
         L.append(f"**{when}**")
+        if s:
+            if s["settled"]:
+                L.append(f"  (baseline settled after {s['waited_s']}s; "
+                         f"dedicated total samples {s['samples_gb']} GB)")
+            else:
+                L.append(f"  **WARNING: still moving after {s['waited_s']}s** "
+                         f"(samples {s['samples_gb']} GB). These counters lag, so this "
+                         f"reading is contaminated by whatever ran last and the delta "
+                         f"below is not trustworthy. Wait for the GPU to go idle and "
+                         f"re-run.")
         L.append("")
         L.append("| adapter instance | Dedicated Usage | Shared Usage |")
         L.append("|---|---|---|")
@@ -297,9 +359,22 @@ def render(obs: dict[str, Any]) -> str:
             f"reserved {a['torch_reserved_gb']} GB)."
         )
         L.append("")
+        before = {x["instance"]: x for x in (obs.get("counters_before") or {}).get("per_adapter", [])}
+        after = {x["instance"]: x for x in (obs.get("counters_after") or {}).get("per_adapter", [])}
+        if before and after:
+            L.append("| adapter instance | Dedicated delta | Shared delta |")
+            L.append("|---|---|---|")
+            for name in after:
+                b, aft = before.get(name, {}), after[name]
+                dd = round((aft.get("dedicated_gb") or 0.0) - (b.get("dedicated_gb") or 0.0), 3)
+                ds = round((aft.get("shared_gb") or 0.0) - (b.get("shared_gb") or 0.0), 3)
+                L.append(f"| `{name}` | {dd:+} GB | {ds:+} GB |")
+            L.append("")
         L.append(
-            "Whichever counter moved by roughly that much is the one that tracks a "
-            "resident model, and therefore the numerator Studio should be reading."
+            "Whichever counter moved by roughly the amount held is the one that tracks a "
+            "resident model, and therefore the numerator Studio should be reading. A delta "
+            "materially larger than the amount held means the baseline was not idle; "
+            "re-run rather than believing it."
         )
         L.append("")
 
@@ -358,6 +433,17 @@ def main() -> int:
         help = "checkout to read the Studio hardware module from",
     )
     ap.add_argument("--json", type = Path, default = None, help = "also write raw JSON here")
+    ap.add_argument(
+        "--settle-timeout",
+        type = float,
+        default = 90.0,
+        help = "seconds to wait for the counters to stop moving before reading",
+    )
+    ap.add_argument(
+        "--no-settle",
+        action = "store_true",
+        help = "read the counters cold; the reading may be contaminated by whatever ran last",
+    )
     args = ap.parse_args()
 
     obs: dict[str, Any] = {
@@ -376,14 +462,24 @@ def main() -> int:
             "which is exactly why it cannot be validated off Windows.\n"
         )
 
-    obs["counters_before"] = read_counters()
+    if args.no_settle:
+        obs["counters_before"] = read_counters()
+    else:
+        obs["counters_before"], obs["settle_before"] = read_counters_settled(
+            timeout_s = args.settle_timeout)
 
     held = None
     if args.allocate > 0:
         try:
             held = allocate(args.allocate)
             obs["allocation"] = {k: v for k, v in held.items() if k != "_buf"}
-            obs["counters_after"] = read_counters()
+            # The reading climbs for a while after the allocation lands, so the
+            # "after" needs settling every bit as much as the "before".
+            if args.no_settle:
+                obs["counters_after"] = read_counters()
+            else:
+                obs["counters_after"], obs["settle_after"] = read_counters_settled(
+                    timeout_s = args.settle_timeout)
         except Exception as e:  # noqa: BLE001
             obs["allocation_error"] = f"{type(e).__name__}: {e}"
 
