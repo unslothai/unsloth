@@ -1213,13 +1213,17 @@ def _torch_get_device_inventory(device_indices: list[int]) -> list[Dict[str, Any
             # torch ordinals are 0-based relative to CUDA_VISIBLE_DEVICES.
             props = mod.get_device_properties(ordinal)
             total_bytes = props.total_memory
-            if _rocm_props_total_is_carve_out(props) and hasattr(mod, "mem_get_info"):
-                try:
-                    total_bytes = mod.mem_get_info(ordinal)[1]
-                except Exception as e:
-                    # Keep the carve-out rather than dropping the device: an
-                    # understated total still beats no device at all.
-                    logger.debug("ROCm APU driver total failed for ordinal %d: %s", ordinal, e)
+            try:
+                if _rocm_props_total_is_carve_out(props) and hasattr(mod, "mem_get_info"):
+                    # Only a WIDER total, same as _rocm_windows_per_device_vram.
+                    # The classifier fails open, so a discrete card reaches here
+                    # too, and a total below props.total_memory would hide models
+                    # this device can hold.
+                    total_bytes = max(int(mod.mem_get_info(ordinal)[1]), int(total_bytes))
+            except Exception as e:
+                # Keep the carve-out rather than dropping the device: an
+                # understated total still beats no device at all.
+                logger.debug("ROCm APU driver total failed for ordinal %d: %s", ordinal, e)
             devices.append(
                 {
                     "index": phys_idx,
@@ -1826,6 +1830,12 @@ def _match_adapter_used_to_devices(
     counters number EXACTLY the visible devices AND capacity forces the mapping;
     otherwise every device is unknown. Best-effort but correct for the common
     loaded-card case (#7072). Returns a list aligned to ``device_totals``.
+
+    ``device_totals`` must be the DEDICATED capacity each counter can fill, never a
+    unified-memory total. A widened total reranks its device, raises the threshold
+    that forces a pairing, and lifts the ceiling below which a usage is judged
+    impossible, which costs other devices their readings and admits counters that
+    belong to no visible card.
     """
     n = len(device_totals)
     if n == 0:
@@ -1890,7 +1900,9 @@ def _rocm_windows_aggregate_used_bytes(
     the visible set therefore holds those cards and nothing else. It fails closed if
     that is wrong: a second instance for one adapter makes the list longer than the
     visible set, which returns None rather than a total. Verify it before widening
-    this, not before trusting it.
+    this, not before trusting it. ``device_totals`` carries the same requirement as
+    _match_adapter_used_to_devices: dedicated capacity, never a unified total, or
+    the check above stops rejecting usages no visible card could hold.
 
     Deliberately NOT the noise filter _match_adapter_used_to_devices uses. Dropping
     sub-threshold counters and summing the rest is safe for per-device attribution,
@@ -1927,15 +1939,21 @@ def _rocm_windows_aggregate_used_bytes(
 def _rocm_windows_per_device_vram(
     device_indices: list[int],
 ) -> tuple[list[Dict[str, Any]], Optional[float]]:
-    """Per-GPU VRAM on Windows AMD/ROCm: total from torch properties (reliable),
-    used from the per-adapter Dedicated Usage counter.
+    """Per-GPU VRAM on Windows AMD/ROCm: total from torch properties, widened to
+    the driver pool on a unified APU, used from the per-adapter Dedicated Usage
+    counter.
 
     Returns ``([{index, visible_ordinal, name, used_gb, total_gb}], aggregate_gb)``
-    per visible GPU (``used_gb`` is ``None`` when the counter is unavailable or the
-    pairing is not capacity-forced), or ``([], None)`` when torch can't enumerate
-    devices so callers fall through to the torch last resort. ``aggregate_gb`` is the
-    visible set's total used VRAM, which survives a pairing no single device can
-    claim (#7452), and ``None`` when even that is not established.
+    per visible GPU, or ``([], None)`` when torch can't enumerate devices so callers
+    fall through to the torch last resort. ``aggregate_gb`` is the visible set's
+    total used VRAM, which survives a pairing no single device can claim (#7452),
+    and ``None`` when even that is not established.
+
+    ``used_gb`` is ``None`` when the counter is unavailable, when the pairing is not
+    capacity-forced, or when this device's total was widened to the unified pool --
+    that counter measures the dedicated segment, so it is not a numerator for a
+    total spanning the shared one. The two totals are kept apart internally for the
+    same reason: the counters are ranked against the carve-out, never the pool.
     """
     if platform.system() != "Windows":
         return [], None
@@ -1969,6 +1987,10 @@ def _rocm_windows_per_device_vram(
                     # and unlike the inventory this path carries a used: a shrunk
                     # total reports past 100% utilization and zero free.
                     if pool_bytes > total_bytes:
+                        logger.debug(
+                            "ROCm unified memory: ordinal %d total %.2f -> %.2f GB (driver pool)",
+                            ordinal, total_bytes / (1024**3), pool_bytes / (1024**3),
+                        )
                         total_bytes = pool_bytes
                         total_is_pool = True
             except Exception as e:

@@ -570,6 +570,65 @@ def test_a_failing_carve_out_probe_keeps_the_device(win_rocm, monkeypatch):
     assert devices[0]["used_gb"] == pytest.approx(40.0, abs = 0.01)
 
 
+def test_the_inventory_path_also_refuses_to_shrink_a_total(monkeypatch):
+    """The sibling correction this one is modelled on. It publishes no used, so a
+    shrink cannot break the used <= total invariant there, but an understated
+    total still hides models the device can hold, which is the failure the
+    classifier exists to prevent."""
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    torch = _fake_torch(DEVICES)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setattr(hw, "_rocm_props_total_is_carve_out", lambda props: True)
+    # Under-reports the 48 GiB card, agrees on the 8 GiB one.
+    monkeypatch.setattr(
+        torch.cuda, "mem_get_info", lambda i: (0, 36 * GB) if i == 0 else (0, 8 * GB)
+    )
+
+    devices = hw._torch_get_device_inventory([0, 1])
+    assert [d["total_gb"] for d in devices] == [48.0, 8.0]
+    assert all(d["used_gb"] is None for d in devices)
+
+
+def _apu_host(monkeypatch):
+    """A lone 8 GiB carve-out / 128 GiB pool APU, with 2 GiB on the counter."""
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
+    torch = _fake_torch([APU])
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda i: (96 * GB, 128 * GB))
+    monkeypatch.setattr(hw, "_rocm_props_total_is_carve_out", lambda props: True)
+    monkeypatch.setattr(
+        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(APU_ADAPTERS))
+    )
+
+
+def test_widened_total_survives_get_gpu_utilization(win_rocm, monkeypatch):
+    """The helper is not what the user sees. The corrected total has to reach the
+    payload, and the unknown occupancy has to stay unknown through the legacy
+    primary-device mirror rather than being filled in with a zero."""
+    _apu_host(monkeypatch)
+
+    result = hw.get_gpu_utilization()
+    assert result["devices"][0]["vram_total_gb"] == 128.0
+    assert result["devices"][0]["vram_used_gb"] is None
+    assert result["devices"][0]["vram_utilization_pct"] is None
+    assert result["vram_total_gb"] == 128.0  # legacy mirror carries it too
+    assert result["vram_used_gb"] is None
+    assert result.get("vram_used_gb_aggregate") is None
+
+
+def test_the_system_tab_does_not_invent_free_vram_on_an_apu(win_rocm, monkeypatch):
+    """The failure this guards is a 128 GiB card reporting 128 GiB free while a
+    model sits in the shared pool: free is total minus used, and used is unknown,
+    so free must stay unknown rather than defaulting used to zero."""
+    _apu_host(monkeypatch)
+
+    devices = hw.get_visible_gpu_utilization()["devices"]
+    assert devices[0]["vram_total_gb"] == 128.0
+    assert devices[0]["vram_used_gb"] is None
+    assert devices[0]["vram_utilization_pct"] is None
+    assert devices[0].get("vram_free_gb") is None
+
+
 @pytest.mark.parametrize("system", ["Linux", "Darwin"])
 def test_the_windows_path_is_inert_off_windows(win_rocm, monkeypatch, system):
     """Linux, macOS and WSL (which reports Linux) never reach this path, so no
