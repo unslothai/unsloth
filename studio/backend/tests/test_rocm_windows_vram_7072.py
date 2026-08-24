@@ -808,7 +808,8 @@ def test_a_failed_driver_probe_keeps_the_apu_on_the_dedicated_counter(win_rocm, 
     _apu_host(monkeypatch, unified_used = 40.0 * GB)
     torch = sys.modules["torch"]
     monkeypatch.setattr(
-        torch.cuda, "mem_get_info",
+        torch.cuda,
+        "mem_get_info",
         lambda i: (_ for _ in ()).throw(RuntimeError("hipMemGetInfo failed")),
     )
 

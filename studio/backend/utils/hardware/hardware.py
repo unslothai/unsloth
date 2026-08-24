@@ -2481,8 +2481,7 @@ def _rocm_windows_per_device_vram(
     # carries a carve-out-sized one that Dedicated Usage is the right numerator
     # for. Hence pool_confirmed.
     pool_scoped = [
-        m["total_is_pool"] or (m["positively_unified"] and m["pool_confirmed"])
-        for m in dev_meta
+        m["total_is_pool"] or (m["positively_unified"] and m["pool_confirmed"]) for m in dev_meta
     ]
     if any(pool_scoped):
         only = dev_meta[0] if len(dev_meta) == 1 else None
