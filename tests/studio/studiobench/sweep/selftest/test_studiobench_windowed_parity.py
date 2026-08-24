@@ -1828,7 +1828,12 @@ def _windowed_only_shard(
     return _write(tmp_path, name, rows)
 
 
-def _windowed_shard_visible_only_on_one(tmp_path, name, *, pairs = 4):
+def _windowed_shard_visible_only_on_one(
+    tmp_path,
+    name,
+    *,
+    pairs = 4,
+):
     """Every pair carries a behavioural invariant; only the FIRST carries a visible capture.
 
     One action at four cells, so all four are pairs behavioural mode declares an invariant for --
