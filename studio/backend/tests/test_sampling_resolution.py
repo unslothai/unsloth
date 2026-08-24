@@ -126,15 +126,15 @@ def test_qwen38_reuses_qwen36_sampling_defaults():
 
 
 @pytest.mark.parametrize(
-    "thinking_mode, expected_temperature, expected_top_p",
+    "thinking_mode, expected_temperature, expected_top_p, expected_presence_penalty",
     [
-        (True, 0.6, 0.95),
-        (False, 0.7, 0.8),
-        (None, 0.7, 0.8),
+        (True, 1.0, 0.95, 0.0),
+        (False, 0.7, 0.8, 1.5),
+        (None, 0.7, 0.8, 1.5),
     ],
 )
 def test_qwen38_sampling_presets_follow_explicit_thinking_mode(
-    thinking_mode, expected_temperature, expected_top_p
+    thinking_mode, expected_temperature, expected_top_p, expected_presence_penalty
 ):
     eff = resolve_effective_sampling(
         "unsloth/Qwen3.8-27B-GGUF",
@@ -146,7 +146,7 @@ def test_qwen38_sampling_presets_follow_explicit_thinking_mode(
     assert eff["top_p"] == expected_top_p
     assert eff["top_k"] == 20
     assert eff["min_p"] == 0.0
-    assert eff["presence_penalty"] == 1.5
+    assert eff["presence_penalty"] == expected_presence_penalty
 
 
 def test_mode_absent_keeps_qwen38_historical_flat_config():
@@ -310,12 +310,12 @@ def test_fill_recommended_sampling_openai_operator_pin_overrides_client(monkeypa
 @pytest.mark.parametrize(
     "request_kwargs, expected_temperature, expected_top_p",
     [
-        ({"enable_thinking": True}, 0.6, 0.95),
+        ({"enable_thinking": True}, 1.0, 0.95),
         ({"enable_thinking": False}, 0.7, 0.8),
         ({}, 0.7, 0.8),
-        ({"thinking": {"type": "enabled"}}, 0.6, 0.95),
+        ({"thinking": {"type": "enabled"}}, 1.0, 0.95),
         ({"reasoning_effort": "none"}, 0.7, 0.8),
-        ({"reasoning_effort": "high"}, 0.6, 0.95),
+        ({"reasoning_effort": "high"}, 1.0, 0.95),
     ],
 )
 def test_fill_recommended_sampling_openai_uses_normalized_request_mode(
@@ -337,7 +337,7 @@ def test_fill_recommended_sampling_openai_uses_normalized_request_mode(
 
 @pytest.mark.parametrize(
     "thinking_mode, expected_temperature, expected_top_p",
-    [(True, 0.6, 0.95), (False, 0.7, 0.8)],
+    [(True, 1.0, 0.95), (False, 0.7, 0.8)],
 )
 def test_chat_route_lifts_harness_template_kwargs_before_sampling(
     monkeypatch, thinking_mode, expected_temperature, expected_top_p
@@ -408,7 +408,7 @@ def test_chat_route_lifts_harness_template_kwargs_before_sampling(
             True,
             None,
             None,
-            0.6,
+            1.0,
             0.95,
         ),
         (
@@ -438,7 +438,7 @@ def test_chat_route_lifts_harness_template_kwargs_before_sampling(
             True,
             "medium",
             True,
-            0.6,
+            1.0,
             0.95,
         ),
         (
@@ -454,7 +454,7 @@ def test_chat_route_lifts_harness_template_kwargs_before_sampling(
             True,
             "high",
             False,
-            0.6,
+            1.0,
             0.95,
         ),
         (
@@ -467,7 +467,7 @@ def test_chat_route_lifts_harness_template_kwargs_before_sampling(
             True,
             None,
             None,
-            0.6,
+            1.0,
             0.95,
         ),
         (
