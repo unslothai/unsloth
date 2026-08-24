@@ -130,6 +130,7 @@ def read_counters_settled(
     tol_gb: float = 0.25,
     need_stable: int = 3,
     interval_s: float = 3.0,
+    baseline: Optional[tuple[float, float]] = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Poll until Dedicated and Shared Usage both stop moving, then take the reading.
 
@@ -141,6 +142,13 @@ def read_counters_settled(
     the wrong counter entirely. So the baseline is established rather than
     assumed, and whether it settled is reported either way: a contaminated run
     has to be visible as contaminated instead of looking like an answer.
+
+    ``baseline`` is the pre-allocation reading. The same lag that inflates a cold
+    "before" also means the counters can still be sitting at their OLD values for
+    tens of seconds after an allocation lands, and three identical stale samples
+    look exactly like three identical settled ones. So with a baseline the window
+    is only trusted once the reading has actually left it; if it never does,
+    that is reported rather than dressed up as a settled zero delta.
     """
     import time
 
@@ -148,11 +156,14 @@ def read_counters_settled(
     counters = read_counters()
     deadline = time.monotonic() + timeout_s
     settled = False
+    moved = baseline is None
     while True:
         d, s = _usage_totals_gb(counters)
         samples.append((round(d, 3), round(s, 3)))
+        if baseline is not None and not moved:
+            moved = any(abs(now - was) > tol_gb for now, was in zip((d, s), baseline))
         window = samples[-need_stable:]
-        if len(window) >= need_stable and all(
+        if moved and len(window) >= need_stable and all(
             max(col) - min(col) <= tol_gb for col in zip(*window)
         ):
             settled = True
@@ -163,6 +174,7 @@ def read_counters_settled(
         counters = read_counters()
     return counters, {
         "settled": settled,
+        "moved_from_baseline": moved,
         "samples_gb": samples,
         "tolerance_gb": tol_gb,
         "waited_s": round((len(samples) - 1) * interval_s, 1),
@@ -357,6 +369,13 @@ def render(obs: dict[str, Any]) -> str:
                     f"  (baseline settled after {s['waited_s']}s; "
                     f"(dedicated, shared) totals {s['samples_gb']} GB)"
                 )
+            elif not s.get("moved_from_baseline", True):
+                L.append(
+                    f"  **WARNING: never left the pre-allocation reading in "
+                    f"{s['waited_s']}s** (samples {s['samples_gb']} GB). The "
+                    f"allocation is resident but no counter has caught up, so the "
+                    f"delta below understates it. Raise --settle-timeout and re-run."
+                )
             else:
                 L.append(
                     f"  **WARNING: still moving after {s['waited_s']}s** "
@@ -397,10 +416,15 @@ def render(obs: dict[str, Any]) -> str:
                     return "unknown (counter missing on one side)"
                 return f"{round(y - x, 3):+} GB"
 
-            for name in after:
-                b, aft = before.get(name), after[name]
-                if b is None:
-                    L.append(f"| `{name}` | unknown (absent before) | unknown (absent before) |")
+            # Union of both snapshots. Dropping out of either one has to show as
+            # a named unknown: an adapter absent from `after` silently vanishing
+            # is how the report ends up claiming nothing moved.
+            for name in dict.fromkeys(list(before) + list(after)):
+                b, aft = before.get(name), after.get(name)
+                if b is None or aft is None:
+                    missing = "before" if b is None else "after"
+                    cell = f"unknown (absent {missing})"
+                    L.append(f"| `{name}` | {cell} | {cell} |")
                     continue
                 L.append(
                     f"| `{name}` | {_delta('dedicated_gb', b, aft)} "
@@ -517,7 +541,8 @@ def main() -> int:
                 obs["counters_after"] = read_counters()
             else:
                 obs["counters_after"], obs["settle_after"] = read_counters_settled(
-                    timeout_s = args.settle_timeout
+                    timeout_s = args.settle_timeout,
+                    baseline = _usage_totals_gb(obs["counters_before"]),
                 )
         except Exception as e:  # noqa: BLE001
             obs["allocation_error"] = f"{type(e).__name__}: {e}"
