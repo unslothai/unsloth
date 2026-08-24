@@ -1305,6 +1305,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   const [genDone, setGenDone] = useState<number | null>(null);
   // Live per-step progress (step / total + ETA) polled during generation.
   const [genStep, setGenStep] = useState<DiffusionGenerateProgress | null>(null);
+  // Held past the denoise: progress reports no preview while the record persists, and the final
+  // blob is still loading after that, so clearing on either would blank the viewer mid-handoff.
+  const [heldPreview, setHeldPreview] = useState<string | null>(null);
   const genPollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   // visibilitychange handler active while a generation poll runs: background tabs clamp setInterval, so returning fires one immediate poll.
   const genVisibilityListener = useRef<(() => void) | null>(null);
@@ -1627,6 +1630,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     [images, selectedId],
   );
   const selectedSrc = selected ? srcById[selected.id] : undefined;
+  // Keep the last denoise frame up until the finished image can actually render, so the viewer
+  // never drops from a near-complete preview back to a spinner.
+  const previewSrc =
+    heldPreview !== null && (busy === "generating" || (selected !== null && !selectedSrc))
+      ? heldPreview
+      : null;
 
   // Fetch (once) the object URL for a record's PNG; cached across remounts.
   const ensureSrc = useCallback(async (image: GalleryImage) => {
@@ -2253,7 +2262,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           void refreshStatus();
           return;
         }
+        if (p.preview) setHeldPreview(p.preview);
         setGenStep((prev) => {
+          // The persist window reports active at step 0; letting the bar fall back to "Preparing"
+          // after the last step reads as the run restarting.
+          if (prev && prev.step > 0 && p.step === 0) return prev;
           if (
             prev &&
             prev.step === p.step &&
@@ -2298,6 +2311,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         if (g.active) {
           setBusy("generating");
           setGenStep(g);
+          if (g.preview) setHeldPreview(g.preview);
           resumeGeneratePoll();
         }
       } catch {
@@ -3245,6 +3259,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     setBusy("generating");
     setGenDone(0);
     setGenStep(null);
+    setHeldPreview(null);
     // Fresh run: a Stop from the PREVIOUS run must not cancel this one.
     cancelRequested.current = false;
     cancelAcked.current = false;
@@ -4313,9 +4328,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
 
         <div className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden @[50rem]:min-h-0">
           <div className="hover-scrollbar relative flex flex-1 items-center justify-center overflow-auto p-6 px-10 @[50rem]:pt-[60px]">
-            {busy === "generating" && genStep?.preview ? (
+            {previewSrc ? (
               <img
-                src={genStep.preview}
+                src={previewSrc}
                 alt="Generation preview"
                 className="max-h-full max-w-full object-contain shadow-sm"
               />
@@ -4390,9 +4405,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
               <div
                 className={cn(
                   "pointer-events-none absolute flex justify-center px-4",
-                  selectedSrc || genStep?.preview
-                    ? "inset-x-0 bottom-4"
-                    : "inset-0 items-center",
+                  selectedSrc || previewSrc ? "inset-x-0 bottom-4" : "inset-0 items-center",
                 )}
               >
                 <div className="w-72 max-w-full rounded-xl bg-background/85 p-3 shadow-lg ring-1 ring-border backdrop-blur">
