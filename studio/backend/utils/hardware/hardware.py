@@ -1154,15 +1154,26 @@ def _hip_runtime_version() -> Optional[tuple[int, int]]:
 def _rocm_props_total_is_carve_out(props: Any) -> bool:
     """True when ``props.total_memory`` may understate what torch can actually use.
 
-    On a unified-memory ROCm APU the two totals are NOT the same number:
-    ``props.total_memory`` is the dedicated carve-out while ``hipMemGetInfo``'s
-    total spans the GTT pool, which is the figure the rest of this module treats
-    as authoritative (_apply_unified_memory_correction adopts it over amd-smi's
-    for exactly this reason). Reporting the carve-out would undo that correction
-    and budget a 128 GiB Strix Halo as ~8 GiB. There is no context-free source for
-    the GTT total, so only APUs pay mem_get_info; every discrete device keeps the
-    free inventory. Same classifier the training worker and the llama.cpp backend
-    use, so all three agree on what an APU is.
+    On some stacks ``props.total_memory`` is the dedicated carve-out while
+    ``hipMemGetInfo``'s total spans the GTT pool. MAY, not does: measured on a
+    Windows gfx1151 (driver 32.0.21041.1000, torch 2.11.0+rocm7.13.0) the two
+    agree at 89.47 GB against a 32 GB BIOS carve-out, and on a Linux gfx1151 they
+    agree at 64 GB, so on both APUs tested props.total_memory already spans the
+    pool and this returning True buys nothing. Callers must therefore compare the
+    two and adopt only a larger driver total, never adopt it outright.
+
+    The gap this module DOES have provenance for is a different pair:
+    _apply_unified_memory_correction adopts torch's total over amd-smi's, because
+    amd-smi reports the carve-out. That is torch against amd-smi, not
+    props.total_memory against hipMemGetInfo, and it is not evidence for this one.
+    A stack where these two disagree is inferred from reports of an understated
+    total, not yet reproduced; #8862 and #7449 are about used VRAM reading
+    Unknown, which is a different fault.
+
+    There is no context-free source for the GTT total, so only APUs pay
+    mem_get_info; every discrete device keeps the free inventory. Same classifier
+    the training worker and the llama.cpp backend use, so all three agree on what
+    an APU is.
 
     "Not unified" is not the same answer as "discrete". That classifier knows an APU
     by the driver's integrated flag or by a hardcoded arch set, so a gfx1103 Phoenix
