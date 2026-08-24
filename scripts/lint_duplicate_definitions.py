@@ -257,8 +257,13 @@ def _defined_names(node, overloads):
     return [(name, "constant") for name in names]
 
 
-def _scope_duplicates(body, scope, out, overloads) -> None:
-    """Names bound twice as direct children of one body; recurses into class bodies."""
+def _scope_duplicates(body, scope, out, overloads, module_overloads) -> None:
+    """Names bound twice as direct children of one body; recurses into class bodies.
+
+    `overloads` is what a decorator in THIS body resolves to; `module_overloads` is what a
+    decorator in a fresh class body resolves to. They differ because a class body is not part
+    of the scope chain of a class nested inside it.
+    """
     seen = {}
     for node in body:
         for name, kind in _defined_names(node, overloads):
@@ -275,15 +280,24 @@ def _scope_duplicates(body, scope, out, overloads) -> None:
             else:
                 seen[name] = (node.lineno, kind)
         if isinstance(node, ast.ClassDef):
-            # The class gets the module's aliases PLUS any it binds itself.
+            # The class gets the MODULE's aliases plus any it binds itself -- never the
+            # enclosing class's. "The scope of names defined in a class block is limited to
+            # the class block", and a class body resolves an unbound name in the GLOBAL
+            # namespace, so a nested class does not see `import typing as t` from the class
+            # around it. Passing the outer set down exempted `@t.overload` in the inner class
+            # where `t` is whatever the MODULE bound it to, and two copies of one def scanned
+            # clean -- widening the exemption is the one direction that hides merge damage.
             _scope_duplicates(
                 node.body,
                 f"{scope}{node.name}.",
                 out,
-                _overload_names_in(node.body, overloads),
+                _overload_names_in(node.body, module_overloads),
+                module_overloads,
             )
         for nested in _branch_bodies(node):
-            _scope_duplicates(nested, scope, out, overloads)
+            # A control-flow branch is not a scope, so it keeps the aliases of the body it
+            # sits in -- only a class body starts over.
+            _scope_duplicates(nested, scope, out, overloads, module_overloads)
 
 
 def _import_duplicates(body, scope, out) -> None:
@@ -382,7 +396,8 @@ def scan_source(source: str, filename: str = "<unknown>"):
     except SyntaxError as exc:
         return [Finding(exc.lineno or 0, "parse", f"does not parse ({exc.msg})")]
     found = []
-    _scope_duplicates(tree.body, "", found, _overload_names(tree))
+    module_overloads = _overload_names(tree)
+    _scope_duplicates(tree.body, "", found, module_overloads, module_overloads)
     _import_duplicates(tree.body, "", found)
     return sorted(found)
 
@@ -598,6 +613,31 @@ _SELF_TEST_CASES = [
         "class C:\n    import typing as t\n"
         "    @t.overload\n    def f(self, x: int): ...\n"
         "    @t.overload\n    def f(self, x: str): ...\n    def f(self, x):\n        return x\n",
+    ),
+    # ...but that alias stops at ITS OWN class body. A class nested inside it resolves an
+    # unbound name in the MODULE namespace, not in the class around it, so `@t.overload` in
+    # the inner class is `types.overload` here and the two copies are ordinary merge damage.
+    # Handing the outer class's aliases down exempted both and the scan reported clean.
+    (
+        1,
+        "import types as t\n\n\nclass Outer:\n    import typing as t\n\n    class Inner:\n"
+        "        @t.overload\n        def f(self, x: int): ...\n"
+        "        @t.overload\n        def f(self, x: str): ...\n",
+    ),
+    # A nested class binding the alias ITSELF still resolves its own decorators.
+    (
+        0,
+        "import types as t\n\n\nclass Outer:\n    class Inner:\n        import typing as t\n"
+        "        @t.overload\n        def f(self, x: int): ...\n"
+        "        @t.overload\n        def f(self, x: str): ...\n",
+    ),
+    # ...and a MODULE-level alias reaches every class body at every depth, so narrowing the
+    # inner class to its own bindings alone would be a false positive on correct code.
+    (
+        0,
+        "import typing as t\n\n\nclass Outer:\n    class Inner:\n"
+        "        @t.overload\n        def f(self, x: int): ...\n"
+        "        @t.overload\n        def f(self, x: str): ...\n",
     ),
     # Each control-flow branch scanned on its own: duplicated INSIDE one branch is merge damage,
     # one per branch is the conditional idiom.
