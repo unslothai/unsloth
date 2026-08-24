@@ -695,7 +695,9 @@ CLAIM_VISIBLE = (
 )
 CLAIM_BEHAVIOURAL = (
     "behavioural parity: the scroll extent matches and the invariants a windowed mount breaks "
-    "first still hold. Says NOTHING about how anything looks"
+    "first still hold, including that each arm's clipboard covers the thread's own visible text "
+    "BY LENGTH. Says NOTHING about how anything looks, and nothing about WHICH characters were "
+    "copied"
 )
 
 #: THE POLICY EVERY VERDICT IS JUDGED AGAINST, printed beside the claim.
@@ -716,6 +718,15 @@ CLAIM_BEHAVIOURAL = (
 #: all, through `clipboard_carries_the_whole_thread`, which scores the copy against the THREAD
 #: rather than against the other arm. Where a payload carries no readable `select_all_copy` the
 #: gate records that the exemption exists and does not grant it.
+#:
+#: And it scores it BY LENGTH. That is a proxy for completeness, not completeness itself, so the
+#: printed line says so rather than leaving "complete" to be read as a content comparison. A
+#: content comparison is not available here: the base arm's clipboard is the DOM's rendered text
+#: while a store-based copy is markdown SOURCE, so the two are different serialisations of one
+#: conversation and comparing their characters fails on a CORRECT build. The coverage band is what
+#: carries the weight, and it is the band that refused both defects this was written for --
+#: truncation at 0.61 of the thread and substitution at 2.16 -- so it is interpolated from the
+#: live constants by `behaviour_policy()` rather than written out here, where it could drift.
 POLICY = (
     "UI and UX idempotency is required, with three exemptions: a deliberate difference accepted "
     "for a dramatic performance improvement, a difference that exists only OFF SCREEN, and a "
@@ -742,11 +753,26 @@ POLICY_BY_MODE = {
         "windowed mount breaks first -- scroll extent, what the clipboard carries, whether the "
         "thread survives being reopened -- so a pass here is evidence about BEHAVIOUR and says "
         "nothing about appearance. It cannot grant the performance or off-screen exemptions, and "
-        "it is the only mode that speaks to the select-all one: clipboard completeness is scored "
-        "against the THREAD, which is the half of that exemption that is required. Without a "
-        "readable select_all_copy it records the exemption rather than granting it"
+        "it is the only mode that speaks to the select-all one, on the half of that exemption "
+        "that is REQUIRED: whether the copy stays complete. It measures that BY LENGTH, scoring "
+        "each arm's clipboard against the thread's own visible text and requiring coverage in "
+        "{min}-{max}. It does not compare the copied characters and cannot: the base arm's "
+        "clipboard is the DOM's rendered text and a store-based copy is markdown source, so a "
+        "character comparison of two correct serialisations fails. Without a readable "
+        "select_all_copy it records the exemption rather than granting it"
     ),
 }
+
+
+def behaviour_policy(min_coverage: float, max_coverage: float) -> str:
+    """The behaviour-mode policy line with the coverage band it actually enforces filled in.
+
+    The band lives in `analysis.behaviour`, which imports THIS module, so the caller passes it in
+    rather than this module importing back and closing a cycle. Interpolating it is the point: a
+    band written out by hand here drifts away from the one enforced, and the sentence a reader
+    trusts is then describing a gate that no longer exists.
+    """
+    return POLICY_BY_MODE["behaviour"].format(min = min_coverage, max = max_coverage)
 
 
 def compare_visible(base: Optional[dict], treat: Optional[dict]) -> dict:

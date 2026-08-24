@@ -1861,6 +1861,33 @@ def test_the_coverage_floor_passes_a_windowed_run_that_compared_enough(tmp_path,
     assert code == 0, out
 
 
+def test_the_behaviour_policy_prints_the_coverage_band_it_actually_enforces(tmp_path, capsys):
+    """The printed policy said the copy must be "complete", which reads as a content comparison.
+
+    It is a LENGTH: each arm's clipboard over the thread's own visible text, inside a band. That
+    band is the whole strength of the claim -- it is what refused truncation at 0.61 and
+    substitution at 2.16 -- so the sentence has to carry the live numbers rather than a pair
+    somebody typed once. The needle here is DERIVED from the constants, so widening the band
+    without touching the wording is caught, and so is a sentence that stopped interpolating.
+    """
+    from studiobench.sweep import ui_parity as U
+
+    band = P.behaviour_policy(B.MIN_CLIPBOARD_COVERAGE, B.MAX_CLIPBOARD_COVERAGE)
+    assert f"{B.MIN_CLIPBOARD_COVERAGE}-{B.MAX_CLIPBOARD_COVERAGE}" in band, band
+
+    # A different band has to travel through as well: a hard-coded sentence would pass the
+    # assertion above by coincidence and fail this one.
+    other = P.behaviour_policy(0.5, 2.0)
+    assert "0.5-2.0" in other, other
+    assert f"{B.MIN_CLIPBOARD_COVERAGE}-{B.MAX_CLIPBOARD_COVERAGE}" not in other, other
+
+    # And the report has to be wired to it, not merely able to produce it.
+    _mixed_rung_shard(tmp_path, "banner")
+    U.main([str(tmp_path / "banner"), "--mode", "behaviour", "--min-compared", "0"])
+    out = capsys.readouterr().out
+    assert f"{B.MIN_CLIPBOARD_COVERAGE}-{B.MAX_CLIPBOARD_COVERAGE}" in out, out
+
+
 def test_the_coverage_floor_is_applied_under_forced_visible_and_behaviour_modes(tmp_path, capsys):
     """The other route to an empty structural plan, and it does not need a windowed payload at all.
     `--mode visible` and `--mode behaviour` hard-set `structural` to an empty set for EVERY

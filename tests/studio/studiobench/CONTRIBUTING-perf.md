@@ -212,6 +212,18 @@ through `clipboard_carries_the_whole_thread`, which scores the copy against the 
 against the other arm -- that is the required half. Where a payload carries no readable
 `select_all_copy`, the gate records that the exemption exists and does not grant it.
 
+**And it scores it by LENGTH, not by content.** Each arm's `clipboard_chars` is divided by the
+thread's own visible text and has to land inside `MIN_CLIPBOARD_COVERAGE`-`MAX_CLIPBOARD_COVERAGE`;
+the copied characters are never compared. That is not an oversight to be fixed by comparing them.
+The base arm's clipboard is the DOM's RENDERED TEXT and a store-based copy is markdown SOURCE, so
+the two are different serialisations of one conversation and a character comparison fails on a
+CORRECT build -- the only way to make it pass would be to normalise until it stopped testing
+anything. The band is where the strength is, and it is two-sided for that reason: the lower bound
+refused truncation measured at 0.61 of the thread, the upper bound refused the substitution its
+first fix turned into, measured at 2.16. A copy that rewrote content while landing inside the band
+would not be caught, so `--mode behaviour` prints the band it is enforcing next to its claim and
+does not use the bare word "complete".
+
 The digest is **sidebar-blind and layout-blind**: run against a real sidebar-drag change it reported
 0 of 34 differing pairs, and so did its own null control. So a digest pass is not a statement that
 the UI is unchanged.

@@ -270,7 +270,13 @@ def test_every_mode_names_the_policy_it_is_judging_against():
     # The behavioural mode grants neither of the first two and is the only one that speaks to the
     # third, so "either" would be the wrong word for it now.
     assert "cannot grant the performance or off-screen exemptions" in P.POLICY_BY_MODE["behaviour"]
-    assert "clipboard completeness is scored" in P.POLICY_BY_MODE["behaviour"]
+    # AND IT SAYS HOW IT MEASURES THE CONDITION. "Complete" on its own reads as a comparison of
+    # the copied content; what the gate does is divide each arm's clipboard length by the thread's
+    # visible text and require the ratio to land in a band. Saying which of those it is decides
+    # whether a reader is entitled to conclude the copy was intact, so the weaker wording is not
+    # allowed back: the line has to name the measure AND disclaim the one it does not perform.
+    assert "BY LENGTH" in P.POLICY_BY_MODE["behaviour"]
+    assert "does not compare the copied characters" in P.POLICY_BY_MODE["behaviour"]
     assert "records the exemption rather than granting it" in P.POLICY_BY_MODE["behaviour"]
     # The floor survives the exemption. An exemption changes what counts as a pass; a measurement
     # with no floor under it is not a pass in the first place.
@@ -278,16 +284,29 @@ def test_every_mode_names_the_policy_it_is_judging_against():
 
 
 def test_the_policy_line_is_printed_next_to_every_claim_line():
-    """A constant nothing prints is a constant nobody reads."""
+    """A constant nothing prints is a constant nobody reads.
+
+    Every needle below is DERIVED from the module under test rather than written out here: the
+    claim names come from `vars(P)` and the mode names from `POLICY_BY_MODE` itself. Counting two
+    hand-typed substrings instead could only ever report a total, so it said "3 claim lines but 2
+    policy lines" without naming the mode that had gone quiet, and it broke the moment a policy
+    line started being built by a function so that it could interpolate the band it enforces.
+    """
     from pathlib import Path
 
     source = (Path(__file__).resolve().parents[2] / "sweep" / "ui_parity.py").read_text(
         encoding = "utf-8"
     )
-    claims = source.count("CLAIM: {P.CLAIM_")
-    policies = source.count("POLICY: {P.POLICY_BY_MODE[")
-    assert claims == 3, f"expected one claim line per mode, found {claims}"
-    assert policies == claims, f"{claims} claim lines but {policies} policy lines"
+    claims = sorted(name for name in vars(P) if name.startswith("CLAIM_"))
+    assert len(claims) == 3, claims
+    for name in claims:
+        assert f"P.{name}" in source, f"{name} is never printed"
+    for mode in P.POLICY_BY_MODE:
+        # Either printed straight from the table, or through the per-mode helper that fills in
+        # the numbers that mode is actually enforcing.
+        assert (
+            f"POLICY_BY_MODE['{mode}']" in source or f"{mode}_policy(" in source
+        ), f"the {mode} policy line is never printed"
 
 
 def test_the_mode_names_the_pull_request_template_uses_are_accepted():

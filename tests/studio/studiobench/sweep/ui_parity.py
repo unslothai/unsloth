@@ -778,7 +778,10 @@ def behaviour_report(
 
     print(f"\n{label}  (BEHAVIOURAL MODE)")
     print(f"  CLAIM: {P.CLAIM_BEHAVIOURAL}.")
-    print(f"  POLICY: {P.POLICY_BY_MODE['behaviour']}.")
+    # Through the helper, not straight off the table: this mode's line names the coverage band it
+    # enforces, and the band lives in `behaviour`. Printing the raw template would emit the
+    # placeholders themselves and quietly stop reporting the numbers being applied.
+    print(f"  POLICY: {P.behaviour_policy(B.MIN_CLIPBOARD_COVERAGE, B.MAX_CLIPBOARD_COVERAGE)}.")
     # WHICH REASON, and only if it is true. Forced behavioural mode on a payload that mounts its
     # whole thread -- which is exactly how a NULL CONTROL is scored on the same scale as the
     # windowed arm it is the control for -- used to print "one arm of this payload mounts a window
