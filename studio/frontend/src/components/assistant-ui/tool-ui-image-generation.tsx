@@ -13,6 +13,7 @@ import type { CSSProperties, MouseEvent } from "react";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { useGeneratedImageOverlay } from "./generated-image-overlay-context";
 import { downloadImagePart } from "./image";
+import { toolArgText } from "./tool-arg-text";
 import {
   ToolFallbackContent,
   ToolFallbackRoot,
@@ -31,7 +32,8 @@ import {
  * JSON with an empty Result block (the "no image" symptom).
  */
 interface ImageGenerationArgs {
-  prompt?: string;
+  // Straight off the wire; the provider decides the JSON type, not this file.
+  prompt?: unknown;
   kind?: string;
   openai_image_generation_call_id?: unknown;
   openai_response_id?: unknown;
@@ -44,7 +46,7 @@ interface ImageGenerationResult {
   size?: string;
   quality?: string;
   background?: string;
-  prompt?: string;
+  prompt?: unknown;
 }
 
 type GeneratedImagePart = {
@@ -159,7 +161,7 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
 }) => {
   const { openOverlay } = useGeneratedImageOverlay();
   const parsedArgs = (args as ImageGenerationArgs) ?? {};
-  const prompt = parsedArgs.prompt ?? "";
+  const prompt = toolArgText(parsedArgs.prompt);
   const isRunning = status?.type === "running";
 
   const isImageResult =
@@ -181,9 +183,9 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
   const imageSrc = imageResult?.image_b64
     ? `data:${mime};base64,${imageResult.image_b64}`
     : null;
-  const imageTitle =
-    imageResult?.prompt?.trim() || prompt.trim() || "Generated image";
-  const captionPrompt = imageResult?.prompt?.trim() || prompt.trim();
+  const resultPrompt = toolArgText(imageResult?.prompt).trim();
+  const imageTitle = resultPrompt || prompt.trim() || "Generated image";
+  const captionPrompt = resultPrompt || prompt.trim();
   const promptLikelyNeedsExpansion = captionPrompt.length > 220;
   const imageMetadata = [imageResult?.size, imageResult?.quality, mime]
     .filter(Boolean)
