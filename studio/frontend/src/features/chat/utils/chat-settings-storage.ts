@@ -241,7 +241,7 @@ function sanitizeInt(value: unknown, min: number): number | undefined {
     : undefined;
 }
 
-function sanitizeChatSettings(value: unknown): PersistedChatSettings {
+export function sanitizeChatSettings(value: unknown): PersistedChatSettings {
   if (!isRecord(value)) return {};
 
   const settings: PersistedChatSettings = {};

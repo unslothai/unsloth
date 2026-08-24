@@ -42,12 +42,7 @@ const CURRENT_QWEN_NON_THINKING_DEFAULTS = {
 } as const satisfies PersistedInferenceParams;
 
 export function isPresenceBumpQwen(modelId: string): boolean {
-  const normalized = modelId.toLowerCase();
-  return (
-    normalized.includes("qwen3.5") ||
-    normalized.includes("qwen3.6") ||
-    normalized.includes("qwen3.8")
-  );
+  return /(?:^|[^a-z0-9])qwen3\.(?:5|6|8)(?:$|[-_/\\])/i.test(modelId);
 }
 
 function isLegacyQwenDefaultSnapshot(

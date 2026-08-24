@@ -54,6 +54,7 @@ import {
 } from "../types/runtime";
 import {
   loadChatSettingsWithLegacyImport,
+  sanitizeChatSettings,
   savePersistedChatSettingsPatch,
   savePersistedChatSettingsPatchIfCurrent,
 } from "../utils/chat-settings-storage";
@@ -3910,7 +3911,7 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
       return true;
     }
     const checkpoint = state.params.checkpoint;
-    const confirmed = await getChatSettings();
+    const confirmed = sanitizeChatSettings(await getChatSettings());
     const confirmedState = useChatRuntimeStore.getState();
     // A model switch while the confirming GET was in flight invalidates both
     // the row and the loaded reasoning mode this retry was about to persist.
@@ -4314,7 +4315,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
             // Re-read immediately before the write. The migration patch is
             // derived from this confirmation, not from the earlier hydration
             // response, so a newer edit from another tab is left untouched.
-            const confirmed = await getChatSettings();
+            const confirmed = sanitizeChatSettings(await getChatSettings());
             const confirmedState = get();
             // A model switch while the confirming GET was in flight invalidates
             // the checkpoint and mode this migration was about to persist. The

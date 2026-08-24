@@ -227,6 +227,18 @@ test("does not migrate generic Qwen3 or a custom preset", () => {
   assert.equal(migrateLegacyQwenDefaults(custom, QWEN38, true).patch, null);
 });
 
+test("matches presence-bump versions only at model-id boundaries", () => {
+  const future = settingsFor("unsloth/Qwen3.80-27B-GGUF");
+  assert.equal(
+    migrateLegacyQwenDefaults(
+      future,
+      "unsloth/Qwen3.80-27B-GGUF",
+      true,
+    ).patch,
+    null,
+  );
+});
+
 test("does not infer that globals belong to a newly active Qwen model", () => {
   const settings = settingsFor(QWEN38);
   const migrated = migrateLegacyQwenDefaults(settings, QWEN38, true, false);
