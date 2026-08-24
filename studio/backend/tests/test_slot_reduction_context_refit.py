@@ -19,6 +19,7 @@ if _TESTS_DIR not in sys.path:
 
 import pytest  # noqa: E402
 
+import core.inference.llama_cpp as llama_cpp  # noqa: E402
 from test_llama_cpp_placement import _backend, _launch  # noqa: E402
 
 MIB = 1024 * 1024
@@ -206,8 +207,13 @@ class TestWhatMustNotMove:
     def test_an_explicit_context_that_forces_offload_is_unchanged(self, tmp_path):
         """An explicit context that requires offload is unchanged."""
         got = _plan(tmp_path, weights_mib = 10_200, n_parallel = 4, spec = "off", n_ctx = 32768)
+        # The launched context stays a literal: honouring the request verbatim IS the
+        # contract, so a derived value here would assert nothing.
         assert (got["ctx"], got["slots"], got["fit"]) == (32768, 4, "on")
-        assert got["ceiling"] == 4096
+        # The ceiling is the published safe zone, which no reduction reached, so it is
+        # the offload fallback. Tracks the constant; #9492 moved it 4096 -> 8192.
+        assert got["ceiling"] == min(llama_cpp._AUTO_OFFLOAD_CTX, NATIVE_CTX)
+        assert got["ceiling"] < got["ctx"], "the sheet must still warn above the safe zone"
 
     def test_a_count_that_needs_no_reduction_is_untouched(self, tmp_path):
         """A plan that needs no slot reduction is unchanged."""
@@ -215,9 +221,20 @@ class TestWhatMustNotMove:
         assert (got["slots"], got["fit"], got["ctx"]) == (4, "off", 51_200)
 
     def test_weights_that_fit_nowhere_still_offload(self, tmp_path):
-        """Oversized weights still fall back to offload."""
+        """Oversized weights still fall back to offload, at the Auto offload context.
+
+        The one case in this file that reads the constant rather than the reduction:
+        no slot count places these weights, so the block below never fires and the
+        context is the fallback itself. Tracked rather than hardcoded, since #9492
+        moved it from 4096 to 8192 and a literal here is a re-edit every time.
+        """
         got = _plan(tmp_path, weights_mib = 11_400, n_parallel = 4, spec = "off")
-        assert (got["fit"], got["ctx"], got["ceiling"]) == ("on", 4096, 4096)
+        offload_ctx = min(llama_cpp._AUTO_OFFLOAD_CTX, NATIVE_CTX)
+        assert (got["fit"], got["ctx"], got["ceiling"]) == ("on", offload_ctx, offload_ctx)
+        # The case is still the one this name claims: nothing was rescued, and the
+        # native length really was cut down to the fallback.
+        assert got["slots"] == 4, "the reduction fired; this is no longer the offload case"
+        assert got["ctx"] < NATIVE_CTX
 
     @pytest.mark.parametrize(
         "weights_mib,slots,ctx",
@@ -230,6 +247,80 @@ class TestWhatMustNotMove:
         """Dense models also recover slot-scaled compute-buffer capacity."""
         got = _plan(tmp_path, weights_mib = weights_mib, n_parallel = 4, spec = "off", metadata = DENSE)
         assert (got["slots"], got["ctx"]) == (slots, ctx)
+
+
+class TestTheReductionIsPricedAtTheFitFloor:
+    """The search that picks the slot count must not be priced at _AUTO_OFFLOAD_CTX.
+
+    That constant is what Auto settles for once offload is unavoidable. This block
+    exists to overturn that verdict by re-asking at fewer slots, so a higher probe
+    context can only make the search fail -- and its failure is all-or-nothing: no
+    reduction, `--fit on`, and the slot count kept at the ask it could not afford.
+
+    #9492 raised the constant 4096 -> 8192 and, through this one shared read, moved
+    placement. The arithmetic, on the 12 GiB card these tests use (budget
+    12288 x 0.97 = 11,919.36 MiB) at 10,200 MiB of weights: the candidates are
+    707 MiB apart (557.75 MiB of per-slot compute buffer plus 149.625 MiB of per-slot
+    Mamba state), while probing 256 tokens higher costs a uniform 64 KiB/token. The
+    2-slot candidate is 11,685.0 MiB at 4096 and 11,947.0 MiB at 8192, so a display
+    constant moved it across the budget by 27.6 MiB.
+    """
+
+    # A band that a reduction rescues from offload. Every one of these launched
+    # `--fit off` before #9492 and `--fit on` after it, which is the ~3x decode
+    # collapse (#6718) the reduction was written to avoid.
+    RESCUED = [
+        (10_900, HYBRID),
+        (11_000, HYBRID),
+        (11_100, HYBRID),
+        (9_800, DENSE),
+        (10_000, DENSE),
+        (10_500, DENSE),
+    ]
+
+    @pytest.mark.parametrize("offload_ctx", [4096, 8192, 16384, 32768])
+    def test_moving_the_offload_fallback_does_not_move_the_placement(
+        self, tmp_path, monkeypatch, offload_ctx
+    ):
+        """Sweeping the constant leaves slots, residency, context and cards alone.
+
+        Pinned against the sweep rather than against one value, so this cannot be
+        satisfied by re-baselining the constant into the expectation.
+        """
+        monkeypatch.setattr(llama_cpp, "_AUTO_OFFLOAD_CTX", offload_ctx)
+        got = _plan(tmp_path, weights_mib = 10_200, n_parallel = 4, spec = "off")
+        assert (got["slots"], got["fit"], got["ctx"], got["devices"]) == (2, "off", 7_680, "0")
+
+    @pytest.mark.parametrize("weights_mib,metadata", RESCUED)
+    @pytest.mark.parametrize("offload_ctx", [4096, 8192])
+    def test_a_load_the_reduction_can_rescue_never_offloads(
+        self, tmp_path, monkeypatch, weights_mib, metadata, offload_ctx
+    ):
+        monkeypatch.setattr(llama_cpp, "_AUTO_OFFLOAD_CTX", offload_ctx)
+        got = _plan(tmp_path, weights_mib = weights_mib, n_parallel = 4, spec = "off", metadata = metadata)
+        assert got["fit"] == "off", "a placeable load was handed to --fit offload"
+        # It was rescued BY the reduction rather than fitting outright, or the row
+        # would prove nothing about this block.
+        assert got["slots"] < 4
+
+    def test_weights_past_the_band_still_offload(self, tmp_path):
+        """The counterweight: the rows above are not green because everything is.
+
+        Without this, RESCUED could drift into sizes that place at the full ask and
+        the assertions there would hold for the wrong reason.
+        """
+        got = _plan(tmp_path, weights_mib = 11_400, n_parallel = 4, spec = "off")
+        assert (got["fit"], got["slots"]) == ("on", 4)
+
+    def test_asking_for_more_slots_never_returns_fewer(self, tmp_path):
+        """Monotone in the ask. At head, asking for 2 got 2 and asking for 3 got 1."""
+        finals = [
+            _plan(tmp_path, weights_mib = 10_200, n_parallel = n, spec = "off")["slots"]
+            for n in (1, 2, 3, 4, 6, 8)
+        ]
+        assert finals == sorted(finals), finals
+        # Not a row of identical numbers, which would sort trivially.
+        assert len(set(finals)) > 1, finals
 
 
 class TestTheSearchPredicate:

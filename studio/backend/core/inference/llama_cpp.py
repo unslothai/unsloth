@@ -57,6 +57,7 @@ from core.inference.context_window import (
     fit_rolling_context,
     messages_have_media,
     retrieval_budget,
+    tool_result_budget,
 )
 from core.inference.stream_errors import stream_error_from_chunk
 from core.inference.llama_server_args import (
@@ -2820,6 +2821,27 @@ _APPLE_UNIFIED_MEMORY_FRACTION = 0.85
 # from _FIT_FLOOR_MIN_CTX (the search's 256 alignment step) before trusting it.
 _FIT_MIN_CTX = 4096
 _FIT_FLOOR_MIN_CTX = 256
+
+# Auto only reaches this path when no discrete-GPU subset can hold the model.
+# llama.cpp must offload layers to host RAM either way, so prefer a context that
+# remains useful for chat. Separate from _FIT_MIN_CTX: that value is also a search
+# and Apple unified-memory safety floor.
+_AUTO_OFFLOAD_CTX = 8192
+
+# Keep this at or above the fit search floor. Not a style rule, a correctness one:
+# the Auto offload branch re-checks whether a subset holds the model at the reduced
+# context, and that re-check can only award residency BELOW the floor, since a subset
+# winnable at or above it was already taken by the fit loop that runs first. Moving
+# this constant is therefore free of placement changes only while it stays on the dead
+# side of that floor. Below it the re-check hands over a device and flips --fit off,
+# which is a placement decision rather than a display one.
+#
+# The floor in question is the ``min_ctx = 4096`` DEFAULT on _fit_context_to_vram and
+# _cap_ctx_to_per_device_reserve, not _FIT_MIN_CTX: neither auto call site passes the
+# argument, and _FIT_MIN_CTX is only handed in explicitly on the Apple arm. The three
+# numbers agree today and nothing here makes them; test_auto_offload_ctx_invariants.py
+# pins both defaults to _FIT_MIN_CTX and this constant above it, so the agreement
+# cannot lapse silently.
 
 # How far amd-smi's total VRAM may sit from HIP's before the two are reporting
 # different memory scopes rather than one pool (an APU carve-out against the GTT
@@ -16814,7 +16836,12 @@ class LlamaCppBackend:
                         #
                         # AUTO gets the FLOOR, which makes this a residency question and
                         # not a context one. Auto shrinks the CONTEXT before it spills
-                        # layers, reaching `--fit on` only once even 4096 will not place.
+                        # layers, reaching `--fit on` only once even _FIT_MIN_CTX will
+                        # not place -- and then RAISES the context to _AUTO_OFFLOAD_CTX,
+                        # since offload is already unavoidable by that point. So this
+                        # floor is deliberately the residency floor and not the context
+                        # the load ends up running at; the projector's bytes are charged
+                        # again at the real context through _subset_model_size below.
                         # Pricing at the native length would answer "does not fit" for a
                         # load merely heading for a smaller context and pin a projector
                         # that was resident all along -- 8.8x on image encode for nothing.
@@ -17409,9 +17436,15 @@ class LlamaCppBackend:
                                 max_available_ctx = best_cap
                             else:
                                 # Weights exceed 90% of every GPU subset, so no
-                                # context fits. Anchor the UI "safe zone" at 4096
-                                # so the slider warns above the fallback.
-                                max_available_ctx = min(4096, native_ctx_for_cap)
+                                # context fits. Anchor the UI "safe zone" at the
+                                # Auto offload fallback so the slider warns ABOVE
+                                # what Auto itself selects: anchoring below it
+                                # makes every Auto load in this branch exceed its
+                                # own published ceiling, and the chat sheet reads
+                                # that as "context exceeds the estimated VRAM
+                                # capacity" while advising the user to leave it
+                                # on Auto.
+                                max_available_ctx = min(_AUTO_OFFLOAD_CTX, native_ctx_for_cap)
 
                         if explicit_ctx:
                             # Honor the requested context verbatim. If it fits,
@@ -17529,10 +17562,10 @@ class LlamaCppBackend:
                                 use_fit = False
                                 break
                             else:
-                                # Native ctx doesn't fit. Drop to 4096 and
-                                # re-check before --fit on: a model overflowing
-                                # at 131k may pin fine with a 4096 KV (#5106).
-                                effective_ctx = min(4096, effective_ctx)
+                                # No discrete-GPU subset holds the model at a fitted
+                                # context. Prefer a useful chat context before
+                                # handing placement to --fit on and host offload.
+                                effective_ctx = min(_AUTO_OFFLOAD_CTX, effective_ctx)
                                 if effective_ctx > 0:
                                     for n_gpus in range(_auto_min_gpus, len(ranked) + 1):
                                         subset = ranked[:n_gpus]
@@ -17578,9 +17611,13 @@ class LlamaCppBackend:
                             min_gpus = _layer_min_gpus,
                         )
                         if use_fit and not explicit_ctx:
-                            # Weights don't fit on any subset; default UI to 4096
-                            # so the slider isn't on an unusable native ctx.
-                            effective_ctx = min(4096, effective_ctx) if effective_ctx > 0 else 4096
+                            # Without KV metadata, llama.cpp owns the fit. Keep the
+                            # same useful Auto default as the measured offload path.
+                            effective_ctx = (
+                                min(_AUTO_OFFLOAD_CTX, effective_ctx)
+                                if effective_ctx > 0
+                                else _AUTO_OFFLOAD_CTX
+                            )
 
                     elif _apple_budget_mib > 0 and effective_ctx > 0:
                         # No GPU on Metal: the branches above are skipped and the context
@@ -17777,28 +17814,54 @@ class LlamaCppBackend:
                         and self._can_estimate_kv()
                         and effective_ctx > 0
                     ):
+                        # The PROBE context for the search below, not the context the load
+                        # runs at: the re-fit further down awards that, from the final slot
+                        # count. So price the search at the fit search floor, never at
+                        # _AUTO_OFFLOAD_CTX.
+                        #
+                        # _AUTO_OFFLOAD_CTX is what Auto settles for once offload really is
+                        # unavoidable. Asking this search at that value asks the wrong
+                        # question, because this block exists to OVERTURN "offload is
+                        # unavoidable" by re-asking at fewer slots -- a higher probe can only
+                        # make it fail, and its failure is all-or-nothing: no reduction and
+                        # --fit on, so the load keeps the slot count it could not afford and
+                        # offloads anyway. Measured on a 12 GiB card, probing at 8192 instead
+                        # of the floor moves the hybrid 10,900-11,100 MiB and dense
+                        # 9,800-10,500 MiB bands from fully GPU-resident to host offload, the
+                        # ~3x decode collapse (#6718) this whole block was written to avoid.
+                        #
+                        # An explicit context is the exception: it launches verbatim, so the
+                        # search has to be priced at the context that will actually run or the
+                        # slot count it picks is one the card cannot hold.
+                        #
+                        # _FIT_MIN_CTX rather than a literal: _largest_ctx below starts its
+                        # binary search at the same floor, and the two must agree or the
+                        # search can pick a slot count the re-fit then refuses to confirm.
+                        _reduce_ctx = (
+                            effective_ctx if explicit_ctx else min(effective_ctx, _FIT_MIN_CTX)
+                        )
                         # Slot-independent footprint (folded compute buffer and the MTP
                         # reserve swapped out so the helper re-prices both per candidate).
                         _base_footprint = (
-                            model_size_fit - _compute_buffer_pipeline + _cc_bytes(effective_ctx)
+                            model_size_fit - _compute_buffer_pipeline + _cc_bytes(_reduce_ctx)
                         )
                         _gi_slots, _uf_slots, _slots = self._slots_that_fit_on_gpu(
                             n_parallel,
-                            effective_ctx,
+                            _reduce_ctx,
                             gpus,
                             total_by_idx,
                             _base_footprint,
                             cache_type_kv,
                             _pin_fraction,
-                            _pipeline_overhead_bytes + _cc_bytes(effective_ctx),
+                            _pipeline_overhead_bytes + _cc_bytes(_reduce_ctx),
                             _layer_min_gpus,
                             _effective_ubatch,
                             swa_full = swa_full,
                             kv_unified = planned_kv_unified,
                             flash_attn = planned_flash_attn,
-                            split_extra_bytes = _cc_split_extra(effective_ctx),
+                            split_extra_bytes = _cc_split_extra(_reduce_ctx),
                             ubatch_for_slots = _ubatch_for_slots,
-                            mtp_bytes_for_slots = lambda s, ub: _mtp_bytes(effective_ctx, s, ub),
+                            mtp_bytes_for_slots = lambda s, ub: _mtp_bytes(_reduce_ctx, s, ub),
                             ctx_checkpoints = _effective_ctx_checkpoints,
                         )
                         if not _uf_slots:
@@ -17848,8 +17911,8 @@ class LlamaCppBackend:
                                 is not always the one that binds it, and a GGUF with no
                                 native length would arrive with the 0 sentinel and search
                                 nothing."""
-                                _native = self._context_length or effective_ctx
-                                _lo = max(1, min(4096, _native) // 256)
+                                _native = self._context_length or _reduce_ctx
+                                _lo = max(1, min(_FIT_MIN_CTX, _native) // 256)
                                 _hi = _native // 256
                                 _best = None
                                 while _lo <= _hi:
@@ -17868,18 +17931,22 @@ class LlamaCppBackend:
                             _kept = set(_gi_slots or ())
                             _plan_gpus = [g for g in gpus if g[0] in _kept]
                             _refit = _largest_ctx(_plan_gpus)
-                            # Explicit contexts are never rewritten.
-                            if (
-                                _refit is not None
-                                and not explicit_ctx
-                                and _refit[0] > effective_ctx
-                            ):
-                                logger.info(
-                                    "Context re-fitted %d -> %d for %d serving slot(s).",
-                                    effective_ctx,
-                                    _refit[0],
-                                    n_parallel,
-                                )
+                            # Explicit contexts are never rewritten. Otherwise the re-fit is
+                            # the answer, in both directions: it is the largest context the
+                            # FINAL slot count holds on the cards the reduction chose, so
+                            # taking anything else launches a context that was never priced.
+                            # Not gated on it being an increase over effective_ctx -- that
+                            # gate was safe only while the search and effective_ctx shared a
+                            # value, and _AUTO_OFFLOAD_CTX above the probe floor is exactly
+                            # the case where the re-fit legitimately comes back lower.
+                            if _refit is not None and not explicit_ctx:
+                                if _refit[0] != effective_ctx:
+                                    logger.info(
+                                        "Context re-fitted %d -> %d for %d serving slot(s).",
+                                        effective_ctx,
+                                        _refit[0],
+                                        n_parallel,
+                                    )
                                 effective_ctx, gpu_indices = _refit
                             # After the re-fit, so it names the context that launches
                             # rather than one sized for slots this load dropped.
@@ -17898,7 +17965,14 @@ class LlamaCppBackend:
                                 _refit if len(_plan_gpus) == len(gpus) else _largest_ctx(gpus)
                             )
                             if _ceiling is not None:
-                                max_available_ctx = max(max_available_ctx, _ceiling[0])
+                                # Replaces the anchor rather than raising it. Reaching here
+                                # means the offload fallback set max_available_ctx for a plan
+                                # this block just superseded, and max() would keep publishing
+                                # that plan's number: with _AUTO_OFFLOAD_CTX above what the
+                                # final slot count holds, the sheet would advertise a context
+                                # the launched plan cannot serve, which is the same ceiling /
+                                # selection inversion #9492 removed, pointing the other way.
+                                max_available_ctx = _ceiling[0]
 
                     # Pass the final slot and micro-batch values instead of the defaults
                     # captured before slot reduction.
@@ -24267,6 +24341,16 @@ class LlamaCppBackend:
                             tools_withheld = _memory_tool_withheld(thread_id, tools),
                         ),
                     )
+                    # Recorded here, not left to the forwarding below. That list is
+                    # drained from INSIDE the reopened stream, so a replacement server
+                    # that came back with a smaller window and then refused this prompt
+                    # raises at the door and the refusal reaches `_friendly_error` as
+                    # nothing at all -- which then advises shortening a conversation
+                    # eviction has already emptied. Idempotent, and safe on a fit:
+                    # `record_fit` clears whatever the last one left.
+                    from core.inference import context_refusal  # noqa: PLC0415
+
+                    context_refusal.record_fit(truncation)
                     if truncation:
                         # Archive only. The replacement fit reserves no recall room, and a
                         # rescued refusal may still have evicted messages.
@@ -25210,7 +25294,7 @@ class LlamaCppBackend:
                 # the card's id for the first matching call (same tool name) to reconcile.
                 _text_provisional_id = _text_args_id if not has_structured_tc else ""
 
-                for tc in tool_calls or []:
+                for _call_index, tc in enumerate(tool_calls or []):
                     func = tc.get("function", {})
                     tool_name = func.get("name", "")
                     if (
@@ -25370,9 +25454,7 @@ class LlamaCppBackend:
                             # the result lands in the current tool exchange, which rolling
                             # truncation protects, so a top_k the window cannot hold ends
                             # the turn in an unrecoverable context-length error.
-                            if self._effective_context_length and accepts_kwarg(
-                                execute_tool, "conversation_budget_tokens"
-                            ):
+                            if self._effective_context_length:
                                 # Priced against the catalogue too: the messages alone
                                 # leave the tools array out, and a big catalogue can put
                                 # the request near its budget while this still reports
@@ -25387,10 +25469,15 @@ class LlamaCppBackend:
                                 # and the next iteration cannot evict it again because the
                                 # current tool exchange is protected.
                                 #
-                                # So price it exactly instead, here: this runs when the
-                                # model actually reaches for a retrieval tool on a request
-                                # that did not truncate, not on every turn. A failure falls
-                                # back to the estimate, which is what this did before.
+                                # So price it exactly instead, here. A failure falls back
+                                # to the estimate, which is what this did before.
+                                #
+                                # Once per TOOL CALL, not once per retrieval: every result
+                                # is now sized against this figure, not only a retrieval's,
+                                # because a `cat` of a large file overflows the window the
+                                # same way a too-large recall does and is likewise
+                                # protected from eviction once appended. One tokenizer pass
+                                # over the conversation next to running the tool itself.
                                 #
                                 # Recomputed on EVERY search, not cached for the request.
                                 # The count is absolute, and the loop appends the assistant
@@ -25441,30 +25528,78 @@ class LlamaCppBackend:
                                         else estimate_messages_tokens_dense(safe_tools or [])
                                     )
                                 )
-                                if accepts_kwarg(execute_tool, "conversation_token_counter"):
-                                    # The admission check estimates a result's size by
-                                    # characters, which is optimistic for ASCII that
-                                    # tokenises densely: code, minified JSON, hashes and
-                                    # command output all run nearer two or three
-                                    # characters per token than four. This path has a
-                                    # tokenizer, so hand it over and let the check spend
-                                    # the budget as exactly as it computes it.
-                                    kwargs["conversation_token_counter"] = lambda text: (
-                                        self.count_chat_tokens(
-                                            [{"role": "tool", "content": text}],
-                                            None,
-                                            None,
-                                            strict = False,
+                                # What ANY result may add before the next prompt is over
+                                # budget, for every tool and not just the retrieval ones.
+                                # The old cap was a share of the WINDOW and never fell as
+                                # the thread filled, so the last result before an overflow
+                                # claimed as much as the first, and nothing downstream
+                                # recovers: the fit protects the newest turn.
+                                if accepts_kwarg(execute_tool, "result_budget_tokens"):
+                                    # Split across the calls still to run in this batch,
+                                    # and after their arguments. One assistant turn can
+                                    # call several tools, and the loop appends each call
+                                    # only as it runs it, so `_spent` here knows nothing
+                                    # about the rest of the batch: sized as if it were
+                                    # alone, the first result can take all the room the
+                                    # other calls and their results still need, and the
+                                    # finished exchange is protected as the newest turn.
+                                    _pending = list(tool_calls or [])[_call_index + 1 :]
+                                    _pending_msgs = [
+                                        {
+                                            "role": "assistant",
+                                            "content": json.dumps(_call, default = str),
+                                        }
+                                        for _call in _pending
+                                    ]
+                                    # Measured, not estimated: the estimator charges ASCII
+                                    # four characters per token, and a pending call can
+                                    # carry base64, minified JSON or a block of code, which
+                                    # run nearer one or two. Under-priced, the first result
+                                    # is handed room the later ARGUMENTS already occupy.
+                                    _pending_args = 0
+                                    if _pending_msgs:
+                                        try:
+                                            _pending_args = self.count_chat_tokens(
+                                                _pending_msgs, None, None, strict = True
+                                            )
+                                        except Exception:
+                                            logger.debug(
+                                                "result budget: pending call count failed",
+                                                exc_info = True,
+                                            )
+                                            _pending_args = 2 * estimate_messages_tokens_dense(
+                                                _pending_msgs
+                                            )
+                                    kwargs["result_budget_tokens"] = tool_result_budget(
+                                        self._effective_context_length,
+                                        max_tokens,
+                                        _spent + _pending_args,
+                                    ) // (len(_pending) + 1)
+                                if accepts_kwarg(execute_tool, "conversation_budget_tokens"):
+                                    if accepts_kwarg(execute_tool, "conversation_token_counter"):
+                                        # The admission check estimates a result's size by
+                                        # characters, which is optimistic for ASCII that
+                                        # tokenises densely: code, minified JSON, hashes and
+                                        # command output all run nearer two or three
+                                        # characters per token than four. This path has a
+                                        # tokenizer, so hand it over and let the check spend
+                                        # the budget as exactly as it computes it.
+                                        kwargs["conversation_token_counter"] = lambda text: (
+                                            self.count_chat_tokens(
+                                                [{"role": "tool", "content": text}],
+                                                None,
+                                                None,
+                                                strict = False,
+                                            )
                                         )
+                                    # The result and reply are protected on the next fit, so
+                                    # the result cannot spend their entire shared budget.
+                                    kwargs["conversation_budget_tokens"] = _retrieval_budget(
+                                        self._effective_context_length,
+                                        max_tokens,
+                                        _spent,
+                                        reply_returns = True,
                                     )
-                                # The result and reply are protected on the next fit, so
-                                # the result cannot spend their entire shared budget.
-                                kwargs["conversation_budget_tokens"] = _retrieval_budget(
-                                    self._effective_context_length,
-                                    max_tokens,
-                                    _spent,
-                                    reply_returns = True,
-                                )
                             if accepts_output_callback(execute_tool):
                                 kwargs["output_callback"] = _output_callback
                             kwargs.update(search_images_kwargs(execute_tool, _decision.tool_name))
@@ -25797,6 +25932,11 @@ class LlamaCppBackend:
                             branch_messages = _extend_live_branch(conversation),
                         )["counts"]
                     )
+                # Recorded rather than only forwarded, for the same reason as the
+                # iteration refit above.
+                from core.inference import context_refusal  # noqa: PLC0415
+
+                context_refusal.record_fit(truncation)
                 stream_payload["messages"] = neutralize_control_markup_in_messages(
                     conversation, None, self.markup_profile
                 )

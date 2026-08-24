@@ -17,6 +17,7 @@ _STUDIO = Path(__file__).resolve().parents[2]
 if str(_STUDIO) not in sys.path:
     sys.path.insert(0, str(_STUDIO))
 
+import os  # noqa: E402
 import hashlib  # noqa: E402
 import builtins  # noqa: E402
 import types  # noqa: E402
@@ -374,6 +375,687 @@ def test_safe_extractall_rejects_path_traversal(tmp_path):
         with pytest.raises(RuntimeError, match = "unsafe path"):
             _safe_extractall(zf, target)
     assert not (tmp_path / "escape.txt").exists()
+
+
+def test_safe_extractall_restores_symlink_members(tmp_path):
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
+    target = tmp_path / "install"
+    target.mkdir()
+    archive = tmp_path / "libs.zip"
+    # A symlink member carries the Unix symlink mode in external_attr and the
+    # link target as its data: the shape CPython's zipfile writes when zipping
+    # a symlink, and what upstream sd.cpp release zips ship for lib*.so.
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("libwebpmux.so.3.1.2", b"\x7fELFpayload")
+        info = zipfile.ZipInfo("libwebpmux.so.3")
+        info.create_system = 3
+        info.external_attr = (0o120777 << 16) | 0o777
+        zf.writestr(info, "libwebpmux.so.3.1.2")
+
+    with zipfile.ZipFile(archive) as zf:
+        _safe_extractall(zf, target)
+
+    link = target / "libwebpmux.so.3"
+    real = target / "libwebpmux.so.3.1.2"
+    assert link.is_symlink()
+    assert link.readlink().name == "libwebpmux.so.3.1.2"
+    # Compare bytes, not stat().st_size: stat() follows the link, so a size check cannot
+    # fail. Pre-fix this was a 19-byte text file, which ldd calls "file too short".
+    assert link.resolve(strict = True) == real.resolve()
+    assert link.read_bytes() == b"\x7fELFpayload"
+    assert not real.is_symlink()
+
+
+# The binary the sweep looks for, spelled the way this host spells it.
+_CLI = sdmod._binary_names()[0]
+
+
+def _can_create_symlinks(tmp_path) -> bool:
+    probe = tmp_path / "_link_probe"
+    try:
+        probe.symlink_to("target.txt")
+    except OSError:
+        return False
+    probe.unlink(missing_ok = True)
+    return True
+
+
+def _link_member(
+    zf,
+    name: str,
+    link_target: str,
+    create_system: int = 3,
+) -> None:
+    """The symlink member CPython's zipfile produces: Unix link mode, target as the data."""
+    info = zipfile.ZipInfo(name)
+    info.create_system = create_system
+    info.external_attr = (0o120777 << 16) | 0o777
+    zf.writestr(info, link_target)
+
+
+def test_safe_extractall_rejects_escaping_symlink(tmp_path):
+    # Validation precedes every write, so this holds even where symlinks need privilege.
+    target = tmp_path / "install"
+    target.mkdir()
+    (target / "sd-cli").write_bytes(b"working binary from the previous install")
+    archive = tmp_path / "evil.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("sd-cli", b"replacement from the rejected archive")
+        _link_member(zf, "libescape.so", "../../outside.so")
+    with zipfile.ZipFile(archive) as zf:
+        with pytest.raises(RuntimeError, match = "unsafe symlink"):
+            _safe_extractall(zf, target)
+    assert not (tmp_path / "outside.so").exists()
+    # A rejected archive must not have replaced the install it was rejected over.
+    assert (target / "sd-cli").read_bytes() == b"working binary from the previous install"
+    assert not (target / "libescape.so").exists()
+
+
+@pytest.mark.parametrize(
+    "link_target",
+    [
+        "/etc/passwd",  # absolute, outside
+        "C:outside.dll",  # Windows drive-relative: Win32 resolves it off that drive's cwd
+        "",  # empty
+        "real\x00.so",  # NUL
+        "libself.so",  # self-referential, the shape the old resolve() bug produced
+    ],
+)
+def test_safe_extractall_rejects_malformed_symlink_targets(tmp_path, link_target):
+    target = tmp_path / "install"
+    target.mkdir()
+    archive = tmp_path / "evil.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        _link_member(zf, "libself.so", link_target)
+    with zipfile.ZipFile(archive) as zf:
+        with pytest.raises(RuntimeError, match = "unsafe symlink"):
+            _safe_extractall(zf, target)
+    assert not any(target.iterdir())
+
+
+def test_safe_extractall_rejects_a_symlink_redirected_parent(tmp_path):
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
+    # An earlier member can turn a later member's parent into a link. Preflight refuses the
+    # member under it, so nothing outside is touched and nothing inside is half replaced: the
+    # working binary an install would have overwritten is still the one that was there.
+    target = tmp_path / "install"
+    target.mkdir()
+    (target / "sd-cli").write_bytes(b"working binary from the previous install")
+    outside = tmp_path / "outside_dir"
+    outside.mkdir()
+    victim = outside / "victim"
+    victim.write_bytes(b"outside the install dir")
+    archive = tmp_path / "evil.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("sd-cli", b"replacement from the rejected archive")
+        _link_member(zf, "a", ".")
+        _link_member(zf, "a/out", "../outside_dir")
+        _link_member(zf, "a/out/victim", "replacement")
+    with zipfile.ZipFile(archive) as zf:
+        with pytest.raises(RuntimeError, match = "under a symlink member"):
+            _safe_extractall(zf, target)
+    assert not victim.is_symlink()
+    assert victim.read_bytes() == b"outside the install dir"
+    assert (target / "sd-cli").read_bytes() == b"working binary from the previous install"
+    assert sorted(p.name for p in target.iterdir()) == ["sd-cli"]
+
+
+def test_the_sweep_keeps_a_binary_supplied_under_a_symlinked_directory(tmp_path):
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
+    # rglob reports the extracted binary under the real directory, so a lexical member path
+    # would not match and the sweep would delete the executable this bundle just supplied.
+    target = tmp_path / "install"
+    target.mkdir()
+    (target / "real").mkdir()
+    (target / "build").mkdir()
+    (target / "build" / "bin").symlink_to(target / "real")
+    archive = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr(f"build/bin/{_CLI}", b"\x7fELF new binary")
+
+    with zipfile.ZipFile(archive) as zf:
+        supplied = sdmod._archive_binary_paths(zf, target)
+        _safe_extractall(zf, target)
+    sdmod._discard_superseded_binaries(target, supplied)
+
+    assert sdmod._locate_sd_cli(target) is not None
+    assert (target / "real" / _CLI).read_bytes() == b"\x7fELF new binary"
+
+
+def test_the_sweep_keeps_a_binary_whose_parent_link_the_archive_replaces(tmp_path):
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
+    # An explicit directory member replaces the previous bundle's directory symlink, so a key
+    # resolved before extraction points into a layout that no longer exists by sweep time.
+    target = tmp_path / "install"
+    target.mkdir()
+    (target / "real").mkdir()
+    (target / "build").mkdir()
+    (target / "build" / "bin").symlink_to(target / "real")
+    archive = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("build/bin/", b"")
+        zf.writestr(f"build/bin/{_CLI}", b"\x7fELF new binary")
+
+    with zipfile.ZipFile(archive) as zf:
+        supplied = sdmod._archive_binary_paths(zf, target)
+        _safe_extractall(zf, target)
+    sdmod._discard_superseded_binaries(target, supplied)
+
+    assert sdmod._locate_sd_cli(target) is not None
+
+
+def test_safe_extractall_rejects_an_existing_cycle_before_writing_anything(tmp_path):
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
+    # The cycle is closed by a link the previous bundle left, so it is only visible against the
+    # tree. Deciding it up front is what keeps a refused archive from replacing the binary.
+    target = tmp_path / "install"
+    target.mkdir()
+    (target / "b").symlink_to("a")
+    (target / "sd-cli").write_bytes(b"\x7fELF working binary")
+    archive = tmp_path / "evil.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("sd-cli", b"replacement from the rejected archive")
+        _link_member(zf, "a", "b")
+    with zipfile.ZipFile(archive) as zf:
+        with pytest.raises(RuntimeError, match = "symlink cycle"):
+            _safe_extractall(zf, target)
+    assert (target / "sd-cli").read_bytes() == b"\x7fELF working binary"
+    assert not (target / "a").exists() and not (target / "a").is_symlink()
+
+
+def test_the_sweep_keeps_a_binary_the_bundle_ships_as_a_symlink(tmp_path):
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
+    # The other half of _binary_key: resolving the final component would spell the binary as
+    # sd-cli-1.2, a name no member carries, and the sweep would take it.
+    target = tmp_path / "install"
+    target.mkdir()
+    archive = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr(f"build/bin/{_CLI}-1.2", b"\x7fELF new binary")
+        _link_member(zf, f"build/bin/{_CLI}", f"{_CLI}-1.2")
+
+    with zipfile.ZipFile(archive) as zf:
+        supplied = sdmod._archive_binary_paths(zf, target)
+        _safe_extractall(zf, target)
+    sdmod._discard_superseded_binaries(target, supplied)
+
+    assert (target / "build" / "bin" / _CLI).is_symlink()
+    assert sdmod._locate_sd_cli(target) is not None
+
+
+def test_safe_extractall_allows_a_parent_symlinked_inside_the_tree(tmp_path):
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
+    # The creation-time re-check asks whether the parent still resolves INSIDE the install
+    # dir, not whether it is link-free, so a tree that symlinks one of its own subdirectories
+    # still installs. A parent pointing outside is already refused by the member-path check.
+    target = tmp_path / "install"
+    target.mkdir()
+    (target / "real_bin").mkdir()
+    (target / "build").mkdir()
+    (target / "build" / "bin").symlink_to(target / "real_bin")
+    archive = tmp_path / "libs.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("build/bin/libwebp.so.7.2.0", b"\x7fELFpayload")
+        _link_member(zf, "build/bin/libwebp.so.7", "libwebp.so.7.2.0")
+
+    with zipfile.ZipFile(archive) as zf:
+        _safe_extractall(zf, target)
+
+    link = target / "build" / "bin" / "libwebp.so.7"
+    assert link.is_symlink()
+    assert link.read_bytes() == b"\x7fELFpayload"
+
+
+def test_safe_extractall_drops_a_stale_link_at_a_regular_members_path(tmp_path):
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
+    # An accelerator switch lands exactly here: upstream ships lib*.so as links, the mirror
+    # ships plain copies. extractall opens its destination "wb", so a leftover link would send
+    # one member's bytes into the file it points at and lose them.
+    target = tmp_path / "install"
+    target.mkdir()
+    (target / "real").write_bytes(b"old real lib")
+    (target / "name").symlink_to("real")
+    archive = tmp_path / "next.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("name", b"new name bytes")
+        zf.writestr("real", b"new real bytes")
+
+    with zipfile.ZipFile(archive) as zf:
+        _safe_extractall(zf, target)
+
+    assert not (target / "name").is_symlink()
+    assert (target / "name").read_bytes() == b"new name bytes"
+    assert (target / "real").read_bytes() == b"new real bytes"
+
+
+def test_safe_extractall_rejects_a_cycle_closed_by_an_existing_link(tmp_path):
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
+    # The graph on disk also holds links a previous bundle left, so archive-to-archive edges
+    # alone cannot see a cycle. The half this archive created must not survive the rejection,
+    # or the retry meets the same loop.
+    target = tmp_path / "install"
+    target.mkdir()
+    (target / "b").symlink_to("a")
+    archive = tmp_path / "next.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        _link_member(zf, "a", "b")
+    with zipfile.ZipFile(archive) as zf:
+        with pytest.raises(RuntimeError, match = "symlink cycle"):
+            _safe_extractall(zf, target)
+    assert not (target / "a").is_symlink()
+
+
+def test_safe_extractall_rejects_a_symlink_at_a_reserved_installer_path(tmp_path):
+    # _write_install_record opens the record with "w", which follows a link planted there and
+    # overwrites its target, while the record still reads back, so the install reports success.
+    target = tmp_path / "install"
+    target.mkdir()
+    archive = tmp_path / "evil.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("sd-cli", b"\x7fELF real binary")
+        _link_member(zf, sdmod.INSTALL_RECORD, "sd-cli")
+    with zipfile.ZipFile(archive) as zf:
+        with pytest.raises(RuntimeError, match = "reserved installer path"):
+            _safe_extractall(zf, target)
+    assert not any(target.iterdir())
+
+
+def test_safe_extractall_rejects_a_symlink_onto_a_reserved_installer_path(tmp_path):
+    # The marker exists before extraction on any root Studio owns, so a link to it resolves
+    # to a file and _locate_sd_cli reports an empty one as the executable.
+    target = tmp_path / "install"
+    target.mkdir()
+    (target / sdmod.OWNERSHIP_MARKER).write_text("")
+    archive = tmp_path / "evil.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        _link_member(zf, _CLI, sdmod.OWNERSHIP_MARKER)
+    with zipfile.ZipFile(archive) as zf:
+        with pytest.raises(RuntimeError, match = "onto a reserved installer path"):
+            _safe_extractall(zf, target)
+    assert sdmod._locate_sd_cli(target) is None
+
+
+def test_safe_extractall_rejects_a_reserved_path_reached_through_a_directory_alias(tmp_path):
+    # A previous bundle's directory link makes alias/<record> land on the record itself, so a
+    # lexical comparison misses it and _write_install_record overwrites sd-cli with JSON.
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
+    target = tmp_path / "install"
+    target.mkdir()
+    (target / "sd-cli").write_bytes(b"\x7fELF real binary")
+    (target / "alias").symlink_to(".")
+    archive = tmp_path / "evil.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        _link_member(zf, "alias/" + sdmod.INSTALL_RECORD, "sd-cli")
+    with zipfile.ZipFile(archive) as zf:
+        with pytest.raises(RuntimeError, match = "reserved installer path"):
+            _safe_extractall(zf, target)
+    assert not (target / sdmod.INSTALL_RECORD).exists()
+    assert (target / "sd-cli").read_bytes() == b"\x7fELF real binary"
+
+
+def test_safe_extractall_rejects_a_cycle_hidden_behind_a_directory_alias(tmp_path):
+    # alias -> real means alias/a and real/b are one cycle, though the member names differ.
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
+    target = tmp_path / "install"
+    target.mkdir()
+    (target / "real").mkdir()
+    (target / "alias").symlink_to("real")
+    archive = tmp_path / "cycle.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        _link_member(zf, "alias/a", "b")
+        _link_member(zf, "real/b", "a")
+    with zipfile.ZipFile(archive) as zf:
+        with pytest.raises(RuntimeError, match = "symlink cycle"):
+            _safe_extractall(zf, target)
+    assert not (target / "real" / "a").is_symlink()
+    assert not (target / "real" / "b").is_symlink()
+
+
+def test_safe_extractall_rejects_a_directory_collision_before_writing_anything(tmp_path):
+    # The collision used to be caught after extractall, so the refused archive had already
+    # replaced the working binary.
+    target = tmp_path / "install"
+    (target / "build" / "bin").mkdir(parents = True)
+    (target / "build" / "bin" / "sd-cli").write_bytes(b"\x7fELF working")
+    (target / "libz.so").mkdir()
+    archive = tmp_path / "collide.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("build/bin/sd-cli", b"\x7fELF replacement")
+        _link_member(zf, "libz.so", "libz.so.1")
+    with zipfile.ZipFile(archive) as zf:
+        with pytest.raises(RuntimeError, match = "collides with a directory"):
+            _safe_extractall(zf, target)
+    assert (target / "build" / "bin" / "sd-cli").read_bytes() == b"\x7fELF working"
+    assert (target / "libz.so").is_dir() and not (target / "libz.so").is_symlink()
+
+
+def _chain_archive(path, hops):
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("l.so.0", b"ELFpayload")
+        prev = "l.so.0"
+        for i in range(1, hops + 1):
+            _link_member(zf, f"l.so.{i}", prev)
+            prev = f"l.so.{i}"
+
+
+def test_safe_extractall_installs_a_chain_the_loader_can_still_walk(tmp_path):
+    # The kernel allows 40 traversals, so 40 is readable and must not be refused.
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
+    target = tmp_path / "install"
+    target.mkdir()
+    archive = tmp_path / "chain40.zip"
+    _chain_archive(archive, 40)
+    with zipfile.ZipFile(archive) as zf:
+        _safe_extractall(zf, target)
+    assert (target / "l.so.40").read_bytes() == b"ELFpayload"
+
+
+def test_safe_extractall_rejects_a_chain_deeper_than_the_loader_allows(tmp_path):
+    # At 41 the loader ELOOPs, so installing it leaves a library nothing can read, which is
+    # the same failure a cycle causes. Terminating does not make it usable.
+    target = tmp_path / "install"
+    target.mkdir()
+    archive = tmp_path / "chain41.zip"
+    _chain_archive(archive, 41)
+    with zipfile.ZipFile(archive) as zf:
+        with pytest.raises(RuntimeError, match = "too deep"):
+            _safe_extractall(zf, target)
+
+
+def test_safe_extractall_rejects_symlink_cycles(tmp_path):
+    # Chains are normal, a cycle is not: it installs a library nothing can read, so the
+    # loader failure would send the backend round the reinstall loop on every load.
+    target = tmp_path / "install"
+    target.mkdir()
+    archive = tmp_path / "cycle.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        _link_member(zf, "liba.so", "libb.so")
+        _link_member(zf, "libb.so", "liba.so")
+    with zipfile.ZipFile(archive) as zf:
+        with pytest.raises(RuntimeError, match = "symlink cycle"):
+            _safe_extractall(zf, target)
+    assert not any(target.iterdir())
+
+
+def test_safe_extractall_keeps_valid_symlink_chains(tmp_path):
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
+    # The cycle check must not reject the chained shape upstream actually ships.
+    target = tmp_path / "install"
+    target.mkdir()
+    archive = tmp_path / "libs.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("libwebp.so.7.2.0", b"\x7fELFpayload")
+        _link_member(zf, "libwebp.so.7", "libwebp.so.7.2.0")
+        _link_member(zf, "libwebp.so", "libwebp.so.7")
+    with zipfile.ZipFile(archive) as zf:
+        _safe_extractall(zf, target)
+    assert (target / "libwebp.so").read_bytes() == b"\x7fELFpayload"
+
+
+def test_safe_extractall_rejects_oversized_symlink_target(tmp_path):
+    # zf.read holds the payload in memory, and a pathname cannot exceed PATH_MAX.
+    target = tmp_path / "install"
+    target.mkdir()
+    archive = tmp_path / "bomb.zip"
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
+        _link_member(zf, "libbomb.so", "a" * (1 << 20))
+    with zipfile.ZipFile(archive) as zf:
+        with pytest.raises(RuntimeError, match = "oversized symlink target"):
+            _safe_extractall(zf, target)
+    assert not any(target.iterdir())
+
+
+def test_safe_extractall_ignores_symlink_mode_from_non_unix_hosts(tmp_path):
+    # Those high bits are a Unix mode only when a Unix host wrote the entry.
+    target = tmp_path / "install"
+    target.mkdir()
+    archive = tmp_path / "dos.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        _link_member(zf, "plain.txt", "not a link", create_system = 0)
+    with zipfile.ZipFile(archive) as zf:
+        _safe_extractall(zf, target)
+    extracted = target / "plain.txt"
+    assert not extracted.is_symlink()
+    assert extracted.read_bytes() == b"not a link"
+
+
+def test_safe_extractall_restores_links_from_a_macos_creator(tmp_path):
+    # Apple's ditto and Archive Utility stamp creator 19 (OS X) and lay external_attr out
+    # exactly as a Unix host does. Gating on 3 alone silently flattens such an archive.
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
+    target = tmp_path / "install"
+    target.mkdir()
+    archive = tmp_path / "ditto.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("libwebp.so.7.2.0", b"ELFpayload")
+        _link_member(zf, "libwebp.so.7", "libwebp.so.7.2.0", create_system = 19)
+    with zipfile.ZipFile(archive) as zf:
+        _safe_extractall(zf, target)
+    link = target / "libwebp.so.7"
+    assert link.is_symlink()
+    assert link.read_bytes() == b"ELFpayload"
+
+
+def test_safe_extractall_creates_the_install_root_before_probing_for_symlinks(tmp_path):
+    # extractall makes the tree itself, so a first install into a root that does not exist yet
+    # must not fail the symlink probe and report the filesystem as unable to store links.
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
+    target = tmp_path / "not-created-yet"
+    archive = tmp_path / "fresh.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("libwebp.so.7.2.0", b"ELFpayload")
+        _link_member(zf, "libwebp.so.7", "libwebp.so.7.2.0")
+    with zipfile.ZipFile(archive) as zf:
+        _safe_extractall(zf, target)
+    assert (target / "libwebp.so.7").is_symlink()
+    assert (target / "libwebp.so.7").read_bytes() == b"ELFpayload"
+
+
+def test_safe_extractall_survives_a_probe_left_by_a_killed_install(tmp_path):
+    # An install killed between symlink_to and unlink leaves its probe in a directory that
+    # outlives the process. A restarted container starts a fresh pid namespace, so the same pid
+    # comes round again, and symlink_to's EEXIST would then read as "no symlink support" and
+    # block every retry.
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
+    target = tmp_path / "install"
+    target.mkdir()
+    (target / f".unsloth-symlink-probe-{os.getpid()}").symlink_to(".")
+    archive = tmp_path / "libs.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("libwebp.so.7.2.0", b"ELFpayload")
+        _link_member(zf, "libwebp.so.7", "libwebp.so.7.2.0")
+    with zipfile.ZipFile(archive) as zf:
+        _safe_extractall(zf, target)
+    assert (target / "libwebp.so.7").is_symlink()
+    assert (target / "libwebp.so.7").read_bytes() == b"ELFpayload"
+    # And the install leaves none of its own behind.
+    assert list(target.glob(".unsloth-symlink-probe-*")) == []
+
+
+def test_safe_extractall_is_idempotent_across_reinstalls(tmp_path):
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
+    target = tmp_path / "install"
+    target.mkdir()
+    archive = tmp_path / "libs.zip"
+    # The chained shape upstream ships: libwebp.so -> libwebp.so.7 -> libwebp.so.7.2.0.
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("libwebp.so.7.2.0", b"ELFpayload")
+        _link_member(zf, "libwebp.so.7", "libwebp.so.7.2.0")
+        _link_member(zf, "libwebp.so", "libwebp.so.7")
+
+    # install() MERGES, so a retry or version bump re-extracts over the previous install's
+    # links. Resolving through them destroyed the real library they pointed at.
+    for _ in range(3):
+        with zipfile.ZipFile(archive) as zf:
+            _safe_extractall(zf, target)
+
+    real = target / "libwebp.so.7.2.0"
+    assert not real.is_symlink()
+    assert real.read_bytes() == b"ELFpayload"
+    for name in ("libwebp.so", "libwebp.so.7"):
+        assert (target / name).is_symlink()
+        assert (target / name).read_bytes() == b"ELFpayload"
+
+
+def test_safe_extractall_repairs_a_flattened_install(tmp_path):
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
+    target = tmp_path / "install"
+    target.mkdir()
+    # What every pre-fix install left behind: the link flattened to its target text.
+    (target / "libwebp.so.7.2.0").write_bytes(b"ELFpayload")
+    (target / "libwebp.so.7").write_bytes(b"libwebp.so.7.2.0")
+    archive = tmp_path / "libs.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("libwebp.so.7.2.0", b"ELFpayload")
+        _link_member(zf, "libwebp.so.7", "libwebp.so.7.2.0")
+
+    with zipfile.ZipFile(archive) as zf:
+        _safe_extractall(zf, target)
+
+    assert (target / "libwebp.so.7").is_symlink()
+    assert (target / "libwebp.so.7").read_bytes() == b"ELFpayload"
+
+
+def test_safe_extractall_survives_a_hand_repaired_install(tmp_path):
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
+    target = tmp_path / "install"
+    target.mkdir()
+    # The workaround #9268 tells users to apply by hand, which the next install must not undo.
+    (target / "libwebp.so.7.2.0").write_bytes(b"ELFpayload")
+    (target / "libwebp.so.7").symlink_to("libwebp.so.7.2.0")
+    archive = tmp_path / "libs.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("libwebp.so.7.2.0", b"ELFpayload")
+        _link_member(zf, "libwebp.so.7", "libwebp.so.7.2.0")
+
+    with zipfile.ZipFile(archive) as zf:
+        _safe_extractall(zf, target)
+
+    real = target / "libwebp.so.7.2.0"
+    assert not real.is_symlink()
+    assert real.read_bytes() == b"ELFpayload"
+    assert (target / "libwebp.so.7").read_bytes() == b"ELFpayload"
+
+
+def test_safe_extractall_falls_back_when_symlinks_are_unavailable(tmp_path, monkeypatch):
+    # Windows outside developer mode cannot create symlinks. The install must still finish
+    # with the flattened member, exactly as it did before symlinks were restored.
+    target = tmp_path / "install"
+    target.mkdir()
+    archive = tmp_path / "libs.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("libwebp.so.7.2.0", b"ELFpayload")
+        _link_member(zf, "libwebp.so.7", "libwebp.so.7.2.0")
+
+    def _no_symlinks(self, *args, **kwargs):
+        raise OSError(1314, "A required privilege is not held by the client")
+
+    monkeypatch.setattr(Path, "symlink_to", _no_symlinks)
+    monkeypatch.setattr(sdmod.sys, "platform", "win32")
+    with zipfile.ZipFile(archive) as zf:
+        _safe_extractall(zf, target)
+
+    flattened = target / "libwebp.so.7"
+    assert not flattened.is_symlink()
+    assert flattened.read_bytes() == b"libwebp.so.7.2.0"
+    assert (target / "libwebp.so.7.2.0").read_bytes() == b"ELFpayload"
+
+
+def test_safe_extractall_refuses_to_flatten_when_a_unix_host_rejects_symlinks(
+    tmp_path, monkeypatch
+):
+    # Off Windows a refusal means this filesystem cannot hold the layout sd-cli needs. Writing
+    # the link text back as a file would rebuild the "file too short" install #9268 reports,
+    # which the runtime probe then discards and reinstalls on every load. Caught before
+    # extractall, so an upgrade that cannot finish still leaves the previous install runnable.
+    target = tmp_path / "install"
+    target.mkdir()
+    (target / "sd-cli").write_bytes(b"\x7fELF old working")
+    archive = tmp_path / "libs.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("sd-cli", b"\x7fELF replacement")
+        zf.writestr("libwebp.so.7.2.0", b"ELFpayload")
+        _link_member(zf, "libwebp.so.7", "libwebp.so.7.2.0")
+
+    def _no_symlinks(self, *args, **kwargs):
+        raise OSError(1, "Operation not permitted")
+
+    monkeypatch.setattr(Path, "symlink_to", _no_symlinks)
+    monkeypatch.setattr(sdmod.sys, "platform", "linux")
+    with zipfile.ZipFile(archive) as zf:
+        with pytest.raises(RuntimeError, match = "cannot store symlinks"):
+            _safe_extractall(zf, target)
+    assert not (target / "libwebp.so.7").exists()
+    assert not (target / "libwebp.so.7.2.0").exists()
+    assert (target / "sd-cli").read_bytes() == b"\x7fELF old working"
+
+
+def test_safe_extractall_rejects_a_member_with_a_parent_component(tmp_path):
+    # extractall drops ".." instead of cancelling the component before it, so "a/../victim"
+    # is "a/victim" to it, and an existing link at "a" lands the write outside the tree.
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
+    target = tmp_path / "install"
+    target.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "victim").write_bytes(b"untouched")
+    (target / "a").symlink_to(outside)
+    archive = tmp_path / "slip.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("a/../victim", b"pwned")
+    with zipfile.ZipFile(archive) as zf:
+        with pytest.raises(RuntimeError, match = "unsafe path"):
+            _safe_extractall(zf, target)
+    assert (outside / "victim").read_bytes() == b"untouched"
+
+
+def test_safe_extractall_rejects_a_cycle_closed_through_link_parents(tmp_path):
+    # a -> b/x and b -> a/y are one cycle only once the b prefix is followed through the
+    # archive, since neither link exists on disk when the graph is built.
+    target = tmp_path / "install"
+    target.mkdir()
+    archive = tmp_path / "cycle.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        _link_member(zf, "a", "b/x")
+        _link_member(zf, "b", "a/y")
+    with zipfile.ZipFile(archive) as zf:
+        with pytest.raises(RuntimeError, match = "symlink cycle"):
+            _safe_extractall(zf, target)
+    assert not any(target.iterdir())
+
+
+def test_safe_extractall_rejects_a_link_that_descends_through_itself(tmp_path):
+    # a -> a/x never reaches a second node, so exact-node repetition misses it, but resolving
+    # a walks a again and every load would fail with ELOOP and reinstall.
+    target = tmp_path / "install"
+    target.mkdir()
+    archive = tmp_path / "loop.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        _link_member(zf, "libz.so", "libz.so/inner")
+    with zipfile.ZipFile(archive) as zf:
+        with pytest.raises(RuntimeError, match = "symlink cycle"):
+            _safe_extractall(zf, target)
+    assert not any(target.iterdir())
 
 
 def test_safe_extractall_extracts_normal_members(tmp_path):
@@ -2683,3 +3365,77 @@ def test_the_install_record_remembers_whether_the_bundle_shipped_a_server(tmp_pa
     sdmod._write_install_record(root, accelerator = "cpu", repo = "r", tag = "t", ships_server = False)
     assert sdmod.installed_ships_server(root) is False
     assert sdmod.installed_accelerator(root) == "cpu"
+
+
+def _reinstall_twice(tmp_path):
+    """The same archive extracted twice into one root, which is what install() does."""
+    target = tmp_path / "install"
+    target.mkdir()
+    archive = tmp_path / "symlink.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("build/bin/libfoo.so.1", b"ELF")
+        _link_member(zf, "build/bin/libfoo.so", "libfoo.so.1")
+    for _ in range(2):
+        with zipfile.ZipFile(archive) as zf:
+            _safe_extractall(zf, target)
+    return target
+
+
+def test_safe_extractall_restores_symlink_members_on_reinstall(tmp_path):
+    # install() merges rather than wipes, so the same archive lands on the links it already wrote.
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
+    target = _reinstall_twice(tmp_path)
+    link = target / "build" / "bin" / "libfoo.so"
+    assert link.is_symlink()
+    assert link.readlink() == Path("libfoo.so.1")
+    assert (target / "build" / "bin" / "libfoo.so.1").read_bytes() == b"ELF"
+
+
+def test_safe_extractall_reinstall_is_idempotent_without_symlink_privilege(tmp_path):
+    # The other half of the test above, and the only one a Windows non-dev-mode host can run:
+    # the fallback flattens, but reinstalling over it must still succeed and leave the same
+    # shape rather than erroring or compounding.
+    if _can_create_symlinks(tmp_path):
+        pytest.skip("this host can create symlinks, so the flattening fallback is not in play")
+    target = _reinstall_twice(tmp_path)
+    flattened = target / "build" / "bin" / "libfoo.so"
+    assert not flattened.is_symlink()
+    assert flattened.read_bytes() == b"libfoo.so.1"
+    assert (target / "build" / "bin" / "libfoo.so.1").read_bytes() == b"ELF"
+
+
+def test_safe_extractall_replaces_stale_symlink_with_regular_member(tmp_path):
+    # A name one bundle ships as a link the next can ship as a file: the mirror ships copies
+    # where upstream ships links, and extractall would otherwise write through the stale link.
+    target = tmp_path / "install"
+    target.mkdir()
+    old_archive = tmp_path / "old.zip"
+    with zipfile.ZipFile(old_archive, "w") as zf:
+        zf.writestr("build/bin/libfoo.so.1", b"OLD")
+        _link_member(zf, "build/bin/libfoo.so", "libfoo.so.1")
+    with zipfile.ZipFile(old_archive) as zf:
+        _safe_extractall(zf, target)
+
+    new_archive = tmp_path / "new.zip"
+    with zipfile.ZipFile(new_archive, "w") as zf:
+        zf.writestr("build/bin/libfoo.so.1", b"TARGET")
+        zf.writestr("build/bin/libfoo.so", b"NEW")
+    with zipfile.ZipFile(new_archive) as zf:
+        _safe_extractall(zf, target)
+
+    assert not (target / "build" / "bin" / "libfoo.so").is_symlink()
+    assert (target / "build" / "bin" / "libfoo.so").read_bytes() == b"NEW"
+    assert (target / "build" / "bin" / "libfoo.so.1").read_bytes() == b"TARGET"
+
+
+def test_safe_extractall_rejects_symlink_escaping_target(tmp_path):
+    target = tmp_path / "install"
+    target.mkdir()
+    archive = tmp_path / "symlink-escape.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        _link_member(zf, "build/bin/escape.so", "../../../escape.txt")
+    with zipfile.ZipFile(archive) as zf:
+        with pytest.raises(RuntimeError, match = "unsafe symlink"):
+            _safe_extractall(zf, target)
+    assert not (tmp_path / "escape.txt").exists()
