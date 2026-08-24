@@ -639,7 +639,18 @@ def compare(base: Optional[dict], treat: Optional[dict]) -> dict:
         # The composer is inside the scaffold and is a function of exactly that, so the scaffold is
         # readable here when they agree and meaningless when they do not. That is the correct form
         # of the half of this refusal that measurement did not support.
-        if scaffold_moved(base, treat) and not generation_disagrees(base, treat):
+        #
+        # AND THE DISAGREEMENT HAS TO BE CORROBORATED OFF THE RUN STATE, exactly as the composer
+        # suppression below requires. `generation_disagrees` reads `composer_control`, which IS the
+        # composer, so on its own it excuses a composer difference with the composer -- and a
+        # treatment that DROPS the Stop control, renames it, or selects the wrong one makes the
+        # tokens differ for that reason and suppressed the whole scaffold with it, while `streaming`
+        # and `queued_idle` were saying the arms were in the same run state all along. That is a
+        # rendering regression withheld by the branch written to admit rendering regressions, and
+        # since a refusal is filed under `blind` the run goes green on it.
+        if scaffold_moved(base, treat) and not (
+            generation_disagrees(base, treat) and _run_state_disagrees(base, treat)
+        ):
             bc, tc = _scaffold(base)[1], _scaffold(treat)[1]
             independent = independent + [f"thread scaffolding outside any message ({bc}->{tc}c)"]
         if independent:

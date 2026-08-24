@@ -697,6 +697,62 @@ def test_a_role_that_changed_survives_the_blind_probe_refusal():
     assert "msg2:role assistant->user" in got["moved"], got["moved"]
 
 
+def test_the_blind_scaffold_rule_needs_run_state_evidence_the_composer_cannot_forge():
+    """SUPPRESSING A COMPOSER DIFFERENCE WITH THE COMPOSER IS ARGUING IN A CIRCLE.
+
+    The blind branch withheld the scaffold whenever `generation_disagrees` said the arms were at
+    different points in the turn -- and that predicate reads `composer_control`, the token naming
+    which control the composer rendered. So a treatment that DROPS the Stop button, renames it, or
+    selects the wrong control makes the tokens differ FOR THAT REASON, and the scaffold carrying
+    the regression went out with the refusal. `report` files a refusal under `blind` and takes its
+    exit code from `stable_bad or one_sided`, so the run went green on it.
+
+    `streaming` and `queued_idle` are read off the thread's run state, not off the composer, so
+    they are evidence the composer cannot manufacture. Here they AGREE -- both arms are generating
+    -- so there is no run-state explanation for the scaffold moving and it is a finding. This is
+    the same corroboration the settled-pair composer suppression already requires.
+    """
+    base = dict(_blind_arm(24), composer_control = "Stop generating", streaming = True)
+    treat = dict(
+        _blind_arm(24),
+        # The regression: the control is gone, so the composer renders a different subtree and the
+        # scaffold moves with it.
+        composer_control = "",
+        streaming = True,
+        digest_scaffold = "scaffold-with-no-stop-button",
+        chars_scaffold = base["chars_scaffold"] - 21,
+    )
+    # The run state itself says the two arms were doing the same thing.
+    assert P._run_state_disagrees(base, treat) is False
+    # ...while the composer-derived predicate says they were not, which is the circle.
+    assert P.generation_disagrees(base, treat) is True
+
+    got = P.compare(base, treat)
+    assert got["verdict"] == P.DIFFER, got
+    assert any("thread scaffolding outside any message" in m for m in got["moved"]), got["moved"]
+    # Symmetric: which arm lost the button cannot decide whether the finding is reported.
+    assert P.compare(treat, base)["verdict"] == P.DIFFER
+
+
+def test_the_blind_scaffold_rule_still_withholds_a_corroborated_run_state_difference():
+    """THE CONTROL. When the run state independently says one arm was generating and the other was
+    not, the composer differs BECAUSE of that, and quoting it would manufacture the wall-clock
+    false alarm this file exists to remove. The refusal is right there and must survive."""
+    base = dict(_blind_arm(24), composer_control = "Stop generating", streaming = True)
+    treat = dict(
+        _blind_arm(24),
+        composer_control = "Send message",
+        streaming = False,
+        digest_scaffold = "scaffold-with-send-button",
+        chars_scaffold = base["chars_scaffold"] + 8,
+    )
+    assert P._run_state_disagrees(base, treat) is True
+
+    got = P.compare(base, treat)
+    assert got["verdict"] == P.NOT_COMPARABLE, got
+    assert not any("thread scaffolding" in m for m in got["moved"]), got["moved"]
+
+
 def test_the_streamed_row_itself_is_still_withheld_when_the_probe_is_blind():
     """The narrowing is not a hole in the other direction.
 
