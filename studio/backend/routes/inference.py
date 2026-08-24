@@ -7227,6 +7227,7 @@ def _estimate_gguf_kv_gb(
     ctx_checkpoints: Optional[int] = None,
     n_devices: int = 1,
     is_diffusion: bool = False,
+    model_identifier: Optional[str] = None,
 ) -> float:
     """KV-cache plus compute-buffer VRAM (GB) at the larger of max_seq_length and
     any `--ctx-size`/`-c` override, over n_parallel slots at the effective
@@ -7242,6 +7243,7 @@ def _estimate_gguf_kv_gb(
         )
 
         probe = LlamaCppBackend()
+        probe._model_identifier = model_identifier
         probe._read_gguf_metadata(gguf_path)
         if not probe._can_estimate_kv():
             return 0.0
@@ -7782,6 +7784,7 @@ def _estimate_gguf_required_gb(
                 ctx_checkpoints = ctx_checkpoints,
                 n_devices = n_devices,
                 is_diffusion = is_diffusion,
+                model_identifier = getattr(config, "identifier", None),
             )
 
         repo = getattr(config, "gguf_hf_repo", None)
@@ -7913,15 +7916,17 @@ def _local_gguf_main_path(config: ModelConfig) -> Optional[str]:
 def _is_embedding_gguf(config: ModelConfig) -> bool:
     """Whether this GGUF's pooling type makes llama-server launch with --embedding.
 
-    False whenever the header cannot be read, which keeps every caller doing what it
-    did before the check existed: this only ever relaxes a refusal, and relaxing one
-    on a guess is how a load reaches the abort the refusal exists to prevent.
+    Before an uncached remote GGUF has a readable header, use the same local identifier
+    basename hints as the eventual loader. Generic names remain unclassified, so this
+    only relaxes the batch refusal for models the loader will launch in embedding mode.
     """
     try:
         main = _local_gguf_main_path(config)
         if not main:
             return False
         probe = LlamaCppBackend()
+        probe._model_identifier = config.identifier
+        probe._gguf_path = main
         probe._read_gguf_metadata(main)
         return bool(probe.is_embedding_gguf)
     except Exception as exc:
@@ -12313,6 +12318,109 @@ async def generate_audio(
     )
 
 
+async def _external_tts_speech(body: AudioSpeechRequest, request: Request) -> Response:
+    """Proxy CreateSpeech to a saved connection, so read-aloud skips the local model slot."""
+    provider_id = (body.provider_id or "").strip()
+    external_model = (body.model or "").strip()
+    external_voice = (body.voice or "").strip()
+    if not provider_id:
+        raise HTTPException(status_code = 400, detail = "provider_id cannot be empty.")
+    if not external_model:
+        raise HTTPException(
+            status_code = 400, detail = "model is required when using an external TTS connection."
+        )
+    if not external_voice:
+        raise HTTPException(
+            status_code = 400, detail = "voice is required when using an external TTS connection."
+        )
+
+    config = await asyncio.to_thread(providers_db.get_provider, provider_id)
+    if config is None:
+        raise HTTPException(status_code = 404, detail = f"Provider config not found: {provider_id}")
+    if not config["is_enabled"]:
+        raise HTTPException(
+            status_code = 400, detail = f"Provider '{config['display_name']}' is disabled."
+        )
+    base_url = config["base_url"] or get_base_url(config["provider_type"])
+    if not base_url:
+        raise HTTPException(status_code = 400, detail = "The connection has no base URL.")
+    # Validate the destination before decrypting the key: a refused target sees no credential.
+    try:
+        base_url = validate_provider_base_url(base_url)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from None
+    async with provider_config_guard(provider_id):
+        current = await asyncio.to_thread(providers_db.get_provider, provider_id)
+        routing_fields = ("provider_type", "base_url", "is_enabled")
+        if current is None or any(
+            current.get(field) != config.get(field) for field in routing_fields
+        ):
+            raise HTTPException(
+                status_code = 409,
+                detail = "Provider changed while the request was starting; retry.",
+            )
+        if body.encrypted_api_key and body.provider_base_url != current.get("base_url"):
+            # The browser encrypted a legacy key for the connection it rendered. A
+            # same-id edit may have replaced both its destination and saved key while
+            # encryption yielded; never attach that captured key to the new endpoint.
+            raise HTTPException(
+                status_code = 409,
+                detail = "Provider changed while the request was starting; retry.",
+            )
+        api_key = await asyncio.to_thread(
+            resolve_provider_api_key_or_400,
+            provider_id,
+            body.encrypted_api_key,
+            allow_saved_key = not _request_has_api_key(request),
+            prefer_saved_key = True,
+        )
+        # The guard coordinates this process, while Studio can also be edited by
+        # another backend process. Provider updates write routing metadata before
+        # the replacement secret, so a final row check prevents an old URL from
+        # being paired with the newly written key.
+        latest = await asyncio.to_thread(providers_db.get_provider, provider_id)
+        if latest is None or any(
+            latest.get(field) != current.get(field) for field in routing_fields
+        ):
+            raise HTTPException(
+                status_code = 409,
+                detail = "Provider changed while the request was starting; retry.",
+            )
+    client = ExternalProviderClient(
+        provider_type = config["provider_type"],
+        base_url = base_url,
+        api_key = api_key,
+    )
+    # FastAPI does not cancel a non-streaming handler on disconnect, so stopping
+    # read-aloud would leave the paid synthesis running. Same pair as transcription.
+    speech_task = asyncio.create_task(
+        client.create_speech(
+            text = body.input,
+            model = external_model,
+            voice = external_voice,
+            response_format = (body.response_format or "wav").strip().lower(),
+            speed = body.speed,
+        )
+    )
+    disconnect_watcher = asyncio.create_task(
+        _await_disconnect_then_cancel_task(request, speech_task)
+    )
+    try:
+        audio_bytes, media_type = await speech_task
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code = 502,
+            detail = (
+                f"TTS endpoint returned HTTP {exc.response.status_code}: {exc.response.text[:300]}"
+            ),
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code = 502, detail = f"Could not reach the TTS endpoint: {exc}")
+    finally:
+        await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
+    return Response(content = audio_bytes, media_type = media_type)
+
+
 # openai-compatible speech api: the router's dual mount also answers /v1/audio/speech
 @router.post("/audio/speech")
 async def openai_audio_speech(
@@ -12322,9 +12430,26 @@ async def openai_audio_speech(
 ) -> Response:
     """OpenAI-compatible text-to-speech (POST /v1/audio/speech).
 
-    ``model`` is informational (the loaded audio model is used); ``voice`` and ``speed``
-    are ignored. Only WAV exists, so another ``response_format`` is a 400 rather than a
-    silent container mismatch."""
+    With ``provider_id`` the request is proxied to that connection, forwarding
+    model/voice/speed. Otherwise the loaded model is used: ``model`` is informational,
+    ``voice``/``speed`` ignored, and only WAV exists, so another ``response_format`` is
+    a 400 rather than a silent container mismatch."""
+    if body.provider_id:
+        # This branch never touches the local GGUF. Drop it before any monitor or
+        # upstream await so slow external speech cannot block a local swap/training
+        # start or reset the local model's idle timer.
+        from core.inference.llama_keepwarm import untrack_current_request
+        untrack_current_request(request.scope)
+        # A saved TTS connection is still media traffic through this server,
+        # just like the proxied STT path below. Keep it visible in the monitor
+        # and close the row consistently on upstream failure or cancellation.
+        async with _monitored_media_request(
+            request,
+            model = public_model_id(body.model) or body.model,
+            prompt = body.input,
+            subject = current_subject,
+        ):
+            return await _external_tts_speech(body, request)
     fmt = (body.response_format or "wav").strip().lower()
     if fmt != "wav":
         raise HTTPException(
@@ -14236,6 +14361,7 @@ async def _proxy_to_external_provider(
                     confirm_calls = _permission_mode_confirm(payload),
                     bypass_permissions = bool(payload.bypass_permissions),
                     rag_scope = payload.rag_scope,
+                    nudge_tool_calls = payload.nudge_tool_calls,
                 )
                 if studio_tool_payloads
                 else None
@@ -14559,6 +14685,7 @@ async def _proxy_to_external_provider(
                     bypass_permissions = bool(payload.bypass_permissions),
                     rag_scope = payload.rag_scope,
                     auto_heal = payload.auto_heal_tool_calls,
+                    nudge_tool_calls = payload.nudge_tool_calls,
                 ),
                 cancel_event = cancel_event,
             )
