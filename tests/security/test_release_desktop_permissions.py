@@ -263,7 +263,7 @@ def test_the_updater_workflow_skips_releases_without_desktop_bundles():
     gate = steps["Check for desktop bundles"]
     assert gate["id"] == "gate"
     assert gate["env"]["REPAIR_POINTER"] == "${{ inputs.repair_pointer }}"
-    assert "[ \"$REPAIR_POINTER\" = 'true' ] && [ \"$stable_count\" -eq 0 ]" in gate["run"]
+    assert '[ "$REPAIR_POINTER" = \'true\' ] && [ "$stable_count" -eq 0 ]' in gate["run"]
     # An unreadable release must not look like one that simply has no bundles.
     assert "refusing to advance the channel" in gate["run"]
     for name in (
