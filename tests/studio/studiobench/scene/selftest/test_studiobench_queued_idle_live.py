@@ -80,6 +80,17 @@ _STOP_BUTTON = """
 </button>
 """
 
+#: The DISPATCHED queued branch: `isQueueRunning && !thread.isRunning` with `queueEntry.dispatched`,
+#: which renders a stop control the thread does not report itself running behind. Neither
+#: `stopButton()` nor `queueButton()` matches it, so on its own it reads exactly like a settled
+#: composer. `getPromptQueueUIItemsForRun` drops dispatched items, so the queue surface can be gone
+#: here too -- which is why this state has to be recognised from its own control.
+_STOP_QUEUED_BUTTON = """
+<button class="aui-composer-cancel ml-1.5 size-9 rounded-full" aria-label="Stop queued message">
+  <span class="aui-sr-only">Stop queued message</span>
+</button>
+"""
+
 #: `PromptQueueStack`, which renders inside the composer root whenever the run has an item left to
 #: show. An undispatched active item is always one of them, so this surface is up in every state
 #: that renders the queued-idle Queue button.
@@ -551,6 +562,38 @@ def test_a_finished_against_a_running_arm_is_still_refused_after_that(page):
     got = P.compare(base, treat)
     assert got["verdict"] == P.NOT_COMPARABLE, got
     assert "composer dock is inside the thread root" in got["reason"]
+
+
+def test_a_dispatched_queue_wait_is_a_run_state_not_a_rendering_difference(page):
+    """THE TRANSIENT THAT READ AS IDLE.
+
+    Once a queued entry is dispatched, `ComposerRightControls` renders "Stop queued message" under
+    `isQueueRunning && !thread.isRunning`, so the thread says it is not running and neither control
+    `isRunning()` matches is present. Both `streaming` and `queued_idle` therefore came back false,
+    which is exactly how a settled Send arm reads.
+
+    An arm caught in that interval against a settled one then had a differing composer and a
+    differing scaffold with NO run-state difference to account for it -- and that is precisely the
+    shape the comparison layer is entitled to call a rendering regression, now that the scaffold
+    suppression requires independent run-state evidence. It is queue timing, so it must refuse.
+    """
+    dispatched = _capture_html(
+        page,
+        _page(tail = "same", **dict(QUEUED_IDLE, control = _STOP_QUEUED_BUTTON, queue_stack = False)),
+    )
+    settled = _capture_html(
+        page,
+        _page(tail = "same", **dict(QUEUED_IDLE, control = _SEND_BUTTON, queue_stack = False)),
+    )
+    # The composer really does differ, which is what makes this the interesting pair.
+    assert dispatched["composer_control"] != settled["composer_control"]
+    # ...and the run state now says why, off the run state rather than off the composer token.
+    assert bool(dispatched["queued_idle"]) is True, dispatched
+    assert bool(settled["queued_idle"]) is False, settled
+    assert P._run_state_disagrees(dispatched, settled) is True
+
+    assert P.compare(dispatched, settled)["verdict"] == P.NOT_COMPARABLE
+    assert P.compare(settled, dispatched)["verdict"] == P.NOT_COMPARABLE
 
 
 def test_the_queued_idle_arm_against_a_settled_one_is_still_refused(page):

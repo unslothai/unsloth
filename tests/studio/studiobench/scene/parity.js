@@ -925,7 +925,16 @@
           status_hook_present: anyPublishes,
           // The queued-idle interval itself, recorded rather than resolved away, so a reader can
           // tell why a capture with `streaming: true` placed no message in flight.
-          queued_idle: Boolean(running && !generating),
+          // INCLUDING THE DISPATCHED WAIT. `isRunning()` matches "Stop generating" and
+          // "Queue message" only, so the interval where a dispatched queue entry renders
+          // "Stop queued message" recorded `streaming` and `queued_idle` both false -- identical
+          // to a settled Send arm. A pair straddling that transient then had a differing composer
+          // with no run-state difference to account for it, and the comparison layer is entitled
+          // to call that a rendering regression. It is queue timing.
+          queued_idle: Boolean(
+            (running || (dom.stopQueuedButton ? Boolean(dom.stopQueuedButton()) : false)) &&
+              !generating
+          ),
           // The composer's run-state slot, as a token. Carried so the comparison layer can tell a
           // scaffold that differs because the two arms were at different points in one turn from a
           // scaffold that differs because something was rendered differently. See

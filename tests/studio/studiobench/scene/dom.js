@@ -87,6 +87,16 @@
     queueButton() {
       return q('button[aria-label="Queue message"]');
     },
+    // THE DISPATCHED HALF OF A QUEUE RUN. `ComposerRightControls` renders this once the queued
+    // entry has been dispatched, under `isQueueRunning && !thread.isRunning` (thread.tsx), so the
+    // thread reports itself NOT running and neither `stopButton()` nor `queueButton()` matches.
+    // Read on its own, that transient came out as an ordinary idle composer: `streaming` and
+    // `queued_idle` both false, exactly as a settled Send arm reads. An arm caught here against a
+    // settled one then had a differing composer with no run-state difference to explain it, which
+    // is the shape the comparison layer treats as a rendering regression.
+    stopQueuedButton() {
+      return q('button[aria-label="Stop queued message"]');
+    },
     isRunning() {
       return Boolean(D.stopButton() || D.queueButton());
     },
