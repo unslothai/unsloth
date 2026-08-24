@@ -206,10 +206,92 @@ def test_match_adapter_pairs_and_clamps():
     assert hw._match_adapter_used_to_devices([40 * GB], [48 * GB, 8 * GB]) == [40 * GB, None]
 
 
+def test_match_adapter_pairs_single_device_past_placeholder_adapters():
+    # Exactly the shape a gfx1151 Strix Halo host emits: three counter instances,
+    # two of them placeholders at EXACTLY 0, one visible device. An adapter at zero
+    # has nothing committed and so cannot hold the survivor's bytes, which is what
+    # makes this attributable. Before this, the capacity test needed a next-smaller
+    # device to compare against and discarded the survivor as unknown.
+    assert hw._match_adapter_used_to_devices([1.2 * GB, 0.0, 0.0], [89 * GB]) == [1.2 * GB]
+    # Order of the counters must not matter.
+    assert hw._match_adapter_used_to_devices([0.0, 1.2 * GB, 0.0], [89 * GB]) == [1.2 * GB]
+    # Still clamped: a hidden larger adapter must not report a fully-used card.
+    assert hw._match_adapter_used_to_devices([100 * GB, 0.0, 0.0], [48 * GB]) == [None]
+    assert hw._match_adapter_used_to_devices([40 * GB, 0.0], [48 * GB]) == [40 * GB]
+    # Zero is what makes it attributable, not the cardinality. A merely sub-floor
+    # counter can be the visible card idle, making the survivor a hidden GPU's --
+    # that shape must stay unknown (see the [6 GiB, 10 MiB] case below).
+    assert hw._match_adapter_used_to_devices([1.2 * GB, 10 * MiB, 0.0], [89 * GB]) == [None]
+
+
 def test_match_adapter_reports_unknown_when_more_active_than_visible():
     # More adapters actively using VRAM than are visible (a GPU outside the mask):
     # attribution would fabricate a value, so report unknown for every device.
     assert hw._match_adapter_used_to_devices([40 * GB, 0.5 * GB], [8 * GB]) == [None]
+
+
+def test_unified_used_sums_dedicated_and_shared_for_the_compute_adapter(monkeypatch):
+    # On an APU, Dedicated saturates at the carve-out and the overflow lands in
+    # Shared, so only the sum tracks the allocation (measured: 48 GiB held reports
+    # +29.19 dedicated, +19.02 shared on a gfx1151 host).
+    def fake(counter = "Dedicated Usage"):
+        if counter == "Dedicated Usage":
+            return [("luid_compute", 30.5 * GB), ("luid_placeholder", 0.0)]
+        return [("luid_compute", 19.0 * GB), ("luid_placeholder", 1.3 * GB)]
+
+    monkeypatch.setattr(hw, "_rocm_windows_perf_counter_vram_by_adapter", fake)
+    assert hw._rocm_windows_unified_used_bytes() == 30.5 * GB + 19.0 * GB
+
+
+def test_unified_used_selects_on_dedicated_not_the_sum(monkeypatch):
+    # A display adapter reports 0 dedicated while holding gigabytes of shared.
+    # Selecting on the sum would see two candidates and either bail or add a
+    # foreign adapter's bytes; selecting on dedicated isolates the compute device.
+    def fake(counter = "Dedicated Usage"):
+        if counter == "Dedicated Usage":
+            return [("luid_compute", 1.2 * GB), ("luid_display", 0.0)]
+        return [("luid_compute", 0.15 * GB), ("luid_display", 1.3 * GB)]
+
+    monkeypatch.setattr(hw, "_rocm_windows_perf_counter_vram_by_adapter", fake)
+    assert hw._rocm_windows_unified_used_bytes() == 1.2 * GB + 0.15 * GB
+
+
+def test_unified_used_declines_when_the_compute_adapter_is_ambiguous(monkeypatch):
+    # Two adapters above the floor: no key says which is visible, so report None
+    # rather than pick one, matching _rocm_windows_aggregate_used_bytes.
+    def two(counter = "Dedicated Usage"):
+        return [("luid_a", 1.2 * GB), ("luid_b", 2.4 * GB)]
+
+    monkeypatch.setattr(hw, "_rocm_windows_perf_counter_vram_by_adapter", two)
+    assert hw._rocm_windows_unified_used_bytes() is None
+
+    # Every adapter below the floor: nothing to stand on.
+    monkeypatch.setattr(
+        hw,
+        "_rocm_windows_perf_counter_vram_by_adapter",
+        lambda counter = "Dedicated Usage": [("luid_a", 10 * MiB)],
+    )
+    assert hw._rocm_windows_unified_used_bytes() is None
+
+    # Counter unavailable entirely.
+    monkeypatch.setattr(
+        hw,
+        "_rocm_windows_perf_counter_vram_by_adapter",
+        lambda counter = "Dedicated Usage": None,
+    )
+    assert hw._rocm_windows_unified_used_bytes() is None
+
+
+def test_unified_used_declines_rather_than_falling_back_to_dedicated_only(monkeypatch):
+    # Dedicated-only is correct BELOW the carve-out and wrong above it, and nothing
+    # here knows which side a reading is on: on the measured host 30.5 GiB is both a
+    # legitimate below-carve-out figure and a saturated one. So a failed Shared query
+    # declines instead of degrading to dedicated, which would overstate free.
+    def fake(counter = "Dedicated Usage"):
+        return [("luid_compute", 1.2 * GB)] if counter == "Dedicated Usage" else None
+
+    monkeypatch.setattr(hw, "_rocm_windows_perf_counter_vram_by_adapter", fake)
+    assert hw._rocm_windows_unified_used_bytes() is None
 
 
 def test_match_adapter_reports_unknown_when_hidden_high_use_adapter_survives_filter():
@@ -362,6 +444,60 @@ def test_unified_memory_no_op_when_torch_total_not_larger():
     assert metrics["vram_utilization_pct"] == 20.8
 
 
+def test_unified_used_declines_when_the_shared_query_fails(monkeypatch):
+    # Past the carve-out the overflow lives entirely in Shared, so treating a
+    # FAILED shared query as zero reports the measured 48 GiB case as 30.5 and
+    # overstates free by 19 GiB. Nothing here knows where the carve-out sits, so
+    # a failed query has to decline rather than guess.
+    def fake(counter = "Dedicated Usage"):
+        return [("luid_compute", 30.5 * GB)] if counter == "Dedicated Usage" else None
+
+    monkeypatch.setattr(hw, "_rocm_windows_perf_counter_vram_by_adapter", fake)
+    assert hw._rocm_windows_unified_used_bytes() is None
+
+
+def test_unified_used_keeps_a_successful_query_that_omits_the_luid(monkeypatch):
+    # A query that SUCCEEDS but has no row for this adapter is a real zero, not a
+    # failure, and must stay usable.
+    def fake(counter = "Dedicated Usage"):
+        if counter == "Dedicated Usage":
+            return [("luid_compute", 1.2 * GB)]
+        return [("luid_other", 3.0 * GB)]
+
+    monkeypatch.setattr(hw, "_rocm_windows_perf_counter_vram_by_adapter", fake)
+    assert hw._rocm_windows_unified_used_bytes() == 1.2 * GB
+
+
+def test_per_device_vram_uses_the_snapshot_it_is_given(monkeypatch):
+    # The caller validates a snapshot's cardinality before trusting the mapping.
+    # Re-sampling here would apply that check to a different sample than
+    # attribution runs on, and costs a second ~1.3 s PowerShell call.
+    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(
+        hw,
+        "_rocm_windows_perf_counter_vram_by_adapter",
+        lambda counter = "Dedicated Usage": (_ for _ in ()).throw(
+            AssertionError("must not re-sample when a snapshot was passed in")
+        ),
+    )
+    monkeypatch.setattr(
+        hw,
+        "_torch_get_device_module",
+        lambda: (
+            types.SimpleNamespace(
+                get_device_properties = lambda _o: types.SimpleNamespace(
+                    name = "APU", total_memory = 89 * GB
+                )
+            ),
+            None,
+        ),
+    )
+
+    devices, _agg = hw._rocm_windows_per_device_vram([0], [("a", 1.2 * GB)])
+
+    assert devices[0]["used_gb"] == round(1.2 * GB / (1024**3), 2)
+
+
 # ----------------------------------------------------------------------------- #
 # The per-device total on a unified-memory APU
 #
@@ -384,13 +520,14 @@ def test_windows_apu_total_is_the_driver_pool_not_the_carve_out(win_rocm, monkey
         hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(APU_ADAPTERS))
     )
 
+    monkeypatch.setattr(hw, "_rocm_windows_unified_used_bytes", lambda: 12.0 * GB)
     devices, aggregate = hw._rocm_windows_per_device_vram([0])
     assert devices[0]["total_gb"] == 128.0
-    # Dedicated Usage counts the carve-out; the working set is in the shared
-    # segment the widened total spans. Reporting it against this total would
-    # give back the whole pool as free while a model sits in it.
-    assert devices[0]["used_gb"] is None
-    assert aggregate is None
+    # Dedicated Usage alone saturates at the carve-out, so a widened total takes
+    # the Dedicated+Shared sum instead. Pairing the carve-out reading with a pool
+    # total would hand back the shared pool as free while a model sits in it.
+    assert devices[0]["used_gb"] == 12.0
+    assert aggregate == 12.0
 
 
 def test_an_unsettled_classifier_does_not_cost_a_card_its_occupancy(win_rocm, monkeypatch):
@@ -589,13 +726,21 @@ def test_the_inventory_path_also_refuses_to_shrink_a_total(monkeypatch):
     assert all(d["used_gb"] is None for d in devices)
 
 
-def _apu_host(monkeypatch):
-    """A lone 8 GiB carve-out / 128 GiB pool APU, with 2 GiB on the counter."""
+def _apu_host(monkeypatch, unified_used = 12.0 * GB):
+    """A lone 8 GiB carve-out / 128 GiB pool APU.
+
+    ``unified_used`` stands in for _rocm_windows_unified_used_bytes, which sums
+    Dedicated and Shared. Patched rather than driven through the counters because
+    what is under test here is that a widened device takes that figure, not the
+    counter plumbing, which #9362's own tests already cover. ``None`` simulates it
+    declining.
+    """
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
     torch = _fake_torch([APU])
     monkeypatch.setitem(sys.modules, "torch", torch)
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda i: (96 * GB, 128 * GB))
     monkeypatch.setattr(hw, "_rocm_props_total_is_carve_out", lambda props: True)
+    monkeypatch.setattr(hw, "_rocm_windows_unified_used_bytes", lambda: unified_used)
     monkeypatch.setattr(
         hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(APU_ADAPTERS))
     )
@@ -609,11 +754,10 @@ def test_widened_total_survives_get_gpu_utilization(win_rocm, monkeypatch):
 
     result = hw.get_gpu_utilization()
     assert result["devices"][0]["vram_total_gb"] == 128.0
-    assert result["devices"][0]["vram_used_gb"] is None
-    assert result["devices"][0]["vram_utilization_pct"] is None
+    assert result["devices"][0]["vram_used_gb"] == 12.0
+    assert result["devices"][0]["vram_utilization_pct"] == pytest.approx(9.4, abs = 0.1)
     assert result["vram_total_gb"] == 128.0  # legacy mirror carries it too
-    assert result["vram_used_gb"] is None
-    assert result.get("vram_used_gb_aggregate") is None
+    assert result["vram_used_gb"] == 12.0
 
 
 def test_the_system_tab_does_not_invent_free_vram_on_an_apu(win_rocm, monkeypatch):
@@ -624,9 +768,20 @@ def test_the_system_tab_does_not_invent_free_vram_on_an_apu(win_rocm, monkeypatc
 
     devices = hw.get_visible_gpu_utilization()["devices"]
     assert devices[0]["vram_total_gb"] == 128.0
-    assert devices[0]["vram_used_gb"] is None
-    assert devices[0]["vram_utilization_pct"] is None
-    assert devices[0].get("vram_free_gb") is None
+    assert devices[0]["vram_used_gb"] == 12.0
+    assert devices[0]["vram_utilization_pct"] == pytest.approx(9.4, abs = 0.1)
+
+
+def test_a_declining_unified_read_leaves_the_apu_unknown(win_rocm, monkeypatch):
+    """When the sum cannot be established the carve-out reading must not be left
+    standing under a pool-sized total: that is the reading that reports a loaded
+    128 GiB card as almost entirely free."""
+    _apu_host(monkeypatch, unified_used = None)
+
+    devices, aggregate = hw._rocm_windows_per_device_vram([0])
+    assert devices[0]["total_gb"] == 128.0
+    assert devices[0]["used_gb"] is None
+    assert aggregate is None
 
 
 @pytest.mark.parametrize("system", ["Linux", "Darwin"])

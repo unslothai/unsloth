@@ -45,6 +45,7 @@ function job(overrides: Partial<ManagedDownload> = {}): ManagedDownload {
     completeOnDisk: false,
     fraction: 0.99,
     bytesPerSec: 0,
+    etaSeconds: 0,
     error: null,
     startedAt: 1,
   };

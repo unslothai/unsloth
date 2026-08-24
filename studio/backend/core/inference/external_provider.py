@@ -862,7 +862,7 @@ def _build_kimi_tool_end(
 
 
 class ExternalProviderClient:
-    """Async proxy for OpenAI-compatible external LLM APIs."""
+    """Async proxy for OpenAI-compatible external APIs."""
 
     def __init__(
         self,
@@ -6277,6 +6277,41 @@ class ExternalProviderClient:
         )
         response.raise_for_status()
         return response.json()
+
+    async def create_transcription(
+        self,
+        audio: bytes,
+        filename: str,
+        content_type: str,
+        model: str,
+        language: Optional[str] = None,
+        response_format: str = "json",
+        timestamp_granularities: Optional[list[str]] = None,
+    ) -> tuple[bytes, str]:
+        """Post audio to an OpenAI-compatible transcription endpoint."""
+        data = {
+            "model": model,
+            "response_format": response_format,
+        }
+        if language:
+            data["language"] = language
+        if timestamp_granularities:
+            # Repeated field, so httpx wants the list under the bracketed name OpenAI uses.
+            data["timestamp_granularities[]"] = list(timestamp_granularities)
+        headers = self._auth_headers()
+        headers.pop("Content-Type", None)
+        response = await _http_client.post(
+            f"{self.base_url}/audio/transcriptions",
+            headers = headers,
+            files = {"file": (filename, audio, content_type)},
+            data = data,
+            timeout = self._timeout,
+        )
+        response.raise_for_status()
+        media_type = (response.headers.get("content-type") or "").split(";", 1)[0].strip()
+        if not media_type:
+            media_type = "text/plain" if response_format == "text" else "application/json"
+        return response.content, media_type
 
     async def list_models(self) -> list[dict[str, Any]]:
         """GET /models to discover available models.

@@ -29,6 +29,7 @@ from hub.services.models import cache_inventory
 from hub.services.models.common import _is_main_gguf_filename
 from hub.utils.paths import is_valid_gguf_variant as _is_valid_gguf_variant
 from hub.utils.paths import is_valid_repo_id as _is_valid_repo_id
+from utils.paths.path_utils import is_appledouble_metadata
 
 logger = get_logger(__name__)
 
@@ -113,6 +114,10 @@ def _remaining_main_gguf_variants(repo_info, *, excluding: Optional[str] = None)
                 except ValueError:
                     pass
             if not _is_main_gguf_filename(name):
+                continue
+            # The delete this previews ignores proven metadata, so counting it here reports a
+            # checkpoint as surviving that the deletion itself does not see.
+            if path and is_appledouble_metadata(Path(path)):
                 continue
             key = gguf_variant_key(name).lower()
             if key and key not in skip:

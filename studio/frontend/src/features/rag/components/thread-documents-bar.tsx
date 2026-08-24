@@ -549,24 +549,23 @@ export function ThreadDocumentsBar({
     if (!hasPendingAttachments || !nativeAttachmentTargetKey) {
       return;
     }
-    // Hold the batch rather than draining it into the wrong scope. The intents
-    // stay in the store, so this runs again once the row has been read.
+    // Hold the batch rather than draining it before the chat's project scope is known.
     if (projectUnresolved) {
+      return;
+    }
+    const store = useNativeIntentStore.getState();
+    const intents = store.takeAttachments(nativeAttachmentTargetKey);
+    if (intents.length === 0) {
       return;
     }
     // A KB-scoped chat uploads through the KB dialog, so a thread upload here would
     // index into something this bar never shows.
     if (ragEnabled && ragSource.type === "kb") {
-      useNativeIntentStore.getState().takeAttachments(nativeAttachmentTargetKey);
       toast.error("This chat retrieves from a knowledge base", {
         description: "Add these files to the knowledge base instead.",
       });
       return;
     }
-    const intents = useNativeIntentStore
-      .getState()
-      .takeAttachments(nativeAttachmentTargetKey);
-    if (intents.length === 0) return;
     // A stale KB preference is inactive while RAG is off; use thread retrieval.
     if (!ragEnabled) {
       setRagSource({ type: "thread" });

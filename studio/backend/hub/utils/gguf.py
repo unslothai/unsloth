@@ -9,9 +9,14 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 from loggers import get_logger
+from utils.paths.path_utils import (
+    drop_shadowed_appledouble_names as _drop_shadowed_appledouble_names,
+    has_appledouble_magic,
+    is_appledouble_metadata,
+)
 from utils.models.gguf_metadata import mmproj_accepts_image
 
 logger = get_logger(__name__)
@@ -84,6 +89,33 @@ def is_mmproj_filename(filename: str) -> bool:
     return "mmproj" in filename.lower()
 
 
+# Anchored at an END of the stem, never a substring, for the reason
+# is_mtp_drafter_path documents: a name that merely contains the word
+# (``Qwen3-Imatrix-Tuned-Q4_K_M.gguf``) is a real model, while every published
+# imatrix leads or closes with it.
+_IMATRIX_TOKEN_RE = re.compile(r"^imatrix(?:[._\-]|$)|[._\-]imatrix$", re.IGNORECASE)
+
+
+def is_imatrix_filename(path: str) -> bool:
+    """True for a calibration imatrix: ``imatrix.gguf``, ``imatrix_unsloth.gguf``,
+    ``imatrix_unsloth.dat``, ``<model>-imatrix.gguf``, ``<model>.imatrix``.
+
+    It holds activation statistics for llama-quantize, not a model, and llama-server
+    never opens one, so it is neither a selectable variant nor a companion to fetch:
+    unlike mmproj and the MTP drafter it is excluded outright, everywhere they are.
+    Most repos spell it .dat or .gguf_file, which no GGUF listing sees; the ones that
+    publish imatrix_unsloth.gguf (unsloth/Qwen3.8-27B-GGUF) put a valid GGUF container
+    carrying no model in front of the variant menu, download and loader.
+
+    CANONICAL COPY. Two mirrors must change in lockstep:
+    utils/models/model_config.py ``_is_imatrix_path`` (utils cannot import hub) and
+    core/inference/llama_cpp.py ``_is_companion_gguf_path`` (core avoids hub imports).
+    """
+    name = path.replace("\\", "/").rsplit("/", 1)[-1]
+    stem = name.rsplit(".", 1)[0] if "." in name else name
+    return bool(_IMATRIX_TOKEN_RE.search(stem)) or name.lower().endswith(".imatrix")
+
+
 # Separate-file drafter kinds. dspark and dflash are the same DeepSeek V4 Flash
 # drafter: the folder it ships in and the architecture it reports.
 _DRAFTER_KINDS = ("mtp", "dspark", "dflash")
@@ -140,6 +172,48 @@ def is_reclaimable_drafter_path(path: str) -> bool:
     return any(name.startswith(f"{kind}-") for kind in _DRAFTER_DIR_KINDS) or any(
         kind in parents for kind in _DRAFTER_DIR_KINDS
     )
+
+
+def _appledouble_subject_key(name: str) -> object:
+    """What a listing entry has to share with a ``._`` name for it to be that name's subject.
+
+    Only a GGUF has shards to belong to, and a split quant's companions need not all be
+    shadowed; every other suffix is its own subject.
+    """
+    return ("gguf", gguf_variant_family(name)) if is_gguf_filename(name) else ("name", name)
+
+
+def drop_shadowed_appledouble_names(files: list[str]) -> list[str]:
+    """Shadow pairing keyed by GGUF shard family."""
+    return _drop_shadowed_appledouble_names(files, subject_key = _appledouble_subject_key)
+
+
+def drop_shadowed_appledouble_siblings(siblings: Sequence) -> list:
+    """Shadow pairing for callers holding sizes and hashes beside the name."""
+    names = [getattr(s, "rfilename", None) for s in siblings]
+    kept = set(drop_shadowed_appledouble_names([n for n in names if isinstance(n, str)]))
+    return [s for s, n in zip(siblings, names) if not isinstance(n, str) or n in kept]
+
+
+def remove_appledouble_sidecar(path: Path) -> int:
+    """Remove the sidecar beside *path* if it really is one; return the bytes freed.
+
+    Now that discovery rejects sidecars, nothing else would ever name one, and metadata would
+    outlive the weights it describes. Identified positively because this unlinks a file nobody
+    asked for: a user's own ``._model.gguf`` is a real model, and deciding by name would delete
+    weights. Best effort -- a sidecar that resists removal is a few KB, never a failed delete.
+    """
+    try:
+        sidecar = Path(path).with_name(f"._{Path(path).name}")
+        if not has_appledouble_magic(sidecar):
+            return 0
+        if sidecar.is_symlink() or sidecar.exists():
+            freed = sidecar.stat().st_size
+            sidecar.unlink()
+            return freed
+    except (OSError, ValueError):
+        pass
+    return 0
 
 
 def is_gguf_filename(filename: str) -> bool:
@@ -212,7 +286,10 @@ def iter_gguf_files(directory: Path, recursive: bool = False):
         for dirpath, dirnames, filenames in os.walk(directory, onerror = lambda _e: None):
             for name in filenames:
                 if is_gguf_filename(name):
-                    yield Path(dirpath) / name
+                    path = Path(dirpath) / name
+                    if is_appledouble_metadata(path):
+                        continue
+                    yield path
             seen += len(dirnames) + len(filenames)
             if seen > _MAX_LOCAL_SCAN_ENTRIES:
                 return
@@ -224,6 +301,8 @@ def iter_gguf_files(directory: Path, recursive: bool = False):
     for file in entries:
         try:
             if file.is_file() and is_gguf_filename(file.name):
+                if is_appledouble_metadata(file):
+                    continue
                 yield file
         except OSError:
             continue
@@ -232,10 +311,12 @@ def iter_gguf_files(directory: Path, recursive: bool = False):
 def pick_best_gguf(filenames: list[str]) -> Optional[str]:
     gguf_files = [
         name
-        for name in filenames
+        # The preference loop returns the first matching name, and "._" sorts ahead of it.
+        for name in drop_shadowed_appledouble_names(list(filenames))
         if is_gguf_filename(name)
         and not is_mmproj_filename(name)
         and not is_mtp_drafter_path(name)
+        and not is_imatrix_filename(name)
         and not is_big_endian_gguf_path(name, extract_quant_label(name))
     ]
     if not gguf_files:
@@ -646,6 +727,65 @@ def select_gguf_cache_snapshot(
     return fallback
 
 
+def merge_sibling_snapshot_variants(
+    repo_id: str,
+    selected: tuple[list[GgufVariantInfo], bool, set, Path],
+    root: Optional[Path] = None,
+) -> tuple[list[GgufVariantInfo], bool, set, Path]:
+    """*selected* widened with the quants the repo dir's other revisions hold.
+
+    The selector names one directory, so an inventory built on it drops what an upstream re-upload
+    left elsewhere. Only safe for a row loading by repo id, which the caller establishes. One repo
+    dir only: a cache can hold two differing in case, and the row owns one.
+    """
+    from hub.utils.hf_cache_state import same_existing_path
+    from hub.utils.inventory_scan import complete_snapshot_variants
+
+    variants, has_vision, complete, snapshot = selected
+    merged = list(variants)
+    merged_complete = set(complete)
+    whole = {quant.lower() for quant in merged_complete}
+    held: dict[str, int] = {}
+    for index, variant in enumerate(merged):
+        if variant.quant:
+            held.setdefault(variant.quant.lower(), index)
+    # Per row, so a projector cannot outlive the row it arrived with.
+    merged_vision: dict[str, bool] = {}
+    changed = False
+    for other in iter_hf_cache_snapshots(repo_id, root = root):
+        if other.parent != snapshot.parent:
+            continue
+        if other == snapshot or same_existing_path(other, snapshot):
+            continue
+        extra, extra_vision = list_local_gguf_variants(str(other))
+        candidates = [v for v in extra if v.quant and v.quant.lower() not in whole]
+        if not candidates:
+            continue
+        other_complete = complete_snapshot_variants(str(other)) or set()
+        for variant in candidates:
+            key = variant.quant.lower()
+            index = held.get(key)
+            is_whole = variant.quant in other_complete
+            if index is None:
+                held[key] = len(merged)
+                merged.append(variant)
+            elif is_whole:
+                # A load skips the torn copy for this one, so the row describes this one.
+                merged[index] = variant
+            else:
+                continue
+            changed = True
+            merged_vision[key] = extra_vision
+            if is_whole:
+                merged_complete.add(variant.quant)
+                whole.add(key)
+    if changed:
+        # Labels disambiguate within a revision, so a merged set can hold names only the
+        # merge brings together.
+        _apply_gguf_display_labels(merged)
+    return merged, has_vision or any(merged_vision.values()), merged_complete, snapshot
+
+
 def list_gguf_variants_from_hf_cache(
     repo_id: str, root: Optional[Path] = None
 ) -> Optional[tuple[list[GgufVariantInfo], bool, set]]:
@@ -737,9 +877,15 @@ def list_partial_gguf_variants_from_state(
         main_filename: Optional[str] = None
         size_bytes = 0
         companion_bytes = 0
+        imatrix_only = False
         if manifest is not None:
             for expected in manifest.expected_files:
                 if not is_gguf_filename(expected.path):
+                    continue
+                if is_imatrix_filename(expected.path):
+                    # A manifest predating this filtering can still name one; it is
+                    # neither weights nor a companion, so it counts towards neither size.
+                    imatrix_only = True
                     continue
                 if is_mtp_drafter_path(expected.path):
                     # Downloaded with every variant (like mmproj) but not a
@@ -755,6 +901,13 @@ def list_partial_gguf_variants_from_state(
                     main_filename = expected.path
                 size_bytes += max(0, int(expected.size or 0))
         if main_filename is None:
+            # An older build could download the imatrix as a variant of its own, so its
+            # interrupted state is still on disk. Naming the synthetic file after the
+            # variant would put that row back in the menu, at zero bytes, on exactly the
+            # offline path this listing serves. Only when NOTHING eligible was found:
+            # a marker-only quant keeps its synthetic row so it can be resumed or deleted.
+            if imatrix_only or is_imatrix_filename(variant):
+                continue
             main_filename = f"{variant}.gguf"
         variants.append(
             GgufVariantInfo(
@@ -853,13 +1006,14 @@ def list_gguf_variants(
     has_vision = False
     main_files: list[tuple[str, int]] = []
 
-    for sibling in info.siblings:
+    # Sidecars in the listing would otherwise be advertised as the variant, at their own size.
+    for sibling in drop_shadowed_appledouble_siblings(list(info.siblings)):
         filename = getattr(sibling, "rfilename", None)
         if not isinstance(filename, str) or not is_gguf_filename(filename):
             continue
         if not _is_selectable_repo_gguf(repo_id, filename):
             continue
-        if is_mtp_drafter_path(filename):
+        if is_mtp_drafter_path(filename) or is_imatrix_filename(filename):
             continue
         if is_mmproj_filename(filename):
             has_vision = True
@@ -924,6 +1078,8 @@ def list_local_gguf_variants(
 
     for file in sorted(iter_gguf_files(root, recursive = True)):
         if h3_bundle_repo and not _is_selectable_repo_gguf(h3_bundle_repo, file.name):
+            continue
+        if is_imatrix_filename(file.name):
             continue
         if is_mmproj_filename(file.name):
             # An empty projector is an interrupted download; an audio-only one is not vision.

@@ -724,6 +724,60 @@ def test_idle_loop_unloads_after_ttl_and_stashes_for_reload(monkeypatch):
     assert stash is not None and stash[0] == "unsloth/Idle-GGUF" and stash[1] == "Q4_K_M"
 
 
+def test_a_request_landing_during_the_pin_read_is_not_unloaded_out_from_under(monkeypatch):
+    # A chat may register _pending during the off-loop pin read, invalidating prior idleness.
+    import time
+    from core.inference import llama_keepwarm as kw
+
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.005)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: True)
+    monkeypatch.setattr(kw, "_inflight", 0)
+    monkeypatch.setattr(kw, "_pending", 0)
+    monkeypatch.setattr(kw, "_last_active", time.monotonic() - 3600)
+    monkeypatch.setattr(kw, "_last_unloaded_model", None)
+
+    # Mark the interval after the first idle check and before the guarded pin read.
+    inside_the_unload_block = {"flag": False}
+    landed = []
+
+    def _keep_kv_marks_the_block():
+        inside_the_unload_block["flag"] = True
+        return False
+
+    def _api_only_while_a_request_lands():
+        if inside_the_unload_block["flag"]:
+            inside_the_unload_block["flag"] = False
+            kw._note_pending()
+            landed.append(1)
+        return False
+
+    monkeypatch.setattr(settings, "get_auto_unload_keep_kv", _keep_kv_marks_the_block)
+    monkeypatch.setattr(settings, "get_auto_unload_api_only", _api_only_while_a_request_lands)
+
+    unloads = []
+    backend = _FakeBackend("unsloth/Idle-GGUF", hf_variant = "Q4_K_M")
+    backend.unload_model = lambda: unloads.append(1)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+
+    async def _drive():
+        task = asyncio.create_task(kw.idle_unload_loop(poll_seconds = 0.01))
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+            if landed or unloads:
+                break
+        await asyncio.sleep(0.1)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(_drive())
+    assert landed, "the tick never reached the guard's pin read, so the window was never hit"
+    assert unloads == [], "the loop freed the model out from under a request on the gate"
+
+
 def test_idle_loop_deletes_saved_kv_when_unload_fails(monkeypatch, tmp_path):
     import time
     from core.inference import llama_keepwarm as kw
@@ -1028,6 +1082,46 @@ def test_override_route_rejects_managed_flag_and_removes(monkeypatch):
     empty = settings_route.ModelOverridePayload(model_id = "unsloth/B-GGUF")
     resp2 = settings_route.update_openai_auto_switch_override(empty, "tester")
     assert "unsloth/B-GGUF" not in resp2.overrides
+
+
+def test_override_route_stores_llama_server_tuning(override_store):
+    """Load mode, draft KV dtype, checkpoints and cache RAM survive the route.
+
+    The picker has a control for each and mirrors all four, and
+    ``model_override_load_kwargs`` already applies them off a stored row, so a
+    payload that drops them leaves the setting reaching a picker load and nothing
+    else -- and the panel, which hydrates from this row, reads it back as unset.
+    """
+    _put(
+        "unsloth/B-GGUF",
+        load_mode = "mmap+mlock",
+        speculative_type = "dspark",
+        spec_draft_cache_type = "q8_0",
+        # Both meaningful at their falsy values: no checkpoints, and no cache limit.
+        ctx_checkpoints = 0,
+        cache_ram = -1,
+    )
+    stored = settings.get_model_override("unsloth/B-GGUF")
+    assert stored["load_mode"] == "mmap+mlock"
+    assert stored["spec_draft_cache_type"] == "q8_0"
+    assert stored["ctx_checkpoints"] == 0
+    assert stored["cache_ram"] == -1
+    # And they reach a load, rather than being stored where nothing reads them.
+    kwargs = settings.model_override_load_kwargs(stored, is_gguf = True)
+    assert kwargs["load_mode"] == "mmap+mlock"
+    assert kwargs["spec_draft_cache_type"] == "q8_0"
+    assert kwargs["ctx_checkpoints"] == 0
+    assert kwargs["cache_ram"] == -1
+
+
+def test_override_route_keeps_a_row_holding_only_tuning(override_store):
+    """One of the four on its own is a saved field, not an empty payload.
+
+    ``is_removal`` counts what the payload carries, so a field it did not declare
+    would read as "nothing set" and delete the model's row instead of writing it.
+    """
+    _put("unsloth/B-GGUF", cache_ram = 0)
+    assert settings.get_model_override("unsloth/B-GGUF") == {"cache_ram": 0}
 
 
 def test_model_override_rejects_zero_max_seq_length():
