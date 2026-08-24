@@ -1310,7 +1310,6 @@ class TestAnUnsetInheritedCacheAxisIsStillF16:
     @staticmethod
     def _budget(env):
         from core.inference.llama_cpp import _env_main_cache_type_for_budget
-
         return _env_main_cache_type_for_budget(env)
 
     @pytest.mark.parametrize("var", ["LLAMA_ARG_CACHE_TYPE_K", "LLAMA_ARG_CACHE_TYPE_V"])
@@ -1327,16 +1326,26 @@ class TestAnUnsetInheritedCacheAxisIsStillF16:
         assert self._budget({var: "f32"}) == "f32"
 
     def test_both_axes_quantized_is_adopted(self):
-        assert self._budget({
-            "LLAMA_ARG_CACHE_TYPE_K": "q4_0",
-            "LLAMA_ARG_CACHE_TYPE_V": "q4_0",
-        }) == "q4_0"
+        assert (
+            self._budget(
+                {
+                    "LLAMA_ARG_CACHE_TYPE_K": "q4_0",
+                    "LLAMA_ARG_CACHE_TYPE_V": "q4_0",
+                }
+            )
+            == "q4_0"
+        )
 
     def test_an_asymmetric_quantized_pair_takes_the_heavier_axis(self):
-        assert self._budget({
-            "LLAMA_ARG_CACHE_TYPE_K": "q4_0",
-            "LLAMA_ARG_CACHE_TYPE_V": "q8_0",
-        }) == "q8_0"
+        assert (
+            self._budget(
+                {
+                    "LLAMA_ARG_CACHE_TYPE_K": "q4_0",
+                    "LLAMA_ARG_CACHE_TYPE_V": "q8_0",
+                }
+            )
+            == "q8_0"
+        )
 
     def test_nothing_set_is_still_none(self):
         assert self._budget({}) is None
