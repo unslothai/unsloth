@@ -1005,20 +1005,50 @@ MCP_IMAGES_SENTINEL = "__MCP_IMAGES__:"
 MAX_IMAGE_PAYLOAD_CHARS = 12_000_000
 
 
+def _block_text(block: Any) -> Optional[str]:
+    text = getattr(block, "text", None)
+    if text:
+        return str(text)
+    resource = getattr(block, "resource", None)
+    if resource is not None:
+        text = getattr(resource, "text", None)
+        return str(text) if text else None
+    uri = getattr(block, "uri", None)
+    if uri and getattr(block, "type", None) == "resource_link":
+        name = getattr(block, "name", None)
+        return f"[resource: {name} <{uri}>]" if name else f"[resource: <{uri}>]"
+    return None
+
+
+def _block_image(block: Any) -> Optional[tuple[str, str]]:
+    # An image arrives either as ImageContent (data/mimeType) or as an
+    # EmbeddedResource wrapping BlobResourceContents (resource.blob/mimeType).
+    data = getattr(block, "data", None)
+    mime = getattr(block, "mimeType", None)
+    if not data:
+        resource = getattr(block, "resource", None)
+        if resource is None:
+            return None
+        data = getattr(resource, "blob", None)
+        mime = getattr(resource, "mimeType", None)
+    if data and isinstance(mime, str) and mime.startswith("image/"):
+        return str(data), mime
+    return None
+
+
 def _flatten_result(result: Any) -> str:
     parts = []
     images = []
     omitted = 0
     budget = MAX_IMAGE_PAYLOAD_CHARS
     for block in getattr(result, "content", None) or []:
-        text = getattr(block, "text", None)
+        text = _block_text(block)
         if text:
-            parts.append(str(text))
+            parts.append(text)
             continue
-        data = getattr(block, "data", None)
-        mime = getattr(block, "mimeType", None)
-        if data and isinstance(mime, str) and mime.startswith("image/"):
-            data = str(data)
+        image = _block_image(block)
+        if image is not None:
+            data, mime = image
             if len(data) > budget:
                 omitted += 1
                 continue

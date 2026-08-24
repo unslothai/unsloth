@@ -33,6 +33,24 @@ def _image(data: str = PNG_B64, mime: str = "image/png") -> SimpleNamespace:
     return SimpleNamespace(type = "image", data = data, mimeType = mime)
 
 
+def _blob_resource(data: str = PNG_B64, mime: str = "image/png") -> SimpleNamespace:
+    return SimpleNamespace(
+        type = "resource",
+        resource = SimpleNamespace(uri = "file:///out/gen.png", mimeType = mime, blob = data),
+    )
+
+
+def _text_resource(text: str, mime: str = "text/plain") -> SimpleNamespace:
+    return SimpleNamespace(
+        type = "resource",
+        resource = SimpleNamespace(uri = "file:///out/log.txt", mimeType = mime, text = text),
+    )
+
+
+def _resource_link(uri: str = "file:///out/gen.png", name = None) -> SimpleNamespace:
+    return SimpleNamespace(type = "resource_link", uri = uri, name = name, mimeType = "image/png")
+
+
 def _result(
     *blocks,
     is_error = False,
@@ -218,3 +236,37 @@ def test_stdio_session_call_also_passes_raise_on_error_false(monkeypatch):
     assert out.startswith("Error: boom")
     assert MCP_IMAGES_SENTINEL in out
     assert is_tool_error(out)
+
+
+def test_embedded_resource_image_is_rendered():
+    flat = _flatten_result(_result(_blob_resource()))
+    body, payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)
+    assert body == "[1 image attached; displayed to the user]"
+    assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/png"}]
+
+
+def test_embedded_resource_image_shares_budget_with_image_content():
+    flat = _flatten_result(_result(_text("rendered"), _image(), _blob_resource(mime = "image/webp")))
+    body, payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)
+    assert body == "rendered\n[2 images attached; displayed to the user]"
+    assert [img["mimeType"] for img in json.loads(payload)] == ["image/png", "image/webp"]
+
+
+def test_oversized_embedded_resource_image_omitted():
+    huge = "A" * (MAX_IMAGE_PAYLOAD_CHARS + 1)
+    assert _flatten_result(_result(_blob_resource(data = huge))) == "[1 image omitted (too large)]"
+
+
+def test_embedded_text_resource_contributes_its_text():
+    assert _flatten_result(_result(_text_resource("saved to /out/gen.png"))) == "saved to /out/gen.png"
+
+
+def test_embedded_non_image_blob_still_ignored():
+    assert _flatten_result(_result(_blob_resource(mime = "application/pdf"))) == ""
+
+
+def test_resource_link_keeps_its_uri():
+    assert _flatten_result(_result(_resource_link())) == "[resource: <file:///out/gen.png>]"
+    assert _flatten_result(_result(_resource_link(name = "gen.png"))) == (
+        "[resource: gen.png <file:///out/gen.png>]"
+    )
