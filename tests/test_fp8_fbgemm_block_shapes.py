@@ -29,7 +29,6 @@ def _fbgemm_block_selected():
         return False
     try:
         from unsloth.kernels import fp8
-
         return fp8.fp8_block_quant_linear is fp8.fp8_fbgemm_block_linear
     except Exception:
         return False
@@ -38,7 +37,8 @@ def _fbgemm_block_selected():
 # Only the kernel battery needs fbgemm; the fallback tests below never reach it.
 pytestmark = pytest.mark.skipif(not cuda_available, reason = "needs CUDA")
 needs_fbgemm = pytest.mark.skipif(
-    not _fbgemm_block_selected(), reason = "needs fbgemm f8f8bf16_blockwise",
+    not _fbgemm_block_selected(),
+    reason = "needs fbgemm f8f8bf16_blockwise",
 )
 
 
