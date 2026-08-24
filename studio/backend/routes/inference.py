@@ -13409,6 +13409,7 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
     system_parts: list[str] = []
     chat_messages: list[dict] = []
     latest_image_b64: Optional[str] = None
+    latest_user_image_b64: Optional[str] = None
 
     for msg in messages:
         # ── System / developer messages → extract as system_prompt ────────
@@ -13441,6 +13442,8 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
                         part_b64 = url.partition(",")[2]
                         if part_b64:
                             latest_image_b64 = part_b64
+                            if msg.role == "user":
+                                latest_user_image_b64 = part_b64
                         else:
                             logger.warning(
                                 f"Ignoring image URL with no base64 payload: {url[:80]}..."
@@ -13460,7 +13463,15 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
             chat_message["reasoning_content"] = msg.reasoning_content
         chat_messages.append(chat_message)
 
-    return "\n\n".join(p for p in system_parts if p), chat_messages, latest_image_b64
+    # The user's own newest attachment outranks an assistant's generated image: the
+    # frontend picks the legacy image_base64 field the same way (findLatestUserImageBase64
+    # in chat-adapter.ts) and this value overrides it downstream. An assistant-only
+    # history still falls back, so such a chat keeps reaching a vision model.
+    return (
+        "\n\n".join(p for p in system_parts if p),
+        chat_messages,
+        latest_user_image_b64 or latest_image_b64,
+    )
 
 
 # ── External provider proxy ──────────────────────────────────────
