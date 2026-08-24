@@ -20,7 +20,6 @@ from core.inference.diffusion_memory import DeviceMemory
 
 MIB = 1024 * 1024
 
-# Unified-memory pool reported in #9130.
 REPORTER_POOL_MIB = 104424
 STRIX_HALO_POOL_MIB = 64 * 1024
 
@@ -32,16 +31,12 @@ def _files(**dirs: int) -> list:
 # unsloth/Qwen-Image-2512 @ b96dde7f, 57.70 GB total.
 QWEN_IMAGE_2512 = _files(transformer = 38966, text_encoder = 15812, vae = 240, tokenizer = 10)
 
-# The loader skips FLUX.2-dev's packaged root single.
 FLUX2_DEV = _files(transformer = 61461, text_encoder = 45798, vae = 321, tokenizer = 16)
 
-# fp32 transformer with bf16 companions.
 Z_IMAGE_TURBO = _files(transformer = 23479, text_encoder = 7672, vae = 160, tokenizer = 15)
 
-# Lumina 2 stores all components as fp32.
 LUMINA_2 = _files(transformer = 9956, text_encoder = 9973, vae = 320, tokenizer = 21)
 
-# Raw fp8 components widen at load.
 IDEOGRAM_4_FP8 = _files(
     transformer = 8859,
     unconditional_transformer = 8859,
@@ -50,7 +45,6 @@ IDEOGRAM_4_FP8 = _files(
     tokenizer = 11,
 )
 
-# Packed NF4 components stay at their download size.
 IDEOGRAM_4_NF4 = _files(
     transformer = 4980,
     unconditional_transformer = 4980,
@@ -60,7 +54,6 @@ IDEOGRAM_4_NF4 = _files(
 )
 
 
-# Lumina 2 with its dense encoder replaced by a hosted fp8 checkpoint.
 LUMINA_2_MINUS_DENSE_TE = _files(transformer = 9956, vae = 320, tokenizer = 21)
 LUMINA_HOSTED_TE_MIB = 3056
 LUMINA_HOSTED_TE = {
@@ -132,9 +125,6 @@ def _flux_verdict(backend):
     )
 
 
-# -- what #9130 actually names -------------------------------------------------
-
-
 def test_reporter_pool_accepts_named_qwen_but_rejects_flux(monkeypatch):
     backend = _backend(monkeypatch)
     assert _flux_verdict(backend) is not None
@@ -161,9 +151,6 @@ def test_a_pipeline_that_cannot_fit_is_refused_from_metadata_alone(monkeypatch):
     assert "UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_LOAD=1" in message
 
 
-# -- per-component precision ---------------------------------------------------
-
-
 def test_a_mixed_precision_repo_is_sized_component_by_component(monkeypatch):
     fam = _family(name = "z-image", base_repo = "Tongyi-MAI/Z-Image-Turbo")
     backend = _backend(monkeypatch, total_mib = 24 * 1024)
@@ -171,27 +158,27 @@ def test_a_mixed_precision_repo_is_sized_component_by_component(monkeypatch):
         backend, fam, "unsloth/Z-Image-Turbo", "Tongyi-MAI/Z-Image-Turbo", Z_IMAGE_TURBO
     )
     assert message is not None
-    assert "about 21 GB of memory for its weights" in message  # 19,635 + 2,048 MiB
+    assert "about 21 GB of memory for its weights" in message
 
 
 def test_a_raw_fp8_repo_converts_its_encoder_as_well_as_its_denoisers(monkeypatch):
     fam = _family(name = "ideogram-4", base_repo = "ideogram-ai/ideogram-4-fp8")
-    tight = _backend(monkeypatch, total_mib = STRIX_HALO_POOL_MIB)  # 52,429 MiB budget
+    tight = _backend(monkeypatch, total_mib = STRIX_HALO_POOL_MIB)
     message = _verdict(
         tight, fam, "unsloth/ideogram-4-fp8", "ideogram-ai/ideogram-4-fp8", IDEOGRAM_4_FP8
     )
     assert message is not None
-    assert "about 53 GB of memory for its weights" in message  # 52,524 + 2,048 MiB
+    assert "about 53 GB of memory for its weights" in message
 
 
 def test_an_fp32_repo_halves_its_companions_too(monkeypatch):
     fam = _family(name = "lumina-2", base_repo = "Alpha-VLLM/Lumina-Image-2.0")
-    backend = _backend(monkeypatch, total_mib = 16 * 1024)  # 13,107 MiB budget
+    backend = _backend(monkeypatch, total_mib = 16 * 1024)
     assert (
         _verdict(backend, fam, "unsloth/Lumina-Image-2.0", "Alpha-VLLM/Lumina-Image-2.0", LUMINA_2)
         is None
     )
-    tiny = _backend(monkeypatch, total_mib = 12 * 1024)  # 9,830 MiB budget
+    tiny = _backend(monkeypatch, total_mib = 12 * 1024)
     assert (
         _verdict(tiny, fam, "unsloth/Lumina-Image-2.0", "Alpha-VLLM/Lumina-Image-2.0", LUMINA_2)
         is not None
@@ -200,7 +187,7 @@ def test_an_fp32_repo_halves_its_companions_too(monkeypatch):
 
 def test_an_nf4_sibling_of_the_same_family_is_not_inflated(monkeypatch):
     fam = _family(name = "ideogram-4", base_repo = "ideogram-ai/ideogram-4-fp8")
-    backend = _backend(monkeypatch, total_mib = 32 * 1024)  # 26,215 MiB budget
+    backend = _backend(monkeypatch, total_mib = 32 * 1024)
     for base in ("ideogram-ai/ideogram-4-nf4-diffusers", "ideogram-ai/ideogram-4-nf4"):
         name = base.split("/")[1]
         assert _verdict(backend, fam, f"unsloth/{name}", base, IDEOGRAM_4_NF4) is None, base
@@ -213,7 +200,7 @@ def test_an_nf4_sibling_of_the_same_family_is_not_inflated(monkeypatch):
 
 def test_a_hosted_pre_cast_encoder_is_not_converted_again(monkeypatch):
     fam = _family(name = "lumina-2", base_repo = "Alpha-VLLM/Lumina-Image-2.0")
-    backend = _backend(monkeypatch, total_mib = 12 * 1024)  # 9,830 MiB budget
+    backend = _backend(monkeypatch, total_mib = 12 * 1024)
     message = backend.declared_footprint_shortfall(
         fam,
         "unsloth/Lumina-Image-2.0",
@@ -223,7 +210,7 @@ def test_a_hosted_pre_cast_encoder_is_not_converted_again(monkeypatch):
         prequant_bytes = LUMINA_HOSTED_TE_MIB * MIB,
     )
     assert message is not None
-    assert "about 10 GB of memory for its weights" in message  # 8,204 + 2,048 MiB
+    assert "about 10 GB of memory for its weights" in message
 
 
 def test_a_bf16_repo_is_counted_as_it_downloads():
@@ -318,9 +305,6 @@ def test_hidream_dense_te4_is_counted_when_no_prequant_is_selected():
     assert _predownload_encoder_bytes(fam, hosted) == 8 * MIB
 
 
-# -- boundaries ----------------------------------------------------------------
-
-
 def test_discrete_vram_is_never_refused(monkeypatch):
     backend = _backend(monkeypatch, memory_kind = "discrete_vram", total_mib = 24 * 1024)
     assert _flux_verdict(backend) is None
@@ -383,9 +367,6 @@ def test_the_escape_hatch_still_opens_it(monkeypatch):
     backend = _backend(monkeypatch, total_mib = STRIX_HALO_POOL_MIB)
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_LOAD", "1")
     assert _flux_verdict(backend) is None
-
-
-# -- the load path: refused BEFORE the prefetch --------------------------------
 
 
 def _stub_estimate(monkeypatch, files):
@@ -483,9 +464,6 @@ def test_an_offline_load_never_probes_the_device(monkeypatch):
 
     assert backend._loading is None, getattr(backend._loading, "error", None)
     assert calls == ["prefetch", "load"]
-
-
-# -- the plan path: the picker refuses at selection time ------------------------
 
 
 def _plan_backend(

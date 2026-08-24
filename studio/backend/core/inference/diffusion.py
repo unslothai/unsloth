@@ -2132,7 +2132,6 @@ class DiffusionBackend:
                 local_files_only = local_files_only,
                 base_repo = base,
             )
-            # Reuse the download metadata for the preflight memory estimate.
             declared_sizes: dict[str, dict[str, int]] = {}
             expected, base_files = self._estimate_download_bytes(
                 kwargs["repo_id"],
@@ -2194,14 +2193,12 @@ class DiffusionBackend:
                 kwargs.get("hf_token"),
                 allow_network = not local_files_only,
             )
-            # Reject an impossible unified-memory load before prefetching it.
             shortfall = self.declared_footprint_shortfall(
                 fam,
                 kwargs["repo_id"],
                 base,
                 kind = kind,
                 declared_files = _flatten_declared_sizes(declared_sizes),
-                # Dense encoder shards were skipped, so count their pre-cast replacement.
                 prequant_bytes = _predownload_encoder_bytes(
                     fam, te_prequant_files, pipeline_declared = bool(declared_sizes)
                 ),
@@ -2905,7 +2902,6 @@ class DiffusionBackend:
             # A companion of the checkpoint, never the selected model itself.
             prequant_repo, prequant_file, prequant_size = dit_prequant
             add_missing_entry(prequant_repo, [prequant_file], {prequant_file: prequant_size})
-        # Preserve a more specific incompatibility already found above.
         if incompatible is None and allow_device_probe:
             incompatible = self.declared_footprint_shortfall(
                 fam,
@@ -2913,7 +2909,6 @@ class DiffusionBackend:
                 base,
                 kind = kind,
                 declared_files = _flatten_declared_sizes(file_sizes),
-                # Count the pre-cast encoder that replaced skipped dense shards.
                 prequant_bytes = _predownload_encoder_bytes(
                     fam, te_files, pipeline_declared = bool(file_sizes)
                 ),
@@ -5078,7 +5073,6 @@ class DiffusionBackend:
             return None
         try:
             target = self._target_for_ordinal(fam, gpu_ordinal)
-            # Scope the ordinal without pinning the route's pooled worker thread.
             with diffusion_device_scope(target.ordinal if target.is_cuda_torch_device else None):
                 device_memory = snapshot_device_memory(target)
             if device_memory.total_mib is None:
@@ -5090,16 +5084,15 @@ class DiffusionBackend:
                 target = target,
                 device_memory = capacity,
                 model_dense_mib = resident_mib,
-                # Match the default placement budget used by _plan_memory.
                 runtime_headroom_mib = estimate_image_runtime_mib(
                     width = None, height = None, family = variant_hint
                 ),
                 requested_mode = memory_mode,
                 explicit_offload = bool(cpu_offload),
             )
-            # The verdict used capacity, so do not quote an unrelated free-memory value.
+            # The estimate uses capacity, not current free memory.
             plan = replace(plan, device_memory = replace(capacity, free_mib = None))
-        except Exception:  # noqa: BLE001 -- a sizing probe that fails must never refuse a load
+        except Exception:  # noqa: BLE001 -- failed sizing must not refuse a load
             return None
         return unified_memory_shortfall_message(plan, family = fam.name)
 

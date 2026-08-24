@@ -238,7 +238,7 @@ def te_prequant_sources(
             if source is not None:
                 sources[component] = source
         return sources
-    except Exception:  # noqa: BLE001 — an unresolvable pre-cast just means the dense encoder
+    except Exception:  # noqa: BLE001 -- fall back to the dense encoder
         return {}
 
 
