@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import collections
 import json
+import math
 import statistics
 import sys
 from pathlib import Path
@@ -43,11 +44,37 @@ from tests.studio.studiobench.scoring.from_payload import (  # noqa: E402
     ACTION_SOURCES,
     FRAME_METRICS,
     IDLE_WINDOW_KINDS,
+    STREAM_METRICS,
     _actions_for,
     _frame_measures,
+    _stream_measures,
 )
 
-METRICS = tuple(ACTION_SOURCES) + FRAME_METRICS
+METRICS = tuple(ACTION_SOURCES) + FRAME_METRICS + STREAM_METRICS
+
+# The metrics compared by DIFFERENCE rather than by ratio, because zero is their CLEAN reading.
+#
+# Everything else here is a duration, and a duration is zero only when nothing happened. Jank is
+# the opposite: a stream that never dropped a frame reports exactly 0.0, and that is the reading a
+# good build is supposed to produce. Measured on this repository's recorded payloads,
+# `stream_time_in_jank_pct` is exactly 0.0 on 765 of 1,438 scored cells, and 349 of 668 base-vs-
+# treatment pairs across 117 payload files have a zero base arm.
+#
+# Paired as a ratio those pairs cannot survive: `t / 0.0` is undefined, so `paired` dropped them,
+# and dropping them is not a conservative choice. It removes exactly the comparisons where the base
+# was CLEAN -- the ones a treatment that introduces jank shows up in -- so a regression from 0.0%
+# to 12.0% left no row at all, and a run where only some repetitions had a zero base kept the rest
+# under the same `n`, pooling a metric over a set whose membership depends on the base arm's value.
+#
+# A difference is defined from zero, so these are pooled as `treatment - base` in the metric's own
+# unit, for EVERY pair rather than only the zero ones: mixing the two within one mean would be a
+# second unstable pool. The null control's floor is computed the same way, so the gates compare
+# like with like, and the table marks these rows so the column is not read as a percentage change.
+#
+# Scoped to the two streaming metrics this file has just started harvesting. `time_in_jank_pct`
+# has the same shape and loses 3% of its pairs, but it is already published against ratio-based
+# floors, and re-basing it would silently re-score every table taken so far.
+DIFFERENCE_METRICS: frozenset[str] = frozenset({"stream_time_in_jank_pct", "stream_jank_index"})
 
 
 def _action_timings(records: list[dict], cid: str) -> dict[str, float]:
@@ -119,6 +146,13 @@ def cell_metrics(records: list[dict]) -> dict[str, dict[str, float]]:
         for key, m in _frame_measures(windows).items():
             if m.value is not None:
                 vals[key] = float(m.value)
+        # The streaming phase on its own, per streamed character. Kept separate from the pooled
+        # frame metrics rather than replacing them: the pooled ones answer "was this film janky",
+        # which is still worth asking, and these answer "what did streaming one character cost",
+        # which nothing answered before.
+        for key, m in _stream_measures(windows).items():
+            if m.value is not None:
+                vals[key] = float(m.value)
         out[cid] = vals
     return out
 
@@ -176,7 +210,13 @@ def paired(records: list[dict], shard: str = "") -> dict[str, list[tuple[float, 
             continue
         for metric in set(sides["base"]) & set(sides["treatment"]):
             b, t = sides["base"][metric], sides["treatment"][metric]
-            if b:
+            # `if b` is a ratio's precondition, not a validity test: a zero base is a real reading
+            # for the jank metrics and only an undefined DENOMINATOR. Those are compared by
+            # difference (see DIFFERENCE_METRICS), so they are kept whenever both sides are finite.
+            if metric in DIFFERENCE_METRICS:
+                if math.isfinite(b) and math.isfinite(t):
+                    out[metric].append((b, t))
+            elif b:
                 out[metric].append((b, t))
     return out
 
@@ -198,6 +238,33 @@ def tier_of(records: list[dict]) -> str:
     return "?"
 
 
+def corpora_of(records: list[dict]) -> set[str]:
+    """EVERY corpus hash the payload carries, not just the first one.
+
+    The recorder appends, so one payload file can hold more than one `run_meta`: `--resume` (and
+    any re-run into the same `--out`) writes a second header next to the first run's completed
+    cells. `paired` matches base against treatment on (shard, rung, repetition) and does not care
+    which run wrote either side, so a first-header-wins reading would pair a base recorded on the
+    old corpus with a treatment recorded on the new one and print the corpus change as a
+    performance change -- the exact thing the refusal below exists to prevent.
+    """
+    found = {str(r.get("corpus_hash") or "?") for r in records if r.get("row_type") == "run_meta"}
+    return found or {"?"}
+
+
+def corpus_of(records: list[dict]) -> str:
+    """The one corpus a payload was recorded on, or a refusal if it holds more than one."""
+    corpora = corpora_of(records)
+    if len(corpora) > 1:
+        raise SystemExit(
+            f"refusing to read a payload recorded on more than one corpus: "
+            f"{sorted(h[:16] for h in corpora)}. Its cells were recorded against different "
+            f"films, so pairing them would read the corpus change as a performance change. "
+            f"Re-run the whole payload on one corpus."
+        )
+    return next(iter(corpora))
+
+
 def read_rows(path: Path) -> list[dict]:
     return [
         json.loads(line) for line in path.read_text(encoding = "utf-8").splitlines() if line.strip()
@@ -214,9 +281,11 @@ def load(paths: list[Path]) -> tuple[dict[str, list[tuple[float, float]]], set[s
     """
     pooled: dict[str, list[tuple[float, float]]] = collections.defaultdict(list)
     tiers: set[str] = set()
+    corpora: set[str] = set()
     for path in paths:
         records = read_rows(path)
         tiers |= tiers_of(records)
+        corpora.add(corpus_of(records))
         for metric, rows in paired(records, shard = str(path.parent.name)).items():
             pooled[metric].extend(rows)
     if len(tiers) > 1:
@@ -225,6 +294,17 @@ def load(paths: list[Path]) -> tuple[dict[str, list[tuple[float, float]]], set[s
             f"fast-tier film and a standard-tier film are different measurements of "
             f"the same action, not repetitions of one."
         )
+    # Same rule one level down. The tier fixes how long the film runs; the corpus hash fixes what
+    # is IN it, and it covers the generator's parameters as well as every unit's bytes. Corpus v2
+    # added math, so a v1 payload and a v2 payload measure two different documents under one name,
+    # and pooling them would read the corpus change as a performance change.
+    if len(corpora) > 1:
+        raise SystemExit(
+            f"refusing to pool payloads built on different corpora: "
+            f"{sorted(h[:16] for h in corpora)}. The corpus hash covers every generated "
+            f"byte and every generator parameter, so these are two different films. "
+            f"Re-run the older side."
+        )
     return pooled, tiers
 
 
@@ -232,6 +312,42 @@ def summarise(paths: list[Path]) -> dict[str, dict[str, float]]:
     out: dict[str, dict[str, float]] = {}
     pooled, _tiers = load(paths)
     for metric, rows in pooled.items():
+        if metric in DIFFERENCE_METRICS:
+            # Same three quantities, same three gates, measured in the metric's own unit because a
+            # ratio from a clean zero base does not exist. `delta_pct` and `spread_pct` are then
+            # percentage POINTS (or ms), which is why `render` marks the row.
+            diffs = [t - b for b, t in rows]
+            # A TIE IS NOT A DISAGREEMENT, AND HERE THE TIE IS THE MODAL READING.
+            #
+            # The ratio branch below asks `all(r > 1) or all(r < 1)`, and that is sound there
+            # because a paired ratio of exactly 1.0 is vanishingly rare for a continuous timing.
+            # Reused verbatim on differences it stops being sound, because the tie value is 0.0
+            # and 0.0 is what a CLEAN reading of these metrics is: `stream_time_in_jank_pct` is
+            # exactly 0.0 on 765 of 1,438 scored cells, so a repetition where neither arm dropped
+            # a frame contributes a difference of exactly 0.0.
+            #
+            # A group of `[0.0, 12.0]` then failed both halves of the strict test and was reported
+            # as VOID (pairs disagree on sign), which is not what happened: nothing moved the other
+            # way, some repetitions were unchanged and the rest regressed together. Measured over
+            # the recorded payloads, that voided 34 of 250 pooled groups, 13.6%, and every one of
+            # the 34 came from a tie rather than from a real disagreement. Intermittent and
+            # load-dependent jank is exactly the shape that produces ties, so the predicate was
+            # discarding the regressions it was most needed for.
+            #
+            # Direction is therefore "no pair went the other way", with at least one that moved,
+            # so an all-zero group stays inconsistent rather than being scored as a finding.
+            nonzero = [d for d in diffs if d != 0.0]
+            out[metric] = {
+                "n": len(rows),
+                "base": statistics.fmean(b for b, _ in rows),
+                "treat": statistics.fmean(t for _, t in rows),
+                "delta_pct": statistics.fmean(diffs),
+                "consistent": bool(nonzero)
+                and (all(d >= 0.0 for d in diffs) or all(d <= 0.0 for d in diffs)),
+                "spread_pct": max(diffs) - min(diffs),
+                "difference": True,
+            }
+            continue
         ratios = [t / b for b, t in rows]
         out[metric] = {
             "n": len(rows),
@@ -245,6 +361,7 @@ def summarise(paths: list[Path]) -> dict[str, dict[str, float]]:
             # The spread of the paired ratios. From a null control it is the detection floor; from
             # a real comparison it is the effect's own scatter, which is GATE 3.
             "spread_pct": (max(ratios) - min(ratios)) * 100.0,
+            "difference": False,
         }
     return out
 
@@ -294,14 +411,23 @@ def render(
     title: str,
     floors: dict | None = None,
     floor_tier: str | None = None,
+    floor_corpus: str | None = None,
 ) -> int:
     stats = summarise(paths)
-    tier = tier_of(read_rows(paths[0]))
+    rows = read_rows(paths[0])
+    tier = tier_of(rows)
     if floor_tier is not None and floor_tier != tier:
         raise SystemExit(
             f"refusing to score a {tier}-tier payload against a {floor_tier}-tier "
             f"floor: the two run different films, so their spreads are not the same "
             f"quantity. Run a null control at --tier {tier}."
+        )
+    corpus = corpus_of(rows)
+    if floor_corpus is not None and floor_corpus != corpus:
+        raise SystemExit(
+            f"refusing to score a payload built on corpus {corpus[:16]} against a floor "
+            f"built on {floor_corpus[:16]}: a floor is the scatter of THIS film, and a "
+            f"different corpus is a different film. Re-run the null control."
         )
     if tier == "fast":
         print("\n  NOTE: fast tier. These are directions for iteration, not reportable numbers.")
@@ -311,10 +437,16 @@ def render(
     print(head + ("      floor %  verdict" if floors else ""))
     print("  " + "-" * (len(head) + (26 if floors else 0)))
     survivors = 0
+    marked = False
     for metric in sorted(stats, key = lambda m: (m in METRICS, m)):
         s = stats[metric]
+        # A difference row is named as one. Its delta is in the metric's own unit, and printing it
+        # under a "delta %" heading would be the same class of mistake this file exists to stop.
+        label = metric
+        if s.get("difference"):
+            label, marked = metric + " (abs)", True
         line = (
-            f"  {metric:<28}{s['n']:>3}{s['base']:>11.1f}{s['treat']:>11.1f}"
+            f"  {label:<28}{s['n']:>3}{s['base']:>11.1f}{s['treat']:>11.1f}"
             f"{s['delta_pct']:>+10.1f}{s['spread_pct']:>10.1f}"
         )
         if floors is not None:
@@ -323,6 +455,12 @@ def render(
             if verdict in ("faster", "SLOWER", "LOST (invariant fell)", "gained"):
                 survivors += 1
         print(line)
+    if marked:
+        print(
+            "\n  (abs) = compared by DIFFERENCE, in the metric's own unit rather than as a "
+            "percentage\n        change: zero is these metrics' clean reading, and a ratio from "
+            "zero does not exist."
+        )
     if floors is not None:
         print(f"\n  {survivors} metric(s) cleared all three gates.")
     return survivors
@@ -354,14 +492,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = ap.parse_args(argv)
 
-    floors, floor_tier = None, None
+    floors, floor_tier, floor_corpus = None, None, None
     if args.floor:
         floor_paths = shards_of(args.floor)
         if not floor_paths:
             print(f"no null-control payload found for {args.floor}")
             return 2
         floors = summarise(floor_paths)
-        floor_tier = tier_of(read_rows(floor_paths[0]))
+        floor_rows = read_rows(floor_paths[0])
+        floor_tier = tier_of(floor_rows)
+        floor_corpus = corpus_of(floor_rows)
 
     seen = 0
     for arg in args.payloads:
@@ -370,7 +510,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"\nno payload found for {arg}")
             continue
         seen += 1
-        render(paths, f"PAIRED PER-METRIC TABLE: {arg}", floors, floor_tier)
+        render(paths, f"PAIRED PER-METRIC TABLE: {arg}", floors, floor_tier, floor_corpus)
     if not seen:
         return 2
     if floors is None:

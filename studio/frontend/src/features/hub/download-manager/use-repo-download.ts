@@ -26,6 +26,7 @@ export interface DownloadJobProgress {
 export interface DownloadJob {
   progress: DownloadJobProgress | null;
   bytesPerSec: number;
+  etaSeconds: number;
   /** Transport the running job resolved to, when it started on this frontend. */
   transport: ResolvedTransport | null;
   /** Its cancel marker, when a Xet run fell back to HTTP: stopping it is still
@@ -185,6 +186,7 @@ export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
   return {
     progress,
     bytesPerSec: active?.bytesPerSec ?? 0,
+    etaSeconds: active?.etaSeconds ?? 0,
     transport: active?.transport ?? null,
     cancelTransport: active?.cancelTransport ?? null,
     cancelling: active?.state === "cancelling",

@@ -57,6 +57,7 @@ from core.inference.context_window import (
     fit_rolling_context,
     messages_have_media,
     retrieval_budget,
+    tool_result_budget,
 )
 from core.inference.stream_errors import stream_error_from_chunk
 from core.inference.llama_server_args import (
@@ -25293,7 +25294,7 @@ class LlamaCppBackend:
                 # the card's id for the first matching call (same tool name) to reconcile.
                 _text_provisional_id = _text_args_id if not has_structured_tc else ""
 
-                for tc in tool_calls or []:
+                for _call_index, tc in enumerate(tool_calls or []):
                     func = tc.get("function", {})
                     tool_name = func.get("name", "")
                     if (
@@ -25453,9 +25454,7 @@ class LlamaCppBackend:
                             # the result lands in the current tool exchange, which rolling
                             # truncation protects, so a top_k the window cannot hold ends
                             # the turn in an unrecoverable context-length error.
-                            if self._effective_context_length and accepts_kwarg(
-                                execute_tool, "conversation_budget_tokens"
-                            ):
+                            if self._effective_context_length:
                                 # Priced against the catalogue too: the messages alone
                                 # leave the tools array out, and a big catalogue can put
                                 # the request near its budget while this still reports
@@ -25470,10 +25469,15 @@ class LlamaCppBackend:
                                 # and the next iteration cannot evict it again because the
                                 # current tool exchange is protected.
                                 #
-                                # So price it exactly instead, here: this runs when the
-                                # model actually reaches for a retrieval tool on a request
-                                # that did not truncate, not on every turn. A failure falls
-                                # back to the estimate, which is what this did before.
+                                # So price it exactly instead, here. A failure falls back
+                                # to the estimate, which is what this did before.
+                                #
+                                # Once per TOOL CALL, not once per retrieval: every result
+                                # is now sized against this figure, not only a retrieval's,
+                                # because a `cat` of a large file overflows the window the
+                                # same way a too-large recall does and is likewise
+                                # protected from eviction once appended. One tokenizer pass
+                                # over the conversation next to running the tool itself.
                                 #
                                 # Recomputed on EVERY search, not cached for the request.
                                 # The count is absolute, and the loop appends the assistant
@@ -25524,30 +25528,78 @@ class LlamaCppBackend:
                                         else estimate_messages_tokens_dense(safe_tools or [])
                                     )
                                 )
-                                if accepts_kwarg(execute_tool, "conversation_token_counter"):
-                                    # The admission check estimates a result's size by
-                                    # characters, which is optimistic for ASCII that
-                                    # tokenises densely: code, minified JSON, hashes and
-                                    # command output all run nearer two or three
-                                    # characters per token than four. This path has a
-                                    # tokenizer, so hand it over and let the check spend
-                                    # the budget as exactly as it computes it.
-                                    kwargs["conversation_token_counter"] = lambda text: (
-                                        self.count_chat_tokens(
-                                            [{"role": "tool", "content": text}],
-                                            None,
-                                            None,
-                                            strict = False,
+                                # What ANY result may add before the next prompt is over
+                                # budget, for every tool and not just the retrieval ones.
+                                # The old cap was a share of the WINDOW and never fell as
+                                # the thread filled, so the last result before an overflow
+                                # claimed as much as the first, and nothing downstream
+                                # recovers: the fit protects the newest turn.
+                                if accepts_kwarg(execute_tool, "result_budget_tokens"):
+                                    # Split across the calls still to run in this batch,
+                                    # and after their arguments. One assistant turn can
+                                    # call several tools, and the loop appends each call
+                                    # only as it runs it, so `_spent` here knows nothing
+                                    # about the rest of the batch: sized as if it were
+                                    # alone, the first result can take all the room the
+                                    # other calls and their results still need, and the
+                                    # finished exchange is protected as the newest turn.
+                                    _pending = list(tool_calls or [])[_call_index + 1 :]
+                                    _pending_msgs = [
+                                        {
+                                            "role": "assistant",
+                                            "content": json.dumps(_call, default = str),
+                                        }
+                                        for _call in _pending
+                                    ]
+                                    # Measured, not estimated: the estimator charges ASCII
+                                    # four characters per token, and a pending call can
+                                    # carry base64, minified JSON or a block of code, which
+                                    # run nearer one or two. Under-priced, the first result
+                                    # is handed room the later ARGUMENTS already occupy.
+                                    _pending_args = 0
+                                    if _pending_msgs:
+                                        try:
+                                            _pending_args = self.count_chat_tokens(
+                                                _pending_msgs, None, None, strict = True
+                                            )
+                                        except Exception:
+                                            logger.debug(
+                                                "result budget: pending call count failed",
+                                                exc_info = True,
+                                            )
+                                            _pending_args = 2 * estimate_messages_tokens_dense(
+                                                _pending_msgs
+                                            )
+                                    kwargs["result_budget_tokens"] = tool_result_budget(
+                                        self._effective_context_length,
+                                        max_tokens,
+                                        _spent + _pending_args,
+                                    ) // (len(_pending) + 1)
+                                if accepts_kwarg(execute_tool, "conversation_budget_tokens"):
+                                    if accepts_kwarg(execute_tool, "conversation_token_counter"):
+                                        # The admission check estimates a result's size by
+                                        # characters, which is optimistic for ASCII that
+                                        # tokenises densely: code, minified JSON, hashes and
+                                        # command output all run nearer two or three
+                                        # characters per token than four. This path has a
+                                        # tokenizer, so hand it over and let the check spend
+                                        # the budget as exactly as it computes it.
+                                        kwargs["conversation_token_counter"] = lambda text: (
+                                            self.count_chat_tokens(
+                                                [{"role": "tool", "content": text}],
+                                                None,
+                                                None,
+                                                strict = False,
+                                            )
                                         )
+                                    # The result and reply are protected on the next fit, so
+                                    # the result cannot spend their entire shared budget.
+                                    kwargs["conversation_budget_tokens"] = _retrieval_budget(
+                                        self._effective_context_length,
+                                        max_tokens,
+                                        _spent,
+                                        reply_returns = True,
                                     )
-                                # The result and reply are protected on the next fit, so
-                                # the result cannot spend their entire shared budget.
-                                kwargs["conversation_budget_tokens"] = _retrieval_budget(
-                                    self._effective_context_length,
-                                    max_tokens,
-                                    _spent,
-                                    reply_returns = True,
-                                )
                             if accepts_output_callback(execute_tool):
                                 kwargs["output_callback"] = _output_callback
                             kwargs.update(search_images_kwargs(execute_tool, _decision.tool_name))

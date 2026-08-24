@@ -161,6 +161,19 @@ class CellRunner:
     log: Callable[[str], None] = print
     image_path: Optional[Path] = None
     cadence: str = "field"
+    #: Record the NORMALISED signature text beside each digest. Off by default and deliberately
+    #: so: the text is megabytes per capture. `sweep/parity_null_control.py --hunt` is the only
+    #: consumer, and it needs it because a digest pair can only say THAT two DOMs differ, never
+    #: which bytes moved -- and "which bytes" is the entire difference between fixing a
+    #: normalisation gap and guessing at one.
+    parity_raw: bool = False
+    #: Directory for the per-action viewport PNGs, or None. Set only when the caller intends to
+    #: produce before/after evidence; the encode is cheap but the files are not free.
+    parity_shots: Optional[str] = None
+    #: Which ARM this runner drives. It is burned into every filename, because a screenshot pair
+    #: whose halves cannot be told apart is worse than no pair: both arms share a fixture, a
+    #: password and a film, so the image itself carries nothing that identifies the side.
+    arm_label: str = "base"
     # Set once the 10K check fails, and it then labels every LARGER rung, which is the whole
     # point: those rungs are mostly seeded and their fidelity depends on this one answer.
     equivalence_failed: bool = False
@@ -313,6 +326,9 @@ class CellRunner:
                 "thread_id": seeded.thread_id,
                 "cell_id": cell.cell_id,
                 "cadence": self.cadence,
+                "parity_raw": self.parity_raw,
+                "parity_shots": self.parity_shots,
+                "arm_label": self.arm_label,
                 "image_path": str(self.image_path) if self.image_path else None,
                 # The follow-up turns `send_turn` streams mid-film, and
                 # the pacer it reloads to serve them.
@@ -787,6 +803,8 @@ def build_cells(
     auth: Optional[StudioAuth] = None,
     model_id: str = "",
     log: Callable[[str], None] = lambda _m: None,
+    stream_tail_chars: Optional[int] = None,
+    corpus_dollars: bool = False,
 ) -> list[tuple[Cell, RungPlan]]:
     """The ladder's cells, sized by the MEASURED ratio unless a caller names one.
 
@@ -806,7 +824,17 @@ def build_cells(
         }
     out: list[tuple[Cell, RungPlan]] = []
     for rung in rungs:
-        plan = plan_rung(corpus, rung, ratio["chars_per_token"])
+        # The ladder is sized by `ratio`, not by the raw `chars_per_token` argument: the argument
+        # may be None, meaning "measure it", and the measured value is what every cell's `meta`
+        # reports. Passing the argument straight through here would size the rungs from a number
+        # the payload does not carry.
+        plan = plan_rung(
+            corpus,
+            rung,
+            ratio["chars_per_token"],
+            stream_tail_chars = stream_tail_chars,
+            dollars = corpus_dollars,
+        )
         for rep in range(reps):
             cell = Cell(
                 cell_id = make_cell_id(rung, "A0", rep),

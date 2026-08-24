@@ -115,7 +115,10 @@ def make_cell_id(rung: str, arm: str, rep: int) -> str:
 
 # ── the window ──────────────────────────────────────────────────────
 
-WINDOW_KINDS = frozenset({"action", "stream", "idle", "settle", "teardown"})
+#: `gap` is the quiet stretch the scheduler holds between two slots. It is NOT `stream`: a gap
+#: window is opened before every slot, so most of them sit long after the reply finished. See
+#: SceneRunner._gap_window for what that mislabelling cost.
+WINDOW_KINDS = frozenset({"action", "stream", "gap", "idle", "settle", "teardown"})
 
 
 @dataclass
