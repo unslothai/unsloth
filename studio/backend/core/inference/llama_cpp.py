@@ -8952,7 +8952,9 @@ class LlamaCppBackend:
 
     @classmethod
     def _tensor_quant_kv_unsupported_binary(
-        cls, binary: Optional[str], cache_types: tuple[str, str] = ("f16", "f16")
+        cls,
+        binary: Optional[str],
+        cache_types: tuple[str, str] = ("f16", "f16"),
     ) -> bool:
         """True if this binary already refused a quantized KV cache in tensor mode
         AND this launch asks for one. A non-quantized pair is unaffected."""

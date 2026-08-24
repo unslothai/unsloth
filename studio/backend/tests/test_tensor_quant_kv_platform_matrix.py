@@ -382,14 +382,18 @@ def test_a_miscased_inherited_cache_type_is_normalised_not_dropped(
 # ── An inherited value llama.cpp cannot parse verbatim ──────────────────────
 
 
-@pytest.mark.parametrize("platform,accelerator", [
-    pytest.param(p, a, id = f"{p[0]}-{a[0]}") for p in PLATFORMS for a in ACCELERATORS
-])
-@pytest.mark.parametrize("raw,expected", [
-    (" q8_0 ", "q8_0"),      # surrounding whitespace
-    ("\tq4_0\n", "q4_0"),    # any whitespace, not just spaces
-    (" Q8_0 ", "q8_0"),      # whitespace AND case together
-])
+@pytest.mark.parametrize(
+    "platform,accelerator",
+    [pytest.param(p, a, id = f"{p[0]}-{a[0]}") for p in PLATFORMS for a in ACCELERATORS],
+)
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        (" q8_0 ", "q8_0"),  # surrounding whitespace
+        ("\tq4_0\n", "q4_0"),  # any whitespace, not just spaces
+        (" Q8_0 ", "q8_0"),  # whitespace AND case together
+    ],
+)
 def test_a_whitespace_padded_inherited_cache_type_is_rewritten(
     tmp_path, monkeypatch, platform, accelerator, raw, expected
 ):

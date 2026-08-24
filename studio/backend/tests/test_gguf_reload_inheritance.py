@@ -303,9 +303,9 @@ class TestRepeatLoadMatchesTheEffectiveCache:
         "extras,managed",
         [
             (["--cache-type-k", "q8_0", "--cache-type-v", "q8_0"], None),  # extras only
-            (["--cache-type-k", "q4_0", "--cache-type-v", "f16"], None),   # asymmetric
-            ([], "q8_0"),                                                  # managed only
-            ([], None),                                                    # nothing set
+            (["--cache-type-k", "q4_0", "--cache-type-v", "f16"], None),  # asymmetric
+            ([], "q8_0"),  # managed only
+            ([], None),  # nothing set
         ],
     )
     def test_the_same_request_resolves_to_the_running_pair(self, extras, managed):
@@ -319,7 +319,6 @@ class TestRepeatLoadMatchesTheEffectiveCache:
 
     def test_a_changed_cache_still_reloads(self):
         from core.inference.llama_cpp import _planned_main_cache_types
-
         running = self._backend_running(("q8_0", "q8_0"))
 
         assert running._effective_cache_types != _planned_main_cache_types(
