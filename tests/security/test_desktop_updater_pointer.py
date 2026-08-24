@@ -1,11 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""Discovery must follow desktop metadata, not whichever release is newest.
-
-Clients poll the repo-wide `/releases/latest/download/latest.json`. Publishing a
-`v...` release that carries no desktop bundles moves that pointer, so the
-publish workflow carries the newest desktop manifest onto it instead.
-"""
+"""Desktop discovery must stay on a release with one complete asset set."""
 
 import json
 import os
@@ -19,13 +14,24 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 UPDATER_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "publish-desktop-updater.yml"
 
 REPOSITORY = "unslothai/unsloth"
-STEP_NAME = "Carry desktop metadata forward"
+STEP_NAME = "Restore latest complete Desktop release"
+STABLE_ASSETS = (
+    "Unsloth-Desktop-MacOS.dmg",
+    "Unsloth-Desktop-Linux.AppImage",
+    "Unsloth-Desktop-Ubuntu.deb",
+    "Unsloth-Desktop-Windows.exe",
+)
 
 FAKE_GH = """#!/bin/sh
 set -eu
 printf 'gh %s\\n' "$*" >> "$COMMAND_LOG"
 if [ "$1" = "api" ]; then
-  cat "$RELEASES_FIXTURE"
+  case "$*" in
+    *"releases?per_page=100"*) cat "$RELEASES_FIXTURE" ;;
+    *"/releases/latest"*) printf '%s\\n' "$LATEST_TAG" ;;
+    *"--method PATCH"*) printf '{"make_latest":true}\\n' ;;
+    *) exit 1 ;;
+  esac
   exit 0
 fi
 if [ "$1" = "release" ] && [ "$2" = "download" ]; then
@@ -48,9 +54,7 @@ def _step_run():
     steps = {step.get("name"): step for step in job["steps"]}
     assert STEP_NAME in steps, sorted(steps)
     step = steps[STEP_NAME]
-    # Only for a release that arrived without bundles of its own.
     assert "steps.gate.outputs.proceed == 'false'" in step["if"]
-    # Nothing fires this workflow automatically, so the repair must be asked for.
     assert "inputs.repair_pointer" in step["if"]
     return step["run"]
 
@@ -58,17 +62,22 @@ def _step_run():
 def _release(
     tag,
     *,
-    has_manifest = True,
+    release_id,
+    complete = True,
     draft = False,
     prerelease = False,
     published_at = "2026-01-01T00:00:00Z",
 ):
+    assets = [{"name": name} for name in ("latest.json", *STABLE_ASSETS)]
+    if not complete:
+        assets = [{"name": "notes.txt"}]
     return {
+        "id": release_id,
         "tag_name": tag,
         "draft": draft,
         "prerelease": prerelease,
         "published_at": published_at,
-        "assets": [{"name": "latest.json"}] if has_manifest else [{"name": "notes.txt"}],
+        "assets": assets,
     }
 
 
@@ -77,14 +86,23 @@ def _manifest(tag):
     return {
         "version": tag,
         "platforms": {
-            "darwin-aarch64": {"url": f"{base}app.tar.gz", "signature": "c2ln"},
-            "linux-x86_64": {"url": f"{base}app.AppImage", "signature": "c2ln"},
-            "windows-x86_64": {"url": f"{base}app.exe", "signature": "c2ln"},
+            "darwin-aarch64": {
+                "url": f"{base}Unsloth-Desktop-ARM64.app.tar.gz",
+                "signature": "c2ln",
+            },
+            "linux-x86_64": {
+                "url": f"{base}Unsloth-Desktop-Linux.AppImage",
+                "signature": "c2ln",
+            },
+            "windows-x86_64": {
+                "url": f"{base}Unsloth-Desktop-Windows.exe",
+                "signature": "c2ln",
+            },
         },
     }
 
 
-def _run(tmp_path, *, release_tag, releases, manifest):
+def _run(tmp_path, *, release_tag, releases, manifest, latest_tag = "v0.1.52-beta"):
     tmp_path.mkdir(parents = True, exist_ok = True)
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
@@ -94,7 +112,7 @@ def _run(tmp_path, *, release_tag, releases, manifest):
 
     releases_fixture = tmp_path / "releases.fixture.json"
     releases_fixture.write_text(json.dumps(releases), encoding = "utf-8")
-    manifest_fixture = tmp_path / "manifest.fixture.json"
+    manifest_fixture = tmp_path / "latest.fixture.json"
     manifest_fixture.write_text(json.dumps(manifest), encoding = "utf-8")
     log = tmp_path / "commands.log"
     log.write_text("", encoding = "utf-8")
@@ -104,10 +122,11 @@ def _run(tmp_path, *, release_tag, releases, manifest):
         {
             "COMMAND_LOG": str(log),
             "GITHUB_REPOSITORY": REPOSITORY,
+            "GITHUB_STEP_SUMMARY": str(tmp_path / "step-summary.md"),
+            "LATEST_TAG": latest_tag,
             "MANIFEST_FIXTURE": str(manifest_fixture),
             "PATH": f"{fake_bin}:{env['PATH']}",
             "RELEASES_FIXTURE": str(releases_fixture),
-            "GITHUB_STEP_SUMMARY": str(tmp_path / "step-summary.md"),
             "RELEASE_TAG": release_tag,
             "RUNNER_TEMP": str(tmp_path),
         }
@@ -123,145 +142,138 @@ def _run(tmp_path, *, release_tag, releases, manifest):
     return result, log.read_text(encoding = "utf-8").splitlines()
 
 
-def test_the_newest_desktop_manifest_is_carried_onto_a_bundleless_release(tmp_path):
+def test_the_newest_complete_desktop_release_is_restored_without_copying_assets(tmp_path):
     result, commands = _run(
         tmp_path,
         release_tag = "v0.1.53-beta",
         releases = [
-            _release("v0.1.52-beta", published_at = "2026-03-01T00:00:00Z"),
-            _release("v0.1.51-beta", published_at = "2026-02-01T00:00:00Z"),
-            _release("v0.1.53-beta", has_manifest = False, published_at = "2026-04-01T00:00:00Z"),
+            _release("v0.1.52-beta", release_id = 52, published_at = "2026-03-01T00:00:00Z"),
+            _release("v0.1.51-beta", release_id = 51, published_at = "2026-02-01T00:00:00Z"),
+            _release(
+                "v0.1.53-beta",
+                release_id = 53,
+                complete = False,
+                published_at = "2026-04-01T00:00:00Z",
+            ),
         ],
         manifest = _manifest("v0.1.52-beta"),
     )
     assert result.returncode == 0, result.stderr
-    assert "gh release download v0.1.52-beta" in "\n".join(commands)
+    assert "gh release download v0.1.52-beta --pattern latest.json" in "\n".join(commands)
     assert any(
-        line.startswith("gh release upload v0.1.53-beta") and "--clobber" in line
+        line.startswith(f"gh api --method PATCH repos/{REPOSITORY}/releases/52")
+        and "-f make_latest=true" in line
         for line in commands
     ), commands
-    # The manifest is copied byte for byte, so it keeps pointing at its own release.
-    carried = json.loads((tmp_path / "carry-forward" / "latest.json").read_text(encoding = "utf-8"))
-    assert carried == _manifest("v0.1.52-beta")
+    assert not [line for line in commands if line.startswith("gh release upload")]
 
-    # The 404 gap between publish and this upload is recorded, not silent.
+    restored = json.loads((tmp_path / "restore-latest" / "latest.json").read_text(encoding = "utf-8"))
+    assert restored == _manifest("v0.1.52-beta")
     summary = (tmp_path / "step-summary.md").read_text(encoding = "utf-8")
-    assert "v0.1.52-beta manifest" in summary
+    assert "points back to v0.1.52-beta" in summary
     assert "404" in summary
 
 
-def test_drafts_prereleases_and_bundleless_releases_are_never_the_source(tmp_path):
+def test_incomplete_draft_and_prerelease_releases_are_never_restored(tmp_path):
     result, commands = _run(
         tmp_path,
         release_tag = "v0.1.53-beta",
         releases = [
-            _release("v0.1.53-beta", has_manifest = False, published_at = "2026-04-01T00:00:00Z"),
-            _release("v0.1.52-beta", draft = True, published_at = "2026-03-01T00:00:00Z"),
-            _release("v0.1.51-beta", prerelease = True, published_at = "2026-02-01T00:00:00Z"),
-            _release("v0.1.50-beta", has_manifest = False, published_at = "2026-01-01T00:00:00Z"),
+            _release("v0.1.53-beta", release_id = 53, complete = False),
+            _release("v0.1.52-beta", release_id = 52, draft = True),
+            _release("v0.1.51-beta", release_id = 51, prerelease = True),
+            _release("v0.1.50-beta", release_id = 50, complete = False),
         ],
         manifest = _manifest("v0.1.52-beta"),
     )
     assert result.returncode == 0, result.stderr
-    assert "nothing to carry forward" in result.stdout
-    assert not [line for line in commands if line.startswith("gh release upload")]
+    assert "nothing to restore" in result.stdout
+    assert not [line for line in commands if "--method PATCH" in line]
 
 
-def test_a_non_semver_release_leaves_the_pointer_alone(tmp_path):
+def test_a_non_semver_release_leaves_latest_alone(tmp_path):
     result, commands = _run(
         tmp_path,
         release_tag = "vnext",
-        releases = [_release("v0.1.52-beta")],
+        releases = [_release("v0.1.52-beta", release_id = 52)],
         manifest = _manifest("v0.1.52-beta"),
     )
     assert result.returncode == 0, result.stderr
     assert commands == [], commands
 
 
-def test_an_already_carried_manifest_is_carried_forward_again(tmp_path):
-    # The carried release is now the newest one holding latest.json, and the
-    # manifest it holds names an older version on purpose. Forwarding it again is
-    # the only thing that keeps the pointer resolving.
+def test_a_manifest_naming_another_release_is_refused(tmp_path):
     result, commands = _run(
         tmp_path,
         release_tag = "v0.1.54-beta",
         releases = [
-            _release("v0.1.54-beta", has_manifest = False, published_at = "2026-05-01T00:00:00Z"),
-            _release("v0.1.53-beta", published_at = "2026-04-01T00:00:00Z"),
-            _release("v0.1.52-beta", published_at = "2026-03-01T00:00:00Z"),
+            _release("v0.1.54-beta", release_id = 54, complete = False),
+            _release("v0.1.53-beta", release_id = 53),
+            _release("v0.1.52-beta", release_id = 52),
         ],
         manifest = _manifest("v0.1.52-beta"),
     )
-    assert result.returncode == 0, result.stderr
-    assert any(line.startswith("gh release upload v0.1.54-beta") for line in commands), commands
+    assert result.returncode == 1
+    assert "names v0.1.52-beta" in result.stderr
+    assert not [line for line in commands if "--method PATCH" in line]
 
 
-def test_a_manifest_that_is_not_pinned_to_its_own_version_is_refused(tmp_path):
+def test_a_manifest_with_a_moving_bundle_url_is_refused(tmp_path):
+    manifest = _manifest("v0.1.52-beta")
+    manifest["platforms"]["linux-x86_64"]["url"] = (
+        f"https://github.com/{REPOSITORY}/releases/latest/download/Unsloth-Desktop-Linux.AppImage"
+    )
     result, commands = _run(
         tmp_path,
         release_tag = "v0.1.53-beta",
         releases = [
-            _release("v0.1.53-beta", has_manifest = False),
-            _release("v0.1.52-beta"),
+            _release("v0.1.53-beta", release_id = 53, complete = False),
+            _release("v0.1.52-beta", release_id = 52),
         ],
-        manifest = {
-            "version": "v0.1.52-beta",
-            "platforms": {
-                "linux-x86_64": {
-                    "url": f"https://github.com/{REPOSITORY}/releases/latest/download/app.AppImage",
-                    "signature": "c2ln",
-                }
-            },
-        },
+        manifest = manifest,
     )
     assert result.returncode == 1
-    assert "not pinned to v0.1.52-beta" in result.stderr
-    assert not [line for line in commands if line.startswith("gh release upload")]
+    assert "URL is not pinned to its release" in result.stderr
+    assert not [line for line in commands if "--method PATCH" in line]
 
 
 def test_a_manifest_without_a_usable_version_is_refused(tmp_path):
-    result, _ = _run(
+    result, commands = _run(
         tmp_path,
         release_tag = "v0.1.53-beta",
         releases = [
-            _release("v0.1.53-beta", has_manifest = False),
-            _release("v0.1.52-beta"),
+            _release("v0.1.53-beta", release_id = 53, complete = False),
+            _release("v0.1.52-beta", release_id = 52),
         ],
         manifest = {"version": "latest", "platforms": {}},
     )
     assert result.returncode == 1
-    assert "refusing to carry it forward" in result.stderr
+    assert "declares invalid version" in result.stderr
+    assert not [line for line in commands if "--method PATCH" in line]
 
 
 def test_a_draft_or_prerelease_target_is_refused(tmp_path):
-    # /releases/latest never resolves to a draft or prerelease, so carrying a manifest
-    # onto one cannot repair the endpoint. The source filter already refuses them; the
-    # target is held to the same rule.
     for state in ("draft", "prerelease"):
-        target = _release("v0.1.53-beta", has_manifest = False)
+        target = _release("v0.1.53-beta", release_id = 53, complete = False)
         target[state] = True
         result, commands = _run(
             tmp_path / state,
             release_tag = "v0.1.53-beta",
-            releases = [target, _release("v0.1.52-beta")],
+            releases = [target, _release("v0.1.52-beta", release_id = 52)],
             manifest = _manifest("v0.1.52-beta"),
         )
         assert result.returncode != 0, f"{state} target was accepted"
         assert f"is a {state}" in result.stderr, result.stderr
-        assert not [line for line in commands if line.startswith("gh release upload")], commands
+        assert not [line for line in commands if "--method PATCH" in line], commands
 
 
 def test_a_target_missing_from_the_release_listing_is_refused(tmp_path):
-    # The listing is the only view of the target's draft state: /releases/tags/{tag}
-    # answers 404 for a draft, which has no git tag until it is published. A target
-    # absent from that single page has an unverifiable state, so the draft/prerelease
-    # refusal above would degrade into no check. Fail closed instead.
     result, commands = _run(
         tmp_path,
         release_tag = "v0.1.53-beta",
-        releases = [_release("v0.1.52-beta")],
+        releases = [_release("v0.1.52-beta", release_id = 52)],
         manifest = _manifest("v0.1.52-beta"),
     )
     assert result.returncode != 0, result.stdout
     assert "is not among the 100 most recent releases" in result.stderr, result.stderr
-    assert not [line for line in commands if line.startswith("gh release upload")], commands
+    assert not [line for line in commands if "--method PATCH" in line], commands

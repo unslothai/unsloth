@@ -129,7 +129,7 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
 
     names = [step.get("name") for step in publish["steps"]]
     assert names.index("Wait for the build matrix") < names.index(
-        "Publish versioned release assets"
+        "Publish release assets"
     )
     # And it has to clear before the assets are pulled, or the download races the
     # legs and publish-release dies on artifacts that do not exist yet.
@@ -188,7 +188,7 @@ def test_post_publish_scan_job_holds_no_release_credentials():
 
 def test_versioned_release_hides_updater_signature_assets():
     steps = _workflow()["jobs"]["publish-release"]["steps"]
-    publish = next(step for step in steps if step.get("name") == "Publish versioned release assets")
+    publish = next(step for step in steps if step.get("name") == "Publish release assets")
 
     assert '[[ "$asset" == *.sig ]] || release_assets+=("$asset")' in publish["run"]
     assert '"${release_assets[@]}"' in publish["run"]
@@ -266,6 +266,15 @@ def test_the_updater_workflow_skips_releases_without_desktop_bundles():
     assert gate["id"] == "gate"
     # An unreadable release must not look like one that simply has no bundles.
     assert "refusing to advance the channel" in gate["run"]
+    for name in (
+        "Unsloth-Desktop-MacOS.dmg",
+        "Unsloth-Desktop-Linux.AppImage",
+        "Unsloth-Desktop-Ubuntu.deb",
+        "Unsloth-Desktop-Windows.exe",
+    ):
+        assert name in gate["run"]
+        assert name in steps["Validate updater metadata"]["run"]
+        assert name in steps["Mark published release as GitHub latest"]["run"]
 
     for name in (
         "Download updater metadata",
@@ -310,8 +319,11 @@ def test_the_updater_workflow_is_manual_dispatch_only():
         assert "github.event" not in condition, condition
 
     # Dropping the release trigger is only safe while the pointer repair stays reachable.
-    carry = next(
-        step for step in job["steps"] if step.get("name") == "Carry desktop metadata forward"
+    restore = next(
+        step for step in job["steps"]
+        if step.get("name") == "Restore latest complete Desktop release"
     )
-    assert "inputs.repair_pointer" in carry["if"]
+    assert "inputs.repair_pointer" in restore["if"]
+    assert "gh release upload" not in restore["run"]
+    assert "-f make_latest=true" in restore["run"]
     assert triggers["workflow_dispatch"]["inputs"]["repair_pointer"]["default"] is False
