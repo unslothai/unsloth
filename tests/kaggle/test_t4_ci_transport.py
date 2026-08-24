@@ -329,7 +329,8 @@ def _drive_packed(
                 # to WORK would test an assignment; this tests the branch.
                 .replace(
                     "/tmp/t4ci_venvs",
-                    str(tmp_path / "blocked" / "t4ci_venvs") if venv_fallback
+                    str(tmp_path / "blocked" / "t4ci_venvs")
+                    if venv_fallback
                     else str(tmp_path / "venvs"),
                 )
                 .replace("/kaggle/working", str(tmp_path))
