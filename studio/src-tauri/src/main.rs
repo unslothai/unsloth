@@ -1824,9 +1824,9 @@ fn main() {
     // process drives X from several threads. See x11_threads for the crash.
     x11_threads::init_x11_threads();
 
-    // WebKitGTK's hardware dmabuf path can violate Wayland explicit-sync
-    // protocol on current NVIDIA/Mesa stacks. Select a compatible fallback
-    // before any GTK/WebKit object can be initialized.
+    // WebKitGTK's hardware dmabuf path breaks on the proprietary NVIDIA driver on
+    // either display server, and on an AppImage that cannot load GLES. Select a
+    // compatible fallback before any GTK/WebKit object can be initialized.
     #[cfg(target_os = "linux")]
     let webkit_rendering_workaround = linux_webkit::configure_renderer();
     // Fix PATH for GUI apps (macOS .app bundles, Linux AppImage, Windows)
@@ -1838,8 +1838,13 @@ fn main() {
     info!("Unsloth desktop app starting");
 
     #[cfg(target_os = "linux")]
-    if let Some(variable) = webkit_rendering_workaround {
-        info!("Set {variable}=1 for WebKitGTK compatibility");
+    if let Some((variables, reason)) = webkit_rendering_workaround {
+        let applied = variables
+            .iter()
+            .map(|variable| format!("{variable}=1"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        info!("{reason}; set {applied} for WebKitGTK compatibility");
     }
     windows_job::initialize();
 
