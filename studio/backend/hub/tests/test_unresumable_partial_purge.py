@@ -10,7 +10,7 @@ import time
 
 import pytest
 
-from hub.utils import download_registry, hf_cache_state
+from hub.utils import download_registry, hf_cache_state, resumable_partials
 
 
 _MAIN = "a" * 64
@@ -70,11 +70,41 @@ def _prepare(**kwargs):
     ],
 )
 def test_writer_resumability_tracks_the_installed_version(monkeypatch, hf_version, resumable):
-    """1.18 is the line: before it a partial is appended to, after it a new file is written."""
+    """1.18 is the line: before it a partial is appended to, after it a new file is written.
+
+    Pinned with the restoration in :mod:`hub.utils.resumable_partials` unavailable, which is what
+    a machine whose filesystem cannot prove ``flock`` excludes a second writer sees.
+    """
+    monkeypatch.setattr(resumable_partials, "can_restore_partials", lambda: False)
     monkeypatch.setattr("huggingface_hub.__version__", hf_version, raising = False)
     hf_cache_state.hf_partials_are_resumable.cache_clear()
     try:
         assert hf_cache_state.hf_partials_are_resumable() is resumable
+    finally:
+        hf_cache_state.hf_partials_are_resumable.cache_clear()
+
+
+@pytest.mark.parametrize("hf_version", ["1.18.0", "1.23.0", "1.27.0"])
+def test_restoring_the_1_17_writer_makes_partials_resumable_again(monkeypatch, hf_version):
+    """Where the worker puts the append-mode writer back, a partial is worth keeping again."""
+    monkeypatch.setattr(resumable_partials, "can_restore_partials", lambda: True)
+    monkeypatch.setattr("huggingface_hub.__version__", hf_version, raising = False)
+    hf_cache_state.hf_partials_are_resumable.cache_clear()
+    try:
+        assert hf_cache_state.hf_partials_are_resumable() is True
+    finally:
+        hf_cache_state.hf_partials_are_resumable.cache_clear()
+
+
+def test_a_nonce_partial_stays_unresumable_after_the_writer_is_restored(monkeypatch):
+    """Bytes already on disk under a nonce name are still litter: the restored writer opens the
+    stable name, so it never finds them. Only what it writes from here is reusable."""
+    monkeypatch.setattr(resumable_partials, "can_restore_partials", lambda: True)
+    monkeypatch.setattr("huggingface_hub.__version__", "1.28.0", raising = False)
+    hf_cache_state.hf_partials_are_resumable.cache_clear()
+    try:
+        assert hf_cache_state.partial_is_resumable(_NONCE_PARTIAL) is False
+        assert hf_cache_state.partial_is_resumable(_LEGACY_PARTIAL) is True
     finally:
         hf_cache_state.hf_partials_are_resumable.cache_clear()
 

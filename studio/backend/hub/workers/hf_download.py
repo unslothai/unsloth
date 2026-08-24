@@ -17,6 +17,9 @@ Enforced by:
   globally and simplifying reasoning about partial state during a SIGKILL.
 - Letting ``prepare_cache_for_transport`` purge any pre-existing
   ``.incomplete`` blobs not provably from the same sequential writer.
+- Restoring huggingface_hub's 1.17 append-mode writer where that is safe
+  (see :mod:`hub.utils.resumable_partials`); 1.18+ writes a process-unique
+  partial and unlinks it, which leaves this loop nothing to resume from.
 
 If the final byte count doesn't match what HF declared, huggingface_hub
 raises ``EnvironmentError`` ("Consistency check failed: …"); we surface
@@ -55,6 +58,11 @@ from hub.utils.gguf_plan import (
     sibling_sha256,
 )
 from hub.utils.state_dir import RepoType
+from hub.utils.resumable_partials import restore_resumable_partials
+
+# Put huggingface_hub's 1.17 HTTP writer back where it is safe to. The SIGKILL then restart loop
+# documented above reads ``.incomplete`` for its resume offset, and 1.18+ leaves nothing to read.
+_PARTIALS_RESUMABLE = restore_resumable_partials()
 
 # typing.Union, not `str | bool | None`: an alias is evaluated on import and PEP 604 raises below 3.10.
 HfTokenArg = Union[str, bool, None]

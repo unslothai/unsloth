@@ -71,6 +71,9 @@ def hf_partials_are_resumable() -> bool:
 
     An unreadable version answers True: not knowing which writer is installed is not grounds
     for deleting bytes that may still be resumable.
+
+    On 1.18+ this also asks whether the download worker will put the 1.17 writer back
+    (:mod:`hub.utils.resumable_partials`), since a restored resumer makes partials reusable again.
     """
     try:
         from huggingface_hub import __version__ as hf_version
@@ -86,7 +89,18 @@ def hf_partials_are_resumable() -> bool:
         if not digits:
             return True
         release.append(int(digits))
-    return tuple(release) <= _LAST_RESUMABLE_PARTIAL_VERSION
+    if tuple(release) <= _LAST_RESUMABLE_PARTIAL_VERSION:
+        return True
+    try:
+        from hub.utils.resumable_partials import can_restore_partials
+        return can_restore_partials()
+    except Exception:  # noqa: BLE001 - no restoration is just the stock answer
+        from loggers import get_logger
+        get_logger(__name__).debug(
+            "Resumable-partial restoration unavailable; partials stay unresumable.",
+            exc_info = True,
+        )
+        return False
 
 
 def partial_is_process_unique(name: str) -> bool:
