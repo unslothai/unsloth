@@ -8,11 +8,11 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { recordedSandboxSessionId } = await import(
+const { allRecordedSandboxSessionIds } = await import(
   "../src/features/chat/utils/recorded-sandbox-session.ts"
 );
 
-type Message = Parameters<typeof recordedSandboxSessionId>[0][number];
+type Message = Parameters<typeof allRecordedSandboxSessionIds>[0][number];
 
 function toolMessage(sessionId: string): Message {
   return {
@@ -40,12 +40,27 @@ function toolMessage(sessionId: string): Message {
 test("a chat moved into a project still names the sandbox its files are in", () => {
   // Written while the chat was loose, so the id is the thread's, not project-<id>.
   const messages = [toolMessage("thread-1")];
-  assert.equal(recordedSandboxSessionId(messages), "thread-1");
+  assert.deepEqual(allRecordedSandboxSessionIds(messages), ["thread-1"]);
 });
 
-test("the most recent tool result wins when the scope changed mid-chat", () => {
+test("a scope change mid-chat leaves files in both folders, so both are named", () => {
+  // One thread, two sandboxes: it ran a tool loose, joined a project, and ran
+  // another. Answering with the newest alone would strand the first folder,
+  // and its caller would think the chat had a single session id to hand out.
   const messages = [toolMessage("thread-1"), toolMessage("project-p1")];
-  assert.equal(recordedSandboxSessionId(messages), "project-p1");
+  assert.deepEqual(allRecordedSandboxSessionIds(messages), [
+    "project-p1",
+    "thread-1",
+  ]);
+});
+
+test("a chat that stayed put names its one sandbox once, however many tools ran", () => {
+  const messages = [
+    toolMessage("project-p1"),
+    toolMessage("project-p1"),
+    toolMessage("project-p1"),
+  ];
+  assert.deepEqual(allRecordedSandboxSessionIds(messages), ["project-p1"]);
 });
 
 test("a chat that never ran a tool records nothing, leaving the caller its default", () => {
@@ -58,7 +73,7 @@ test("a chat that never ran a tool records nothing, leaving the caller its defau
       content: [{ type: "text", text: "hello" }],
     } as unknown as Message,
   ];
-  assert.equal(recordedSandboxSessionId(messages), undefined);
+  assert.deepEqual(allRecordedSandboxSessionIds(messages), []);
 });
 
 test("an mcp tool answering with its own session id is not read as a sandbox", () => {
@@ -83,7 +98,7 @@ test("an mcp tool answering with its own session id is not read as a sandbox", (
       ],
     } as unknown as Message,
   ];
-  assert.equal(recordedSandboxSessionId(messages), undefined);
+  assert.deepEqual(allRecordedSandboxSessionIds(messages), []);
 });
 
 test("a python result missing the wrapper shape is not read as a sandbox", () => {
@@ -104,7 +119,7 @@ test("a python result missing the wrapper shape is not read as a sandbox", () =>
       ],
     } as unknown as Message,
   ];
-  assert.equal(recordedSandboxSessionId(messages), undefined);
+  assert.deepEqual(allRecordedSandboxSessionIds(messages), []);
 });
 
 test("a result without a session id is skipped rather than read as one", () => {
@@ -130,7 +145,7 @@ test("a result without a session id is skipped rather than read as one", () => {
       ],
     } as unknown as Message,
   ];
-  assert.equal(recordedSandboxSessionId(messages), undefined);
+  assert.deepEqual(allRecordedSandboxSessionIds(messages), []);
 });
 
 test("a run that created no files still names the sandbox it ran in", () => {
@@ -158,7 +173,7 @@ test("a run that created no files still names the sandbox it ran in", () => {
       ],
     } as unknown as Message,
   ];
-  assert.equal(recordedSandboxSessionId(messages), "project-p1");
+  assert.deepEqual(allRecordedSandboxSessionIds(messages), ["project-p1"]);
 });
 
 test("content that is not an array is skipped rather than thrown on", () => {
@@ -169,7 +184,7 @@ test("content that is not an array is skipped rather than thrown on", () => {
     { id: "m2", threadId: "t", role: "assistant", createdAt: 2, content: null },
     { id: "m3", threadId: "t", role: "assistant", createdAt: 3 },
   ] as unknown as Message[];
-  assert.equal(recordedSandboxSessionId(messages), undefined);
+  assert.deepEqual(allRecordedSandboxSessionIds(messages), []);
 });
 
 test("a null part inside a real content array does not stop the scan", () => {
@@ -191,7 +206,7 @@ test("a null part inside a real content array does not stop the scan", () => {
       ],
     } as unknown as Message,
   ];
-  assert.equal(recordedSandboxSessionId(messages), "thread-1");
+  assert.deepEqual(allRecordedSandboxSessionIds(messages), ["thread-1"]);
 });
 
 test("a tool-result shaped part is not mistaken for a tool call", () => {
@@ -212,12 +227,13 @@ test("a tool-result shaped part is not mistaken for a tool call", () => {
       ],
     } as unknown as Message,
   ];
-  assert.equal(recordedSandboxSessionId(messages), undefined);
+  assert.deepEqual(allRecordedSandboxSessionIds(messages), []);
 });
 
-test("a long history answers from the newest message without walking it all", () => {
-  // Runs on a menu click over a chat of thousands of turns. Walking backwards
-  // makes it one part when the newest message carries the answer.
+test("a long history is walked in full and still answers inside a menu click", () => {
+  // Naming every folder means the whole history, not an early return on the
+  // newest. Runs on a menu click over a chat of thousands of turns, so the
+  // bound stands: it is one pass over parts already in memory.
   const messages: Message[] = [];
   for (let i = 0; i < 5000; i += 1) {
     messages.push({
@@ -230,9 +246,9 @@ test("a long history answers from the newest message without walking it all", ()
   }
   messages.push(toolMessage("newest-session"));
   const started = performance.now();
-  assert.equal(recordedSandboxSessionId(messages), "newest-session");
+  assert.deepEqual(allRecordedSandboxSessionIds(messages), ["newest-session"]);
   assert.ok(
     performance.now() - started < 50,
-    "the newest message must answer it",
+    "a full pass has to stay inside a click",
   );
 });

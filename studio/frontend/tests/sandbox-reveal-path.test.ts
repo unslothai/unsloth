@@ -113,11 +113,29 @@ test("a failed history read is reported, not mistaken for a chat that ran no too
   const end = SIDEBAR.indexOf("\n  }", start);
   assert.ok(start !== -1 && end > start, "the read block moved");
   const block = SIDEBAR.slice(start, end);
-  assert.ok(block.includes("recordedSandboxSessionId"), "the read block moved");
+  assert.ok(
+    block.includes("allRecordedSandboxSessionIds"),
+    "the read block moved",
+  );
   assert.ok(
     !block.includes(".catch("),
     "a per-pane catch turns a failed read into a wrong folder",
   );
+});
+
+test("one thread that outlived a move counts as two folders, not one", () => {
+  // A chat can name two sandboxes on its own: ran a tool, moved between
+  // projects, ran another. Taking one id per thread would leave the refusal
+  // blind to that and hand out the newer id as though it were the only one.
+  const start = SIDEBAR.indexOf("async function recordedSandboxSessionIds");
+  const end = SIDEBAR.indexOf("\n  }", start);
+  const block = SIDEBAR.slice(start, end);
+  assert.match(
+    block,
+    /recorded\.push\(\n\s*\.\.\.allRecordedSandboxSessionIds\(await listStoredChatMessages\(threadId\)\),\n\s*\);/,
+  );
+  // Both actions refuse on more than one, rather than picking a folder.
+  assert.equal(SIDEBAR.split("distinct.length > 1").length - 1, 2);
 });
 
 test("a sandbox holding files is told apart from one that was never written", async () => {

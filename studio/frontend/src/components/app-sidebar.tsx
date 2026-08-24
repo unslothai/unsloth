@@ -139,7 +139,7 @@ import {
   listStoredChatMessages,
   listStoredChatThreads,
   moveChatItemToProject,
-  recordedSandboxSessionId,
+  allRecordedSandboxSessionIds,
   notifyChatHistoryUpdated,
   renameChatItem,
   renameChatProject,
@@ -2421,15 +2421,18 @@ export function AppSidebar() {
 
   /** The sandbox sessions this chat's stored tool results name, if any. */
   async function recordedSandboxSessionIds(ids: string[]): Promise<string[]> {
-    const recorded: (string | undefined)[] = [];
+    const recorded: string[] = [];
+    // Every id a thread names, not just its latest: one chat that ran a tool,
+    // moved between projects and ran another wrote to two folders on its own,
+    // and the newest would answer for both.
     // One at a time, not Promise.all: this file's export contract forbids a
     // concurrent await here, and two panes win nothing.
     for (const threadId of ids) {
       recorded.push(
-        recordedSandboxSessionId(await listStoredChatMessages(threadId)),
+        ...allRecordedSandboxSessionIds(await listStoredChatMessages(threadId)),
       );
     }
-    return [...new Set(recorded.filter((id): id is string => Boolean(id)))];
+    return [...new Set(recorded)];
   }
 
   /** The sandbox session this chat's tool calls write into. */
@@ -2438,8 +2441,8 @@ export function AppSidebar() {
     const ids = threadIds.length > 0 ? threadIds : [item.id];
     // The chat's own history names the folder it wrote to, which is not where
     // current membership points once it has moved between projects. Same read
-    // as "Open chat folder", and the same answer when a compare row's panes
-    // wrote to two.
+    // as "Open chat folder", and the same answer when it names two, whether
+    // that is a compare row's two panes or one thread that outlived a move.
     const refusal: { value: { title: string; description?: string } | null } = {
       value: null,
     };
@@ -3048,7 +3051,7 @@ export function AppSidebar() {
                             if (distinct.length > 1) {
                               toast.error("This chat wrote to more than one folder.", {
                                 description:
-                                  "Its panes ran before it joined this project, so open the folder from a tool card instead.",
+                                  "It ran tools on both sides of a move, so open the folder from a tool card instead.",
                               });
                               return;
                             }

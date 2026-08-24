@@ -237,7 +237,7 @@ export {
   listStoredChatThreads,
   markThreadIncognito,
 } from "./utils/chat-history-storage";
-export { recordedSandboxSessionId } from "./utils/recorded-sandbox-session";
+export { allRecordedSandboxSessionIds } from "./utils/recorded-sandbox-session";
 export {
   markChatThreadDeleted,
   removeChatThreadTombstones,
