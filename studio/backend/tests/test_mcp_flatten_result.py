@@ -282,3 +282,34 @@ def test_resource_link_does_not_displace_structured_content():
 def test_server_text_still_wins_over_structured_content():
     flat = _flatten_result(_result(_resource_link(), _text("done"), structured = {"path": "/x"}))
     assert flat == "[resource: <file:///out/gen.png>]\ndone"
+
+
+def test_fastmcp_file_format_png_is_rendered():
+    # File(data = ..., format = "png") labels the blob "application/png".
+    flat = _flatten_result(_result(_blob_resource(mime = "application/png")))
+    body, payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)
+    assert body == "[1 image attached; displayed to the user]"
+    assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/png"}]
+
+
+def test_application_image_subtypes_are_normalised():
+    for mime, expected in (
+        ("application/jpeg", "image/jpeg"),
+        ("application/jpg", "image/jpeg"),
+        ("application/webp", "image/webp"),
+        ("application/GIF", "image/gif"),
+    ):
+        flat = _flatten_result(_result(_blob_resource(mime = mime)))
+        payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)[1]
+        assert json.loads(payload) == [{"data": PNG_B64, "mimeType": expected}], mime
+
+
+def test_non_image_application_types_stay_ignored():
+    for mime in ("application/pdf", "application/octet-stream", "application/json"):
+        assert _flatten_result(_result(_blob_resource(mime = mime))) == "", mime
+
+
+def test_image_content_mime_is_passed_through_unchanged():
+    flat = _flatten_result(_result(_image(mime = "image/png")))
+    payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)[1]
+    assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/png"}]

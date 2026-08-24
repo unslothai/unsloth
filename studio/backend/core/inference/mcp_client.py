@@ -1026,6 +1026,33 @@ def _block_link(block: Any) -> Optional[str]:
     return None
 
 
+# FastMCP's File helper labels raw bytes f"application/{format}", so an image
+# handed to it as File(data = ..., format = "png") arrives as "application/png".
+# The frontend renders these through data:<mimeType>;base64, which no browser
+# draws for an application/* type, so the subtype is mapped back to a real one.
+_IMAGE_SUBTYPES = {
+    "png": "image/png",
+    "jpeg": "image/jpeg",
+    "jpg": "image/jpeg",
+    "gif": "image/gif",
+    "webp": "image/webp",
+    "bmp": "image/bmp",
+    "avif": "image/avif",
+    "tiff": "image/tiff",
+    "svg+xml": "image/svg+xml",
+}
+
+
+def _image_mime(mime: Any) -> Optional[str]:
+    if not isinstance(mime, str):
+        return None
+    if mime.startswith("image/"):
+        return mime
+    subtype = mime.partition(";")[0].strip().lower()
+    subtype = subtype[len("application/") :] if subtype.startswith("application/") else ""
+    return _IMAGE_SUBTYPES.get(subtype)
+
+
 def _block_image(block: Any) -> Optional[tuple[str, str]]:
     # An image arrives either as ImageContent (data/mimeType) or as an
     # EmbeddedResource wrapping BlobResourceContents (resource.blob/mimeType).
@@ -1037,7 +1064,8 @@ def _block_image(block: Any) -> Optional[tuple[str, str]]:
             return None
         data = getattr(resource, "blob", None)
         mime = getattr(resource, "mimeType", None)
-    if data and isinstance(mime, str) and mime.startswith("image/"):
+    mime = _image_mime(mime)
+    if data and mime:
         return str(data), mime
     return None
 
