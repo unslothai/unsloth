@@ -803,6 +803,8 @@ def build_cells(
     auth: Optional[StudioAuth] = None,
     model_id: str = "",
     log: Callable[[str], None] = lambda _m: None,
+    stream_tail_chars: Optional[int] = None,
+    corpus_dollars: bool = False,
 ) -> list[tuple[Cell, RungPlan]]:
     """The ladder's cells, sized by the MEASURED ratio unless a caller names one.
 
@@ -822,7 +824,17 @@ def build_cells(
         }
     out: list[tuple[Cell, RungPlan]] = []
     for rung in rungs:
-        plan = plan_rung(corpus, rung, ratio["chars_per_token"])
+        # The ladder is sized by `ratio`, not by the raw `chars_per_token` argument: the argument
+        # may be None, meaning "measure it", and the measured value is what every cell's `meta`
+        # reports. Passing the argument straight through here would size the rungs from a number
+        # the payload does not carry.
+        plan = plan_rung(
+            corpus,
+            rung,
+            ratio["chars_per_token"],
+            stream_tail_chars = stream_tail_chars,
+            dollars = corpus_dollars,
+        )
         for rep in range(reps):
             cell = Cell(
                 cell_id = make_cell_id(rung, "A0", rep),

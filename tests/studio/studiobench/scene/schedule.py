@@ -331,7 +331,24 @@ class SceneRunner:
         now_ms = (time.monotonic() - t0) * 1000
         if until_ms - now_ms < 250:
             return
-        with self.open_window(name, "stream") as window:
+        # `gap`, NOT `stream`. These windows were labelled `stream` and the label was read by
+        # people, including this project, as meaning the stream was running in them. It does not.
+        # A gap window is opened before EVERY slot, so on the standard film eighteen of them exist
+        # and only the first four contain any streaming at all; the rest are the quiet stretches
+        # between post-generation actions. Measured on a 100K cell, `stream:gap12` ran for 32.9 s
+        # at 1.6% busy with the reply finished thirty seconds earlier, and `stream:drain` -- the
+        # one window that really is about the stream -- was 7 ms long.
+        #
+        # Anyone filtering on `kind == "stream"` to find the streaming phase therefore selected
+        # mostly post-stream idle and diluted whatever they were measuring. The phase has to be
+        # detected from the SSE traffic (see instruments/streamcost.py), and this label no longer
+        # invites the mistake.
+        #
+        # The window NAME is deliberately left as `stream:gapN`. It is the join key in every
+        # payload this tool has already written and in the analysis scripts pointed at them;
+        # renaming it would break those silently, which is a worse failure than a misleading name
+        # that is now documented in INTERFACES.md and contradicted by the kind beside it.
+        with self.open_window(name, "gap") as window:
             while (time.monotonic() - t0) * 1000 < until_ms:
                 time.sleep(min(0.2, max(0.01, (until_ms - (time.monotonic() - t0) * 1000) / 1000)))
             window.note("waited_to_ms", until_ms)

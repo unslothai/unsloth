@@ -403,6 +403,29 @@ def test_a_session_that_died_before_its_first_cell_declares_no_mode(tmp_path):
     )
 
 
+# ── the two fixture axes ────────────────────────────────────────────────────────────────────
+#
+# `--stream-tail-chars` and `--corpus-dollars` change what the last turn STREAMS, and neither of
+# them moves `corpus_hash`, which covers the frozen units on disk and the generator's parameters.
+# Nor does either move a `cell_id`. They are on `IDENTITY_AXES` for the same reason the tier is:
+# without that, a resume under a changed fixture skips cells measured against a different film and
+# the payload silently becomes one ladder built from two.
+
+
+def _fixture_payload(tmp_path, name, session, **fixture):
+    paths = Paths.under(tmp_path / name)
+    _record(
+        paths,
+        session,
+        [
+            _run_meta("standard", "main", ["10K"], **fixture),
+            _cell("r10K.A0.rep0", 10_000),
+            _keystroke("r10K.A0.rep0", 55.0),
+        ],
+    )
+    return paths
+
+
 def _one_engine_rung(
     tmp_path,
     engine,
@@ -426,6 +449,96 @@ def _one_engine_rung(
         ],
     )
     return paths
+
+
+def _resume_args(*flags):
+    return parse_args(["--tier", "standard", "--branch", "main", "--resume", *flags])
+
+
+def test_resuming_under_a_changed_stream_tail_is_refused(tmp_path):
+    paths = _fixture_payload(tmp_path, "tail", "sess-1", stream_tail_chars = 24_000)
+
+    with pytest.raises(SystemExit) as excinfo:
+        prepare_payload(
+            paths,
+            requested_identity(_resume_args("--stream-tail-chars", "96000"), None, CORPUS),
+            resume = True,
+            log = lambda *_a: None,
+        )
+
+    message = str(excinfo.value)
+    assert "stream_tail_chars" in message
+    assert "24000" in message and "96000" in message
+
+
+def test_resuming_under_a_changed_dollar_setting_is_refused(tmp_path):
+    """Both directions. Dropping the flag on the resume is the likelier of the two."""
+
+    on = _fixture_payload(tmp_path, "on", "sess-on", corpus_dollars = True)
+    with pytest.raises(SystemExit) as excinfo:
+        prepare_payload(
+            on,
+            requested_identity(_resume_args(), None, CORPUS),
+            resume = True,
+            log = lambda *_a: None,
+        )
+    assert "corpus_dollars" in str(excinfo.value)
+
+    off = _fixture_payload(tmp_path, "off", "sess-off", corpus_dollars = False)
+    with pytest.raises(SystemExit) as excinfo:
+        prepare_payload(
+            off,
+            requested_identity(_resume_args("--corpus-dollars"), None, CORPUS),
+            resume = True,
+            log = lambda *_a: None,
+        )
+    assert "corpus_dollars" in str(excinfo.value)
+
+
+def test_a_payload_that_already_holds_two_fixtures_is_refused_either_way(tmp_path):
+    """Two sessions, two films, one file: whichever of them you ask for, the other one is still
+    in there and its cells would still be skipped."""
+
+    paths = _fixture_payload(tmp_path, "mixed", "sess-1", stream_tail_chars = 6_000)
+    _record(
+        paths,
+        "sess-2",
+        [
+            _run_meta("standard", "main", ["10K"], stream_tail_chars = 96_000),
+            _cell("r100K.A0.rep0", 100_000),
+        ],
+    )
+
+    for asked in ("6000", "96000"):
+        with pytest.raises(SystemExit) as excinfo:
+            prepare_payload(
+                paths,
+                requested_identity(_resume_args("--stream-tail-chars", asked), None, CORPUS),
+                resume = True,
+                log = lambda *_a: None,
+            )
+        assert "stream_tail_chars" in str(excinfo.value)
+
+
+# ── the controls: neither axis may swallow a resume that is legitimate ───────────────────────
+
+
+def test_an_unchanged_fixture_resumes_and_returns_its_completed_cells(tmp_path):
+    paths = _fixture_payload(
+        tmp_path, "same", "sess-1", stream_tail_chars = 24_000, corpus_dollars = True
+    )
+    args = _resume_args("--stream-tail-chars", "24000", "--corpus-dollars")
+
+    assert (
+        prepare_payload(
+            paths, requested_identity(args, None, CORPUS), resume = True, log = lambda *_a: None
+        )
+        is None
+    )
+    assert _resume_set(paths) == {"r10K.A0.rep0"}
+
+
+# ── the browser engine that rendered every number ────────────────────────
 
 
 def test_resuming_under_a_different_browser_engine_is_refused(tmp_path):
@@ -491,6 +604,118 @@ def test_the_same_engine_still_resumes(tmp_path):
         is None
     )
     assert _resume_set(paths) == {"r1K.A0.rep0"}
+
+
+def test_a_payload_from_before_the_fixture_axes_existed_resumes_exactly_as_it_did(tmp_path):
+    """No `stream_tail_chars` and no `corpus_dollars` key at all, which is every payload written
+    before this branch. Resumed UNDER THE DEFAULTS it is asking for the film it already ran, so it
+    resumes and its completed cells are skipped, exactly as they were before either flag existed.
+
+    The other half of that reading -- a resume that does NOT use the defaults -- is the test below.
+    """
+
+    paths = _fixture_payload(tmp_path, "old", "sess-old")
+    assert "stream_tail_chars" not in paths.payload_jsonl.read_text(encoding = "utf-8")
+
+    assert (
+        prepare_payload(
+            paths,
+            requested_identity(_resume_args(), None, CORPUS),
+            resume = True,
+            log = lambda *_a: None,
+        )
+        is None
+    )
+    assert _resume_set(paths) == {"r10K.A0.rep0"}
+
+
+def test_a_payload_from_before_the_fixture_axes_is_refused_under_a_non_default_fixture(tmp_path):
+    """REGRESSION. Absence PROVES the default here, and skipping the axis threw that proof away.
+
+    An axis a payload never declared is normally skipped: it declined to say, so there is nothing
+    to disagree with. These two axes arrived WITH the flags that set them, so a payload written
+    before them could not have run under anything but `stream_tail_chars = None` and
+    `corpus_dollars = False`. Skipping them accepted `--resume --stream-tail-chars 24000` against
+    such a payload, skipped every cell it had completed, and recorded the remaining cells under a
+    different streamed fixture beneath the same cell ids -- the mixed ladder the refusal exists to
+    prevent, arrived at through the one door left open.
+    """
+
+    for name, flags in (
+        ("tail", ["--stream-tail-chars", "24000"]),
+        ("dollars", ["--corpus-dollars"]),
+    ):
+        paths = _fixture_payload(tmp_path, f"legacy-{name}", "sess-old")
+        with pytest.raises(SystemExit) as excinfo:
+            prepare_payload(
+                paths,
+                requested_identity(_resume_args(*flags), None, CORPUS),
+                resume = True,
+                log = lambda *_a: None,
+            )
+
+        message = str(excinfo.value)
+        assert ("stream_tail_chars" if "--stream-tail-chars" in flags else "corpus_dollars") in (
+            message
+        )
+        # The refusal has to say WHY an axis the payload never mentions is a difference, or the
+        # reader's next move is to go looking for a key that was never going to be there.
+        assert "predates this axis" in message
+
+
+def test_the_skip_rule_still_holds_for_an_axis_that_really_did_decline_to_say(tmp_path):
+    """The other axes keep the general rule: `run_meta` has always carried them, so a payload that
+    omits one omitted it for its own reasons and this check has nothing to say about it. Only the
+    two fixture axes read absence as a value."""
+
+    paths = Paths.under(tmp_path / "quiet")
+    _record(
+        paths,
+        "sess-quiet",
+        [
+            {
+                "row_type": "run_meta",
+                "tier": "standard",
+                "tool_version": "0.0.9",
+                "corpus_hash": CORPUS,
+                "studio_ref": "main",
+                "bundle": {"production": True},
+                "platform": {"system": "Linux"},
+                "started_at": "2026-01-01T00:00:00",
+                "stream_tail_chars": 24_000,
+                "corpus_dollars": True,
+            },
+            _cell("r10K.A0.rep0", 10_000),
+        ],
+    )
+    args = _resume_args("--stream-tail-chars", "24000", "--corpus-dollars", "--cadence", "fast")
+
+    assert (
+        prepare_payload(
+            paths, requested_identity(args, None, CORPUS), resume = True, log = lambda *_a: None
+        )
+        is None
+    )
+
+
+def test_a_dead_cell_is_still_re_run_and_a_missing_payload_is_still_empty(tmp_path):
+    """The refusal decides WHETHER to resume; this is what a resume then skips. A cell that died
+    is re-run, because its failure may have been the machine and not the build."""
+
+    paths = Paths.under(tmp_path / "died")
+    _record(
+        paths,
+        "sess-1",
+        [
+            _run_meta("standard", "main", ["10K"], stream_tail_chars = None),
+            {**_cell("r10K.A0.rep0", 10_000), "completed": False, "fidelity": "died"},
+        ],
+    )
+    assert _resume_set(paths) == set()
+    assert _resume_set(Paths.under(tmp_path / "nothing-here")) == set()
+
+
+# ── the engine controls ───────────────────────────────────────────────────
 
 
 def test_a_payload_that_never_recorded_an_engine_still_resumes(tmp_path):
@@ -626,6 +851,129 @@ def test_the_readme_sequence_no_longer_scores_two_runs_as_one_ladder(tmp_path):
     _text, _ladder, payload = build_report(paths.payload_jsonl, [1_000, 10_000, 100_000])
     assert payload["header"]["tier"] == "standard"
     assert payload["header"]["studio_ref"] == "main"
+
+
+# ── the injection axis ──────────────────────────────────────────────────────────────────────
+#
+# `--inject-stream-cost-ms` burns a known amount of main-thread time per SSE chunk on the TREATMENT
+# arm, so a treatment cell recorded with it is not the same reading as one recorded without it --
+# and `cell_id` carries the rung, the arm and the repetition and nothing that could tell. It is on
+# `IDENTITY_AXES` for the same reason the two fixture axes above are, and for a larger perturbation
+# than either of them makes.
+
+
+def _injected_payload(tmp_path, name, session, **fixture):
+    paths = Paths.under(tmp_path / name)
+    _record(
+        paths,
+        session,
+        [
+            _run_meta("standard", "main", ["10K"], **fixture),
+            _cell("r10K.base.rep0", 10_000, arm = "base"),
+            _cell("r10K.treatment.rep0", 10_000, arm = "treatment"),
+        ],
+    )
+    return paths
+
+
+def _ab_resume_args(*flags):
+    return parse_args(
+        ["--tier", "standard", "--branch", "main", "--ab", "main", "--resume", *flags]
+    )
+
+
+def test_resuming_a_finished_uninjected_run_with_the_injection_on_is_refused(tmp_path):
+    """REGRESSION, and the expensive half of it.
+
+    Every pair in this payload is complete, so `skippable_cells` skips all of them, `rows` comes
+    back empty with `resumed` non-zero and `completion_exit_code` returns 0. The run pays for two
+    installs, measures nothing, and the recovery gate is then answered out of cells that were never
+    injected -- a calibration reporting that the metric cannot see a cost nobody put there.
+    """
+
+    paths = _injected_payload(tmp_path, "clean", "sess-1")
+
+    with pytest.raises(SystemExit) as excinfo:
+        prepare_payload(
+            paths,
+            requested_identity(_ab_resume_args("--inject-stream-cost-ms", "3"), "main", CORPUS),
+            resume = True,
+            log = lambda *_a: None,
+        )
+
+    message = str(excinfo.value)
+    assert "inject_stream_cost_ms" in message
+    assert "3.0" in message
+
+
+def test_resuming_an_injected_run_without_the_injection_is_refused(tmp_path):
+    """The other direction, and the likelier one: an injected A/B dies part way up the ladder and
+    the retry is typed without the flag. The rungs already done stay injected, the rungs still to
+    come are not, and the ladder the recovery fraction is computed from is half of each."""
+
+    paths = _injected_payload(tmp_path, "injected", "sess-1", inject_stream_cost_ms = 3.0)
+
+    with pytest.raises(SystemExit) as excinfo:
+        prepare_payload(
+            paths,
+            requested_identity(_ab_resume_args(), "main", CORPUS),
+            resume = True,
+            log = lambda *_a: None,
+        )
+    assert "inject_stream_cost_ms" in str(excinfo.value)
+
+
+def test_resuming_under_a_changed_injection_amount_is_refused(tmp_path):
+    """The amount is the measurement. A ladder half of which burned 3 ms per chunk and half 40 ms
+    has no recovery fraction at all."""
+
+    paths = _injected_payload(tmp_path, "amount", "sess-1", inject_stream_cost_ms = 3.0)
+
+    with pytest.raises(SystemExit) as excinfo:
+        prepare_payload(
+            paths,
+            requested_identity(_ab_resume_args("--inject-stream-cost-ms", "40"), "main", CORPUS),
+            resume = True,
+            log = lambda *_a: None,
+        )
+    assert "inject_stream_cost_ms" in str(excinfo.value)
+
+
+def test_a_payload_from_before_the_injection_flag_resumes_under_the_default(tmp_path):
+    """THE CONTROL, and the one `HISTORICAL_DEFAULTS` exists for. A payload written before the flag
+    could not have been injected, so absence reads as off and an ordinary resume still works."""
+
+    paths = _injected_payload(tmp_path, "old", "sess-old")
+    assert "inject_stream_cost_ms" not in paths.payload_jsonl.read_text(encoding = "utf-8")
+
+    assert (
+        prepare_payload(
+            paths,
+            requested_identity(_ab_resume_args(), "main", CORPUS),
+            resume = True,
+            log = lambda *_a: None,
+        )
+        is None
+    )
+    assert _resume_set(paths) == {"r10K.base.rep0", "r10K.treatment.rep0"}
+
+
+def test_an_unchanged_injection_resumes(tmp_path):
+    """THE SECOND CONTROL. An injected run that died is meant to be resumable AS an injected run;
+    a refusal on every value would make the axis useless rather than safe."""
+
+    paths = _injected_payload(tmp_path, "same", "sess-1", inject_stream_cost_ms = 3.0)
+
+    assert (
+        prepare_payload(
+            paths,
+            requested_identity(_ab_resume_args("--inject-stream-cost-ms", "3"), "main", CORPUS),
+            resume = True,
+            log = lambda *_a: None,
+        )
+        is None
+    )
+    assert _resume_set(paths) == {"r10K.base.rep0", "r10K.treatment.rep0"}
 
 
 def test_a_fresh_run_into_a_new_directory_archives_nothing(tmp_path):

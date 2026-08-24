@@ -67,14 +67,27 @@ accumulate. Windows do not nest and do not overlap; opening one while another is
 ```python
 @dataclass
 class Window:
-    name: str               # "action:scroll_after", "stream:seg3", "idle:calibrate"
-    kind: str               # "action" | "stream" | "idle" | "settle" | "teardown"
+    name: str               # "action:scroll_after", "stream:gap3", "idle:calibrate"
+    kind: str               # "action" | "stream" | "gap" | "idle" | "settle" | "teardown"
     cell: Cell
     t_open_ms: float        # driver monotonic ms since session t0
     t_close_ms: float | None
     notes: dict             # writer scratch, merged into the row under "notes"
     instruments: dict       # {instrument_name: dict}, filled on close
 ```
+
+**`gap` is not `stream`, and the difference has already misled this project.** The scheduler opens
+a `gap` window before every slot, to keep frame coverage continuous between actions. On the
+standard film that is eighteen of them, and only the first four contain any streaming: the rest are
+the quiet stretches between post-generation actions. Measured on a 100K cell, `stream:gap12` ran
+32.9 s at 1.6% busy with the reply thirty seconds finished, while `stream:drain` -- the one window
+that is genuinely about the stream -- was 7 ms long. These windows carried `kind = "stream"` until
+that was corrected, and anyone who filtered on it to find the streaming phase selected mostly
+post-stream idle.
+
+The NAMES still read `stream:gapN`, because they are the join key in every payload already written.
+Trust the `kind`, not the name, and to find the streaming phase itself detect it from the SSE
+traffic rather than from either.
 
 Opened as a context manager on the session:
 
