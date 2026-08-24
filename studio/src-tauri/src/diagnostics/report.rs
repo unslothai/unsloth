@@ -951,4 +951,27 @@ mod tests {
         let _ = fs::remove_file(&fifo);
         let _ = fs::remove_dir_all(&dir);
     }
+
+    /// The section sits above the phase logs and enforce_report_limit chops the END
+    /// of the body, which is the whole reason for its smaller cap. A report that
+    /// overflows the clipboard budget must still carry the crash stack.
+    #[test]
+    fn a_truncated_report_still_carries_the_crash_stack() {
+        let stack = "Current thread 0x1 (most recent call first):";
+        let mut body = String::from("Unsloth Support Diagnostics\n\n== Log tails ==\n");
+        body.push_str(&format!(
+            "file=server.log source=backend-session-log\n```text\n{stack}\n```\n"
+        ));
+        body.push_str(&"phase log filler line\n".repeat(60_000));
+        let footer = render_footer(&["w".to_string()], &RedactionReport::default());
+        assert!(
+            body.len() + footer.len() > REPORT_MAX_BYTES,
+            "fixture no longer overflows"
+        );
+
+        let out = enforce_report_limit(body, footer);
+        assert!(out.len() <= REPORT_MAX_BYTES);
+        assert!(out.contains("report truncated"));
+        assert!(out.contains(stack));
+    }
 }
