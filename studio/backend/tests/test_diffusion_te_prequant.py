@@ -184,6 +184,36 @@ def test_hosted_lookup_honors_cache_only_and_the_active_root(monkeypatch, tmp_pa
     assert seen["cache_dir"] == str(tmp_path)
 
 
+def test_encoder_config_honors_cache_only_and_the_active_root(monkeypatch, tmp_path):
+    import torch
+    import transformers
+    from utils import hf_cache_settings
+
+    seen: dict = {}
+    monkeypatch.setattr(tpq, "_resolve_checkpoint_path", lambda *_a, **_k: "/cache/encoder.pt")
+    monkeypatch.setattr(torch, "load", lambda *_a, **_k: _good_ckpt())
+    monkeypatch.setattr(hf_cache_settings, "active_hf_hub_cache", lambda: str(tmp_path))
+
+    def fake_config(repo_id, **kwargs):
+        seen["repo_id"] = repo_id
+        seen.update(kwargs)
+        raise FileNotFoundError("stop after config lookup")
+
+    monkeypatch.setattr(transformers.AutoConfig, "from_pretrained", fake_config)
+    out = tpq.load_prequant_text_encoder(
+        "Lightricks/LTX-2",
+        "text_encoder",
+        TePrequantSource(kind = "repo", location = "org/hosted", filename = "encoder.pt"),
+        dtype = None,
+        local_files_only = True,
+    )
+    assert out is None
+    assert seen["repo_id"] == "Lightricks/LTX-2"
+    assert seen["subfolder"] == "text_encoder"
+    assert seen["local_files_only"] is True
+    assert seen["cache_dir"] == str(tmp_path)
+
+
 # ── pipeline-assembly injection gating ───────────────────────────────────────
 def _target():
     return types.SimpleNamespace(device = "cuda", dtype = None)

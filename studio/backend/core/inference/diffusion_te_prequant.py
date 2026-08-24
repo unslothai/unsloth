@@ -370,7 +370,13 @@ def load_prequant_text_encoder(
             )
             return None
         subfolder = component if config_subfolder is None else config_subfolder
-        config_kwargs: dict[str, Any] = {"token": hf_token}
+        from utils.hf_cache_settings import active_hf_hub_cache
+
+        config_kwargs: dict[str, Any] = {
+            "token": hf_token,
+            "cache_dir": active_hf_hub_cache(),
+            "local_files_only": local_files_only,
+        }
         if subfolder:
             config_kwargs["subfolder"] = subfolder
         config = transformers.AutoConfig.from_pretrained(base, **config_kwargs)

@@ -462,10 +462,8 @@ def test_pipeline_estimate_uses_selected_components_and_default_variant(
         def model_info(self, *_a, **_k):
             return types.SimpleNamespace(siblings = siblings, sha = "a" * 40)
 
-        def hf_hub_download(self, *_a, **_k):
-            return str(manifest)
-
     monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", lambda *a, **k: str(manifest))
     staged: dict = {}
     resident: dict = {}
     total, files = DiffusionBackend._estimate_download_bytes(
@@ -515,10 +513,8 @@ def test_explicit_pipeline_assemblers_use_their_fixed_component_sets(
         def model_info(self, *_a, **_k):
             return types.SimpleNamespace(siblings = siblings, sha = None)
 
-        def hf_hub_download(self, *_a, **_k):
-            return str(manifest)
-
     monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", lambda *a, **k: str(manifest))
     staged: dict = {}
     resident: dict = {}
     _total, files = DiffusionBackend._estimate_download_bytes(

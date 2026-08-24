@@ -2566,7 +2566,6 @@ class DiffusionBackend:
             if kind == "pipeline":
                 info = api.model_info(repo_id, files_metadata = True, token = hf_token)
                 components = _pipeline_components_from_index(
-                    api,
                     repo_id,
                     info,
                     hf_token,
@@ -6703,7 +6702,6 @@ def _explicit_pipeline_components(fam: Any) -> Optional[tuple[str, ...]]:
 
 
 def _pipeline_components_from_index(
-    api: Any,
     repo_id: str,
     info: Any,
     hf_token: Optional[str],
@@ -6717,9 +6715,11 @@ def _pipeline_components_from_index(
     best-effort listing and resident sizing declines to issue a hard refusal.
     """
     try:
+        from huggingface_hub import hf_hub_download
+
         if not any(s.rfilename == "model_index.json" for s in (info.siblings or ())):
             raise FileNotFoundError(f"{repo_id} has no model_index.json")
-        path = api.hf_hub_download(
+        path = hf_hub_download(
             repo_id,
             "model_index.json",
             revision = getattr(info, "sha", None) or None,
