@@ -385,10 +385,15 @@ async function raceWorld() {
 // wrong-value failure; see tests/helpers/mock-timer-drain.ts for why a count was never the
 // right bound.
 async function settle(
+  mod: { awaitStartedThreadScopedSettingsWrites: () => Promise<void> },
   tick: (ms: number) => void,
   until?: () => boolean,
 ): Promise<void> {
-  await drainMockedTimers(tick, { until, label: "settle" });
+  await drainMockedTimers(tick, {
+    until,
+    label: "settle",
+    barrier: () => mod.awaitStartedThreadScopedSettingsWrites(),
+  });
 }
 
 test("B1: a slider moved while /api/chat/settings is still in flight survives it", async (t) => {
@@ -399,7 +404,7 @@ test("B1: a slider moved while /api/chat/settings is still in flight survives it
   w.store().setParams({ ...w.store().params, temperature: 1.42 });
   settingsHttp.release?.();
   await hydrating;
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   assert.equal(
     w.store().params.temperature,
     1.42,
@@ -413,7 +418,7 @@ test("B2: an edit made while the chat's own read is out is stored on that chat",
   enableCountedTimers(t);
   const w = await raceWorld();
   await w.store().hydratePersistedSettings();
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   settingsHttp.puts.length = 0;
 
   w.beginOpen("A");
@@ -424,7 +429,7 @@ test("B2: an edit made while the chat's own read is out is stored on that chat",
     systemPrompt: "HELD EDIT 5f3a",
   });
   w.finishOpen("A", { temperature: 0.22, topP: 0.33, systemPrompt: "STORED" });
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
 
   // the held edit wins over what the read brought back
   assert.equal(w.store().params.temperature, 1.37);
@@ -443,7 +448,7 @@ test("B3: leaving mid-read sends the held edit to its own chat, not the next one
   enableCountedTimers(t);
   const w = await raceWorld();
   await w.store().hydratePersistedSettings();
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   settingsHttp.puts.length = 0;
 
   w.beginOpen("A");
@@ -455,7 +460,7 @@ test("B3: leaving mid-read sends the held edit to its own chat, not the next one
   // the user gives up on A and opens B before A's read lands
   await w.mod.commitHeldThreadScopedEditsToTheirThread();
   w.open("B");
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
 
   // A's row carries the edit as a merge, leaving the rest of its snapshot alone
   const merged = threadRows
@@ -480,7 +485,7 @@ test("B4: a model load landing during the pairing window does not take the chat'
   enableCountedTimers(t);
   const w = await raceWorld();
   await w.store().hydratePersistedSettings();
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   settingsHttp.puts.length = 0;
 
   w.beginOpen("A");
@@ -491,7 +496,7 @@ test("B4: a model load landing during the pairing window does not take the chat'
     { fromModelDefaults: true },
   );
   w.finishOpen("A", null);
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
 
   assert.equal(w.store().params.temperature, 1.37, "the load took the edit");
   // and the chat was pinned with the user's value, not the one the load published
@@ -513,7 +518,7 @@ test("B4b: the held sampling edit that survives a load is the LAST one made", as
   enableCountedTimers(t);
   const w = await raceWorld();
   await w.store().hydratePersistedSettings();
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
 
   w.beginOpen("A");
   // a slider dragged twice, then the load, then the read
@@ -524,7 +529,7 @@ test("B4b: the held sampling edit that survives a load is the LAST one made", as
     { fromModelDefaults: true },
   );
   w.finishOpen("A", null);
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   assert.equal(w.store().params.temperature, 1.37);
 });
 
@@ -532,7 +537,7 @@ test("B4c: a falsy held edit is not treated as no edit at all", async (t) => {
   enableCountedTimers(t);
   const w = await raceWorld();
   await w.store().hydratePersistedSettings();
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
 
   w.beginOpen("A");
   // 0, "" and -1 are all deliberate choices, and all falsy or negative
@@ -548,7 +553,7 @@ test("B4c: a falsy held edit is not treated as no edit at all", async (t) => {
     { fromModelDefaults: true },
   );
   w.finishOpen("A", null);
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
 
   const params = w.store().params;
   assert.equal(params.temperature, 0);
@@ -566,20 +571,20 @@ test("B5: two rapid model switches with a pinned chat open", async (t) => {
   enableCountedTimers(t);
   const w = await raceWorld();
   await w.store().hydratePersistedSettings();
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   w.open("A");
   w.store().setParams({
     ...w.store().params,
     temperature: 1.37,
     systemPrompt: "CHAT A ONLY 5f3a",
   });
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   settingsHttp.puts.length = 0;
 
   // no settle between them: the second switch lands while the first is still writing
   w.store().setCheckpoint(LLAMA, null);
   w.store().setCheckpoint(EXTERNAL, null);
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
 
   assert.equal(w.store().params.temperature, 1.37);
   assert.equal(w.store().params.systemPrompt, "CHAT A ONLY 5f3a");
@@ -601,10 +606,10 @@ test("B6: a thread switch while a load is in flight keeps each chat's own values
   enableCountedTimers(t);
   const w = await raceWorld();
   await w.store().hydratePersistedSettings();
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   w.open("A");
   w.store().setParams({ ...w.store().params, temperature: 1.37 });
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
 
   // the user opens B, and the load that was started in A finishes into B
   w.beginOpen("B");
@@ -613,7 +618,7 @@ test("B6: a thread switch while a load is in flight keeps each chat's own values
     { fromModelDefaults: true },
   );
   w.finishOpen("B", null);
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   assert.notEqual(
     w.store().params.temperature,
     1.37,
@@ -621,7 +626,7 @@ test("B6: a thread switch while a load is in flight keeps each chat's own values
   );
 
   w.open("A");
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   assert.equal(w.store().params.temperature, 1.37, "A lost its temperature");
 });
 
@@ -629,7 +634,7 @@ test("B7: a tab closing with a held edit beacons it to the chat it was made in",
   enableCountedTimers(t);
   const w = await raceWorld();
   await w.store().hydratePersistedSettings();
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   settingsHttp.puts.length = 0;
 
   w.beginOpen("A");
@@ -641,7 +646,7 @@ test("B7: a tab closing with a held edit beacons it to the chat it was made in",
   // pagehide, which is what the store listens on; the read never landed
   const delivered = fireWindowEvent("pagehide", {});
   assert.ok(delivered > 0, "the store is not listening for the terminal event");
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
 
   // The beacon is a PATCH, so it is not in `puts`; what it queued for replay is the
   // durable record of what the closing tab tried to save, and for which chat.

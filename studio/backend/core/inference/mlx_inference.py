@@ -501,6 +501,81 @@ def _normalize_mlx_kv_bits(value):
     return bits
 
 
+def _mlx_rng_key_words():
+    """The MLX PRNG key as its two 32-bit words, or None if it cannot be read.
+
+    Deciding it here is what lets the rewind below stay unconditional. A key
+    that reads but is not two words is not the same as an unreadable one: the
+    rewind no longer works on the installed mlx, so say so before declining.
+    """
+    import mlx.core as mx
+
+    try:
+        words = mx.random.state[0].tolist()
+    except Exception:
+        return None
+    if len(words) != 2:
+        logger.warning(
+            "MLX exposes a %d-word random key; Unsloth can only rewind the "
+            "two-word form, so the KV quantization probe will not restore the "
+            "PRNG and sampling after a load may differ from an unprobed run.",
+            len(words),
+        )
+        return None
+    return _as_uint32_pair(int(words[0]), int(words[1]))
+
+
+def _as_uint32_pair(high, low):
+    """Both words as uint32, or None if either is not a 32-bit word at all.
+
+    mx.random.seed takes a uint64 and raises outside [0, 2**64); that raise would
+    land in the probe's finally and replace the probe's own outcome. So the words
+    are range-checked here rather than passed through, which is what lets the
+    rewind below stay unguarded.
+
+    Range-checked and not simply masked, though. A negative reads as the two's
+    complement of the uint32 mlx stores, so reinterpreting it loses nothing. A
+    value at or above 2**32 is not a 32-bit word under any reading, and masking
+    it would turn a key we cannot represent into a plausible wrong one: (2**32, 0)
+    would restore as (0, 0), the probe would report success, and sampling would
+    silently diverge from an unprobed run. Decline instead, which is the outcome
+    the caller already handles.
+    """
+    converted = []
+    for word in (high, low):
+        if not -(2**31) <= word < 2**32:
+            logger.warning(
+                "MLX exposed a random key word of %d, which is not a 32-bit "
+                "word; the KV quantization probe will not restore the PRNG and "
+                "sampling after a load may differ from an unprobed run.",
+                word,
+            )
+            return None
+        converted.append(word & 0xFFFFFFFF)
+    return (converted[0], converted[1])
+
+
+def _restore_mlx_rng_key(words):
+    """Rewind the MLX PRNG to a key captured by ``_mlx_rng_key_words``.
+
+    mlx 0.32.1 made mx.random.state a sentinel that refuses item assignment.
+    mx.random.key packs a seed as its two 32-bit halves, so reseeding with a
+    key's own words restores it exactly, over the whole unsigned 64-bit range.
+
+    Unguarded on purpose: the range check in _as_uint32_pair removes the only way
+    this can raise, so there is no failure to swallow, and a blanket except here
+    would be a failure indistinguishable from an intentional no-op.
+    """
+    import mlx.core as mx
+
+    if words is None:
+        return
+    pair = _as_uint32_pair(int(words[0]), int(words[1]))
+    if pair is None:
+        return
+    mx.random.seed((pair[0] << 32) | pair[1])
+
+
 def _kv_quant_probe(language_model, entries, bits):
     """Attempt the conversion the runtime will perform, on a real cache.
 
@@ -529,8 +604,7 @@ def _kv_quant_probe(language_model, entries, bits):
         return 0, 0, "it uses a bounded sliding window", True
 
     # The forward pass below draws random numbers, so keep sampled output stable.
-    # mx.random.state is mutated in place, so restore element-wise, not by rebinding.
-    rng_state = list(mx.random.state)
+    rng_key = _mlx_rng_key_words()
     try:
         try:
             language_model(mx.array([[0]]), cache = entries)
@@ -556,7 +630,7 @@ def _kv_quant_probe(language_model, entries, bits):
                 retainable = False
         return converted, skipped, None, retainable
     finally:
-        mx.random.state[:] = rng_state
+        _restore_mlx_rng_key(rng_key)
 
 
 def _kv_quant_eligibility(

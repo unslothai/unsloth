@@ -35,8 +35,15 @@ from playwright.sync_api import sync_playwright
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
+    install_wall_clock_watchdog,
     wait_for_health,
 )
+
+# The wall this suite did not have, matching playwright_chat_ui.py and
+# playwright_extra_ui.py. It has six raw `page.evaluate` calls, which take no
+# `timeout=` at all, and it runs mid-lane on Windows sharing a server with the
+# suite before it -- so a wedge here stalled the lane with nothing printed.
+WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "720"))
 
 BASE = os.environ["BASE_URL"]
 OLD = os.environ["STUDIO_OLD_PW"]
@@ -744,6 +751,11 @@ def main() -> int:
         return 1
 
     with sync_playwright() as p:
+        install_wall_clock_watchdog(
+            WALL_TIMEOUT_S,
+            label = "ui-update-banner",
+            info = info,
+        )
         launch_kwargs: dict = {"headless": True}
         if PLAYWRIGHT_BROWSER == "chromium":
             launch_kwargs["args"] = chromium_launch_args()

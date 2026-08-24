@@ -101,6 +101,7 @@ export const CHAT_COLLAPSE_HTML_ARTIFACTS_KEY =
   "unsloth_chat_collapse_html_artifacts";
 export const CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY =
   "unsloth_chat_allow_artifact_network_access";
+export const CHAT_SEARCH_IMAGES_KEY = "unsloth_chat_search_images";
 export const CHAT_MCP_ENABLED_KEY = "unsloth_chat_mcp_enabled";
 export const CHAT_CONFIRM_TOOL_CALLS_KEY = "unsloth_chat_confirm_tool_calls";
 export const CHAT_EXPAND_QUANTIZATIONS_KEY =
@@ -461,19 +462,71 @@ async function flushSettingsPatch(keepalive = false): Promise<void> {
   }
 }
 
+// Flushes handed to the network and not yet answered. pendingPatch and
+// pendingTimer are both empty across that window, so they cannot answer "is a
+// settings write still outstanding" on their own.
+let unsettledFlushes = 0;
+
+function enqueueSettingsFlush(): Promise<void> {
+  unsettledFlushes += 1;
+  inflightFlush = inflightFlush
+    .catch(() => undefined)
+    .then(() => flushSettingsPatch())
+    .finally(() => {
+      unsettledFlushes -= 1;
+    });
+  return inflightFlush;
+}
+
 function scheduleSettingsFlush(): void {
   if (pendingTimer !== null) clearTimeout(pendingTimer);
   pendingTimer = setTimeout(() => {
     pendingTimer = null;
-    inflightFlush = inflightFlush
-      .catch(() => undefined)
-      .then(() => flushSettingsPatch());
+    void enqueueSettingsFlush();
   }, SETTINGS_DEBOUNCE_MS);
 }
 
 function saveSettingsPatch(patch: SettingsPatch): void {
   mergePatch(pendingPatch, patch);
   scheduleSettingsFlush();
+}
+
+// A wedged PATCH must not hold a send open. Past this the run goes ahead on the
+// value the server already has, which is exactly where it stood before.
+const SETTINGS_FLUSH_TIMEOUT_MS = 2000;
+
+/**
+ * Send the debounced settings patch now and wait for it.
+ *
+ * Some settings are read by the backend out of SQLite at call time rather than
+ * being carried in the request -- Search images picks the web_search schema that
+ * way -- and the mirror above is a trailing-edge debounce, so a message sent
+ * inside that window would run on the value before the toggle. Returns
+ * immediately when nothing is queued, which is every send but one right after a
+ * settings change.
+ */
+export async function flushPendingChatSettings(): Promise<void> {
+  const queued = pendingTimer !== null || Object.keys(pendingPatch).length > 0;
+  // Not just what is queued: the debounce may have fired already and handed its
+  // patch to a request the server has not answered, which leaves both of those
+  // empty while the value the backend reads is still the old one.
+  if (!queued && unsettledFlushes === 0) return;
+  if (pendingTimer !== null) {
+    clearTimeout(pendingTimer);
+    pendingTimer = null;
+  }
+  if (queued) void enqueueSettingsFlush();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      inflightFlush.catch(() => undefined),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, SETTINGS_FLUSH_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 // Best-effort flush of any pending patch when the page is going away. keepalive
@@ -650,6 +703,7 @@ const MIRRORED_SETTINGS = {
     storageKey: CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY,
     ...BOOLEAN_SETTING,
   },
+  searchImages: { storageKey: CHAT_SEARCH_IMAGES_KEY, ...BOOLEAN_SETTING },
   mcpEnabledForChat: { storageKey: CHAT_MCP_ENABLED_KEY, ...BOOLEAN_SETTING },
   confirmToolCalls: {
     storageKey: CHAT_CONFIRM_TOOL_CALLS_KEY,
@@ -1395,6 +1449,30 @@ export async function awaitThreadScopedSettingsWrite(
   // A rejection is the held-edit merge path, which throws on failure.
   const landed = await chain.catch(() => false);
   return landed !== false;
+}
+
+/**
+ * Every row write that has already been started, landed.
+ *
+ * Not a flush: a debounce that has not fired yet is left where it is, so a caller cannot
+ * use this to make a write happen earlier than the store would have. It is for a caller
+ * that has just let the debounce fire and now needs the rows before it reads them back,
+ * and does not know which chats the store decided to write.
+ *
+ * The chain a write runs on ends in `await import("../utils/chat-history-storage")`. How
+ * many event-loop turns that costs is a property of the machine -- the specifier has no
+ * extension, so it resolves through a hook, which means filesystem work under a test
+ * runner and a chunk fetch in a browser. A caller that instead spins a fixed number of
+ * turns, or races the loader with an import of its own, is asserting something about the
+ * machine rather than about the store. Awaiting the chains asserts the thing itself.
+ */
+export async function awaitStartedThreadScopedSettingsWrites(): Promise<void> {
+  // A chain that settles can leave a newer one behind it for the same chat, so this
+  // repeats until the map is empty rather than awaiting one snapshot of it. Bounded, so a
+  // write that keeps rescheduling itself surfaces as a failed assertion, not as a hang.
+  for (let pass = 0; pass < 20 && threadSettingsWriteChains.size > 0; pass += 1) {
+    await Promise.allSettled([...threadSettingsWriteChains.values()]);
+  }
 }
 
 function flushThreadScopedSettingsWrite(keepalive = false): void {
@@ -2463,6 +2541,8 @@ type ChatRuntimeStore = {
   showCanvasMenuItem: boolean;
   collapseHtmlArtifacts: boolean;
   allowArtifactNetworkAccess: boolean;
+  // web_search also returns images the model can place inline; read by the backend per call.
+  searchImages: boolean;
   mcpEnabledForChat: boolean;
   ragEnabled: boolean;
   ragSource: RagSource;
@@ -2596,10 +2676,37 @@ type ChatRuntimeStore = {
   nUbatch: number | null;
   /** micro-batch size the last successful load sent (null = default) */
   loadedNUbatch: number | null;
+  /** user --spec-draft-type-k/-v override, the DRAFT context's KV cache dtype
+   *  (null = llama.cpp default f16). Separate from kvCacheDtype, which is the
+   *  target model's. */
+  specDraftCacheDtype: string | null;
+  /** draft cache dtype the last successful load sent (null = default) */
+  loadedSpecDraftCacheDtype: string | null;
+  /** user --load-mode override (null = llama.cpp's own `auto`) */
+  loadMode: string | null;
+  /** load mode the last successful load sent (null = default) */
+  loadedLoadMode: string | null;
+  /** user --ctx-checkpoints override (null = llama.cpp default 32) */
+  ctxCheckpoints: number | null;
+  /** checkpoint count the last successful load sent (null = default) */
+  loadedCtxCheckpoints: number | null;
+  /** user --cache-ram override in MiB (null = llama.cpp default 8192) */
+  cacheRam: number | null;
+  /** host prompt cache size the last successful load sent (null = default) */
+  loadedCacheRam: number | null;
   /** Tensor-parallel split (--split-mode tensor) toggle, GGUF multi-GPU only. */
   tensorParallel: boolean;
   /** Backend-reported tensor-parallel state; null until first hydrated. */
   loadedTensorParallel: boolean | null;
+  /** What the RUNNING server was loaded with, as opposed to what the control now
+   * shows: a pending per-model config is applied to disableVision before a switch
+   * captures its rollback baseline, so only this survives to restore. */
+  loadedDisableVision: boolean | null;
+  /** Load a vision GGUF without its mmproj, freeing the projector's VRAM. */
+  disableVision: boolean;
+  /** Backend-reported: image input is off by request, not by absence of a
+   *  projector. Null until first hydrated. */
+  loadedVisionDisabledByUser: boolean | null;
   /** GPU memory strategy for GGUF loads. "auto" = Unsloth picks GPUs and context
    *  to fit; "manual" = you own the offload (gpuLayers < 0 = Auto/--fit, >= 0
    *  pins layers + nCpuMoe). */
@@ -2792,6 +2899,7 @@ type ChatRuntimeStore = {
   setShowCanvasMenuItem: (enabled: boolean) => void;
   setCollapseHtmlArtifacts: (enabled: boolean) => void;
   setAllowArtifactNetworkAccess: (enabled: boolean) => void;
+  setSearchImages: (enabled: boolean) => void;
   setMcpEnabledForChat: (enabled: boolean) => void;
   setConfirmToolCalls: (enabled: boolean) => void;
   setBypassPermissions: (enabled: boolean) => void;
@@ -2893,6 +3001,7 @@ type ScalarSettingKey =
   | "preserveThinking"
   | "collapseHtmlArtifacts"
   | "allowArtifactNetworkAccess"
+  | "searchImages"
   | "autoHealToolCalls"
   | "nudgeToolCalls"
   | "maxToolCallsPerMessage"
@@ -2942,6 +3051,7 @@ const SCALAR_SETTING_KEYS = [
   "preserveThinking",
   "collapseHtmlArtifacts",
   "allowArtifactNetworkAccess",
+  "searchImages",
   "autoHealToolCalls",
   "nudgeToolCalls",
   "maxToolCallsPerMessage",
@@ -3636,6 +3746,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY,
     false,
   ),
+  searchImages: loadBool(CHAT_SEARCH_IMAGES_KEY, false),
   mcpEnabledForChat: loadBool(CHAT_MCP_ENABLED_KEY, false),
   // Mirrors permissionMode (gate requested for ask/auto) so both controls
   // agree on load.
@@ -3695,8 +3806,19 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedLlamaExtraArgs: null,
   nUbatch: null,
   loadedNUbatch: null,
+  specDraftCacheDtype: null,
+  loadedSpecDraftCacheDtype: null,
+  loadMode: null,
+  loadedLoadMode: null,
+  ctxCheckpoints: null,
+  loadedCtxCheckpoints: null,
+  cacheRam: null,
+  loadedCacheRam: null,
   tensorParallel: false,
   loadedTensorParallel: null,
+  loadedDisableVision: null,
+  disableVision: false,
+  loadedVisionDisabledByUser: null,
   gpuMemoryMode: readPersistedGpuMemoryMode(),
   loadedGpuMemoryMode: null,
   loadedCpuFallback: false,
@@ -4452,8 +4574,19 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       loadedLlamaExtraArgs: null,
       nUbatch: null,
       loadedNUbatch: null,
+      specDraftCacheDtype: null,
+      loadedSpecDraftCacheDtype: null,
+      loadMode: null,
+      loadedLoadMode: null,
+      ctxCheckpoints: null,
+      loadedCtxCheckpoints: null,
+      cacheRam: null,
+      loadedCacheRam: null,
       tensorParallel: false,
       loadedTensorParallel: null,
+  loadedDisableVision: null,
+      disableVision: false,
+      loadedVisionDisabledByUser: null,
       // Standing preference: survives unload, unlike the per-model knobs above.
       gpuMemoryMode: readPersistedGpuMemoryMode(),
       loadedGpuMemoryMode: null,
@@ -4646,6 +4779,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         allowArtifactNetworkAccess,
       );
       return { allowArtifactNetworkAccess };
+    }),
+  setSearchImages: (searchImages) =>
+    set(() => {
+      saveBool(CHAT_SEARCH_IMAGES_KEY, searchImages);
+      return { searchImages };
     }),
   setMcpEnabledForChat: (mcpEnabledForChat) =>
     set((state) => {

@@ -64,6 +64,8 @@ const MICROTASK_TURNS = 6;
 const QUIET_ROUNDS = 3;
 /** Backstop only. Reaching it is a failure, not the normal exit. */
 const MAX_ROUNDS = 600;
+/** Which turn of a round awaits the caller's barrier, once this tick's callbacks have run. */
+const BARRIER_AFTER_TURN = 2;
 
 /** Set on the wrapper so a second enable() in the same test is not double-wrapped, and so
  * a drain can tell it is looking at a counted setTimeout rather than a raw mocked one.
@@ -168,32 +170,30 @@ export function enableCountedTimers(t: TestContext): (ms: number) => void {
   return (ms: number) => t.mock.timers.tick(ms);
 }
 
-/** Which turn of a round waits out the module loader; see probeModuleLoader. */
-const LOADER_PROBE_AFTER_TURN = 2;
-
 /**
- * Wait for the module loader to come back, so that a dynamic import the code under test
- * issued earlier in this round has settled by the time the round is judged quiet.
+ * Wait out the work that has no timer behind it.
  *
  * The store's thread-scoped write ends in `await import("../utils/chat-history-storage")`,
  * and these suites `register()` a resolver hook, which puts that import on the hooks
- * thread. That round trip is the second kind of pending work here, and unlike a debounce it
- * has no timer to count: on v24 it settles in ONE macrotask turn, but measured on v22.23.2
- * with a hook registered, three repeat imports of an already-loaded module settled in 6, 3
- * and 35 turns. That is the whole node-24-green / node-22-red split, and the reason a
- * Windows runner under load fails what the same commit passed an hour earlier: the pending
- * work is a message to another thread, so its cost is scheduling latency, not instructions.
+ * thread. That is the second kind of pending work here, and unlike a debounce it has no
+ * timer to count: on v24 it settles in ONE macrotask turn, but measured on v22.23.2 with a
+ * hook registered, three repeat imports of an already-loaded module settled in 6, 3 and 35
+ * turns. That is the whole node-24-green / node-22-red split, and the reason a Windows
+ * runner under load fails what the same commit passed an hour earlier: the pending work is
+ * a message to another thread, so its cost is scheduling latency, not instructions.
  *
- * Issuing our own import is what turns that into something to wait ON. The hooks thread
- * serves one request at a time and replies over the same port, so a reply to a request
- * issued after the store's arrives after it: when this resolves, the store's import has
- * resolved too and its continuation is at most a turn behind, which the rest of the round
- * covers. Re-importing this module rather than some marker file keeps it honest -- it is
- * certainly loaded, and it goes through the same registered hooks the store's import does.
+ * The caller supplies the wait, because only the caller knows what its subject has
+ * outstanding. For the sampling suites that is the store's own
+ * `awaitStartedThreadScopedSettingsWrites`, which awaits the write chains themselves.
+ *
+ * An earlier version of this raced the loader instead, by issuing an import of its own each
+ * round and assuming the hooks thread serves requests in order, so a reply to a later
+ * request could not arrive first. It worked, and it is still the wrong thing to assert: it
+ * is a claim about node's loader internals standing in for a claim about the store, and if
+ * that ordering ever fails it fails as a stale read again rather than as a throw. A barrier
+ * on the actual chains has no such assumption behind it.
  */
-function probeModuleLoader(): Promise<unknown> {
-  return import(import.meta.url);
-}
+export type Barrier = () => Promise<unknown>;
 
 /** Debounce timers scheduled and not yet fired or cleared. */
 export function pendingTimerCount(): number {
@@ -203,6 +203,8 @@ export function pendingTimerCount(): number {
 }
 
 export interface DrainOptions {
+  /** Awaited each round, for pending work that has no timer to count. See Barrier. */
+  barrier?: Barrier;
   /** An extra condition the caller needs true before the drain may return. Quiescence is
    * still required with it: a condition that flips mid-chain must not cut the rest off. */
   until?: () => boolean;
@@ -222,7 +224,7 @@ export async function drainMockedTimers(
   tick: (ms: number) => void,
   options: DrainOptions = {},
 ): Promise<void> {
-  const { until, label = "drain", maxRounds = MAX_ROUNDS } = options;
+  const { until, barrier, label = "drain", maxRounds = MAX_ROUNDS } = options;
   const state = counter;
   if (countedSetTimeout() === null || state === null) {
     throw new Error(
@@ -237,9 +239,9 @@ export async function drainMockedTimers(
     tick(TICK_MS);
     for (let turn = 0; turn < MICROTASK_TURNS; turn += 1) {
       await new Promise((resolve) => setImmediate(resolve));
-      // Half way through the round, once the timer callbacks fired by the tick have had a
-      // turn to issue their own import, wait out the loader with them.
-      if (turn === LOADER_PROBE_AFTER_TURN) await probeModuleLoader();
+      // After the timer callbacks fired by this tick have had a turn to start their work,
+      // wait for that work rather than for a number of turns.
+      if (turn === BARRIER_AFTER_TURN && barrier !== undefined) await barrier();
     }
     quiet =
       state.outstanding === 0 && state.activity === activityBefore

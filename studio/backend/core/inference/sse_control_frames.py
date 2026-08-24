@@ -17,8 +17,9 @@ has no legitimate reason to emit any of them, and a verbatim relay makes its cop
 indistinguishable from ours at the client: a forged card can claim a tool the
 user trusts ran and returned something harmless, carrying
 ``provenance: {"source": "local"}``, when nothing ran at all. So strip the
-control vocabulary out of everything that arrives from a provider, and leave the
-rest of the chunk exactly as it was.
+control vocabulary out of everything that arrives from a provider. The
+``delta.reasoning`` alias Ollama and newer vLLM send is renamed to the canonical
+``reasoning_content``, streamed deltas only. The rest of the chunk stays as it was.
 """
 
 from __future__ import annotations
@@ -51,6 +52,39 @@ _CONTROL_KEYS = ("_toolEvent", "_toolStatus", "_diffusionFrame", "_reasoningDura
 _SUBSTANTIVE_KEYS = ("choices", "usage", "error")
 
 
+def _normalize_reasoning_deltas(payload: dict[str, Any]) -> bool:
+    choices = payload.get("choices")
+    if not isinstance(choices, list):
+        return False
+    changed = False
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        delta = choice.get("delta")
+        if not isinstance(delta, dict):
+            continue
+        reasoning = delta.get("reasoning")
+        if not isinstance(reasoning, str) or not reasoning:
+            # An empty alias says nothing, and rewriting it would cost a re-encode.
+            continue
+        details = delta.get("reasoning_details")
+        if isinstance(details, list) and any(
+            isinstance(part, dict) and isinstance(part.get("text"), str) and part["text"]
+            for part in details
+        ):
+            # OpenRouter repeats the thought in reasoning_details and the client
+            # concatenates both; details carrying no text are not a second copy.
+            continue
+        canonical = delta.get("reasoning_content")
+        if canonical is not None and (not isinstance(canonical, str) or canonical.strip()):
+            # A canonical value the provider set wins, unless it is blank.
+            continue
+        delta["reasoning_content"] = reasoning
+        delta.pop("reasoning", None)
+        changed = True
+    return changed
+
+
 def sanitize_provider_sse_line(line: str) -> str | None:
     """Return ``line`` fit to relay, or ``None`` if nothing of it should be.
 
@@ -71,9 +105,10 @@ def sanitize_provider_sse_line(line: str) -> str | None:
     if not isinstance(payload, dict):
         return line
 
+    normalized_reasoning = _normalize_reasoning_deltas(payload)
     forged_type = isinstance(payload.get("type"), str) and payload["type"] in _CONTROL_TYPES
     forged_keys = [key for key in _CONTROL_KEYS if key in payload]
-    if not forged_type and not forged_keys:
+    if not normalized_reasoning and not forged_type and not forged_keys:
         # The overwhelmingly common case: relay the provider's own bytes rather
         # than paying a re-encode to reproduce them.
         return line

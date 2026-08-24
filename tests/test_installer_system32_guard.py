@@ -19,6 +19,8 @@ from pathlib import Path
 
 import pytest
 
+from unsloth_pwsh_runner import run_pwsh
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INSTALL_PS1 = REPO_ROOT / "install.ps1"
 CLI_INIT = REPO_ROOT / "unsloth_cli" / "__init__.py"
@@ -146,7 +148,11 @@ def test_install_ps1_under_system_root(path: str, expected: str):
         f"{_extract_helper()}"
         f"\"RESULT=$(Test-UnderSystemRoot '{path}')\"\n"
     )
-    result = subprocess.run(
+    # run_pwsh, not subprocess.run: Test-UnderSystemRoot only reports a verdict if pwsh
+    # lived long enough to print one, and an interpreter that aborted at startup would
+    # read here as the containment check answering wrongly for this path.
+    # See tests/_shared/unsloth_pwsh_runner.py.
+    result = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,
         text = True,
@@ -221,7 +227,10 @@ def _run_relocation_block(
             "HOMEPATH": tail,
         }
     )
-    return subprocess.run(
+    # run_pwsh, not subprocess.run: every relocation case below reads this run's exit code
+    # to tell "moved out of System32" from "routed through Exit-InstallFailure", and a pwsh
+    # killed by a signal is neither. See tests/_shared/unsloth_pwsh_runner.py.
+    return run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,
         text = True,
@@ -505,7 +514,10 @@ def test_cli_guard_cd_line_actually_runs_in_powershell(profile_name: str, tmp_pa
     message, _ = _run_cli_guard(r"C:\Windows\System32", userprofile = str(profile))
     assert message is not None
     command = _cd_line(message, "PowerShell")
-    result = subprocess.run(
+    # run_pwsh, not subprocess.run: this is the call whose stderr caught the crash in the
+    # first place ('Stack overflow.' from a bare cd), and blaming the advertised recovery
+    # command for it is exactly the wrong reading. See tests/_shared/unsloth_pwsh_runner.py.
+    result = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", f"{command}; (Get-Location).Path"],
         capture_output = True,
         text = True,

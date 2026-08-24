@@ -258,8 +258,8 @@ def _auth_denied(repo_id: str, hf_token: Optional[str]) -> bool:
 def _gguf_variants(siblings, repo_id: str = "") -> dict[str, int]:
     """Quant label -> bytes the download will actually fetch.
 
-    Mirrors list_gguf_variants for the selectable labels: companions (mmproj/MTP)
-    and big-endian builds are not quants, and sharded quants sum across shards.
+    Mirrors list_gguf_variants for the selectable labels: companions (mmproj/MTP),
+    calibration imatrices and big-endian builds are not quants, and sharded quants sum across shards.
     Bytes come from the download plan, which folds companions back into every
     quant, so the disk reserve is measured against what the worker fetches.
     """
@@ -269,6 +269,7 @@ def _gguf_variants(siblings, repo_id: str = "") -> dict[str, int]:
     from utils.models.model_config import (
         _extract_quant_label,
         _is_big_endian_gguf_path,
+        _is_imatrix_path,
         _is_mmproj,
         _is_mtp_drafter,
     )
@@ -298,7 +299,12 @@ def _gguf_variants(siblings, repo_id: str = "") -> dict[str, int]:
             # key the whole stem, so advertising ours dispatches an unresolvable variant.
             quant = canonical_quant_label(name) or quant
         # The endian test reads a quant TOKEN, so it gets the label, not the path-qualified key.
-        if _is_mmproj(name) or _is_mtp_drafter(name) or _is_big_endian_gguf_path(name, label):
+        if (
+            _is_mmproj(name)
+            or _is_mtp_drafter(name)
+            or _is_imatrix_path(name)
+            or _is_big_endian_gguf_path(name, label)
+        ):
             continue
         plan = plans.get(quant.lower())
         if plan is not None:

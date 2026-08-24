@@ -362,6 +362,29 @@ def verdict_pending_mlx_repair(chat_only: bool, reason: Optional[str]) -> bool:
         return False
 
 
+def verdict_blames_the_mlx_stack() -> bool:
+    """Unlocked deliberately: _DETECT_LOCK spans a whole detection pass, imports included, so
+    taking it would park the post-warm worker behind an early request's first import. The
+    overturn re-reads under the lock, so a straddling read costs one needless measurement."""
+    return bool(CHAT_ONLY) and CHAT_ONLY_REASON == "mlx_unavailable"
+
+
+def overturn_the_mlx_verdict(epoch: Optional[int] = None) -> bool:
+    """For a caller that has just measured the stack as usable.
+
+    Read and re-detect share one locked section, or a forced pass landing between them loses
+    its answer to this one. ``epoch`` predates the measurement, so a shutdown since discards
+    the pass instead of republishing for a dead lifespan. True is /api/health's three-part
+    settled read, not "a re-detect ran": callers announce it, and shutdown clears DEVICE
+    before the event and the verdict."""
+    with _DETECT_LOCK:
+        if not CHAT_ONLY or CHAT_ONLY_REASON != "mlx_unavailable":
+            return False
+        with owning_detection_epoch(epoch):
+            detect_hardware()
+        return DEVICE is not None and DETECTION_COMPLETE.is_set() and not CHAT_ONLY
+
+
 def _print_cuda_device_list(is_rocm: bool) -> None:
     """List every visible CUDA/ROCm GPU with its index at startup.
 
