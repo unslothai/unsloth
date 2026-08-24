@@ -7787,7 +7787,7 @@ def test_every_gguf_choice_gets_a_seed_of_its_own():
     from routes.inference import _choice_seed
 
     sent = 0xFFFFFFFF
-    for seed in (-2, -3, 0, 5, 2 ** 32 - 2):
+    for seed in (-2, -3, 0, 5, 2**32 - 2):
         served = [_choice_seed(seed, i, negative_is_random = True) for i in range(3)]
         as_read = [v & 0xFFFFFFFF for v in served]
         assert len(set(as_read)) == 3, (seed, served)
