@@ -449,32 +449,34 @@ def detect_vlm_dataset_structure(dataset):
     column_names = set(sample.keys())
     if "messages" in column_names:
         messages = sample["messages"]
-        if isinstance(messages, list):
-            content_items = (
-                item
-                for message in messages
-                if isinstance(message, dict) and isinstance(message.get("content"), list)
-                for item in message["content"]
-                if isinstance(item, dict)
-            )
-            content_items = list(content_items)
-
-            if "images" in column_names and any("index" in item for item in content_items):
-                return {
-                    "format": "vlm_messages_llava",
-                    "needs_conversion": True,
-                    "messages_column": "messages",
-                    "image_column": "images",
-                    "text_column": None,
-                }
-            if any("image" in item for item in content_items):
-                return {
-                    "format": "vlm_messages",
-                    "needs_conversion": False,
-                    "messages_column": "messages",
-                    "image_column": None,
-                    "text_column": None,
-                }
+        if messages and len(messages) > 0:
+            first_msg = messages[0]
+            if "content" in first_msg:
+                content = first_msg["content"]
+                if (
+                    isinstance(content, list)
+                    and content
+                    and isinstance(content[0], dict)
+                    and "type" in content[0]
+                ):
+                    has_index = any("index" in item for item in content if isinstance(item, dict))
+                    if has_index and "images" in column_names:
+                        return {
+                            "format": "vlm_messages_llava",
+                            "needs_conversion": True,
+                            "messages_column": "messages",
+                            "image_column": "images",
+                            "text_column": None,
+                        }
+                    has_image = any("image" in item for item in content if isinstance(item, dict))
+                    if has_image:
+                        return {
+                            "format": "vlm_messages",
+                            "needs_conversion": False,
+                            "messages_column": "messages",
+                            "image_column": None,
+                            "text_column": None,
+                        }
 
     for chat_col in ("conversations", "messages"):
         if chat_col not in column_names:
