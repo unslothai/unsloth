@@ -32,6 +32,10 @@ export {
 export interface GpuInfo {
   available: boolean;
   budgetKnown: boolean;
+  /** The backend torch resolved: cuda, rocm, xpu, mlx, cpu. Carried on every path, including the
+   * GPU-less one, because "which runtimes can this host place" is exactly the question a host
+   * with no usable GPU has to answer. Empty until system info arrives. */
+  backend: string;
   name: string;
   memoryTotalGb: number;
   /** Largest single device's VRAM. Image/video loads live on ONE device (no tensor split), so their fit math must use a single device, not the multi-GPU sum. */
@@ -47,6 +51,7 @@ export interface GpuInfo {
 const DEFAULT_GPU: GpuInfo = {
   available: false,
   budgetKnown: false,
+  backend: "",
   name: "Unknown",
   memoryTotalGb: 0,
   maxDeviceMemoryGb: 0,
@@ -64,6 +69,7 @@ function toGpuInfo(
   // CPU/RAM exist even on GPU-less hosts (e.g. Mac), so populate them on every
   // path: unified-memory math still needs a RAM budget to work with.
   const base = {
+    backend: data?.device_backend ?? "",
     cpuCore: data?.cpu?.physical_count ?? 0,
     cpuThread: data?.cpu?.logical_count ?? 0,
     systemRamAvailableGb: data?.memory?.available_gb ?? 0,

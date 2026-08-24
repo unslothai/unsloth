@@ -46,17 +46,21 @@ def _make_dist(
     name: str,
     files: dict[str, bytes],
     record_sizes = None,
+    version: str = "1.0",
 ):
     """Install `files` under `site` and write a dist-info RECORD describing them.
 
     `record_sizes` overrides the size RECORD claims, which is how damage is
     simulated without having to corrupt anything after the fact.
     """
-    info = site / f"{name}-1.0.dist-info"
+    info = site / f"{name}-{version}.dist-info"
     info.mkdir(parents = True, exist_ok = True)
-    (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {name}\nVersion: 1.0\n")
+    (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n")
     (info / "WHEEL").write_text("Wheel-Version: 1.0\n")
-    rows = [f"{name}-1.0.dist-info/METADATA,,", f"{name}-1.0.dist-info/RECORD,,"]
+    rows = [
+        f"{name}-{version}.dist-info/METADATA,,",
+        f"{name}-{version}.dist-info/RECORD,,",
+    ]
     for rel, body in files.items():
         target = site / rel
         target.parent.mkdir(parents = True, exist_ok = True)
@@ -88,6 +92,59 @@ def site(tmp_path, monkeypatch):
 def test_an_intact_install_reports_nothing(site):
     _make_dist(site, "alpha", {"alpha/__init__.py": b"x = 1\n"})
     assert _deps().damaged_installed_files() == []
+
+
+def test_superseded_metadata_is_not_treated_as_file_damage(site):
+    removed = "studio/frontend/dist/assets/removed-hash.js"
+    _make_dist(site, "unsloth", {removed: b"old\n"}, version = "1.0")
+    _make_dist(site, "unsloth", {"unsloth/__init__.py": b"new\n"}, version = "2.0")
+    (site / removed).unlink()
+
+    assert _deps().damaged_installed_files() == []
+    conflicts = _deps().installed_metadata_conflicts()
+    assert len(conflicts) == 1
+    assert "unsloth" in conflicts[0]
+    assert "1.0" in conflicts[0] and "2.0" in conflicts[0]
+
+
+def test_duplicate_metadata_names_are_canonicalized(site):
+    _make_dist(site, "foo_bar", {"foo_bar/old.py": b"old\n"}, version = "1.0")
+    info = site / "foo_bar-1.0.dist-info"
+    (info / "METADATA").write_text("Metadata-Version: 2.1\nName: foo.bar\nVersion: 1.0\n")
+    _make_dist(site, "foo_bar", {"foo_bar/new.py": b"new\n"}, version = "2.0")
+    info = site / "foo_bar-2.0.dist-info"
+    (info / "METADATA").write_text("Metadata-Version: 2.1\nName: foo-bar\nVersion: 2.0\n")
+
+    conflicts = _deps().installed_metadata_conflicts()
+    assert len(conflicts) == 1 and conflicts[0].startswith("foo-bar:")
+
+
+def test_duplicate_metadata_conflicts_can_be_scoped_by_canonical_name(site):
+    _make_dist(site, "unsloth", {"unsloth/old.py": b"old\n"}, version = "1.0")
+    _make_dist(site, "unsloth", {"unsloth/new.py": b"new\n"}, version = "2.0")
+    _make_dist(site, "foo_bar", {"foo_bar/old.py": b"old\n"}, version = "1.0")
+    _make_dist(site, "foo_bar", {"foo_bar/new.py": b"new\n"}, version = "2.0")
+
+    deps = _deps()
+    included = deps.installed_metadata_conflicts(names = ("foo.bar",))
+    excluded = deps.installed_metadata_conflicts(exclude_names = ("foo-bar",))
+
+    assert len(included) == 1 and included[0].startswith("foo-bar:")
+    assert len(excluded) == 1 and excluded[0].startswith("unsloth:")
+
+
+def test_duplicate_metadata_does_not_hide_another_packages_damage(site):
+    _make_dist(site, "unsloth", {"studio/old.py": b"old\n"}, version = "1.0")
+    _make_dist(site, "unsloth", {"unsloth/__init__.py": b"new\n"}, version = "2.0")
+    _make_dist(
+        site,
+        "fastapi",
+        {"fastapi/__init__.py": b""},
+        record_sizes = {"fastapi/__init__.py": 1081},
+    )
+
+    found = _deps().damaged_installed_files()
+    assert len(found) == 1 and "fastapi/__init__.py" in found[0]
 
 
 def test_a_truncated_file_is_reported(site):
@@ -275,6 +332,69 @@ def test_a_clean_tree_passes_through(monkeypatch):
     studio._fail_if_install_damaged()  # must not raise
 
 
+def test_duplicate_metadata_gets_its_own_actionable_failure(monkeypatch, capsys):
+    import typer
+
+    studio = _studio()
+    monkeypatch.setattr(studio._studio_deps, "running_outside_managed_venv", lambda *a: False)
+    monkeypatch.setattr(
+        studio._studio_deps,
+        "installed_metadata_conflicts",
+        lambda *a, **k: [
+            "unsloth: multiple metadata records "
+            "(2026.8.12 at unsloth-2026.8.12.dist-info, "
+            "2026.8.15 at unsloth-2026.8.15.dist-info)"
+        ],
+    )
+
+    def _file_scan_must_not_run(*_args, **_kwargs):
+        raise AssertionError("ambiguous RECORDs reached the file-damage scan")
+
+    monkeypatch.setattr(studio._studio_deps, "damaged_installed_files", _file_scan_must_not_run)
+    with pytest.raises(typer.Exit) as excinfo:
+        studio._fail_if_install_damaged()
+
+    assert excinfo.value.exit_code == 1
+    err = capsys.readouterr().err
+    assert "Studio package metadata is inconsistent" in err
+    assert "cannot safely choose" in err
+    assert "Recreate the managed environment before" in err
+    assert "pip install" not in err
+    assert "installed files are damaged" not in err
+    assert "Studio will keep failing to start" not in err
+
+
+@pytest.mark.parametrize("package", ["typer", "torch"])
+def test_other_duplicate_metadata_warns_without_an_unsafe_command(monkeypatch, capsys, package):
+    studio = _studio()
+    monkeypatch.setattr(studio._studio_deps, "running_outside_managed_venv", lambda *a: False)
+
+    def conflicts(
+        *_args,
+        names = None,
+        exclude_names = (),
+    ):
+        if names is not None:
+            return []
+        assert "unsloth" in exclude_names and "unsloth-zoo" in exclude_names
+        return [
+            f"{package}: multiple metadata records "
+            f"(1.0 at {package}-1.0.dist-info, 2.0 at {package}-2.0.dist-info)"
+        ]
+
+    monkeypatch.setattr(studio._studio_deps, "installed_metadata_conflicts", conflicts)
+    monkeypatch.setattr(studio._studio_deps, "damaged_installed_files", lambda: [])
+
+    studio._fail_if_install_damaged()
+
+    err = capsys.readouterr().err
+    assert "Warning: some other packages have duplicate metadata" in err
+    assert f"{package}: multiple metadata records" in err
+    assert "skipped file verification" in err
+    assert "original package source" in err
+    assert "pip install" not in err
+
+
 def test_a_damaged_tree_exits_nonzero_and_names_the_files(monkeypatch, capsys):
     import typer
 
@@ -383,7 +503,9 @@ def _run_update(monkeypatch, argv, verified):
     monkeypatch.setattr(studio, "_WindowsLauncherUpdateTransaction", _NoopLauncherUpdate)
     monkeypatch.setattr(studio, "_run_setup_script", lambda *a, **k: None)
     monkeypatch.setattr(studio, "_refresh_desktop_shortcuts", lambda *a, **k: None)
-    monkeypatch.setattr(studio, "_fail_if_install_damaged", lambda: verified.append(True))
+    monkeypatch.setattr(
+        studio, "_fail_if_install_damaged", lambda package: verified.append(package)
+    )
     return CliRunner().invoke(studio.studio_app, ["update", *argv])
 
 
@@ -391,7 +513,7 @@ def test_update_verifies_by_default(monkeypatch):
     verified = []
     result = _run_update(monkeypatch, [], verified)
     assert result.exit_code == 0, result.output
-    assert verified == [True]
+    assert verified == ["unsloth"]
 
 
 def test_no_verify_skips_the_check(monkeypatch):
@@ -409,7 +531,7 @@ def test_a_tauri_update_is_verified_too(monkeypatch):
     monkeypatch.setenv("UNSLOTH_TAURI_UPDATE", "1")
     result = _run_update(monkeypatch, [], verified)
     assert result.exit_code == 0, result.output
-    assert verified == [True]
+    assert verified == ["unsloth"]
 
 
 @pytest.mark.parametrize(

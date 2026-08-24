@@ -78,7 +78,7 @@ export function isSttModelLanguageCompatible(
   return normalized === "auto" || normalized.split("-", 1)[0] === "en";
 }
 
-export type DictationEngine = "browser" | "model";
+export type DictationEngine = "browser" | "model" | "custom";
 
 /**
  * Whether a model id is curated. Whisper ids run GGML through whisper.cpp,
@@ -105,7 +105,12 @@ export interface VoiceSettingsState {
   sttModel: SttModel;
   setSttModel: (value: SttModel) => void;
 
-  /** BCP 47 tag for speech recognition, or "auto" for the browser locale. */
+  sttProviderId: string;
+  setSttProviderId: (value: string) => void;
+  sttProviderModel: string;
+  setSttProviderModel: (value: string) => void;
+
+  /** bcp 47 tag for speech recognition, or "auto" for engine-specific detection. */
   dictationLanguage: string;
   setDictationLanguage: (value: string) => void;
 
@@ -206,6 +211,11 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
               : DEFAULT_STT_MODEL,
           };
         }),
+
+      sttProviderId: "",
+      setSttProviderId: (sttProviderId) => set({ sttProviderId }),
+      sttProviderModel: "",
+      setSttProviderModel: (sttProviderModel) => set({ sttProviderModel }),
 
       dictationLanguage: "auto",
       setDictationLanguage: (dictationLanguage) =>
@@ -314,11 +324,12 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
         // "gguf" was a short-lived separate engine choice; both local
         // backends now live under "model".
         const savedEngine = saved?.dictationEngine as string | undefined;
-        // Desktop has no browser speech engine, so always resolve to "model".
         const dictationEngine: DictationEngine =
-          isTauri || savedEngine === "model" || savedEngine === "gguf"
-            ? "model"
-            : "browser";
+          savedEngine === "custom"
+            ? "custom"
+            : isTauri || savedEngine === "model" || savedEngine === "gguf"
+              ? "model"
+              : "browser";
         const savedSttModel = normalizeSttModel(saved?.sttModel);
         const sttModel = isSttModelLanguageCompatible(
           savedSttModel,
@@ -331,6 +342,8 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
           micDeviceId: asString(saved?.micDeviceId, "default"),
           dictationEngine,
           sttModel,
+          sttProviderId: asString(saved?.sttProviderId, ""),
+          sttProviderModel: asString(saved?.sttProviderModel, ""),
           dictationLanguage,
           dictionary: Array.isArray(saved?.dictionary)
             ? saved.dictionary

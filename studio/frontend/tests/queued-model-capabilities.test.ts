@@ -1,8 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { getImageInputUnavailableReason } from "../src/features/chat/utils/image-input-support.ts";
-import { mergeQueuedModelCapabilities } from "../src/features/chat/utils/queued-model-capabilities.ts";
+import { registerBundlerResolver } from "./helpers/kit.ts";
+
+// image-input-support.ts imports ./mmproj-fallback without an extension, which is
+// what 2314 of the 2367 relative imports under src/ do -- vite and tsconfig's
+// "bundler" mode resolve it, the bare node loader does not. A static import here
+// resolves before any registration can run, so the module has to come in
+// dynamically, after the resolver is registered.
+registerBundlerResolver();
+
+const { getImageInputUnavailableReason } = await import(
+  "../src/features/chat/utils/image-input-support.ts"
+);
+const { mergeQueuedModelCapabilities } = await import(
+  "../src/features/chat/utils/queued-model-capabilities.ts"
+);
 
 test("status capabilities synthesize an audio model missing from the catalog", () => {
   assert.deepEqual(

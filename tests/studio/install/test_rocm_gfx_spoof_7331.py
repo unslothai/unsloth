@@ -60,9 +60,18 @@ _STACK_SPEC.loader.exec_module(stack_mod)
 
 _INSTALL_SH = PACKAGE_ROOT / "install.sh"
 
-# torch probe stdout: "<hip marker>|<version>". Empty marker = CPU/CUDA torch.
-_CPU_TORCH = b"|2.10.0+cpu\n"
-_ROCM63_TORCH = b"6.3.42134|2.9.1+rocm6.3\n"  # what the reporter ended up with
+# torch probe stdout: "<version>|<hip>|<cuda>". An empty HIP field = CPU/CUDA torch.
+_CPU_TORCH = "2.10.0+cpu||\n"
+_ROCM63_TORCH = "2.9.1+rocm6.3|6.3.42134|\n"  # what the reporter ended up with
+
+
+@pytest.fixture(autouse = True)
+def _reset_torch_runtime_probe():
+    """The torch classification is memoized for the life of an install run, so one
+    test's mocked probe must not leak into the next."""
+    stack_mod._invalidate_torch_runtime_probe()
+    yield
+    stack_mod._invalidate_torch_runtime_probe()
 
 
 def _run_install(

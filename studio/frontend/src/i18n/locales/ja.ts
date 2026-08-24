@@ -96,6 +96,8 @@ export const ja = {
       export: "エクスポート",
       recents: "履歴",
       noChatsYet: "チャットがまだありません",
+      showMore: "もっと見る",
+      showLess: "表示を減らす",
       settings: "設定",
       api: "API",
       lightMode: "ライトモード",
@@ -109,6 +111,44 @@ export const ja = {
       title: "ページが見つかりません",
       description: "{path} は存在しません。",
       backToChat: "チャットに戻る",
+    },
+    selection: {
+      pinProjects: "プロジェクトをピン留め",
+      unpinProjects: "ピン留めを解除",
+      deleteProjects: "プロジェクトを削除",
+      deleteProjectsTitle: "プロジェクトを削除",
+      deleteProjectsDescription:
+        "{count} 件のプロジェクトを削除しますか。含まれるチャットは完全に削除されます。",
+      deleteProjectsFilesDescription:
+        "各プロジェクトのワークスペースフォルダーがディスクから削除されます。",
+      countSelected: "{count} 件選択中",
+      pinChats: "チャットをピン留め",
+      unpinChats: "ピン留めを解除",
+      archiveChats: "チャットをアーカイブ",
+      markUnread: "未読にする",
+      deleteChats: "チャットを削除",
+      deleteTitle: "チャットを削除",
+      deleteDescription: "{count} 件のチャットを削除しますか。元に戻せません。",
+      deleteFilesDescription:
+        "各チャット専用のサンドボックスフォルダーがディスクから削除されます。プロジェクト内で作成したファイルは、そのプロジェクトのワークスペースに残ります。",
+      deleteFilesLabel: "ファイルとサンドボックスフォルダーを削除",
+      deleteChatFilesDescription:
+        "このチャット専用のサンドボックスフォルダーがディスクから削除されます。プロジェクト内に書き込んだファイルは、そのプロジェクトのワークスペースに残ります。",
+    },
+    organize: {
+      sidebarHeading: "サイドバーの整理",
+      byProject: "プロジェクト別",
+      inOneList: "1つのリストで",
+      sortChatsBy: "チャットの並び順",
+      sortPinnedBy: "ピン留めの並び順",
+      priority: "優先度",
+      lastUpdated: "最終更新",
+      manualOrder: "手動で並べ替え",
+      moveUp: "上へ移動",
+      moveDown: "下へ移動",
+      organizeChats: "チャットを整理",
+      organizeProjects: "プロジェクトを整理",
+      sortPinnedChats: "ピン留めチャットを並べ替え",
     },
     dialog: {
       deleteChat: {
@@ -144,6 +184,8 @@ export const ja = {
       closeAriaLabel: "設定を閉じる",
       searchPlaceholder: "設定を検索…",
       searchNoResults: "設定が見つかりません。",
+      panelFailed: "このセクションを読み込めませんでした。",
+      panelReload: "再読み込み",
     },
     tabs: {
       general: "一般",
@@ -153,11 +195,56 @@ export const ja = {
       chat: "チャット",
       connections: "接続",
       apiKeys: "API",
+      remoteLan: "リモートとLAN",
       about: "情報",
       voice: "音声",
       data: "データ",
       agents: "エージェント",
       debugging: "ログ",
+      keyboardShortcuts: "ショートカット",
+    },
+    keyboardShortcuts: {
+      title: "キーボードショートカット",
+      description:
+        "ショートカットを変更したり、消してブラウザや OS にそのキーを譲ったりできます。",
+      searchPlaceholder: "ショートカットを検索…",
+      noResults: "該当するショートカットはありません。",
+      unassigned: "未割り当て",
+      recording: "キーを押してください…",
+      recordingHint: "新しいキーの組み合わせを押すか、Esc でキャンセルします。",
+      needsModifier: "⌘、Ctrl、Alt のいずれかを加えてください。単独のキーでは入力を奪ってしまいます。",
+      conflict: "別のショートカットでも使われています",
+      conflictShadowed: "この組み合わせは別のショートカットのもので、そちらが実行されます",
+      edit: "ショートカットを変更",
+      clear: "ショートカットを削除",
+      reset: "既定値に戻す",
+      resetAll: "すべて既定値に戻す",
+      groups: {
+        general: "一般",
+        chat: "チャット",
+      },
+      actions: {
+        newChat: {
+          label: "新しいチャット",
+          description: "新しいチャットを開始します",
+        },
+        searchChats: {
+          label: "チャットを検索",
+          description: "チャット検索ダイアログを開きます",
+        },
+        toggleSidebar: {
+          label: "サイドバーの表示切り替え",
+          description: "サイドバーを表示または非表示にします",
+        },
+        openSettings: {
+          label: "設定を開く",
+          description: "設定ダイアログを開きます",
+        },
+        openKeyboardShortcuts: {
+          label: "キーボードショートカット",
+          description: "このショートカット一覧を開きます",
+        },
+      },
     },
     debugging: {
       logSection: "ログファイル",
@@ -195,6 +282,17 @@ export const ja = {
         engineModel: "ローカル文字起こし",
         engineModelDescription:
           "音声認識 (STT) モデルをローカルで実行し、オフラインでも動作します。ダウンロードして読み込むと、一定時間使わなければアンロードされます。",
+        engineCustom: "カスタムエンドポイント",
+        engineCustomDescription:
+          "接続に登録した OpenAI 互換 STT サーバーへ録音音声を送信します。",
+        connectionLabel: "接続",
+        connectionDescription:
+          "接続で OpenAI 互換サーバーと任意の API キーを追加してください。",
+        connectionPlaceholder: "接続を選択",
+        connectionEmpty: "利用可能な接続はありません",
+        customModelLabel: "モデル",
+        customModelDescription:
+          "/v1/audio/transcriptions に送信するモデル名です。",
         sttModelLabel: "音声認識モデル",
         sttModelDescription:
           "ローカルで実行する STT モデルを選択または検索します。",
@@ -245,6 +343,8 @@ export const ja = {
         allowMicrophone: "マイクへのアクセスを許可",
         micAccessBlocked:
           "マイクへのアクセスがブロックされました。この Unsloth のページでマイクへのアクセスを許可してから、もう一度お試しください。",
+        micAccessBlockedDesktop:
+          "マイクへのアクセスがブロックされました。もう一度お試しになり「許可」を選択するか、システムのプライバシー設定でマイクを有効にしてください。",
         micAccessUnsupported:
           "このブラウザーまたはコンテキストではマイクへのアクセスに対応していません。",
         systemDefault: "システムのデフォルト",
@@ -252,6 +352,7 @@ export const ja = {
         languageLabel: "音声入力の言語",
         languageDescription: "認識する言語",
         languageAuto: "自動 (ブラウザーの言語)",
+        languageAutoDetect: "自動 (言語を検出)",
       },
       dictionary: {
         sectionTitle: "音声入力辞書",
@@ -318,6 +419,7 @@ export const ja = {
         modelLabel: "TTS モデル",
         modelDescription:
           "モデルセレクターから音声モデルを読み込んでください (例: Orpheus TTS)",
+        openAudioAction: "音声を開く",
         voiceLabel: "音声",
         voiceDescription: "このデバイスで最適な音声",
         speedLabel: "速度",
@@ -326,6 +428,7 @@ export const ja = {
         previewLabel: "音声を試聴",
         previewDescription: "短いサンプルを再生します",
         previewAction: "試聴",
+        preparingAction: "生成中…",
         previewFailed: "TTS のプレビューに失敗しました",
         stopAction: "停止",
         ttsLabel: "音声合成",
@@ -388,13 +491,16 @@ export const ja = {
         idleUnloadDescription:
           "指定した秒数だけアイドル状態が続くと、モデルをアンロードして VRAM を解放します。0 にすると読み込んだままになります。最小値は 60 秒です。",
         idleSecondsAriaLabel: "アイドル時の自動アンロードまでの秒数",
+        mediaEnable: "リクエストごとに画像・動画モデルを切り替え",
+        mediaEnableDescription:
+          "API リクエストで指定されたダウンロード済みの画像・動画モデルを、生成前に読み込みます。上の設定はチャットモデルのみが対象で、これは独立した設定です。デフォルトではオフです。",
         mediaIdleUnload: "画像と動画のアイドル時の自動アンロード",
         mediaIdleUnloadDescription:
           "指定した秒数だけアイドル状態が続くと、画像モデルと動画モデルをアンロードして VRAM を解放します。これは独立した設定です。上の設定はチャットモデルのみが対象です。0 にすると読み込んだままになります。最小値は 60 秒です。",
         mediaIdleSecondsAriaLabel:
           "画像と動画のアイドル時の自動アンロードまでの秒数",
         mediaIdlePaused:
-          "「モデルを GPU メモリに保持」または「API が読み込んだモデルのみアンロード」がオンの間は一時停止します。",
+          "「モデルを GPU メモリに保持」がオンの間は一時停止します。",
         idleNeedsEnable: "アンロードされたモデルが次回使用時に再読み込みされるように、「リクエストごとにモデルを切り替え」をオンにしてください。",
         idleActiveViaEnv: "アイドル時の自動アンロードは UNSLOTH_MODEL_IDLE_TTL 環境変数によって有効になっています。",
         loadError: "モデル自動切り替え設定の読み込みに失敗しました。",
@@ -408,7 +514,7 @@ export const ja = {
           "アイドル時の自動アンロードの前に KV キャッシュを保存し、再開したチャットが履歴を読み直さずに済むようにします。ディスク使用量は最大 10 GB です。",
         apiOnly: "API が読み込んだモデルのみアンロード",
         apiOnlyDescription:
-          "アイドル時の自動アンロードでは、Studio から自分で読み込んだモデルはメモリに残し、API リクエストが読み込んだモデルだけを解放します。",
+          "アイドル時の自動アンロードでは、Unsloth から自分で読み込んだモデルはメモリに残し、API リクエストが読み込んだモデルだけを解放します。",
       },
       previewSharing: {
         sectionTitle: "プレビュー共有",
@@ -457,6 +563,7 @@ export const ja = {
         sectionTitle: "ドキュメントと RAG",
         embeddingModel: "埋め込みモデル",
         embeddingModelDescription: "ドキュメントのインデックス作成と検索に使用する Hugging Face モデルまたはローカルパス。デフォルトは {defaultModel} です。",
+        searchPlaceholder: "埋め込みモデルを検索",
         reindexWarning: "新しくインデックスされるドキュメントにのみ影響します。モデルを変更した後は、既存のドキュメントを再アップロードしてください。",
         emptyError: "Hugging Face モデル ID またはローカルパスを入力してください。",
         loadError: "埋め込みモデル設定の読み込みに失敗しました。",
@@ -726,6 +833,8 @@ export const ja = {
         title: "GPU デバイス",
         ggufInference: "GGUF 推論",
         unavailable: "利用不可",
+        detecting: "GPU を確認しています...",
+        unreadable: "このサーバーのハードウェアを読み取れませんでした。",
         noGpu:
           "利用可能な GPU が検出されませんでした。CPU のみの環境向けのリソース情報は上に表示されています。",
         unknownDevice: "不明な GPU",
@@ -750,6 +859,24 @@ export const ja = {
         switchFailed: "llama.cpp のバックエンドを変更できませんでした。",
         switchInterrupted: "切り替えは完了する前に中断されました。",
         envLocked: "環境変数 UNSLOTH_LLAMA_CPP_BACKEND により {backend} に固定されています。この設定より優先されます。",
+        customPath: {
+          label: "カスタム llama.cpp フォルダー",
+          description: "独自の llama-server ビルドを使用します。",
+          hint: "llama-server を含む llama.cpp フォルダー、または build/bin 配下にあるビルドを選択します。カスタムランタイムは GGUF チャット、埋め込み、対応する音声モデルで使用されます。環境変数が引き続き優先されます。",
+          automatic: "自動（同梱）",
+          bundled: "Unsloth がインストールした llama.cpp ランタイムを使用します。",
+          active: "次回のモデル読み込みからカスタム llama-server が使用されます。",
+          environmentManaged: "環境変数 {variable} によって管理されています。",
+          missingBinary: "このフォルダーでは llama-server を利用できなくなりました。別のフォルダーを選ぶか、同梱ランタイムを使用してください。",
+          reloadRequired: "選択した llama-server を使用するにはモデルを再読み込みしてください。",
+          change: "変更",
+          saving: "保存中...",
+          useBundled: "同梱版を使用",
+          chooseTitle: "llama.cpp フォルダーを選択",
+          chooseAction: "このフォルダーを使用",
+          saved: "llama.cpp フォルダーを更新しました",
+          saveError: "llama.cpp フォルダーを更新できませんでした",
+        },
         backends: {
           auto: "自動",
           cpu: "CPU",
@@ -762,6 +889,7 @@ export const ja = {
           notInstalled: "管理対象の llama.cpp インストールが見つからないため、切り替えるバックエンドがありません。",
           localLink: "llama.cpp は自分でリンクしたローカルディレクトリのため、Unsloth は置き換えません。",
           sourceBuild: "この llama.cpp はソースからビルドされているため、ここではバックエンドを切り替えられません。",
+          customPath: "カスタム llama.cpp フォルダーが選択されています。そのビルドによって計算バックエンドが決まります。",
           unresolved: "利用可能なバックエンドを確認できませんでした。接続を確認して再試行してください。",
         },
         // 非表示: 設定検索用の追加キーワード。
@@ -867,7 +995,7 @@ export const ja = {
       quickstart: {
         title: "コマンドを組み立てる",
         description:
-          "Studio に読み込み済みのモデルでエージェントを起動します。先にモデルを読み込み、claude を下記の対応エージェントに置き換えてください。",
+          "Unsloth に読み込み済みのモデルでエージェントを起動します。先にモデルを読み込み、claude を下記の対応エージェントに置き換えてください。",
         noneDetected:
           "対応するエージェントの CLI が PATH 上に見つかりませんでした。",
         installed: "インストール済み",
@@ -889,7 +1017,7 @@ export const ja = {
         description:
           "Unsloth のフラグが先に解釈され、認識されなかったものはそのままエージェントへ渡されます。",
         model:
-          "モデルを選択します。--model がない場合、unsloth start は Studio に読み込み済みのモデルを使用し、未読み込みならエラーになります。",
+          "モデルを選択します。--model がない場合、unsloth start は Unsloth に読み込み済みのモデルを使用し、未読み込みならエラーになります。",
         contextLength:
           "要求するコンテキスト長を設定します (エイリアス: --max-seq-length)。",
         ggufVariant: "GGUF の量子化バリアントを選択します。",
@@ -905,13 +1033,17 @@ export const ja = {
           "親エージェントを現在のモデルのままにし、Unsloth をローカルのサブエージェントとして登録します (Claude Code、Codex、OpenCode)。",
         apiKey:
           "Unsloth の API キーを指定します (または UNSLOTH_API_KEY を設定)。",
+        reasoning:
+          "チャットで推論を使うかどうか: on、off、auto。auto はモデルのチャットテンプレートに従い、通常は on になります。",
+        reasoningEffort:
+          "モデルのチャットテンプレートに渡す推論の強さ (例: medium)。指定できる値はモデルごとに異なるため、そのモデルが受け付ける値を渡してください。未指定ならテンプレートの値が使われます。",
         yolo:
           "承認の確認をスキップします。信頼できる環境でのみ使用してください。",
       },
       remote: {
-        title: "リモートの Studio に接続する",
+        title: "リモートの Unsloth Studio に接続する",
         description:
-          "起動前に次を設定すると、unsloth start を別の場所で動作している Studio に向けられます (--api-key を直接渡すことも可能です):",
+          "起動前に次を設定すると、unsloth start を別の場所で動作している Unsloth Studio に向けられます (--api-key を直接渡すことも可能です):",
       },
       passthrough: {
         title: "エージェントへの引数の受け渡し",
@@ -925,6 +1057,9 @@ export const ja = {
       },
     },
     chat: {
+      projectsSection: "プロジェクトセクションを表示",
+      projectsSectionDescription:
+        "プロジェクトのチャットを「プロジェクト」の見出しにまとめます。オフにすると「最近」に表示されます。",
       title: "チャット",
       description: "このデバイスでのチャットの動作をカスタマイズします。",
       modelSelection: {
@@ -946,15 +1081,30 @@ export const ja = {
         compareChat: "チャットを比較",
         exportChat: "チャットをエクスポート",
       },
+      pastedTextThreshold: "長い貼り付けを圧縮",
+      pastedTextThresholdDescription: "この長さを超える貼り付けテキストは、入力欄を埋める代わりに .txt 添付ファイルになります。 {shortcut} を押すと、それでも入力欄に貼り付けます。",
+      pastedTextThresholdOff: "オフ",
       showResponseModel: "応答モデルを表示",
       showResponseModelDescription:
         "アシスタントの応答にモデルのメタデータを表示します。",
       modelDisclaimer: "モデルの免責事項を表示",
       modelDisclaimerDescription: 'チャットボックスの下に "LLMs can make mistakes" と表示します。',
+      projectAttachments: "プロジェクト全体でファイルを共有",
+      projectAttachmentsDescription:
+        "プロジェクトに属するチャットで添付したファイルの既定の扱いです。プロジェクト全体にインデックスし、そのプロジェクト内のどのチャットからも利用できるようにします。チャットごとに添付メニューから変更できます。",
+      rememberParamsPerModel: "モデルごとに設定を記憶",
+      rememberParamsPerModelDescription:
+        "モデルを切り替えると、そのモデルで最後に使った温度やプロンプトなどの設定が復元されます。オフの場合は、すべてのモデルで同じ設定を使います。",
       thinking: {
         collapseByDefault: "思考をデフォルトで折りたたむ",
         collapseByDefaultDescription:
           "モデルの思考中も自動で展開せず、折りたたんだままにします。読みたいときはブロックを展開してください。",
+      },
+      webSearch: {
+        title: "ウェブ検索",
+        images: "ウェブ検索の画像を表示",
+        imagesDescription:
+          "ウェブ検索で画像も取得し、回答に列挙された項目ごとに1枚ずつ探します。サムネイルは Studio が取得して縮小するため、ブラウザが画像ホストに接続することはありません。",
       },
       artifacts: {
         title: "Canvas",
@@ -1029,6 +1179,9 @@ export const ja = {
       archivedVideos: "アーカイブ済み動画",
       archivedVideosDescription: "アーカイブした動画を表示・管理します。",
       manageAction: "管理",
+      manageChats: "チャットを管理",
+      manageChatsDescription:
+        "複数のチャットを選択して移動、ピン留め、アーカイブ、エクスポート、削除できます。",
       exportArchivedChats: "エクスポート",
       exportingArchivedChats: "エクスポート中...",
       exportedOneArchivedChat: "アーカイブ済みチャット 1 件をエクスポートしました",
@@ -1053,6 +1206,9 @@ export const ja = {
       confirmBeforeDeleting: "削除前に確認する",
       confirmBeforeDeletingDescription:
         "チャットを削除する前に確認を求めます。オフにすると即座に削除します。",
+      alwaysDeleteFiles: "常にファイルを削除",
+      alwaysDeleteFilesDescription:
+        "チャットを削除すると、そのチャット専用のサンドボックスフォルダーもディスクから削除されます。プロジェクト内で作成したファイルは、そのプロジェクトのワークスペースに残ります。",
       filesSection: "ファイル",
       uploadedFiles: "アップロード済みファイル",
       uploadedFilesDescription:
@@ -1075,6 +1231,11 @@ export const ja = {
     connections: {
       title: "接続",
       description: "プロバイダーと外部接続を管理します。",
+    },
+    remoteLan: {
+      title: "リモートとLAN",
+      description:
+        "ローカルネットワークまたは一時的な公開URLを介して、他のデバイスからこのUnslothにアクセスできます。",
     },
     apiKeys: {
       title: "API",
@@ -1298,6 +1459,12 @@ export const ja = {
         "このデータセットはまだデバイス上にありません。トレーニング時に自動でダウンロードします。",
       noticeDatasetPartial:
         "トレーニングでは、データセットを読み込む前に未完了のダウンロードを完了します。",
+      noticeTransformersUpgrade:
+        "インストール済みの transformers はこのアーキテクチャに未対応です。実行を開始すると、まず transformers {version} のインストールを確認します。",
+      noticeSixteenBitOnly:
+        "このアーキテクチャは 16 ビット LoRA で学習します。4 ビットは利用できないため、QLoRA より大幅に多い VRAM が必要です。",
+      noticeInstallSwitchesSixteenBit:
+        "モデル独自のコードを使う代わりにそのリリースをインストールすると、この実行は 16 ビット LoRA に切り替わり、QLoRA より大幅に多い VRAM が必要になります。",
       advancedSettings: "詳細設定",
       defaultAdvancedSettings: "デフォルト",
       nonDefaultAdvancedSettings: "デフォルト以外の設定: {count} 件",

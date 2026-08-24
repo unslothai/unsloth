@@ -46,7 +46,15 @@ _httpx_stub.Client = type(
         "__exit__": lambda s, *a: None,
     },
 )
-sys.modules.setdefault("httpx", _httpx_stub)
+# Only when the real library is absent. sys.modules holds what has been IMPORTED, not
+# what is installed, so setdefault does not defer to a real httpx that nothing in this
+# process has touched yet: the stub wins and shadows it for the whole session. This stub
+# has no Response, and starlette.testclient reads httpx.Response at import, so every
+# module collected afterwards that reaches fastapi.testclient or routes.inference dies.
+try:
+    import httpx  # noqa: F401
+except ImportError:
+    sys.modules.setdefault("httpx", _httpx_stub)
 
 from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
 
@@ -115,6 +123,27 @@ def test_already_in_target_state_uses_gguf_path_when_present(tmp_path):
             is_vision = False,
         )
         is True
+    )
+
+
+def test_already_loaded_model_reloads_when_selected_binary_changes():
+    backend = _loaded_backend()
+    backend._binary_changed_since_launch = lambda: True
+
+    assert (
+        _matches(
+            backend,
+            gguf_path = None,
+            model_identifier = "owner/repo",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = None,
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+        )
+        is False
     )
 
 

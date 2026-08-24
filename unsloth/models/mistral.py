@@ -19,6 +19,7 @@ from unsloth_zoo.utils import _get_dtype
 from unsloth_zoo.hf_utils import dtype_from_config
 from ..utils.packing import (
     get_packed_info_from_kwargs,
+    mask_packed_boundary_labels,
     mask_packed_sequence_boundaries,
 )
 from ..utils.attention_dispatch import (
@@ -333,6 +334,13 @@ def MistralForCausalLM_fast_forward(
             if n_items is None:
                 n_items = kwargs.get("n_items", None)
             logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
+
+            # Packed-boundary guard, see llama.py. This branch returns, so
+            # mask_packed_sequence_boundaries() below is never reached.
+            labels = mask_packed_boundary_labels(
+                labels,
+                kwargs.get("packed_seq_lengths"),
+            )
 
             # loss = fused_linear_cross_entropy(
             #     hidden_states = hidden_states,

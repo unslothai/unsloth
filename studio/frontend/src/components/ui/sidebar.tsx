@@ -8,6 +8,9 @@ import { cva, type VariantProps } from "class-variance-authority"
 import { Slot } from "radix-ui"
 
 import { cn } from "@/lib/utils"
+// Deep import, not the feature barrel: the barrel pulls in SettingsDialog,
+// which renders sidebar-aware panels and would close an import cycle.
+import { useShortcut } from "@/features/settings/hooks/use-shortcut"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Separator } from "@/components/ui/separator"
@@ -25,6 +28,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { PanelResizeHandle } from "@/components/ui/panel-resize-handle"
+import { PANEL_RESIZE_SCOPED_VARS_ENABLED } from "@/components/ui/panel-resize-recalc-flags"
 import { useT } from "@/i18n"
 import { useIsMobile } from "@/hooks/use-mobile"
 import {
@@ -40,7 +44,6 @@ const noop = () => {}
 
 const SIDEBAR_WIDTH = `${SIDEBAR_WIDTH_DEFAULT}px`
 const SIDEBAR_WIDTH_ICON = "3rem"
-const SIDEBAR_KEYBOARD_SHORTCUT = "b"
 
 type SidebarContextProps = {
   state: "expanded" | "collapsed"
@@ -146,21 +149,9 @@ function SidebarProvider({
     return setOpen((open) => !open)
   }, [isMobile, setOpen, setOpenMobile, hasPinMode, togglePinnedProp])
 
-  // Adds a keyboard shortcut to toggle the sidebar.
-  React.useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (
-        event.key === SIDEBAR_KEYBOARD_SHORTCUT &&
-        (event.metaKey || event.ctrlKey)
-      ) {
-        event.preventDefault()
-        toggleSidebar()
-      }
-    }
-
-    window.addEventListener("keydown", handleKeyDown)
-    return () => window.removeEventListener("keydown", handleKeyDown)
-  }, [toggleSidebar])
+  // Chord comes from the shortcuts store, so Settings -> Shortcuts can rebind
+  // or clear it.
+  useShortcut("toggleSidebar", toggleSidebar)
 
   // We add a state so that we can do data-state="expanded" or "collapsed".
   // This makes it easier to style the sidebar with Tailwind classes.
@@ -199,7 +190,14 @@ function SidebarProvider({
         style={
           {
             // The drag handle writes this same property live while resizing.
-            "--sidebar-width": `${width}px`,
+            // Under PANEL_RESIZE_SCOPED_VARS_ENABLED it moves DOWN to
+            // [data-slot="sidebar"], which holds every consumer, and cannot
+            // also stay here: this wrapper is an ancestor of the chat thread,
+            // so a declaration left behind would keep restyling the thread on
+            // every render even once the drag-time write had moved.
+            ...(PANEL_RESIZE_SCOPED_VARS_ENABLED
+              ? null
+              : { "--sidebar-width": `${width}px` }),
             "--sidebar-width-icon": SIDEBAR_WIDTH_ICON,
             ...style,
           } as React.CSSProperties
@@ -231,12 +229,21 @@ function Sidebar({
   collapsible?: "offcanvas" | "icon" | "none"
   collapseToZero?: boolean
 }) {
-  const { isMobile, state, openMobile, setOpenMobile, hasPinMode, pinned } = useSidebar()
+  const { isMobile, state, openMobile, setOpenMobile, hasPinMode, pinned, width } =
+    useSidebar()
+
+  // The scoped home for --sidebar-width: every consumer (this element,
+  // sidebar-gap, sidebar-container) is inside it and the chat thread is not.
+  // Empty with the flag off, where the wrapper keeps the declaration.
+  const scopedWidthStyle = (
+    PANEL_RESIZE_SCOPED_VARS_ENABLED ? { "--sidebar-width": `${width}px` } : {}
+  ) as React.CSSProperties
 
   if (collapsible === "none") {
     return (
       <div
         data-slot="sidebar"
+        style={scopedWidthStyle}
         className={cn(
           "bg-sidebar text-sidebar-foreground flex h-full w-(--sidebar-width) flex-col",
           className
@@ -291,6 +298,7 @@ function Sidebar({
       data-variant={variant}
       data-side={side}
       data-slot="sidebar"
+      style={scopedWidthStyle}
       aria-hidden={(hasPinMode && !pinned && collapseToZero) || undefined}
       inert={(hasPinMode && !pinned && collapseToZero) || undefined}
     >
@@ -397,6 +405,18 @@ function SidebarResizeHandle({
         cssVar="--sidebar-width"
         // The custom titlebar renders outside the wrapper and cannot inherit it.
         rootVar="--studio-sidebar-live-width"
+        // Both used only under PANEL_RESIZE_SCOPED_VARS_ENABLED. The rail sits
+        // inside sidebar-container, so [data-slot="sidebar"] always encloses it.
+        scopedTarget={() =>
+          ref.current?.closest<HTMLElement>('[data-slot="sidebar"]') ?? null
+        }
+        // Empty on every build without a custom titlebar: nothing reads the
+        // property there, so nothing needs writing.
+        rootVarTargets={() =>
+          Array.from(
+            document.querySelectorAll<HTMLElement>("[data-titlebar-live-width-scope]"),
+          )
+        }
         measure={() =>
           ref.current
             ?.closest<HTMLElement>('[data-slot="sidebar-container"]')

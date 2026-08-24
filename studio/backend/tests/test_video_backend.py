@@ -794,9 +794,7 @@ def test_detect_load_family_cached_hub_arch_fallback(monkeypatch):
         "try_to_load_from_cache",
         lambda repo_id, filename, **kw: "/fake/cache/blobs/model.gguf",
     )
-    monkeypatch.setattr(
-        gguf_meta, "read_gguf_general_metadata", lambda path: {"general.architecture": "ltxv"}
-    )
+    monkeypatch.setattr(gguf_meta, "read_gguf_architecture", lambda path: "ltxv")
     fam = _detect_load_family("someorg/opaque-quants", "model.gguf", None)
     assert fam is not None and fam.name == "ltx-2"
 
@@ -808,9 +806,7 @@ def test_detect_load_family_cached_hub_arch_fallback(monkeypatch):
     monkeypatch.setattr(
         huggingface_hub, "try_to_load_from_cache", lambda *a, **k: "/fake/cache/blobs/model.gguf"
     )
-    monkeypatch.setattr(
-        gguf_meta, "read_gguf_general_metadata", lambda path: {"general.architecture": "wan"}
-    )
+    monkeypatch.setattr(gguf_meta, "read_gguf_architecture", lambda path: "wan")
     assert _detect_load_family("someorg/opaque-quants", "model.gguf", None) is None
 
     # The blob lives in a NON-active cache root: the active probe misses, but the per-root probe finds it.
@@ -818,9 +814,7 @@ def test_detect_load_family_cached_hub_arch_fallback(monkeypatch):
 
     monkeypatch.setattr(hub_paths, "legacy_hf_cache_dir", lambda: "/fake/legacy")
     monkeypatch.setattr(hub_paths, "hf_default_cache_dir", lambda: "/fake/default")
-    monkeypatch.setattr(
-        gguf_meta, "read_gguf_general_metadata", lambda path: {"general.architecture": "ltxv"}
-    )
+    monkeypatch.setattr(gguf_meta, "read_gguf_architecture", lambda path: "ltxv")
     monkeypatch.setattr(
         huggingface_hub,
         "try_to_load_from_cache",
@@ -1269,7 +1263,21 @@ def _ltx23_assembly_stubs(monkeypatch, tmp_path):
             _FakeLTX2Pipeline.last = kwargs
 
         @staticmethod
-        def load_config(base_repo, token = None):
+        # An exact hand-written signature, so it follows the production one: the assembly bypasses
+        # the caller's guarded pipe_kwargs, and this base-repo read is the first of the calls that
+        # a load nobody asked for must not turn into a fetch.
+        def load_config(
+            base_repo,
+            token = None,
+            local_files_only = False,
+            cache_dir = None,
+        ):
+            _FakeLTX2Pipeline.last_config_kwargs = {
+                "local_files_only": local_files_only,
+                # Pinned to Studio's LIVE root: unset, this resolves through huggingface_hub's
+                # import-time constant, which a mid-session cache-folder change leaves stale.
+                "cache_dir": cache_dir,
+            }
             return {
                 "scheduler": ["diffusers", "_Loaded"],
                 "tokenizer": ["transformers", "_Loaded"],
@@ -2084,10 +2092,15 @@ def test_base_download_files_scopes_pipeline_pull():
 
 
 def test_base_download_files_gguf_drops_transformer():
-    # A GGUF/single-file checkpoint replaces the DiT: the base transformer never pulls.
+    # A GGUF/single-file checkpoint replaces the DiT: the base transformer WEIGHTS never pull.
     info = types.SimpleNamespace(siblings = _LTX2_SIBLINGS)
     names = [n for n, _ in VideoBackend._base_download_files(info, "gguf")]
-    assert not any(n.startswith("transformer/") for n in names)
+    transformer = [n for n in names if n.startswith("transformer/")]
+    # config.json is the one exception, and it is not an oversight: from_single_file resolves
+    # config = <repo id> through the Hub, so an API load that promised to download nothing needs
+    # this ~1 KB file staged, and the locality gate needs to count it. Everything else under
+    # transformer/ is supplied by the checkpoint itself.
+    assert transformer == ["transformer/config.json"]
     assert "text_encoder/model-00001-of-00002.safetensors" in names
 
 
@@ -2371,23 +2384,23 @@ def test_detect_load_family_arch_fallback_for_local_gguf(tmp_path, monkeypatch):
 
     # ltxv arch resolves to the ltx-2 family via the arch fallback.
     monkeypatch.setattr(
-        "utils.models.gguf_metadata.read_gguf_general_metadata",
-        lambda p: {"general.architecture": "ltxv"},
+        "utils.models.gguf_metadata.read_gguf_architecture",
+        lambda p: "ltxv",
     )
     fam = vid._detect_load_family(str(d), "model.gguf", None)
     assert fam is not None and fam.name == "ltx-2"
 
     # A video arch with no backend family (wan) stays None, so the loader 400s as before.
     monkeypatch.setattr(
-        "utils.models.gguf_metadata.read_gguf_general_metadata",
-        lambda p: {"general.architecture": "wan"},
+        "utils.models.gguf_metadata.read_gguf_architecture",
+        lambda p: "wan",
     )
     assert vid._detect_load_family(str(d), "model.gguf", None) is None
 
     # An explicit family_override skips the arch read entirely (worker parity).
     monkeypatch.setattr(
-        "utils.models.gguf_metadata.read_gguf_general_metadata",
-        lambda p: {"general.architecture": "ltxv"},
+        "utils.models.gguf_metadata.read_gguf_architecture",
+        lambda p: "ltxv",
     )
     assert vid._detect_load_family(str(d), "model.gguf", "ltx-2").name == "ltx-2"
 
@@ -3532,6 +3545,135 @@ def test_the_load_time_accelerator_probe_runs_under_the_reader_claim(monkeypatch
     # own pair, so assert on the opening ones rather than the whole list.
     assert held[:2] == [1, False], f"probe ran unclaimed: {held}"
     assert sd_cpp_backend._tree_readers == 0, "the claim must be released after the probe"
+
+
+def _load_h3_native_offload(
+    monkeypatch,
+    tmp_path,
+    *,
+    help_text,
+    accelerator = True,
+    memory_mode = None,
+):
+    """Run the native H3 load against a stubbed sd-cli and hand back its committed offload flags.
+
+    ``help_text`` is what the binary answers ``--help`` with, which is the only thing the graph-cut
+    gate reads. ``accelerator = False`` reproduces the Linux CUDA host with only the CPU prebuilt,
+    where the load commits to ``native_device = "cpu"``.
+    """
+    from core.inference import gpu_arbiter
+    from core.inference import video as video_mod
+    from core.inference import sd_cpp_backend, sd_cpp_engine
+
+    class _Api:
+        def __init__(self, **_kwargs):
+            pass
+
+        def model_info(self, *_args, **_kwargs):
+            return _PlanInfo([])
+
+    monkeypatch.setattr("huggingface_hub.HfApi", _Api)
+    monkeypatch.setattr(
+        video_mod,
+        "resolve_diffusion_device_target",
+        lambda: types.SimpleNamespace(backend = "cuda", device = "cuda", dtype = None),
+    )
+    monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: True)
+    monkeypatch.setattr(
+        sd_cpp_backend,
+        "ensure_sd_cpp_binary",
+        lambda *, allow_install, accelerator: "/existing/sd-cli",
+    )
+    # One probe helper serves both --list-devices and --help, so the ggml device line rides along or the CPU case is unreachable.
+    devices = "CUDA0\tNVIDIA GeForce RTX 4070 Ti\n" if accelerator else "CPU\tAMD Ryzen 9\n"
+    monkeypatch.setattr(sd_cpp_backend, "_sd_cpp_probe_output", lambda *_a: devices + help_text)
+
+    class _Engine:
+        def __init__(self, binary):
+            self.binary = binary
+
+        def version(self):
+            return "stub-version"
+
+    monkeypatch.setattr(sd_cpp_engine, "SdCppEngine", _Engine)
+
+    def _download(_repo, wanted, *_args, **_kwargs):
+        path = tmp_path / Path(wanted).name
+        path.write_bytes(b"x")
+        return str(path)
+
+    monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download)
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.VIDEO)
+
+    backend = VideoBackend()
+    fam = _detect_load_family("leejet/MiniMax-H3-GGUF", None, "minimax-h3")
+    assert fam is not None
+    backend._run_load_h3_native(
+        fam = fam,
+        token = None,
+        cancel_event = threading.Event(),
+        repo_id = "leejet/MiniMax-H3-GGUF",
+        gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
+        memory_mode = memory_mode,
+    )
+    assert backend._state is not None
+    return backend._state, list(backend._state.pipe.offload_flags)
+
+
+# Both fixtures carry the project banner the identity gate reads and the H3 marker
+# ensure_h3_sd_cpp_binary gates on, and differ only in the graph-cut options.
+_H3_HELP = (
+    "stable-diffusion.cpp version master-813\n"
+    "  --ref-video           MiniMax-H3 Ref2VA reference video frame directory\n"
+)
+_GRAPH_CUT_HELP = (
+    _H3_HELP + "  --max-vram <string>   VRAM budget\n  --stream-layers       prefetch\n"
+)
+_NO_GRAPH_CUT_HELP = _H3_HELP + "  --offload-to-cpu      place the weights in RAM\n"
+
+
+def test_h3_native_emits_the_graph_cut_flags_on_an_accelerator(monkeypatch, tmp_path):
+    """H3's modules are individually larger than the cards it is offered on, so --offload-to-cpu
+    alone still allocates each one whole and cudaMallocs before any tensor is resident. The graph
+    cut is what makes the checkpoint renderable, and auto -- not low_vram -- is the default mode
+    that has to carry it."""
+    state, offload = _load_h3_native_offload(monkeypatch, tmp_path, help_text = _GRAPH_CUT_HELP)
+    assert state.device == "cuda"
+    # auto offloads, which is what makes --stream-layers take effect.
+    assert "--offload-to-cpu" in offload
+    assert offload[-3:] == ["--max-vram", "-1", "--stream-layers"]
+    # A negative budget auto-detects per device. A fixed number would misjudge the other card.
+    assert "0" not in offload
+
+
+def test_h3_native_drops_stream_layers_without_cpu_offload(monkeypatch, tmp_path):
+    """fast keeps the params resident on the device, and upstream only honours --stream-layers when
+    the diffusion params backend is CPU: without --offload-to-cpu it warns and ignores the flag.
+    The budget still segments on its own, so --max-vram stays."""
+    _state, offload = _load_h3_native_offload(
+        monkeypatch, tmp_path, help_text = _GRAPH_CUT_HELP, memory_mode = "fast"
+    )
+    assert "--offload-to-cpu" not in offload
+    assert offload[-2:] == ["--max-vram", "-1"]
+    assert "--stream-layers" not in offload
+
+
+def test_h3_native_skips_the_graph_cut_flags_on_an_older_build(monkeypatch, tmp_path):
+    """sd-cli exits non-zero on an option it does not know, so emitting these unconditionally
+    would break every generation on a build that predates the executor."""
+    _state, offload = _load_h3_native_offload(monkeypatch, tmp_path, help_text = _NO_GRAPH_CUT_HELP)
+    assert "--max-vram" not in offload
+    assert "--stream-layers" not in offload
+
+
+def test_h3_native_skips_the_graph_cut_flags_on_cpu(monkeypatch, tmp_path):
+    """The cut splits a module to fit a device budget; the CPU backend allocates from system RAM,
+    so there is nothing to size against."""
+    state, offload = _load_h3_native_offload(
+        monkeypatch, tmp_path, help_text = _GRAPH_CUT_HELP, accelerator = False
+    )
+    assert state.device == "cpu"
+    assert "--max-vram" not in offload
 
 
 def test_h3_native_reused_cpu_binary_still_commits_to_cpu(monkeypatch, tmp_path):

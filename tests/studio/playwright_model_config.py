@@ -823,10 +823,11 @@ with sync_playwright() as p:
 
     # ─────────────────────────────────────────────────────
     # 3b. Re-typing the value already shown must not pin an override (HARD).
-    # Entering the currently displayed native/default context commits no
-    # onChange (the value is unchanged), so the cached blur value must not be
-    # replayed into a stored override on Load. Otherwise re-typing the shown
-    # number, or doing so before a Reset, recreates a phantom context pin.
+    # Entering the currently displayed context commits no onChange (the value is
+    # unchanged), so the cached blur value must not be replayed into a stored
+    # override on Load. Otherwise re-typing the shown number, or doing so before a
+    # Reset, recreates a phantom context pin. The box shows "Auto" while nothing is
+    # pinned, so the number it edits is read from the focused input below.
     # ─────────────────────────────────────────────────────
     step("re-typing the shown context does not pin an override")
     # Own its state instead of inheriting the step above: the previous step commits a
@@ -839,6 +840,12 @@ with sync_playwright() as p:
         native_default = None
     else:
         ctx_in = context_input(popover)
+        # With no override stored the box reads "Auto", and only reveals the number it
+        # would edit (the fitted context) once it has focus. Click first, or there is
+        # nothing numeric to re-type and the step skips the regression it guards.
+        if ctx_in is not None:
+            ctx_in.click()
+            page.wait_for_timeout(200)
         native_default = _as_int(ctx_in.input_value()) if ctx_in else None
     if ctx_in is None or native_default is None:
         # A skip here is not a pass: this step is the only guard on the phantom-pin
@@ -861,13 +868,44 @@ with sync_playwright() as p:
             btn.click()
             page.wait_for_timeout(1500)
         cfg = read_configs()
-        pinned = any(
-            _as_int(e.get("customContextLength")) == native_default for e in entries_for_model(cfg)
-        )
-        if pinned:
+        entries = entries_for_model(cfg)
+        pinned = [e for e in entries if _as_int(e.get("customContextLength")) == native_default]
+
+        # Not every stored context here is a phantom pin. model-config-page.tsx pins the
+        # active context ON PURPOSE when the placement is fixed:
+        #
+        #   const pinFixedLayerContext =
+        #     target.isGguf && loadableConfig.gpuMemoryMode === "manual" &&
+        #     loadableConfig.gpuLayers != null && loadableConfig.gpuLayers >= 0 &&
+        #     loadableConfig.customContextLength == null && activeLoadedContext != null;
+        #
+        # with the reason stated above it: "If the user fixes GPU Layers (Manual) and
+        # remembers, pin that shown context so a later fresh load keeps the fitted
+        # placement instead of sending native/0 and recreating the OOM." Storing the
+        # context is the feature; not storing it is the bug it was written to prevent.
+        #
+        # This step could not tell the two apart, so on a runner where the placement IS
+        # manual -- which is every CPU-only CI runner, gpuLayers 0 -- it reported the
+        # documented behaviour as a regression. It went unnoticed because it inherited a
+        # closed popover from the Reset step and silently skipped until #7760 made it own
+        # its state; the first time it actually ran, it failed.
+        expected_pin = [
+            e
+            for e in pinned
+            if e.get("gpuMemoryMode") == "manual"
+            and isinstance(e.get("gpuLayers"), int)
+            and e.get("gpuLayers") >= 0
+        ]
+        if pinned and len(expected_pin) == len(pinned):
+            info(
+                f"OK re-type-shown: context {native_default} is stored, and every entry "
+                f"storing it has the fixed-layer placement that pins it deliberately"
+            )
+        elif pinned:
             fail(
                 "re-typing the shown context pinned it as an override "
-                f"(customContextLength={native_default})"
+                f"(customContextLength={native_default}) with no fixed-layer placement to "
+                f"justify it; entries={[{k: e.get(k) for k in ('gpuMemoryMode', 'gpuLayers', 'customContextLength')} for e in pinned]}"
             )
         else:
             info("OK re-type-shown: shown context not stored as an override")
