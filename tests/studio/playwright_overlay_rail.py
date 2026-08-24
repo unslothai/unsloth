@@ -802,8 +802,10 @@ def run_titlebar_stacking(page, base: str) -> None:
     )
     shapes = [
         ("before this PR (grips 70, header 70)", "gripz=70&headerz=70"),
-        ("toolbar number added (grips 9050, header 70, toolbar 9060)",
-         "gripz=9050&headerz=70&toolbarz=9060"),
+        (
+            "toolbar number added (grips 9050, header 70, toolbar 9060)",
+            "gripz=9050&headerz=70&toolbarz=9060",
+        ),
         ("at head (grips 9050, header 70, no toolbar number)", "gripz=9050&headerz=70"),
     ]
     losses = {}
