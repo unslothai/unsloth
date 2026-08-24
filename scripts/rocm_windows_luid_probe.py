@@ -85,8 +85,14 @@ def read_directx_records() -> dict[str, Any]:
                     out.append(rec)
                     continue
                 with winreg.OpenKey(dx, subkey) as k:
-                    for field in ("VendorId", "AdapterLuid", "Description", "AdapterFamily",
-                                  "DeviceId", "DriverVersion"):
+                    for field in (
+                        "VendorId",
+                        "AdapterLuid",
+                        "Description",
+                        "AdapterFamily",
+                        "DeviceId",
+                        "DriverVersion",
+                    ):
                         try:
                             value, regtype = winreg.QueryValueEx(k, field)
                         except OSError:
@@ -96,14 +102,18 @@ def read_directx_records() -> dict[str, Any]:
                         rec[field] = value if not isinstance(value, bytes) else value.hex()
                         # 4 = REG_DWORD, 11 = REG_QWORD, 1 = REG_SZ, 3 = REG_BINARY.
                         rec[f"{field}_type"] = {
-                            1: "REG_SZ", 3: "REG_BINARY", 4: "REG_DWORD", 11: "REG_QWORD",
+                            1: "REG_SZ",
+                            3: "REG_BINARY",
+                            4: "REG_DWORD",
+                            11: "REG_QWORD",
                         }.get(regtype, f"type {regtype}")
                         rec[f"{field}_python"] = type(value).__name__
                 out.append(rec)
     except Exception as e:  # noqa: BLE001
         return {"error": f"{type(e).__name__}: {e}", "partial": out}
-    amd = [r for r in out if r.get("VendorId") is not None
-           and int(r["VendorId"]) == AMD_PCI_VENDOR_ID]
+    amd = [
+        r for r in out if r.get("VendorId") is not None and int(r["VendorId"]) == AMD_PCI_VENDOR_ID
+    ]
     return {"records": out, "amd_count": len(amd), "subkey_count": len(out)}
 
 
@@ -122,8 +132,11 @@ def read_counter(name: str = "Dedicated Usage") -> Optional[list[tuple[str, floa
     try:
         r = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-            capture_output = True, text = True, encoding = "utf-8",
-            errors = "replace", timeout = 15,
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 15,
         )
     except Exception:  # noqa: BLE001
         return None
@@ -167,8 +180,7 @@ def read_studio(repo: Path, allocate_gb: float, device: Optional[int]) -> dict[s
 
     try:
         obs["records_by_luid"] = {
-            str(luid): rec for luid, rec in
-            hw._windows_amd_adapter_records_by_luid().items()
+            str(luid): rec for luid, rec in hw._windows_amd_adapter_records_by_luid().items()
         }
     except Exception as e:  # noqa: BLE001
         obs["records_error"] = f"{type(e).__name__}: {e}"
@@ -193,16 +205,21 @@ def read_studio(repo: Path, allocate_gb: float, device: Optional[int]) -> dict[s
     if allocate_gb > 0:
         try:
             import torch
+
             ordinal = device if device is not None else 0
-            buf = torch.empty(int(allocate_gb * GB), dtype = torch.uint8,
-                              device = f"cuda:{ordinal}")
+            buf = torch.empty(int(allocate_gb * GB), dtype = torch.uint8, device = f"cuda:{ordinal}")
             buf.fill_(1)
             torch.cuda.synchronize(ordinal)
-            held = {"gb": round(allocate_gb, 2), "ordinal": ordinal,
-                    "name": torch.cuda.get_device_properties(ordinal).name, "_buf": buf}
+            held = {
+                "gb": round(allocate_gb, 2),
+                "ordinal": ordinal,
+                "name": torch.cuda.get_device_properties(ordinal).name,
+                "_buf": buf,
+            }
             obs["allocation"] = {k: v for k, v in held.items() if k != "_buf"}
             # The counters lag by tens of seconds; give them a chance to catch up.
             import time
+
             time.sleep(20)
         except Exception as e:  # noqa: BLE001
             obs["allocation_error"] = f"{type(e).__name__}: {e}"
@@ -211,8 +228,16 @@ def read_studio(repo: Path, allocate_gb: float, device: Optional[int]) -> dict[s
     obs["counter_adapters"] = adapters
     try:
         obs["parsed_luids"] = (
-            [{"instance": inst, "luid": hw._parse_adapter_luid(inst), "used_gb": round(u / GB, 3)}
-             for inst, u in adapters] if adapters else None
+            [
+                {
+                    "instance": inst,
+                    "luid": hw._parse_adapter_luid(inst),
+                    "used_gb": round(u / GB, 3),
+                }
+                for inst, u in adapters
+            ]
+            if adapters
+            else None
         )
     except Exception as e:  # noqa: BLE001
         obs["parse_error"] = f"{type(e).__name__}: {e}"
@@ -255,7 +280,9 @@ def render(obs: dict[str, Any]) -> str:
     else:
         L.append(f"- {dx.get('subkey_count')} subkeys, {dx.get('amd_count')} AMD adapter(s)")
         L.append("")
-        L.append("| subkey | VendorId | AdapterLuid | type | python | Description | AdapterFamily |")
+        L.append(
+            "| subkey | VendorId | AdapterLuid | type | python | Description | AdapterFamily |"
+        )
         L.append("|---|---|---|---|---|---|---|")
         for r in dx.get("records") or []:
             if not r.get("guid_named"):
@@ -266,8 +293,10 @@ def render(obs: dict[str, Any]) -> str:
                 f"| {r.get('Description')} | {r.get('AdapterFamily')} |"
             )
     L.append("")
-    L.append("The `AdapterLuid` type column answers whether `int(luid)` is a no-op "
-             "or a TypeError. `REG_QWORD` / `int` is the expected pair.")
+    L.append(
+        "The `AdapterLuid` type column answers whether `int(luid)` is a no-op "
+        "or a TypeError. `REG_QWORD` / `int` is the expected pair."
+    )
     L.append("")
 
     L.append("### 2. Counter instances and their LUIDs")
@@ -281,9 +310,11 @@ def render(obs: dict[str, Any]) -> str:
         records = s.get("records_by_luid") or {}
         for p in parsed:
             luid = p["luid"]
-            L.append(f"| `{p['instance']}` | {luid} "
-                     f"| {'yes' if luid is not None and str(luid) in records else 'NO'} "
-                     f"| {p['used_gb']} GB |")
+            L.append(
+                f"| `{p['instance']}` | {luid} "
+                f"| {'yes' if luid is not None and str(luid) in records else 'NO'} "
+                f"| {p['used_gb']} GB |"
+            )
     L.append("")
 
     L.append("### 3. What the module made of it")
@@ -302,9 +333,11 @@ def render(obs: dict[str, Any]) -> str:
         L.append("")
         L.append(f"Held {a['gb']} GB on ordinal {a['ordinal']} ({a['name']}).")
         L.append("")
-        L.append("The reading above should show that GB on THAT device and not on "
-                 "another one. On a single-GPU machine this only confirms the counter "
-                 "moves; it takes two GPUs to show the attribution is right.")
+        L.append(
+            "The reading above should show that GB on THAT device and not on "
+            "another one. On a single-GPU machine this only confirms the counter "
+            "moves; it takes two GPUs to show the attribution is right."
+        )
         L.append("")
     for key in ("allocation_error", "records_error", "torch_error", "per_device_vram_error"):
         if s.get(key):
@@ -314,12 +347,21 @@ def render(obs: dict[str, Any]) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description = __doc__)
-    ap.add_argument("--repo", type = Path, default = Path(__file__).resolve().parents[1],
-                    help = "checkout to import Studio from (default: this one)")
-    ap.add_argument("--allocate", type = float, default = 0.0,
-                    help = "hold N GB on a GPU and re-read, to check attribution")
-    ap.add_argument("--device", type = int, default = None,
-                    help = "torch ordinal to allocate on (default 0)")
+    ap.add_argument(
+        "--repo",
+        type = Path,
+        default = Path(__file__).resolve().parents[1],
+        help = "checkout to import Studio from (default: this one)",
+    )
+    ap.add_argument(
+        "--allocate",
+        type = float,
+        default = 0.0,
+        help = "hold N GB on a GPU and re-read, to check attribution",
+    )
+    ap.add_argument(
+        "--device", type = int, default = None, help = "torch ordinal to allocate on (default 0)"
+    )
     ap.add_argument("--json", type = Path, default = None, help = "also write raw JSON here")
     args = ap.parse_args()
 
