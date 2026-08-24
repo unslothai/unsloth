@@ -142,7 +142,14 @@ def planner_quantization_kwargs(
         return {"quantization_config": quantization_config}
     kwargs = {"load_in_4bit": load_in_4bit, "load_in_8bit": load_in_8bit}
     if load_in_4bit or load_in_8bit:
-        from unsloth_zoo.peft_utils import SKIP_QUANTIZATION_MODULES
+        try:
+            from unsloth_zoo.peft_utils import SKIP_QUANTIZATION_MODULES
+        except Exception:
+            # The leaf loaders build these arguments on every quantized load, planning or
+            # not, so an unsloth_zoo below our pin must not turn a 4bit load into an
+            # ImportError. A zoo without the shared skip list is far older than the planner
+            # that consumes it, so the plan this feeds is going to decline anyway.
+            return kwargs
         kwargs["llm_int8_skip_modules"] = SKIP_QUANTIZATION_MODULES + list(extra_skip_modules or [])
     return kwargs
 
@@ -224,7 +231,11 @@ def resolve_unsloth_device_map(
         return _fallback("each rank of a distributed launch owns its own device")
     if DEVICE_TYPE_TORCH != "cuda":
         return _fallback(f"the planner has no memory budgets for {DEVICE_TYPE_TORCH}")
-    if torch.cuda.device_count() < 2:
+    try:
+        device_count = torch.cuda.device_count()
+    except Exception as error:
+        return _fallback(f"the devices could not be counted ({error})")
+    if device_count < 2:
         return "sequential"
 
     try:
@@ -234,9 +245,16 @@ def resolve_unsloth_device_map(
 
     # Free, not total: this process's CUDA context and anything else on the card are
     # already resident, so planning against total overcommits every device.
-    max_memory = {
-        index: torch.cuda.mem_get_info(index)[0] for index in range(torch.cuda.device_count())
-    }
+    # Inside the try for the same reason the planner call is: `mem_get_info` initialises a
+    # context on every visible device, and one card that refuses (an ECC-error GPU, a MIG
+    # parent handle, another process holding it in Exclusive_Process mode) would abort a
+    # load that has a perfectly good "sequential" placement waiting for it.
+    try:
+        max_memory = {
+            index: torch.cuda.mem_get_info(index)[0] for index in range(device_count)
+        }
+    except Exception as error:
+        return _fallback(f"free memory could not be read ({error})")
     try:
         plan = plan_device_map_for_pretrained(
             model_name, max_memory = max_memory, **(planner_kwargs or {}), **config_kwargs
