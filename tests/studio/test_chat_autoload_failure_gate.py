@@ -94,6 +94,56 @@ export function sanitizeStoredExtraArgs(
   return [...tokens];
 }
 
+// The llama-server tuning group, mirroring
+// studio/frontend/src/features/chat/lib/server-tuning-fields.ts. Real logic rather
+// than a neutral stub: serverTuningLoadPayload spreads into the /load payload these
+// scenarios assert on, so a stub that always returned {} would keep passing if the
+// real one started sending a field. These are pure and import nothing, so copying
+// them costs only the drift this file already guards against by name.
+export function serverTuningLoadPayload(values: any): any {
+  return {
+    ...(values?.loadMode != null ? { load_mode: values.loadMode } : {}),
+    ...(values?.specDraftCacheDtype != null
+      ? { spec_draft_cache_type: values.specDraftCacheDtype }
+      : {}),
+    ...(values?.ctxCheckpoints != null
+      ? { ctx_checkpoints: values.ctxCheckpoints }
+      : {}),
+    ...(values?.cacheRam != null ? { cache_ram: values.cacheRam } : {}),
+  };
+}
+export function clearedServerTuningState(): any {
+  return {
+    loadMode: null,
+    loadedLoadMode: null,
+    specDraftCacheDtype: null,
+    loadedSpecDraftCacheDtype: null,
+    ctxCheckpoints: null,
+    loadedCtxCheckpoints: null,
+    cacheRam: null,
+    loadedCacheRam: null,
+  };
+}
+export function committedServerTuningState(values: any, isDiffusion = false): any {
+  if (isDiffusion) {
+    return clearedServerTuningState();
+  }
+  const loadMode = values?.loadMode ?? null;
+  const specDraftCacheDtype = values?.specDraftCacheDtype ?? null;
+  const ctxCheckpoints = values?.ctxCheckpoints ?? null;
+  const cacheRam = values?.cacheRam ?? null;
+  return {
+    loadMode,
+    loadedLoadMode: loadMode,
+    specDraftCacheDtype,
+    loadedSpecDraftCacheDtype: specDraftCacheDtype,
+    ctxCheckpoints,
+    loadedCtxCheckpoints: ctxCheckpoints,
+    cacheRam,
+    loadedCacheRam: cacheRam,
+  };
+}
+
 export const EVENTS: any[] = [];
 let SCENARIO: Scenario;
 export function setScenario(scenario: Scenario) {

@@ -19,6 +19,7 @@ const ORDER = [
   "FLOATING_PANEL_TOP",
   "STARTUP_SCREEN",
   "TOOLTIP",
+  "DRAG_CURSOR_OVERLAY",
 ] as const;
 
 test("the named layers are strictly ordered", () => {

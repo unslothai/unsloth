@@ -36,8 +36,6 @@ export interface SidebarItem {
   updatedAt: number;
   isFork?: boolean;
   projectId?: string | null;
-  /** The model this chat was started on. Single rows only: a compare row runs two. */
-  modelId?: string;
 }
 
 function lastActivityAt(thread: ThreadRecord): number {
@@ -89,8 +87,6 @@ export function groupThreads(
         updatedAt: lastActivityAt(t),
         isFork: Boolean(t.forkedFromThreadId),
         projectId: t.projectId ?? null,
-        // Stamped at creation. Blank on a legacy row, which reads as unknown.
-        modelId: t.modelId || undefined,
       });
     }
   }

@@ -29,6 +29,19 @@ for _up in _iso.parents:
         break
 # -----------------------------------------------------------------------------------
 
+# --- shared test helpers on sys.path -----------------------------------------------
+# tests/_shared holds no package marker and pytest only puts a *test file's* own
+# directory on sys.path, so tests/python/, tests/studio/install/ and tests/security/
+# cannot reach it by import. Adding it here (this conftest is collected for anything
+# under tests/) is what lets all four levels share one module rather than each growing
+# a private copy -- see tests/_shared/unsloth_pwsh_runner.py for the case that forced it.
+import sys as _sys  # noqa: E402
+
+_shared_dir = _iso.parent / "_shared"
+if _shared_dir.is_dir() and str(_shared_dir) not in _sys.path:
+    _sys.path.insert(0, str(_shared_dir))
+# -----------------------------------------------------------------------------------
+
 import importlib.util
 import os
 import sys
