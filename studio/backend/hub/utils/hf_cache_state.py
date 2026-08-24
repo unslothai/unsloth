@@ -9,7 +9,6 @@ import re
 import shutil
 import stat as stat_module
 import sys
-from functools import lru_cache
 from pathlib import Path, PureWindowsPath
 from typing import Iterable, Iterator, Optional
 
