@@ -24,7 +24,19 @@ import time
 from pathlib import Path
 from typing import Optional
 
-TOOL_VERSION = "0.1.0"
+# BUMPED BECAUSE THE INSTRUMENTS CHANGED, not because the tool gained features. This is one of the
+# fields the comparability key is computed over, and it is the ONLY field that can separate a run
+# taken before this change from one taken after it: the corpus is untouched, so the corpus hash,
+# the tier and the rungs all match across the change.
+#
+# They must not match. `reasoning_toggle` now settles on a quiet DOM, so
+# `highlight_spans_while_open` reads 74,250 where it used to read 44,075 on the same bundle, and
+# `open_ms` now terminates on a settled mount rather than on the `data-state` flip, which makes it
+# a different quantity rather than a better-measured one. A key that certified those two runs as
+# comparable would be the exact failure this key exists to prevent, committed by the guard itself.
+#
+# Any future change to what an instrument MEASURES has to bump this for the same reason.
+TOOL_VERSION = "0.2.0"
 TIERS = ("fast", "quick", "standard", "full")
 TIER_RUNGS = {
     # One rung, and it is 100K on purpose. The 10K rung was measured across six PRs and could
@@ -209,6 +221,26 @@ def doctor(args) -> int:
 
 
 # ── the run ─────────────────────────────────────────────────────────
+
+
+def _windowed_arms(spec: str, labels: list) -> set:
+    """The arms `--windowed-arm` names, checked against the arms this run will actually have.
+
+    A PURE ARGUMENT CHECK, WHICH IS WHY IT RUNS BEFORE ANYTHING IS STARTED. It used to run after
+    both Studio installs had been launched, the pacer bound and the browser opened -- and the
+    `SystemExit` it raises for a typo (`--windowed-arm treatments`) left every one of them running,
+    because the cleanup `finally` does not begin until the cell loop much further down. No
+    `bundle.close()`, no `pacer.stop()`, no `stop_studio()`, no watchdog cancellation: a mistyped
+    flag cost a browser and up to two Studio servers, still holding their ports.
+    """
+    names = {name.strip() for name in (spec or "").split(",") if name.strip()}
+    unknown = names - set(labels)
+    if unknown:
+        raise SystemExit(
+            f"--windowed-arm names {sorted(unknown)}, which is not an arm in this run "
+            f"({sorted(labels)})"
+        )
+    return names
 
 
 def side_home(explicit, out, label: str, *, ab: bool) -> Path:
@@ -552,6 +584,52 @@ def stop_owned_sides(
 
 
 def run(args, ab_ref = None) -> int:
+    """Take the output directory FIRST, then run inside it.
+
+    THE LOCK IS THE FIRST THING THE RUN DOES, and it used to be almost the last. It was taken where
+    the `Recorder` opens `payload.jsonl`, which is after `prepare_payload` has archived what was
+    already in the directory and after every clone, build and launch. So a second invocation into a
+    busy `--out` without `--resume` was refused only once it had:
+
+      * RENAMED THE LIVE PAYLOAD of the run it was about to be refused in favour of. `rename` does
+        not disturb a writer -- the first run's descriptor names the inode, not the path -- so that
+        run went on recording into `payload-<stamp>.jsonl` while `payload.jsonl`, the one name
+        `--report`, `--assert-liveness` and the next `--resume` all open, was gone. The rule
+        `prepare_payload` states for itself is that a refusal leaves the payload exactly as it
+        found it, and this broke it in the one case the guard exists for.
+      * CLONED, BUILT AND LAUNCHED A STUDIO ON A MACHINE THAT WAS MEASURING. Contention between two
+        runs sharing one `--out` is the whole reason for the guard, so it may not be the price of
+        the refusal.
+
+    Held through setup and the cells, and handed to the `Recorder` rather than taken twice. The
+    `finally` releases it on every path, including the refusals that leave by returning, so a
+    second `run()` in one process -- which is how the tests drive this -- still gets the directory.
+    """
+    from .runtime.types import OutDirLock, Paths
+
+    # THE ARM NAMES, BEFORE A SINGLE PROCESS EXISTS AND BEFORE A SINGLE DIRECTORY. Nothing below
+    # this line can be undone without the cleanup `finally`, and that block is a long way down; see
+    # `_windowed_arms`. The labels are READ OFF THE SPECS rather than spelled a second time, so the
+    # check and the sides cannot drift into disagreeing about what an arm is called -- and
+    # `side_specs` is a pure list build, so asking it this early starts nothing.
+    #
+    # AHEAD OF THE OUTPUT DIRECTORY as well as ahead of the processes. A mistyped `--windowed-arm`
+    # must cost nothing at all, and a directory tree with a lock file in it is not nothing. See
+    # test_studiobench_windowed_arm_names.
+    specs = side_specs(args, ab_ref)
+    arm_labels = [label for label, _ref, _attach, _port, _password in specs]
+    windowed = _windowed_arms(getattr(args, "windowed_arm", ""), arm_labels)
+
+    out = Path(args.out or f"studiobench-{args.tier}-{int(time.time())}").resolve()
+    paths = Paths.under(out)
+    out_lock = OutDirLock.take(paths.out)
+    try:
+        return _run_holding_out_dir(args, ab_ref, specs, arm_labels, windowed, paths, out_lock)
+    finally:
+        out_lock.release()
+
+
+def _run_holding_out_dir(args, ab_ref, specs, arm_labels, windowed, paths, out_lock) -> int:
     from .fixture.corpus import Corpus
     from .instruments import build as build_instruments  # noqa: F401
     from .pacer import Pacer
@@ -569,12 +647,10 @@ def run(args, ab_ref = None) -> int:
         wait_for_healthz,
     )
     from .runtime.seeder import Seeder
+    from .runtime.readiness import MODE_FULL, MODE_WINDOWED
     from .runtime.session import CellRunner, build_cells, ensure_probe_image, make_context
     from .runtime import resources
-    from .runtime.types import Paths
 
-    out = Path(args.out or f"studiobench-{args.tier}-{int(time.time())}").resolve()
-    paths = Paths.under(out)
     _log(f"studiobench {TOOL_VERSION}  tier={args.tier}  out={paths.out}")
 
     corpus = Corpus.load()
@@ -605,35 +681,17 @@ def run(args, ab_ref = None) -> int:
             )
             return 2
 
-    # BEFORE the first install, the first launch and the first recorded row. See `prepare_payload`:
-    # a refusal that arrives after two clones and two builds has cost the caller an hour to say
-    # something it could have said in a millisecond, and an archive that arrives after the Recorder
-    # has opened the file has already appended this run's header to the payload it was moving.
-    archived = prepare_payload(
-        paths, requested_identity(args, ab_ref, corpus.corpus_hash), resume = bool(args.resume)
-    )
-
-    # AND THE REPORTS THE ARCHIVE LEFT BEHIND. See `invalidate_stale_reports`: this is the one
-    # point every reuse of an output directory passes through, whichever of the two ways it
-    # invalidates what is already sitting there.
-    invalidate_stale_reports(paths.out, archived = archived, extra_init = extra_init)
-
-    # One spec per side, with its own home and password. Without --ab there is exactly one.
-    specs = side_specs(args, ab_ref)
-    # Armed AFTER the sides are known, because what it has to cover depends on them: see
-    # `watchdog_deadline_s`. Nothing between here and there can hang -- `Corpus.load` reads a
-    # generated fixture and `side_specs` builds a list.
-    watchdog = browser_mod.install_wall_clock_watchdog(
-        watchdog_deadline_s(
-            args.tier,
-            specs,
-            rungs = planned_rungs(args),
-            reps = args.reps,
-            surfaces = bool(args.surfaces),
-        ),
-        "studiobench",
-        _log,
-    )
+    # EVERY A/B ARGUMENT CHECK, AHEAD OF `prepare_payload`, FOR THE REASON STATED DIRECTLY ABOVE.
+    # These three refuse the INVOCATION -- nothing they read comes from a Studio, a browser or a
+    # payload, only `args` and `specs`, both of which exist before this function starts anything.
+    # Left below the archive they cost the previous run its payload's standard path: a fresh
+    # `--ab X --home H --out DIR` over a finished DIR archived `payload.jsonl` and then exited 2
+    # having run no benchmark, so the next `--resume` found nothing to continue and silently
+    # re-ran the whole ladder, while `--report` and `--assert-liveness` opened the standard name
+    # and found no rows. `rollback_session_rows` states the rule: a refusal has to leave the
+    # payload it refused exactly as it found it. That rule covers `invalidate_stale_reports`
+    # below for the same reason it covers the archive: it REPLACES `summary.md` and `ab.md`, so
+    # a refusal reaching it would take the previous run's reports down with its payload.
     if ab_ref:
         if args.attach and not args.attach_b:
             _log("  --ab with --attach needs --attach-b URL: the second build has to be somewhere.")
@@ -647,6 +705,56 @@ def run(args, ab_ref = None) -> int:
         if injection_problem:
             _log(f"  {injection_problem}")
             return 2
+        # ONE HOME CANNOT HOLD TWO BUILDS. `install_studio` checks the ref out into a repo
+        # directory derived from the home and installs from it, so two arms sharing a home share
+        # one checkout: the second install overwrites the first and BOTH arms then serve whichever
+        # build was installed last. The A/B compares a build against itself and reports a clean,
+        # confident "no difference" -- which is the same failure mode as a copy timing that is
+        # really a sleep, and just as invisible in the payload.
+        #
+        # Measured, before this refused: two runs of the same pair, one at 716 ms and 718 ms for
+        # base and treatment, the other at 2,583 ms and 2,614 ms. Nearly equal WITHIN each run and
+        # 3.6x apart BETWEEN them, because each run was internally uniform and the two runs were
+        # serving different builds. Read as a within-run comparison it says the change does
+        # nothing; the difference was sitting between the runs the whole time.
+        if not args.attach and args.home:
+            _log(
+                "  --home cannot be used with --ab: both arms would install into that one "
+                "directory, the second install would overwrite the first, and both arms would "
+                "then serve the same build. Drop --home and each arm gets its own "
+                "studio_home_<label> under --out."
+            )
+            return 2
+
+    # BEFORE the first install, the first launch and the first recorded row. See `prepare_payload`:
+    # a refusal that arrives after two clones and two builds has cost the caller an hour to say
+    # something it could have said in a millisecond, and an archive that arrives after the Recorder
+    # has opened the file has already appended this run's header to the payload it was moving.
+    archived = prepare_payload(
+        paths, requested_identity(args, ab_ref, corpus.corpus_hash), resume = bool(args.resume)
+    )
+
+    # AND THE REPORTS THE ARCHIVE LEFT BEHIND. See `invalidate_stale_reports`: this is the one
+    # point every reuse of an output directory passes through, whichever of the two ways it
+    # invalidates what is already sitting there.
+    invalidate_stale_reports(paths.out, archived = archived, extra_init = extra_init)
+
+    # Armed AFTER the sides are known, because what it has to cover depends on them: see
+    # `watchdog_deadline_s`. Nothing between the `side_specs` call above and here can hang --
+    # `_windowed_arms` compares two sets, `Corpus.load` reads a generated fixture, and
+    # `prepare_payload` and `invalidate_stale_reports` each touch a handful of files in `--out`.
+    watchdog = browser_mod.install_wall_clock_watchdog(
+        watchdog_deadline_s(
+            args.tier,
+            specs,
+            rungs = planned_rungs(args),
+            reps = args.reps,
+            surfaces = bool(args.surfaces),
+        ),
+        "studiobench",
+        _log,
+    )
+    if ab_ref:
         _log(f"  A/B: base={args.branch} vs treatment={ab_ref}, interleaved in ONE session")
 
     installs = []
@@ -673,10 +781,10 @@ def run(args, ab_ref = None) -> int:
                 side_install, owns = None, False
                 _log(f"  {label}: attaching to {side_url}")
             else:
-                home = side_home(args.home, out, label, ab = bool(ab_ref))
+                home = side_home(args.home, paths.out, label, ab = bool(ab_ref))
                 _log(f"  {label}: installing Studio from {ref} into {home} (this takes a while)")
                 side_install = install_studio(ref, home)
-                launch_studio(side_install, port, out / "logs" / f"studio_{label}.log")
+                launch_studio(side_install, port, paths.out / "logs" / f"studio_{label}.log")
                 side_url, owns = side_install.base_url, True
                 _log(f"  {label}: Studio up at {side_url}")
             installs.append((side_install, owns))
@@ -934,61 +1042,124 @@ def run(args, ab_ref = None) -> int:
         # back the way it found it. See `rollback_session_rows`.
         mark = payload_mark(paths.payload_jsonl)
         ctx, session = make_context(
-            bundle, base_url, args.tier, args.instrument_level, paths, _log, procs
+            bundle,
+            base_url,
+            args.tier,
+            args.instrument_level,
+            paths,
+            _log,
+            procs,
+            # ADOPTED, NOT TAKEN AGAIN. `run()` has held this directory since before the payload
+            # was archived; the `Recorder` writes its session id into the marker it already holds.
+            out_lock = out_lock,
         )
         rec = ctx.recorder
         # The ladder this run PROMISED, resolved before it is announced. Recorded rather than
         # left to be re-derived from the tier later: `--report` reads it back to decide which rungs
         # a payload owes, and a `--rungs` override the payload did not carry made that answer wrong.
         rungs = planned_rungs(args)
+        meta_row = {
+            "row_type": "run_meta",
+            "tier": args.tier,
+            "tool_version": TOOL_VERSION,
+            "corpus_hash": corpus.corpus_hash,
+            "studio_ref": args.branch if owns_studio else f"attached:{base_url}",
+            # WHICH COMMIT THAT REF NAMED, so a later `--resume` can tell a continuation from
+            # a branch that moved. Empty for an attached Studio, whose build is not visible
+            # from here. See `commit_problems`.
+            "studio_commit": sides[0].get("commit") or "",
+            "bundle": verdict.as_dict(),
+            "platform": {
+                "system": platform.system(),
+                "machine": platform.machine(),
+                # WHICH PHYSICAL MACHINE, which `system` and `machine` do not answer between
+                # them. `platform.machine()` is the ARCHITECTURE -- "the machine type, e.g.
+                # 'AMD64'" -- so two ordinary Linux x86_64 boxes report `Linux` and `x86_64`
+                # alike, and every number this tool produces is machine-local: `report/render.py`
+                # says so in its own words, "machine-local; does not travel between machines".
+                # `platform.node()` is the computer's network name, which is the only thing
+                # recorded here that differs between two such hosts. Empty when it cannot be
+                # determined, exactly as the other two are.
+                "node": platform.node(),
+                "python": sys.version.split()[0],
+                "engine": bundle.engine,
+                "engine_note": bundle.engine_note,
+            },
+            "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "pacer_base_url": pacer.base_url,
+            "cadence": args.cadence,
+            "rungs": rungs,
+            "tier_rungs": TIER_RUNGS[args.tier],
+            "reps": args.reps,
+            "instrument_level": args.instrument_level,
+            # In the payload, not only in the log. Two runs with different fixtures are
+            # not comparable, and a fixture difference that is not recorded is one a later
+            # reader has no way to notice before quoting a ratio across it.
+            "stream_tail_chars": args.stream_tail_chars,
+            "corpus_dollars": bool(args.corpus_dollars),
+            # WHICH PROBE, IF ANY, WAS IN THE PAGE. Recorded next to the corpus hash and for
+            # the same reason: a payload nobody can audit against the page it measured has to
+            # be taken on trust. `null` is the normal case and the only scorable one.
+            "probe_init_script": extra_init or None,
+            # WHETHER THE PROBE RAN BEFORE THE FILM, for the same reason and with the same
+            # consequence: it changes what the cell measures without moving the cell id, so
+            # `--resume` needs it on the record to be able to refuse a toggle. See
+            # `IDENTITY_AXES`.
+            "click_probe": bool(getattr(args, "click_probe", False)),
+            # AN ARM RUNNING THIS IS NOT A MEASUREMENT OF THE BUILD, and the payload has to
+            # say so itself. A reader who finds a treatment arm 40% slower has no other way
+            # to discover that the harness put the 40% there on purpose, and `--resume` reads
+            # it back as an identity axis so a calibration cannot be continued as an ordinary
+            # run or the other way round. See `IDENTITY_AXES`.
+            "inject_stream_cost_ms": getattr(args, "inject_stream_cost_ms", None),
+            # WHICH BROWSER ACTUALLY RENDERED THIS, which the engine name does not settle.
+            #
+            # `--headed` flips `headless` at launch, and since Playwright 1.57 the two modes
+            # default to DIFFERENT BINARIES -- headed resolves to `chrome`, headless to
+            # `chrome-headless-shell`. This workflow pins `playwright>=1.45,<2`, so that split is
+            # in range. It is not a mode flag with a mode-shaped effect: one report measures
+            # headless-shell at two to three times the processing time of chrome-stable, headless
+            # falls back to software rendering for GPU-accelerated work, and the compositor still
+            # ticks at 60 Hz in headless unless BeginFrameControl is driven by hand.
+            #
+            # This tool measures frames, jank and time-to-settle. A payload recorded headed and one
+            # recorded headless are two different renderers, and the payload has to say which it
+            # was before anything compares them.
+            "headed": bool(getattr(args, "headed", False)),
+        }
+        rec.emit(meta_row)
+
+        from .scoring import payload_rules
+
+        # THE COMPARABILITY KEY, emitted as its own row so a prose comparison can be checked later.
+        #
+        # `floor_table.load` already refuses to POOL payloads across tiers and corpora, and that
+        # guard works. What it cannot reach is a comparison made in PROSE between two separately
+        # published runs, which is how a wrong number nearly propagated here twice.
+        #
+        # Computed over the run_meta row that was actually emitted, not over a second dict built
+        # to look like it. A hand-copied duplicate is one more value whose provenance is not
+        # stable, which is the whole failure this module exists to stop: the key has to describe
+        # the payload, not a parallel description of it that can drift.
+        #
+        # Keyed on the COMPUTED corpus hash rather than on the harness commit, because a commit is
+        # a claim about provenance and the hash is the thing itself: one tree in this campaign ran
+        # a corpus that matched neither the branch's pre-fix nor its post-fix hash, silently and
+        # self-consistently, and only printing the hash revealed it.
         rec.emit(
             {
-                "row_type": "run_meta",
-                "tier": args.tier,
-                "tool_version": TOOL_VERSION,
-                "corpus_hash": corpus.corpus_hash,
-                "studio_ref": args.branch if owns_studio else f"attached:{base_url}",
-                # WHICH COMMIT THAT REF NAMED, so a later `--resume` can tell a continuation from
-                # a branch that moved. Empty for an attached Studio, whose build is not visible
-                # from here. See `commit_problems`.
-                "studio_commit": sides[0].get("commit") or "",
-                "bundle": verdict.as_dict(),
-                "platform": {
-                    "system": platform.system(),
-                    "machine": platform.machine(),
-                    "python": sys.version.split()[0],
-                    "engine": bundle.engine,
-                    "engine_note": bundle.engine_note,
-                },
-                "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                "pacer_base_url": pacer.base_url,
-                "cadence": args.cadence,
-                "rungs": rungs,
-                "tier_rungs": TIER_RUNGS[args.tier],
-                "reps": args.reps,
-                "instrument_level": args.instrument_level,
-                # In the payload, not only in the log. Two runs with different fixtures are
-                # not comparable, and a fixture difference that is not recorded is one a later
-                # reader has no way to notice before quoting a ratio across it.
-                "stream_tail_chars": args.stream_tail_chars,
-                "corpus_dollars": bool(args.corpus_dollars),
-                # WHICH PROBE, IF ANY, WAS IN THE PAGE. Recorded next to the corpus hash and for
-                # the same reason: a payload nobody can audit against the page it measured has to
-                # be taken on trust. `null` is the normal case and the only scorable one.
-                "probe_init_script": extra_init or None,
-                # WHETHER THE PROBE RAN BEFORE THE FILM, for the same reason and with the same
-                # consequence: it changes what the cell measures without moving the cell id, so
-                # `--resume` needs it on the record to be able to refuse a toggle. See
-                # `IDENTITY_AXES`.
-                "click_probe": bool(getattr(args, "click_probe", False)),
-                # AN ARM RUNNING THIS IS NOT A MEASUREMENT OF THE BUILD, and the payload has to
-                # say so itself. A reader who finds a treatment arm 40% slower has no other way
-                # to discover that the harness put the 40% there on purpose, and `--resume` reads
-                # it back as an identity axis so a calibration cannot be continued as an ordinary
-                # run or the other way round. See `IDENTITY_AXES`.
-                "inject_stream_cost_ms": getattr(args, "inject_stream_cost_ms", None),
+                "row_type": "comparability",
+                "key": payload_rules.comparability_key(meta_row),
+                "fields": payload_rules.comparability_fields(meta_row),
+                "note": (
+                    "quote this key beside any number taken from this payload. Two numbers with "
+                    "different keys are not comparable, and `--compare` will name the field that "
+                    "differs."
+                ),
             }
         )
+        _log(f"  comparability {payload_rules.comparability_key(meta_row)}")
+
         rec.gate("production_build", verdict.production, verdict.as_dict())
 
         if args.tier == "fast":
@@ -1044,6 +1215,35 @@ def run(args, ab_ref = None) -> int:
             _log("")
 
         image_path = ensure_probe_image(paths)
+        # WHICH SIDE, IF ANY, IS ALLOWED THE WINDOWED READINESS GATE.
+        #
+        # Per side and never global, so an A/B of the shipped build against a virtualised one runs
+        # the base arm on the strict full-mount gate it has always had. A flag that relaxed both
+        # sides would let a base arm that failed to finish mounting sail through and be compared
+        # against a treatment that did the same, which is the exact "flattering garbage" the gate
+        # exists to refuse -- on both arms at once, so the ratio would still look fine.
+        #
+        # `windowed` was parsed and validated at the top of this function, before the installs, the
+        # pacer and the browser existed. Only the application of it is left here.
+        for side in sides:
+            side["readiness_mode"] = MODE_WINDOWED if side["label"] in windowed else MODE_FULL
+            if side["readiness_mode"] == MODE_WINDOWED:
+                _log(
+                    f"  {side['label']}: WINDOWED readiness gate. This arm is permitted to mount "
+                    "fewer messages than the thread contains; it must publish aria-setsize matching "
+                    "the seeded count, mount the end of the thread, settle, and pass the "
+                    "scroll-to-top completeness probe. See runtime/readiness.py."
+                )
+                rec.gate(
+                    f"windowed_readiness:{side['label']}",
+                    True,
+                    {
+                        "arm": side["label"],
+                        "reason": "declared on the command line with --windowed-arm",
+                        "note": "structural UI parity is NOT APPLICABLE to this arm; run "
+                        "sweep/ui_parity.py --mode behaviour",
+                    },
+                )
         for side in sides:
             side_seeder = Seeder(
                 base_url = side["base_url"], auth = side["auth"], model_id = model_id, log = _log
@@ -1055,6 +1255,7 @@ def run(args, ab_ref = None) -> int:
                 seeder = side_seeder,
                 corpus = corpus,
                 click_probe = bool(getattr(args, "click_probe", False)),
+                readiness_mode = side["readiness_mode"],
                 base_url = side["base_url"],
                 model_id = model_id,
                 tier = args.tier,
@@ -1464,8 +1665,8 @@ def _render_ab(
     if missing:
         result.void = True
         result.void_reason = (
-            f"{len(missing)} of {len(planned)} planned cells did not complete, so what remains is "
-            "a selection rather than the plan: " + ", ".join(missing)
+            f"{len(missing)} of {len(planned)} planned cells left no usable reading, so what "
+            "remains is a selection rather than the plan: " + ", ".join(missing)
         )
 
     text = render_ab_table(result)
@@ -1510,6 +1711,17 @@ IDENTITY_AXES = (
     "tier",
     "cadence",
     "engine",
+    # THE INSTRUMENTS THEMSELVES. `TOOL_VERSION` is bumped when what an instrument MEASURES
+    # changes and for no other reason -- this commit bumped it to 0.2.0 because
+    # `reasoning_toggle.open_ms` now terminates on a settled mount rather than on the `data-state`
+    # flip, which makes it a different quantity under the same name. None of that moves a cell id,
+    # so `--resume` into a half-finished 0.1.0 payload from an upgraded tree skipped the completed
+    # cells and appended the rest measured by 0.2.0: one ladder built from two instruments, which
+    # is the same failure the tier and the corpus are on this list for. `merged_run_meta` names the
+    # mixture afterwards, but only `--compare` and a floor-gated `floor_table.render` call it --
+    # plain `--report` takes the FIRST header and pools the two quantities without a word. Refused
+    # here instead, before anything is installed and before anything is measured.
+    "tool_version",
     "instrument_level",
     "corpus_hash",
     "studio_ref",
@@ -1552,6 +1764,14 @@ IDENTITY_AXES = (
     # cells that were recorded cleanly before it are unscorable from then on and nothing this tool
     # offers takes it back. Refusing here costs a millisecond and happens before the first install.
     "probe_init_script",
+    # `--headed`. On the same rule as `engine` directly above the others, and for the same reason
+    # the engine is there at all: it decides which browser binary renders the film. Since
+    # Playwright 1.57 headed and headless resolve to different executables (`chrome` against
+    # `chrome-headless-shell`), headless falls back to software rendering for GPU-accelerated
+    # work, and the compositor's own pacing differs. A resume that toggles it would skip the
+    # completed cells and append the rest under the same ids, building one ladder from two
+    # renderers -- exactly what this check exists to refuse.
+    "headed",
 )
 
 #: The axes that describe the SECOND side, which only exist when a run has one. See
@@ -1578,6 +1798,7 @@ HISTORICAL_DEFAULTS = {
     "click_probe": False,
     "inject_stream_cost_ms": None,
     "probe_init_script": None,
+    "headed": False,
 }
 
 #: THE RATIO THE LADDER WAS SIZED BY, carried on every cell's `meta` by `session.build_cells`.
@@ -1623,6 +1844,9 @@ def requested_identity(args, ab_ref, corpus_hash: str) -> dict:
     return {
         "tier": args.tier,
         "cadence": args.cadence,
+        # THE INSTRUMENTS THIS TREE CARRIES, as a module constant rather than anything the caller
+        # can ask for. A payload recorded by another version was measured by other instruments.
+        "tool_version": TOOL_VERSION,
         # THE ENGINE THAT WILL RENDER, not the flag that asked for it. `--engine` defaults to
         # nothing and `browser.launch` resolves the platform's desktop webview family, so the
         # requested value has to be resolved the same way `launch` resolves it -- otherwise the
@@ -1645,6 +1869,11 @@ def requested_identity(args, ab_ref, corpus_hash: str) -> dict:
         "corpus_dollars": bool(args.corpus_dollars),
         "click_probe": bool(getattr(args, "click_probe", False)),
         "inject_stream_cost_ms": getattr(args, "inject_stream_cost_ms", None),
+        # Spelled the same way `run_meta` records it, through `bool`, so the recorded False and
+        # the requested value are the same type. Adding the axis without this line made every
+        # resume refuse itself -- the payload declared `False` and the request declared `None` --
+        # which is the failure mode an identity axis has when it is only half wired up.
+        "headed": bool(getattr(args, "headed", False)),
         # FROM THE ENVIRONMENT, because that is where this one is asked for: the probe hook is a
         # variable rather than a flag on purpose, so `args` never sees it and there is nothing to
         # read it from. Spelled exactly as `run_meta` records it -- the path as it was given -- for
@@ -2123,6 +2352,16 @@ def _summarise(rows: list, paths) -> None:
         if not r.get("completed"):
             f = r.get("failure") or {}
             _log(f"    FAILED: {f.get('kind')}: {str(f.get('message'))[:100]}")
+    # SAID UNDER THE TABLE THAT PRINTS THEM. `elems` and `spans` come from `census_peak`, whose
+    # action is chosen by a max() over per-action censuses that race their own teardown, so it is
+    # not the same moment on two arms. Differencing these two columns between arms is what
+    # produced a withdrawn "43% more standing DOM" claim. The columns stay because the high-water
+    # mark is a useful diagnostic; the warning stays with them so it cannot be read without it.
+    _log(
+        "\n  elems/spans are census_peak: a diagnostic high-water mark, taken at whichever "
+        "action mounted most.\n  Do NOT difference them between arms. For a cross-arm census use "
+        "a settled measure."
+    )
 
 
 def _rung_tokens(labels: list) -> list:
@@ -2224,6 +2463,79 @@ def report_only(args) -> int:
     out.write_text(text, encoding = "utf-8")
     _log(f"summary written to {out}")
     return 0
+
+
+def compare_payloads(args) -> int:
+    """Are these two payloads comparable, and if not, exactly which field stops them?
+
+    The guard in `floor_table.load` refuses to POOL payloads across tiers and corpora and it
+    works. It cannot reach a comparison made in prose across two separately published runs, which
+    is how a withdrawn number nearly propagated twice in one campaign. Quoting the comparability
+    key beside a number turns that check from an act of memory into one command.
+    """
+    from .report.payload import read_records
+    from .scoring import payload_rules
+
+    metas = []
+    for raw in args.compare:
+        path = Path(raw)
+        if not path.exists():
+            print(f"no such payload: {path}")
+            return 2
+        # EVERY header, not the first. `--resume` appends a second `run_meta` describing the run
+        # that continued the file, and it may legitimately have extended the ladder: `rungs` is
+        # deliberately outside `IDENTITY_AXES` because adding a rung ADDS cells rather than
+        # reinterpreting the recorded ones. Keying on the first header therefore hashes a ladder
+        # the file has since outgrown, and declares a resumed payload comparable with the one-rung
+        # run it started as. `floor_table.tiers_of` and `corpora_of` were both fixed for exactly
+        # this; `--compare` was the reader left behind.
+        #
+        # READ THE WAY EVERY OTHER READER IN THIS TOOL READS. The payload is append-only and every
+        # row is flushed as it is written, so a run killed during its last append leaves valid rows
+        # followed by a torn one -- the failure this format is chosen to survive, and the reason
+        # `report.read_records` counts a malformed line instead of raising. `recorded_identities`
+        # and `_resume_set` skip one too. Parsing it here with a bare `json.loads` made `--compare`
+        # the only reader that answered an interrupted payload with a JSONDecodeError traceback
+        # rather than with the check it was asked for.
+        records, discarded = read_records(path)
+        if discarded:
+            print(
+                f"  {path}: {discarded} malformed line(s) skipped, which is what a run killed "
+                f"mid-append leaves. The check below reads the intact records."
+            )
+        meta, conflicts = payload_rules.merged_run_meta(records)
+        if meta is None:
+            print(f"{path} carries no run_meta row, so it cannot be checked at all")
+            return 2
+        if conflicts:
+            # A file whose own headers disagree is not one measurement, so no single key can stand
+            # for it and the honest answer is a refusal rather than a token.
+            print(f"{path} disagrees with ITSELF across its own run_meta rows:")
+            for line in conflicts:
+                print(f"  {line}")
+            print(
+                "\nThis payload holds more than one run and they were not measuring the same "
+                "thing, so no comparability key describes it. Score the sessions apart."
+            )
+            return 2
+        metas.append((path, meta))
+
+    (pa, a), (pb, b) = metas
+    ka = payload_rules.comparability_key(a)
+    kb = payload_rules.comparability_key(b)
+    print(f"  {pa}  {ka}")
+    print(f"  {pb}  {kb}")
+    if ka == kb:
+        print("\ncomparable: every field the key covers matches.")
+        return 0
+    print("\nNOT COMPARABLE. These differ:")
+    for line in payload_rules.explain_incomparable(a, b):
+        print(f"  {line}")
+    print(
+        "\nA number from one of these must not be quoted against a number from the other. "
+        "Re-run the older side."
+    )
+    return 1
 
 
 def assert_liveness(args) -> int:
@@ -2420,6 +2732,16 @@ def parse_args(argv: list):
         "so a payload mailed in from another machine reports here",
     )
     ap.add_argument(
+        "--compare",
+        metavar = ("PAYLOAD_A", "PAYLOAD_B"),
+        nargs = 2,
+        dest = "compare",
+        help = "offline. Say whether two payloads may be compared at all, and if not, name the "
+        "field that differs. `floor_table` already refuses to POOL across tiers and corpora; "
+        "this is for the case it cannot reach, a comparison made in PROSE between two "
+        "separately published runs",
+    )
+    ap.add_argument(
         "--assert-liveness",
         metavar = "PAYLOAD",
         dest = "assert_liveness",
@@ -2436,6 +2758,24 @@ def parse_args(argv: list):
         "only. A listed action that does run is still held to its slot and its own "
         "assertion. Use only for an action a platform genuinely cannot perform, and say "
         "which in the pull request: every name here is a hole in the gate",
+    )
+    ap.add_argument(
+        "--windowed-arm",
+        metavar = "ARMS",
+        dest = "windowed_arm",
+        # An ENV FALLBACK as well as the flag. `scripts/pr_perf_sweep.py` builds studiobench's
+        # command line itself and is shared with other people's in-flight sweeps, so adding an
+        # argument there mid-run is a hazard; this lets the sweep driver select the gate through
+        # the environment without anybody editing the driver.
+        default = os.environ.get("SBENCH_WINDOWED_ARM", ""),
+        help = "comma-separated arm labels (base, treatment) that mount a WINDOW of the thread "
+        "rather than all of it, and are therefore gated on the windowed readiness signal "
+        "instead of on every message being mounted. Not a relaxation: the named arm must "
+        "publish aria-setsize equal to the seeded message count, mount the end of the "
+        "thread, settle, and pass a scroll-to-top completeness probe. Naming an arm that "
+        "does NOT virtualise makes no difference to it beyond the extra conditions. "
+        "Structural UI parity is not applicable to a windowed arm; score it with "
+        "sweep/ui_parity.py --mode behaviour",
     )
     ap.add_argument(
         "--click-probe",
@@ -2580,6 +2920,8 @@ def main(argv: list) -> int:
         return doctor(args)
     if args.report:
         return report_only(args)
+    if args.compare:
+        return compare_payloads(args)
     if args.assert_liveness:
         return assert_liveness(args)
     if args.ab:

@@ -234,6 +234,32 @@ def test_a_volatile_attribute_keeps_its_presence_even_though_its_value_is_droppe
     assert a == b
 
 
+def test_the_shared_signature_still_sees_virtualization_bookkeeping():
+    """WHERE THE `aria-posinset` EXCLUSION LIVES, and where it does not.
+
+    The VISIBLE-region digest drops `aria-posinset` and `aria-setsize`, because readiness.py lets a
+    windowed arm publish them on the message itself and the fully mounted arm publishes neither --
+    so comparing them reports every message as changed while the content is identical. That
+    exclusion is passed in by that one caller. The shared `signature`, which the whole-thread
+    digest, the per-message rows and the overlays all use, keeps them: those pairs are scored only
+    when NEITHER arm is windowing, and there an ordinal that appears or moves is a real difference.
+    """
+    plain, numbered = sigs(
+        {"tag": "div", "attrs": {}}, {"tag": "div", "attrs": {"aria-posinset": "3"}}
+    )
+    assert plain != numbered
+    three, four = sigs(
+        {"tag": "div", "attrs": {"aria-posinset": "3"}},
+        {"tag": "div", "attrs": {"aria-posinset": "4"}},
+    )
+    assert three != four
+    small, large = sigs(
+        {"tag": "div", "attrs": {"aria-setsize": "18"}},
+        {"tag": "div", "attrs": {"aria-setsize": "180"}},
+    )
+    assert small != large
+
+
 def test_added_and_removed_elements_move_the_signature():
     small, large = sigs(
         {"tag": "div", "children": [{"tag": "span"}]},

@@ -60,9 +60,12 @@ Playwright's WebKit is a PROXY, not the webview Desktop embeds. It is Apple's We
 Playwright, driven headless, with no Tauri IPC layer and no WebKitGTK compositor. Read it as
 "JavaScriptCore plus WebKit layout", not as "Unsloth Desktop on macOS".
 
-Desktop Linux under Wayland is WORSE than any number this file can produce, and not by a little:
-studio/src-tauri/src/linux_webkit.rs sets WEBKIT_DMABUF_RENDERER_FORCE_SHM=1, which forces the
-software rendering transport. Everything below runs on a normal compositor path.
+Desktop Linux is WORSE than any number this file can produce, and not by a little:
+studio/src-tauri/src/linux_webkit.rs drops the webview off the hardware DMA-BUF transport on
+Wayland and on NVIDIA under either display server. It forces the shared-memory transport with
+WEBKIT_DMABUF_RENDERER_FORCE_SHM=1, or, on Wayland and on old WebKitGTK, disables the renderer
+outright with WEBKIT_DISABLE_DMABUF_RENDERER=1, which turns accelerated compositing off for the
+whole process. Everything below runs on a normal compositor path.
 
 THIS HARNESS MEASURES, IT DOES NOT GATE. It prints the table and exits 0 on any timing. It exits
 non-zero only when the harness itself is broken: the seed did not land, an element it drives went
