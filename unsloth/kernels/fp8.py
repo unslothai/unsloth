@@ -540,33 +540,44 @@ class FP8_fbgemm_block_linear(torch.autograd.Function):
         bias = None,
     ):
         orig_shape = X.shape
-        X = X.view(-1, X.shape[-1])
+        X = X.reshape(-1, X.shape[-1])  # reshape, not view: X may be a strided slice
 
         bs_n, bs_k = getattr(weight, "block_size", None) or getattr(
             weight_scale, "block_size", [128, 128]
         )
         bs_m = bs_n
 
-        m, n = weight.shape
-        p, q = weight_scale.shape
+        if weight_scale.dtype not in (torch.float32, torch.float16, torch.bfloat16):
+            weight_scale = weight_scale.to(torch.float32)  # e8m0 scales break triton
 
-        if triton.cdiv(m, bs_n) != p or triton.cdiv(n, bs_k) != q:
-            if triton.cdiv(m, bs_n) == q and triton.cdiv(n, bs_k) == p:
-                # Backward transposes the weight; transpose the scale to match
-                # (transposing the weight itself would break matmul with X).
-                weight_scale = weight_scale.T
-            else:
-                raise ValueError(
-                    f"Weight shape {weight.shape} and scales shape {weight_scale.shape} is not compatible with block size {bs_n, bs_k}"
-                )
+        m, n = weight.shape
+        # A per-tensor scale has no block grid to check or transpose; the fallback
+        # below scales by it directly.
+        per_tensor = weight_scale.ndim != 2
+        if not per_tensor:
+            p, q = weight_scale.shape
+            if triton.cdiv(m, bs_n) != p or triton.cdiv(n, bs_k) != q:
+                if triton.cdiv(m, bs_n) == q and triton.cdiv(n, bs_k) == p:
+                    # Backward transposes the weight; transpose the scale to match
+                    # (transposing the weight itself would break matmul with X).
+                    weight_scale = weight_scale.T
+                else:
+                    raise ValueError(
+                        f"Weight shape {weight.shape} and scales shape {weight_scale.shape} is not compatible with block size {bs_n, bs_k}"
+                    )
 
         # f8f8bf16_blockwise raises on non-128x128x128 blocks ("Only
-        # 128x128x128 block size is supported") and, measured on H800 with
+        # 128x128x128 block size is supported"), on scales that are not a float32
+        # grid ("Scale tensors must be float32."), and, measured on H800 with
         # fbgemm 1.4.0, on in_features % 16 != 0 or out_features % 8 != 0
         # ("cutlass cannot implement"). Dequant + plain matmul for those,
         # the same fallback FP8BlockQuantLinear uses for unevenly tiled K.
         kernel_supported = (
-            (bs_m, bs_n, bs_k) == (128, 128, 128) and X.shape[-1] % 16 == 0 and m % 8 == 0
+            not per_tensor
+            and weight_scale.dtype == torch.float32
+            and (bs_m, bs_n, bs_k) == (128, 128, 128)
+            and X.shape[-1] % 16 == 0
+            and m % 8 == 0
         )
         if not kernel_supported:
             W_deq = _blockwise_weight_dequant_any_shape(weight, weight_scale, [bs_n, bs_k], X.dtype)

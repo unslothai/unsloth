@@ -22,24 +22,17 @@ import torch
 cuda_available = torch.cuda.is_available()
 
 
-def _fbgemm_block_selected():
-    # Ask unsloth's own import-time probe rather than checking for sm_90: that is
-    # exactly when the kernel path is reachable, and future arches enable themselves.
-    if not cuda_available:
-        return False
-    try:
-        from unsloth.kernels import fp8
-        return fp8.fp8_block_quant_linear is fp8.fp8_fbgemm_block_linear
-    except Exception:
-        return False
-
-
 # Only the kernel battery needs fbgemm; the fallback tests below never reach it.
 pytestmark = pytest.mark.skipif(not cuda_available, reason = "needs CUDA")
-needs_fbgemm = pytest.mark.skipif(
-    not _fbgemm_block_selected(),
-    reason = "needs fbgemm f8f8bf16_blockwise",
-)
+
+
+def skip_without_fbgemm():
+    # Ask unsloth's own import-time probe rather than checking for sm_90: that is
+    # exactly when the kernel path is reachable, and future arches enable themselves.
+    # Called inside the test so collection never imports unsloth.
+    from unsloth.kernels import fp8
+    if fp8.fp8_block_quant_linear is not fp8.fp8_fbgemm_block_linear:
+        pytest.skip("needs fbgemm f8f8bf16_blockwise")
 
 
 def _block_quantize_weight(W, block):
@@ -87,8 +80,8 @@ def _rel_err(out, ref):
     return float((out - ref).abs().mean() / ref.abs().mean())
 
 
-@needs_fbgemm
 def test_output_tile_grid_battery_matches_reference():
+    skip_without_fbgemm()
     # Shapes cover both dispatch buckets' former failure zones plus safe ones.
     # On fbgemm <=1.3.0 the failing ones returned whole outputs at ~0.7 relative
     # error; the healthy bound (activation quant noise) sits around 0.04.
@@ -172,6 +165,39 @@ def test_non_square_block_uses_dequant_fallback():
     assert rel < 0.10, f"rel_err={rel:.4f}"
 
     _check_grad(X, out, Wq, scale, block)
+
+
+@pytest.mark.parametrize("kind", ["per_tensor", "bf16_scale", "strided_3d"])
+def test_inputs_the_kernel_rejects_use_dequant_fallback(kind):
+    # Each of these used to reach f8f8bf16_blockwise and raise: a per-tensor scale
+    # has no block grid to unpack, the kernel demands float32 scales, and a strided
+    # view cannot be .view()ed flat.
+    from unsloth.kernels.fp8 import FP8_fbgemm_block_linear
+
+    torch.manual_seed(0)
+    block = [128, 128]
+    # strided_3d needs a shape the kernel rejects too, else it stays on the fast path
+    N, K = (250, 130) if kind == "strided_3d" else (256, 256)
+    W = torch.randn(N, K, device = "cuda", dtype = torch.bfloat16)
+    Wq, scale = _block_quantize_weight(W, block)
+    X = torch.randn(8, K, device = "cuda", dtype = torch.bfloat16)
+
+    if kind == "per_tensor":
+        scale = scale.amax().clone()
+        ref = (X.float() @ (Wq.to(torch.float32) * scale).T).to(X.dtype)
+    else:
+        if kind == "bf16_scale":
+            scale = scale.to(torch.bfloat16)
+        else:
+            X = torch.randn(2, 4, K * 2, device = "cuda", dtype = torch.bfloat16)[..., ::2]
+        scale.block_size = block
+        ref = _reference(X, Wq, scale, block)
+
+    out = FP8_fbgemm_block_linear.apply(X.requires_grad_(True), Wq, scale)
+    assert out.shape == (*X.shape[:-1], N) and out.dtype == X.dtype
+    assert _rel_err(out, ref) < 0.10
+    out.sum().backward()
+    assert X.grad is not None and torch.isfinite(X.grad).all()
 
 
 if __name__ == "__main__":
