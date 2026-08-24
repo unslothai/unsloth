@@ -605,7 +605,6 @@ def test_a_duplicate_is_still_refused_while_the_report_is_being_rendered(studio,
     # And the control: the directory is released once `run()` has actually finished with it.
     assert sb.run(_args(studio, "--branch", "main")) == 0
 
-
 def _clean_summary(studio) -> Path:
     """A clean run, then the `--report` the README quickstart runs on it, into the same `--out`."""
 
