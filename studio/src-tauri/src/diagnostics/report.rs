@@ -363,9 +363,18 @@ fn append_log_sections(
         append_tail_section(out, &path, name, "local-app-log", warnings);
     }
 
-    let server_logs = newest_server_logs(SERVER_LOG_TAIL_FILES);
+    let server_log_dir = logs_dir().join("server");
+    let server_logs = newest_server_logs_in(&server_log_dir, SERVER_LOG_TAIL_FILES, warnings);
     if server_logs.is_empty() {
-        out.push_str("backend_session_logs=unavailable\n");
+        // Name the directory. A backend the app adopted rather than spawned can
+        // resolve its own studio root from sys.prefix (backend
+        // utils/paths/storage_roots.py `_infer_studio_home_from_venv`), which no
+        // environment scrub reaches, so "unavailable" is otherwise ambiguous
+        // between "no crash logs" and "the backend writes somewhere else".
+        out.push_str(&format!(
+            "backend_session_logs=unavailable searched={}\n",
+            server_log_dir.display()
+        ));
     }
     for path in server_logs {
         let label = path
@@ -418,26 +427,78 @@ const SERVER_LOG_TAIL_MAX_BYTES: usize = 64 * 1024;
 /// `_setup_server_disk_logging`), so when the GPU runtime aborts, the Python stack
 /// naming the call that died is written here and nowhere else Studio keeps. Without
 /// it a report shows the process exiting and nothing about what it was doing.
-fn newest_server_logs(max: usize) -> Vec<PathBuf> {
-    newest_server_logs_in(&logs_dir().join("server"), max)
-}
-
-fn newest_server_logs_in(dir: &Path, max: usize) -> Vec<PathBuf> {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return Vec::new();
+///
+/// Only two files are collected, so anything rejected has to be rejected HERE and
+/// not later in `read_tail`: an entry that merely matches the name would otherwise
+/// spend one of the two slots and push the real crash log out of the report. Same
+/// reason `collect_phase_groups` screens symlinks during selection rather than at
+/// read time (phase_log.rs).
+fn newest_server_logs_in(dir: &Path, max: usize, warnings: &mut Vec<String>) -> Vec<PathBuf> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) => {
+            // A missing directory is the ordinary case, not a fault: a --no-torch
+            // host, UNSLOTH_STUDIO_NO_FILE_LOG=1, or an install that has never
+            // started a backend all have none. Anything else (a permission wall,
+            // most of all) is worth saying out loud, the way scan_phase_logs_in_dir
+            // reports its own read_dir failures.
+            if error.kind() != std::io::ErrorKind::NotFound {
+                warnings.push(format!(
+                    "backend session log dir unavailable: {} ({})",
+                    dir.display(),
+                    error
+                ));
+            }
+            return Vec::new();
+        }
     };
-    let mut logs: Vec<(SystemTime, PathBuf)> = entries
-        .flatten()
-        .filter(|entry| {
-            entry
-                .file_name()
-                .to_str()
-                .is_some_and(|name| name.starts_with("server-") && name.ends_with(".log"))
-        })
-        .filter_map(|entry| Some((entry.metadata().ok()?.modified().ok()?, entry.path())))
-        .collect();
-    // Name breaks an mtime tie, descending like the mtime itself: the stamp is in the
-    // filename, so two logs written inside one clock tick still order newest-first.
+    let mut logs: Vec<(SystemTime, PathBuf)> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if !name.starts_with("server-") || !name.ends_with(".log") {
+            continue;
+        }
+        // The report is line-oriented and fences tails with ```text. A filename may
+        // hold a newline or a backtick on Unix, and both the header and the path are
+        // printed verbatim, so a matching name could forge report structure.
+        if name.contains(|ch: char| ch.is_control() || ch == '`') {
+            warnings.push(format!(
+                "ignored backend session log with an unprintable name in {}",
+                dir.display()
+            ));
+            continue;
+        }
+        if path_has_symlink(&path) {
+            warnings.push(format!(
+                "ignored backend session log symlink: {}",
+                path.display()
+            ));
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        // Regular files only. A directory with this name reads back as EISDIR, and a
+        // FIFO is worse than useless: `File::open` on one blocks until a writer shows
+        // up, which would hang report generation rather than fail it.
+        if !metadata.is_file() {
+            warnings.push(format!(
+                "ignored non-regular backend session log: {}",
+                path.display()
+            ));
+            continue;
+        }
+        let Ok(modified) = metadata.modified() else {
+            continue;
+        };
+        logs.push((modified, path));
+    }
+    // mtime decides; the name only breaks an exact tie, and does so descending like
+    // the mtime itself. The `pidN` suffix is not zero-padded, so that tie-break is an
+    // arbitrary-but-stable order, not a chronological one.
     logs.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
     logs.truncate(max);
     logs.into_iter().map(|(_, path)| path).collect()
@@ -594,7 +655,7 @@ fn render_footer(warnings: &[String], redaction: &RedactionReport) -> String {
     ));
     footer.push_str("redaction_scope=ANSI, private keys, URL credentials, auth headers, cookies, token patterns, assignment-style secrets, studio/home paths, emails\n");
     footer.push_str(
-        "report_bounds=log sections <=1000 lines/200KiB each; total clipboard text <=1MiB\n",
+        "report_bounds=log sections <=1000 lines/200KiB each; backend session logs <=400 lines/64KiB each; total clipboard text <=1MiB\n",
     );
     footer.push_str("known_v1_gap=elevated apt helper may buffer subprocess output before diagnostics caps it\n");
     footer.push_str("known_v1_gap=normal install elevation resume is linked in same-run state/report history; disk fallback conservatively includes recent install attempts but has no explicit install_group_id in V1\n");
@@ -687,6 +748,16 @@ mod tests {
         dir
     }
 
+    fn collect_names(dir: &Path, max: usize) -> (Vec<String>, Vec<String>) {
+        let mut warnings = Vec::new();
+        let found = newest_server_logs_in(dir, max, &mut warnings);
+        let names = found
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        (names, warnings)
+    }
+
     #[test]
     fn server_logs_are_newest_first_and_capped() {
         let dir = server_log_dir("order");
@@ -694,11 +765,7 @@ mod tests {
             fs::write(dir.join(format!("server-{stamp}-pid1.log")), b"x").unwrap();
         }
 
-        let found = newest_server_logs_in(&dir, 2);
-        let names: Vec<String> = found
-            .iter()
-            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
-            .collect();
+        let (names, _) = collect_names(&dir, 2);
         assert_eq!(
             names,
             vec![
@@ -709,6 +776,25 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// The one above cannot say WHICH key ordered the result: its names and its
+    /// mtimes agree. Make them disagree, so it can only pass on mtime. A restored
+    /// or copied log carries a stamp that is not its mtime, and the crash the
+    /// report is for is the one written last.
+    #[test]
+    fn server_logs_order_by_mtime_not_by_name() {
+        let dir = server_log_dir("order-key");
+        let stale_name = dir.join("server-20260109-000000-pid9.log");
+        let fresh_name = dir.join("server-20260101-000000-pid1.log");
+        fs::write(&stale_name, b"x").unwrap();
+        // Coarser than any filesystem timestamp granularity in play here.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        fs::write(&fresh_name, b"x").unwrap();
+
+        let (names, _) = collect_names(&dir, 1);
+        assert_eq!(names, vec!["server-20260101-000000-pid1.log"]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn server_logs_ignore_unrelated_files() {
         let dir = server_log_dir("filter");
@@ -716,9 +802,50 @@ mod tests {
         fs::write(dir.join("tauri.log"), b"x").unwrap();
         fs::write(dir.join("server-notes.txt"), b"x").unwrap();
 
-        let found = newest_server_logs_in(&dir, 5);
-        assert_eq!(found.len(), 1);
-        assert!(found[0].ends_with("server-20260101-000000-pid1.log"));
+        let (names, _) = collect_names(&dir, 5);
+        assert_eq!(names, vec!["server-20260101-000000-pid1.log"]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Only two files are collected, so an entry that matches the name but cannot be
+    /// read must not spend a slot: it would push the real crash log out of the report
+    /// while `read_tail` merely notes it later. A directory reads back as EISDIR and a
+    /// FIFO blocks `File::open` outright, which would hang the report.
+    #[test]
+    fn unreadable_entries_never_take_a_slot_from_a_real_log() {
+        let dir = server_log_dir("crowding");
+        let real = dir.join("server-20260101-000000-pid1.log");
+        fs::write(&real, b"Current thread 0x1 (most recent call first):\n").unwrap();
+        fs::create_dir_all(dir.join("server-20260102-000000-pid2.log")).unwrap();
+        #[cfg(unix)]
+        {
+            let decoy = dir.join("decoy.txt");
+            fs::write(&decoy, b"not a session log\n").unwrap();
+            std::os::unix::fs::symlink(&decoy, dir.join("server-20260103-000000-pid3.log"))
+                .unwrap();
+        }
+
+        let (names, warnings) = collect_names(&dir, 2);
+        assert_eq!(names, vec!["server-20260101-000000-pid1.log"]);
+        assert!(warnings.iter().any(|w| w.contains("non-regular")));
+        #[cfg(unix)]
+        assert!(warnings.iter().any(|w| w.contains("symlink")));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The report is line-oriented and fences tails with ```text, and both the header
+    /// and the path are printed verbatim, so a name carrying a newline could forge
+    /// `key=value` lines inside a report a maintainer then reads as structure.
+    #[cfg(unix)]
+    #[test]
+    fn server_logs_reject_names_that_could_forge_report_structure() {
+        let dir = server_log_dir("inject");
+        fs::write(dir.join("server-20260101\ninjected=yes\n-pid1.log"), b"x").unwrap();
+        fs::write(dir.join("server-20260102-000000-pid2.log"), b"x").unwrap();
+
+        let (names, warnings) = collect_names(&dir, 5);
+        assert_eq!(names, vec!["server-20260102-000000-pid2.log"]);
+        assert!(warnings.iter().any(|w| w.contains("unprintable name")));
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -750,14 +877,16 @@ mod tests {
 
         // A literal, not a multiple of the constant under test: an assert derived from
         // SERVER_LOG_TAIL_MAX_BYTES would scale with any raise and never catch one.
-        // 128 KiB sits above the 64 KiB cap plus its header and below TAIL_MAX_BYTES.
+        // 80 KiB clears the 64 KiB cap plus its header with room to spare, and sits
+        // far enough below TAIL_MAX_BYTES to catch a raise well short of it. At the
+        // 128 KiB this used to allow, a mutation to 100 KiB passed unnoticed.
         assert!(
-            out.len() < 128 * 1024,
+            out.len() < 80 * 1024,
             "section grew into the phase-log budget: {}",
             out.len()
         );
         assert!(
-            TAIL_MAX_BYTES >= 128 * 1024,
+            TAIL_MAX_BYTES >= 80 * 1024,
             "budget headroom assumption broke"
         );
         // The faulthandler stack sits at the end of the file, so the tail must keep it.
@@ -770,7 +899,11 @@ mod tests {
         let missing =
             std::env::temp_dir().join(format!("unsloth-no-server-logs-{}", std::process::id()));
         let _ = fs::remove_dir_all(&missing);
-        assert!(newest_server_logs_in(&missing, 2).is_empty());
+        let mut warnings = Vec::new();
+        assert!(newest_server_logs_in(&missing, 2, &mut warnings).is_empty());
+        // An install that has never started a backend is the ordinary case, so it
+        // must not spend a line of the collection-warnings budget on it.
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 
     #[test]
@@ -785,5 +918,52 @@ mod tests {
         let tail = read_tail(&path, 10, 100).unwrap();
         assert!(tail.text.contains('�'));
         let _ = fs::remove_file(path);
+    }
+
+    /// The worst of the three: `File::open` on a FIFO with no writer blocks, and
+    /// `read_tail` runs on the blocking pool behind the support-report command, so
+    /// reaching one does not skip a log, it wedges the thread and the report never
+    /// comes back. Assert on a deadline, since a regression here hangs the suite
+    /// rather than failing it.
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_named_like_a_log_cannot_wedge_the_report() {
+        use std::ffi::CString;
+        let dir = server_log_dir("fifo");
+        fs::write(
+            dir.join("server-20260101-000000-pid1.log"),
+            b"Current thread 0x1 (most recent call first):\n",
+        )
+        .unwrap();
+        let fifo = dir.join("server-20260103-000000-pid3.log");
+        let name = CString::new(fifo.as_os_str().to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let probe = dir.clone();
+        std::thread::spawn(move || {
+            let mut warnings = Vec::new();
+            let found = newest_server_logs_in(&probe, 2, &mut warnings);
+            let mut out = String::new();
+            for path in &found {
+                append_tail_section_capped(
+                    &mut out,
+                    path,
+                    "server.log",
+                    "backend-session-log",
+                    SERVER_LOG_TAIL_MAX_LINES,
+                    SERVER_LOG_TAIL_MAX_BYTES,
+                    &mut warnings,
+                );
+            }
+            let _ = tx.send(out);
+        });
+        let out = rx
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .expect("collection blocked on the fifo");
+        assert!(out.contains("Current thread 0x1 (most recent call first):"));
+
+        let _ = fs::remove_file(&fifo);
+        let _ = fs::remove_dir_all(&dir);
     }
 }
