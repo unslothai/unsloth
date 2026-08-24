@@ -82,12 +82,11 @@ _studio_home_counter = itertools.count()
 
 @pytest.fixture(autouse = True)
 def _contain_installer_venv_root(tmp_path_factory, monkeypatch):
-    """See tests/_shared/installer_venv_root.py for the mechanism this exists for.
+    """Mechanism: tests/_shared/installer_venv_root.py.
 
-    This suite is a separate pytest root and cannot poison the AMD fast-path probe,
-    which runs in another job. It carries the same fixture because it has the same
-    defect: test_torchao_select.py drives install_python_stack() in process, so it
-    deletes and rewrites the manifest of the venv running the tests.
+    A separate pytest root, so it cannot poison the AMD fast-path probe (another job), but
+    it has the same defect: test_torchao_select.py drives install_python_stack() in process,
+    so it deletes and rewrites the manifest of the venv running the tests.
     """
     for _up in _iso.parents:
         _shared = _up / "tests" / "_shared"

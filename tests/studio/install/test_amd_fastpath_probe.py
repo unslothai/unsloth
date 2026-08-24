@@ -307,10 +307,9 @@ def _run_cli(
 def _decision(result):
     """The CLI's own account of which input produced its exit code.
 
-    Exit 1 alone is five states (no-torch venv, resolved backend, non-ROCm pin, absent
-    or masked AMD host, unreadable torch), so an assertion on the code alone cannot say
-    which one it saw. Asserting the line back against the code also stops the diagnostic
-    drifting away from the decision it claims to describe.
+    Exit 1 alone is five states (no-torch venv, resolved backend, non-ROCm pin, absent or
+    masked AMD host, unreadable torch), so the code cannot say which one it saw. Asserting
+    the line back against the code keeps the diagnostic from drifting off the decision.
     """
     stdout = result.stdout.decode(errors = "replace")
     marked = [
@@ -337,14 +336,14 @@ def test_the_cli_reports_keep_the_fast_path_as_a_non_zero_exit(env_name, safe_pa
     stderr = result.stderr.decode(errors = "replace")
     # An import failure also exits 1, so exit 1 alone does not prove the gate ran.
     assert not stderr, stderr
-    # Read as a STATEMENT, not in an assert message. A `_decision(result)` that only appears
-    # after a comma is evaluated when the assertion has already failed, so it checks nothing on
-    # the passing path while reading exactly like it does.
+    # Read as a STATEMENT, not in an assert message: a `_decision(result)` that appears only
+    # after the comma runs once the assertion has already failed, so it checks nothing on the
+    # passing path while reading exactly like it does.
     decision = _decision(result)
     assert result.returncode == 1, decision
-    # ...and the gate that answered has to be the one this case names, not whichever
-    # other exit-1 state the environment happened to be in. Without this the case passes
-    # on any host that keeps the fast path for an unrelated reason.
+    # ...and the gate that answered must be the one this case names, not whichever other
+    # exit-1 state the host happened to be in, or the case passes on any host that keeps
+    # the fast path for an unrelated reason.
     expected_field = {
         "UNSLOTH_NO_TORCH": "no_torch=True",
         "UNSLOTH_TORCH_BACKEND": "backend='cpu'",
@@ -375,13 +374,13 @@ def test_the_cli_answers_end_to_end_over_a_stub_torch(tmp_path, version, hip, ex
     )
     stderr = result.stderr.decode(errors = "replace")
     assert not stderr, stderr
-    # The decision line, not the bare code: exit 1 is five different states here, and an
-    # `assert 1 == 0` with both streams empty is what this case used to report. Read as a
-    # statement so it is checked on the passing path too, not only when the next line fails.
+    # The decision line, not the bare code: exit 1 is five states here, and a bare
+    # `assert 1 == 0` with both streams empty is what this case used to report. A statement,
+    # so it is checked on the passing path too, not only when the next line fails.
     decision = _decision(result)
     assert result.returncode == expected, f"{decision}\n{stderr}"
-    # The wheel family must be the input that decided it, so the case cannot pass on a
-    # host that answered before the probe was reached.
+    # The wheel family must be the input that decided it, so the case cannot pass on a host
+    # that answered before the probe was reached.
     assert f"'{version}'" in decision, decision
 
 

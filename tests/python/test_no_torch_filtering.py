@@ -615,14 +615,12 @@ class TestInstallPythonStackSubprocessMock:
         """install_python_stack() drops, marks and rewrites the manifest for real here.
 
         Only subprocess.run is mocked, so remove_manifest(), set_no_torch_marker() and
-        write_manifest() all execute, and their default root is Path(sys.prefix) -- one
-        directory shared by every xdist worker and by every subprocess they spawn. A
-        leaked no-torch marker makes every install_python_stack.py subprocess in the
-        run resolve NO_TORCH True at import, which is how the AMD fast-path CLI probe
-        failed on 17 CI runs across 7 branches in one day while passing in isolation.
-
-        Driven through the real _capture_install rather than a rebuilt copy of it: the
-        property has to hold for the harness that actually ships in this file.
+        write_manifest() all execute against Path(sys.prefix), one directory shared by every
+        xdist worker and every subprocess they spawn. A leaked no-torch marker makes every
+        install_python_stack.py subprocess in the run resolve NO_TORCH True at import, which
+        is how the AMD fast-path CLI probe failed on 17 CI runs across 7 branches in one day
+        while passing in isolation. Driven through the real _capture_install, not a rebuilt
+        copy: the property has to hold for the harness that ships in this file.
         """
         real_root = Path(sys.prefix)
         watched = (
@@ -638,8 +636,8 @@ class TestInstallPythonStackSubprocessMock:
             f"the installer harness wrote {real_root}, which every worker in this run "
             "shares; give install_manifest.venv_root a contained root instead"
         )
-        # Non-vacuous: the writes must have happened somewhere, or this test would also
-        # pass on an install that returned early and wrote nothing at all.
+        # Non-vacuous: the writes must have landed somewhere, or an install that returned
+        # early and wrote nothing at all would pass this too.
         contained = ips.install_manifest.venv_root()
         assert contained != real_root, "venv_root was never contained"
         assert (contained / ips.install_manifest.MANIFEST_NAME).is_file(), (

@@ -52,10 +52,10 @@ import pytest
 
 @pytest.fixture(autouse = True)
 def _contain_installer_venv_root(tmp_path_factory, monkeypatch):
-    """See tests/_shared/installer_venv_root.py for the mechanism this exists for.
+    """Mechanism: tests/_shared/installer_venv_root.py.
 
-    Imported inside the body because tests/_shared reaches sys.path further down this
-    file, and an autouse fixture must not depend on where in the module it is defined.
+    Imported inside the body because tests/_shared reaches sys.path further down this file,
+    and an autouse fixture must not depend on where in the module it is defined.
     """
     from installer_venv_root import contain_installer_venv_root
     contain_installer_venv_root(monkeypatch, tmp_path_factory)

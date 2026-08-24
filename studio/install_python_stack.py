@@ -335,9 +335,8 @@ _TORCH_RUNTIME_PROBE: "tuple[bool, bool, str | None, str, str] | None" = None
 # line" is not reliably ours; "the last line starting with this" is.
 _TORCH_PROBE_MARKER = "UNSLOTH_TORCH_PROBE|"
 
-# Prefix on the --amd-torch-needs-dependency-pass decision line. setup.sh discards the
-# stream; this exists so a caller (CI above all) can read which input produced the exit
-# code instead of inferring it from the code alone, which five different states share.
+# Prefix on the --amd-torch-needs-dependency-pass decision line: five states share exit 1,
+# so a caller (CI above all) needs to read WHICH input decided. setup.sh discards the stream.
 _AMD_FASTPATH_DECISION_MARKER = "UNSLOTH_AMD_FASTPATH|"
 
 
@@ -5694,13 +5693,11 @@ if __name__ == "__main__":
     if sys.argv[1:] == ["--amd-torch-needs-dependency-pass"]:
         # Exit 0 forces the dependency pass; exit 1 keeps the fast path.
         _needs_pass = _amd_torch_needs_dependency_pass()
-        # setup.sh sends both streams to /dev/null and reads only the exit code, so this
-        # line costs the installer nothing and is the only record of WHICH input decided.
-        # Exit 1 covers a no-torch venv, a resolved non-ROCm backend, a non-ROCm pin, an
-        # absent or masked AMD host and a torch that could not be read, and a CI failure
-        # here reports a bare `assert 1 == 0` with both streams empty. Reading the
-        # memoized probe rather than calling it keeps this free and adds no subprocess:
-        # None means the gates above answered before the probe was ever needed.
+        # Exit 1 covers five states (no-torch venv, resolved non-ROCm backend, non-ROCm pin,
+        # absent or masked AMD host, unreadable torch), so a CI failure here would otherwise
+        # report a bare `assert 1 == 0` with both streams empty. setup.sh discards both
+        # streams, so this costs the installer nothing. _TORCH_RUNTIME_PROBE is read, not
+        # called, so no subprocess is added: None means an earlier gate answered first.
         _safe_print(
             f"{_AMD_FASTPATH_DECISION_MARKER}needs_pass={_needs_pass} no_torch={NO_TORCH} "
             f"is_linux={IS_LINUX} machine={platform.machine()!r} backend={_TORCH_BACKEND!r} "
