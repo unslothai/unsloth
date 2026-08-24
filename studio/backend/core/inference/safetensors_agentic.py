@@ -727,6 +727,10 @@ def run_safetensors_tool_loop(
             if not isinstance(cumulative, str):
                 continue  # defensive: pipeline yields only strings
 
+            # Deltas by length: this needs snapshots that only grow. A producer that
+            # rebuilds its text each step can revise one instead, and diffing that
+            # splices two renderings together -- which is why the MLX text producer
+            # withholds while it is matching stop sequences.
             delta = cumulative[len(prev_cumulative) :]
             prev_cumulative = cumulative
             if not delta:
