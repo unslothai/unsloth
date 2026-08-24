@@ -351,6 +351,7 @@ from core.inference.tool_call_parser import (
     is_short_intent_without_action as _is_short_intent_without_action,
     reprompt_to_act_message as _reprompt_to_act_message,
 )
+from core.inference.passthrough_healing import nudge_enabled as _nudge_enabled
 from core.inference.tool_loop_controller import (
     ToolLoopController,
     append_deferred_nudges,
@@ -25078,10 +25079,10 @@ class LlamaCppBackend:
                             _reprompt_used, _reprompt_cap = _post_tool_reprompts, 1
                         else:
                             _reprompt_used, _reprompt_cap = _reprompt_count, _MAX_REPROMPTS
-                        # None keeps the default-on re-prompt; False disables it.
+                        # None follows the shared process default; explicit values win.
                         if (
                             auto_heal_tool_calls
-                            and (nudge_tool_calls is None or nudge_tool_calls)
+                            and _nudge_enabled(nudge_tool_calls)
                             and active_tools
                             and not _render_html_already_done_intent
                             and _reprompt_used < _reprompt_cap
