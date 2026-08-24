@@ -448,6 +448,23 @@ def test_validate_sends_the_mlx_speculative_tuple_it_will_load_with():
         assert f"{field}: payload.{field}" in sent, field
 
 
+def test_the_picker_offers_every_pairing_the_backend_defers():
+    """A deferred reason is not a refusal -- the backend declines to judge until the load
+    supplies the target's own files, then settles it. Drop one from the picker's set and the
+    user cannot request the first load the backend was built to accept."""
+    spec = _read_backend("core/inference/mlx_speculative.py")
+    start = spec.index("_UNPROVEN_REASONS = frozenset(")
+    deferred = set(re.findall(r'"([a-z_]+)"', spec[start : spec.index(")", start)]))
+    assert deferred, "the backend's deferred-reason set moved"
+
+    modes = " ".join(_read("lib/speculative-modes.ts").split())
+    start = modes.index("UNSETTLED_REASONS = new Set([")
+    offered = set(re.findall(r'"([a-z_]+)"', modes[start : modes.index("]", start)]))
+    # Exactly, in both directions: a reason the backend does refuse on, listed here, makes a
+    # candidate selectable that no download and no load can make loadable.
+    assert offered == deferred | {"checkpoint_not_downloaded"}
+
+
 def test_hidden_infra_model_needles_present():
     """The frontend static needle list must keep hiding the RAG embedder and the
     llama.cpp validation probe."""

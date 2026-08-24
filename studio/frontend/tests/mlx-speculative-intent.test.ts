@@ -227,17 +227,21 @@ test("a method one download away is offered, since the picker offers the downloa
     selectMlxSpeculativeCandidate([undownloaded], "mtp", null)?.repo_id,
     "org/d",
   );
-  // The target is the undownloaded half here, so the drafter is on disk and still offered.
-  assert.equal(
-    isSelectableMlxDraftCandidate(
-      candidate({
-        loadable: false,
-        downloaded: true,
-        reason: "target_weights_unmeasured",
-      }),
-    ),
-    true,
-  );
+  // A comparison the target cannot answer until it is on disk is not a refusal, so the
+  // drafter stays offered: the load settles it. These are the backend's unproven reasons.
+  for (const deferred of [
+    "tokenizer_contract_unavailable",
+    "target_config_unavailable",
+    "target_weights_unmeasured",
+  ]) {
+    assert.equal(
+      isSelectableMlxDraftCandidate(
+        candidate({ loadable: false, downloaded: true, reason: deferred }),
+      ),
+      true,
+      deferred,
+    );
+  }
   // What downloading cannot fix stays out, and so does the head: nothing to fetch for it.
   for (const broken of [
     { compatible: false },

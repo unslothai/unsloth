@@ -291,13 +291,19 @@ export function mlxDraftRowCheckpoint(
   };
 }
 
-/** Either side of the pair still to fetch. */
-const DOWNLOAD_PENDING_REASONS = new Set([
+/**
+ * Not verdicts. The first is the drafter the picker itself can fetch; the rest are the
+ * backend's _UNPROVEN_REASONS (core/inference/mlx_speculative.py), which it refuses to
+ * answer from a target that is not on disk yet and settles once the load supplies it.
+ */
+const UNSETTLED_REASONS = new Set([
   "checkpoint_not_downloaded",
+  "tokenizer_contract_unavailable",
+  "target_config_unavailable",
   "target_weights_unmeasured",
 ]);
 
-/** Loadable now, or one download away: what no download can fix stays out. */
+/** Loadable now, or still to be settled by the load: what neither can fix stays out. */
 export function isSelectableMlxDraftCandidate(
   candidate: MlxSpeculativeCandidate,
 ): boolean {
@@ -307,7 +313,7 @@ export function isSelectableMlxDraftCandidate(
       candidate.compatible &&
       candidate.runtime_supported &&
       candidate.integration_ready &&
-      DOWNLOAD_PENDING_REASONS.has(candidate.reason ?? ""))
+      UNSETTLED_REASONS.has(candidate.reason ?? ""))
   );
 }
 
