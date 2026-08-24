@@ -6087,9 +6087,7 @@ def test_h3_reference_video_decodes_an_explicit_trim_with_matching_audio():
 
     from core.inference.video_minimax_h3 import decode_h3_reference_video
 
-    blob = base64.b64decode(
-        _reference_video_data_url(seconds = 20.0, fps = 24).split(",", 1)[1]
-    )
+    blob = base64.b64decode(_reference_video_data_url(seconds = 20.0, fps = 24).split(",", 1)[1])
     frames, waveform, sample_rate = decode_h3_reference_video(
         blob,
         trim_start_seconds = 5.0,
@@ -6150,9 +6148,7 @@ def test_h3_reference_video_trim_keeps_exact_boundary_frame_and_sample_counts(du
 
     from core.inference.video_minimax_h3 import decode_h3_reference_video
 
-    blob = base64.b64decode(
-        _reference_video_data_url(seconds = duration, fps = 24).split(",", 1)[1]
-    )
+    blob = base64.b64decode(_reference_video_data_url(seconds = duration, fps = 24).split(",", 1)[1])
     frames, waveform, sample_rate = decode_h3_reference_video(
         blob,
         trim_start_seconds = 0.0,
@@ -6171,9 +6167,7 @@ def test_h3_reference_video_without_trim_discards_aac_padding(duration):
 
     from core.inference.video_minimax_h3 import decode_h3_reference_video
 
-    blob = base64.b64decode(
-        _reference_video_data_url(seconds = duration, fps = 24).split(",", 1)[1]
-    )
+    blob = base64.b64decode(_reference_video_data_url(seconds = duration, fps = 24).split(",", 1)[1])
     frames, waveform, sample_rate = decode_h3_reference_video(blob)
 
     assert len(frames) == round(duration * 24)
@@ -6200,9 +6194,7 @@ def test_h3_reference_video_trim_seeks_and_stops_both_decoders(monkeypatch):
 
     from core.inference.video_minimax_h3 import decode_h3_reference_video
 
-    blob = base64.b64decode(
-        _reference_video_data_url(seconds = 20.0, fps = 24).split(",", 1)[1]
-    )
+    blob = base64.b64decode(_reference_video_data_url(seconds = 20.0, fps = 24).split(",", 1)[1])
     real_open = av.open
     opened = []
 
@@ -6320,9 +6312,7 @@ def test_h3_begin_generate_reuses_preflight_resolved_references(monkeypatch):
     monkeypatch.setattr(backend, "_resolve_references", _resolve)
     monkeypatch.setattr(backend, "_state_device_target", lambda _state: None)
     monkeypatch.setattr(video_mod.threading, "Thread", _DeferredThread)
-    monkeypatch.setattr(
-        backend, "_generate_h3_native", lambda **kwargs: kwargs["references"]
-    )
+    monkeypatch.setattr(backend, "_generate_h3_native", lambda **kwargs: kwargs["references"])
 
     backend.begin_generate(prompt = "p")
     assert len(resolve_calls) == 1
