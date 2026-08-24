@@ -58,10 +58,16 @@ def _desktop_case(monkeypatch, threads):
     return authentication.authenticated_via_desktop_jwt(_credentials("token"))
 
 
+def _keyless_case(monkeypatch, threads):
+    monkeypatch.setattr(
+        authentication, "get_user_and_secret", _record_thread(threads, ("s", "h", SECRET, False))
+    )
+    return authentication.get_current_subject(authentication._KEYLESS_CREDENTIALS)
+
+
 @pytest.mark.parametrize(
     "build_call",
-    [_jwt_case, _api_key_case, _desktop_case],
-    ids = ["session-jwt", "api-key", "desktop-jwt"],
+    [_jwt_case, _api_key_case, _desktop_case, _keyless_case],
 )
 def test_the_dependency_reads_off_the_event_loop_thread(monkeypatch, build_call):
     threads: list[int] = []

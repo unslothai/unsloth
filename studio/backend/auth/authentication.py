@@ -468,7 +468,9 @@ async def _get_current_credential(
     Credential reads run in the threadpool so stalled SQLite cannot block the event loop.
     """
     if credentials.scheme == KEYLESS_SCHEME:
-        return _admin_credential(allow_password_change = allow_password_change)
+        return await run_in_threadpool(
+            _admin_credential, allow_password_change = allow_password_change
+        )
 
     if credentials.scheme == KEYLESS_FALLBACK_SCHEME:
         from utils.keyless_api_access import APPROVED_DUMMY_BEARERS
@@ -477,7 +479,9 @@ async def _get_current_credential(
                 status_code = status.HTTP_401_UNAUTHORIZED,
                 detail = "Invalid authentication credentials",
             )
-        return _admin_credential(allow_password_change = allow_password_change)
+        return await run_in_threadpool(
+            _admin_credential, allow_password_change = allow_password_change
+        )
 
     token = credentials.credentials
 
