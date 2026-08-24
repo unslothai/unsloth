@@ -142,11 +142,17 @@ export function railBottomOffset(cardsInset: number): number {
 /**
  * The rail's `max-height`, given the band its cards may fill. Both gutters are
  * added back so neither is spent on them, which also leaves slack: the clip is
- * at the padding box, so a cap landing a few px short of a card now shows it
- * whole rather than taking its corners off. The slack is the room below, not
- * both, since the cards sit against the top of the band; measured across the
- * three engines, a cap short by up to STACK_SHADOW_GUTTER_BOTTOM clips nothing
- * and one short by more clips only the excess.
+ * at the padding box, so a cap landing a few px short of a card shows it whole
+ * rather than taking its corners off.
+ *
+ * The slack is the room below, not both, since the cards sit against the top of
+ * the band. It is spent, not free: a card overrunning the band by k eats k of
+ * the room under it, so a cap short by k leaves `16 - k` for the shadow and one
+ * short by more than 16 clips the card again, by the excess. Measured in all
+ * three engines. Growing the cap by k as well would hand the cards more room
+ * than the placement allotted, which is the composer the cap exists to dodge,
+ * so this is the trade and not an oversight. The rail scrolls in that state and
+ * the full room is at the end of its scroll, where the padding sits.
  */
 export function railMaxHeight(cardsRoom: number): number {
   return cardsRoom + STACK_SHADOW_GUTTER_BOTTOM + STACK_SHADOW_GUTTER_TOP;

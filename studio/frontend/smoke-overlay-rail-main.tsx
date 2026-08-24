@@ -195,10 +195,36 @@ function Obstacles() {
   );
 }
 
+/**
+ * The desktop window's own resize targets, copied from
+ * src/components/tauri/window-titlebar.tsx. Only the two the rail can reach are here: the
+ * rail is anchored to that corner, `-mx-3` puts its border box 4px from the window edge and
+ * the gutter drops it the last 16px to the floor, so a scrolling rail's box lands on both.
+ */
+function WindowResizeTargets() {
+  return (
+    <>
+      <div
+        aria-hidden="true"
+        data-testid="resize-south"
+        className="pointer-events-auto fixed inset-x-2 bottom-0 h-1 cursor-s-resize"
+        style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
+      />
+      <div
+        aria-hidden="true"
+        data-testid="resize-southeast"
+        className="pointer-events-auto fixed right-0 bottom-0 size-3 cursor-se-resize"
+        style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
+      />
+    </>
+  );
+}
+
 function Harness() {
   return (
     <>
       <Obstacles />
+      <WindowResizeTargets />
       <Rail />
     </>
   );

@@ -300,6 +300,28 @@ test("the rail's block gutter costs the cards no room", () => {
     // clip edge the bottom card loses all of it and reads as cut off, which is
     // how the llama.cpp toast was reported. A zero gutter is that bug again.
     assert.doesNotMatch(rules, /\bp[byt]-/, "a rem gutter is back on the rail");
+  // The gutter drops the rail's box to the window's floor, and `-mx-3` already put it 4px
+  // from the right edge, so a scrolling rail's box lands on the two resize grips along the
+  // bottom. Those are under it on Tailwind's scale, so they need the named layer to win.
+  // The other six keep z-[70]: the rail cannot reach them, and the north-east one would
+  // take the corner of the window controls, which are z-[80].
+  const TITLEBAR = read("components/tauri/window-titlebar.tsx");
+  for (const grip of ["cursor-s-resize", "cursor-se-resize"]) {
+    const target = TITLEBAR.slice(
+      TITLEBAR.lastIndexOf("<div", TITLEBAR.indexOf(grip)),
+      TITLEBAR.indexOf("/>", TITLEBAR.indexOf(grip)),
+    );
+    assert.doesNotMatch(
+      target,
+      /z-\[70\]/,
+      `the ${grip} target is back under the overlay stack`,
+    );
+    assert.match(
+      target,
+      /zIndex: Z_LAYER\.WINDOW_RESIZE_EDGE/,
+      `the ${grip} target does not take the named layer, so a scrolling rail covers it`,
+    );
+  }
   }
 });
 

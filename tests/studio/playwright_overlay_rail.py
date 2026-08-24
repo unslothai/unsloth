@@ -411,6 +411,8 @@ def run_short_cap(page) -> None:
           return {
             sliced: Math.round((Math.max(0, r.top - c.top)
                               + Math.max(0, c.bottom - r.bottom)) * 100) / 100,
+            // What is left for the shadow once the card has spent the slack.
+            room: Math.round((r.bottom - c.bottom) * 100) / 100,
             band: r.bottom - r.top,
           };
         }"""
@@ -419,8 +421,17 @@ def run_short_cap(page) -> None:
         # the room reserved under them, not the room reserved around them.
         reserved = m["gutter"]["bottom"]
         info(
-            f"cap short by {short:2d}: {sliced['sliced']:5.2f}px of the card is clipped "
-            f"(cap {m['geometry']['maxHeight']}, card {card}, {reserved}px under it)"
+            f"cap short by {short:2d}: {sliced['sliced']:5.2f}px of the card is clipped, "
+            f"{sliced['room']:5.2f}px left under it "
+            f"(cap {m['geometry']['maxHeight']}, card {card}, {reserved}px reserved)"
+        )
+        # The slack is spent, not free: a card overrunning the band by k eats k of the room
+        # under it. Pinned rather than left to the docstring, because the room is what the
+        # gutter exists for and "a short cap costs nothing" is only true of the card.
+        check(
+            abs(sliced["room"] - (reserved - short)) <= 0.6,
+            f"a cap {short}px short leaves {sliced['room']:.2f}px under the card, "
+            f"expected {reserved - short}",
         )
         if short <= reserved:
             check(
@@ -572,6 +583,47 @@ def run_hit_testing(page) -> None:
         "rail" not in hit["rows"].values() and "card" not in hit["rows"].values(),
         f"an emptied rail still answers clicks in the corner: {hit['rows']}",
     )
+
+    # The window's own resize targets. Unlike the Live monitor these are in-page chrome on
+    # Tailwind's z scale, so they are *under* the rail and lose whatever it covers. The rail
+    # reaches them across, because -mx-3 puts its border box 4px from the window edge while
+    # `right-4` holds its margin edge at 16, and the gutter is what brings it down to them.
+    room = configure(page, cards = [INDICATOR])["geometry"]["maxHeight"]
+    configure(page, cards = [{"height": room + 200, "floor": room + 200}])
+    for target in ("resize-southeast", "resize-south"):
+        taken = page.evaluate(
+            """([id]) => {
+          const rail = document.querySelector('[data-testid="overlay-rail"]');
+          const grip = document.querySelector(`[data-testid="${id}"]`);
+          const g = grip.getBoundingClientRect();
+          const r = rail.getBoundingClientRect();
+          let mine = 0, total = 0;
+          for (let x = Math.ceil(g.left); x < g.right; x += 1) {
+            for (let y = Math.ceil(g.top); y < g.bottom; y += 1) {
+              total += 1;
+              const el = document.elementFromPoint(x, y);
+              if (el === rail || (el && el.closest
+                  && el.closest('[data-testid="overlay-rail"]'))) mine += 1;
+            }
+          }
+          return {
+            mine, total,
+            grip: {top: g.top, bottom: g.bottom, left: g.left, right: g.right},
+            railBox: {top: r.top, bottom: r.bottom, left: r.left, right: r.right},
+          };
+        }""",
+            [target],
+        )
+        info(
+            f"{target}: the rail takes {taken['mine']} of {taken['total']} px "
+            f"(rail box to {taken['railBox']['bottom']:.0f},{taken['railBox']['right']:.0f}; "
+            f"grip {taken['grip']['top']:.0f}..{taken['grip']['bottom']:.0f})"
+        )
+        check(
+            taken["mine"] == 0,
+            f"a scrolling rail covers {taken['mine']} of the {target} target's "
+            f"{taken['total']}px, so a window resize started there hits the rail",
+        )
 
 
 def run_observer_and_scroll(page) -> None:

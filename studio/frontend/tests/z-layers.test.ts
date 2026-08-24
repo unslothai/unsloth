@@ -14,6 +14,7 @@ import { Z_LAYER } from "../src/lib/z-layers.ts";
 // The layers, bottom to top. Adding one belongs in this list.
 const ORDER = [
   "OVERLAY_STACK",
+  "WINDOW_RESIZE_EDGE",
   "FLOATING_PANEL",
   "FLOATING_PANEL_TOP",
   "STARTUP_SCREEN",
@@ -38,6 +39,16 @@ test("every layer is listed in the order", () => {
 // What #8199 fixed: a passive status card was covering a window's Close button.
 test("floating panels paint over the notification stack", () => {
   assert.ok(Z_LAYER.FLOATING_PANEL > Z_LAYER.OVERLAY_STACK);
+});
+
+// The stack reaches the window's bottom edge once it reserves a shadow gutter
+// there, and it is pointer-active whenever it scrolls. A status card must not
+// be what a drag on the window's own corner grip lands on.
+test("the window's bottom resize grips outrank the notification stack", () => {
+  assert.ok(Z_LAYER.WINDOW_RESIZE_EDGE > Z_LAYER.OVERLAY_STACK);
+  // And stay under a panel the user is dragging, which is where they were
+  // relative to one before, so nothing about that pairing changes.
+  assert.ok(Z_LAYER.WINDOW_RESIZE_EDGE < Z_LAYER.FLOATING_PANEL);
 });
 
 // Every in-page surface -- dialogs, sheets, dropdowns, the Tauri titlebar --

@@ -6,6 +6,7 @@ import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { useSidebarWidth } from "@/hooks/use-sidebar-width";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
+import { Z_LAYER } from "@/lib/z-layers";
 import { CopyIcon, LayoutAlignLeftIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { Window as TauriWindow } from "@tauri-apps/api/window";
@@ -455,9 +456,15 @@ export function WindowTitlebar({
         className="pointer-events-auto fixed inset-x-2 top-0 z-[70] h-1 cursor-n-resize"
         onPointerDown={handleResizePointerDown("North")}
       />
+      {/* The two along the bottom carry a named layer, not z-[70]: the overlay stack is
+          anchored to that corner and reaches them once it reserves a shadow gutter, and it
+          hit-tests its whole box while it scrolls. The other six stay where they are; a
+          stack in the bottom-right cannot reach them, and the north-east grip would take
+          the corner of the window controls, which are z-[80] and win today. */}
       <div
         aria-hidden="true"
-        className="pointer-events-auto fixed inset-x-2 bottom-0 z-[70] h-1 cursor-s-resize"
+        className="pointer-events-auto fixed inset-x-2 bottom-0 h-1 cursor-s-resize"
+        style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
         onPointerDown={handleResizePointerDown("South")}
       />
       <div
@@ -487,7 +494,8 @@ export function WindowTitlebar({
       />
       <div
         aria-hidden="true"
-        className="pointer-events-auto fixed bottom-0 right-0 z-[70] size-3 cursor-se-resize"
+        className="pointer-events-auto fixed bottom-0 right-0 size-3 cursor-se-resize"
+        style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
         onPointerDown={handleResizePointerDown("SouthEast")}
       />
     </>
