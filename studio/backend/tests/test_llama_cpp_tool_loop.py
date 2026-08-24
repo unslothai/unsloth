@@ -3739,6 +3739,80 @@ def test_tool_loop_refits_each_preflight_path_after_context_shrinking_respawn(mo
         assert len(payloads[1]["messages"]) == 1
 
 
+def test_a_respawn_refit_that_misses_its_target_still_archives_and_reports(monkeypatch):
+    """A rescued respawn refit archives its evictions and emits metadata."""
+    import httpx
+
+    from core.inference import llama_cpp
+
+    # Captured once: the second pass would otherwise wrap the first pass's spy.
+    real_archive = llama_cpp._archive_and_recall
+
+    for max_tool_iterations in (1, 0):
+        payloads: list[dict] = []
+        archived: list[tuple[int, int]] = []
+        backend = _make_backend(
+            monkeypatch,
+            [
+                httpx.ConnectError("server is down"),
+                [_sse({"content": "Recovered."}), _done()],
+            ],
+            payloads,
+        )
+        backend._effective_context_length = 2000
+        monkeypatch.setattr(
+            backend,
+            "count_chat_tokens",
+            lambda candidate, *_args, **_kwargs: sum(
+                len(str(message.get("content", ""))) for message in candidate
+            ),
+        )
+
+        def spy(conversation, before, **kwargs):
+            archived.append((len(before), len(conversation)))
+            return real_archive(conversation, before, **kwargs)
+
+        monkeypatch.setattr(llama_cpp, "_archive_and_recall", spy)
+
+        def fake_respawn():
+            backend._effective_context_length = 1000
+            return True
+
+        monkeypatch.setattr(backend, "_respawn_if_dead", fake_respawn)
+        events = list(
+            backend.generate_chat_completion_with_tools(
+                messages = [
+                    {"role": "user", "content": "u" * 250},
+                    {"role": "assistant", "content": "a" * 250},
+                    {"role": "user", "content": "u" * 250},
+                    {"role": "assistant", "content": "a" * 250},
+                    {"role": "user", "content": "f" * 900},
+                ],
+                tools = [{"type": "function", "function": {"name": "python"}}],
+                max_tool_iterations = max_tool_iterations,
+                context_overflow = "truncate_oldest",
+            )
+        )
+
+        notices = [event for event in events if event.get("type") == "context_truncated"]
+        assert [notice["context_length"] for notice in notices] == [2000, 1000]
+        refit = notices[1]
+        # The rescued refusal reports what it evicted, boundary included: the client reads
+        # that depth to place the compaction notice, so recording nothing would compact
+        # silently. Reported is not REPLAYED, which `_sticky_compaction_boundary` still
+        # declines for any `fits` false record.
+        assert refit["fits"] is False
+        assert refit["dropped_messages"] == 2
+        assert refit["prompt_tokens_after"] == 900 < refit["prompt_tokens_before"]
+        # 4, not the 2 of `dropped_messages`: the boundary counts against the REQUEST's
+        # own leading messages, which the next request replays it against, while the drop
+        # count is what this one fit removed.
+        assert refit["boundary_messages"] == 4
+        assert "boundary_anchor" in refit
+        assert archived[-1] == (3, 1)
+        assert len(payloads[1]["messages"]) == 1
+
+
 def test_tool_loop_retries_preflight_when_counting_failed_on_the_dead_server(monkeypatch):
     import httpx
 

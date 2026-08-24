@@ -752,6 +752,16 @@ export interface OpenAIChatChunk {
     // that one message is the problem, i.e. whether "shorten the conversation" helps.
     irreducible_tokens?: number;
     latest_turn_tokens?: number;
+    // Whether `latest_turn_tokens` is a real token count or the four-characters-a-token
+    // estimate the fit falls back to when nothing could price the turn at all. A turn the
+    // template renders as nothing on its own is priced by difference and stays exact.
+    // Only the counted one may be quoted as the turn's size.
+    latest_turn_exact?: boolean;
+    // The floor both counts above carry: what a rendered prompt costs with no messages in
+    // it, which on a tool-enabled request is the whole tool catalogue. Subtract it before
+    // comparing them, or the catalogue is blamed on the turn. Absent from an older server,
+    // where zero reproduces the old behaviour.
+    shared_prompt_tokens?: number;
     // Where the compaction boundary sits in the messages THIS request was sent with.
     // Absolute, unlike dropped_messages, so re-sending it after a turn that refit several
     // times cannot advance the boundary past the turns actually evicted.

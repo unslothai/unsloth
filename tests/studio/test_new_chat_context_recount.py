@@ -530,7 +530,7 @@ def _harness_source() -> str:
 
 def _run(script: str) -> dict:
     require_node(SOURCES)
-    return run_harness(TEMP, _harness_source(), script)
+    return run_harness(TEMP, _harness_source(), script, sources = SOURCES)
 
 
 # The status response that hydrates a resident GGUF; neither field survives a reload.

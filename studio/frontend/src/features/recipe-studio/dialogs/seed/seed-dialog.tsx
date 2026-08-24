@@ -1004,6 +1004,7 @@ export function SeedDialog({
                 <Input
                   id={tokenId}
                   className="nodrag"
+                  data-reload-snapshot-sensitive
                   placeholder="hf_..."
                   value={config.hf_token ?? ""}
                   onChange={(event) =>
@@ -1052,7 +1053,10 @@ export function SeedDialog({
               </p>
               {(localFile?.name || config.local_file_name?.trim()) && (
                 <p className="text-xs text-muted-foreground">
-                  Selected: {localFile?.name ?? config.local_file_name?.trim()}
+                  Selected:{" "}
+                  <span data-reload-snapshot-sensitive>
+                    {localFile?.name ?? config.local_file_name?.trim()}
+                  </span>
                 </p>
               )}
             </div>

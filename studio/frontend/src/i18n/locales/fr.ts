@@ -536,7 +536,7 @@ export const fr = {
           "Enregistrer le cache KV avant un déchargement en cas d'inactivité, afin qu'une discussion reprise n'ait pas à relire l'historique. Jusqu'à 10 Go sur le disque.",
         apiOnly: "Décharger uniquement les modèles chargés par l'API",
         apiOnlyDescription:
-          "Le déchargement en cas d'inactivité laisse en mémoire un modèle que vous avez chargé depuis Studio et ne libère que ceux chargés par une requête API.",
+          "Le déchargement en cas d'inactivité laisse en mémoire un modèle que vous avez chargé depuis Unsloth et ne libère que ceux chargés par une requête API.",
       },
       previewSharing: {
         sectionTitle: "Partage de l'aperçu",
@@ -875,6 +875,8 @@ export const fr = {
         title: "Périphériques GPU",
         ggufInference: "Inférence GGUF",
         unavailable: "indisponible",
+        detecting: "Recherche de GPU...",
+        unreadable: "Impossible de lire le matériel de ce serveur.",
         noGpu:
           "Aucun GPU visible n'a été détecté. Seules les ressources du CPU sont affichées ci-dessus.",
         unknownDevice: "GPU inconnu",
@@ -1035,7 +1037,7 @@ export const fr = {
       quickstart: {
         title: "Construire une commande",
         description:
-          "Lancez un agent sur le modèle actuellement chargé dans Studio. Chargez d'abord un modèle, puis remplacez claude par n'importe quel agent pris en charge ci-dessous.",
+          "Lancez un agent sur le modèle actuellement chargé dans Unsloth. Chargez d'abord un modèle, puis remplacez claude par n'importe quel agent pris en charge ci-dessous.",
         noneDetected:
           "Aucune CLI d'agent prise en charge n'a été trouvée dans votre PATH.",
         installed: "Installé",
@@ -1057,7 +1059,7 @@ export const fr = {
         description:
           "Les options Unsloth sont analysées en premier ; tout ce qu'Unsloth ne reconnaît pas est transmis tel quel à l'agent.",
         model:
-          "Sélectionne un modèle. Sans --model, unsloth start utilise le modèle actuellement chargé dans Studio et échoue si aucun modèle n'est chargé.",
+          "Sélectionne un modèle. Sans --model, unsloth start utilise le modèle actuellement chargé dans Unsloth et échoue si aucun modèle n'est chargé.",
         contextLength:
           "Définit la longueur de contexte demandée (alias : --max-seq-length).",
         ggufVariant: "Choisit la variante de quantification GGUF.",
@@ -1082,9 +1084,9 @@ export const fr = {
           "Ignore les demandes d'autorisation. À n'utiliser que dans des environnements de confiance.",
       },
       remote: {
-        title: "Se connecter à un Studio distant",
+        title: "Se connecter à un Unsloth Studio distant",
         description:
-          "Faites pointer unsloth start vers un Studio exécuté ailleurs en définissant ces variables avant le lancement (ou passez --api-key directement) :",
+          "Faites pointer unsloth start vers un Unsloth Studio exécuté ailleurs en définissant ces variables avant le lancement (ou passez --api-key directement) :",
       },
       passthrough: {
         title: "Transmettre des arguments à l'agent",
@@ -1123,7 +1125,7 @@ export const fr = {
         exportChat: "Exporter le chat",
       },
       pastedTextThreshold: "Condenser les collages longs",
-      pastedTextThresholdDescription: "Le texte collé plus long que cette valeur devient une pièce jointe .txt au lieu de remplir le champ de message.",
+      pastedTextThresholdDescription: "Le texte collé plus long que cette valeur devient une pièce jointe .txt au lieu de remplir le champ de message. Appuyez sur {shortcut} pour coller quand même dans le champ de message.",
       pastedTextThresholdOff: "Désactivé",
       showResponseModel: "Afficher le modèle de réponse",
       showResponseModelDescription:
@@ -1141,6 +1143,12 @@ export const fr = {
         collapseByDefault: "Replier la réflexion par défaut",
         collapseByDefaultDescription:
           "Garde la réflexion repliée pendant que le modèle réfléchit, au lieu de l’ouvrir automatiquement. Dépliez un bloc pour le lire.",
+      },
+      webSearch: {
+        title: "Recherche web",
+        images: "Afficher les images de la recherche web",
+        imagesDescription:
+          "Permet à la recherche web de renvoyer des images et en récupère une pour chaque élément listé dans une réponse. Studio télécharge et redimensionne les vignettes : le navigateur ne contacte jamais les hébergeurs d'images.",
       },
       artifacts: {
         title: "Canvas",
