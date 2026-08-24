@@ -293,19 +293,15 @@ def _exclusion_is_provable(hub_cache: Optional[Path | str] = None) -> bool:
     except ImportError:
         # No fcntl on Windows, where huggingface_hub locks via msvcrt: mandatory rather than
         # advisory. A network share still cannot be spoken for, which the locality check catches.
-        windows = os.name == "nt"
-        try:
-            return windows and _filesystem_is_local(str(directory))
-        except _ProbeUnavailable as exc:
-            logger.debug("resumable partials: %s", exc)
-            return False
-    try:
-        return _filesystem_is_local(str(directory)) and _lock_is_honoured_at(str(directory))
-    except _ProbeUnavailable as exc:
-        # Nothing was shown, so the stock writer stays -- but this answer is not remembered, and
-        # the next caller probes again rather than inheriting a verdict from a bad moment.
-        logger.debug("resumable partials: %s", exc)
+        # Windows has no way to establish who owns a partial: os.stat reports st_uid 0 for every
+        # file, and reading an ACL needs pywin32, which is not a dependency here. Without an owner
+        # check, another account on a shared NTFS cache could leave a partial with a chosen prefix
+        # and have the remaining range appended to it, which the size-only check downstream would
+        # pass. So the shared name stays off here and Windows keeps the stock writer.
         return False
+    # _ProbeUnavailable is deliberately not caught: a probe that could not run is not an answer,
+    # and letting it out keeps any caller from caching one. Callers turn it into "not proven".
+    return _filesystem_is_local(str(directory)) and _lock_is_honoured_at(str(directory))
 
 
 def _hub_is_patchable() -> bool:
@@ -350,9 +346,33 @@ def _objection_to(descriptor: int) -> Optional[str]:
     if info.st_nlink > 1:
         return "hard linked from elsewhere"
     euid = getattr(os, "geteuid", None)
-    if euid is not None and info.st_uid != euid():
+    if euid is None:
+        # No owner to compare against, so nothing here can be vouched for. Reachable only if the
+        # writer is ever enabled without geteuid; _exclusion_is_provable refuses that today.
+        return "on a platform where ownership cannot be established"
+    if info.st_uid != euid():
         return "owned by another user"
     return None
+
+
+def _still_the_written_file(path: Path, written: os.stat_result) -> bool:
+    """Whether *path* still names the file described by *written*.
+
+    ``(st_dev, st_ino)`` identifies a file; the pathname does not. Checked before publishing
+    because the move re-resolves the name, and a shared cache directory lets another account
+    unlink or rename the partial after the last byte is written and leave something else there.
+
+    This narrows the window rather than closing it: nothing between this stat and the move is
+    atomic, and closing it properly needs a by-descriptor rename that Python does not expose
+    portably. Turning "an unrelated file is published as the model" into "the download is retried"
+    is the improvement available here.
+    """
+    try:
+        current = os.lstat(path)
+    except OSError as exc:
+        logger.warning("resumable partials: the partial at %s vanished (%s)", path, exc)
+        return False
+    return (current.st_dev, current.st_ino) == (written.st_dev, written.st_ino)
 
 
 def _open_stable_partial(path: Path) -> Optional[Any]:
@@ -470,6 +490,7 @@ def restore_resumable_partials() -> bool:
                 xet_file_data = xet_file_data,
                 **kwargs,
             )
+        written = os.fstat(opened.fileno())
         with opened as handle:
             resume_size = handle.tell()
             if expected_size is not None:
@@ -490,6 +511,16 @@ def restore_resumable_partials() -> bool:
                 expected_size = expected_size,
                 tqdm_class = kwargs.get("tqdm_class"),
             )
+        # _chmod_and_move resolves the name again, so publish only if the name still holds the
+        # file that was actually written. Otherwise another account could swap something in
+        # after the last write and have it installed as the blob under a verified descriptor.
+        if not _still_the_written_file(incomplete_path, written):
+            logger.warning(
+                "Not publishing '%s': the partial at %s was replaced while it was being written.",
+                filename,
+                incomplete_path,
+            )
+            return
         # Only on success: a failure has to leave the partial where the next attempt looks for it.
         file_download._chmod_and_move(incomplete_path, destination_path)
 

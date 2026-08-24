@@ -59,7 +59,6 @@ _LAST_RESUMABLE_PARTIAL_VERSION = (1, 17)
 ABANDONED_PARTIAL_SECONDS = 120
 
 
-@lru_cache(maxsize = 8)
 def hf_partials_are_resumable(hub_cache: Optional[str] = None) -> bool:
     """Whether an interrupted download leaves bytes the next attempt can reuse.
 
@@ -78,6 +77,12 @@ def hf_partials_are_resumable(hub_cache: Optional[str] = None) -> bool:
     about. Studio remembers several and they need not lock alike: without it, a selected cache on a
     network mount would condemn a local cache's partials to the abandoned-partial sweep. Omitting it
     asks about the cache in force, which is where a new download lands.
+
+    Deliberately not cached here. The verdict is a fact about a filesystem, not about a path, so a
+    result keyed on the path alone survives a remount at the same name and outlives a momentary
+    failure to probe. The expensive part, the lock probe, is cached in
+    :mod:`hub.utils.resumable_partials` against the mounted device instead, and a probe that could
+    not run raises rather than answering, so nothing remembers a bad moment.
     """
     try:
         from huggingface_hub import __version__ as hf_version
@@ -96,8 +101,12 @@ def hf_partials_are_resumable(hub_cache: Optional[str] = None) -> bool:
     if tuple(release) <= _LAST_RESUMABLE_PARTIAL_VERSION:
         return True
     try:
-        from hub.utils.resumable_partials import can_restore_partials
-        return can_restore_partials(hub_cache)
+        from hub.utils.resumable_partials import _ProbeUnavailable, can_restore_partials
+        try:
+            return can_restore_partials(hub_cache)
+        except _ProbeUnavailable:
+            # Nothing was shown, so nothing is promised -- and nothing is remembered either.
+            return False
     except Exception:  # noqa: BLE001 - no restoration is just the stock answer
         from loggers import get_logger
         get_logger(__name__).debug(
@@ -113,7 +122,6 @@ def invalidate_partial_resumability() -> None:
     The verdict depends on whether ``flock`` excludes a second writer where the partial lands, so
     it cannot be carried over from the old root.
     """
-    hf_partials_are_resumable.cache_clear()
     try:
         from hub.utils.resumable_partials import invalidate_probe_cache
         invalidate_probe_cache()

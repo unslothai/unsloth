@@ -11,6 +11,7 @@ cannot prove that is safe, which is the whole reason 1.18 removed it.
 from __future__ import annotations
 
 from pathlib import Path
+import builtins
 import errno
 import os
 import sys
@@ -343,14 +344,40 @@ def test_a_probe_that_could_not_run_is_not_remembered(tmp_path, monkeypatch):
     assert rp._filesystem_is_local(str(tmp_path)) is True, "the failure was cached"
 
 
-def test_an_unrunnable_probe_reads_as_unprovable_not_as_an_error(tmp_path, monkeypatch):
-    """It still has to fail closed for the caller, just without being remembered."""
+def test_an_unrunnable_probe_travels_up_rather_than_answering(tmp_path, monkeypatch):
+    """The probe layer must not turn "could not tell" into "no", or a caller would cache it."""
     rp.invalidate_probe_cache()
     monkeypatch.setattr(rp, "_probe_dir", lambda _c = None: tmp_path)
     monkeypatch.setattr(
         rp, "_device_at", lambda _d: (_ for _ in ()).throw(rp._ProbeUnavailable("gone"))
     )
-    assert rp._exclusion_is_provable() is False
+    with pytest.raises(rp._ProbeUnavailable):
+        rp._exclusion_is_provable()
+
+    # And out through the public entry point, past the version gate.
+    monkeypatch.setattr("huggingface_hub.__version__", "1.28.0", raising = False)
+    monkeypatch.setattr(rp, "_hub_is_patchable", lambda: True)
+    with pytest.raises(rp._ProbeUnavailable):
+        rp.can_restore_partials()
+
+
+def test_the_capability_reads_false_when_the_probe_could_not_run(monkeypatch):
+    """Fail closed at the boundary the callers use, and do not remember it there either."""
+    from hub.utils import hf_cache_state
+
+    monkeypatch.setattr("huggingface_hub.__version__", "1.28.0", raising = False)
+    attempts: list[int] = []
+
+    def unavailable(_c = None):
+        attempts.append(1)
+        raise rp._ProbeUnavailable("mount table briefly unreadable")
+
+    monkeypatch.setattr(rp, "can_restore_partials", unavailable)
+    hf_cache_state.invalidate_partial_resumability()
+
+    assert hf_cache_state.hf_partials_are_resumable() is False
+    assert hf_cache_state.hf_partials_are_resumable() is False
+    assert len(attempts) == 2, "the failure was cached instead of being re-probed"
 
 
 def test_changing_the_cache_home_invalidates_the_verdict(monkeypatch):
@@ -359,15 +386,14 @@ def test_changing_the_cache_home_invalidates_the_verdict(monkeypatch):
 
     monkeypatch.setattr(rp, "can_restore_partials", lambda _c = None: True)
     monkeypatch.setattr("huggingface_hub.__version__", "1.28.0", raising = False)
-    hf_cache_state.hf_partials_are_resumable.cache_clear()
+    hf_cache_state.invalidate_partial_resumability()
     assert hf_cache_state.hf_partials_are_resumable() is True
 
     monkeypatch.setattr(rp, "can_restore_partials", lambda _c = None: False)
-    assert hf_cache_state.hf_partials_are_resumable() is True, "cached, as the hot path needs"
-
-    hf_cache_state.invalidate_partial_resumability()
+    # No cache at this layer any more: the verdict follows the filesystem, and a result kept
+    # against the path alone outlives a remount at the same name.
     assert hf_cache_state.hf_partials_are_resumable() is False
-    hf_cache_state.hf_partials_are_resumable.cache_clear()
+    hf_cache_state.invalidate_partial_resumability()
 
 
 # ---------------------------------------------------------------------------------------------
@@ -440,19 +466,23 @@ def test_a_partial_left_by_another_user_is_not_built_on(monkeypatch, tmp_path):
     partial = tmp_path / "abc.incomplete"
     partial.write_bytes(b"poison" * 100)
 
-    # Only this file reads as somebody else's: owning one for real needs root, and the fresh
-    # partial that replaces it has to still be ours or the test proves nothing about the retry.
+    # Only the planted file reads as somebody else's: owning one for real needs root, and the
+    # fresh partial that replaces it has to still be ours or the test proves nothing about the
+    # retry. Keyed on which open it is rather than on the inode, since a filesystem is free to
+    # hand the replacement the inode the unlinked file just released.
     real_fstat = os.fstat
-    planted_inode = partial.stat().st_ino
+    opens: list[int] = []
 
     class _Foreign:
         def __init__(self, info):
             self.st_mode, self.st_nlink = info.st_mode, info.st_nlink
+            self.st_dev, self.st_ino = info.st_dev, info.st_ino
             self.st_uid = info.st_uid + 1
 
     def fstat(descriptor, *args, **kwargs):
         info = real_fstat(descriptor, *args, **kwargs)
-        return _Foreign(info) if info.st_ino == planted_inode else info
+        opens.append(1)
+        return _Foreign(info) if len(opens) == 1 else info
 
     monkeypatch.setattr(rp.os, "fstat", fstat)
 
@@ -501,6 +531,75 @@ def test_an_unopenable_partial_defers_instead_of_failing_the_download(monkeypatc
     assert len(calls["stock"]) == 1, "the download was abandoned rather than handed to stock"
     assert calls["http_get"] == []
     assert partial.read_bytes() == b"someone else's", "it deleted a partial it could not read"
+
+
+def test_a_partial_swapped_after_the_last_write_is_not_published(monkeypatch, tmp_path):
+    """_chmod_and_move resolves the name again, so the name has to still hold what was written.
+
+    Otherwise a shared cache lets another account replace the partial once writing stops and have
+    its file installed as the blob, under a descriptor that passed every check.
+    """
+    module, calls = _fake_file_download(monkeypatch)
+    assert rp.restore_resumable_partials() is True
+
+    partial = tmp_path / "abc.incomplete"
+    real_http_get = module.http_get
+
+    def swap_then_write(url, handle, **kwargs):
+        real_http_get(url, handle, **kwargs)
+        # The writer is finished with the descriptor; the name now points somewhere else.
+        partial.unlink()
+        partial.write_bytes(b"attacker's model")
+
+    module.http_get = swap_then_write
+
+    _patched_writer(module)(
+        incomplete_path = partial,
+        destination_path = tmp_path / "abc",
+        url_to_download = "https://example/f",
+        headers = {},
+        expected_size = 50,
+        filename = "f",
+    )
+
+    assert calls["moved"] == [], "the replacement was published as the blob"
+    assert partial.read_bytes() == b"attacker's model", "it should be left for the retry to judge"
+
+
+def test_ownership_that_cannot_be_established_is_an_objection(monkeypatch, tmp_path):
+    """Windows has no st_uid and no ACL read without pywin32, so nothing there can be vouched for.
+
+    _exclusion_is_provable keeps the shared writer off that platform, and this is the second line:
+    if it were ever enabled, an unknown owner still must not read as ours.
+    """
+    monkeypatch.delattr(rp.os, "geteuid", raising = False)
+    target = tmp_path / "partial"
+    target.write_bytes(b"whoever wrote this")
+    descriptor = os.open(target, os.O_RDONLY)
+    try:
+        assert rp._objection_to(descriptor) is not None
+    finally:
+        os.close(descriptor)
+
+
+def test_windows_keeps_the_stock_writer(monkeypatch, tmp_path):
+    """No fcntl and no way to establish ownership, so the shared name stays off.
+
+    os.name is faked as well as fcntl: on a posix box the answer would be False either way, and
+    a test that cannot tell the difference would not notice the writer being switched back on.
+    """
+    monkeypatch.setattr(rp, "_probe_dir", lambda _c = None: tmp_path)
+    monkeypatch.setattr(rp, "_filesystem_is_local", lambda _d: True)
+    monkeypatch.setattr(rp.os, "name", "nt")
+    real_import = builtins.__import__
+
+    def without_fcntl(name, *args, **kwargs):
+        if name == "fcntl":
+            raise ImportError("no fcntl on Windows")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", without_fcntl)
+    assert rp._exclusion_is_provable() is False
 
 
 def test_a_planted_hard_link_is_not_appended_to(monkeypatch, tmp_path):
@@ -665,14 +764,14 @@ def test_the_ui_is_told_partials_are_resumable_again(monkeypatch):
     from hub.utils import hf_cache_state
 
     _fake_file_download(monkeypatch)
-    hf_cache_state.hf_partials_are_resumable.cache_clear()
+    hf_cache_state.invalidate_partial_resumability()
     monkeypatch.setattr(rp, "can_restore_partials", lambda _c = None: True)
     assert hf_cache_state.hf_partials_are_resumable() is True
 
-    hf_cache_state.hf_partials_are_resumable.cache_clear()
+    hf_cache_state.invalidate_partial_resumability()
     monkeypatch.setattr(rp, "can_restore_partials", lambda _c = None: False)
     assert hf_cache_state.hf_partials_are_resumable() is False
-    hf_cache_state.hf_partials_are_resumable.cache_clear()
+    hf_cache_state.invalidate_partial_resumability()
 
 
 def test_the_worker_restores_it_on_import():

@@ -77,11 +77,11 @@ def test_writer_resumability_tracks_the_installed_version(monkeypatch, hf_versio
     """
     monkeypatch.setattr(resumable_partials, "can_restore_partials", lambda _c = None: False)
     monkeypatch.setattr("huggingface_hub.__version__", hf_version, raising = False)
-    hf_cache_state.hf_partials_are_resumable.cache_clear()
+    hf_cache_state.invalidate_partial_resumability()
     try:
         assert hf_cache_state.hf_partials_are_resumable() is resumable
     finally:
-        hf_cache_state.hf_partials_are_resumable.cache_clear()
+        hf_cache_state.invalidate_partial_resumability()
 
 
 @pytest.mark.parametrize("hf_version", ["1.18.0", "1.23.0", "1.27.0"])
@@ -89,11 +89,11 @@ def test_restoring_the_1_17_writer_makes_partials_resumable_again(monkeypatch, h
     """Where the worker puts the append-mode writer back, a partial is worth keeping again."""
     monkeypatch.setattr(resumable_partials, "can_restore_partials", lambda _c = None: True)
     monkeypatch.setattr("huggingface_hub.__version__", hf_version, raising = False)
-    hf_cache_state.hf_partials_are_resumable.cache_clear()
+    hf_cache_state.invalidate_partial_resumability()
     try:
         assert hf_cache_state.hf_partials_are_resumable() is True
     finally:
-        hf_cache_state.hf_partials_are_resumable.cache_clear()
+        hf_cache_state.invalidate_partial_resumability()
 
 
 def test_a_nonce_partial_stays_unresumable_after_the_writer_is_restored(monkeypatch):
@@ -101,12 +101,12 @@ def test_a_nonce_partial_stays_unresumable_after_the_writer_is_restored(monkeypa
     stable name, so it never finds them. Only what it writes from here is reusable."""
     monkeypatch.setattr(resumable_partials, "can_restore_partials", lambda _c = None: True)
     monkeypatch.setattr("huggingface_hub.__version__", "1.28.0", raising = False)
-    hf_cache_state.hf_partials_are_resumable.cache_clear()
+    hf_cache_state.invalidate_partial_resumability()
     try:
         assert hf_cache_state.partial_is_resumable(_NONCE_PARTIAL) is False
         assert hf_cache_state.partial_is_resumable(_LEGACY_PARTIAL) is True
     finally:
-        hf_cache_state.hf_partials_are_resumable.cache_clear()
+        hf_cache_state.invalidate_partial_resumability()
 
 
 def test_a_nonce_partial_is_unresumable_even_under_a_legacy_writer(monkeypatch):
