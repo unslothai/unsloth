@@ -1039,36 +1039,87 @@ with sync_playwright() as p:
         the migrated map). Removing the row leaves the legacy import as the only thing
         that can put a value in this key, which is what the step is about.
         """
-        want = {
-            _normalize_model_identity(GGUF_REPO),
-            f"{_normalize_model_identity(GGUF_REPO)}:{GGUF_VARIANT.strip().lower()}",
-        }
+        # MODEL AND QUANT NORMALISED SEPARATELY, which is what `entries_for_model` already does
+        # to these same two values. Folding the whole `<model>:<quant>` string as one identity
+        # only works while the model half folds too: `normalizeModelIdentity` deliberately keeps
+        # a plain POSIX path's case, so with a local-path GGUF_REPO the row
+        # `/models/Foo.gguf:UD-Q4_K_XL` normalises to itself and never matched the lowercased
+        # `...:ud-q4_k_xl` this was comparing against. The stale row then survived the cleanup and
+        # the migration check went on to measure server precedence instead.
+        want_model = _normalize_model_identity(GGUF_REPO)
+        want_quant = GGUF_VARIANT.strip().lower()
 
-        def rows_for_model() -> list[str]:
+        def _is_row_for_model(key: str) -> bool:
+            if _normalize_model_identity(key) == want_model:
+                return True
+            model, sep, quant = key.rpartition(":")
+            return bool(sep) and (
+                _normalize_model_identity(model) == want_model
+                and quant.strip().lower() == want_quant
+            )
+
+        def rows_for_model() -> list[str] | None:
+            """The override rows for this model, or None if the inventory could not be READ.
+
+            None is not the empty list. `evaluate_fetch` reports a timeout or an HTTP error by
+            returning `status == 0` / a non-None `error` rather than raising, so a request that
+            never landed used to come back as "there are no override rows" -- the cleanup did
+            nothing, its own post-delete verification passed on the same silence, and stale rows
+            went on to contaminate the migration check with no line of output saying so.
+            """
             resp = evaluate_fetch(
                 page,
                 f"{BASE}/api/settings/openai-auto-switch/overrides",
                 headers = {"Authorization": f"Bearer {token}"},
             )
+            if not resp.get("status") or resp.get("error") is not None:
+                return None
             body = resp.get("body")
             if not isinstance(body, dict) or not isinstance(body.get("overrides"), dict):
-                return []
-            return [k for k in body["overrides"] if _normalize_model_identity(str(k)) in want]
+                return None
+            return [k for k in body["overrides"] if _is_row_for_model(str(k))]
+
+        def remove_rows(keys: list[str]) -> None:
+            for key in keys:
+                evaluate_fetch(
+                    page,
+                    f"{BASE}/api/settings/openai-auto-switch/overrides",
+                    method = "PUT",
+                    headers = {
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json",
+                    },
+                    body = {"model_id": key, "remove": True},
+                )
 
         stale = rows_for_model()
-        for key in stale:
-            evaluate_fetch(
-                page,
-                f"{BASE}/api/settings/openai-auto-switch/overrides",
-                method = "PUT",
-                headers = {
-                    "Authorization": f"Bearer {token}",
-                    "Content-Type": "application/json",
-                },
-                body = {"model_id": key, "remove": True},
+        if stale is None:
+            runtime_warn(
+                "could not read the server override inventory, so the rows left by the earlier "
+                "steps were not cleared; the migration check below may be measuring server "
+                "precedence instead"
             )
-        left = rows_for_model()
-        if left:
+            return
+        remove_rows(stale)
+        # AND IT HAS TO STAY REMOVED. `syncModelOverride` is fire-and-forget, so a mirror PUT
+        # from steps 2 to 4 can still be in flight when this runs and recreate the row moments
+        # after a single post-delete read found it gone -- which puts back exactly the
+        # contamination this cleanup exists to remove. So absence is confirmed over a short
+        # window rather than at one instant, and a row that comes back is removed again.
+        left: list[str] | None = []
+        for _ in range(4):
+            page.wait_for_timeout(250)
+            left = rows_for_model()
+            if not left:
+                break
+            remove_rows(left)
+        if left is None:
+            runtime_warn(
+                "could not re-read the server override inventory after clearing it, so whether "
+                "the rows stayed removed is unknown; the migration check below may be measuring "
+                "server precedence instead"
+            )
+        elif left:
             # Not fatal on its own: say so rather than let the migration assertion below
             # report the leftover row as the migration losing a value.
             runtime_warn(
@@ -1134,8 +1185,22 @@ with sync_playwright() as p:
         # skipped it, which is what a racing write produces. Collapsing them into "not
         # migrated" sent the last investigation into normalizeV1, which was innocent.
         migrated_any = any(e.get("disableVision") is True for e in model_entries)
-        if migrated_ctx:
+        # AND THE PASS REQUIRES THE FINGERPRINT TOO. The context alone does not say where it came
+        # from: a server override row that survived the cleanup carries DISTINCT_CTX as well --
+        # step 3b wrote it -- and hydration can put that into `model_entries` with the legacy
+        # import never having applied the seed at all. Reporting OK on the context by itself is
+        # the very confusion `disableVision` was added to end, left out of the branch that
+        # decides whether this step passed.
+        if migrated_ctx and migrated_any:
             info(f"OK migration: legacy context {DISTINCT_CTX} preserved after migrating")
+        elif migrated_ctx:
+            soft_fail(
+                f"legacy context {DISTINCT_CTX} is present but NOTHING ELSE from the seed is: "
+                f"disableVision is the fingerprint that only this seed sets, so the context was "
+                f"put here by something other than the legacy import -- a surviving server "
+                f"override row hydrating over the map is what produces this "
+                f"(entries={json.dumps(model_entries)[:400]})"
+            )
         elif migrated_any:
             soft_fail(
                 f"legacy context {DISTINCT_CTX} was DROPPED by the migration: other fields "
