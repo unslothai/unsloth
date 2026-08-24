@@ -332,9 +332,11 @@ _RUNTIME_CAPABILITIES: Optional[dict[str, Any]] = None
 def mlx_speculative_runtime_capabilities() -> dict[str, Any]:
     """What the installed MLX stack can draft with.
 
-    A stack that would not import is not remembered: MLX self-heal installs one into this
-    process's environment, and a probe cached from before it ran would leave every mode
-    disabled until Studio restarts.
+    Self-heal installs and upgrades the stack inside this running process, so nothing it can
+    still change is answered from before it ran. It is asked first, from distribution metadata:
+    importing a stack it is about to replace pins the old modules in ``sys.modules``, where the
+    upgraded ones can no longer be reached. Only a usable stack, or a platform that can never
+    have one, is remembered.
     """
     global _RUNTIME_CAPABILITIES
     if _RUNTIME_CAPABILITIES is not None:
@@ -349,13 +351,19 @@ def mlx_speculative_runtime_capabilities() -> dict[str, Any]:
         _RUNTIME_CAPABILITIES = result
         return result
     try:
+        from utils.mlx_repair import mlx_stack_available
+
+        if not mlx_stack_available():
+            return result
         drafters = importlib.import_module("mlx_vlm.speculative.drafters")
         ar = importlib.import_module("mlx_vlm.generate.ar")
         utils = importlib.import_module("mlx_vlm.speculative.utils")
     except Exception:
         return result
-    _RUNTIME_CAPABILITIES = _runtime_capabilities_from_modules(drafters, ar, utils)
-    return _RUNTIME_CAPABILITIES
+    probed = _runtime_capabilities_from_modules(drafters, ar, utils)
+    if probed["common"]:
+        _RUNTIME_CAPABILITIES = probed
+    return probed
 
 
 def _runtime_capabilities_from_modules(drafters: Any, ar: Any, utils: Any) -> dict[str, Any]:

@@ -5720,35 +5720,59 @@ def test_a_target_whose_weights_are_not_here_defers_the_memory_verdict(monkeypat
     assert [row.reason for row in measured] == [None]
 
 
-def test_a_runtime_that_is_not_installed_yet_is_probed_again(monkeypatch):
-    """MLX self-heal installs the stack into this running process, so a probe taken before it
-    finished must not be what every later request answers from."""
+_MISSING_API = {"common": False, "methods": {}, "reason": "runtime_missing_speculative_api"}
+_USABLE = {"common": True, "methods": {"mtp": True}, "reason": None}
+
+
+@pytest.mark.parametrize(
+    "stack_available, classify, reason, imports_per_probe",
+    [
+        # Below the floor self-heal upgrades past. Not imported at all: loading it would pin the
+        # old modules in sys.modules, where the upgraded ones can no longer be reached.
+        (False, None, "runtime_unavailable", 0),
+        (True, None, "runtime_unavailable", 1),
+        (True, _MISSING_API, "runtime_missing_speculative_api", 3),
+    ],
+)
+def test_a_runtime_self_heal_can_still_fix_is_probed_again(
+    monkeypatch, stack_available, classify, reason, imports_per_probe
+):
+    """Self-heal installs and upgrades the stack inside this running process, so no verdict it
+    can still change may be what every later request answers from -- and the repaired stack has
+    to be reachable from the same process, without a restart."""
     from core.inference import mlx_speculative as spec
 
     monkeypatch.setattr(spec, "_RUNTIME_CAPABILITIES", None)
     monkeypatch.setattr(spec.sys, "platform", "darwin")
-    calls = []
+    stack = {"available": stack_available}
+    classifier = {"result": classify}
+    imported = []
 
     def _import(name):
-        calls.append(name)
-        raise ImportError(name)
+        imported.append(name)
+        if classifier["result"] is None:
+            raise ImportError(name)
 
+    monkeypatch.setattr("utils.mlx_repair.mlx_stack_available", lambda: stack["available"])
     monkeypatch.setattr(spec.importlib, "import_module", _import)
-    assert spec.mlx_speculative_runtime_capabilities()["reason"] == "runtime_unavailable"
-    assert spec.mlx_speculative_runtime_capabilities()["reason"] == "runtime_unavailable"
-    assert len(calls) == 2
-
     monkeypatch.setattr(
-        spec,
-        "_runtime_capabilities_from_modules",
-        lambda *_m: {"common": True, "methods": {"mtp": True}, "reason": None},
+        spec, "_runtime_capabilities_from_modules", lambda *_m: dict(classifier["result"])
     )
-    monkeypatch.setattr(spec.importlib, "import_module", lambda name: calls.append(name))
+
+    assert spec.mlx_speculative_runtime_capabilities()["reason"] == reason
+    assert len(imported) == imports_per_probe
+    assert spec.mlx_speculative_runtime_capabilities()["reason"] == reason
+    assert len(imported) == imports_per_probe * 2
+
+    # The repair lands: every gate this verdict came from is asked again, in this same process.
+    stack["available"] = True
+    classifier["result"] = _USABLE
+    assert spec.mlx_speculative_runtime_capabilities()["reason"] is None
+    settled = imports_per_probe * 2 + 3
+    assert len(imported) == settled
     assert spec.mlx_speculative_runtime_capabilities()["reason"] is None
     # Settled now, so the imports are not walked again.
-    before = len(calls)
-    assert spec.mlx_speculative_runtime_capabilities()["reason"] is None
-    assert len(calls) == before
+    assert len(imported) == settled
 
 
 def _drafter_snapshot(tmp_path, name, config):
