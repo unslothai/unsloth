@@ -88,10 +88,11 @@ assert_not_contains \
 echo ""
 echo "=== README.md Launch section ==="
 
-# The primary Launch example must not include -H 0.0.0.0; the LAN/cloud
-# note is an opt-in line outside it. Stop at the next heading of any level:
+# The primary Launch example must not include -H 0.0.0.0. Stop at the next heading:
 # '#### Update' was later deleted, silently extending the section to the file end.
 _readme_launch=$(awk '/^#### Launch$/{found=1; print; next} found && /^#{1,6} /{exit} found{print}' "$README")
+# The opt-in belongs anywhere in the Studio quickstart, including a sibling subsection.
+_readme_studio=$(awk '/^### Unsloth Studio \(web UI\)$/{found=1; print; next} found && /^#{1,3} /{exit} found{print}' "$README")
 assert_contains \
     "README: Launch section exists" \
     "$_readme_launch" "unsloth studio"
@@ -99,8 +100,8 @@ assert_not_contains \
     "README: Launch section primary command has no -H 0.0.0.0" \
     "$_readme_launch" "studio -H 0.0.0.0"
 assert_contains \
-    "README: Launch section documents -H 0.0.0.0 opt-in" \
-    "$_readme_launch" "0.0.0.0"
+    "README: Studio quickstart documents -H 0.0.0.0 opt-in" \
+    "$_readme_studio" "unsloth studio -H 0.0.0.0"
 
 echo ""
 echo "=== Results ==="
