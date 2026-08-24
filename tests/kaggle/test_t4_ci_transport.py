@@ -2313,27 +2313,43 @@ def test_the_shared_wheels_are_the_specs_every_leg_holds_in_common():
     one leg carries is part of what that leg tests, and sharing it would make
     the legs agree about the thing they exist to disagree about.
     """
-    common = build_kernel._shared_vcs_specs({
-        "a": [["unsloth_zoo @ git+u@S1"], ["transformers==5.5.0"]],
-        "b": [["unsloth_zoo @ git+u@S1"], ["--upgrade", "transformers"]],
-    })
+    common = build_kernel._shared_vcs_specs(
+        {
+            "a": [["unsloth_zoo @ git+u@S1"], ["transformers==5.5.0"]],
+            "b": [["unsloth_zoo @ git+u@S1"], ["--upgrade", "transformers"]],
+        }
+    )
     assert common == ("unsloth_zoo @ git+u@S1",), common
 
     # Different refs for the same package share NOTHING. Returning either one
     # would hand a leg a wheel built from the other leg's commit.
-    assert build_kernel._shared_vcs_specs({
-        "a": [["unsloth @ git+u@S1"]], "b": [["unsloth @ git+u@S2"]],
-    }) == ()
+    assert (
+        build_kernel._shared_vcs_specs(
+            {
+                "a": [["unsloth @ git+u@S1"]],
+                "b": [["unsloth @ git+u@S2"]],
+            }
+        )
+        == ()
+    )
 
     # A spec only one leg carries is never shared.
-    assert build_kernel._shared_vcs_specs({
-        "a": [["x @ git+u@S1"], ["y @ git+u@S9"]], "b": [["x @ git+u@S1"]],
-    }) == ("x @ git+u@S1",)
+    assert build_kernel._shared_vcs_specs(
+        {
+            "a": [["x @ git+u@S1"], ["y @ git+u@S9"]],
+            "b": [["x @ git+u@S1"]],
+        }
+    ) == ("x @ git+u@S1",)
 
     # And on the real legs: BOTH packages, at the refs asked for.
     driver = build_kernel.build_kernel(
-        SMOKE_DIR, ALL_FOUR, unsloth_ref = "PRSHA", zoo_ref = "MAINSHA",
-        extra_args = (), per_run_timeout = 60, skip_reference = True,
+        SMOKE_DIR,
+        ALL_FOUR,
+        unsloth_ref = "PRSHA",
+        zoo_ref = "MAINSHA",
+        extra_args = (),
+        per_run_timeout = 60,
+        skip_reference = True,
     )
     src = "".join("".join(c["source"]) for c in driver["cells"])
     specs = re.search(r"SHARED_WHEEL_SPECS = (.+)", src).group(1)
@@ -2341,9 +2357,9 @@ def test_the_shared_wheels_are_the_specs_every_leg_holds_in_common():
     assert "PRSHA" in specs and "MAINSHA" in specs, specs
     # Built before any leg can start. A background build loses the race it
     # exists to win: the legs are admitted and start installing at t=0.
-    assert src.index('"pip", "wheel"') < src.index("threads = []"), (
-        "the wheels are built after the leg workers start, so no leg can use them"
-    )
+    assert src.index('"pip", "wheel"') < src.index(
+        "threads = []"
+    ), "the wheels are built after the leg workers start, so no leg can use them"
 
 
 def test_every_leg_gets_its_own_torch_and_triton_cache(tmp_path):
@@ -2366,14 +2382,18 @@ def test_every_leg_gets_its_own_torch_and_triton_cache(tmp_path):
     seen: dict[str, set] = {}
     for call in driven["stub"].papermill:
         env = call.get("env") or {}
-        for key in ("TORCHINDUCTOR_CACHE_DIR", "TRITON_CACHE_DIR", "TMPDIR",
-                    "UNSLOTH_COMPILE_LOCATION"):
+        for key in (
+            "TORCHINDUCTOR_CACHE_DIR",
+            "TRITON_CACHE_DIR",
+            "TMPDIR",
+            "UNSLOTH_COMPILE_LOCATION",
+        ):
             assert env.get(key), f"{call['notebook']} has no {key}"
             seen.setdefault(key, set()).add(env[key])
     for key, values in seen.items():
-        assert len(values) == len(driven["stub"].papermill), (
-            f"{key} is shared between legs: {sorted(values)}"
-        )
+        assert len(values) == len(
+            driven["stub"].papermill
+        ), f"{key} is shared between legs: {sorted(values)}"
 
 
 def test_the_workflow_can_actually_reach_studio_concurrent():

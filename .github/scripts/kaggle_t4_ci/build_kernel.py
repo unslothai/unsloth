@@ -1330,7 +1330,9 @@ def build_kernel(
         isolation[name] = leg.system_site_packages
         legs_by_payload[name] = leg
         leg_groups[name] = expand_install(
-            leg, unsloth_ref = unsloth_ref, zoo_ref = zoo_ref,
+            leg,
+            unsloth_ref = unsloth_ref,
+            zoo_ref = zoo_ref,
             payload_dir = payload_dir,
         )
     # The card queue is the LEGS. Studio's two halves ride the same kernel but
