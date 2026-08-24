@@ -217,10 +217,10 @@ function UnauthenticatedApiWarning({ enabled }: { enabled: boolean }) {
     return null;
   }
   return (
-    <output className="mb-3 block text-xs leading-snug text-muted-foreground">
+    <p className="mb-3 block text-xs leading-snug text-muted-foreground">
       Trusted networks only. While LAN access is online, anyone on the private
       network can use loaded models and agent tools on this machine.
-    </output>
+    </p>
   );
 }
 
