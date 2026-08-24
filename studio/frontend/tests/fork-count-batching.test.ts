@@ -44,7 +44,10 @@ function fireHistoryUpdated(): void {
 }
 
 /** A fresh module instance plus the request log its fetches write to. */
-function freshStore(counts: Record<string, number> = {}): {
+function freshStore(
+  counts: Record<string, number> = {},
+  incognito: readonly string[] = [],
+): {
   store: Store;
   requests: string[];
 } {
@@ -58,6 +61,9 @@ function freshStore(counts: Record<string, number> = {}): {
           requests.push(threadId);
           return new Map(Object.entries(counts));
         },
+      },
+      "./chat-history-storage": {
+        isThreadIncognito: (threadId: string) => incognito.includes(threadId),
       },
     },
   );
@@ -369,6 +375,36 @@ test("a chat created in the app asks for its fork counts", async (t) => {
   assert.equal(store.forkCountFor("__LOCALID_abc123", "m1"), 2);
 
   unsubscribe();
+});
+
+test("a temporary chat is the one thread that never asks", async (t) => {
+  // ensureThreadRecord marks an incognito thread and returns without writing a row, so its
+  // forks cannot exist and the request can only 404 -- once on mount and again on every
+  // history event, which streaming raises per chunk. The saved chat beside it still asks:
+  // the guard is the row, not the `__LOCALID_` prefix both of them carry.
+  mock.timers.enable({ apis: ["setTimeout"] });
+  t.after(() => mock.timers.reset());
+  const { store, requests } = freshStore({ m1: 2 }, ["__LOCALID_temp"]);
+
+  const stop = [
+    store.subscribeForkCounts("__LOCALID_temp", () => {}),
+    store.subscribeForkCounts("__LOCALID_saved", () => {}),
+  ];
+  await flush();
+  assert.deepEqual(requests, ["__LOCALID_saved"]);
+
+  for (let i = 0; i < 20; i++) fireHistoryUpdated();
+  mock.timers.tick(store.FORK_COUNT_REFRESH_MAX_WAIT_MS);
+  await flush();
+  assert.equal(
+    requests.filter((id) => id === "__LOCALID_temp").length,
+    0,
+    "nor must a burst of history events reach a temporary chat",
+  );
+  assert.equal(store.forkCountFor("__LOCALID_temp", "m1"), 0);
+  assert.equal(store.forkCountFor("__LOCALID_saved", "m1"), 2);
+
+  for (const unsubscribe of stop) unsubscribe();
 });
 
 test("every subscribed thread refreshes, whatever its id looks like", async (t) => {

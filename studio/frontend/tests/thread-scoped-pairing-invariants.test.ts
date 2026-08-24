@@ -36,6 +36,11 @@ test("the read waits for this chat's own write before it can be believed", () =>
   // returns the pre-edit snapshot, which is then applied over what the user set.
   const sync = slice(provider, "const sync = () => {", "// The read did not answer");
   assert.match(sync, /awaitThreadScopedSettingsWrite\(activeThreadId\)/);
+  // And the row's own creation. initialize() resolves as soon as the id is minted and leaves
+  // the POST tracked, so on the first send a read can overtake it, see no row, and release
+  // this chat's held edits into the installation defaults -- the leak the pairing exists to
+  // stop, narrowed to the window after the send rather than removed.
+  assert.match(sync, /awaitStoredChatThreadWrites\(activeThreadId\)/);
   // and the read only happens after it, not alongside
   assert.ok(
     sync.indexOf("awaitThreadScopedSettingsWrite") <

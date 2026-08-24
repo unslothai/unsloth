@@ -1796,7 +1796,16 @@ function ThreadScopedSettingsSync({
       // over the values the user set and is written out again by the next edit.
       const read = new AbortController();
       reads.add(read);
-      void awaitThreadScopedSettingsWrite(activeThreadId)
+      void Promise.all([
+        awaitThreadScopedSettingsWrite(activeThreadId),
+        // And this chat's row itself, which may not exist yet. initialize() resolves as soon
+        // as the id is minted and leaves the row's POST tracked in the background, so on the
+        // first send a read can overtake it, find no row, and release the edits held for this
+        // chat into the installation defaults -- the same leak this pairing exists to stop,
+        // in the window just after the send. Settles at once when nothing is tracked, so a
+        // chat opened from the sidebar waits for nothing.
+        awaitStoredChatThreadWrites(activeThreadId),
+      ])
         .then(() =>
           // Bounded, because this read is what holds sends back: an unbounded GET that
           // never settles would park every send in the chat behind "Loading this chat's

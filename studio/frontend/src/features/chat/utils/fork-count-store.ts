@@ -12,6 +12,7 @@ import {
   CHAT_HISTORY_UPDATED_EVENT,
   getThreadForkCounts,
 } from "../api/chat-api";
+import { isThreadIncognito } from "./chat-history-storage";
 
 // Same reasoning as the sidebar's refresh: each quiet window costs one fetch.
 export const FORK_COUNT_REFRESH_DEBOUNCE_MS = 300;
@@ -51,6 +52,11 @@ let listening = false;
 async function refresh(threadId: string): Promise<void> {
   const entry = entries.get(threadId);
   if (!entry) return;
+  // A temporary chat is the one thread whose forks really cannot exist: ensureThreadRecord
+  // marks it and returns without writing a row, while assistant-ui still publishes its id as
+  // the remoteId, so this request can only 404. The row is what decides that, not the id --
+  // a `__LOCALID_` prefix belongs to every chat the app creates, saved ones included.
+  if (isThreadIncognito(threadId)) return;
   const seq = ++entry.seq;
   let counts: Counts;
   try {
