@@ -256,9 +256,12 @@ jobs:
         # base against the PR head SHA so the range is the PR's own commits and
         # not every base commit since the branch point.
         #
-        # --diff-filter=ACMR, not M: a bad resolution can just as easily land in a
+        # --diff-filter=ACMRT, not M: a bad resolution can just as easily land in a
         # file the PR adds, and a rename that also edits the file is reported as R
-        # (R093 and so on), which an ACM filter would drop.
+        # (R093 and so on), which an ACM filter would drop. T is there because a path
+        # that changes TYPE -- a symlink replaced by a regular .py file -- is reported
+        # as neither M nor A, so the newly active source reached the verifier as no
+        # path at all and the step passed having checked nothing.
         #
         # The verifier scans BOTH revisions and compares findings by identity, so a
         # duplicate that was already in the file is printed and ignored while one
@@ -294,7 +297,7 @@ jobs:
           # line-oriented git diff as "caf\303\251.py", whose suffix is .py" rather than
           # .py, so the verifier would skip it and report success having checked nothing.
           mapfile -d '' -t CHANGED < <(
-            git diff -z --name-only --diff-filter=ACMR \
+            git diff -z --name-only --diff-filter=ACMRT \
               "$MERGE_BASE" "$HEAD_SHA" -- '*.py' \
               | grep -zvE '(^|/)(unsloth_compiled_cache|node_modules|build|dist)/' || true
           )

@@ -60,9 +60,11 @@ from __future__ import annotations
 
 import argparse
 import ast
+import io
 import re
 import subprocess
 import sys
+import tokenize
 from collections import Counter
 from pathlib import Path
 from typing import NamedTuple
@@ -109,18 +111,37 @@ def _overload_names(tree) -> set:
     `@t.overload`, or `from typing import overload as ov` with `@ov`, was not recognised and
     the overload signatures were reported as duplicate definitions. That is the wrong way for
     a gate to be wrong: a conventional typing pattern would block CI on correct code.
+
+    MODULE-SCOPED, and not by a whole-tree walk. An alias bound INSIDE a function is not in
+    effect at module level, so collecting it globally let a local `import typing as t` exempt
+    module-level `@t.overload` definitions where `t` is something else entirely -- widening the
+    exemption is the one direction that hides merge damage.
+
+    Nested statements are still descended into, because the conventional spellings are wrapped:
+    `try: from typing import overload / except ImportError: from typing_extensions import ...`
+    is an ast.Try at module level. Function and class bodies are what get skipped.
     """
-    names = set(OVERLOAD_DECORATORS)
+    names: set = set(OVERLOAD_DECORATORS)
     modules = {"typing", "typing_extensions"}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name in modules and alias.asname:
-                    names.add(f"{alias.asname}.overload")
-        elif isinstance(node, ast.ImportFrom) and node.module in modules and not node.level:
-            for alias in node.names:
-                if alias.name == "overload" and alias.asname:
-                    names.add(alias.asname)
+
+    def visit(body) -> None:
+        for node in body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue  # a binding in here is not the one a module-level decorator resolves
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name in modules and alias.asname:
+                        names.add(f"{alias.asname}.overload")
+            elif isinstance(node, ast.ImportFrom) and node.module in modules and not node.level:
+                for alias in node.names:
+                    if alias.name == "overload" and alias.asname:
+                        names.add(alias.asname)
+            for field in ("body", "orelse", "finalbody"):
+                visit(getattr(node, field, []) or [])
+            for handler in getattr(node, "handlers", []) or []:
+                visit(handler.body)
+
+    visit(tree.body)
     return names
 
 
@@ -216,7 +237,8 @@ def _import_duplicates(body, scope, out) -> None:
     the dead-binding this is here to catch. Plain `import a.b` keeps the full dotted path in
     its key too, since `import urllib.parse` beside `import urllib.request` is correct.
     """
-    seen = {}
+    seen_implicit: dict = {}   # (bound name, source) -> line; a name nobody chose
+    seen_explicit: dict = {}   # bound name -> line; a name the author wrote after `as`
     for node in body:
         if isinstance(node, ast.ImportFrom):
             # `level` carries the leading dots, so `from .a` and `from ..a` stay distinct.
@@ -247,14 +269,27 @@ def _import_duplicates(body, scope, out) -> None:
             # `import urllib.parse as client` beside `import urllib.request as client` slipped
             # past a key that carried the source.
             implicit = alias.asname is None
-            if bound in seen:
-                first_line, first_source, first_implicit = seen[bound]
-                if implicit and first_implicit and first_source != source:
-                    continue
+            # EVERY IMPLICIT SOURCE IS REMEMBERED, not just the first. Keeping one entry per
+            # bound name and skipping the legitimate different-source case left `seen` pointing
+            # at the first source forever, so in `from a import x` / `from b import x` /
+            # `from b import x` the third was compared with `a`, looked like the legitimate
+            # shape again, and the exact repeat of `b` went unreported.
+            #
+            # So an implicit binding collides with the SAME source, and an explicit one -- a name
+            # the author chose -- collides with any earlier binding of that name at all.
+            first = seen_explicit.get(bound)
+            if implicit:
+                first = seen_implicit.get((bound, source), first)
+            elif first is None:
+                first = min(
+                    (line for (name, _), line in seen_implicit.items() if name == bound),
+                    default = None,
+                )
+            if first is not None:
                 where = (
                     "twice in this statement"
-                    if first_line == node.lineno
-                    else f"twice from the same module (first at line {first_line})"
+                    if first == node.lineno
+                    else f"twice from the same module (first at line {first})"
                 )
                 out.append(
                     Finding(
@@ -263,12 +298,19 @@ def _import_duplicates(body, scope, out) -> None:
                         # bound name alone, two DIFFERENT plain-import duplicates both read
                         # as `import:None:x`, so compare mode charged a newly introduced one
                         # against a pre-existing counter entry and passed.
-                        f"import:{scope}{source}:{bound}",
+                        #
+                        # DELIMITED, because `scope` ends in a dot and `source` may contain
+                        # them: a module-level `from A.m import x` and a `from m import x`
+                        # inside `class A` both spelled `import:A.m:x`, so compare mode let a
+                        # branch swap one for the other and charged the new one to the old.
+                        f"import:{scope}|{source}:{bound}",
                         f"{scope}{bound} is imported {where}",
                     )
                 )
+            elif implicit:
+                seen_implicit[(bound, source)] = node.lineno
             else:
-                seen[bound] = (node.lineno, source, implicit)
+                seen_explicit[bound] = node.lineno
 
 
 def scan_source(source: str, filename: str = "<unknown>"):
@@ -287,12 +329,31 @@ def _git(args, cwd = None):
     return subprocess.run(["git", *args], cwd = cwd, capture_output = True, text = True)
 
 
+def _decode_source(data: bytes) -> str:
+    """Decode Python source by ITS OWN declared encoding, the way the parser would.
+
+    `text = True` decodes with the runner's locale, so a valid `# coding: cp1252` file holding
+    a non-UTF-8 byte raised UnicodeDecodeError out of `subprocess` and took the whole run down
+    -- on an unrelated edit, and on a file `compileall` and ruff both accept. PEP 263 says the
+    declaration decides, and `tokenize.detect_encoding` is the parser's own reader for it.
+    """
+    try:
+        encoding, _ = tokenize.detect_encoding(io.BytesIO(data).readline)
+    except SyntaxError:
+        encoding = "utf-8"
+    return data.decode(encoding)
+
+
 def _revision_findings(revision: str, path: str):
     """Findings for `path` at `revision`, or None if the file does not exist there."""
-    shown = _git(["show", f"{revision}:{path}"])
+    shown = subprocess.run(["git", "show", f"{revision}:{path}"], capture_output = True)
     if shown.returncode != 0:
         return None
-    return scan_source(shown.stdout, f"{revision}:{path}")
+    try:
+        source = _decode_source(shown.stdout)
+    except (UnicodeDecodeError, LookupError) as exc:
+        return [Finding(0, "parse", f"does not decode ({exc})")]
+    return scan_source(source, f"{revision}:{path}")
 
 
 def _rename_map(before: str, after: str):
@@ -434,6 +495,28 @@ _SELF_TEST_CASES = [
     (0, "import urllib.parse\nimport urllib.request\n"),
     # Still caught: the same package root rebound from the package to a submodule.
     (1, "import urllib.parse\nimport urllib.parse as urllib\n"),
+    # EVERY implicit source is remembered, not just the first. Keeping one entry per bound name
+    # compared the third statement with the FIRST source, which looked like the legitimate
+    # different-source shape again, so an exact repeat went unreported.
+    (1, "from a import x\nfrom b import x\nfrom b import x\n"),
+    (1, "import urllib.parse\nimport urllib.request\nimport urllib.request\n"),
+    (0, "from a import x\nfrom b import x\nfrom c import x\n"),
+    # An explicit alias collides with a name already bound implicitly, in either order.
+    (1, "import urllib.parse as urllib\nimport urllib.request\n"),
+    # A typing alias bound INSIDE a function is not in effect at module level, so it may not
+    # exempt a module-level decorator. Widening the exemption is what hides merge damage.
+    (
+        1,
+        "import types as t\n\n\ndef helper():\n    import typing as t\n    return t\n\n\n"
+        "@t.overload\ndef f(x): ...\n@t.overload\ndef f(x): ...\n",
+    ),
+    # ...but the conventional wrapped spellings are still found, since they are module level.
+    (
+        0,
+        "try:\n    from typing import overload as ov\nexcept ImportError:\n"
+        "    from typing_extensions import overload as ov\n"
+        "@ov\ndef f(x: int) -> int: ...\n@ov\ndef f(x: str) -> str: ...\ndef f(x):\n    return x\n",
+    ),
 ]
 
 
@@ -501,7 +584,7 @@ def main() -> int:
                     blocking.append(text)
         else:
             try:
-                source = path.read_text(encoding = "utf-8")
+                source = _decode_source(path.read_bytes())
             except (OSError, UnicodeDecodeError) as exc:
                 blocking.append(f"{path}: unreadable ({exc})")
                 continue

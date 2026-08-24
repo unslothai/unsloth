@@ -112,6 +112,47 @@ def test_rename_that_also_adds_a_duplicate_still_blocks(repo):
     assert "nu is defined twice" in result.stdout
 
 
+def test_a_scoped_duplicate_is_not_absorbed_by_a_module_level_one(repo):
+    """The finding identity has to keep the SCOPE and the SOURCE apart.
+
+    Concatenated, a module-level `from A.m import x` and a `from m import x` inside `class A`
+    both spell `A.m:x`, so a branch that deletes the first and writes the second had its new
+    finding charged to the old one's counter and passed. They are different duplicates in
+    different scopes and only a delimiter can say so.
+    """
+    (repo / "mod.py").write_text("from A.m import x\nfrom A.m import x\n")
+    before = _commit(repo, "module-level duplicate")
+    (repo / "mod.py").write_text("class A:\n    from m import x\n    from m import x\n")
+    after = _commit(repo, "swap it for a scoped one")
+
+    result = _run(repo, before, after, "mod.py")
+    assert result.returncode == 1, result.stdout
+    assert "A.x is imported twice" in result.stdout
+
+
+def test_a_file_declaring_a_non_utf8_source_encoding_is_read_not_crashed_on(repo):
+    """PEP 263 says the file's own declaration decides how it decodes.
+
+    Reading the blob with the runner's UTF-8 locale raised UnicodeDecodeError out of
+    `subprocess` and took the whole run down -- on a file the parser, `compileall` and ruff all
+    accept, and on an edit that had nothing to do with it. Decoded properly the file is ordinary
+    source, so the duplicate in it is found like any other.
+    """
+    (repo / "mod.py").write_bytes(
+        b'# coding: cp1252\nS = "caf\xe9"\n\n\ndef go():\n    return 1\n'
+    )
+    before = _commit(repo, "base")
+    (repo / "mod.py").write_bytes(
+        b'# coding: cp1252\nS = "caf\xe9"\n\n\ndef go():\n    return 1\n\n\ndef go():\n    return 2\n'
+    )
+    after = _commit(repo, "duplicate it")
+
+    result = _run(repo, before, after, "mod.py")
+    assert "UnicodeDecodeError" not in result.stderr, result.stderr
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "go is defined twice" in result.stdout
+
+
 def test_a_rename_from_a_non_python_file_is_treated_as_an_addition(repo):
     """Renaming `mod.txt` to `mod.py` is what makes those definitions active code.
 
