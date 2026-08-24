@@ -650,7 +650,14 @@ AFTER_GPU_CONCURRENT = {after_gpu_concurrent!r}
 # says is available.
 VRAM_GB = {vram_gb!r}
 CARD_VRAM_BUDGET_GB = 13.0
-MAX_LEGS_PER_CARD = 2
+# 1 when the venvs had to fall back to WORK. The fallback above says it "keeps
+# a one-leg-per-card run working", and until this line that was a description
+# of an intention rather than of anything the code did: MAX_LEGS_PER_CARD was a
+# constant, so a box with no writable /tmp would still build four torch venvs,
+# two at a time per card, in the 19.5 GB /kaggle/working that the comment at
+# the top of this block says they do not fit in. It would have surfaced as an
+# install failing halfway through for reasons that look nothing like a disk.
+MAX_LEGS_PER_CARD = 2 if VENV_ROOT != WORK else 1
 
 # The model prefetch, gzip+base64 like the payloads so its quoting survives
 # being embedded in a generated cell. Empty string means no prefetch, which is

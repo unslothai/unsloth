@@ -284,6 +284,7 @@ def _drive_packed(
     prefetch_repos = (),
     hub = None,
     after_gpu_concurrent = False,
+    venv_fallback = False,
 ):
     driver = build_kernel.build_kernel(
         SMOKE_DIR,
@@ -303,7 +304,9 @@ def _drive_packed(
         vram = {f"t4_{n}.ipynb": LEGS[n].vram_gb for n in leg_names},
     )
     stub.root = tmp_path
-    stub.venv_root = tmp_path / "venvs"
+    # On the fallback path the venvs land in WORK itself, so that is where the
+    # stub has to count them.
+    stub.venv_root = tmp_path if venv_fallback else tmp_path / "venvs"
     hub = hub if hub is not None else _HubStub()
     saved = sys.modules["subprocess"]
     saved_hub = sys.modules.get("huggingface_hub")
@@ -319,7 +322,15 @@ def _drive_packed(
                 # onto the ~1 TB overlay when two legs per card made four of
                 # them possible at once. Both roots are rewritten here, or the
                 # stub counts venvs in a directory nothing ever writes to.
-                .replace("/tmp/t4ci_venvs", str(tmp_path / "venvs"))
+                # venv_fallback points the preferred root at a path whose
+                # parent is a regular file, so `mkdir` raises OSError and the
+                # kernel takes its own fallback branch. Rewriting it straight
+                # to WORK would test an assignment; this tests the branch.
+                .replace(
+                    "/tmp/t4ci_venvs",
+                    str(tmp_path / "blocked" / "t4ci_venvs") if venv_fallback
+                    else str(tmp_path / "venvs"),
+                )
                 .replace("/kaggle/working", str(tmp_path))
             )
             try:
@@ -359,6 +370,35 @@ def _drive_packed(
 # second-wave one, so every test driving it was exercising an order the kernel
 # no longer builds -- including the test that exists to assert the order.
 ALL_FOUR = list(KERNELS[0])
+
+
+def test_losing_tmp_drops_the_kernel_back_to_one_leg_per_card(tmp_path):
+    """The venv fallback described an intention nothing implemented.
+
+    Venvs moved to /tmp because co-scheduling made four torch-bearing venvs
+    possible at once and four do not fit in the 19.5 GB /kaggle/working. The
+    fallback for a box with no writable /tmp says it "keeps a one-leg-per-card
+    run working" -- but MAX_LEGS_PER_CARD was a constant, so the fallback put
+    the venvs back on the small partition and went right on building two per
+    card. It would have surfaced as an install dying halfway through, which
+    reads like anything except a full disk.
+
+    The fallback BRANCH is exercised, not simulated: the preferred root is
+    pointed at a path whose parent is a regular file, so mkdir raises exactly
+    as it would there.
+    """
+    (tmp_path / "blocked").write_text("not a directory")
+    driven = _drive_packed(tmp_path, ALL_FOUR, gpus = 2, venv_fallback = True)
+    assert driven["stood_down"] is None
+    stub = driven["stub"]
+    assert stub.venv_root is not None
+    for card, count in stub.peak_card_legs.items():
+        assert count <= 1, (
+            f"card {card} ran {count} legs at once with the venvs back on "
+            f"/kaggle/working: {stub.same_card_overlaps}"
+        )
+    assert stub.max_live_venvs <= 2, stub.max_live_venvs
+    assert len(stub.papermill) == 4, stub.papermill
 
 
 def test_a_seeds_seat_is_taken_before_any_worker_can_look_at_the_card(tmp_path):
