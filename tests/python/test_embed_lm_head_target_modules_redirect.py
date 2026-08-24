@@ -186,16 +186,24 @@ def test_qualified_targets_are_not_collapsed_to_their_leaf():
     from unsloth import FastLanguageModel
 
     model, _ = FastLanguageModel.from_pretrained(
-        model_name = MODEL_NAME, load_in_4bit = True, max_seq_length = 512,
+        model_name = MODEL_NAME,
+        load_in_4bit = True,
+        max_seq_length = 512,
     )
     try:
         model = FastLanguageModel.get_peft_model(
-            model, r = 8, lora_alpha = 16, target_modules = ["layers.0.self_attn.q_proj"],
+            model,
+            r = 8,
+            lora_alpha = 16,
+            target_modules = ["layers.0.self_attn.q_proj"],
         )
         for different in (["layers.1.self_attn.q_proj"], ["q_proj"]):
             with pytest.raises(TypeError, match = "parameters are different"):
                 FastLanguageModel.get_peft_model(
-                    model, r = 8, lora_alpha = 16, target_modules = different,
+                    model,
+                    r = 8,
+                    lora_alpha = 16,
+                    target_modules = different,
                 )
     finally:
         del model
