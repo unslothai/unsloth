@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import errno
 import os
+import stat
 import tempfile
 from functools import lru_cache
 from pathlib import Path
@@ -293,6 +294,55 @@ def can_restore_partials(hub_cache: Optional[Path | str] = None) -> bool:
     return _hub_is_patchable() and _exclusion_is_provable(hub_cache)
 
 
+def _open_stable_partial(path: Path) -> Optional[Any]:
+    """Open the stable partial for append, or ``None`` if it cannot be trusted.
+
+    The 1.18 nonce made this name unguessable; restoring the 1.17 name makes it predictable again,
+    so on a cache another account can write, the entry can be pre-created as a symlink or a hard
+    link to any file this process may write and an unguarded ``"ab"`` would append the download to
+    it (``_chmod_and_move`` would then chmod the target too). ``O_NOFOLLOW`` refuses a symlink and
+    closes the race the ``lstat`` alone would leave; the ``lstat`` catches a hard link and a
+    non-file, which ``O_NOFOLLOW`` does not see, and covers Windows, which has no ``O_NOFOLLOW``.
+
+    A planted entry is removed and a clean partial started. Where even that is refused, the caller
+    falls back to the stock writer, which invents its own name and cannot be steered.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+    flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    for last_attempt in (False, True):
+        planted = None
+        try:
+            existing = os.lstat(path)
+        except FileNotFoundError:
+            existing = None
+        except OSError as exc:
+            logger.debug("resumable partials: cannot stat %s (%s)", path, exc)
+            return None
+        if existing is not None and not stat.S_ISREG(existing.st_mode):
+            planted = "not a regular file"
+        elif existing is not None and existing.st_nlink > 1:
+            planted = "hard linked from elsewhere"
+        if planted is None:
+            try:
+                handle = os.fdopen(os.open(path, flags, 0o600), "ab")
+            except OSError as exc:
+                # ELOOP, or EMLINK on some BSDs: it became a symlink after the lstat.
+                if exc.errno not in (errno.ELOOP, errno.EMLINK):
+                    raise
+                planted = "a symlink"
+            else:
+                return handle
+        if last_attempt:
+            return None
+        logger.warning("Discarding the download partial at %s: it is %s.", path, planted)
+        try:
+            os.unlink(path)
+        except OSError as exc:
+            logger.warning("Could not remove it (%s); leaving the resume to the stock writer.", exc)
+            return None
+    return None
+
+
 def restore_resumable_partials() -> bool:
     """Patch huggingface_hub in THIS process. Idempotent, and a no-op where it is unsafe."""
     if not can_restore_partials():
@@ -335,7 +385,20 @@ def restore_resumable_partials() -> bool:
             )
 
         # The 1.17 caller: a stable name, opened for append, told how far it already got.
-        with incomplete_path.open("ab") as handle:
+        opened = _open_stable_partial(incomplete_path)
+        if opened is None:
+            return stock(
+                incomplete_path = incomplete_path,
+                destination_path = destination_path,
+                url_to_download = url_to_download,
+                headers = headers,
+                expected_size = expected_size,
+                filename = filename,
+                force_download = force_download,
+                xet_file_data = xet_file_data,
+                **kwargs,
+            )
+        with opened as handle:
             resume_size = handle.tell()
             if expected_size is not None:
                 file_download._check_disk_space(expected_size, incomplete_path.parent)

@@ -11,6 +11,7 @@ cannot prove that is safe, which is the whole reason 1.18 removed it.
 from __future__ import annotations
 
 from pathlib import Path
+import os
 import sys
 import types
 
@@ -340,6 +341,126 @@ def test_it_appends_to_the_stable_name_and_says_how_far_it_got(monkeypatch, tmp_
     assert calls["http_get"] == [{"resume_size": 40, "mode": "ab"}]
     assert calls["moved"] == [(partial, destination)]
     assert calls["stock"] == []
+
+
+def test_a_planted_symlink_is_not_appended_to(monkeypatch, tmp_path):
+    """The stable name is predictable, so on a shared cache it can be pre-created.
+
+    An unguarded "ab" would follow the link and append the model to whatever it points at, and
+    _chmod_and_move would then chmod that file too.
+    """
+    module, calls = _fake_file_download(monkeypatch)
+    assert rp.restore_resumable_partials() is True
+
+    victim = tmp_path / "victim"
+    victim.write_bytes(b"keep me")
+    partial = tmp_path / "abc.incomplete"
+    partial.symlink_to(victim)
+
+    _patched_writer(module)(
+        incomplete_path = partial,
+        destination_path = tmp_path / "abc",
+        url_to_download = "https://example/f",
+        headers = {},
+        expected_size = 50,
+        filename = "f",
+    )
+
+    assert victim.read_bytes() == b"keep me", "the download was appended to the symlink target"
+    assert not partial.is_symlink(), "the planted link survived"
+    # Started from zero rather than trusting the target's length.
+    assert calls["http_get"] == [{"resume_size": 0, "mode": "ab"}]
+
+
+def test_a_symlink_planted_after_the_stat_is_still_refused(monkeypatch, tmp_path):
+    """The stat and the open are two syscalls, and the attacker writes the same directory.
+
+    Winning that race is the whole reason the open carries O_NOFOLLOW rather than trusting what
+    the stat just reported. Simulated by having the stat report nothing while the link is there.
+    """
+    module, calls = _fake_file_download(monkeypatch)
+    assert rp.restore_resumable_partials() is True
+
+    victim = tmp_path / "victim"
+    victim.write_bytes(b"keep me")
+    partial = tmp_path / "abc.incomplete"
+    partial.symlink_to(victim)
+
+    real_lstat = os.lstat
+    seen: list[str] = []
+
+    def blind_first_look(target, *args, **kwargs):
+        if str(target) == str(partial) and not seen:
+            seen.append("looked")
+            raise FileNotFoundError(str(target))
+        return real_lstat(target, *args, **kwargs)
+
+    monkeypatch.setattr(rp.os, "lstat", blind_first_look)
+
+    _patched_writer(module)(
+        incomplete_path = partial,
+        destination_path = tmp_path / "abc",
+        url_to_download = "https://example/f",
+        headers = {},
+        expected_size = 50,
+        filename = "f",
+    )
+
+    assert seen, "the stat was never called, so this proves nothing"
+    assert victim.read_bytes() == b"keep me", "the open followed the link the stat had missed"
+    assert calls["http_get"] == [{"resume_size": 0, "mode": "ab"}]
+
+
+def test_a_planted_hard_link_is_not_appended_to(monkeypatch, tmp_path):
+    """O_NOFOLLOW cannot see a hard link, so the size check is what catches this one."""
+    module, calls = _fake_file_download(monkeypatch)
+    assert rp.restore_resumable_partials() is True
+
+    victim = tmp_path / "victim"
+    victim.write_bytes(b"keep me")
+    partial = tmp_path / "abc.incomplete"
+    os.link(victim, partial)
+
+    _patched_writer(module)(
+        incomplete_path = partial,
+        destination_path = tmp_path / "abc",
+        url_to_download = "https://example/f",
+        headers = {},
+        expected_size = 50,
+        filename = "f",
+    )
+
+    assert victim.read_bytes() == b"keep me", "the download was appended through the hard link"
+    assert calls["http_get"] == [{"resume_size": 0, "mode": "ab"}]
+
+
+def test_a_planted_partial_that_cannot_be_removed_defers_to_stock(monkeypatch, tmp_path):
+    """Stock invents its own name, so it cannot be steered by a planted one either."""
+    module, calls = _fake_file_download(monkeypatch)
+    assert rp.restore_resumable_partials() is True
+
+    victim = tmp_path / "victim"
+    victim.write_bytes(b"keep me")
+    partial = tmp_path / "abc.incomplete"
+    partial.symlink_to(victim)
+
+    def refuse(_path):
+        raise PermissionError("sticky directory")
+
+    monkeypatch.setattr(rp.os, "unlink", refuse)
+
+    _patched_writer(module)(
+        incomplete_path = partial,
+        destination_path = tmp_path / "abc",
+        url_to_download = "https://example/f",
+        headers = {},
+        expected_size = 50,
+        filename = "f",
+    )
+
+    assert calls["http_get"] == [], "the patched writer wrote anyway"
+    assert len(calls["stock"]) == 1
+    assert victim.read_bytes() == b"keep me"
 
 
 def test_a_failed_download_leaves_the_partial_for_the_next_attempt(monkeypatch, tmp_path):
