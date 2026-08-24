@@ -2483,8 +2483,7 @@ def _rocm_windows_per_device_vram(
             # used, so an unclamped sum publishes negative free.
             unified_used = min(unified_used, float(only["total_bytes"]))
         assigned = [
-            (unified_used if scoped else used)
-            for scoped, used in zip(pool_scoped, assigned)
+            (unified_used if scoped else used) for scoped, used in zip(pool_scoped, assigned)
         ]
         # The aggregate is the visible set's exact total, so it survives only
         # when every pool-scoped member got a figure.
