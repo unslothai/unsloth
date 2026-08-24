@@ -648,6 +648,12 @@ export function DatasetPreviewDialog({
                     </span>
                   }
                 />
+                {effectiveIsVlm && data.detected_instruction_column && (
+                  <MetaRow
+                    label="User instruction"
+                    value={`${data.detected_instruction_column} (dynamic)`}
+                  />
+                )}
               </div>
 
               {readyForTraining && (
