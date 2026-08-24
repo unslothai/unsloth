@@ -16262,6 +16262,10 @@ def _contained_sandbox_path(session_id: str, filename: str) -> tuple[str, str]:
         if not _re.fullmatch(r"[^/\\\x00-\x1f]{1,255}", part):
             raise HTTPException(status_code = 404, detail = "Not found")
     sandbox_dir = _sandbox_dir_for(session_id, create = False)
+    # The check above is lexical and stays in front of the loop for the cheap
+    # refusal; this one is the answer: only the real scratch dir skips a segment.
+    if len(_user_path_parts(parts, sandbox_dir)) > _MAX_SANDBOX_PATH_SEGMENTS:
+        raise HTTPException(status_code = 404, detail = "Not found")
     file_path = os.path.realpath(os.path.join(sandbox_dir, *parts))
     if file_path != sandbox_dir and not file_path.startswith(sandbox_dir + os.sep):
         raise HTTPException(

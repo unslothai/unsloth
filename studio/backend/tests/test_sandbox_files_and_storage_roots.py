@@ -775,6 +775,39 @@ def test_the_download_route_serves_the_full_depth_under_the_scratch_dir(tmp_path
         _contained_sandbox_path(session, f"{tools._SANDBOX_TEMP_DIRNAME}/a/b/c/d/toodeep.csv")
 
 
+def test_only_the_real_scratch_dir_skips_a_path_segment(tmp_path, monkeypatch):
+    """The walks are handed the stored spelling by os.walk and never follow links,
+    so the discount has to be the resolved directory's, not the name's. A link the
+    model made would otherwise serve a file neither walk lists, which is also the
+    shape of a wrong-case entry on NTFS or APFS."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from fastapi import HTTPException
+
+    from core.inference import tools
+    from routes import inference
+
+    tools._workdirs.clear()
+    session = "__LOCALID_depth2"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    (workdir / "out/a/b/c").mkdir(parents = True)
+    (workdir / "out/a/b/c/deep.csv").write_bytes(b"x")
+    (workdir / "out/a/b/shallow.csv").write_bytes(b"x")
+    try:
+        (workdir / tools._SANDBOX_TEMP_DIRNAME).symlink_to(
+            workdir / "out", target_is_directory = True
+        )
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable (Windows without developer mode)")
+
+    name = tools._SANDBOX_TEMP_DIRNAME
+    assert f"{name}/a/b/c/deep.csv" not in inference._sandbox_listing_names(str(workdir))
+    with pytest.raises(HTTPException):
+        inference._contained_sandbox_path(session, f"{name}/a/b/c/deep.csv")
+    # Only the extra segment is withdrawn; four still resolve through the link.
+    inference._contained_sandbox_path(session, f"{name}/a/b/shallow.csv")
+
+
 def test_the_listing_drops_a_directory_the_route_would_refuse(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
 

@@ -6753,21 +6753,19 @@ def _sandbox_temp_dir(workdir: str) -> str:
     return temp_dir
 
 
-def _reusable_sandbox_temp_dir(temp_dir: str, workdir: str) -> bool:
-    """Whether an existing entry may serve as the scratch directory.
+def _is_sandbox_temp_dir(temp_dir: str, workdir: str) -> bool:
+    """Whether *temp_dir* is the workdir's own scratch directory.
 
     Both artifact walks decide the segment discount from the name they are
-    handed by os.walk, so the entry is reused only when the filesystem stores
-    that exact spelling. A case-insensitive volume (default APFS, every NTFS)
-    resolves our lowercase probe onto a directory stored as ``TMP``, and
-    os.path.realpath does not canonicalise case, so a name comparison alone
-    adopted it and then failed to recognise the spelling the walk reported.
+    handed by os.walk, so this holds only when the filesystem stores that exact
+    spelling. A case-insensitive volume (default APFS, every NTFS) resolves our
+    lowercase probe onto a directory stored as ``TMP``, and os.path.realpath
+    does not canonicalise case, so a name comparison alone adopted it and then
+    failed to recognise the spelling the walk reported.
 
     It must also be the real directory rather than a link or junction to one:
     os.walk does not follow links, so the artifacts would land somewhere both
-    walks skip. Writability is checked because tempfile abandons an unwritable
-    TMPDIR for the platform default, putting the child's temporary data outside
-    the session sandbox.
+    walks skip.
     """
     try:
         with os.scandir(workdir) as entries:
@@ -6780,7 +6778,18 @@ def _reusable_sandbox_temp_dir(temp_dir: str, workdir: str) -> bool:
             return False
     except OSError:
         return False
-    return os.path.isdir(temp_dir) and os.access(temp_dir, os.W_OK | os.X_OK)
+    return os.path.isdir(temp_dir)
+
+
+def _reusable_sandbox_temp_dir(temp_dir: str, workdir: str) -> bool:
+    """Whether an existing entry may serve as the scratch directory.
+
+    Identity plus writability: tempfile abandons an unwritable TMPDIR for the
+    platform default, putting the child's temporary data outside the session
+    sandbox. Path accounting asks _is_sandbox_temp_dir instead, since which
+    directory a segment belongs to does not depend on whether it can be written.
+    """
+    return _is_sandbox_temp_dir(temp_dir, workdir) and os.access(temp_dir, os.W_OK | os.X_OK)
 
 
 def _build_safe_env(workdir: str) -> dict[str, str]:
@@ -12419,16 +12428,27 @@ _MAX_SNAPSHOT_FILES = 2000  # a shard-writing script must not blow up the result
 _MAX_SNAPSHOT_DIRS = 2000  # nor a directory-writing one stall the next call
 
 
-def _user_path_parts(parts: "list[str]") -> "list[str]":
+def _user_path_parts(parts: "list[str]", root: "str | None" = None) -> "list[str]":
     """The segments _MAX_SANDBOX_PATH_SEGMENTS applies to.
 
     The scratch directory is Studio's own container rather than a name the model
     chose, and on Windows it is what /tmp resolves to. Charging it a segment
     would drop one level of the /tmp artifacts that were served before the
     workdir stopped being %TEMP%, so it is not counted.
+
+    *root* is for callers that resolve the path afterwards. os.walk hands the
+    walks the stored spelling and never follows links, so there the name is the
+    directory; the download route resolves, and without the root a link named
+    unsloth-tmp (or a wrong-case entry on NTFS or APFS) would take the discount
+    for a tree neither walk lists.
     """
-    # exact: _reusable_sandbox_temp_dir reuses only this stored spelling.
-    return parts[1:] if parts and parts[0] == _SANDBOX_TEMP_DIRNAME else parts
+    if not parts or parts[0] != _SANDBOX_TEMP_DIRNAME:
+        return parts
+    if root is not None and not _is_sandbox_temp_dir(
+        os.path.join(root, _SANDBOX_TEMP_DIRNAME), root
+    ):
+        return parts
+    return parts[1:]
 
 
 # The same allowlist the download route applies per segment, so a name that
