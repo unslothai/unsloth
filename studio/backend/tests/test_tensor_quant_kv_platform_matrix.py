@@ -377,3 +377,33 @@ def test_a_miscased_inherited_cache_type_is_normalised_not_dropped(
 
     assert env["LLAMA_ARG_CACHE_TYPE_K"] == "q8_0"
     assert env["LLAMA_ARG_CACHE_TYPE_V"] == "iq4_nl"
+
+
+# ── An inherited value llama.cpp cannot parse verbatim ──────────────────────
+
+
+@pytest.mark.parametrize("platform,accelerator", [
+    pytest.param(p, a, id = f"{p[0]}-{a[0]}") for p in PLATFORMS for a in ACCELERATORS
+])
+@pytest.mark.parametrize("raw,expected", [
+    (" q8_0 ", "q8_0"),      # surrounding whitespace
+    ("\tq4_0\n", "q4_0"),    # any whitespace, not just spaces
+    (" Q8_0 ", "q8_0"),      # whitespace AND case together
+])
+def test_a_whitespace_padded_inherited_cache_type_is_rewritten(
+    tmp_path, monkeypatch, platform, accelerator, raw, expected
+):
+    """common_arg::get_value_from_env hands the raw getenv string straight to
+    kv_cache_type_from_str, which compares it to ggml_type_name(t) exactly and
+    throws otherwise -- neither side trims. So " q8_0 " aborts the child just as
+    a typo does, and normalising against an already-stripped copy would compare
+    equal and leave the padding on the child.
+    """
+    backend, gguf = _cell_backend(tmp_path, monkeypatch, platform, accelerator)
+    monkeypatch.setenv("LLAMA_ARG_CACHE_TYPE_K", raw)
+    monkeypatch.setenv("LLAMA_ARG_CACHE_TYPE_V", "q8_0")
+
+    env = _launch(backend, gguf, tensor_parallel = True)["env"]
+
+    assert env["LLAMA_ARG_CACHE_TYPE_K"] == expected
+    assert env["LLAMA_ARG_CACHE_TYPE_V"] == "q8_0"

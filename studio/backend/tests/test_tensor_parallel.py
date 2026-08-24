@@ -1796,11 +1796,14 @@ class TestLegacyBuildQuantizedKvInTensorMode:
 
     @pytest.fixture(autouse = True)
     def _clear_latch(self):
-        """The latch is class-level and process-wide; a leak would make the second
-        cell pass for the first cell's reason."""
+        """Both latches are class-level and process-wide; a leak would make the
+        second cell pass for the first cell's reason (an already-latched binary
+        skips tensor up front, so no doomed spawn happens at all)."""
         LlamaCppBackend._tensor_split_abort_keys.clear()
+        LlamaCppBackend._tensor_quant_kv_unsupported_binaries.clear()
         yield
         LlamaCppBackend._tensor_split_abort_keys.clear()
+        LlamaCppBackend._tensor_quant_kv_unsupported_binaries.clear()
 
     def test_the_refusal_costs_exactly_one_spawn(self, tmp_path, monkeypatch):
         """Not two. The --fit off -> --fit on retry cannot fix a missing capability,
@@ -1822,13 +1825,21 @@ class TestLegacyBuildQuantizedKvInTensorMode:
         """Without this the doomed attempt repeats on every load, forever."""
         backend, gguf, _spawns, _error = self._run(tmp_path, monkeypatch)
 
-        assert LlamaCppBackend._tensor_split_aborts("/fake/llama-server", "test", ("q8_0", "q8_0"))
-        # And ONLY for that pair: f16 runs fine under a tensor split on a
-        # pre-b9455 binary, so latching the model wholesale would take tensor
-        # mode away from a config that works.
-        assert not LlamaCppBackend._tensor_split_aborts(
-            "/fake/llama-server", "test", ("f16", "f16")
+        # Binary-wide, not model-and-pair: the refusal is a capability this
+        # llama.cpp lacks for every model and every quantized type.
+        assert LlamaCppBackend._tensor_quant_kv_unsupported_binary(
+            "/fake/llama-server", ("q8_0", "q8_0")
         )
+        assert LlamaCppBackend._tensor_quant_kv_unsupported_binary(
+            "/fake/llama-server", ("q4_0", "q4_0")
+        )
+        # But f16 runs fine under a tensor split on such a binary, so the latch
+        # must not take tensor mode away from a config that works.
+        assert not LlamaCppBackend._tensor_quant_kv_unsupported_binary(
+            "/fake/llama-server", ("f16", "f16")
+        )
+        # The model+pair latch stays clean: this was never a geometry abort.
+        assert not LlamaCppBackend._tensor_split_abort_keys
 
     def test_a_current_build_is_untouched(self, tmp_path, monkeypatch):
         """The guard must not cost anything on a binary that supports the pair:
@@ -1852,3 +1863,73 @@ class TestLegacyBuildQuantizedKvInTensorMode:
         assert cmd[cmd.index("--split-mode") + 1] == "tensor"
         assert cmd[cmd.index("--cache-type-k") + 1] == "q8_0"
         assert not LlamaCppBackend._tensor_split_abort_keys
+
+
+class TestLegacyBuildLatchIsBinaryWide:
+    """The pre-b9455 refusal is a missing capability of the BINARY: llama.cpp
+    refuses every quantized type for every model on it. Keying it per model and
+    per cache pair (like the #6415 split-axis abort, which really is specific to
+    both) would pay another doomed full model load for each new model and each
+    q8_0 -> q4_0 switch."""
+
+    @pytest.fixture(autouse = True)
+    def _clear(self):
+        LlamaCppBackend._tensor_quant_kv_unsupported_binaries.clear()
+        yield
+        LlamaCppBackend._tensor_quant_kv_unsupported_binaries.clear()
+
+    def test_one_detection_covers_other_models_and_other_types(self, tmp_path):
+        binary = str(tmp_path / "llama-server")
+        Path(binary).write_text("x")
+        LlamaCppBackend._record_tensor_quant_kv_unsupported(binary)
+
+        # Same model, a different quantized type.
+        assert LlamaCppBackend._tensor_quant_kv_unsupported_binary(binary, ("q4_0", "q4_0"))
+        # A completely different model.
+        assert LlamaCppBackend._tensor_quant_kv_unsupported_binary(binary, ("q8_0", "q8_0"))
+        # One quantized axis is enough, since llama.cpp checks both.
+        assert LlamaCppBackend._tensor_quant_kv_unsupported_binary(binary, ("q4_0", "f16"))
+        assert LlamaCppBackend._tensor_quant_kv_unsupported_binary(binary, ("f16", "q4_0"))
+
+    def test_a_non_quantized_pair_still_gets_a_tensor_split(self, tmp_path):
+        """f16 runs fine under a tensor split on such a binary -- the refusal is
+        about quantization, so latching it must not cost the working config."""
+        binary = str(tmp_path / "llama-server")
+        Path(binary).write_text("x")
+        LlamaCppBackend._record_tensor_quant_kv_unsupported(binary)
+
+        assert not LlamaCppBackend._tensor_quant_kv_unsupported_binary(binary, ("f16", "f16"))
+        assert not LlamaCppBackend._tensor_quant_kv_unsupported_binary(binary, ("bf16", "f32"))
+
+    def test_a_replaced_binary_is_re_probed(self, tmp_path):
+        """An update is exactly what fixes this, so the mtime must invalidate it."""
+        import os
+        import time
+
+        binary = str(tmp_path / "llama-server")
+        Path(binary).write_text("old")
+        LlamaCppBackend._record_tensor_quant_kv_unsupported(binary)
+        assert LlamaCppBackend._tensor_quant_kv_unsupported_binary(binary, ("q8_0", "q8_0"))
+
+        time.sleep(0.01)
+        Path(binary).write_text("new")
+        os.utime(binary, ns = (time.time_ns(), time.time_ns()))
+
+        assert not LlamaCppBackend._tensor_quant_kv_unsupported_binary(binary, ("q8_0", "q8_0"))
+
+    def test_an_unseen_binary_is_not_latched(self, tmp_path):
+        assert not LlamaCppBackend._tensor_quant_kv_unsupported_binary(
+            str(tmp_path / "never-seen"), ("q8_0", "q8_0")
+        )
+        assert not LlamaCppBackend._tensor_quant_kv_unsupported_binary(None, ("q8_0", "q8_0"))
+
+    def test_the_loader_consults_it_before_spawning(self):
+        """Source-pinned: the whole point is to skip the doomed load, so the check
+        has to sit at the up-front gate, not after a spawn."""
+        load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        gate = load.find("self._tensor_quant_kv_unsupported_binary(")
+        assert gate != -1, "the binary-wide gate is gone"
+        # Ahead of the first spawn.
+        assert gate < load.find("healthy=_spawn_and_wait(cmd)")
+        # And the skip must strip the split-mode group like every other TP drop.
+        assert "extra_args=strip_split_mode_only(extra_args)" in load

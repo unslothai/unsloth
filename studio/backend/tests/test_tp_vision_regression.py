@@ -131,6 +131,11 @@ _ALLOWED_TP_DROP_GUARDS = {
     # Capability: --split-mode tensor aborted for this (binary, model) (#6415).
     # Self-healing -- tried by default, skipped only after a real abort (vs #6416).
     "tensor_parallel and self._tensor_split_aborts(binary, model_identifier, _planned_cache_pair)",
+    # Capability: this llama.cpp already refused a quantized KV cache under a
+    # tensor split (pre-b9455, ggml-org/llama.cpp#23792). Binary-wide rather than
+    # per model+pair, since the refusal covers every model and every quantized
+    # type; a non-quantized pair still gets its tensor split.
+    "tensor_parallel and self._tensor_quant_kv_unsupported_binary(binary, _planned_cache_pair)",
     # Capacity: tensor needs >= 2 GPUs clearing the compute-buffer reserve. Gated
     # on plan_tp (not raw tensor_parallel) so manual mode skips this planner (#6414).
     "plan_tp and len(tp_gpus) < 2",
