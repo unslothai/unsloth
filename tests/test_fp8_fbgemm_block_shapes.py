@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team.
 """FP8 fbgemm blockwise linear must stay correct across tile grids and shapes.
 
 Guards three things:
