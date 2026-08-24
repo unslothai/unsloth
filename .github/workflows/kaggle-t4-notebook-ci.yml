@@ -324,8 +324,18 @@ permissions:
 # result. Superseded runs that have not STARTED are still discarded (GitHub
 # keeps only the most recent pending run per group), which is where the saving
 # was anyway; only a run already spending is left alone.
+#
+# The slot belongs in THIS group too, not only in the job's. GitHub keeps at
+# most one PENDING run per group and DISCARDS the older one when a newer run
+# queues, so two dispatches on the same ref that were meant to hold Kaggle's
+# two session slots at once instead cancel each other before either starts.
+# That is not hypothetical: it killed run 32674255736, and a later A/B had to
+# be run serially because a single push into this group would have discarded
+# the pending arm. The job-level group carries the slot as well, and it is the
+# one that actually serialises same-slot work; this one only has to stop
+# distinct slots being collapsed into a single queue position.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.slot || '1' }}
   cancel-in-progress: false
 
 jobs:

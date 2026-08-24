@@ -2421,12 +2421,20 @@ def test_two_dispatches_can_hold_the_two_kaggle_slots_at_once():
     )
     assert slot.get("default") == "1", slot
 
-    group = workflow["jobs"]["t4-smoke"]["concurrency"]["group"]
-    assert "inputs.slot" in group, group
-    # A non-dispatch event has no input and must land in a single shared slot,
-    # or every push would get a session of its own.
-    assert "'1'" in group, group
-    assert workflow["jobs"]["t4-smoke"]["concurrency"]["cancel-in-progress"] is False
+    # BOTH levels, because the discard rule applies to both and fixing only the
+    # job left the whole thing broken in exactly the same way: the two runs
+    # still shared one workflow-level group, so the second dispatch discarded
+    # the first while it was pending and never reached the job group at all.
+    for scope, block in (
+        ("workflow", workflow["concurrency"]),
+        ("job", workflow["jobs"]["t4-smoke"]["concurrency"]),
+    ):
+        group = block["group"]
+        assert "inputs.slot" in group, f"{scope}: {group}"
+        # A non-dispatch event has no input and must land in a single shared
+        # slot, or every push would get a session of its own.
+        assert "'1'" in group, f"{scope}: {group}"
+        assert block["cancel-in-progress"] is False, scope
 
 
 def test_the_shared_wheel_build_is_opt_in():
