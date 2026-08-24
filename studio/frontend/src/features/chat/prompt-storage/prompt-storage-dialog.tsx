@@ -61,6 +61,10 @@ import { usePlusMenuPrefsStore } from "../stores/plus-menu-prefs-store";
 import type { ThreadRecord, MessageRecord } from "../types";
 import { createConversationMarkdownExporter } from "../utils/conversation-markdown-export";
 import { parseCsv } from "../utils/csv-parse";
+import {
+  conversationJsonlBody,
+  type ConversationJsonlLayout,
+} from "../utils/ndjson";
 import { unwrapPastedTextContent } from "../utils/pasted-text.ts";
 import {
   buildConversationMarkdown,
@@ -419,14 +423,25 @@ export async function exportConversationShareGPT(threadId: string): Promise<void
 // OpenAI/ChatML JSONL: {"messages": [{"role","content"}, ...]} per conversation;
 // Unsloth reads this as a ChatML dataset.
 export async function exportConversationRawJsonl(threadId: string): Promise<void> {
+  return exportConversationJsonl(threadId, "training");
+}
+
+export async function exportConversationMessagesJsonl(threadId: string): Promise<void> {
+  return exportConversationJsonl(threadId, "messages");
+}
+
+async function exportConversationJsonl(
+  threadId: string,
+  layout: ConversationJsonlLayout,
+): Promise<void> {
   const messages = await loadConversationMessages(threadId);
   if (!messages) return;
 
   const oaiMsgs: OAIMessage[] = messages.flatMap((msg) => messageToOpenAI(msg));
   if (oaiMsgs.length === 0) { toast.info("No exportable content."); return; }
   await downloadBlob(
-    JSON.stringify({ messages: oaiMsgs }),
-    "conversation-" + exportTs() + ".jsonl",
+    conversationJsonlBody(oaiMsgs, layout),
+    `conversation${layout === "messages" ? "-messages" : ""}-${exportTs()}.jsonl`,
     "application/x-ndjson",
   );
 }
@@ -516,10 +531,11 @@ export async function saveChatItemAsProjectSource(
   }
 }
 
-export type ConvExportFormat = "jsonl-raw" | "csv" | "sharegpt";
+export type ConvExportFormat = "jsonl-raw" | "jsonl-messages" | "csv" | "sharegpt";
 
 const EXPORT_FORMAT_LABELS: Record<ConvExportFormat, string> = {
-  "jsonl-raw": "Raw JSONL",
+  "jsonl-raw": "Training JSONL",
+  "jsonl-messages": "Message JSONL",
   csv: "CSV",
   sharegpt: "ShareGPT JSONL",
 };
@@ -535,11 +551,13 @@ async function buildThreadContent(
   const messages = await loadConversationMessages(threadId);
   if (!messages) return null;
 
-  if (format === "jsonl-raw") {
-    // OpenAI/ChatML: Unsloth reads the "messages" key as ChatML.
+  if (format === "jsonl-raw" || format === "jsonl-messages") {
     const oaiMsgs: OAIMessage[] = messages.flatMap((msg) => messageToOpenAI(msg));
     if (oaiMsgs.length === 0) return null;
-    return JSON.stringify({ messages: oaiMsgs });
+    return conversationJsonlBody(
+      oaiMsgs,
+      format === "jsonl-messages" ? "messages" : "training",
+    );
   }
 
   if (format === "sharegpt") {

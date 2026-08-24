@@ -55,6 +55,7 @@ import {
 import type { SidebarItem } from "./hooks/use-chat-sidebar-items";
 import {
   exportConversationRawJsonl,
+  exportConversationMessagesJsonl,
   exportConversationCsv,
   exportConversationShareGPT,
   exportConversationMarkdown,
@@ -68,7 +69,8 @@ import {
 } from "./utils/chat-history-storage";
 
 const EXPORT_FORMATS = [
-  { label: "Raw JSONL", fn: exportConversationRawJsonl },
+  { label: "Training JSONL", fn: exportConversationRawJsonl },
+  { label: "Message JSONL", fn: exportConversationMessagesJsonl },
   { label: "CSV", fn: exportConversationCsv },
   { label: "ShareGPT JSONL", fn: exportConversationShareGPT },
   { label: CONVERSATION_MARKDOWN_LABEL, fn: exportConversationMarkdown },

@@ -1129,6 +1129,7 @@ function createThreadNonce(): string {
 // Chat export formats, mirroring the sidebar chat menu.
 type ProjectChatExportFormat =
   | "raw-jsonl"
+  | "messages-jsonl"
   | "csv"
   | "sharegpt-jsonl"
   | typeof CONVERSATION_MARKDOWN_FORMAT;
@@ -1136,7 +1137,8 @@ const PROJECT_CHAT_EXPORT_OPTIONS: Array<{
   label: string;
   format: ProjectChatExportFormat;
 }> = [
-  { label: "Raw JSONL", format: "raw-jsonl" },
+  { label: "Training JSONL", format: "raw-jsonl" },
+  { label: "Message JSONL", format: "messages-jsonl" },
   { label: "CSV", format: "csv" },
   { label: "ShareGPT JSONL", format: "sharegpt-jsonl" },
   {
@@ -1151,6 +1153,8 @@ async function exportProjectConversation(
 ): Promise<void> {
   const exports = await import("./prompt-storage/prompt-storage-dialog");
   if (format === "raw-jsonl") return exports.exportConversationRawJsonl(threadId);
+  if (format === "messages-jsonl")
+    return exports.exportConversationMessagesJsonl(threadId);
   if (format === "csv") return exports.exportConversationCsv(threadId);
   if (format === CONVERSATION_MARKDOWN_FORMAT)
     return exports.exportConversationMarkdown(threadId);

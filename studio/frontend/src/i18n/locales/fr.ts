@@ -1170,7 +1170,7 @@ export const fr = {
       exportingAction: "Exportation...",
       exportConversations: "Exporter Récents et Projets",
       exportConversationsDescription:
-        "Télécharger Récents ou Récents plus les discussions de projet au format JSONL brut, CSV ou JSONL ShareGPT, combinés ou par discussion.",
+        "Télécharger Récents ou Récents plus les discussions de projet au format Training JSONL, Message JSONL, CSV ou JSONL ShareGPT, combinés ou par discussion.",
       exportConversationsAction: "Exporter",
       exportScopeRecents: "Récents",
       exportScopeAll: "Récents + Projets",

@@ -1164,7 +1164,7 @@ export const es = {
       exportingAction: "Exportando...",
       exportConversations: "Exportar Recientes y Proyectos",
       exportConversationsDescription:
-        "Descarga Recientes, o Recientes más los chats de proyectos, como JSONL sin procesar, CSV o JSONL de ShareGPT, combinados o por chat.",
+        "Descarga Recientes, o Recientes más los chats de proyectos, como Training JSONL, Message JSONL, CSV o JSONL de ShareGPT, combinados o por chat.",
       exportConversationsAction: "Exportar",
       exportScopeRecents: "Recientes",
       exportScopeAll: "Recientes + Proyectos",
