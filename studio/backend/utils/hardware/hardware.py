@@ -2525,10 +2525,6 @@ def _rocm_windows_per_device_vram(
             used == 0 for _, used in adapters if used < _ROCM_WIN_ADAPTER_MIN_BYTES
         )
         unified_used = (
-            # `adapters` is None when the caller's own query came back unavailable.
-            # The helper reads None as "not supplied" and re-runs it, which is a
-            # second ~1.3 s PowerShell call on the polled telemetry path to reach
-            # the same None.
             _rocm_windows_unified_used_bytes(adapters)
             if wants_sum and placeholders_only
             else None
@@ -2536,10 +2532,10 @@ def _rocm_windows_per_device_vram(
         if unified_used is not None:
             # Every other reading is clamped on its way through the matcher.
             # This one bypasses it, and the payload derives free as total minus
-            # used, so an unclamped sum publishes negative free. Lower bound too:
-            # a negative cooked counter value parses as a perfectly good float,
-            # and the older caller only avoids publishing one because
-            # _free_in_torch_scope clamps downstream of it.
+            # used, so an unclamped sum publishes negative free. The lower bound
+            # is belt and braces: the helper already declines a negative reading
+            # at source, and this keeps the guarantee local to the consumer that
+            # publishes the number.
             unified_used = max(0.0, min(unified_used, float(only["total_bytes"])))
         assigned = [
             (unified_used if scoped else used) for scoped, used in zip(pool_scoped, assigned)

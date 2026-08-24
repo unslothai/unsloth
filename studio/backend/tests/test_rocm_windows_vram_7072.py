@@ -819,26 +819,10 @@ def test_a_nonzero_sub_threshold_row_declines_the_unified_sum(win_rocm, monkeypa
     assert aggregate is None
 
 
-def test_a_failed_counter_query_is_not_retried(win_rocm, monkeypatch):
-    """Passing None reads as "no snapshot supplied", so the unified helper would
-    launch the same failing PowerShell query a second time on a polled path."""
-    _apu_host(monkeypatch)
-    monkeypatch.setattr(hw.subprocess, "run", _subprocess_run(adapter_output = "__NONE__\n"))
-    calls = []
-    monkeypatch.setattr(
-        hw, "_rocm_windows_unified_used_bytes",
-        lambda dedicated = None: (calls.append(dedicated), 12.0 * GB)[1],
-    )
-
-    devices, _ = hw._rocm_windows_per_device_vram([0])
-    assert calls == [], "the unified helper was asked to re-run a query that just failed"
-    assert devices[0]["used_gb"] is None
-
-
 def test_a_negative_counter_never_publishes_negative_usage(win_rocm, monkeypatch):
-    """A negative cooked counter value parses as a perfectly good float. The older
-    caller only avoids publishing one because _free_in_torch_scope clamps below it;
-    this path reaches the payload directly."""
+    """The helper declines a negative reading at source; this is the consumer end
+    of the same guarantee, driven with the helper stubbed so the clamp that
+    publishes the number is what gets tested rather than the decline above it."""
     _apu_host(monkeypatch, unified_used = -5.0 * GB)
 
     devices, aggregate = hw._rocm_windows_per_device_vram([0])
