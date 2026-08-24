@@ -1372,7 +1372,6 @@ class UnslothTrainer:
                     logger.info(f"  - Finetune language layers: {finetune_language_layers}")
                     logger.info(f"  - Finetune attention modules: {finetune_attention_modules}")
                     logger.info(f"  - Finetune MLP modules: {finetune_mlp_modules}")
-                logger.info()
 
                 peft_kwargs = dict(
                     r = lora_r,
