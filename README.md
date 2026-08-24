@@ -70,7 +70,7 @@ irm https://unsloth.ai/install.ps1 | iex
 - [Reddit](https://reddit.com/r/unsloth)
 
 ## ⭐ Features
-Unsloth works on CPU, Apple, NVIDIA, AMD, Intel, multi GPU setups and supports 1000+ models.
+Unsloth works on **Windows, Linux, WSL** and **macOS**. We support **Multi GPU setups, NVIDIA, AMD, Intel GPUs, CPUs** and the **Vulkan** backend.
 
 ### Run & Build with AI
 * Run and train LLMs, diffusion, embedding, audio models: [Kimi K3](https://unsloth.ai/docs/models/kimi-k3), MiniMax-H3, Qwen3.8, [Muse Glimmer](https://unsloth.ai/docs/models/muse-glimmer), [DeepSeek-V4](https://unsloth.ai/docs/models/deepseek-v4), [Gemma 4](https://unsloth.ai/docs/models/gemma-4).
@@ -108,8 +108,6 @@ Unsloth can be used in three ways: **[Unsloth Desktop](https://unsloth.ai/downlo
 
 ### Unsloth Desktop (recommended)
 
-The desktop is the easiest way to use Unsloth and needs no setup, so start here.
-
 <table>
   <tr>
     <td><b>Platform</b></td>
@@ -138,7 +136,6 @@ The desktop is the easiest way to use Unsloth and needs no setup, so start here.
 </table>
 
 ### Unsloth Studio (web UI)
-Unsloth Studio (Beta) works on **Windows, Linux, WSL** and **macOS**. We support **NVIDIA, AMD, Intel GPUs** and also **CPUs** and the **Vulkan** backend. **Multi-GPU** is also available.
 
 #### macOS, Linux, WSL:
 ```bash
@@ -159,8 +156,6 @@ unsloth studio
 ```bash
 unsloth studio --secure
 ```
-
-To reach Unsloth over HTTPS, use `unsloth studio --secure`. This creates a free secure Cloudflare tunnel which makes Unsloth reachable globally. For LAN access, 
 
 #### Docker
 Use our [Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth``` container. Run:
