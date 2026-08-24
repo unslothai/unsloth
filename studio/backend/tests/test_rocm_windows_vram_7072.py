@@ -795,9 +795,33 @@ def test_shared_usage_needs_a_positively_unified_part(win_rocm, monkeypatch):
     monkeypatch.setattr(hw, "_rocm_props_are_positively_unified", lambda props: False)
 
     devices, aggregate = hw._rocm_windows_per_device_vram([0])
-    assert devices[0]["total_gb"] == 128.0  # the widened total still stands
-    assert devices[0]["used_gb"] is None  # but not a shared-inflated occupancy
-    assert aggregate is None
+    # Not merely "the sum is not used": without positive UMA the driver total is
+    # never asked for, so there is no widening to pair a numerator with either.
+    assert devices[0]["total_gb"] == 8.0
+    assert devices[0]["used_gb"] == 2.0  # the Dedicated counter, not the sum
+    assert aggregate == 2.0
+
+
+def test_the_poll_does_not_probe_an_unclassified_discrete_card(win_rocm, monkeypatch):
+    """mem_get_info attaches a primary HIP context worth ~612 MiB that is never
+    released, and main reaches this function without ever calling it. The
+    carve-out classifier fails open for an unclassified discrete card, so gating
+    the probe on it would take that off every discrete GPU on the host on every
+    telemetry poll, for a total the device then does not use."""
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0,1")
+    torch = _fake_torch(DEVICES)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    probed = []
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda i: (probed.append(i), (0, 99 * GB))[1])
+    monkeypatch.setattr(hw, "_rocm_props_total_is_carve_out", lambda props: True)  # fails open
+    monkeypatch.setattr(hw, "_rocm_props_are_positively_unified", lambda props: False)
+    monkeypatch.setattr(
+        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(REPORTER_ADAPTERS))
+    )
+
+    devices, _ = hw._rocm_windows_per_device_vram([0, 1])
+    assert probed == [], "a discrete card was asked for a context it does not need"
+    assert [d["total_gb"] for d in devices] == [48.0, 8.0]  # props totals, unwidened
 
 
 def test_a_failed_driver_probe_keeps_the_apu_on_the_dedicated_counter(win_rocm, monkeypatch):

@@ -2397,10 +2397,22 @@ def _rocm_windows_per_device_vram(
             # carve-out-sized total standing, and a unified part is exactly where
             # that is possible, so the two are not the same question.
             pool_confirmed = False
+            # POSITIVELY unified, not _rocm_props_total_is_carve_out, and this is
+            # the gate on the probe rather than only on what the probe's answer is
+            # used for. mem_get_info attaches a primary HIP context worth ~612 MiB
+            # that is never released, main reaches this function without ever
+            # calling it, and the carve-out classifier deliberately fails open for
+            # an unclassified DISCRETE card. Gating on it would therefore have made
+            # a telemetry poll take 612 MiB off every discrete GPU on the host, to
+            # obtain a total that is then not used for anything: only a positively
+            # unified part takes the widened total or the unified numerator.
+            unified = False
             try:
-                # Classifier inside the try: it is a probe, and a probe that
-                # throws must cost this device its correction, not its existence.
-                if _rocm_props_total_is_carve_out(props) and hasattr(mod, "mem_get_info"):
+                # Inside the try with the probe it gates: both are probes, and a
+                # probe that throws must cost this device its correction, not its
+                # place in the list.
+                unified = _rocm_props_are_positively_unified(props)
+                if unified and hasattr(mod, "mem_get_info"):
                     pool_bytes = int(mod.mem_get_info(ordinal)[1])
                     pool_confirmed = pool_bytes >= total_bytes
                     # Only a WIDER total is worth adopting. The classifier says
@@ -2436,7 +2448,7 @@ def _rocm_windows_per_device_vram(
                     # card can widen, and shared bytes are host memory its
                     # props.total_memory never counted. Same test
                     # get_gpu_memory_info applies before summing the two counters.
-                    "positively_unified": _rocm_props_are_positively_unified(props),
+                    "positively_unified": unified,
                     "pool_confirmed": pool_confirmed,
                 }
             )
