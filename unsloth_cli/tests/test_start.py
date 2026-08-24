@@ -1748,6 +1748,19 @@ def test_prefer_cmd_sibling_is_none_safe_and_posix_noop(monkeypatch, tmp_path):
     assert start._prefer_windows_cmd_sibling(str(shim)) == str(shim)
 
 
+def test_resolved_launch_command_rescues_uppercase_cmd_sibling(monkeypatch, tmp_path):
+    # #9167's pnpm dir holds pi.CMD, not pi.cmd. Default NTFS matches either on the
+    # .cmd probe, but a case-sensitive volume (ReFS, or an fsutil-flagged dir) needs
+    # the .CMD probe -- as does this test, on a case-sensitive CI filesystem.
+    _simulate_windows(monkeypatch)
+    posix_shim = tmp_path / "fake-agent"
+    posix_shim.write_text("#!/bin/sh\n", encoding = "utf-8")
+    cmd = tmp_path / "fake-agent.CMD"
+    cmd.write_text("@ECHO off\ncustom-wrapper %*\n", encoding = "utf-8")
+
+    assert start._resolved_launch_command(str(posix_shim), ["--flag"]) == [str(cmd), "--flag"]
+
+
 def test_which_with_install_dirs_applies_the_cmd_sibling_preference(monkeypatch, tmp_path):
     # The version/capability probes spawn this result directly, without going
     # through _resolved_launch_command, so the rescue must happen here too.
