@@ -360,13 +360,19 @@ def test_tying_normalizes_the_saved_embedding_to_its_bare_name():
 
     tied = _Model(tie = True)
     assert _drop_tied_output_module(
-        tied, ["model.embed_tokens", "language_model.lm_head"], True,
+        tied,
+        ["model.embed_tokens", "language_model.lm_head"],
+        True,
     ) == ["embed_tokens"]
     assert _drop_tied_output_module(tied, ["embed_tokens", "lm_head"], True) == ["embed_tokens"]
     # Untouched when tying does not apply, and non-embedding names keep their full path.
     assert _drop_tied_output_module(
-        tied, ["model.embed_tokens", "lm_head"], False,
+        tied,
+        ["model.embed_tokens", "lm_head"],
+        False,
     ) == ["model.embed_tokens", "lm_head"]
     assert _drop_tied_output_module(
-        tied, ["model.embed_tokens", "lm_head", "custom.score"], True,
+        tied,
+        ["model.embed_tokens", "lm_head", "custom.score"],
+        True,
     ) == ["embed_tokens", "custom.score"]

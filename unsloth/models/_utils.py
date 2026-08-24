@@ -4610,11 +4610,7 @@ def _drop_tied_output_module(model, modules_to_save, ensure_weight_tying):
     # `modules_to_save` entries, so a qualified `model.embed_tokens` matches nothing there
     # and it reconstructs no output module, leaving the head frozen. PEFT resolves the
     # bare name by suffix on every version, so normalizing is safe.
-    return [
-        _embedding_leaf(x) or x
-        for x in modules_to_save
-        if _embedding_leaf(x) != "lm_head"
-    ]
+    return [_embedding_leaf(x) or x for x in modules_to_save if _embedding_leaf(x) != "lm_head"]
 
 
 def _raise_if_fast_inference_modules_to_save(model, modules_to_save):
