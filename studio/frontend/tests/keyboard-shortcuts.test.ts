@@ -944,6 +944,23 @@ test("the fork chord is registered where it mounts, not from an action bar", asy
     "an autohidden bar cannot hold the registration",
   );
 
+  // Two instances of the action now exist on the last message, the chord's and
+  // the button's, so the in-flight flag cannot be either one's own state: the
+  // chord followed by a click would post two forks with two thread ids.
+  assert.match(
+    thread,
+    /const useForkInFlight = create<\{\n\s*forking: boolean;/,
+  );
+  assert.match(thread, /const pending = useForkInFlight\(\(s\) => s\.forking\);/);
+  assert.match(
+    thread,
+    /if \(useForkInFlight\.getState\(\)\.forking\) return;/,
+  );
+  assert.ok(
+    !thread.includes("const [pending, setPending] = useState(false);"),
+    "the per-instance flag is what let two forks run",
+  );
+
   // Mounted from both roles, since either can be the last message, and only
   // for the last one, which is the message a fork may be taken from.
   const mounts = thread.match(

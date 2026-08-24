@@ -147,6 +147,7 @@ import {
 import { holdAutoContinueRun } from "@/features/chat/utils/auto-continue-run-keeper";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
 import { COMPOSER_INPUT_SELECTOR, useShortcut } from "@/features/settings";
+import { create } from "zustand";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
 import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
 import { BypassPermissionsMenuItem } from "@/features/chat/bypass-permissions-menu-item";
@@ -7425,14 +7426,34 @@ const ForkCountBadge: FC = () => {
   );
 };
 
+/**
+ * One fork at a time, across every caller of the hook below.
+ *
+ * The chord and the button each hold their own instance, so a `useState` flag
+ * only disables the one that was used: pressing the chord and then clicking
+ * Fork before the first request lands would post two, each with its own new
+ * thread id, and race their navigations. A store is what both of them read.
+ */
+const useForkInFlight = create<{
+  forking: boolean;
+  setForking: (forking: boolean) => void;
+}>((set) => ({
+  forking: false,
+  setForking: (forking) => set({ forking }),
+}));
+
 const useForkMessageAction = () => {
   const aui = useAui();
   const navigate = useNavigate();
   const messageId = useAuiState(({ message }) => message.id);
   const isRunning = useAuiState(({ thread }) => thread.isRunning);
-  const [pending, setPending] = useState(false);
+  const pending = useForkInFlight((s) => s.forking);
+  const setPending = useForkInFlight((s) => s.setForking);
 
   const handleFork = async () => {
+    // Read, do not trust the render: two handlers can run in one tick, before
+    // either sees the other's state.
+    if (useForkInFlight.getState().forking) return;
     const remoteId = aui.threadListItem().getState().remoteId;
     if (!remoteId) {
       toast.error("Cannot fork an unsaved chat");
