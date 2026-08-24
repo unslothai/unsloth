@@ -13,7 +13,9 @@ import os
 
 TRAINER = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "core", "training", "trainer.py",
+    "core",
+    "training",
+    "trainer.py",
 )
 
 
@@ -21,7 +23,8 @@ def _peft_calls():
     """Every get_peft_model call, plus the peft_kwargs dict that feeds one."""
     tree = ast.parse(open(TRAINER, encoding = "utf-8").read())
     fn = next(
-        n for n in ast.walk(tree)
+        n
+        for n in ast.walk(tree)
         if isinstance(n, ast.FunctionDef) and n.name == "prepare_model_for_training"
     )
     calls = []
@@ -29,9 +32,7 @@ def _peft_calls():
         if not isinstance(node, ast.Call):
             continue
         name = getattr(node.func, "attr", None)
-        if name == "get_peft_model" or (
-            name is None and getattr(node.func, "id", None) == "dict"
-        ):
+        if name == "get_peft_model" or (name is None and getattr(node.func, "id", None) == "dict"):
             kwargs = {k.arg for k in node.keywords if k.arg}
             # Only the dicts that actually build an adapter.
             if name == "get_peft_model" or "target_modules" in kwargs:
@@ -43,7 +44,8 @@ def test_every_adapter_call_forwards_modules_to_save():
     calls = _peft_calls()
     assert len(calls) >= 5, f"expected every branch, found {len(calls)}"
     missing = [
-        lineno for lineno, kwargs in calls
+        lineno
+        for lineno, kwargs in calls
         if "target_modules" in kwargs and "modules_to_save" not in kwargs
     ]
     assert not missing, (
