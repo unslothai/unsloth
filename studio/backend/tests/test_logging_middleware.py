@@ -229,9 +229,7 @@ def test_watchdog_window_outlasts_the_probe_interval():
     ).read_text(encoding = "utf-8")
 
     def _secs(name):
-        match = re.search(
-            rf"{name}: Duration = Duration::from_secs\((\d+)\)", commands_rs
-        )
+        match = re.search(rf"{name}: Duration = Duration::from_secs\((\d+)\)", commands_rs)
         assert match is not None, (
             f"{name} is no longer a Duration::from_secs literal in commands.rs; this test "
             f"reads it to pin the heartbeat window and needs updating alongside it"

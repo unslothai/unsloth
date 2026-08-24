@@ -190,7 +190,7 @@ class TestSetupServerDiskLogging:
 
         tree = ast.parse((Path(_BACKEND_DIR) / "run.py").read_text(encoding = "utf-8"))
         offenders = []
-        for node in tree.body:                      # module scope only
+        for node in tree.body:  # module scope only
             if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("loggers."):
                 offenders.append(f"line {node.lineno}: from {node.module} import ...")
             elif isinstance(node, ast.Import):
@@ -222,7 +222,6 @@ class TestSetupServerDiskLogging:
 
     def test_a_rejected_flag_combination_leaves_the_streams_alone(self):
         import run as run_mod
-
         orig_out, orig_err = sys.stdout, sys.stderr
         try:
             with pytest.raises(SystemExit):
