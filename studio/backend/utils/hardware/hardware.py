@@ -2504,23 +2504,43 @@ def _rocm_windows_per_device_vram(
     ]
     if any(pool_scoped):
         only = dev_meta[0] if len(dev_meta) == 1 else None
+        # Two conditions beyond "this device wants the sum", both of which the
+        # matcher applies to its own readings and the unified helper does not:
+        #
+        #   adapters falsy   the Dedicated query already failed. Passing None
+        #                    reads as "no snapshot supplied" and pays for the
+        #                    same failing PowerShell call a second time, on a
+        #                    path that polls, only to return unknown anyway.
+        #   a NON-ZERO sub-threshold row
+        #                    the helper picks the lone counter above the noise
+        #                    floor, which on a masked host can be a hidden GPU
+        #                    while the visible APU is the small one; its usage
+        #                    would then be published as the APU's. The matcher
+        #                    declines exactly this shape, requiring every dropped
+        #                    counter to be an EXACT zero, so the same rule holds
+        #                    here. An adapter at zero has nothing committed and
+        #                    cannot be the holder of the survivor's bytes.
+        wants_sum = only is not None and pool_scoped[0] and only["positively_unified"]
+        placeholders_only = bool(adapters) and all(
+            used == 0 for _, used in adapters if used < _ROCM_WIN_ADAPTER_MIN_BYTES
+        )
         unified_used = (
             # `adapters` is None when the caller's own query came back unavailable.
             # The helper reads None as "not supplied" and re-runs it, which is a
             # second ~1.3 s PowerShell call on the polled telemetry path to reach
             # the same None.
             _rocm_windows_unified_used_bytes(adapters)
-            if adapters is not None
-            and only is not None
-            and pool_scoped[0]
-            and only["positively_unified"]
+            if wants_sum and placeholders_only
             else None
         )
         if unified_used is not None:
             # Every other reading is clamped on its way through the matcher.
             # This one bypasses it, and the payload derives free as total minus
-            # used, so an unclamped sum publishes negative free.
-            unified_used = min(unified_used, float(only["total_bytes"]))
+            # used, so an unclamped sum publishes negative free. Lower bound too:
+            # a negative cooked counter value parses as a perfectly good float,
+            # and the older caller only avoids publishing one because
+            # _free_in_torch_scope clamps downstream of it.
+            unified_used = max(0.0, min(unified_used, float(only["total_bytes"])))
         assigned = [
             (unified_used if scoped else used) for scoped, used in zip(pool_scoped, assigned)
         ]

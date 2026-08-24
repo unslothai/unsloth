@@ -802,6 +802,50 @@ def test_shared_usage_needs_a_positively_unified_part(win_rocm, monkeypatch):
     assert aggregate == 2.0
 
 
+def test_a_nonzero_sub_threshold_row_declines_the_unified_sum(win_rocm, monkeypatch):
+    """The helper picks the lone counter above the noise floor. With only the APU
+    visible but a hidden GPU active, that counter is the hidden one and the APU is
+    the small row, so its usage would be published as the APU's. The matcher
+    declines this shape by requiring every dropped counter to be an exact zero."""
+    _apu_host(monkeypatch, unified_used = 30.0 * GB)
+    monkeypatch.setattr(hw.subprocess, "run", _subprocess_run(
+        adapter_output = _adapter_output([
+            ("luid_0x00000000_0x0000c001_phys_0", 10 * MiB),  # the visible APU, idle
+            ("luid_0x00000000_0x0000d1e2_phys_0", 30.0 * GB),  # a hidden GPU, loaded
+        ])))
+
+    devices, aggregate = hw._rocm_windows_per_device_vram([0])
+    assert devices[0]["used_gb"] is None
+    assert aggregate is None
+
+
+def test_a_failed_counter_query_is_not_retried(win_rocm, monkeypatch):
+    """Passing None reads as "no snapshot supplied", so the unified helper would
+    launch the same failing PowerShell query a second time on a polled path."""
+    _apu_host(monkeypatch)
+    monkeypatch.setattr(hw.subprocess, "run", _subprocess_run(adapter_output = "__NONE__\n"))
+    calls = []
+    monkeypatch.setattr(
+        hw, "_rocm_windows_unified_used_bytes",
+        lambda dedicated = None: (calls.append(dedicated), 12.0 * GB)[1],
+    )
+
+    devices, _ = hw._rocm_windows_per_device_vram([0])
+    assert calls == [], "the unified helper was asked to re-run a query that just failed"
+    assert devices[0]["used_gb"] is None
+
+
+def test_a_negative_counter_never_publishes_negative_usage(win_rocm, monkeypatch):
+    """A negative cooked counter value parses as a perfectly good float. The older
+    caller only avoids publishing one because _free_in_torch_scope clamps below it;
+    this path reaches the payload directly."""
+    _apu_host(monkeypatch, unified_used = -5.0 * GB)
+
+    devices, aggregate = hw._rocm_windows_per_device_vram([0])
+    assert devices[0]["used_gb"] == 0.0
+    assert aggregate == 0.0
+
+
 def test_the_poll_does_not_probe_an_unclassified_discrete_card(win_rocm, monkeypatch):
     """mem_get_info attaches a primary HIP context worth ~612 MiB that is never
     released, and main reaches this function without ever calling it. The
