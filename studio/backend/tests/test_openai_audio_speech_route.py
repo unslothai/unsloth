@@ -656,15 +656,20 @@ def test_provider_client_appends_speech_path_before_the_base_query(monkeypatch):
 
 def test_external_provider_reads_do_not_block_the_event_loop(monkeypatch):
     import asyncio
-    import time
+    import threading
 
     from models.inference import AudioSpeechRequest
 
     _install_external(monkeypatch)
     original_get_provider = routes_module.providers_db.get_provider
+    read_started = threading.Event()
+    release_read = threading.Event()
+    heartbeat_seen = threading.Event()
+    event_loop_blocked = []
 
     def _slow_get_provider(provider_id):
-        time.sleep(0.2)
+        read_started.set()
+        release_read.wait()
         return original_get_provider(provider_id)
 
     monkeypatch.setattr(routes_module.providers_db, "get_provider", _slow_get_provider)
@@ -675,20 +680,32 @@ def test_external_provider_reads_do_not_block_the_event_loop(monkeypatch):
         async def is_disconnected(self):
             return False
 
+    def _watchdog():
+        if not read_started.wait(timeout = 1):
+            event_loop_blocked.append(True)
+            release_read.set()
+            return
+        if not heartbeat_seen.wait(timeout = 1):
+            event_loop_blocked.append(True)
+        release_read.set()
+
     async def _run():
-        started = time.perf_counter()
+        watchdog = threading.Thread(target = _watchdog)
+        watchdog.start()
         speech = asyncio.create_task(
             routes_module._external_tts_speech(
                 AudioSpeechRequest(input = "hi", provider_id = "conn-1", model = "kokoro", voice = "alloy"),
                 _ConnectedRequest(),
             )
         )
-        await asyncio.sleep(0.02)
-        heartbeat_elapsed = time.perf_counter() - started
+        await asyncio.sleep(0)
+        heartbeat_seen.set()
+        release_read.set()
         await speech
-        return heartbeat_elapsed
+        watchdog.join()
 
-    assert asyncio.run(_run()) < 0.1
+    asyncio.run(_run())
+    assert event_loop_blocked == []
 
 
 def test_external_rejects_a_cross_process_provider_edit_after_resolving_its_key(monkeypatch):
