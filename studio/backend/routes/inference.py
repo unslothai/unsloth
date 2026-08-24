@@ -8551,6 +8551,11 @@ async def _preflight_native_audio_placement(
             detail = "Higgs TTS requires Python 3.10 or newer in Studio.",
         )
 
+    automatic = not placement.requested_gpu_ids
+    availability = (
+        await asyncio.to_thread(_native_audio_post_handoff_free_gb) if automatic else None
+    )
+
     def _resolve() -> tuple[Optional[List[int]], Optional[float], Optional[dict[int, float]]]:
         import utils.hardware as hardware
         from core.inference.native_audio import (
@@ -8617,10 +8622,8 @@ async def _preflight_native_audio_placement(
             required_override_gb = required_gb,
         )
         post_handoff_free_gb = None
-        automatic = not placement.requested_gpu_ids
         if required_gb is None:
             required_gb = metadata.get("required_gb")
-        availability = _native_audio_post_handoff_free_gb() if automatic else None
         if metadata.get("selection_mode") == "fallback_all":
             candidates = set(resolved or ())
             fitting = sorted(
@@ -10125,19 +10128,22 @@ async def _load_model_impl(
 
         placement = await _preflight_native_audio_placement(config, request, placement)
 
+        async def _guard_training(guard_placement: _LoadPlacement):
+            return await asyncio.to_thread(
+                _offline_guarded,
+                (model_identifier, config.identifier, getattr(config, "base_model", None)),
+                _guard_chat_load_against_training,
+                config,
+                request,
+                load_in_4bit = effective_load_in_4bit,
+                placement = guard_placement,
+                llama_extra_args = extra_llama_args,
+                n_parallel = _n_parallel,
+            )
+
         # Apply the training coexistence policy before the unload step below
         # frees the resident model. Off-loop and guarded: the guard does sync HF work.
-        initial_training_info = await asyncio.to_thread(
-            _offline_guarded,
-            (model_identifier, config.identifier, getattr(config, "base_model", None)),
-            _guard_chat_load_against_training,
-            config,
-            request,
-            load_in_4bit = effective_load_in_4bit,
-            placement = placement,
-            llama_extra_args = extra_llama_args,
-            n_parallel = _n_parallel,
-        )
+        initial_training_info = await _guard_training(placement)
 
         # Mark the load and refuse one the download manager already owns BEFORE the eviction below: this 409 leaves nothing
         # loaded. It runs after argument inheritance, since a carried --no-mmproj changes the companion requirement.
@@ -10248,17 +10254,7 @@ async def _load_model_impl(
             final_placement = placement._replace(
                 native_post_handoff_free_gb = {selected_gpu: effective_free}
             )
-            final_training_info = await asyncio.to_thread(
-                _offline_guarded,
-                (model_identifier, config.identifier, getattr(config, "base_model", None)),
-                _guard_chat_load_against_training,
-                config,
-                request,
-                load_in_4bit = effective_load_in_4bit,
-                placement = final_placement,
-                llama_extra_args = extra_llama_args,
-                n_parallel = _n_parallel,
-            )
+            final_training_info = await _guard_training(final_placement)
             expected_native_owner = final_availability.owner_snapshot
             post_handoff_needed_gb = float(
                 (final_training_info or initial_training_info or {}).get("needed_gb") or required
@@ -10312,17 +10308,7 @@ async def _load_model_impl(
                     requested_gpu_ids = [post_media_handoff_gpu],
                     native_post_handoff_free_gb = None,
                 )
-                await asyncio.to_thread(
-                    _offline_guarded,
-                    (model_identifier, config.identifier, getattr(config, "base_model", None)),
-                    _guard_chat_load_against_training,
-                    config,
-                    request,
-                    load_in_4bit = effective_load_in_4bit,
-                    placement = live_placement,
-                    llama_extra_args = extra_llama_args,
-                    n_parallel = _n_parallel,
-                )
+                await _guard_training(live_placement)
         else:
             # The marker still goes up (the download-manager handshake reads it, and it keeps this load cancellable). A stale CHAT claim is dropped AFTER the load.
             gguf_load_stack.enter_context(chat_load_in_flight())
