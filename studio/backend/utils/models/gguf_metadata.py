@@ -402,7 +402,7 @@ def _parse_gguf_has_classifier_head(path: str) -> Optional[bool]:
     return False
 
 
-def _gguf_has_classifier_head(path: str) -> Optional[bool]:
+def _gguf_shard_has_classifier_head(path: str) -> Optional[bool]:
     key = _cache_key(path)
     if key is None:
         return None
@@ -418,6 +418,20 @@ def _gguf_has_classifier_head(path: str) -> Optional[bool]:
                 break
         _CLASSIFIER_HEAD_CACHE[key] = result
     return result
+
+
+def _gguf_has_classifier_head(path: str) -> Optional[bool]:
+    try:
+        from utils.models.model_config import colocated_split_shards
+        shards, complete = colocated_split_shards(Path(path))
+    except Exception:
+        return None
+    if not complete:
+        return None
+    results = [_gguf_shard_has_classifier_head(str(shard)) for shard in shards]
+    if any(result is True for result in results):
+        return True
+    return False if results and all(result is False for result in results) else None
 
 
 def _parse_gguf_bool(path: str, wanted_key: str) -> Optional[bool]:

@@ -398,7 +398,7 @@ class TestEmbeddingSlotClampInTheBatchFloor(unittest.TestCase):
         config = SimpleNamespace(identifier = "someone/gguf", gguf_file = None, gguf_hf_repo = None)
         self.assertFalse(route._is_embedding_gguf(config))
 
-    def test_an_uncached_embedding_identifier_is_still_classified(self):
+    def test_an_uncached_embedding_identifier_stays_fail_closed(self):
         route = _load_route_module("inf_route_embed_clamp_6")
         config = SimpleNamespace(
             identifier = "Qwen/Qwen3-Embedding-4B-GGUF",
@@ -407,7 +407,7 @@ class TestEmbeddingSlotClampInTheBatchFloor(unittest.TestCase):
             gguf_variant = "Q4_K_M",
         )
         with patch.object(route, "_local_gguf_main_path", return_value = None):
-            self.assertTrue(route._is_embedding_gguf(config))
+            self.assertFalse(route._is_embedding_gguf(config))
 
 
 class TestValidateAllowsTheEmbeddingClampedBatch(TestValidateRefusesWhatLoadWouldRefuse):

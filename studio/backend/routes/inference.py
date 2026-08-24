@@ -7923,8 +7923,7 @@ def _is_embedding_gguf(config: ModelConfig) -> bool:
     try:
         main = _local_gguf_main_path(config)
         if not main:
-            from utils.models.gguf_metadata import is_gguf_embedding_model
-            return is_gguf_embedding_model("", model_identifier = getattr(config, "identifier", None))
+            return False
         probe = LlamaCppBackend()
         probe._model_identifier = config.identifier
         probe._gguf_path = main

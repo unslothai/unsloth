@@ -657,3 +657,16 @@ def test_is_gguf_embedding_model_excludes_unnamed_bert_classifier_heads(tmp_path
             tensor_names = (classifier_tensor,),
         )
         assert is_gguf_embedding_model(str(p), model_identifier = "local/model") is False
+
+
+def test_is_gguf_embedding_model_checks_every_split_for_classifier_head(tmp_path: Path):
+    first = _write_synthetic_gguf(
+        tmp_path / "model-00001-of-00002.gguf",
+        {"general.architecture": "bert"},
+    )
+    _write_synthetic_gguf(
+        tmp_path / "model-00002-of-00002.gguf",
+        {"general.architecture": "bert"},
+        tensor_names = ("cls.weight",),
+    )
+    assert is_gguf_embedding_model(str(first), model_identifier = "local/model") is False
