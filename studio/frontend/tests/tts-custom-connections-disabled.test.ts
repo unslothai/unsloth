@@ -17,6 +17,14 @@ type Adapter = {
   ) => Promise<string>;
 };
 
+type AuthApi = {
+  authFetch: (
+    input: string,
+    init?: RequestInit,
+    options?: { beforeRetry?: () => void },
+  ) => Promise<Response>;
+};
+
 type StubProvider = {
   id: string;
   hasApiKey: boolean;
@@ -34,11 +42,13 @@ function load(
     legacyKey = "",
     voice = "af_sky",
     encrypt = async (key: string) => `enc(${key})`,
+    beforeAuthenticatedRetry,
   }: {
     providers?: StubProvider[];
     legacyKey?: string;
     voice?: string;
     encrypt?: (key: string) => Promise<string>;
+    beforeAuthenticatedRetry?: () => void;
   } = {},
 ): {
   adapter: Adapter;
@@ -58,7 +68,15 @@ function load(
     ),
     {
       "@/features/auth": {
-        authFetch: async (_input: string, init: { body: string }) => {
+        authFetch: async (
+          _input: string,
+          init: { body: string },
+          options?: { beforeRetry?: () => void },
+        ) => {
+          if (beforeAuthenticatedRetry) {
+            beforeAuthenticatedRetry();
+            options?.beforeRetry?.();
+          }
           posted.push(init.body);
           return {
             ok: true,
@@ -206,6 +224,84 @@ test("custom TTS does not send a captured legacy key after the connection change
 
   await assert.rejects(pending, /connection changed/i);
   assert.deepEqual(posted, []);
+});
+
+test("custom TTS rechecks the connection switch before an authenticated retry", async () => {
+  let disableConnections = () => {};
+  const loaded = load(true, {
+    beforeAuthenticatedRetry: () => disableConnections(),
+  });
+  disableConnections = () => loaded.setConnectionsEnabled(false);
+
+  await assert.rejects(
+    loaded.adapter.generateCustomTtsAudio("secret assistant reply"),
+    /Connections are disabled/,
+  );
+  assert.deepEqual(loaded.posted, []);
+});
+
+test("authFetch invokes its policy guard after refresh and before retry", async () => {
+  let accessToken: string | null = "expired-access";
+  let refreshToken: string | null = "refresh-token";
+  const fetched: string[] = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    fetched.push(url);
+    if (url === "/api/auth/refresh") {
+      return new Response(
+        JSON.stringify({
+          access_token: "fresh-access",
+          refresh_token: "fresh-refresh",
+          must_change_password: false,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    return new Response(null, { status: fetched.length === 1 ? 401 : 200 });
+  };
+
+  try {
+    const authApi = loadWithStubs<AuthApi>(
+      new URL("../src/features/auth/api.ts", import.meta.url),
+      {
+        "@/lib/api-base": { apiUrl: (path: string) => path, isTauri: false },
+        "./session": {
+          clearAuthTokens: () => {
+            accessToken = null;
+            refreshToken = null;
+          },
+          getAuthToken: () => accessToken,
+          getRefreshToken: () => refreshToken,
+          mustChangePassword: () => false,
+          setMustChangePassword: () => {},
+          storeAuthTokens: (access: string, refresh: string) => {
+            accessToken = access;
+            refreshToken = refresh;
+          },
+        },
+      },
+    );
+
+    await assert.rejects(
+      authApi.authFetch(
+        "/api/inference/audio/speech",
+        { method: "POST" },
+        {
+          beforeRetry: () => {
+            throw new Error("Connections are disabled");
+          },
+        },
+      ),
+      /Connections are disabled/,
+    );
+    assert.deepEqual(fetched, [
+      "/api/inference/audio/speech",
+      "/api/auth/refresh",
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 // #9214: a failed key migration leaves the connection selectable on the retained key.

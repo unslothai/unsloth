@@ -2,12 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
-import { stripSearchImageTokens } from "../search-images/search-images";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { toast } from "@/lib/toast";
 import type { SpeechSynthesisAdapter } from "@assistant-ui/react";
 import { encryptProviderApiKey } from "../api/providers-api";
 import { getExternalProviderApiKey } from "../external-providers";
+import { stripSearchImageTokens } from "../search-images/search-images";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
 
 /** Voice for a stored voiceURI. "default" resolves to the voice the platform
@@ -293,47 +293,55 @@ export async function generateCustomTtsAudio(
     ? await encryptProviderApiKey(legacyApiKey)
     : "";
 
-  // Encryption yields to the event loop. Recheck the frontend-only policy and
-  // provider membership before releasing assistant text or a retained key.
-  const currentProvidersState = useExternalProvidersStore.getState();
-  if (!currentProvidersState.connectionsEnabled) {
-    throw new Error(
-      "Connections are disabled. Turn on Enable connections in Settings → Connections to use a custom TTS endpoint.",
+  // Encryption and auth refresh both yield. Reuse this check before the first
+  // request and every authFetch retry so neither path can release assistant text
+  // or a retained key after the frontend-only connection policy changes.
+  const assertConnectionSnapshot = () => {
+    const currentProvidersState = useExternalProvidersStore.getState();
+    if (!currentProvidersState.connectionsEnabled) {
+      throw new Error(
+        "Connections are disabled. Turn on Enable connections in Settings → Connections to use a custom TTS endpoint.",
+      );
+    }
+    const currentProvider = currentProvidersState.providers.find(
+      (candidate) => candidate.id === ttsProviderId,
     );
-  }
-  const currentProvider = currentProvidersState.providers.find(
-    (candidate) => candidate.id === ttsProviderId,
+    if (!currentProvider) {
+      useVoiceSettingsStore.getState().setTtsProviderId("");
+      throw new Error(
+        "The custom TTS connection no longer exists. Pick another connection in Settings → Voice.",
+      );
+    }
+    if (
+      currentProvider.baseUrl !== provider.baseUrl ||
+      currentProvider.providerType !== provider.providerType ||
+      currentProvider.backendProviderType !== provider.backendProviderType ||
+      currentProvider.hasApiKey !== provider.hasApiKey ||
+      currentProvider.updatedAt !== provider.updatedAt
+    ) {
+      throw new Error(
+        "The custom TTS connection changed while the request was starting. Try again.",
+      );
+    }
+  };
+  assertConnectionSnapshot();
+  const response = await authFetch(
+    "/api/inference/audio/speech",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        input: text,
+        provider_id: ttsProviderId,
+        provider_base_url: provider.baseUrl,
+        model,
+        voice,
+        ...(encryptedApiKey ? { encrypted_api_key: encryptedApiKey } : {}),
+      }),
+      signal,
+    },
+    { beforeRetry: assertConnectionSnapshot },
   );
-  if (!currentProvider) {
-    useVoiceSettingsStore.getState().setTtsProviderId("");
-    throw new Error(
-      "The custom TTS connection no longer exists. Pick another connection in Settings → Voice.",
-    );
-  }
-  if (
-    currentProvider.baseUrl !== provider.baseUrl ||
-    currentProvider.providerType !== provider.providerType ||
-    currentProvider.backendProviderType !== provider.backendProviderType ||
-    currentProvider.hasApiKey !== provider.hasApiKey ||
-    currentProvider.updatedAt !== provider.updatedAt
-  ) {
-    throw new Error(
-      "The custom TTS connection changed while the request was starting. Try again.",
-    );
-  }
-  const response = await authFetch("/api/inference/audio/speech", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      input: text,
-      provider_id: ttsProviderId,
-      provider_base_url: provider.baseUrl,
-      model,
-      voice,
-      ...(encryptedApiKey ? { encrypted_api_key: encryptedApiKey } : {}),
-    }),
-    signal,
-  });
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as {
       detail?: string;
@@ -498,7 +506,9 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
       !StudioSpeechSynthesisAdapter.systemVoicesSupported()
     ) {
       const generate =
-        ttsEngine === "custom" ? generateCustomTtsAudio : generateStudioTtsAudio;
+        ttsEngine === "custom"
+          ? generateCustomTtsAudio
+          : generateStudioTtsAudio;
       const session = speakWithBackendAudio(generate, text, handleEnd, () => {
         if (res.status.type === "ended") return;
         // Notify subscribers of the async starting -> running transition;
