@@ -9,6 +9,7 @@ import {
   type MonitorFrame,
   stackBottomInset,
   stackGeometry,
+  usableFloorRoom,
 } from "../src/features/settings/stores/monitor-frame-store.ts";
 
 const W = 1440;
@@ -340,6 +341,113 @@ test("the docked composer is dodged however little the rail insists on", () => {
   }
 });
 
+// The published form leaves a 5px strip above the footnote. A border-only floor
+// used to accept that strip and clip the download panel into a hairline.
+const NOTE_H = 800;
+const NOTE_DOCKED: MonitorFrame = {
+  left: 407,
+  top: 658.53,
+  right: 1143,
+  bottom: 770.53,
+  coverable: true,
+};
+// One download row under the panel's header, measured in the same window.
+const ONE_CARD = 121;
+// The download panel alone in the rail, which is what the report had.
+const alone = (squeezed: number, natural: number) =>
+  usableFloorRoom([{ squeezed, natural }], natural);
+
+test("the strip the composer's footnote leaves is not room for the rail", () => {
+  const geometry = stackGeometry(
+    NOTE_DOCKED,
+    CHAT_W,
+    NOTE_H,
+    ONE_CARD,
+    alone(2, ONE_CARD),
+  );
+  assert.ok(geometry.bottom > 16, "5px under the note is not a placement");
+  assert.ok(
+    NOTE_H - geometry.bottom <= NOTE_DOCKED.top,
+    "so the rail clears the composer",
+  );
+  assert.ok(geometry.maxHeight >= ONE_CARD, "and the card fits where it lands");
+});
+
+test("the floor is a card the reader can see, not what the rail can shrink to", () => {
+  assert.equal(alone(2, ONE_CARD), ONE_CARD);
+  assert.equal(alone(2, 40), 40);
+  assert.equal(alone(300, 480), 300);
+  // Long lists still scroll rather than asking for their full height.
+  assert.ok(alone(2, 480) < 480);
+});
+
+// The same window with the app update card up. Its min-height is its own floor,
+// so a rail floored as one number is already past the minimum while the panel
+// beside it is still measuring its borders.
+const BANNER_FLOOR = 189;
+const BANNER_NATURAL = 196;
+const PANEL_BORDERS = 2;
+const RAIL_CARDS = [
+  { squeezed: BANNER_FLOOR, natural: BANNER_NATURAL },
+  { squeezed: PANEL_BORDERS, natural: ONE_CARD },
+];
+const RAIL_NATURAL = BANNER_NATURAL + 8 + ONE_CARD;
+
+test("a banner's own floor does not answer for the panel beside it", () => {
+  const floor = usableFloorRoom(RAIL_CARDS, RAIL_NATURAL);
+  assert.ok(
+    floor > BANNER_FLOOR + 8 + PANEL_BORDERS,
+    "the panel is asked for as well as the banner",
+  );
+  // Shorter than the minimum, so it is asked for whole rather than for room it
+  // could not fill.
+  assert.equal(floor, BANNER_FLOOR + 8 + ONE_CARD);
+});
+
+// A 1366x768 laptop, where the browser leaves a 640px viewport: the welcome
+// composer sits with exactly 200px under it, which holds the banner and left
+// the download panel an 8px strip with no scrollbar to reach it by.
+const NOTE_W = 1366;
+const NOTE_WELCOME_H = 640;
+const NOTE_WELCOME: MonitorFrame = {
+  left: 450,
+  top: 304,
+  right: 1186,
+  bottom: 416,
+  coverable: true,
+};
+
+test("a band that only holds the banner is not room for the rail", () => {
+  const geometry = stackGeometry(
+    NOTE_WELCOME,
+    NOTE_W,
+    NOTE_WELCOME_H,
+    RAIL_NATURAL,
+    usableFloorRoom(RAIL_CARDS, RAIL_NATURAL),
+    ONE_CARD + 8,
+  );
+  assert.ok(
+    NOTE_WELCOME_H - geometry.bottom - geometry.maxHeight >= 0,
+    "the rail stays on the page",
+  );
+  assert.ok(
+    geometry.maxHeight - BANNER_FLOOR - 8 >= ONE_CARD,
+    "and the panel is more than its borders",
+  );
+});
+
+// Preserve #8462: the 163px welcome-screen band still keeps the corner.
+test("the welcome band still keeps the corner under a real floor", () => {
+  const geometry = stackGeometry(
+    WIDE_WELCOME,
+    WIDE_W,
+    WIDE_H,
+    328,
+    alone(2, 328),
+  );
+  assert.equal(geometry.bottom, 16, "the panel belongs in the corner");
+});
+
 test("a docked composer is dodged whatever the stack measures", () => {
   const docked = { left: 412, top: 664, right: 1148, bottom: 814 };
   for (const height of [40, 80, 120, 260]) {
@@ -374,8 +482,59 @@ test("the height is measured with the hook's own cap lifted", async () => {
   );
   assert.match(
     measure,
-    /node\.scrollHeight;[\s\S]*node\.style\.maxHeight = capped;/,
+    /node\.scrollHeight[\s\S]*node\.style\.maxHeight = capped;/,
     "the cap is not restored after the read",
+  );
+});
+
+// A rect is read through the update cards' scale 0.96 enter transform, and a
+// finished transform resizes nothing, so the short reading is the floor the
+// placement keeps. See cardHeight.
+test("the card floors are read off the layout box, not the painted one", async () => {
+  const source = await readFile(
+    new URL(
+      "../src/features/settings/stores/monitor-frame-store.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const measure = source.slice(
+    source.indexOf("const measure = () => {"),
+    source.indexOf("const observer = new ResizeObserver"),
+  );
+  assert.match(
+    source,
+    /function cardHeight\([\s\S]*?\)\.offsetHeight;/,
+    "a card's height is not the untransformed layout box",
+  );
+  assert.match(measure, /const grown = cards\.map\(cardHeight\)/);
+  assert.match(measure, /squeezed: cardHeight\(child\)/);
+  assert.match(measure, /tail \+= cardHeight\(child\) \+ STACK_GAP/);
+});
+
+// Dragged, the loaded models card pins itself `position: fixed` and leaves the
+// rail's flow. scrollHeight drops it, so a floor that still counted it asked
+// for 225px where 128 was needed and lifted the rail off a corner it fitted.
+test("a card dragged out of the rail is not floored for", async () => {
+  const source = await readFile(
+    new URL(
+      "../src/features/settings/stores/monitor-frame-store.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const measure = source.slice(
+    source.indexOf("const measure = () => {"),
+    source.indexOf("const observer = new ResizeObserver"),
+  );
+  assert.match(
+    source,
+    /function inRailFlow\([\s\S]*?position !== "fixed" && position !== "absolute";/,
+    "an out-of-flow card is not recognised",
+  );
+  assert.match(
+    measure,
+    /const cards = \[\.\.\.node\.children\]\.filter\(inRailFlow\)/,
   );
 });
 

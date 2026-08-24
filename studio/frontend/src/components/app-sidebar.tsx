@@ -168,7 +168,6 @@ import {
   CONVERSATION_MARKDOWN_LABEL,
   type ProjectRecord,
   type SidebarItem,
-  compareModelDisplayName,
 } from "@/features/chat";
 import { sandboxSessionIdFor } from "@/components/assistant-ui/sandbox-files";
 import {
@@ -2522,17 +2521,6 @@ export function AppSidebar() {
               <span className="truncate">
                 {pendingRename?.id === item.id ? pendingRename.title : item.title}
               </span>
-              {/* The model the chat was started on. Only in the quiet states: the
-                  spinner takes the same right-hand slot, and the unread dot sits
-                  over it. The title truncates first, so this never squeezes it out. */}
-              {item.modelId && !showWorkSpinner && !hasUnreadActivity && (
-                <span
-                  className="ml-auto max-w-[45%] shrink-0 truncate text-ui-10 text-muted-foreground/70"
-                  title={item.modelId}
-                >
-                  {compareModelDisplayName(item.modelId)}
-                </span>
-              )}
               {showWorkSpinner && (
                 <Spinner
                   data-testid="chat-row-spinner"
