@@ -154,8 +154,15 @@ async () => {
 """
 
 
-def configure(page, *, cards, obstacles = None, root_font = 16, direction = "ltr",
-              theme = "dark") -> dict:
+def configure(
+    page,
+    *,
+    cards,
+    obstacles = None,
+    root_font = 16,
+    direction = "ltr",
+    theme = "dark",
+) -> dict:
     """Put the page in one state of the matrix and wait for the rail to stop moving."""
     page.evaluate(
         """([opts]) => {
@@ -169,13 +176,15 @@ def configure(page, *, cards, obstacles = None, root_font = 16, direction = "ltr
       }
       window.__railSmoke.setCards(opts.cards);
     }""",
-        [{
-            "cards": cards,
-            "obstacles": obstacles or {},
-            "rootFont": root_font,
-            "direction": direction,
-            "theme": theme,
-        }],
+        [
+            {
+                "cards": cards,
+                "obstacles": obstacles or {},
+                "rootFont": root_font,
+                "direction": direction,
+                "theme": theme,
+            }
+        ],
     )
     page.evaluate(SETTLE)
     return page.evaluate(MEASURE)
@@ -205,8 +214,7 @@ def assert_invariants(m: dict, label: str, *, fitting: bool) -> None:
     # The room is in pixels. A spacing utility would resolve through --spacing in rem and
     # disagree with the compensation at any root font size but 16.
     check(
-        abs(m["padding"]["top"] - top) < 0.01
-        and abs(m["padding"]["bottom"] - bottom) < 0.01,
+        abs(m["padding"]["top"] - top) < 0.01 and abs(m["padding"]["bottom"] - bottom) < 0.01,
         f"{label}: block padding is {m['padding']['top']}/{m['padding']['bottom']}, "
         f"reserved {top}/{bottom}; a rem has got into the gutter",
     )
@@ -275,8 +283,14 @@ PANEL = {"height": 120, "floor": 60}
 INDICATOR = {"height": 64, "floor": 64}
 
 VIEWPORTS = [
-    (1280, 800), (1440, 900), (1920, 1080), (1024, 768),
-    (921, 534), (768, 500), (390, 844), (640, 480),
+    (1280, 800),
+    (1440, 900),
+    (1920, 1080),
+    (1024, 768),
+    (921, 534),
+    (768, 500),
+    (390, 844),
+    (640, 480),
 ]
 ROOT_FONTS = [12, 14, 16, 20, 24]
 DECKS = {
@@ -293,22 +307,35 @@ def obstacles_for(name: str, width: int, height: int) -> dict:
     if name == "none":
         return {}
     if name == "composer":
-        return {"composer": {
-            "left": width // 2 - 300, "right": width // 2 + 300,
-            "top": height - 180, "bottom": height - 24, "coverable": True,
-        }}
+        return {
+            "composer": {
+                "left": width // 2 - 300,
+                "right": width // 2 + 300,
+                "top": height - 180,
+                "bottom": height - 24,
+                "coverable": True,
+            }
+        }
     if name == "monitor-short":
-        return {"monitor": {
-            "left": width - 288, "right": width - 16,
-            "top": height - 320, "bottom": height - 200,
-        }}
+        return {
+            "monitor": {
+                "left": width - 288,
+                "right": width - 16,
+                "top": height - 320,
+                "bottom": height - 200,
+            }
+        }
     if name == "monitor-tall":
         # Tall enough that the lift does not fit, which is the branch that seats the stack
         # inside the panel and reserves room for its resize grip.
-        return {"monitor": {
-            "left": width - 288, "right": width - 16,
-            "top": 20, "bottom": height - 20,
-        }}
+        return {
+            "monitor": {
+                "left": width - 288,
+                "right": width - 16,
+                "top": 20,
+                "bottom": height - 20,
+            }
+        }
     if name == "both":
         out = obstacles_for("monitor-short", width, height)
         out.update(obstacles_for("composer", width, height))
@@ -330,8 +357,10 @@ def run_geometry_matrix(page) -> None:
             for deck_name, deck in DECKS.items():
                 for obstacle in OBSTACLES:
                     for direction in ("ltr", "rtl"):
-                        label = (f"{width}x{height} root{root_font} {deck_name} "
-                                 f"{obstacle} {direction}")
+                        label = (
+                            f"{width}x{height} root{root_font} {deck_name} "
+                            f"{obstacle} {direction}"
+                        )
                         m = configure(
                             page,
                             cards = deck,
@@ -572,8 +601,10 @@ def run_hit_testing(page) -> None:
         "rail" not in grip["answers"],
         f"the rail's gutter answers over the monitor's resize grip: {grip['answers']}",
     )
-    info(f"gutter overlaps the grip band: {grip['railOverlapsBand']}, "
-         f"answers: {sorted(set(grip['answers']))}")
+    info(
+        f"gutter overlaps the grip band: {grip['railOverlapsBand']}, "
+        f"answers: {sorted(set(grip['answers']))}"
+    )
 
     # Emptied after scrolling: whatever the rail's state, an empty rail must not hold the
     # corner. Its box is the gutter now, so this is worth a row of its own.
@@ -631,9 +662,10 @@ def run_observer_and_scroll(page) -> None:
     print("[matrix] observers and scroll", flush = True)
     page.set_viewport_size({"width": 1280, "height": 800})
     loops: list[str] = []
-    page.on("console", lambda msg: (
-        loops.append(msg.text) if "ResizeObserver loop" in msg.text else None
-    ))
+    page.on(
+        "console",
+        lambda msg: (loops.append(msg.text) if "ResizeObserver loop" in msg.text else None),
+    )
     room = configure(page, cards = [INDICATOR])["geometry"]["maxHeight"]
 
     # Cross the threshold repeatedly: each configure settles or reports that it did not.
@@ -746,7 +778,9 @@ def main() -> int:
             # Attached, not visible: an empty rail is a zero-height box before the gutter
             # gives it one, and waiting on visibility would hang there.
             page.wait_for_selector(
-                '[data-testid="overlay-rail"]', state = "attached", timeout = 30_000,
+                '[data-testid="overlay-rail"]',
+                state = "attached",
+                timeout = 30_000,
             )
             page.wait_for_function("() => Boolean(window.__railSmoke)", timeout = 30_000)
 
