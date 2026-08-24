@@ -13,8 +13,8 @@ const DISABLE_DMABUF: &str = "WEBKIT_DISABLE_DMABUF_RENDERER";
 // disable-nvidia-dmabuf.patch's own opt-out, read inside isNVIDIA(). WebKit returns on
 // DISABLE_DMABUF first, so it never gets there unless we honour it ourselves.
 const FORCE_DMABUF: &str = "WEBKIT_FORCE_DMABUF_RENDERER";
-// Names the variable we set, so a relaunch tells our own inherited output from an
-// operator's value. Tauri's process::restart does not env_clear. WebKit never reads it.
+// Comma-joined list of the variables we set, so a relaunch tells our own inherited output
+// from an operator's value. Tauri's process::restart does not env_clear. WebKit never reads it.
 const APPLIED_WORKAROUND: &str = "UNSLOTH_WEBKIT_RENDERER_WORKAROUND";
 const FORCE_SHARED_MEMORY_MIN_VERSION: (u32, u32) = (2, 44);
 // both the proprietary and open nvidia modules publish this; nouveau does not and is unaffected
@@ -34,10 +34,14 @@ enum RenderingWorkaround {
 }
 
 impl RenderingWorkaround {
-    fn variable(self) -> &'static str {
+    /// Forcing shared memory takes two variables on a patched library: isNVIDIA() returns
+    /// before mode.add(SharedMemory) in 2.50.4 and 2.52.6, so FORCE_SHM alone is never
+    /// read and the set is empty anyway. FORCE_DMABUF is what makes isNVIDIA() stand down
+    /// so selection reaches FORCE_SHM. Unpatched libraries ignore it.
+    fn variables(self) -> &'static [&'static str] {
         match self {
-            Self::ForceSharedMemory => FORCE_SHARED_MEMORY,
-            Self::DisableDmabuf => DISABLE_DMABUF,
+            Self::ForceSharedMemory => &[FORCE_SHARED_MEMORY, FORCE_DMABUF],
+            Self::DisableDmabuf => &[DISABLE_DMABUF],
         }
     }
 }
@@ -80,8 +84,13 @@ fn rendering_plan(
     // DISABLE_DMABUF=0 is how a host this over-triggers on gets its accelerated path
     // back: WebKit reads it as unset (`g_strcmp0(v, "0")`), and a patched library's own
     // GL_VENDOR probe then declines on an iGPU. An empty value is not that request.
-    let applied_by_this_app = env(APPLIED_WORKAROUND);
-    let ours = |variable: &str| applied_by_this_app.as_deref() == Some(OsStr::new(variable));
+    let applied_by_this_app = env(APPLIED_WORKAROUND).unwrap_or_default();
+    let ours = |variable: &str| {
+        applied_by_this_app
+            .to_string_lossy()
+            .split(',')
+            .any(|claimed| claimed == variable)
+    };
 
     if env(DISABLE_DMABUF).is_some() && !ours(DISABLE_DMABUF) {
         return RenderingPlan::PreserveEnvironment;
@@ -92,9 +101,10 @@ fn rendering_plan(
 
     // Stands the NVIDIA branch down and nothing else: it answers that patch's question,
     // not the missing-GLES one below, and that launch cannot render without its fallback.
-    let force_dmabuf = env(FORCE_DMABUF)
-        .as_deref()
-        .is_some_and(force_dmabuf_requested);
+    let force_dmabuf = !ours(FORCE_DMABUF)
+        && env(FORCE_DMABUF)
+            .as_deref()
+            .is_some_and(force_dmabuf_requested);
 
     let is_appimage = env(APPIMAGE).is_some();
     let configured_backends = env(GDK_BACKEND);
@@ -208,10 +218,22 @@ fn runtime_webkit_version() -> (u32, u32, u32) {
     }
 }
 
+/// Unset the variables an earlier launch of this process tree claimed and `drop` selects,
+/// then retire the claim. Only claimed names are touched, never an operator's value.
+fn release_claimed(drop: impl Fn(&str) -> bool) {
+    let claimed = std::env::var_os(APPLIED_WORKAROUND).unwrap_or_default();
+    for name in claimed.to_string_lossy().split(',') {
+        if !name.is_empty() && drop(name) {
+            std::env::remove_var(name);
+        }
+    }
+    std::env::remove_var(APPLIED_WORKAROUND);
+}
+
 /// Select a compatible WebKitGTK rendering transport before GTK initialization.
 ///
 /// Returns the variable applied by this launch and the reason for it, if any.
-pub fn configure_renderer() -> Option<(&'static str, &'static str)> {
+pub fn configure_renderer() -> Option<(&'static [&'static str], &'static str)> {
     let gles_usable = std::env::var_os(APPIMAGE).is_none() || gles_is_usable();
     match rendering_plan(
         |name| std::env::var_os(name),
@@ -220,23 +242,20 @@ pub fn configure_renderer() -> Option<(&'static str, &'static str)> {
         nvidia_driver_loaded(),
     ) {
         RenderingPlan::Apply(workaround, reason) => {
-            let variable = workaround.variable();
-            // A relaunch deciding the other way inherited the previous choice, and WebKit
-            // reads DISABLE_DMABUF before FORCE_SHM, so a stale one would outrank it.
-            // Only a variable we claimed is cleared; an operator's never reaches here.
-            if let Some(previous) = std::env::var_os(APPLIED_WORKAROUND) {
-                if previous != OsStr::new(variable) {
-                    std::env::remove_var(previous);
-                }
+            let variables = workaround.variables();
+            release_claimed(|name| !variables.contains(&name));
+            for variable in variables {
+                std::env::set_var(variable, "1");
             }
-            std::env::set_var(variable, "1");
-            // Claim it, so the next launch re-decides rather than reading it as an override.
-            std::env::set_var(APPLIED_WORKAROUND, variable);
-            Some((variable, reason))
+            // Claim them, so the next launch re-decides rather than reading them as overrides.
+            std::env::set_var(APPLIED_WORKAROUND, variables.join(","));
+            Some((variables, reason))
         }
         RenderingPlan::PreserveEnvironment => {
-            // Nothing is ours now; a stale claim would suppress an override next relaunch.
-            std::env::remove_var(APPLIED_WORKAROUND);
+            // Drop the values too, not just the claim. Leaving one set keeps a workaround
+            // this launch decided against, and the next launch, seeing it unmarked, would
+            // read it as an operator override and preserve it for good.
+            release_claimed(|_| true);
             None
         }
     }
@@ -445,14 +464,85 @@ mod tests {
                 continue;
             };
             let mut inherited = session.to_vec();
-            inherited.push((workaround.variable(), "1"));
-            inherited.push((APPLIED_WORKAROUND, workaround.variable()));
+            let claimed = workaround.variables().join(",");
+            for variable in workaround.variables() {
+                inherited.push((variable, "1"));
+            }
+            inherited.push((APPLIED_WORKAROUND, &claimed));
             assert_eq!(
                 plan_on_host(&inherited, MODERN_WEBKIT, true, nvidia),
                 RenderingPlan::Apply(workaround, reason),
                 "relaunch drifted for session {session:?} nvidia={nvidia}"
             );
         }
+    }
+
+    // release_claimed touches the real process environment, so serialise the tests that do.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn standing_down_clears_the_value_we_set_not_only_the_claim() {
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::env::set_var(DISABLE_DMABUF, "1");
+        std::env::set_var(APPLIED_WORKAROUND, DISABLE_DMABUF);
+
+        release_claimed(|_| true);
+
+        // Leaving it set would keep a workaround this launch decided against, and the
+        // next launch would read the unmarked value as an operator override for good.
+        assert!(std::env::var_os(DISABLE_DMABUF).is_none());
+        assert!(std::env::var_os(APPLIED_WORKAROUND).is_none());
+    }
+
+    #[test]
+    fn switching_workaround_clears_only_the_variable_being_dropped() {
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::env::set_var(FORCE_SHARED_MEMORY, "1");
+        std::env::set_var(FORCE_DMABUF, "1");
+        std::env::set_var(
+            APPLIED_WORKAROUND,
+            [FORCE_SHARED_MEMORY, FORCE_DMABUF].join(","),
+        );
+
+        let keep = [FORCE_DMABUF];
+        release_claimed(|name| !keep.contains(&name));
+
+        assert!(std::env::var_os(FORCE_SHARED_MEMORY).is_none());
+        assert_eq!(std::env::var_os(FORCE_DMABUF), Some(OsString::from("1")));
+        std::env::remove_var(FORCE_DMABUF);
+    }
+
+    #[test]
+    fn forcing_shared_memory_also_opts_out_of_the_distro_patch() {
+        // isNVIDIA() returns before mode.add(SharedMemory) on 2.50.4 and 2.52.6, so
+        // FORCE_SHM on its own is never read there and the set is empty regardless.
+        assert_eq!(
+            RenderingWorkaround::ForceSharedMemory.variables(),
+            &[FORCE_SHARED_MEMORY, FORCE_DMABUF]
+        );
+        assert_eq!(
+            RenderingWorkaround::DisableDmabuf.variables(),
+            &[DISABLE_DMABUF]
+        );
+    }
+
+    #[test]
+    fn our_own_force_dmabuf_does_not_read_back_as_an_opt_out() {
+        // We set it as half of ForceSharedMemory; a relaunch must not see its own output
+        // as an operator standing the NVIDIA branch down.
+        let claimed = [FORCE_SHARED_MEMORY, FORCE_DMABUF].join(",");
+        assert_eq!(
+            plan_on_nvidia(&[
+                (FORCE_SHARED_MEMORY, "1"),
+                (FORCE_DMABUF, "1"),
+                (APPLIED_WORKAROUND, &claimed),
+            ]),
+            RenderingPlan::Apply(RenderingWorkaround::ForceSharedMemory, NVIDIA_REASON)
+        );
     }
 
     #[test]
