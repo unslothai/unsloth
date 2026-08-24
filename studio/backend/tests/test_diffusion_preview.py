@@ -18,7 +18,12 @@ from core.inference import diffusion_preview as preview
 
 
 class _Config:
-    def __init__(self, channels, scaling = 1.0, shift = 0.0):
+    def __init__(
+        self,
+        channels,
+        scaling = 1.0,
+        shift = 0.0,
+    ):
         self.latent_channels = channels
         self.scaling_factor = scaling
         self.shift_factor = shift
@@ -27,7 +32,12 @@ class _Config:
 class _LinearVae(torch.nn.Module):
     """A VAE whose decode is a fixed per-channel linear map to RGB, upscaled 8x."""
 
-    def __init__(self, channels = 4, scaling = 1.0, shift = 0.0):
+    def __init__(
+        self,
+        channels = 4,
+        scaling = 1.0,
+        shift = 0.0,
+    ):
         super().__init__()
         self.config = _Config(channels, scaling, shift)
         torch.manual_seed(7)

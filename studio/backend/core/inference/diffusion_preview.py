@@ -61,9 +61,7 @@ def _scale_shift(vae: Any) -> tuple[float, float]:
 
 
 def _fit(vae: Any, channels: int, device: Any, dtype: Any, torch: Any) -> Optional[Any]:
-    noise = torch.randn(
-        _FIT_SAMPLES, channels, _FIT_GRID, _FIT_GRID, device = device, dtype = dtype
-    )
+    noise = torch.randn(_FIT_SAMPLES, channels, _FIT_GRID, _FIT_GRID, device = device, dtype = dtype)
     with torch.no_grad():
         decoded = _decoded(vae, noise)
     if decoded.ndim != 4 or decoded.shape[1] != 3:
@@ -78,7 +76,11 @@ def _fit(vae: Any, channels: int, device: Any, dtype: Any, torch: Any) -> Option
     return solution.cpu()
 
 
-def projection(vae: Any, torch: Any, logger: Any = None) -> Optional[Any]:
+def projection(
+    vae: Any,
+    torch: Any,
+    logger: Any = None,
+) -> Optional[Any]:
     cached = _projections.get(vae, False)
     if cached is not False:
         return cached
