@@ -3279,11 +3279,19 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       pollInFlight = true;
       try {
         const p = await getGenerateProgress();
+        if (p.preview) setHeldPreview(p.preview);
         // Skip the state update (and re-render) when nothing the bar shows moved.
         setGenStep((prev) => {
           if (!p.active) return null;
-          if (prev && prev.step === p.step && prev.eta_seconds === p.eta_seconds) return prev;
-          return p;
+          const next = nextProgress(prev, p);
+          if (
+            prev &&
+            prev.step === next.step &&
+            prev.eta_seconds === next.eta_seconds &&
+            prev.preview === next.preview
+          )
+            return prev;
+          return next;
         });
       } catch {
         // transient; keep polling

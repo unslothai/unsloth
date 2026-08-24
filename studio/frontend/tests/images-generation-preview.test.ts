@@ -10,7 +10,9 @@
 // These replay that whole sequence and assert the viewer never goes backwards.
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   nextProgress,
@@ -162,4 +164,33 @@ test("step 0 still shows before the run has ticked", () => {
 test("real progress still advances the bar", () => {
   const advanced = { step: 5, total_steps: 9 };
   assert.equal(nextProgress({ step: 4, total_steps: 9 }, advanced), advanced);
+});
+
+// The page polls progress from two independent places: the resume path, and the loop
+// handleGenerate starts when you press Generate. Wiring the preview into only one of them
+// left the button path with no frames at all, which is invisible to the unit tests above
+// because the helper was fine and simply never received anything.
+test("every progress poll that drives the bar also drives the preview", () => {
+  const page = readFileSync(
+    fileURLToPath(
+      new URL("../src/features/images/images-page.tsx", import.meta.url),
+    ),
+    "utf8",
+  );
+  // Scoped to polls that render progress: settleLostGeneration also polls, but it waits out a
+  // lost POST from module scope and has no viewer state to set.
+  const driving = [...page.matchAll(/await getGenerateProgress\(\)/g)].filter(
+    (poll) => page.slice(poll.index, poll.index + 1400).includes("setGenStep("),
+  );
+  assert.ok(
+    driving.length >= 2,
+    "expected both the resume and the Generate poll",
+  );
+  for (const poll of driving) {
+    assert.match(
+      page.slice(poll.index, poll.index + 1400),
+      /setHeldPreview\(/,
+      "a poll drives the progress bar but hands the viewer no preview",
+    );
+  }
 });
