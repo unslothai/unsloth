@@ -55,6 +55,8 @@ class _MainRefCleanupError(RuntimeError):
 
 _MAIN_REF_LOCK_TIMEOUT_SECONDS = 60
 _MAIN_REF_CHANGE_RETRY_DELAYS_SECONDS = (0.05, 0.1)
+_REFS_STAGING_DIRECTORY_NAME = ".unsloth-refs-tmp"
+_REFS_STAGING_RETRY_DELAYS_SECONDS = (0.01, 0.05, 0.1)
 _IS_WINDOWS = os.name == "nt"
 _IS_LINUX = sys.platform.startswith("linux")
 _IS_DARWIN = sys.platform == "darwin"
@@ -148,6 +150,62 @@ def _ensure_real_directory(path: Path, expected: Path, label: str) -> Path:
     except FileExistsError:
         pass
     return _require_real_directory(path, expected, label)
+
+
+def _refs_staging_directory(repo_dir: Path) -> Path:
+    """Return the promotion scratch directory that sits beside ``refs`` in *repo_dir*.
+
+    Promotion scratch files must never live inside ``refs`` itself. Third-party
+    readers enumerate ``refs`` with ``glob("**/*")`` -- which matches dotfiles --
+    and treat every entry as a real ref, so a transient or crash-orphaned scratch
+    file is read as a ref that pins a stale revision, or trips the reader with a
+    partially written value. Staging beside ``refs`` keeps the scratch files in
+    the same repo directory, hence on the same filesystem, so the hardlink and
+    no-replace rename paths behave exactly as they do within ``refs``.
+
+    A directory left behind by an interrupted promotion is reused as-is; its
+    contents are never reclaimed here because a stale scratch file is now inert.
+    """
+    return _ensure_real_directory(
+        repo_dir / _REFS_STAGING_DIRECTORY_NAME,
+        repo_dir / _REFS_STAGING_DIRECTORY_NAME,
+        "Hub cache refs staging path",
+    )
+
+
+def _open_staged_temporary(repo_dir: Path) -> tuple[Path, Path, int]:
+    """Create the staging directory plus an exclusive scratch ref inside it.
+
+    Cache maintenance prunes empty directories across a repo without taking the
+    main-ref lock, so a staging directory is only safe from that prune once it
+    holds a file. Retry the mkdir-then-open window rather than failing an
+    otherwise valid promotion; once the scratch ref exists the directory stays
+    non-empty for the rest of the promotion.
+    """
+    for attempt in range(len(_REFS_STAGING_RETRY_DELAYS_SECONDS) + 1):
+        try:
+            staging = _refs_staging_directory(repo_dir)
+            temporary = staging / f".unsloth-main-{uuid.uuid4().hex}"
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+        except FileNotFoundError:
+            if attempt == len(_REFS_STAGING_RETRY_DELAYS_SECONDS):
+                raise
+            time.sleep(_REFS_STAGING_RETRY_DELAYS_SECONDS[attempt])
+            continue
+        return staging, temporary, fd
+    raise ConcurrentMainRefError("the refs staging directory kept vanishing during promotion")
+
+
+def _discard_refs_staging_directory(staging: Path) -> None:
+    """Drop the staging directory once it is empty; never fail a promotion for it.
+
+    ``rmdir`` only succeeds on an empty directory, so a displaced previous ref
+    that a failed rollback deliberately left behind is preserved.
+    """
+    try:
+        staging.rmdir()
+    except OSError:
+        pass
 
 
 def _main_ref_lock(repo_dir: Path) -> FileLock:
@@ -677,7 +735,11 @@ def _create_main_ref(refs: Path, source: Path, *, try_hardlink: bool) -> None:
 
 
 def _publish_main_ref(
-    refs: Path, temporary: Path, expected_previous: Optional[str], previous_mode: Optional[int]
+    refs: Path,
+    staging: Path,
+    temporary: Path,
+    expected_previous: Optional[str],
+    previous_mode: Optional[int],
 ) -> None:
     main = refs / "main"
     if expected_previous is None:
@@ -689,7 +751,7 @@ def _publish_main_ref(
             ) from exc
         return
 
-    probe = refs / f".unsloth-main-link-{uuid.uuid4().hex}"
+    probe = staging / f".unsloth-main-link-{uuid.uuid4().hex}"
     hardlinks_available = True
     try:
         os.link(temporary, probe)
@@ -705,7 +767,7 @@ def _publish_main_ref(
         except FileNotFoundError:
             pass
 
-    displaced = refs / f".unsloth-main-previous-{uuid.uuid4().hex}"
+    displaced = staging / f".unsloth-main-previous-{uuid.uuid4().hex}"
     claimed = False
     try:
         _retry_main_ref_change(
@@ -785,8 +847,7 @@ def _atomic_write_main_ref(repo_dir: Path, revision: str, expected_previous: Opt
     previous_mode = _assert_main_unchanged(refs_real, expected_previous)
     main = refs_real / "main"
 
-    temporary = refs_real / f".unsloth-main-{uuid.uuid4().hex}"
-    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+    staging, temporary, fd = _open_staged_temporary(repo_dir)
     try:
         with os.fdopen(fd, "w", encoding = "utf-8") as handle:
             handle.write(revision)
@@ -800,6 +861,7 @@ def _atomic_write_main_ref(repo_dir: Path, revision: str, expected_previous: Opt
         _assert_main_unchanged(refs_real, expected_previous)
         _publish_main_ref(
             refs_real,
+            staging,
             temporary,
             expected_previous,
             latest_mode,
@@ -820,6 +882,7 @@ def _atomic_write_main_ref(repo_dir: Path, revision: str, expected_previous: Opt
             pass
         except OSError:
             pass
+        _discard_refs_staging_directory(staging)
 
 
 def promote_verified_snapshot(

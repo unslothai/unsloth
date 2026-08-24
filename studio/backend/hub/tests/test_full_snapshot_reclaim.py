@@ -40,6 +40,18 @@ def _snapshot_file(repo: Path, revision: str, name: str, payload: bytes) -> Path
     return snapshot_file
 
 
+def _displaced_refs(repo: Path) -> list[Path]:
+    """Return the displaced previous refs, asserting none leaked into ``refs``.
+
+    Scratch refs are staged beside ``refs`` because third-party cache scanners
+    glob ``refs/**/*`` -- dotfiles included -- and read every entry as a ref.
+    """
+    stray = sorted((repo / "refs").glob(".unsloth-main-*"))
+    assert stray == [], f"scratch refs leaked into refs/: {stray}"
+    staging = repo / snapshot_reclaim._REFS_STAGING_DIRECTORY_NAME
+    return sorted(staging.glob(".unsloth-main-previous-*")) if staging.is_dir() else []
+
+
 def _capture(monkeypatch, root: Path):
     monkeypatch.setattr(
         snapshot_reclaim,
@@ -625,7 +637,7 @@ def test_redirected_main_at_claim_is_not_restored_as_the_active_ref(tmp_path, mo
         )
 
     assert not main.exists() and not main.is_symlink()
-    displaced = list(refs.glob(".unsloth-main-previous-*"))
+    displaced = _displaced_refs(repo)
     assert len(displaced) == 1
     assert displaced[0].is_symlink()
     assert displaced[0].resolve() == external
@@ -994,7 +1006,7 @@ def test_native_noreplace_does_not_overwrite_an_external_creation(
 
     assert advanced is True
     assert main.read_text(encoding = "utf-8") == DETACHED
-    assert list(refs.glob(".unsloth-main-previous-*")) == []
+    assert _displaced_refs(repo) == []
 
 
 def test_windows_noreplace_retry_never_overwrites_a_created_destination(tmp_path, monkeypatch):
@@ -1235,7 +1247,7 @@ def test_failed_partial_ref_cleanup_preserves_the_displaced_previous_ref(tmp_pat
 
     assert isinstance(caught.value.__cause__, snapshot_reclaim._MainRefCleanupError)
     assert main.read_bytes() == b""
-    displaced = list(refs.glob(".unsloth-main-previous-*"))
+    displaced = _displaced_refs(repo)
     assert len(displaced) == 1
     assert displaced[0].read_text(encoding = "utf-8") == OLD
 
@@ -1274,7 +1286,7 @@ def test_failed_partial_ref_cleanup_is_reported_when_main_was_absent(tmp_path, m
         )
 
     assert main.read_bytes() == b""
-    assert list(refs.glob(".unsloth-main-previous-*")) == []
+    assert _displaced_refs(repo) == []
 
 
 def test_hardlink_fallback_preserves_a_mode_changed_at_the_claim_boundary(tmp_path, monkeypatch):
