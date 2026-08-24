@@ -3086,7 +3086,7 @@ class FastLlamaModel:
         temporary_location = "_unsloth_temporary_saved_buffers",
         qat_scheme = None,
         target_parameters = None,  # For MoE expert layers (nn.Parameter)
-        ensure_weight_tying = False,
+        ensure_weight_tying = None,  # None = auto (tie when we redirect a tied pair)
         **kwargs,
     ):
         if os.environ.get("UNSLOTH_USE_NEW_MODEL", "0") == "1":
@@ -3172,27 +3172,57 @@ class FastLlamaModel:
                 bool(peft_config.get("use_dora", False)) == bool(kwargs.get("use_dora", False))
             )
 
-            # Check save_modules
-            old_target_modules = list(peft_config["target_modules"])
-            modules_to_save = peft_config["modules_to_save"]
-            if modules_to_save is None:
-                modules_to_save = {}
-            modules_to_save = list(modules_to_save)
-            old_target_modules += modules_to_save
-
-            # Combine all
-            new_target_modules = list(target_modules) + list(
-                modules_to_save if modules_to_save is not None else []
+            # Everything the stored adapter trains, wherever PEFT filed it: tying moves
+            # the counterpart to modules_to_tie, which to_dict() drops, so read the
+            # config object.
+            requested_modules_to_save = modules_to_save
+            modules_to_save = list(peft_config["modules_to_save"] or [])
+            old_target_modules = list(peft_config["target_modules"]) + modules_to_save
+            old_target_modules += list(
+                getattr(model.peft_config["default"], "modules_to_tie", None) or []
             )
+
+            # The new side is what THIS call asks for, through the same redirect. Built
+            # from the stored lists instead, a narrowed request would compare equal.
+            requested_targets, requested_saved, _ = _redirect_embedding_targets(
+                target_modules,
+                requested_modules_to_save,
+                skip = _vllm_unmovable_embedding_modules(model, target_modules),
+            )
+            new_target_modules = list(requested_targets) + list(requested_saved or [])
+            if isinstance(model, PeftModelForSequenceClassification):
+                # PeftModelForSequenceClassification.__init__ extends modules_to_save with
+                # these unconditionally, so the stored config names modules the caller
+                # never asked for. Mirror it, or an unchanged request looks different.
+                new_target_modules += ["classifier", "score"]
+            # Tying is not in check_parameters and leaves both lists looking the same, so
+            # compare it separately. On what it actually does, not what was asked: on an
+            # untied model the request changes nothing either way.
+            _requested_ties = _effective_weight_tying(
+                model,
+                requested_saved,
+                ensure_weight_tying,
+            )
+            _stored_ties = bool(getattr(model.peft_config["default"], "modules_to_tie", None))
+            check_all = check_all and (_requested_ties == _stored_ties)
+            if _requested_ties:
+                # PEFT files the counterpart under modules_to_tie, which the old side
+                # counts, so name it here even when the caller listed only one side.
+                new_target_modules += list(EMBEDDING_MODULES)
             # Per-expert Linear MoE experts (e.g. gpt-oss bnb-4bit) were auto-added to the
             # saved target_modules when the adapter was first created. Recompute them so a
             # repeat get_peft_model call with the same args stays idempotent instead of
             # tripping the mismatch below. No-op for non per-expert-Linear models.
             new_target_modules += get_moe_target_modules(model, target_modules)
 
-            # Now check!
-            new_target_modules = set(new_target_modules)
-            check_all = check_all and (len(set(old_target_modules) ^ new_target_modules) == 0)
+            # Now check! Fold away PEFT's model.embed_tokens alias, and only that one:
+            # layers.0.q_proj is a real target and is not layers.1.q_proj.
+            def _leaf_name(module):
+                return _embedding_leaf(module) or module
+
+            new_target_modules = {_leaf_name(x) for x in new_target_modules}
+            old_target_modules = {_leaf_name(x) for x in old_target_modules}
+            check_all = check_all and (len(old_target_modules ^ new_target_modules) == 0)
 
             check_all = check_all and (
                 (loftq_config == {} or loftq_config is None)
@@ -3315,29 +3345,49 @@ class FastLlamaModel:
         train_lm_head = False
         train_embed_tokens = False
         final_modules = []
-        for module in target_modules:
-            if module == "embed_tokens":
-                # logger.warning_once(
-                #     "Unsloth: `embed_tokens` should be placed in `modules_to_save` and not `target_modules`. "\
-                #     "Luckily, we shall do it for you!"
-                # )
+        # LoRA on these never trains (see _redirect_embedding_targets); modules_to_save
+        # does, and is what embedding_learning_rate matches.
+        target_modules, modules_to_save, _moved_embedding_modules = _redirect_embedding_targets(
+            target_modules,
+            modules_to_save,
+            skip = _vllm_unmovable_embedding_modules(model, target_modules),
+        )
+        _raise_if_no_lora_targets_left(
+            target_modules,
+            _moved_embedding_modules,
+            target_parameters,
+        )
+        ensure_weight_tying = _effective_weight_tying(
+            model,
+            modules_to_save,
+            ensure_weight_tying,
+        )
+        modules_to_save = _drop_tied_output_module(
+            model,
+            modules_to_save,
+            ensure_weight_tying,
+        )
+        for module in _moved_embedding_modules:
+            if _embedding_leaf(module) == "embed_tokens":
                 train_embed_tokens = True
-                if modules_to_save is None:
-                    modules_to_save = ["embed_tokens"]
-                else:
-                    modules_to_save.append("embed_tokens")
-
             else:
-                try:
-                    assert module in accepted_modules
-                    final_modules.append(module)
-                except AssertionError as e:
-                    final_modules.append(module)
-                    print(
-                        "Unsloth: You added custom modules, but Unsloth hasn't optimized for this.\n"
-                        "Beware - your finetuning might be noticeably slower!"
-                    )
-                pass
+                train_lm_head = True
+        if _moved_embedding_modules:
+            logger.warning_once(
+                f"Unsloth: Moved {', '.join(_moved_embedding_modules)} from `target_modules` "
+                f"to `modules_to_save`, so they are trained as full weight matrices.\n"
+                f"This uses more VRAM than LoRA. Please list them in `modules_to_save` directly."
+            )
+        for module in target_modules:
+            try:
+                assert module in accepted_modules
+                final_modules.append(module)
+            except AssertionError as e:
+                final_modules.append(module)
+                print(
+                    "Unsloth: You added custom modules, but Unsloth hasn't optimized for this.\n"
+                    "Beware - your finetuning might be noticeably slower!"
+                )
 
         # Check if we added new tokens!
         if hasattr(model, "_need_to_train_embeddings"):
@@ -3380,9 +3430,11 @@ class FastLlamaModel:
         # Check modules_to_save
         if modules_to_save is not None:
             for module in modules_to_save:
-                if module == "lm_head":
+                # By leaf: PEFT resolves model.embed_tokens to the same module.
+                leaf = _embedding_leaf(module)
+                if leaf == "lm_head":
                     train_lm_head = True
-                elif module == "embed_tokens":
+                elif leaf == "embed_tokens":
                     train_embed_tokens = True
                 else:
                     raise TypeError(
@@ -3451,6 +3503,9 @@ class FastLlamaModel:
             ensure_weight_tying = ensure_weight_tying,
             **kwargs,
         )
+        # Older PEFT has no `ensure_weight_tying`; passing it would TypeError.
+        if "ensure_weight_tying" not in inspect.signature(LoraConfig).parameters:
+            del arguments["ensure_weight_tying"]
         if not SUPPORTS_LOFTQ:
             del arguments["loftq_config"]
         if not SUPPORTS_RSLORA:

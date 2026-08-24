@@ -378,24 +378,167 @@ class TestSandboxEnvIsolation:
         monkeypatch.setattr(tools_mod, "_windows_bash_userland_dirs", lambda: [])
         assert _build_safe_env(str(tmp_path))["PATH"] == before
 
-    def test_temp_and_tmp_point_at_the_workdir_on_windows(self, monkeypatch, tmp_path):
+    def test_temp_and_tmp_point_inside_the_workdir_on_windows(self, monkeypatch, tmp_path):
         # Windows reads TEMP/TMP, not TMPDIR; without them a child writes
         # outside the sandbox workdir.
-        from core.inference.tools import _build_safe_env
+        from core.inference.tools import _SANDBOX_TEMP_DIRNAME, _build_safe_env
 
         self._trusted_git_bash(monkeypatch, tmp_path)
         env = _build_safe_env(str(tmp_path))
-        assert env["TEMP"] == str(tmp_path)
-        assert env["TMP"] == str(tmp_path)
+        expected = str(tmp_path / _SANDBOX_TEMP_DIRNAME)
+        assert env["TEMP"] == expected
+        assert env["TMP"] == expected
 
     def test_temp_and_tmp_absent_on_posix(self, monkeypatch, tmp_path):
-        from core.inference.tools import _build_safe_env
+        from core.inference.tools import _SANDBOX_TEMP_DIRNAME, _build_safe_env
 
         monkeypatch.setattr(sys, "platform", "linux")
         env = _build_safe_env(str(tmp_path))
         assert "TEMP" not in env
         assert "TMP" not in env
-        assert env["TMPDIR"] == str(tmp_path)
+        assert env["TMPDIR"] == str(tmp_path / _SANDBOX_TEMP_DIRNAME)
+
+    def test_temp_dir_is_a_created_child_of_the_workdir(self, tmp_path):
+        """A temp var pointing AT the workdir made /tmp its shortest POSIX name
+        under msys2 ``usertemp``, so ``pwd`` printed /tmp (#8892). It must also
+        exist before the child starts, or every tempfile call fails.
+        """
+        from core.inference.tools import _sandbox_temp_dir
+
+        temp_dir = _sandbox_temp_dir(str(tmp_path))
+        assert temp_dir != str(tmp_path)
+        assert os.path.dirname(temp_dir) == str(tmp_path)
+        assert os.path.isdir(temp_dir)
+
+    def test_temp_dir_falls_back_to_the_workdir_when_unusable(self, tmp_path):
+        # a TMPDIR that does not exist fails every tempfile call in the child.
+        from core.inference.tools import _SANDBOX_TEMP_DIRNAME, _sandbox_temp_dir
+        (tmp_path / _SANDBOX_TEMP_DIRNAME).write_text("not a directory")
+        assert _sandbox_temp_dir(str(tmp_path)) == str(tmp_path)
+
+    def test_temp_dir_never_recreates_a_deleted_workdir(self, tmp_path):
+        # a chat deleted mid-call must not reappear as an empty folder.
+        from core.inference.tools import _sandbox_temp_dir
+
+        gone = tmp_path / "gone"
+        assert _sandbox_temp_dir(str(gone)) == str(gone)
+        assert not gone.exists()
+
+    def test_temp_dir_is_never_followed_out_of_the_workdir(self, tmp_path):
+        # tool code runs in the workdir and can replace the name with a link.
+        from core.inference.tools import _SANDBOX_TEMP_DIRNAME, _sandbox_temp_dir
+
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        workdir = tmp_path / "sandbox"
+        workdir.mkdir()
+        try:
+            (workdir / _SANDBOX_TEMP_DIRNAME).symlink_to(outside, target_is_directory = True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable (Windows without developer mode)")
+        assert _sandbox_temp_dir(str(workdir)) == str(workdir)
+
+    def test_temp_dir_refuses_an_escape_islink_cannot_see(self, monkeypatch, tmp_path):
+        """A junction carries a different reparse tag, so os.path.islink is
+        False while os.path.isdir follows it. Blinding islink stands in for that:
+        containment is decided by the resolved path.
+        """
+        import core.inference.tools as tools_mod
+        from core.inference.tools import _SANDBOX_TEMP_DIRNAME, _sandbox_temp_dir
+
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        workdir = tmp_path / "sandbox"
+        workdir.mkdir()
+        try:
+            (workdir / _SANDBOX_TEMP_DIRNAME).symlink_to(outside, target_is_directory = True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable (Windows without developer mode)")
+        monkeypatch.setattr(tools_mod.os.path, "islink", lambda path: False)
+        assert _sandbox_temp_dir(str(workdir)) == str(workdir)
+
+    def test_temp_dir_refuses_a_link_even_inside_the_workdir(self, tmp_path):
+        """os.walk does not follow links, so `tmp -> .scratch` would send every
+        artifact where both walks skip. The test is being the real directory,
+        not containment.
+        """
+        from core.inference.tools import _SANDBOX_TEMP_DIRNAME, _sandbox_temp_dir
+
+        workdir = tmp_path / "sandbox"
+        (workdir / ".scratch").mkdir(parents = True)
+        try:
+            (workdir / _SANDBOX_TEMP_DIRNAME).symlink_to(
+                workdir / ".scratch", target_is_directory = True
+            )
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable (Windows without developer mode)")
+        assert _sandbox_temp_dir(str(workdir)) == str(workdir)
+
+    def test_temp_dir_refuses_an_entry_stored_under_another_case(self, tmp_path):
+        """On a case-insensitive volume (default APFS, every NTFS) the lowercase
+        probe resolves onto a directory stored as another case, and realpath does
+        not canonicalise it, so os.walk reports a spelling the discount misses.
+        """
+        from core.inference.tools import _SANDBOX_TEMP_DIRNAME, _sandbox_temp_dir
+
+        (tmp_path / _SANDBOX_TEMP_DIRNAME.upper()).mkdir()
+        if not (tmp_path / _SANDBOX_TEMP_DIRNAME).exists():
+            pytest.skip("case-sensitive volume, so the collision cannot arise")
+        assert _sandbox_temp_dir(str(tmp_path)) == str(tmp_path)
+
+    def test_temp_dir_refuses_an_unwritable_existing_directory(self, tmp_path):
+        """tempfile abandons an unwritable TMPDIR for the platform default,
+        putting the child's temporary data outside the session sandbox.
+        """
+        from core.inference.tools import _SANDBOX_TEMP_DIRNAME, _sandbox_temp_dir
+
+        scratch = tmp_path / _SANDBOX_TEMP_DIRNAME
+        scratch.mkdir()
+        scratch.chmod(0o500)
+        try:
+            if os.access(str(scratch), os.W_OK):
+                pytest.skip("mode bits not enforced here (running as root)")
+            assert _sandbox_temp_dir(str(tmp_path)) == str(tmp_path)
+        finally:
+            scratch.chmod(0o700)
+
+    def test_the_scratch_dir_does_not_spend_a_path_segment(self, tmp_path):
+        """/tmp/a/b/c/result.csv was a four-segment path and downloadable.
+        Nesting TMPDIR a level deeper must not push it past
+        _MAX_SANDBOX_PATH_SEGMENTS and drop it from the card.
+        """
+        from core.inference.tools import (
+            _SANDBOX_TEMP_DIRNAME,
+            _sandbox_temp_dir,
+            _snapshot_workdir_files,
+        )
+
+        scratch = Path(_sandbox_temp_dir(str(tmp_path)))
+        (scratch / "a/b/c").mkdir(parents = True)
+        (scratch / "a/b/c/result.csv").write_bytes(b"x")
+        (scratch / "a/b/c/d").mkdir()
+        (scratch / "a/b/c/d/toodeep.csv").write_bytes(b"x")
+        # the cap still applies, it is just measured from inside the scratch dir.
+        assert sorted(_snapshot_workdir_files(str(tmp_path))) == [
+            f"{_SANDBOX_TEMP_DIRNAME}/a/b/c/result.csv"
+        ]
+
+    def test_scratch_files_are_still_offered_as_artifacts(self, tmp_path):
+        """On Windows this is what /tmp resolves to, so /tmp/report.csv must
+        still get a download card. A dot-named scratch dir would be skipped by
+        the snapshot walk and the file would vanish.
+        """
+        from core.inference.tools import (
+            _SANDBOX_TEMP_DIRNAME,
+            _sandbox_temp_dir,
+            _snapshot_workdir_files,
+        )
+
+        temp_dir = _sandbox_temp_dir(str(tmp_path))
+        (Path(temp_dir) / "report.csv").write_bytes(b"x")
+        assert list(_snapshot_workdir_files(str(tmp_path))) == [
+            f"{_SANDBOX_TEMP_DIRNAME}/report.csv"
+        ]
 
     def test_host_git_dir_appended_after_curated(self, monkeypatch, tmp_path):
         # #7317: Windows Git lives under Program Files, not System32. Sandbox
@@ -621,11 +764,11 @@ class TestSandboxEnvIsolation:
         assert env["NoDefaultCurrentDirectoryInExePath"] == "1"
 
     def test_home_points_at_sandbox_workdir(self, tmp_path):
-        from core.inference.tools import _build_safe_env
+        from core.inference.tools import _SANDBOX_TEMP_DIRNAME, _build_safe_env
 
         env = _build_safe_env(str(tmp_path))
         assert env["HOME"] == str(tmp_path)
-        assert env["TMPDIR"] == str(tmp_path)
+        assert env["TMPDIR"] == str(tmp_path / _SANDBOX_TEMP_DIRNAME)
 
     def test_term_is_dumb(self, tmp_path):
         from core.inference.tools import _build_safe_env
