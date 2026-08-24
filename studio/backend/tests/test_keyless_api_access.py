@@ -29,6 +29,7 @@ from auth.authentication import (
     security,
 )
 from utils.keyless_api_access import (
+    KeylessToolPolicyMiddleware,
     _reset_scope_cache,
     access_exposure,
     asgi_request_is_keyless,
@@ -66,26 +67,54 @@ def asgi_scope(
     headers = None,
     app_state = None,
     path = "/v1/chat/completions",
+    method = None,
+    root_path = "",
+    server = ("127.0.0.1", 8000),
+    client = ("127.0.0.1", 50000),
 ):
     """A real ASGI scope, so header casing behaves the way uvicorn delivers it."""
     return {
         "type": "http",
-        "method": "POST",
+        "method": method or ("GET" if path.startswith("/v1/models") else "POST"),
         "path": path,
+        "root_path": root_path,
         "query_string": b"",
         "scheme": "http",
-        "server": ("127.0.0.1", 8000),
+        "server": server,
+        "client": client,
         "headers": [
             (key.lower().encode(), value.encode()) for key, value in (headers or {}).items()
         ],
         "app": SimpleNamespace(
-            state = SimpleNamespace(bind_host = "127.0.0.1") if app_state is None else app_state
+            state = SimpleNamespace(
+                bind_host = "127.0.0.1",
+                secure = False,
+                remote_access_is_colab = False,
+                lan_access_is_colab = False,
+                cloudflare_url = None,
+            )
+            if app_state is None
+            else app_state
         ),
     }
 
 
 def request_for(**kwargs):
     return Request(asgi_scope(**kwargs))
+
+
+def app_state(**overrides):
+    state = SimpleNamespace(
+        bind_host = "127.0.0.1",
+        secure = False,
+        remote_access_is_colab = False,
+        lan_access_is_colab = False,
+        lan_access_secure_launch = False,
+        cloudflare_url = None,
+    )
+    for name, value in overrides.items():
+        setattr(state, name, value)
+    return state
 
 
 def resolve(request):
@@ -129,6 +158,59 @@ def test_inference_scope_serves_the_openai_surface(path):
 
 
 @pytest.mark.parametrize(
+    "method,path",
+    [
+        ("POST", "/v1/chat/completions"),
+        ("POST", "/v1/chat/count_tokens"),
+        ("POST", "/v1/completions"),
+        ("POST", "/v1/embeddings"),
+        ("POST", "/v1/messages"),
+        ("POST", "/v1/messages/count_tokens"),
+        ("GET", "/v1/models"),
+        ("GET", "/v1/models/unsloth/model"),
+        ("POST", "/v1/responses"),
+    ],
+)
+def test_inference_scope_has_an_exact_method_and_path_matrix(method, path):
+    assert scope_covers("inference", method, path) is True
+
+
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("GET", "/v1/chat/completions"),
+        ("PUT", "/v1/chat/completions"),
+        ("GET", "/v1/chat/count_tokens"),
+        ("GET", "/v1/completions"),
+        ("GET", "/v1/embeddings"),
+        ("GET", "/v1/messages"),
+        ("GET", "/v1/messages/count_tokens"),
+        ("POST", "/v1/models"),
+        ("POST", "/v1/models/unsloth/model"),
+        ("GET", "/v1/responses"),
+    ],
+)
+def test_inference_scope_rejects_wrong_methods(method, path):
+    assert scope_covers("inference", method, path) is False
+
+
+@pytest.mark.parametrize(
+    "path,root_path",
+    [
+        ("/v1/models", "/studio"),
+        ("/studio/v1/models", "/studio"),
+        ("/studio/v1/models/", "/studio/"),
+    ],
+)
+def test_inference_scope_normalizes_direct_and_root_path_prefixed_requests(path, root_path):
+    assert scope_covers("inference", "GET", path, root_path) is True
+
+
+def test_root_path_requires_a_path_segment_boundary():
+    assert scope_covers("inference", "GET", "/studio-v2/v1/models", "/studio") is False
+
+
+@pytest.mark.parametrize(
     "path",
     [
         # /v1 also aliases model loading, media and sandbox routes; none are in scope
@@ -143,6 +225,8 @@ def test_inference_scope_serves_the_openai_surface(path):
         "/v1/generate/stream",
         "/v1/sandbox/abc",
         "/v1/sandbox/abc/reveal",
+        "/v1/external/openai/containers/list",
+        "/v1/external/openai/containers/create",
         "/v1/external/openai/containers/delete",
         "/v1/llama-flags",
         "/v1/validate",
@@ -157,7 +241,49 @@ def test_inference_scope_serves_the_openai_surface(path):
     ],
 )
 def test_inference_scope_leaves_everything_else_alone(path):
-    assert scope_covers("inference", path) is False
+    assert scope_covers("inference", "POST", path) is False
+
+
+def test_the_allowlist_matches_the_actual_v1_router_topology():
+    from routes.inference import router
+
+    registered = {
+        (method, route.path)
+        for route in router.routes
+        for method in getattr(route, "methods", set())
+    }
+    intended = {
+        ("POST", "/chat/completions"),
+        ("POST", "/chat/count_tokens"),
+        ("POST", "/completions"),
+        ("POST", "/embeddings"),
+        ("POST", "/messages"),
+        ("POST", "/messages/count_tokens"),
+        ("GET", "/models"),
+        ("GET", "/models/{model_id:path}"),
+        ("POST", "/responses"),
+    }
+    assert intended <= registered
+
+    denied_side_effects = {
+        ("POST", "/load"),
+        ("POST", "/unload"),
+        ("POST", "/validate"),
+        ("POST", "/generate/stream"),
+        ("POST", "/audio/generate"),
+        ("POST", "/audio/speech"),
+        ("POST", "/audio/transcriptions"),
+        ("POST", "/images/generations"),
+        ("GET", "/sandbox/{session_id}"),
+        ("POST", "/sandbox/{session_id}/reveal"),
+        ("POST", "/external/openai/containers/list"),
+        ("POST", "/external/openai/containers/create"),
+        ("POST", "/external/openai/containers/delete"),
+    }
+    assert denied_side_effects <= registered
+    for method, path in denied_side_effects:
+        concrete = path.replace("{session_id}", "abc")
+        assert scope_covers("inference", method, f"/v1{concrete}") is False
 
 
 def test_turning_it_off_takes_effect_at_once():
@@ -279,6 +405,52 @@ def test_a_damaged_settings_db_grants_no_tools(monkeypatch):
     assert get_keyless_api_tools_enabled() is False
 
 
+def _middleware_tool_policy(scope):
+    from state.tool_policy import get_tool_policy, reset_tool_policy, set_tool_policy
+
+    observed = []
+
+    async def downstream(_scope, _receive, _send):
+        observed.append(get_tool_policy())
+
+    async def receive():
+        return {"type": "http.disconnect"}
+
+    async def send(_message):
+        return None
+
+    set_tool_policy(True)
+    try:
+        asyncio.run(KeylessToolPolicyMiddleware(downstream)(scope, receive, send))
+    finally:
+        reset_tool_policy()
+    return observed
+
+
+def test_keyless_tools_are_forced_off_without_the_separate_grant():
+    seed_user()
+    set_keyless_api_access("inference", tools = False)
+    assert _middleware_tool_policy(asgi_scope()) == [False]
+
+
+def test_keyless_tools_remain_available_with_the_separate_grant():
+    seed_user()
+    set_keyless_api_access("inference", tools = True)
+    assert _middleware_tool_policy(asgi_scope()) == [True]
+
+
+def test_a_valid_api_key_keeps_its_existing_tool_policy():
+    seed_user()
+    set_keyless_api_access("inference", tools = False)
+    raw, _row = storage.create_api_key(
+        username = storage.DEFAULT_ADMIN_USERNAME,
+        name = "tool-client",
+        expires_at = None,
+    )
+    scope = asgi_scope(headers = {"Authorization": f"Bearer {raw}"})
+    assert _middleware_tool_policy(scope) == [True]
+
+
 # --- the middleware view of a request ----------------------------------------
 
 
@@ -309,8 +481,7 @@ def test_the_middleware_leaves_a_working_api_key_alone():
 
 
 @pytest.mark.parametrize("expired", [False, True])
-def test_the_middleware_sees_an_unusable_key_as_keyless(expired):
-    """A revoked or expired key falls through to the admin, so the tool grant applies."""
+def test_the_middleware_keeps_an_unusable_studio_key_authoritative(expired):
     seed_user()
     set_keyless_api_access("inference")
     raw, row = storage.create_api_key(
@@ -322,7 +493,7 @@ def test_the_middleware_sees_an_unusable_key_as_keyless(expired):
     )
     if not expired:
         storage.revoke_api_key(storage.DEFAULT_ADMIN_USERNAME, row["id"])
-    assert asgi_request_is_keyless(asgi_scope(headers = {"Authorization": f"Bearer {raw}"})) is True
+    assert asgi_request_is_keyless(asgi_scope(headers = {"Authorization": f"Bearer {raw}"})) is False
 
 
 def test_the_middleware_check_does_not_count_as_a_use():
@@ -342,7 +513,7 @@ def test_the_middleware_is_inert_when_access_is_off():
     assert asgi_request_is_keyless(asgi_scope()) is False
 
 
-# --- exposure is advisory, never a gate -------------------------------------
+# --- public and hosted transports fail closed -------------------------------
 
 
 def test_loopback_bind_reports_no_exposure():
@@ -391,14 +562,120 @@ def test_a_tunnel_still_wins_over_a_lan_listener(monkeypatch):
     assert access_exposure(SimpleNamespace(bind_host = "127.0.0.1")) == "public_url"
 
 
-def test_exposure_does_not_stop_a_request():
-    """The admin's choice stands however the server is reached."""
+def test_a_public_or_wildcard_bind_never_receives_full_keyless_access():
     set_keyless_api_access("full")
     exposed = request_for(
         headers = {"x-forwarded-for": "203.0.113.7"},
         app_state = SimpleNamespace(bind_host = "0.0.0.0"),
     )
-    assert keyless_request_allowed(exposed) is True
+    assert keyless_request_allowed(exposed) is False
+
+
+@pytest.mark.parametrize(
+    "server,client,bind_host",
+    [
+        (("127.0.0.1", 8000), ("127.0.0.1", 50000), "127.0.0.1"),
+        (("::1", 8000), ("::1", 50000), "::1"),
+        (("::ffff:127.0.0.1", 8000), ("::ffff:127.0.0.1", 50000), "::1"),
+        (("localhost", 8000), ("localhost", 50000), "localhost"),
+    ],
+)
+def test_full_scope_accepts_only_authoritative_loopback_transports(server, client, bind_host):
+    set_keyless_api_access("full")
+    request = request_for(
+        server = server,
+        client = client,
+        app_state = app_state(bind_host = bind_host),
+    )
+    assert keyless_request_allowed(request) is True
+
+
+@pytest.mark.parametrize(
+    "state_overrides",
+    [
+        {"remote_access_is_colab": True},
+        {"lan_access_is_colab": True},
+        {"secure": True},
+        {"lan_access_secure_launch": True},
+        {"cloudflare_url": "https://example.trycloudflare.com"},
+    ],
+)
+def test_public_tunnel_and_colab_transports_fail_closed(state_overrides):
+    set_keyless_api_access("inference")
+    assert keyless_request_allowed(
+        request_for(app_state = app_state(**state_overrides))
+    ) is False
+
+
+def test_an_active_public_tunnel_fails_closed(monkeypatch):
+    from utils import host_policy
+
+    set_keyless_api_access("inference")
+    monkeypatch.setattr(host_policy, "_remote_connector_active", True)
+    assert keyless_request_allowed(request_for()) is False
+
+
+def test_an_exact_private_lan_socket_remains_distinct_from_an_active_tunnel(monkeypatch):
+    import lan_access
+    from utils import host_policy
+
+    set_keyless_api_access("inference")
+    monkeypatch.setattr(host_policy, "_remote_connector_active", True)
+    monkeypatch.setattr(
+        lan_access,
+        "lan_listener_status",
+        lambda: {"running": True, "port": 8888, "addresses": ["192.168.1.24"]},
+    )
+    request = request_for(
+        server = ("192.168.1.24", 8888),
+        client = ("192.168.1.90", 54321),
+        app_state = app_state(),
+    )
+    assert keyless_request_allowed(request) is True
+
+
+@pytest.mark.parametrize("headers", [None, {"Authorization": "Bearer not-needed"}])
+def test_browser_origin_requests_never_receive_keyless_access(headers):
+    set_keyless_api_access("inference")
+    headers = dict(headers or {})
+    headers["Origin"] = "https://attacker.example"
+    request = request_for(headers = headers)
+    assert keyless_request_allowed(request) is False
+    assert asgi_request_is_keyless(request.scope) is False
+
+
+def test_inference_scope_accepts_an_exact_live_private_lan_socket(monkeypatch):
+    import lan_access
+
+    set_keyless_api_access("inference")
+    monkeypatch.setattr(
+        lan_access,
+        "lan_listener_status",
+        lambda: {"running": True, "port": 8888, "addresses": ["192.168.1.24"]},
+    )
+    request = request_for(
+        server = ("192.168.1.24", 8888),
+        client = ("192.168.1.90", 54321),
+        app_state = app_state(bind_host = "127.0.0.1"),
+    )
+    assert keyless_request_allowed(request) is True
+
+
+def test_full_scope_never_expands_to_the_private_lan(monkeypatch):
+    import lan_access
+
+    set_keyless_api_access("full")
+    monkeypatch.setattr(
+        lan_access,
+        "lan_listener_status",
+        lambda: {"running": True, "port": 8888, "addresses": ["192.168.1.24"]},
+    )
+    request = request_for(
+        server = ("192.168.1.24", 8888),
+        client = ("192.168.1.90", 54321),
+        app_state = app_state(bind_host = "127.0.0.1"),
+    )
+    assert keyless_request_allowed(request) is False
 
 
 # --- what the auth dependency does with it ----------------------------------
@@ -426,8 +703,8 @@ def test_a_bad_key_still_fails_when_the_setting_is_off():
     assert excinfo.value.status_code == 401
 
 
-@pytest.mark.parametrize("token", ["not-needed", "lm-studio", "ollama", "sk-unsloth-YOUR_KEY"])
-def test_unusable_keys_are_ignored_rather_than_rejected(token):
+@pytest.mark.parametrize("token", ["not-needed", "lm-studio", "ollama"])
+def test_approved_dummy_bearers_are_accepted(token):
     seed_user()
     set_keyless_api_access("full")
     request = request_for(headers = {"Authorization": f"Bearer {token}"})
@@ -435,22 +712,55 @@ def test_unusable_keys_are_ignored_rather_than_rejected(token):
     assert subject_of(request) == storage.DEFAULT_ADMIN_USERNAME
 
 
-def test_a_jwt_shaped_dummy_key_is_ignored_too():
-    """A token that merely parses as a JWT names no session here."""
+@pytest.mark.parametrize(
+    "stranger",
+    [
+        "arbitrary-client-token",
+        jwt.encode({"sub": "someone-else"}, secrets.token_urlsafe(64), algorithm = "HS256"),
+    ],
+)
+def test_an_arbitrary_bearer_is_rejected(stranger):
     seed_user()
     set_keyless_api_access("full")
-    stranger = jwt.encode({"sub": "someone-else"}, secrets.token_urlsafe(64), algorithm = "HS256")
-    assert subject_of(request_for(headers = {"Authorization": f"Bearer {stranger}"})) == (
-        storage.DEFAULT_ADMIN_USERNAME
-    )
+    with pytest.raises(HTTPException) as excinfo:
+        subject_of(request_for(headers = {"Authorization": f"Bearer {stranger}"}))
+    assert excinfo.value.status_code == 401
 
 
-def test_a_malformed_header_is_ignored_too():
+@pytest.mark.parametrize("header", ["garbage", "Basic abc", "Bearer", "Bearer "])
+def test_a_malformed_header_is_rejected(header):
     seed_user()
     set_keyless_api_access("full")
-    assert subject_of(request_for(headers = {"Authorization": "garbage"})) == (
-        storage.DEFAULT_ADMIN_USERNAME
+    with pytest.raises(HTTPException) as excinfo:
+        subject_of(request_for(headers = {"Authorization": header}))
+    assert excinfo.value.status_code in (401, 403)
+
+
+def test_duplicate_authorization_headers_are_rejected():
+    seed_user()
+    set_keyless_api_access("full")
+    scope = asgi_scope()
+    scope["headers"] = [
+        (b"authorization", b"Bearer not-needed"),
+        (b"authorization", b"Bearer not-needed"),
+    ]
+    request = Request(scope)
+    assert asgi_request_is_keyless(scope) is False
+    with pytest.raises(HTTPException) as excinfo:
+        subject_of(request)
+    assert excinfo.value.status_code == 403
+
+
+def test_approved_dummy_bearer_is_only_accepted_on_an_eligible_request():
+    seed_user()
+    set_keyless_api_access("inference")
+    request = request_for(
+        path = "/v1/load",
+        headers = {"Authorization": "Bearer not-needed"},
     )
+    with pytest.raises(HTTPException) as excinfo:
+        subject_of(request)
+    assert excinfo.value.status_code == 401
 
 
 def test_a_working_key_still_authenticates_as_itself():
@@ -467,8 +777,7 @@ def test_a_working_key_still_authenticates_as_itself():
     assert storage.list_api_keys(storage.DEFAULT_ADMIN_USERNAME)[0]["last_used_at"] is not None
 
 
-def test_an_expired_key_is_ignored_rather_than_rejected():
-    """A stale key is a no-op once the server asks for none at all."""
+def test_an_expired_key_is_rejected_without_downgrading():
     seed_user()
     set_keyless_api_access("full")
     raw, _row = storage.create_api_key(
@@ -476,9 +785,30 @@ def test_an_expired_key_is_ignored_rather_than_rejected():
         name = "expired",
         expires_at = (datetime.now(timezone.utc) - timedelta(days = 1)).isoformat(),
     )
-    assert subject_of(request_for(headers = {"Authorization": f"Bearer {raw}"})) == (
-        storage.DEFAULT_ADMIN_USERNAME
+    with pytest.raises(HTTPException) as excinfo:
+        subject_of(request_for(headers = {"Authorization": f"Bearer {raw}"}))
+    assert excinfo.value.status_code == 401
+
+
+def test_a_revoked_key_is_rejected_without_downgrading():
+    seed_user()
+    set_keyless_api_access("full")
+    raw, row = storage.create_api_key(
+        username = storage.DEFAULT_ADMIN_USERNAME,
+        name = "revoked",
+        expires_at = None,
     )
+    storage.revoke_api_key(storage.DEFAULT_ADMIN_USERNAME, row["id"])
+    with pytest.raises(HTTPException) as excinfo:
+        subject_of(request_for(headers = {"Authorization": f"Bearer {raw}"}))
+    assert excinfo.value.status_code == 401
+
+
+def test_root_path_prefixed_request_authenticates_keylessly():
+    seed_user()
+    set_keyless_api_access("inference")
+    request = request_for(path = "/studio/v1/models", root_path = "/studio", method = "GET")
+    assert subject_of(request) == storage.DEFAULT_ADMIN_USERNAME
 
 
 @pytest.mark.parametrize("headers", [None, {"Authorization": "Bearer ollama"}])
@@ -502,12 +832,53 @@ def test_keyless_callers_are_not_mistaken_for_the_ui_by_the_route_checks():
     assert _request_has_api_key(request_for()) is False
 
 
+def test_lan_keyless_request_state_drives_external_workflow_and_monitoring(monkeypatch):
+    import lan_access
+    from core.inference.api_monitor import ApiMonitor
+    from routes import inference
+
+    seed_user()
+    set_keyless_api_access("inference")
+    monkeypatch.setattr(
+        lan_access,
+        "lan_listener_status",
+        lambda: {"running": True, "port": 8888, "addresses": ["192.168.1.24"]},
+    )
+    request = request_for(
+        path = "/v1/models",
+        method = "GET",
+        server = ("192.168.1.24", 8888),
+        client = ("192.168.1.90", 54321),
+        app_state = app_state(),
+    )
+    subject = subject_of(request)
+
+    assert request.state.keyless_api_admitted is True
+    assert inference._request_has_api_key(request) is True
+    assert inference._request_used_api_key(request) is True
+    assert inference._request_is_internal_workflow(request) is False
+    assert inference._request_is_saved_credential_workflow(request) is False
+
+    monitor = ApiMonitor(enabled = True)
+    monitor.start(
+        endpoint = "/v1/models",
+        method = "GET",
+        model = "",
+        prompt = "",
+        subject = subject,
+        via_api_key = inference._request_used_api_key(request),
+    )
+    rows = monitor.snapshot(subject = storage.DEFAULT_ADMIN_USERNAME)
+    assert len(rows) == 1
+    assert rows[0]["via_api_key"] is True
+
+
 def test_keyless_callers_do_not_pass_as_the_ui():
     """Saved provider credentials are held back from a keyless caller, as from a key."""
     seed_user()
     set_keyless_api_access("full")
     assert admitted_without_session(request_for()) is True
-    assert admitted_without_session(request_for(headers = {"Authorization": "Bearer x"})) is True
+    assert admitted_without_session(request_for(headers = {"Authorization": "Bearer x"})) is False
 
 
 def test_a_signed_in_session_is_still_the_ui():
@@ -578,8 +949,17 @@ def api_key_client():
     from routes import auth as auth_routes
 
     app = FastAPI()
+    app.state.bind_host = "127.0.0.1"
+    app.state.secure = False
+    app.state.remote_access_is_colab = False
+    app.state.lan_access_is_colab = False
+    app.state.cloudflare_url = None
     app.include_router(auth_routes.router, prefix = "/api/auth")
-    return TestClient(app)
+    return TestClient(
+        app,
+        base_url = "http://127.0.0.1",
+        client = ("127.0.0.1", 50000),
+    )
 
 
 @pytest.mark.parametrize("headers", [{}, {"Authorization": "Bearer ollama"}])
@@ -802,7 +1182,7 @@ def health_fields(headers = None):
 def test_health_answers_a_keyless_caller_in_full():
     seed_user()
     set_keyless_api_access("full")
-    for headers in (None, {"Authorization": "Bearer unsloth-local"}):
+    for headers in (None, {"Authorization": "Bearer not-needed"}):
         assert "version" in health_fields(headers), headers
 
 
@@ -836,12 +1216,12 @@ def test_the_sandbox_file_routes_follow_the_full_scope():
     assert authenticate_manually(request_for(path = SANDBOX_PATH)) == admin
     assert (
         authenticate_manually(
-            request_for(path = SANDBOX_PATH, headers = {"Authorization": "Bearer unsloth-local"})
+            request_for(path = SANDBOX_PATH, headers = {"Authorization": "Bearer not-needed"})
         )
         == admin
     )
     # the ?token= form an <img src> has to use, since it cannot send a header
-    assert authenticate_manually(request_for(path = SANDBOX_PATH), "unsloth-local") == admin
+    assert authenticate_manually(request_for(path = SANDBOX_PATH), "not-needed") == admin
 
 
 def test_the_sandbox_file_routes_are_outside_the_inference_scope():

@@ -234,7 +234,17 @@ def test_a_tool_snippet_names_a_key_that_actually_gets_tools():
     for variant in ("curl", "python", "javascript"):
         assert "base, key," in built_from(variant), variant
 
-    assert 'keylessScope !== "off" && keylessTools' in src
+    assert "keylessBase && keylessTools" in src
+    assert 'keylessScope === "full" && keylessTools' in src
+
+
+def test_dummy_bearer_is_only_shown_for_an_admissible_transport():
+    src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
+    assert 'const KEYLESS_KEY_PLACEHOLDER = "not-needed"' in src
+    assert 'exposure === "colab" || exposure === "public_url"' in src
+    assert "if (isLoopbackHost(host)) return true;" in src
+    assert 'scope === "inference" && isPrivateLanHost(host)' in src
+    assert "const keylessBase = keylessBaseEligible(base, keylessScope, keylessExposure);" in src
 
 
 def test_the_full_scope_confirmation_names_what_it_lets_a_stranger_destroy():

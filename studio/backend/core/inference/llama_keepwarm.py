@@ -295,9 +295,9 @@ def _carries_bearer_credentials(scope, path: str = "") -> bool:
     header, so requiring it costs a legitimate generation nothing. Keyless API access is
     the one case where a route demands no bearer at all, so a path it covers passes too.
     """
-    from utils.keyless_api_access import get_keyless_api_access_scope, scope_covers
+    from utils.keyless_api_access import asgi_request_is_keyless
 
-    if path and scope_covers(get_keyless_api_access_scope(), path):
+    if path and asgi_request_is_keyless(scope):
         return True
     headers = scope.get("headers")
     if headers is None:

@@ -2108,6 +2108,8 @@ class LanAccessResponse(BaseModel):
     can_stop: bool
     block_reason: Optional[str] = None
     serves_web_ui: bool = True
+    keyless_scope: Literal["off", "inference", "full"] = "off"
+    keyless_tools: bool = False
 
 
 def _lan_access_response(request: Request) -> LanAccessResponse:

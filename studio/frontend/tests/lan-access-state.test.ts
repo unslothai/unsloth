@@ -7,6 +7,7 @@ import test from "node:test";
 // lan-access-section.tsx pulls in hugeicons, so only its pure helpers are tested here
 import {
   type ApiLanAccessStatus,
+  keylessLanAccessDescription,
   lanAccessAutoStartReadOnly,
   lanAccessBlockMessage,
   lanAccessErrorMessage,
@@ -64,6 +65,8 @@ test("normalize maps every snake_case field onto its camelCase name", () => {
     canStop: true,
     blockReason: null,
     servesWebUi: true,
+    keylessScope: "off",
+    keylessTools: false,
   });
 });
 
@@ -75,6 +78,96 @@ test("normalize defaults the optional fields an older backend may omit", () => {
   assert.equal(s.managedBy, null);
   assert.equal(s.blockReason, null);
   assert.equal(s.servesWebUi, true);
+  assert.equal(s.keylessScope, "off");
+  assert.equal(s.keylessTools, false);
+});
+
+test("keyless state normalizes unknown values off and drops a stale tool grant", () => {
+  const unknown = normalizeLanAccessStatus(
+    apiStatus({
+      // biome-ignore lint/style/useNamingConvention: API schema
+      keyless_scope: "everything",
+      // biome-ignore lint/style/useNamingConvention: API schema
+      keyless_tools: true,
+    }),
+  );
+  assert.equal(unknown.keylessScope, "off");
+  assert.equal(unknown.keylessTools, false);
+
+  const enabled = normalizeLanAccessStatus(
+    apiStatus({
+      // biome-ignore lint/style/useNamingConvention: API schema
+      keyless_scope: "inference",
+      // biome-ignore lint/style/useNamingConvention: API schema
+      keyless_tools: true,
+    }),
+  );
+  assert.equal(enabled.keylessScope, "inference");
+  assert.equal(enabled.keylessTools, true);
+});
+
+test("keyless LAN messaging explains local, LAN, public, Colab, and tool boundaries", () => {
+  assert.match(keylessLanAccessDescription(null), /Authentication is required/);
+
+  const local = normalizeLanAccessStatus(
+    // biome-ignore lint/style/useNamingConvention: API schema
+    apiStatus({ keyless_scope: "inference" }),
+  );
+  assert.match(keylessLanAccessDescription(local), /localhost/);
+  assert.match(keylessLanAccessDescription(local), /active private listener/);
+  assert.match(keylessLanAccessDescription(local), /tools remain off/i);
+
+  const lan = normalizeLanAccessStatus(
+    apiStatus({
+      state: "online",
+      // biome-ignore lint/style/useNamingConvention: API schema
+      keyless_scope: "inference",
+      // biome-ignore lint/style/useNamingConvention: API schema
+      keyless_tools: true,
+    }),
+  );
+  assert.match(keylessLanAccessDescription(lan), /active private LAN/);
+  assert.match(
+    keylessLanAccessDescription(lan),
+    /tools are separately enabled/i,
+  );
+
+  const publicStatus = normalizeLanAccessStatus(
+    apiStatus({
+      state: "online",
+      // biome-ignore lint/style/useNamingConvention: API schema
+      public_urls: [PUBLIC],
+      // biome-ignore lint/style/useNamingConvention: API schema
+      keyless_scope: "inference",
+    }),
+  );
+  assert.match(
+    keylessLanAccessDescription(publicStatus),
+    /never through.*public URL/i,
+  );
+
+  const full = normalizeLanAccessStatus(
+    // biome-ignore lint/style/useNamingConvention: API schema
+    apiStatus({ keyless_scope: "full" }),
+  );
+  assert.match(keylessLanAccessDescription(full), /localhost-only/);
+  assert.match(
+    keylessLanAccessDescription(full),
+    /never granted over LAN or public URLs/,
+  );
+
+  const colab = normalizeLanAccessStatus(
+    apiStatus({
+      // biome-ignore lint/style/useNamingConvention: API schema
+      block_reason: "colab",
+      // biome-ignore lint/style/useNamingConvention: API schema
+      keyless_scope: "inference",
+    }),
+  );
+  assert.match(
+    keylessLanAccessDescription(colab),
+    /Colab never receives keyless access/,
+  );
 });
 
 test("urls survives a null or non-array payload without throwing", () => {

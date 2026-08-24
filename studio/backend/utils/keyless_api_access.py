@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Opt-in that serves the API without an API key.
+"""Fail-closed admission policy for serving Studio without an API key.
 
 Off by default. When an admin turns it on, a request that sends no usable
 credential authenticates as the local admin, so ``curl`` and the OpenAI SDKs reach
@@ -11,17 +11,17 @@ Two scopes, so opening up chat does not also open up training:
 
 ``inference``
     The OpenAI-compatible endpoints only, named one by one in
-    ``_INFERENCE_PATHS``. Everything else keeps needing a key.
+    ``_INFERENCE_ROUTES``. Everything else keeps needing a key.
 ``full``
-    Every route, training and settings included.
+    Every route, but only for callers arriving and connecting over loopback.
 
 Server-side tools (python, terminal, web search) stay off for a keyless caller
 whatever the scope, until the admin ticks them on separately: ``/v1/chat/completions``
 runs that tool loop on this machine, so it is a bigger grant than chat itself.
 
-Turning it on is the admin's call and nothing here second-guesses the bind
-address: ``access_exposure`` only reports how far this server currently reaches
-so the UI can say who that choice lets in. Signing in to Unsloth is unaffected.
+Public tunnels and Colab never receive keyless access. Private-LAN inference is
+accepted only through a live settings listener or the launch-managed bind that
+matches the ASGI accepting address and port. Signing in to Unsloth is unaffected.
 """
 
 from __future__ import annotations
@@ -38,22 +38,23 @@ KEYLESS_SCOPE_INFERENCE = "inference"
 KEYLESS_SCOPE_FULL = "full"
 KEYLESS_SCOPES = (KEYLESS_SCOPE_OFF, KEYLESS_SCOPE_INFERENCE, KEYLESS_SCOPE_FULL)
 DEFAULT_KEYLESS_API_ACCESS_SCOPE = KEYLESS_SCOPE_OFF
+APPROVED_DUMMY_BEARERS = frozenset({"not-needed", "lm-studio", "ollama"})
+KEYLESS_ADMISSION_STATE_KEY = "keyless_api_admitted"
 
-# named one by one, not by prefix: /v1 also aliases model loading, audio and sandbox routes
-_INFERENCE_PATHS = frozenset(
+# Named by method and normalized path: /v1 also aliases model loading, media,
+# sandbox, validation, and streaming side-effect routes.
+_INFERENCE_ROUTES = frozenset(
     {
-        "/v1/chat/completions",
-        "/v1/chat/count_tokens",
-        "/v1/completions",
-        "/v1/embeddings",
-        "/v1/messages",
-        "/v1/messages/count_tokens",
-        "/v1/models",
-        "/v1/responses",
+        ("POST", "/v1/chat/completions"),
+        ("POST", "/v1/chat/count_tokens"),
+        ("POST", "/v1/completions"),
+        ("POST", "/v1/embeddings"),
+        ("POST", "/v1/messages"),
+        ("POST", "/v1/messages/count_tokens"),
+        ("GET", "/v1/models"),
+        ("POST", "/v1/responses"),
     }
 )
-# GET /v1/models/<id>, and nothing else nested
-_INFERENCE_PREFIXES = ("/v1/models/",)
 
 
 def _coerce_scope(value: Any) -> Optional[str]:
@@ -193,23 +194,140 @@ def access_exposure(app_state: Any) -> Optional[str]:
     return None
 
 
-def scope_covers(scope: str, path: str) -> bool:
-    """Whether ``scope`` serves ``path`` without a key."""
+def normalize_request_path(path: str, root_path: str = "") -> str:
+    """Normalize trailing slash and an ASGI/FastAPI mount root."""
+    if not isinstance(path, str) or not path.startswith("/"):
+        return ""
+    root = root_path.rstrip("/") if isinstance(root_path, str) else ""
+    if root and root.startswith("/"):
+        if path == root:
+            path = "/"
+        elif path.startswith(f"{root}/"):
+            path = path[len(root) :]
+    return path.rstrip("/") or "/"
+
+
+def scope_covers(scope: str, method: str, path: str, root_path: str = "") -> bool:
+    """Whether ``scope`` includes this exact method and normalized route."""
+    normalized = normalize_request_path(path, root_path)
+    normalized_method = method.upper() if isinstance(method, str) else ""
     if scope == KEYLESS_SCOPE_FULL:
-        return True
+        return bool(normalized and normalized_method)
     if scope != KEYLESS_SCOPE_INFERENCE:
         return False
-    normalized = path.rstrip("/") or path
-    return normalized in _INFERENCE_PATHS or path.startswith(_INFERENCE_PREFIXES)
+    if (normalized_method, normalized) in _INFERENCE_ROUTES:
+        return True
+    # The router intentionally exposes one dynamic retrieval template. Its method
+    # is still explicit; an empty id and every non-GET alias remain denied.
+    return normalized_method == "GET" and normalized.startswith("/v1/models/")
+
+
+def _request_app_state(request: Any):
+    try:
+        return request.app.state
+    except Exception:
+        return None
+
+
+def _hosted_mode_forbidden(app_state: Any) -> bool:
+    """Whether the whole launch mode forbids keyless admission."""
+    if app_state is None:
+        return True
+    if bool(getattr(app_state, "remote_access_is_colab", False)) or bool(
+        getattr(app_state, "lan_access_is_colab", False)
+    ):
+        return True
+    if bool(getattr(app_state, "secure", False)) or bool(
+        getattr(app_state, "lan_access_secure_launch", False)
+    ):
+        return True
+    return False
+
+
+def _public_tunnel_active(app_state: Any) -> bool:
+    """Whether loopback transport may actually be carrying a public tunnel request."""
+    if getattr(app_state, "cloudflare_url", None):
+        return True
+    try:
+        from utils.host_policy import tunnel_connector_active
+
+        return tunnel_connector_active()
+    except Exception:
+        return True
+
+
+def _full_scope_transport_allowed(request: Any, app_state: Any) -> bool:
+    from utils.lan_access_settings import _all_addresses_are, request_is_loopback
+
+    if not request_is_loopback(request):
+        return False
+    bind_host = getattr(app_state, "bind_host", None)
+    scope = getattr(request, "scope", {})
+    server = scope.get("server")
+    if not isinstance(bind_host, str) or bind_host in ("0.0.0.0", "::"):
+        return False
+    if not isinstance(server, (tuple, list)) or len(server) < 2:
+        return False
+    port = server[1]
+    return isinstance(port, int) and _all_addresses_are(
+        bind_host, port, lambda address: address.is_loopback
+    )
+
+
+def keyless_transport_allowed(request: Any, scope: str) -> bool:
+    """Enforce the loopback/private-LAN boundary from authoritative ASGI state."""
+    try:
+        if request.headers.get("origin") is not None:
+            return False
+    except Exception:
+        return False
+    app_state = _request_app_state(request)
+    if _hosted_mode_forbidden(app_state):
+        return False
+    if scope == KEYLESS_SCOPE_FULL:
+        if _public_tunnel_active(app_state):
+            return False
+        return _full_scope_transport_allowed(request, app_state)
+    if scope != KEYLESS_SCOPE_INFERENCE:
+        return False
+    from utils.lan_access_settings import request_is_loopback, request_on_lan_access
+
+    if request_on_lan_access(request):
+        return True
+    if _public_tunnel_active(app_state):
+        return False
+    return request_is_loopback(request)
 
 
 def keyless_request_allowed(request: Any) -> bool:
-    """Whether this request may authenticate without a usable credential."""
+    """Whether the route and transport are eligible for keyless authentication."""
     scope = get_keyless_api_access_scope()
     if scope == KEYLESS_SCOPE_OFF:
         return False
-    path = getattr(getattr(request, "url", None), "path", None)
-    return scope_covers(scope, path if isinstance(path, str) else "")
+    asgi_scope = getattr(request, "scope", {})
+    method = asgi_scope.get("method", "")
+    path = asgi_scope.get("path", "")
+    root_path = asgi_scope.get("root_path", "")
+    if not scope_covers(scope, method, path, root_path):
+        return False
+    return keyless_transport_allowed(request, scope)
+
+
+def mark_keyless_admission(request: Any, admitted: bool) -> None:
+    """Publish the authoritative admission result for downstream policy decisions."""
+    try:
+        setattr(request.state, KEYLESS_ADMISSION_STATE_KEY, bool(admitted))
+    except Exception:
+        pass
+
+
+def request_was_admitted_keyless(request: Any) -> Optional[bool]:
+    """Return a recorded admission decision, or None before auth has classified it."""
+    try:
+        value = getattr(request.state, KEYLESS_ADMISSION_STATE_KEY)
+    except Exception:
+        return None
+    return value if isinstance(value, bool) else None
 
 
 class KeylessToolPolicyMiddleware:
@@ -228,7 +346,11 @@ class KeylessToolPolicyMiddleware:
         if asgi_scope.get("type") != "http" or get_keyless_api_tools_enabled():
             await self.app(asgi_scope, receive, send)
             return
-        if not asgi_request_is_keyless(asgi_scope):
+        from starlette.concurrency import run_in_threadpool
+
+        admitted = await run_in_threadpool(asgi_request_is_keyless, asgi_scope)
+        asgi_scope.setdefault("state", {})[KEYLESS_ADMISSION_STATE_KEY] = admitted
+        if not admitted:
             await self.app(asgi_scope, receive, send)
             return
         from state.tool_policy import tools_force_disabled
@@ -245,19 +367,26 @@ def asgi_request_is_keyless(asgi_scope) -> bool:
     a working API key both authenticate as themselves, so neither is keyless: applying
     the tool restriction to an existing API client would take away tools it already had.
     """
-    access = get_keyless_api_access_scope()
-    if access == KEYLESS_SCOPE_OFF:
-        return False
-    if not scope_covers(access, asgi_scope.get("path") or ""):
-        return False
-    for name, value in asgi_scope.get("headers") or ():
-        if bytes(name).lower() != b"authorization":
-            continue
-        parts = bytes(value).split(b" ", 1)
-        if len(parts) != 2 or parts[0].lower() != b"bearer" or not parts[1].strip():
-            return True
-        from auth.authentication import bearer_is_valid_api_key, bearer_names_a_session
+    try:
+        from starlette.requests import Request
 
-        token = parts[1].strip().decode("utf-8", "replace")
-        return not (bearer_names_a_session(token) or bearer_is_valid_api_key(token))
-    return True
+        request = Request(asgi_scope)
+    except Exception:
+        return False
+    if not keyless_request_allowed(request):
+        return False
+    authorization = [
+        bytes(value).decode("latin-1")
+        for name, value in asgi_scope.get("headers") or ()
+        if bytes(name).lower() == b"authorization"
+    ]
+    if not authorization:
+        return True
+    if len(authorization) != 1:
+        return False
+    scheme, separator, token = authorization[0].partition(" ")
+    return bool(
+        separator
+        and scheme.lower() == "bearer"
+        and token in APPROVED_DUMMY_BEARERS
+    )

@@ -86,9 +86,30 @@ def admitted_without_credential(credentials: Optional[HTTPAuthorizationCredentia
         return False
     if credentials.scheme == KEYLESS_SCHEME:
         return True
-    if credentials.scheme != KEYLESS_FALLBACK_SCHEME:
+    return credentials.scheme == KEYLESS_FALLBACK_SCHEME
+
+
+def _request_would_use_keyless(request: Any) -> bool:
+    """Classify a request before the security dependency has recorded its result."""
+    from utils.keyless_api_access import APPROVED_DUMMY_BEARERS, keyless_request_allowed
+
+    if not keyless_request_allowed(request):
         return False
-    return not bearer_is_valid_api_key(credentials.credentials)
+    try:
+        raw_headers = getattr(request, "scope", {}).get("headers") or ()
+        values = [
+            bytes(value).decode("latin-1")
+            for name, value in raw_headers
+            if bytes(name).lower() == b"authorization"
+        ]
+    except Exception:
+        return False
+    if not values:
+        return True
+    if len(values) != 1:
+        return False
+    scheme, token = get_authorization_scheme_param(values[0])
+    return scheme.lower() == "bearer" and token in APPROVED_DUMMY_BEARERS
 
 
 def request_admitted_without_credential(request: Any) -> bool:
@@ -97,18 +118,10 @@ def request_admitted_without_credential(request: Any) -> bool:
     Costs a key validation, so ask it late: past the cheap disqualifiers, next to the
     effect being guarded.
     """
-    from utils.keyless_api_access import keyless_request_allowed
+    from utils.keyless_api_access import request_was_admitted_keyless
 
-    if not keyless_request_allowed(request):
-        return False
-    try:
-        header = request.headers.get("Authorization")
-    except Exception:
-        return True  # no readable header is no credential either
-    scheme, token = get_authorization_scheme_param(header or "")
-    if scheme.lower() != "bearer" or not token:
-        return True
-    return not (_names_a_session(token) or bearer_is_valid_api_key(token))
+    recorded = request_was_admitted_keyless(request)
+    return _request_would_use_keyless(request) if recorded is None else recorded
 
 
 def admitted_without_session(request: Any) -> bool:
@@ -117,16 +130,10 @@ def admitted_without_session(request: Any) -> bool:
     The single predicate behind both the auth dependency below and the route-level
     checks that ask whether a caller is the Unsloth UI or a programmatic client.
     """
-    from utils.keyless_api_access import keyless_request_allowed
+    from utils.keyless_api_access import request_was_admitted_keyless
 
-    if not keyless_request_allowed(request):
-        return False
-    try:
-        header = request.headers.get("Authorization")
-    except Exception:
-        return True  # no readable header is no session either
-    scheme, token = get_authorization_scheme_param(header or "")
-    return not (scheme.lower() == "bearer" and token and _names_a_session(token))
+    recorded = request_was_admitted_keyless(request)
+    return _request_would_use_keyless(request) if recorded is None else recorded
 
 
 class _BearerOrKeyless(HTTPBearer):
@@ -136,18 +143,41 @@ class _BearerOrKeyless(HTTPBearer):
     """
 
     async def __call__(self, request: Request) -> Optional[HTTPAuthorizationCredentials]:
-        scheme, token = get_authorization_scheme_param(request.headers.get("Authorization") or "")
+        from utils.keyless_api_access import (
+            APPROVED_DUMMY_BEARERS,
+            keyless_request_allowed,
+            mark_keyless_admission,
+        )
+
+        raw_headers = getattr(request, "scope", {}).get("headers") or ()
+        authorization = [
+            bytes(value).decode("latin-1")
+            for name, value in raw_headers
+            if bytes(name).lower() == b"authorization"
+        ]
+        if len(authorization) > 1:
+            mark_keyless_admission(request, False)
+            raise HTTPException(
+                status_code = status.HTTP_403_FORBIDDEN,
+                detail = "Invalid authentication credentials",
+            )
+        header = authorization[0] if authorization else ""
+        scheme, token = get_authorization_scheme_param(header)
         usable_bearer = bool(scheme.lower() == "bearer" and token)
-        if not admitted_without_session(request):
-            if usable_bearer:
-                return HTTPAuthorizationCredentials(scheme = scheme, credentials = token)
-            return await super().__call__(request)
-        if usable_bearer:
+        eligible = await run_in_threadpool(keyless_request_allowed, request)
+        if not authorization and eligible:
+            mark_keyless_admission(request, True)
+            return _KEYLESS_CREDENTIALS
+        dummy = eligible and usable_bearer and token in APPROVED_DUMMY_BEARERS
+        mark_keyless_admission(request, dummy)
+        if dummy:
             return HTTPAuthorizationCredentials(
                 scheme = KEYLESS_FALLBACK_SCHEME,
                 credentials = token,
             )
-        return _KEYLESS_CREDENTIALS
+        if usable_bearer:
+            return HTTPAuthorizationCredentials(scheme = scheme, credentials = token)
+        return await super().__call__(request)
 
 
 # scheme_name pinned so the OpenAPI securitySchemes entry keeps its published name
@@ -327,9 +357,10 @@ def credentials_for_token(
     API access entirely and answer 401 on a scope that covers them. None means no
     usable credential and no setting to stand in for one.
     """
-    from utils.keyless_api_access import keyless_request_allowed
+    from utils.keyless_api_access import APPROVED_DUMMY_BEARERS, keyless_request_allowed
 
-    keyless = keyless_request_allowed(request) and not (token and _names_a_session(token))
+    eligible = keyless_request_allowed(request)
+    keyless = eligible and (token is None or token in APPROVED_DUMMY_BEARERS)
     if token:
         return HTTPAuthorizationCredentials(
             scheme = KEYLESS_FALLBACK_SCHEME if keyless else "Bearer",
@@ -439,20 +470,15 @@ async def _get_current_credential(
     if credentials.scheme == KEYLESS_SCHEME:
         return _admin_credential(allow_password_change = allow_password_change)
 
-    # a working key still authenticates as itself; only an unusable one falls through
     if credentials.scheme == KEYLESS_FALLBACK_SCHEME:
-        try:
-            return await _get_current_credential(
-                HTTPAuthorizationCredentials(
-                    scheme = "Bearer",
-                    credentials = credentials.credentials,
-                ),
-                allow_password_change = allow_password_change,
+        from utils.keyless_api_access import APPROVED_DUMMY_BEARERS
+
+        if credentials.credentials not in APPROVED_DUMMY_BEARERS:
+            raise HTTPException(
+                status_code = status.HTTP_401_UNAUTHORIZED,
+                detail = "Invalid authentication credentials",
             )
-        except HTTPException as exc:
-            if exc.status_code != status.HTTP_401_UNAUTHORIZED:
-                raise
-            return _admin_credential(allow_password_change = allow_password_change)
+        return _admin_credential(allow_password_change = allow_password_change)
 
     token = credentials.credentials
 

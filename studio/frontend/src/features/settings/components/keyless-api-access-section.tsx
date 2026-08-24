@@ -14,7 +14,6 @@ import { Switch } from "@/components/ui/switch";
 import {
   type KeylessApiAccessScope,
   type KeylessApiAccessSettings,
-  keylessAudience,
   loadKeylessApiAccess,
   updateKeylessApiAccess,
 } from "@/features/settings/api/keyless-api-access";
@@ -28,24 +27,24 @@ type PendingGrant = Exclude<KeylessApiAccessScope, "off"> | "tools";
 
 const CONFIRM_COPY: Record<
   PendingGrant,
-  { title: string; body: (audience: string) => string; action: string }
+  { title: string; body: () => string; action: string }
 > = {
   inference: {
     title: "Allow chat without a key?",
-    body: (audience) =>
-      `${audience} will be able to chat with your loaded model, with no API key. Training, files and settings keep needing one.`,
+    body: () =>
+      "Inference will work without a key on localhost and an active private LAN listener. Public URLs and Colab always require authentication; training, files and settings still require it.",
     action: "Allow chat",
   },
   full: {
-    title: "Allow everything without a key?",
-    body: (audience) =>
-      `${audience} will be able to chat, start training runs, and read, change and delete the files and settings in Unsloth, with no API key.`,
+    title: "Allow full localhost access without a key?",
+    body: () =>
+      "Localhost callers will be able to chat, start training runs, and read, change and delete files and settings. Full keyless access is never honored over LAN, a public bind or URL, a tunnel, or Colab.",
     action: "Allow everything",
   },
   tools: {
     title: "Let keyless callers run tools?",
-    body: (audience) =>
-      `${audience} will be able to run Python and terminal commands through the model, with no API key.`,
+    body: () =>
+      "Eligible keyless callers will also be able to run Python, terminal and web-search tools through the model. This is a separate grant from API access.",
     action: "Allow tools",
   },
 };
@@ -57,6 +56,7 @@ export function KeylessApiAccessSection({
   onSettingsChange?: (settings: {
     scope: KeylessApiAccessScope;
     tools: boolean;
+    exposure: KeylessApiAccessSettings["exposure"];
   }) => void;
 }) {
   const [settings, setSettings] = useState<KeylessApiAccessSettings | null>(
@@ -73,7 +73,11 @@ export function KeylessApiAccessSection({
         if (!cancelled) {
           setSettings(next);
           setError(null);
-          onSettingsChange?.({ scope: next.scope, tools: next.tools });
+          onSettingsChange?.({
+            scope: next.scope,
+            tools: next.tools,
+            exposure: next.exposure,
+          });
         }
       })
       .catch((cause: unknown) => {
@@ -96,7 +100,11 @@ export function KeylessApiAccessSection({
     try {
       const saved = await updateKeylessApiAccess(next, tools);
       setSettings(saved);
-      onSettingsChange?.({ scope: saved.scope, tools: saved.tools });
+      onSettingsChange?.({
+        scope: saved.scope,
+        tools: saved.tools,
+        exposure: saved.exposure,
+      });
     } catch (cause: unknown) {
       setError(
         cause instanceof Error
@@ -124,7 +132,6 @@ export function KeylessApiAccessSection({
 
   const scope = settings?.scope ?? "off";
   const tools = settings?.tools === true;
-  const audience = keylessAudience(settings?.exposure ?? null);
   const busy = settings === null || saving;
 
   const request = (next: KeylessApiAccessScope, confirmAs: PendingGrant) => {
@@ -172,7 +179,7 @@ export function KeylessApiAccessSection({
             </h2>
             <p className="text-xs text-muted-foreground leading-relaxed">
               Use Unsloth from other apps without creating an API key. Signing
-              in to Unsloth is unchanged.
+              in is unchanged; public URLs and Colab always require a key.
             </p>
           </div>
         </div>
@@ -187,7 +194,7 @@ export function KeylessApiAccessSection({
       <div className="border-t border-border/60 px-4 py-1">
         <SettingsRow
           label="Chat and inference"
-          description="Serve the OpenAI-compatible endpoints without a key, the way LM Studio and Ollama do."
+          description="Serve the approved OpenAI and Anthropic inference endpoints on localhost and an active private LAN."
           alignTop={true}
         >
           <Switch
@@ -202,7 +209,7 @@ export function KeylessApiAccessSection({
 
         <SettingsRow
           label="Everything else"
-          description="Also serve training, files and settings without a key."
+          description="Also serve training, files and settings, but only to local loopback callers."
           alignTop={true}
         >
           <Switch
@@ -237,7 +244,7 @@ export function KeylessApiAccessSection({
               {pending ? CONFIRM_COPY[pending].title : ""}
             </DialogTitle>
             <DialogDescription>
-              {pending ? CONFIRM_COPY[pending].body(audience) : ""}
+              {pending ? CONFIRM_COPY[pending].body() : ""}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
