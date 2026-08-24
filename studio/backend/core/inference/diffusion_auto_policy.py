@@ -101,11 +101,15 @@ def resident_bytes_from_declared(
     declared_files: Any,
     *,
     prequant_bytes: int = 0,
+    extra_bf16_bytes: int = 0,
+    dtype_scale: float = 1.0,
 ) -> Optional[int]:
     """Estimate resident bytes from Hub file sizes and component storage precision.
 
     ``prequant_bytes`` is added unchanged because hosted pre-cast encoders are already stored at
-    their load precision. Unknown families are treated as 1:1 with their download size.
+    their load precision. ``extra_bf16_bytes`` covers separately hosted dense components, and is
+    widened with the pipeline when the resolved target is float32. Unknown families are treated
+    as 1:1 with their download size.
     """
     denoiser_factor, companion_factor = resident_factors(fam, base_repo)
     denoiser = 0
@@ -119,13 +123,16 @@ def resident_bytes_from_declared(
         else:
             companions += size
     prequant_bytes = max(0, int(prequant_bytes or 0))
-    if denoiser <= 0 and companions <= 0 and prequant_bytes <= 0:
+    extra_bf16_bytes = max(0, int(extra_bf16_bytes or 0))
+    dtype_scale = max(1.0, float(dtype_scale or 1.0))
+    if denoiser <= 0 and companions <= 0 and prequant_bytes <= 0 and extra_bf16_bytes <= 0:
         return None
-    return (
+    dtype_resident = (
         int(denoiser / max(denoiser_factor, 0.01))
         + int(companions / max(companion_factor, 0.01))
-        + prequant_bytes
+        + extra_bf16_bytes
     )
+    return int(dtype_resident * dtype_scale) + prequant_bytes
 
 
 def _base_key(base_repo: Optional[str]) -> str:

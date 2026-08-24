@@ -492,14 +492,23 @@ def _predownload_encoder_bytes(
     pipeline_declared: bool = True,
 ) -> int:
     """Return encoder bytes that are absent from the selected pipeline declaration."""
-    total = _prequant_plan_bytes(te_files)
+    return _prequant_plan_bytes(te_files)
+
+
+def _predownload_encoder_bf16_bytes(
+    fam: Any,
+    te_files: Any,
+    *,
+    pipeline_declared: bool = True,
+) -> int:
+    """Return separately hosted dense bf16 encoder bytes absent from the pipeline repo."""
     if (
         getattr(fam, "name", None) == HIDREAM_FAMILY_NAME
         and "text_encoder_4" not in (te_files or {})
         and pipeline_declared
     ):
-        total += HIDREAM_LLAMA_BF16_BYTES
-    return total
+        return HIDREAM_LLAMA_BF16_BYTES
+    return 0
 
 
 def _image_variant_hint(
@@ -2136,12 +2145,14 @@ class DiffusionBackend:
                 base_repo = base,
             )
             declared_sizes: dict[str, dict[str, int]] = {}
+            resident_sizes: dict[str, dict[str, int]] = {}
             expected, base_files = self._estimate_download_bytes(
                 kwargs["repo_id"],
                 kwargs.get("gguf_filename"),
                 base,
                 kwargs.get("hf_token"),
                 kind = kind,
+                pipeline_components = _explicit_pipeline_components(fam),
                 single_file_is_pipeline = bool(fam and fam.single_file_is_pipeline),
                 # Pull the base shards here rather than inside the locked, unpreemptable finalize.
                 # Deferred: the widening turns on the base repo's own listing, which this call is
@@ -2162,6 +2173,7 @@ class DiffusionBackend:
                 skip_te_components = tuple(te_prequant_files),
                 local_files_only = local_files_only,
                 file_sizes_out = declared_sizes,
+                resident_file_sizes_out = resident_sizes,
             )
             # Only shards this prefetch staged may be materialised by the dense fallback, so read it
             # off the staged list: a failed size estimate drops every base file too. A LOCAL base
@@ -2201,9 +2213,12 @@ class DiffusionBackend:
                 kwargs["repo_id"],
                 base,
                 kind = kind,
-                declared_files = _flatten_declared_sizes(declared_sizes),
+                declared_files = _flatten_declared_sizes(resident_sizes),
                 prequant_bytes = _predownload_encoder_bytes(
-                    fam, te_prequant_files, pipeline_declared = bool(declared_sizes)
+                    fam, te_prequant_files, pipeline_declared = bool(resident_sizes)
+                ),
+                extra_bf16_bytes = _predownload_encoder_bf16_bytes(
+                    fam, te_prequant_files, pipeline_declared = bool(resident_sizes)
                 ),
                 gguf_filename = kwargs.get("gguf_filename"),
                 gpu_ordinal = kwargs.get("gpu_ordinal"),
@@ -2484,10 +2499,12 @@ class DiffusionBackend:
         hf_token: Optional[str],
         *,
         kind: str = "gguf",
+        pipeline_components: Optional[Sequence[str]] = None,
         single_file_is_pipeline: bool = False,
         include_transformer: "bool | Callable[[Sequence[str], Sequence[str]], bool]" = False,
         sizes_out: Optional[dict[str, int]] = None,
         file_sizes_out: Optional[dict[str, dict[str, int]]] = None,
+        resident_file_sizes_out: Optional[dict[str, dict[str, int]]] = None,
         revisions_out: Optional[dict[str, str]] = None,
         skip_te_components: tuple[str, ...] = (),
         failures_out: Optional[list] = None,
@@ -2498,6 +2515,8 @@ class DiffusionBackend:
 
         ``sizes_out``, when given, is filled with per-repo byte totals so the download
         plan can size one job per repo off this same single pair of Hub lookups.
+        ``resident_file_sizes_out`` receives only the selected pipeline components and default
+        weight variant, which is the set that ``from_pretrained`` materialises in memory.
         ``revisions_out`` records the commit each lookup described, so a cache probe can ask
         about the SAME revision the sizes came from instead of whatever ``main`` is locally.
 
@@ -2546,10 +2565,20 @@ class DiffusionBackend:
         try:
             if kind == "pipeline":
                 info = api.model_info(repo_id, files_metadata = True, token = hf_token)
+                components = _pipeline_components_from_index(
+                    api,
+                    repo_id,
+                    info,
+                    hf_token,
+                    explicit_components = pipeline_components,
+                    failures_out = failures_out,
+                )
                 picked = [
                     s
                     for s in info.siblings
-                    if _pipeline_file_downloaded(s.rfilename) and not _dense_te_shard(s.rfilename)
+                    if _pipeline_file_downloaded(s.rfilename)
+                    and not _dense_te_shard(s.rfilename)
+                    and (components is None or _pipeline_selected_file(s.rfilename, components))
                 ]
                 # diffusers prefers safetensors: drop a .bin whose dir also has a picked .safetensors.
                 st_dirs = {
@@ -2569,6 +2598,16 @@ class DiffusionBackend:
                         s.rfilename: int(s.size or 0)
                         for s in picked
                         if not (
+                            s.rfilename.endswith(".bin")
+                            and s.rfilename.rsplit("/", 1)[0] in st_dirs
+                        )
+                    }
+                if resident_file_sizes_out is not None and components is not None:
+                    resident_file_sizes_out[repo_id] = {
+                        s.rfilename: int(s.size or 0)
+                        for s in picked
+                        if _pipeline_resident_weight(s.rfilename, components)
+                        and not (
                             s.rfilename.endswith(".bin")
                             and s.rfilename.rsplit("/", 1)[0] in st_dirs
                         )
@@ -2700,6 +2739,7 @@ class DiffusionBackend:
         )
         sizes: dict[str, int] = {}
         file_sizes: dict[str, dict[str, int]] = {}
+        resident_file_sizes: dict[str, dict[str, int]] = {}
         revisions: dict[str, str] = {}
         plan_failures: list = []
         required_total, base_files = self._estimate_download_bytes(
@@ -2708,6 +2748,7 @@ class DiffusionBackend:
             base,
             hf_token,
             kind = kind,
+            pipeline_components = _explicit_pipeline_components(fam),
             single_file_is_pipeline = bool(fam and fam.single_file_is_pipeline),
             # The RESOLVED base, as the load passes it: a variant base picks its own pre-quant repo.
             # Deferred exactly as _run_load defers it. Called eagerly this runs before the base
@@ -2728,6 +2769,7 @@ class DiffusionBackend:
             ),
             sizes_out = sizes,
             file_sizes_out = file_sizes,
+            resident_file_sizes_out = resident_file_sizes,
             revisions_out = revisions,
             skip_te_components = tuple(te_files),
             failures_out = plan_failures,
@@ -2901,9 +2943,12 @@ class DiffusionBackend:
                 repo_id,
                 base,
                 kind = kind,
-                declared_files = _flatten_declared_sizes(file_sizes),
+                declared_files = _flatten_declared_sizes(resident_file_sizes),
                 prequant_bytes = _predownload_encoder_bytes(
-                    fam, te_files, pipeline_declared = bool(file_sizes)
+                    fam, te_files, pipeline_declared = bool(resident_file_sizes)
+                ),
+                extra_bf16_bytes = _predownload_encoder_bf16_bytes(
+                    fam, te_files, pipeline_declared = bool(resident_file_sizes)
                 ),
                 gguf_filename = gguf_filename,
                 gpu_ordinal = load_kwargs.get("gpu_ordinal"),
@@ -5072,6 +5117,7 @@ class DiffusionBackend:
         kind: str,
         declared_files: Any,
         prequant_bytes: int = 0,
+        extra_bf16_bytes: int = 0,
         gguf_filename: Optional[str] = None,
         gpu_ordinal: Optional[int] = None,
         memory_mode: Optional[str] = None,
@@ -5085,13 +5131,26 @@ class DiffusionBackend:
         """
         if fam is None or kind != "pipeline":
             return None
-        resident_bytes = resident_bytes_from_declared(
-            fam, base, declared_files, prequant_bytes = prequant_bytes
-        )
-        if not resident_bytes:
+        declared_files = list(declared_files or ())
+        if (
+            max(0, int(prequant_bytes or 0)) <= 0
+            and max(0, int(extra_bf16_bytes or 0)) <= 0
+            and not any(int(size or 0) > 0 for _name, size in declared_files)
+        ):
             return None
         try:
             target = self._target_for_ordinal(fam, gpu_ordinal)
+            dtype_scale = 2.0 if "float32" in str(getattr(target, "dtype", "")).lower() else 1.0
+            resident_bytes = resident_bytes_from_declared(
+                fam,
+                base,
+                declared_files,
+                prequant_bytes = prequant_bytes,
+                extra_bf16_bytes = extra_bf16_bytes,
+                dtype_scale = dtype_scale,
+            )
+            if not resident_bytes:
+                return None
             with diffusion_device_scope(target.ordinal if target.is_cuda_torch_device else None):
                 device_memory = snapshot_device_memory(target)
             if device_memory.total_mib is None:
@@ -6611,6 +6670,122 @@ def _pipeline_file_downloaded(rfilename: str) -> bool:
     if ".fp16." in name or ".bf16." in name or ".non_ema." in name:
         return False
     return True
+
+
+_DEFAULT_PIPELINE_WEIGHT_RE = re.compile(
+    r"^(?:diffusion_pytorch_model|pytorch_model|model)"
+    r"(?:-\d{5}-of-\d{5})?\.(?:bin|safetensors)$"
+)
+_DEFAULT_PIPELINE_WEIGHT_INDEX_RE = re.compile(
+    r"^(?:diffusion_pytorch_model|pytorch_model|model)\.(?:bin|safetensors)\.index\.json$"
+)
+_PIPELINE_WEIGHT_PREFIX_RE = re.compile(
+    r"^(?:diffusion_pytorch_model|pytorch_model|model)[.-].*"
+    r"(?:bin|safetensors)(?:\.index.*\.json)?$"
+)
+
+
+def _explicit_pipeline_components(fam: Any) -> Optional[tuple[str, ...]]:
+    """Component folders opened by image pipelines assembled outside generic Diffusers."""
+    name = getattr(fam, "name", None)
+    if name == KREA2_FAMILY_NAME:
+        return ("scheduler", "text_encoder", "tokenizer", "transformer", "vae")
+    if name == IDEOGRAM4_FAMILY_NAME:
+        return (
+            "scheduler",
+            "text_encoder",
+            "tokenizer",
+            "transformer",
+            "unconditional_transformer",
+            "vae",
+        )
+    return None
+
+
+def _pipeline_components_from_index(
+    api: Any,
+    repo_id: str,
+    info: Any,
+    hf_token: Optional[str],
+    *,
+    explicit_components: Optional[Sequence[str]] = None,
+    failures_out: Optional[list] = None,
+) -> Optional[tuple[frozenset[str], frozenset[str]]]:
+    """Return selected component folders and exact model-index ignores.
+
+    The manifest is small but authoritative. If it cannot be read, staging retains the prior
+    best-effort listing and resident sizing declines to issue a hard refusal.
+    """
+    try:
+        if not any(s.rfilename == "model_index.json" for s in (info.siblings or ())):
+            raise FileNotFoundError(f"{repo_id} has no model_index.json")
+        path = api.hf_hub_download(
+            repo_id,
+            "model_index.json",
+            revision = getattr(info, "sha", None) or None,
+            cache_dir = hub_cache_dir(),
+            token = hf_token or None,
+        )
+        payload = json.loads(Path(path).read_text(encoding = "utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError(f"{repo_id}/model_index.json is not an object")
+        if explicit_components is None:
+            selected = {
+                str(name)
+                for name, spec in payload.items()
+                if not str(name).startswith("_")
+                and isinstance(spec, (list, tuple))
+                and len(spec) >= 2
+                and spec[0] is not None
+                and spec[1] is not None
+            }
+        else:
+            selected = {str(name) for name in explicit_components}
+        ignored = payload.get("_ignore_files", ())
+        if not isinstance(ignored, (list, tuple, set)):
+            ignored = ()
+        if not selected:
+            raise ValueError(f"{repo_id}/model_index.json names no loadable components")
+        return frozenset(selected), frozenset(str(name) for name in ignored)
+    except Exception as exc:  # noqa: BLE001 -- no manifest means no hard memory verdict
+        logger.warning("diffusion.pipeline_manifest_failed: %s", exc)
+        if failures_out is not None:
+            failures_out.append(exc)
+        return None
+
+
+def _pipeline_default_variant_file(rfilename: str) -> bool:
+    """Whether a model-looking filename belongs to Diffusers' default variant."""
+    name = rfilename.rsplit("/", 1)[-1].lower()
+    if not _PIPELINE_WEIGHT_PREFIX_RE.match(name):
+        return True
+    return bool(
+        _DEFAULT_PIPELINE_WEIGHT_RE.match(name) or _DEFAULT_PIPELINE_WEIGHT_INDEX_RE.match(name)
+    )
+
+
+def _pipeline_selected_file(
+    rfilename: str, selection: tuple[frozenset[str], frozenset[str]]
+) -> bool:
+    """Match the files loaded by the selected components at ``variant=None``."""
+    components, ignored = selection
+    if rfilename in ignored:
+        return False
+    if rfilename == "model_index.json":
+        return True
+    if "/" not in rfilename or rfilename.split("/", 1)[0] not in components:
+        return False
+    return _pipeline_default_variant_file(rfilename)
+
+
+def _pipeline_resident_weight(
+    rfilename: str, selection: tuple[frozenset[str], frozenset[str]]
+) -> bool:
+    """Whether a selected file becomes tensor storage in the loaded pipeline."""
+    if not _pipeline_selected_file(rfilename, selection):
+        return False
+    name = rfilename.rsplit("/", 1)[-1].lower()
+    return bool(_DEFAULT_PIPELINE_WEIGHT_RE.match(name))
 
 
 def _progress(

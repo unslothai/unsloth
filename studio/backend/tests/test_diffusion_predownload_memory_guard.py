@@ -8,6 +8,7 @@ Hub sizes recorded on 2026-08-24 are aggregated by component directory.
 
 from __future__ import annotations
 
+import json
 import types
 
 import pytest
@@ -64,10 +65,15 @@ LUMINA_HOSTED_TE = {
 }
 
 
-def _target(*, device = "cuda", ordinal = None) -> DiffusionDeviceTarget:
+def _target(
+    *,
+    device = "cuda",
+    ordinal = None,
+    dtype = "bfloat16",
+) -> DiffusionDeviceTarget:
     return DiffusionDeviceTarget(
         device = device,
-        dtype = "bfloat16",
+        dtype = dtype,
         backend = device,
         vendor = "amd",
         supports_model_cpu_offload = True,
@@ -98,9 +104,10 @@ def _backend(
     total_mib = REPORTER_POOL_MIB,
     free_mib = None,
     device = "cuda",
+    dtype = "bfloat16",
 ):
     backend = DiffusionBackend()
-    target = _target(device = device)
+    target = _target(device = device, dtype = dtype)
     monkeypatch.setattr(backend, "_target_for_ordinal", lambda *_a, **_k: target)
     snapshot = DeviceMemory(
         device,
@@ -213,6 +220,46 @@ def test_a_hosted_pre_cast_encoder_is_not_converted_again(monkeypatch):
     assert "about 10 GB of memory for its weights" in message
 
 
+def test_float32_scales_dense_pipeline_bytes_but_not_hosted_prequant():
+    from core.inference.diffusion_auto_policy import resident_bytes_from_declared
+
+    fam = _family(name = "lumina-2", base_repo = "Alpha-VLLM/Lumina-Image-2.0")
+    dense = resident_bytes_from_declared(
+        fam,
+        fam.base_repo,
+        LUMINA_2_MINUS_DENSE_TE,
+        prequant_bytes = LUMINA_HOSTED_TE_MIB * MIB,
+        dtype_scale = 2.0,
+    )
+    bf16_dense = resident_bytes_from_declared(
+        fam,
+        fam.base_repo,
+        LUMINA_2_MINUS_DENSE_TE,
+        prequant_bytes = LUMINA_HOSTED_TE_MIB * MIB,
+    )
+    assert dense == 2 * (bf16_dense - LUMINA_HOSTED_TE_MIB * MIB) + LUMINA_HOSTED_TE_MIB * MIB
+
+
+def test_float32_target_rejects_lumina_that_bf16_accepts(monkeypatch):
+    fam = _family(name = "lumina-2", base_repo = "Alpha-VLLM/Lumina-Image-2.0")
+    bf16 = _backend(monkeypatch, total_mib = 16 * 1024)
+    assert _verdict(bf16, fam, "unsloth/Lumina-Image-2.0", fam.base_repo, LUMINA_2) is None
+
+    fp32 = _backend(monkeypatch, total_mib = 16 * 1024, device = "mps", dtype = "float32")
+    message = _verdict(fp32, fam, "unsloth/Lumina-Image-2.0", fam.base_repo, LUMINA_2)
+    assert message is not None
+    assert "about 22 GB of memory for its weights" in message
+
+
+def test_float32_doubles_a_custom_bf16_pipeline():
+    from core.inference.diffusion_auto_policy import resident_bytes_from_declared
+
+    fam = _family(name = "krea-2", base_repo = "unsloth/custom-krea")
+    files = _files(transformer = 20_000, text_encoder = 8_000)
+    bf16 = resident_bytes_from_declared(fam, fam.base_repo, files)
+    assert resident_bytes_from_declared(fam, fam.base_repo, files, dtype_scale = 2.0) == 2 * bf16
+
+
 def test_a_bf16_repo_is_counted_as_it_downloads():
     from core.inference.diffusion_auto_policy import resident_bytes_from_declared
     assert resident_bytes_from_declared(_family(), "Qwen/Qwen-Image", QWEN_IMAGE_2512) == sum(
@@ -298,14 +345,19 @@ def test_hidream_te4_uses_its_standalone_base_for_prequant_compatibility(monkeyp
 
 
 def test_hidream_dense_te4_is_counted_when_no_prequant_is_selected():
-    from core.inference.diffusion import _predownload_encoder_bytes
+    from core.inference.diffusion import (
+        _predownload_encoder_bf16_bytes,
+        _predownload_encoder_bytes,
+    )
     from core.inference.diffusion_hidream import HIDREAM_LLAMA_BF16_BYTES
 
     fam = _family(name = "hidream-i1", base_repo = "HiDream-ai/HiDream-I1-Full")
-    assert _predownload_encoder_bytes(fam, {}) == HIDREAM_LLAMA_BF16_BYTES
-    assert _predownload_encoder_bytes(fam, {}, pipeline_declared = False) == 0
+    assert _predownload_encoder_bytes(fam, {}) == 0
+    assert _predownload_encoder_bf16_bytes(fam, {}) == HIDREAM_LLAMA_BF16_BYTES
+    assert _predownload_encoder_bf16_bytes(fam, {}, pipeline_declared = False) == 0
     hosted = {"text_encoder_4": ("unsloth/HiDream-I1-Full-FP8", [("te4.pt", 8 * MIB)])}
     assert _predownload_encoder_bytes(fam, hosted) == 8 * MIB
+    assert _predownload_encoder_bf16_bytes(fam, hosted) == 0
 
 
 def test_discrete_vram_is_never_refused(monkeypatch):
@@ -351,6 +403,138 @@ def test_no_sizes_is_no_verdict(monkeypatch, files):
     )
 
 
+def test_no_sizes_does_not_resolve_a_target(monkeypatch):
+    backend = DiffusionBackend()
+
+    def _resolve(*_a, **_k):
+        raise AssertionError("zero metadata must not resolve a device")
+
+    monkeypatch.setattr(backend, "_target_for_ordinal", _resolve)
+    assert (
+        backend.declared_footprint_shortfall(
+            _flux2(),
+            "unsloth/FLUX.2-dev",
+            "black-forest-labs/FLUX.2-dev",
+            kind = "pipeline",
+            declared_files = [],
+        )
+        is None
+    )
+
+
+class _ManifestSibling:
+    def __init__(self, name, size):
+        self.rfilename = name
+        self.size = size
+
+
+@pytest.mark.parametrize("repo", ["unsloth/custom-pipeline", "unsloth/canonical-mirror"])
+def test_pipeline_estimate_uses_selected_components_and_default_variant(
+    monkeypatch, tmp_path, repo
+):
+    manifest = tmp_path / "model_index.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "_class_name": "FluxPipeline",
+                "_ignore_files": ["transformer/ignored.safetensors"],
+                "transformer": ["diffusers", "FluxTransformer2DModel"],
+                "unused": [None, None],
+                "scheduler": ["diffusers", "FlowMatchEulerDiscreteScheduler"],
+            }
+        ),
+        encoding = "utf-8",
+    )
+    siblings = [
+        _ManifestSibling("model_index.json", 100),
+        _ManifestSibling("transformer/config.json", 200),
+        _ManifestSibling("transformer/diffusion_pytorch_model.safetensors", 20 * MIB),
+        _ManifestSibling("transformer/diffusion_pytorch_model.fp8.safetensors", 10 * MIB),
+        _ManifestSibling(
+            "transformer/diffusion_pytorch_model.fp8-00001-of-00002.safetensors", 10 * MIB
+        ),
+        _ManifestSibling("transformer/ignored.safetensors", 9 * MIB),
+        _ManifestSibling("unused/diffusion_pytorch_model.safetensors", 30 * MIB),
+        _ManifestSibling("scheduler/scheduler_config.json", 300),
+    ]
+
+    class _Api:
+        def model_info(self, *_a, **_k):
+            return types.SimpleNamespace(siblings = siblings, sha = "a" * 40)
+
+        def hf_hub_download(self, *_a, **_k):
+            return str(manifest)
+
+    monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
+    staged: dict = {}
+    resident: dict = {}
+    total, files = DiffusionBackend._estimate_download_bytes(
+        repo,
+        None,
+        repo,
+        None,
+        kind = "pipeline",
+        file_sizes_out = staged,
+        resident_file_sizes_out = resident,
+    )
+
+    expected = {
+        "model_index.json",
+        "transformer/config.json",
+        "transformer/diffusion_pytorch_model.safetensors",
+        "scheduler/scheduler_config.json",
+    }
+    assert set(files) == expected
+    assert set(staged[repo]) == expected
+    assert resident[repo] == {"transformer/diffusion_pytorch_model.safetensors": 20 * MIB}
+    assert total == 20 * MIB + 600
+
+
+@pytest.mark.parametrize(
+    ("family", "included"),
+    [
+        pytest.param("krea-2", "transformer", id = "krea"),
+        pytest.param("ideogram-4", "unconditional_transformer", id = "ideogram"),
+    ],
+)
+def test_explicit_pipeline_assemblers_use_their_fixed_component_sets(
+    monkeypatch, tmp_path, family, included
+):
+    from core.inference.diffusion import _explicit_pipeline_components
+
+    repo = f"unsloth/{family}"
+    manifest = tmp_path / "model_index.json"
+    manifest.write_text(json.dumps({"_class_name": "Pipeline"}), encoding = "utf-8")
+    siblings = [
+        _ManifestSibling("model_index.json", 100),
+        _ManifestSibling(f"{included}/diffusion_pytorch_model.safetensors", 20 * MIB),
+        _ManifestSibling("unused/diffusion_pytorch_model.safetensors", 30 * MIB),
+    ]
+
+    class _Api:
+        def model_info(self, *_a, **_k):
+            return types.SimpleNamespace(siblings = siblings, sha = None)
+
+        def hf_hub_download(self, *_a, **_k):
+            return str(manifest)
+
+    monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
+    staged: dict = {}
+    resident: dict = {}
+    _total, files = DiffusionBackend._estimate_download_bytes(
+        repo,
+        None,
+        repo,
+        None,
+        kind = "pipeline",
+        pipeline_components = _explicit_pipeline_components(_family(name = family)),
+        file_sizes_out = staged,
+        resident_file_sizes_out = resident,
+    )
+    assert files == ["model_index.json", f"{included}/diffusion_pytorch_model.safetensors"]
+    assert set(resident[repo]) == {f"{included}/diffusion_pytorch_model.safetensors"}
+
+
 def test_an_unreadable_device_never_refuses(monkeypatch):
     backend = _backend(monkeypatch, total_mib = None)
     assert _flux_verdict(backend) is None
@@ -374,9 +558,10 @@ def test_the_escape_hatch_still_opens_it(monkeypatch):
 
 def _stub_estimate(monkeypatch, files):
     def _estimate(*_a, **kwargs):
-        out = kwargs.get("file_sizes_out")
-        if out is not None:
-            out["unsloth/FLUX.2-dev"] = {name: size for name, size in files}
+        for key in ("file_sizes_out", "resident_file_sizes_out"):
+            out = kwargs.get(key)
+            if out is not None:
+                out["unsloth/FLUX.2-dev"] = {name: size for name, size in files}
         return sum(size for _name, size in files), []
 
     monkeypatch.setattr(DiffusionBackend, "_estimate_download_bytes", staticmethod(_estimate))
