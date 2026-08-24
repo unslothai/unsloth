@@ -68,7 +68,7 @@ accumulate. Windows do not nest and do not overlap; opening one while another is
 @dataclass
 class Window:
     name: str               # "action:scroll_after", "stream:gap3", "idle:calibrate"
-    kind: str               # "action" | "stream" | "gap" | "idle" | "settle" | "teardown"
+    kind: str               # "action" | "stream" | "gap" | "idle" | "setup" | "settle" | "teardown"
     cell: Cell
     t_open_ms: float        # driver monotonic ms since session t0
     t_close_ms: float | None
@@ -89,6 +89,13 @@ The NAMES still read `stream:gapN`, because they are the join key in every paylo
 Trust the `kind`, not the name, and to find the streaming phase itself detect it from the SSE
 traffic rather than from either.
 
+**`setup` is not `action`, for the same class of reason.** The only `setup` window is
+`setup:composer_click`, the click that starts the film. Most of what it costs is Playwright's own
+injected actionability script -- selector resolution, visibility, stability and the
+`elementsFromPoint` hit test -- and that script runs on the PAGE'S main thread, so it blocks frames
+indistinguishably from app work. At 500K the window is around 11 s against a `max_frame_ms` anchor
+whose worst case is 2,000 ms. It is instrumented and reported, and `scoring/from_payload.py` keeps
+it out of the frame pool via `UNSCORED_WINDOW_KINDS`.
 Opened as a context manager on the session:
 
 ```python

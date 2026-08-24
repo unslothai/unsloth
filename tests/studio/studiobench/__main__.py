@@ -580,14 +580,45 @@ def run(args, ab_ref = None) -> int:
     corpus = Corpus.load()
     _log(f"  corpus_hash {corpus.corpus_hash}")
 
+    # READ NOW, BEFORE ANYTHING IS STARTED OR MOVED. The probe's source is not needed until the
+    # browser is launched, but reading it there means a path typo raises after Studio and the pacer
+    # are up and before the cleanup `finally` that would stop them is entered, so a detached Studio
+    # keeps running and holds its port. The cheapest correct fix is to fail while there is nothing
+    # to clean up: a missing, unreadable or non-UTF-8 file is a mistake in the invocation, and the
+    # right moment to say so is the first second of the run.
+    #
+    # AHEAD OF `prepare_payload` FOR THE SAME REASON THE ARCHIVE IS AHEAD OF THE RECORDER. Reusing
+    # an `--out` without `--resume` archives the payload that is already there, so reading the
+    # probe afterwards meant a path typo exited 2 having run no benchmark and having already taken
+    # `payload.jsonl` off the path every reader looks at: `--report`, `--assert-liveness` and the
+    # next `--resume` all open that name. A refusal that the first millisecond of the run could
+    # have issued must not cost the previous run's payload its standard path.
+    extra_init = os.environ.get("SBENCH_EXTRA_INIT_SCRIPT")
+    extra_init_source = ""
+    if extra_init:
+        try:
+            extra_init_source = Path(extra_init).read_text(encoding = "utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            _log(
+                f"  FATAL: SBENCH_EXTRA_INIT_SCRIPT={extra_init} could not be read: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            return 2
+
     # BEFORE the first install, the first launch and the first recorded row. See `prepare_payload`:
     # a refusal that arrives after two clones and two builds has cost the caller an hour to say
     # something it could have said in a millisecond, and an archive that arrives after the Recorder
     # has opened the file has already appended this run's header to the payload it was moving.
-    prepare_payload(
+    archived = prepare_payload(
         paths, requested_identity(args, ab_ref, corpus.corpus_hash), resume = bool(args.resume)
     )
 
+    # AND THE REPORTS THE ARCHIVE LEFT BEHIND. See `invalidate_stale_reports`: this is the one
+    # point every reuse of an output directory passes through, whichever of the two ways it
+    # invalidates what is already sitting there.
+    invalidate_stale_reports(paths.out, archived = archived, extra_init = extra_init)
+
+    # One spec per side, with its own home and password. Without --ab there is exactly one.
     specs = side_specs(args, ab_ref)
     # Armed AFTER the sides are known, because what it has to cover depends on them: see
     # `watchdog_deadline_s`. Nothing between here and there can hang -- `Corpus.load` reads a
@@ -804,13 +835,45 @@ def run(args, ab_ref = None) -> int:
                 )
 
         auth = sides[0]["auth"]
+
+        # ONE `add_init_script` CALL PER SCENE SCRIPT, which is what this always did.
+        #
+        # These were briefly concatenated into a single script, on the reasoning that Playwright
+        # says "the order of evaluation of multiple scripts installed via
+        # browserContext.addInitScript() and page.addInitScript() is not defined", and surfaces.js
+        # reads what dom.js and parity.js put on `window.__sb`. The reasoning is sound and the
+        # change was a REGRESSION, caught by CI: joining them means the browser parses and
+        # evaluates the three as one unit, so a throw or a parse error in any one of them stops
+        # the other two running as well. Separate scripts are separate failure domains, and on the
+        # CI fixture that difference cost `message_menu` its More button and turned a green job
+        # red. An ordering guarantee is not worth trading fault isolation for when the ordering
+        # has been correct in practice for the life of the file.
+        #
+        # surfaces.js is loaded unconditionally, even without --surfaces. It defines selectors and
+        # never runs on its own. Making the page's JS depend on a CLI flag would mean the flag
+        # changes what is on the page during the FILM as well, and the film's numbers must not
+        # depend on whether a later phase was asked for.
         init_scripts.append(resources.read_text("scene/dom.js"))
         init_scripts.append(resources.read_text("scene/parity.js"))
-        # Loaded unconditionally, even without --surfaces. It defines selectors and reads dom.js and
-        # parity.js; it never runs on its own. Making the page's JS depend on a CLI flag would mean
-        # the flag changes what is on the page during the FILM as well, and the film's numbers must
-        # not depend on whether a later phase was asked for.
         init_scripts.append(resources.read_text("scene/surfaces.js"))
+
+        # AN EXTERNAL PROBE OR ABLATION ARM, its own script like the three above. One environment
+        # variable rather than a CLI flag per experiment, and WITH THE VARIABLE UNSET NOTHING IS
+        # APPENDED: the run is byte-identical to a run of a tree that does not have this hook. That
+        # property is the point. A potency probe perturbs the page it observes, so the probe run and
+        # the scored run have to be different runs of one harness, and the only safe way to arrange
+        # that is for the probe to be absent by default.
+        #
+        # BECAUSE THE ORDER IS UNDEFINED, A PROBE MUST BE SELF-CONTAINED. It cannot assume the
+        # scene scripts have run, so it cannot read `window.__sb` at install time. That is a real
+        # constraint and it is written down in CONTRIBUTING-perf.md rather than papered over with
+        # a guarantee this file is not in a position to give.
+        if extra_init:
+            init_scripts.extend(_probe_init_scripts(extra_init, extra_init_source))
+            _log(
+                f"  EXTRA INIT SCRIPT: {extra_init} -- this run carries an external probe and "
+                f"is NOT a clean measurement of the build"
+            )
 
         procs_before = {}
         try:
@@ -822,6 +885,31 @@ def run(args, ab_ref = None) -> int:
         bundle = browser_mod.launch(
             args.engine, headless = not args.headed, init_scripts = init_scripts, log = _log
         )
+        # THE RETURN PATH for a probe installed by the hook above. Studio ships `connect-src
+        # 'self'`, so a beacon to a collector on another port is blocked by CSP before it leaves
+        # the page, and the payload schema has no row for a one-off probe. The console is what is
+        # left. Lines are filtered on a caller-supplied prefix so they can be recovered from the
+        # run log by exact match, and so a probe cannot drown the log in the app's own traffic.
+        console_prefix = os.environ.get("SBENCH_PAGE_CONSOLE")
+        if console_prefix:
+            bundle.page.on(
+                "console",
+                lambda m: _log(f"  [page] {m.text}") if m.text.startswith(console_prefix) else None,
+            )
+        if extra_init:
+            # A probe that throws on load is the same silence as a probe that was never installed,
+            # and the console filter above cannot show it because a failing probe never gets as far
+            # as printing its own prefix. Attached only when a probe was asked for, so an ordinary
+            # run is unchanged. `console.error` from the isolation wrapper arrives here as a
+            # console message rather than a page error, so both channels are listened to.
+            bundle.page.on("pageerror", lambda err: _log(f"  [page error] {err}"))
+            bundle.page.on(
+                "console",
+                lambda m: _log(f"  [page error] {m.text}")
+                if m.type == "error" and "SBENCH_EXTRA_INIT_SCRIPT" in m.text
+                else None,
+            )
+
         procs = []
         if new_roots is not None:
             time.sleep(1.0)
@@ -884,6 +972,15 @@ def run(args, ab_ref = None) -> int:
                 # reader has no way to notice before quoting a ratio across it.
                 "stream_tail_chars": args.stream_tail_chars,
                 "corpus_dollars": bool(args.corpus_dollars),
+                # WHICH PROBE, IF ANY, WAS IN THE PAGE. Recorded next to the corpus hash and for
+                # the same reason: a payload nobody can audit against the page it measured has to
+                # be taken on trust. `null` is the normal case and the only scorable one.
+                "probe_init_script": extra_init or None,
+                # WHETHER THE PROBE RAN BEFORE THE FILM, for the same reason and with the same
+                # consequence: it changes what the cell measures without moving the cell id, so
+                # `--resume` needs it on the record to be able to refuse a toggle. See
+                # `IDENTITY_AXES`.
+                "click_probe": bool(getattr(args, "click_probe", False)),
                 # AN ARM RUNNING THIS IS NOT A MEASUREMENT OF THE BUILD, and the payload has to
                 # say so itself. A reader who finds a treatment arm 40% slower has no other way
                 # to discover that the harness put the 40% there on purpose, and `--resume` reads
@@ -922,6 +1019,29 @@ def run(args, ab_ref = None) -> int:
                 else "standard measurement protocol",
             },
         )
+        # THE SAME SHAPE OF GATE, for the same reason. A probe forces layout on a schedule of its
+        # own, so its payload is perturbed, and "the docs say probe payloads are never scored" is a
+        # convention rather than a gate. A convention is what this subsystem keeps being wrong
+        # about: the run still records ordinary cells and still renders an A/B table, so a probe
+        # invocation on the standard tier produces something that reads exactly like a result. The
+        # gate is what lets `floor_table` refuse it instead of trusting the caller to remember.
+        rec.gate(
+            "probe_free",
+            not extra_init,
+            {
+                "probe_init_script": extra_init or None,
+                "reason": (
+                    "an external init script was installed via SBENCH_EXTRA_INIT_SCRIPT, so this "
+                    "page was instrumented while it was measured"
+                )
+                if extra_init
+                else "no external init script was installed",
+            },
+        )
+        if extra_init:
+            _log("")
+            _log("  PROBE RUN: this payload is NOT scorable. floor_table will refuse it.")
+            _log("")
 
         image_path = ensure_probe_image(paths)
         for side in sides:
@@ -934,6 +1054,7 @@ def run(args, ab_ref = None) -> int:
                 pacer = pacer,
                 seeder = side_seeder,
                 corpus = corpus,
+                click_probe = bool(getattr(args, "click_probe", False)),
                 base_url = side["base_url"],
                 model_id = model_id,
                 tier = args.tier,
@@ -1161,6 +1282,86 @@ def _sweep_surfaces(sides: list, ctx, paths) -> None:
         ctx.recorder.gate(f"surface_sweep:{label}", passed, manifest)
 
 
+def _probe_init_scripts(path: str, source: str) -> list[str]:
+    """The external script AS SOURCE, plus a separate script that says when it did not install.
+
+    NO `eval`, AND THAT IS THE WHOLE POINT. This used to hand the file to indirect eval as a
+    string, so that a malformed probe degraded to a caught `SyntaxError` instead of taking the
+    scene scripts with it. Studio serves `script-src 'self'` with no `'unsafe-eval'`
+    (`studio/backend/main.py::_build_csp`), and `runtime/browser.py::default_engine` picks WEBKIT
+    on both Linux and macOS, so on the DEFAULT engine that eval was refused by CSP and the probe
+    never installed at all. Measured against a page served with Studio's own header:
+
+        chromium   indirect eval runs;      a bad init script leaves the other init scripts alone
+        firefox    indirect eval runs;      a bad init script leaves the other init scripts alone
+        webkit     indirect eval REFUSED;   a bad init script kills every other init script
+
+    So the isolation the wrapper was bought for does not exist on webkit either way -- Playwright
+    installs webkit's init scripts as one bootstrap unit -- and on the two engines where it does
+    exist, separate `add_init_script` calls already provide it without evaluating a string. The
+    source is therefore installed as its own script, opening it, exactly as it reads on disk.
+
+    THE STAMP GOES AFTER THE SOURCE, NOT BEFORE IT. A directive prologue is the run of expression
+    statements a Script or FunctionBody OPENS with (ECMA-262, "Directive Prologues and the Use
+    Strict Directive"), so a statement in front of a probe's leading `"use strict"` demotes it to a
+    string expression that does nothing. The probe then runs sloppy: an undeclared assignment
+    silently creates a global instead of throwing, and the harness is no longer executing the file
+    as it reads on disk. Playwright wraps every init script in `(() => { ... })();`
+    (`playwright-core/src/server/page.ts`, `class InitScript`), which keeps the file's own prologue
+    working as a FunctionBody prologue -- until something is prepended to it.
+
+    THE EMPTY STATEMENT BETWEEN THEM IS THE ATTESTATION. This used to append the stamp on a bare
+    newline, on the reasoning that ASI made that safe because the appended line opens with an
+    identifier. That reasoning only covers a source whose last line is COMPLETE. ASI does not
+    terminate a source that ends mid-expression, so a probe truncated after an assignment operator
+    -- `var result =` -- is a SyntaxError on its own and STOPS BEING ONE once the stamp is
+    concatenated onto it: the stamp becomes that variable's initializer, `window.__sbExtraInitScript`
+    is set by the very assignment that was supposed to prove the probe finished, and the deferred
+    check below returns early. The probe reported nothing and the harness called that a clean run,
+    which is the one conclusion this pair of scripts exists to prevent. Measured on webkit and
+    chromium alike: stamp set, no `pageerror`, console silent, byte-identical to a healthy probe.
+
+    A bare `;` closes any pending operand slot, so that class stays a parse error. It goes AFTER the
+    source and never in front of it, because a leading empty statement is not a StringLiteral
+    ExpressionStatement and would end the directive prologue before the probe's own `"use strict"`
+    was reached.
+
+    WHAT THIS STILL DOES NOT CLOSE, stated so nobody reads the `;` as more than it is: a source
+    truncated after a STATEMENT HEAD rather than inside an expression -- `if (x)`, `while (a)`,
+    `for (;;)` -- takes the empty statement as its body and parses either way, so the stamp still
+    lands. Closing that needs the probe to be PARSED, which this harness deliberately does not do
+    (that is the whole point of the no-`eval` note above). The `;` narrows the hole; it does not
+    seal it, and the attestation is a smoke alarm rather than a proof.
+
+    The second script is the report. The last line of the probe script stamps
+    `window.__sbExtraInitScript`, so a probe that failed to PARSE, or that THREW on the way down,
+    leaves it unset and the deferred check names it on the console. A throw also arrives as a
+    `pageerror`, which `bundle.page.on("pageerror", ...)` already logs, and that is what separates
+    the two cases. On webkit the check dies in the same bootstrap unit as the probe, and the
+    `pageerror` is what reports there.
+    """
+    where = json.dumps(path)
+    return [
+        f"{source}\n;\nwindow.__sbExtraInitScript = {where};\n",
+        (
+            "(function () {\n"
+            "  setTimeout(function () {\n"
+            "    if (window.__sbExtraInitScript) { return; }\n"
+            "    try {\n"
+            "      window.console.error(\n"
+            f"        'SBENCH_EXTRA_INIT_SCRIPT ' + {where} + ' never installed: it did not "
+            "parse, or it threw before it finished. '" + " +\n"
+            "        'This probe reported nothing, which is NOT the same as an arm that did not '"
+            " +\n"
+            "        'fire.'\n"
+            "      );\n"
+            "    } catch (ignored) {}\n"
+            "  }, 0);\n"
+            "})();\n"
+        ),
+    ]
+
+
 def _render_ab(
     paths,
     sides,
@@ -1192,10 +1393,47 @@ def _render_ab(
                 continue
 
     out = paths.out / "ab.md"
+
+    # NO TABLE AT ALL for a probe run, rather than a table with a warning printed above it. The
+    # warning scrolls off; `ab.md` sits in the output directory and gets pasted into a pull
+    # request. This is the same refusal `--report` and `floor_table` make, on the same evidence,
+    # and it is the entry point that actually runs at the end of every session.
+    from .scoring.from_payload import probe_scripts
+
+    probes = probe_scripts(records)
+    if probes:
+        reason = (
+            f"NO A/B TABLE: this run carried an external init script ({', '.join(probes)}), so "
+            f"its timings measure the page and the instrument together. The payload is kept "
+            f"for the probe's own output and for --assert-liveness; it is not scorable."
+        )
+        _log("")
+        _log(reason)
+        # OVERWRITTEN, not left alone and not deleted. `--resume` reuses the output directory, so
+        # an `ab.md` from an earlier clean run of the same directory would survive this refusal
+        # and sit at the standard artifact path, where it reads as this run's result. Deleting it
+        # would leave whoever opens the path with nothing to explain the absence, so the file is
+        # replaced by the refusal itself.
+        stale = paths.out / "ab.md"
+        if stale.exists():
+            stale.write_text(f"# No A/B table\n\n{reason}\n", encoding = "utf-8")
+            _log(f"  a previous {stale} was replaced by this refusal")
+        _log("")
+        return
+
     # A FULLY RESUMED A/B MEASURED NOTHING OF ITS OWN. `--resume` against a finished output skips
     # every cell and is a success, but the ratio is scoped to THIS session, so re-rendering here
     # replaced a real table with NO READING and exited 0 while doing it. The run that measured
     # keeps its report; a run with no prior table still gets one, since there is nothing to lose.
+    #
+    # AFTER THE PROBE REFUSAL, NOT BEFORE IT. The payload the resume keeps is the payload this
+    # check is deciding on behalf of, and a probed one is not scorable no matter which session
+    # recorded it. Run first, this returned early for the one sequence that needs the refusal
+    # most: a fresh PROBE run into a directory that already holds a clean `ab.md`, killed after
+    # its last cell was fsynced and before it rendered -- `archive_payload` moves `payload.jsonl`
+    # and nothing else, so the clean table stays at the standard artifact path -- and then
+    # resumed, which finds every cell complete, records none of its own and left that table
+    # standing over an unscorable probe payload.
     if not any(r.get("row_type") == "cell" and r.get("session_id") == session_id for r in records):
         if out.exists():
             _log(f"\nno cell ran in this session; keeping the A/B table already at {out}")
@@ -1283,6 +1521,15 @@ IDENTITY_AXES = (
     # back as the defaults (see `HISTORICAL_DEFAULTS`).
     "stream_tail_chars",
     "corpus_dollars",
+    # `--click-probe`, whose own help text says it "makes the cell's timings incomparable with a
+    # cell that did not run it". That is the definition of an identity axis: the probe runs a full
+    # `page.click`, a real mouse click, a dispatch, a focus and a hover over the thread before the
+    # film starts, and the cell then records a `composer_click_ms` measured on a composer those
+    # paths have already been through plus a `click_attribution` block a cell without the flag
+    # does not have at all. None of it moves the cell id, so a resume that toggles the flag skips
+    # the completed cells and appends the rest under the same ids -- the one ladder built from two
+    # films this check exists to refuse.
+    "click_probe",
     # `--inject-stream-cost-ms`, on the same rule and for a larger perturbation than either of
     # those two. It burns a known amount of main-thread time per SSE chunk on the TREATMENT arm,
     # so a treatment cell recorded with it is a different reading from one recorded without it,
@@ -1294,6 +1541,17 @@ IDENTITY_AXES = (
     # Both land as a recovery fraction near zero, which reads as "the metric is blind" and is the
     # single verdict this flag exists to make trustworthy.
     "inject_stream_cost_ms",
+    # `SBENCH_EXTRA_INIT_SCRIPT`, the external probe. Unlike the axes above it cannot end in a
+    # wrong NUMBER -- `refuse_if_probed` reads every `run_meta` in the file and every scoring entry
+    # point calls it, so one probed session makes the whole payload unscorable and there is no flag
+    # to override that. It is here for what the refusal costs instead. The variable is an
+    # ENVIRONMENT variable rather than a flag, so it survives in a shell after the experiment that
+    # set it is over, and `--resume` into a half-finished clean payload then installs both sides,
+    # runs the rungs that are still owed with the probe in the page, and appends a probed
+    # `run_meta` to the file. The payload is append-only and the refusal is whole-file, so the
+    # cells that were recorded cleanly before it are unscorable from then on and nothing this tool
+    # offers takes it back. Refusing here costs a millisecond and happens before the first install.
+    "probe_init_script",
 )
 
 #: The axes that describe the SECOND side, which only exist when a run has one. See
@@ -1306,18 +1564,20 @@ TREATMENT_AXES = ("treatment_ref", "treatment_url")
 #: never declared cannot be a difference. That is right for the axes `run_meta` has always carried:
 #: a payload missing one of those is a payload this check has nothing to say about.
 #:
-#: It is WRONG for these three. They arrived with the flags that set them, so a payload written
-#: before them did not decline to record a value -- there was no way to ask for anything but the
-#: default, and it ran under `stream_tail_chars = None`, `corpus_dollars = False` and
-#: `inject_stream_cost_ms = None` by construction. Skipping them therefore accepted `--resume
-#: --stream-tail-chars 24000` against such a payload, skipped its completed cells, and recorded the
-#: rest under a different streamed fixture beneath the same cell ids: one ladder built from two
-#: films, which is what this check exists to refuse. Absence proves the value here, so it is read
-#: as the value.
+#: It is WRONG for the ones below. They arrived with the flag or the variable that sets them, so a
+#: payload written before them did not decline to record a value -- there was no way to ask for
+#: anything but the default, and it ran under `stream_tail_chars = None`, `corpus_dollars = False`,
+#: `click_probe = False`, `inject_stream_cost_ms = None` and `probe_init_script = None` by
+#: construction. Skipping them therefore accepted `--resume --stream-tail-chars 24000` against such
+#: a payload, skipped its completed cells, and recorded the rest under a different streamed fixture
+#: beneath the same cell ids: one ladder built from two films, which is what this check exists to
+#: refuse. Absence proves the value here, so it is read as the value.
 HISTORICAL_DEFAULTS = {
     "stream_tail_chars": None,
     "corpus_dollars": False,
+    "click_probe": False,
     "inject_stream_cost_ms": None,
+    "probe_init_script": None,
 }
 
 #: THE RATIO THE LADDER WAS SIZED BY, carried on every cell's `meta` by `session.build_cells`.
@@ -1383,7 +1643,14 @@ def requested_identity(args, ab_ref, corpus_hash: str) -> dict:
         "treatment_url": attach_b if (ab_ref and attach_b) else "",
         "stream_tail_chars": args.stream_tail_chars,
         "corpus_dollars": bool(args.corpus_dollars),
+        "click_probe": bool(getattr(args, "click_probe", False)),
         "inject_stream_cost_ms": getattr(args, "inject_stream_cost_ms", None),
+        # FROM THE ENVIRONMENT, because that is where this one is asked for: the probe hook is a
+        # variable rather than a flag on purpose, so `args` never sees it and there is nothing to
+        # read it from. Spelled exactly as `run_meta` records it -- the path as it was given -- for
+        # the same reason `studio_ref` is, so the requested value and the recorded one compare
+        # without a second convention to keep in step.
+        "probe_init_script": os.environ.get("SBENCH_EXTRA_INIT_SCRIPT") or None,
     }
 
 
@@ -1675,6 +1942,80 @@ def rollback_session_rows(
     return dropped
 
 
+def invalidate_stale_reports(
+    out,
+    *,
+    archived,
+    extra_init,
+    log = _log,
+) -> list:
+    """Replace `summary.md` and `ab.md` when the payload they describe is no longer the one there.
+
+    `archive_payload` moves `payload.jsonl` and nothing else, so a `summary.md` written by an
+    earlier `--report` of this directory -- step three of the README quickstart, into the same
+    `--out` -- stays at the standard artifact path while the payload underneath it is replaced.
+    Nothing later puts that right, because the report that would overwrite it is a command the
+    next run has no reason to issue: a plain run writes `summary.md` never (only `--report` does)
+    and `ab.md` only under `--ab`, so a single-arm run produces no report-shaped file at all and
+    both stale ones survive it.
+
+    TWO INDEPENDENT INVALIDATIONS, and each is sufficient on its own.
+
+    `archived` is the general case: the payload these reports described has been moved aside, so
+    they describe a file that is no longer at the path they name, whatever the incoming run is.
+    This is the half that was missing. Keying only on `extra_init` closed the clean-then-probed
+    direction and left probed-then-clean open, where a probe run's refusal text -- which says in
+    so many words that the payload beside it is not scorable -- survives into a directory whose
+    payload is now perfectly scorable. A refusal that outlives its reason is worse than no file,
+    because it is read as a finding about the run that is actually there.
+
+    `extra_init` is the narrower case and is NOT covered by `archived`: a `--resume` that
+    `prepare_payload` accepts archives nothing, so `archived` is `None` while the continued
+    payload is being extended by a probed run and becomes unscorable under the old summary.
+
+    OVERWRITTEN, not deleted, for the reason `_render_ab` gives: whoever opens the path gets the
+    reason rather than a missing file. HERE, not at the probe banner further down, for the reason
+    52fc3e848 moved the `ab.md` refusal above its early return: everything between this point and
+    the banner can `return`, raise or be killed by the wall-clock watchdog, and every one of those
+    paths has already archived the payload the summary belongs to. After `prepare_payload`,
+    though, because a `--resume` it refuses touched nothing.
+
+    BOTH ARTIFACTS, and `ab.md` is not already covered by the refusal inside `_render_ab`. That
+    function runs only under `if ab_ref`, so a fresh SINGLE-ARM run into a directory left by an
+    earlier `--ab` run never reaches it, and the old table survives beside the new payload for as
+    long as the directory lasts.
+
+    Returns the paths it rewrote, so a caller can assert on them.
+    """
+    if not archived and not extra_init:
+        return []
+    if extra_init:
+        why = (
+            f"this output directory was reused by a run carrying an external init script "
+            f"({extra_init}), so its timings measure the page and the instrument together. The "
+            f"payload beside it now is not scorable. Re-run with SBENCH_EXTRA_INIT_SCRIPT unset."
+        )
+    else:
+        why = (
+            f"this output directory was reused by a later run, which moved the payload this "
+            f"described to {Path(archived).name} and recorded a new one beside it. Re-report the "
+            f"payload that is there now, or read the archived one directly."
+        )
+
+    rewritten = []
+    for name, heading, what in (
+        ("summary.md", "# No summary", "summary"),
+        ("ab.md", "# No A/B table", "table"),
+    ):
+        stale = Path(out) / name
+        if not stale.exists():
+            continue
+        stale.write_text(f"{heading}\n\nNO {what.upper()}: {why}\n", encoding = "utf-8")
+        log(f"  a previous {stale} was replaced by this refusal")
+        rewritten.append(stale)
+    return rewritten
+
+
 def prepare_payload(
     paths,
     requested: dict,
@@ -1858,8 +2199,21 @@ def report_only(args) -> int:
         _log(f"scoring against the ladder this run recorded: {','.join(recorded)}")
     else:
         declared = _rung_tokens(TIER_RUNGS[args.tier])
+    out = path.parent / "summary.md"
     try:
         text, ladder, _payload = build_report(path, declared)
+    except SystemExit as exc:
+        # A REFUSAL, not a crash, and it has to reach the artefact rather than only the terminal.
+        # `SystemExit` is not an `Exception`, so without this clause it would leave the process
+        # before the write below. `--resume` reuses the output directory, so a `summary.md` from
+        # an earlier clean report of the same directory would survive the refusal and sit next to
+        # a now-probed payload, reading as its result. Same reasoning as the stale `ab.md` in
+        # `_render_ab`: overwritten rather than deleted, so opening the path gives the reason.
+        _log(str(exc))
+        if out.exists():
+            out.write_text(f"# No summary\n\n{exc}\n", encoding = "utf-8")
+            _log(f"  a previous {out} was replaced by this refusal")
+        return 2
     except Exception as exc:  # noqa: BLE001
         # A payload that cannot be scored is reported as such rather than half-rendered: a
         # partial report is exactly the artefact that gets quoted without its caveats.
@@ -1867,7 +2221,6 @@ def report_only(args) -> int:
         return 1
 
     print(text)
-    out = path.parent / "summary.md"
     out.write_text(text, encoding = "utf-8")
     _log(f"summary written to {out}")
     return 0
@@ -2083,6 +2436,15 @@ def parse_args(argv: list):
         "only. A listed action that does run is still held to its slot and its own "
         "assertion. Use only for an action a platform genuinely cannot perform, and say "
         "which in the pull request: every name here is a hole in the gate",
+    )
+    ap.add_argument(
+        "--click-probe",
+        dest = "click_probe",
+        action = "store_true",
+        help = "before the film starts, split the composer click into what a USER pays and "
+        "what Playwright's actionability check pays, plus a hover-only reading. Off by "
+        "default: it costs seconds at large rungs and makes the cell's timings "
+        "incomparable with a cell that did not run it",
     )
     ap.add_argument(
         "--allow-slot-misses",
