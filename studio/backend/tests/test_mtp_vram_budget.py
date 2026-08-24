@@ -988,8 +988,9 @@ class TestExtraArgsMtpDetection:
 
     def test_env_main_cache_type_for_budget(self):
         # The child inherits LLAMA_ARG_CACHE_TYPE_K/_V, but Unsloth emits no
-        # --cache-type when neither param nor extras set it -> a heavier env
-        # main KV (f32) must be adopted so the reserve matches the child.
+        # --cache-type when neither param nor extras set it -> an env type that
+        # budgets differently from f16 must be adopted so the reserve matches
+        # the child.
         assert _env_main_cache_type_for_budget(env = {}) is None
         # f32 exceeds the f16 default -> adopt it (lower-cased so the launch
         # re-emits it via _valid_cache_types).
@@ -1002,9 +1003,24 @@ class TestExtraArgsMtpDetection:
             )
             == "f32"
         )
-        # Quantized env types are <= f16 -> already over-reserved by the default.
-        assert _env_main_cache_type_for_budget(env = {"LLAMA_ARG_CACHE_TYPE_K": "q4_0"}) is None
-        assert _env_main_cache_type_for_budget(env = {"LLAMA_ARG_CACHE_TYPE_V": "q8_0"}) is None
+        # Quantized env types launch (tensor no longer drops them) and flip the
+        # compute-scratch pricing -> adopt them too.
+        assert _env_main_cache_type_for_budget(env = {"LLAMA_ARG_CACHE_TYPE_K": "q4_0"}) == "q4_0"
+        assert _env_main_cache_type_for_budget(env = {"LLAMA_ARG_CACHE_TYPE_V": "q8_0"}) == "q8_0"
+        assert (
+            _env_main_cache_type_for_budget(
+                env = {"LLAMA_ARG_CACHE_TYPE_K": "q4_0", "LLAMA_ARG_CACHE_TYPE_V": "q8_0"}
+            )
+            == "q8_0"
+        )
+        # Heavier-axis rule as for extras: a set f16/f32 beside a quantized axis
+        # wins, keeping the KV reserve safe for the heavier axis.
+        assert (
+            _env_main_cache_type_for_budget(
+                env = {"LLAMA_ARG_CACHE_TYPE_K": "q8_0", "LLAMA_ARG_CACHE_TYPE_V": "f32"}
+            )
+            == "f32"
+        )
         assert _env_main_cache_type_for_budget(env = {"LLAMA_ARG_CACHE_TYPE_K": "f16"}) is None
         # Unknown env type self-neutralizes (treated as f16 by _kv_bytes_per_elem).
         assert _env_main_cache_type_for_budget(env = {"LLAMA_ARG_CACHE_TYPE_K": "wat"}) is None

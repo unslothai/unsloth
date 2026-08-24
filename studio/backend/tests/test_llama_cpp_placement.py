@@ -2414,14 +2414,28 @@ def test_an_unknown_kv_type_is_still_refused_in_tensor_mode(tmp_path):
 def test_tensor_mode_keeps_an_inherited_quantized_kv_env(tmp_path, monkeypatch):
     """The tensor-branch env scrub owns the split, not the cache type: an
     LLAMA_ARG_CACHE_TYPE_K/_V reaches the child untouched, while the tensor split
-    Unsloth emits itself is still cleared."""
+    Unsloth emits itself is still cleared. The inherited type also reaches tensor
+    placement accounting -- priced as banded/f16 instead, an Inkling child's dense
+    fallback OOMs an auto context the plan advertised as fitting."""
     monkeypatch.setenv("LLAMA_ARG_CACHE_TYPE_K", "q8_0")
     monkeypatch.setenv("LLAMA_ARG_CACHE_TYPE_V", "q8_0")
     monkeypatch.setenv("LLAMA_ARG_TENSOR_SPLIT", "9,1")
     backend, gguf = _tensor_backend(tmp_path)
+    planned = {}
+    real_plan = backend._plan_tensor_parallel
 
-    env = _launch(backend, gguf, tensor_parallel = True)["env"]
+    with patch.object(
+        backend,
+        "_plan_tensor_parallel",
+        side_effect = lambda *a, **kw: planned.update(kw) or real_plan(*a, **kw),
+    ):
+        captured = _launch(backend, gguf, tensor_parallel = True)
+    env, cmd = captured["env"], captured["cmd"]
 
     assert env["LLAMA_ARG_CACHE_TYPE_K"] == "q8_0"
     assert env["LLAMA_ARG_CACHE_TYPE_V"] == "q8_0"
     assert "LLAMA_ARG_TENSOR_SPLIT" not in env
+    assert planned["cache_type_kv"] == "q8_0"
+    # Budget-only adoption: the env stays the source of truth for the child.
+    assert "--cache-type-k" not in cmd
+    assert "--cache-type-v" not in cmd

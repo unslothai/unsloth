@@ -2892,21 +2892,24 @@ def _kv_cache_cell_layout(n_ctx: int, n_parallel: int, kv_unified: bool) -> tupl
 
 
 def _env_main_cache_type_for_budget(env: Optional[Mapping[str, str]] = None) -> Optional[str]:
-    """Heavier of the inherited LLAMA_ARG_CACHE_TYPE_K/_V env types when it
-    exceeds the f16 default, else None. Unsloth emits --cache-type only for the
-    param/extras path, so a heavier env (f32) would otherwise reach the child
-    unbudgeted; quantized env types stay over-reserved by f16 (-> None)."""
+    """Heavier (max bytes/elem) of the set LLAMA_ARG_CACHE_TYPE_K/_V env types
+    when it budgets differently from the f16 default, else None. Unsloth emits
+    --cache-type only for the param/extras path, so an env type would otherwise
+    reach the child unbudgeted: f32 under-reserves the KV, and a quantized type
+    skips the dequant compute scratch (on Inkling the dense fallback it forces
+    dwarfs the banded rate). The caller adopts the type for the reserve only;
+    _cache_type_from_env keeps it out of the emitted flags."""
     e = os.environ if env is None else env
-    f16_bpe = _kv_bytes_per_elem("f16")
-    heaviest: Optional[str] = None
-    heaviest_bpe = f16_bpe
-    for var in ("LLAMA_ARG_CACHE_TYPE_K", "LLAMA_ARG_CACHE_TYPE_V"):
-        raw = (e.get(var) or "").strip().lower()
-        if not raw:
-            continue
-        bpe = _kv_bytes_per_elem(raw)
-        if bpe > heaviest_bpe:
-            heaviest, heaviest_bpe = raw, bpe
+    set_types = [
+        raw
+        for var in ("LLAMA_ARG_CACHE_TYPE_K", "LLAMA_ARG_CACHE_TYPE_V")
+        if (raw := (e.get(var) or "").strip().lower())
+    ]
+    if not set_types:
+        return None
+    heaviest = max(set_types, key = _kv_bytes_per_elem)
+    if _kv_bytes_per_elem(heaviest) == _kv_bytes_per_elem("f16"):
+        return None
     return heaviest
 
 
@@ -9815,9 +9818,9 @@ class LlamaCppBackend:
         batch; the flat term only covers ctx -> 0. A quantized KV cache adds a
         context-sized dequant scratch that scales with n_embd; f16/bf16/f32 pays only
         the KQ mask, a flat n_ubatch*2 bytes per context token. ``cache_type_kv`` None
-        -> f16 (llama.cpp's default; an env-set quantized cache is budgeted as f16 on
-        the KV side, whose over-reservation absorbs the dequant scratch). Returns 0
-        when dims are missing or ``n_ctx`` <= 0.
+        -> f16 (llama.cpp's default; env-set types are adopted by the caller via
+        ``_env_main_cache_type_for_budget``). Returns 0 when dims are missing or
+        ``n_ctx`` <= 0.
 
         ``layer_split`` adds the extra KQ-mask copies a multi-device split pays (see
         ``_CTX_COMPUTE_SPLIT_MULT``) on every architecture except deepseek4, whose own
@@ -15677,10 +15680,11 @@ class LlamaCppBackend:
                 _cache_type_from_env = False
                 if cache_type_kv is None:
                     # Param/extras set nothing, so the child inherits
-                    # LLAMA_ARG_CACHE_TYPE_K/_V. Adopt a heavier env type (f32) for
-                    # the reserve only; the launch does NOT re-emit it (that would
-                    # rewrite an asymmetric K=f32,V=f16 env into symmetric flags),
-                    # so _cache_type_from_env keeps it out of the emitted flags.
+                    # LLAMA_ARG_CACHE_TYPE_K/_V. Adopt an env type that budgets
+                    # differently from f16 (f32, quantized) for the reserve only;
+                    # the launch does NOT re-emit it (that would rewrite an
+                    # asymmetric K=f32,V=f16 env into symmetric flags), so
+                    # _cache_type_from_env keeps it out of the emitted flags.
                     cache_type_kv = _env_main_cache_type_for_budget()
                     _cache_type_from_env = cache_type_kv is not None
                 # A user --split-mode in extras last-wins-overrides the toggle, and
