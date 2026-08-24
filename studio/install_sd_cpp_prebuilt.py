@@ -713,7 +713,17 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
         # it to exist already: a first install into a fresh root would fail as "cannot store
         # symlinks" when the real answer is that nothing had been created yet.
         base.mkdir(parents = True, exist_ok = True)
-        probe = base / f".unsloth-symlink-probe-{os.getpid()}"
+        # A probe a killed install left behind must not answer for this one. symlink_to raises
+        # EEXIST on an existing path, which the handler below would read as "no symlink support",
+        # and the install directory outlives the process: a restarted container starts a fresh
+        # pid namespace, so the same low pid comes round again and every retry stays blocked.
+        # Sweep stragglers, and take a unique name so a concurrent install cannot collide either.
+        for stale in base.glob(".unsloth-symlink-probe-*"):
+            try:
+                stale.unlink()
+            except OSError:
+                pass
+        probe = base / f".unsloth-symlink-probe-{os.getpid()}-{os.urandom(4).hex()}"
         try:
             probe.symlink_to(".")
         except OSError as exc:
@@ -721,7 +731,8 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
             if sys.platform != "win32":
                 raise RuntimeError(f"this filesystem cannot store symlinks: {exc}") from exc
         else:
-            probe.unlink()
+            # missing_ok: a concurrent install's sweep may have taken this one already.
+            probe.unlink(missing_ok = True)
     # extractall opens each destination "wb", which FOLLOWS a link a previous bundle left and
     # writes the member into its target. Drop stale links first: a name one bundle ships as a link
     # the next can ship as a file (the mirror ships copies where upstream ships links).

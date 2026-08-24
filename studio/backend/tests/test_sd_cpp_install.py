@@ -17,6 +17,7 @@ _STUDIO = Path(__file__).resolve().parents[2]
 if str(_STUDIO) not in sys.path:
     sys.path.insert(0, str(_STUDIO))
 
+import os  # noqa: E402
 import hashlib  # noqa: E402
 import builtins  # noqa: E402
 import types  # noqa: E402
@@ -825,6 +826,28 @@ def test_safe_extractall_creates_the_install_root_before_probing_for_symlinks(tm
         _safe_extractall(zf, target)
     assert (target / "libwebp.so.7").is_symlink()
     assert (target / "libwebp.so.7").read_bytes() == b"ELFpayload"
+
+
+def test_safe_extractall_survives_a_probe_left_by_a_killed_install(tmp_path):
+    # An install killed between symlink_to and unlink leaves its probe in a directory that
+    # outlives the process. A restarted container starts a fresh pid namespace, so the same pid
+    # comes round again, and symlink_to's EEXIST would then read as "no symlink support" and
+    # block every retry.
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
+    target = tmp_path / "install"
+    target.mkdir()
+    (target / f".unsloth-symlink-probe-{os.getpid()}").symlink_to(".")
+    archive = tmp_path / "libs.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("libwebp.so.7.2.0", b"ELFpayload")
+        _link_member(zf, "libwebp.so.7", "libwebp.so.7.2.0")
+    with zipfile.ZipFile(archive) as zf:
+        _safe_extractall(zf, target)
+    assert (target / "libwebp.so.7").is_symlink()
+    assert (target / "libwebp.so.7").read_bytes() == b"ELFpayload"
+    # And the install leaves none of its own behind.
+    assert list(target.glob(".unsloth-symlink-probe-*")) == []
 
 
 def test_safe_extractall_is_idempotent_across_reinstalls(tmp_path):
@@ -1751,9 +1774,9 @@ def test_a_legacy_sibling_install_is_read_from_its_own_root(tmp_path, monkeypatc
     monkeypatch.setattr(sdmod, "install", lambda **kw: installs.append(kw))
 
     assert bk.ensure_sd_server_binary(accelerator = "cuda") == str(server)
-    assert (
-        installs == []
-    ), "the CUDA build recorded in the legacy root is already what was asked for"
+    assert installs == [], (
+        "the CUDA build recorded in the legacy root is already what was asked for"
+    )
 
 
 def test_asking_for_the_cpu_build_never_reinstalls(tmp_path, monkeypatch):
@@ -2574,9 +2597,9 @@ def test_a_generation_cannot_start_inside_the_install_window(tmp_path, monkeypat
     generator = threading.Thread(target = _try_generate, daemon = True)
     generator.start()
     generator.join(1.0)
-    assert (
-        generator.is_alive()
-    ), "a generation must not be admitted while the tree is being replaced"
+    assert generator.is_alive(), (
+        "a generation must not be admitted while the tree is being replaced"
+    )
     assert admitted_during_install == []
 
     release.set()
