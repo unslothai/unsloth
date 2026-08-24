@@ -209,6 +209,7 @@ import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { buildChatTourSteps } from "./tour";
 import type { ChatView, MessageRecord } from "./types";
 import { clearNewChatDraft } from "./utils/composer-draft";
+import { isChatThreadDeleted } from "./utils/chat-thread-tombstones";
 import {
   getStoredChatThread,
   isExpectedBackgroundChatStorageError,
@@ -1492,8 +1493,19 @@ function ProjectLanding({
     }
     if (!activeThreadId) {
       if (resumed && pendingNewThreadId) {
-        useChatRuntimeStore.getState().setActiveThreadId(pendingNewThreadId);
-        return;
+        // ...unless it was deleted while another view held the screen. Retaining this id
+        // across compare is what this PR added; before it, leaving the project view
+        // unmounted the landing, so there was nothing to restore. The sidebar deletes
+        // globally and does not
+        // reach this component's state, and compare does not hold the chat as the active
+        // id, so nothing else clears it. Restoring a tombstoned thread would put a
+        // conversation storage no longer has back on screen, and the next prompt would
+        // append to it. Fall through to the rotate below: a fresh nonce is what the
+        // landing shows when it owns no chat.
+        if (!isChatThreadDeleted(pendingNewThreadId)) {
+          useChatRuntimeStore.getState().setActiveThreadId(pendingNewThreadId);
+          return;
+        }
       }
       // Leaving a created chat for a new one: rotate the nonce so the runtime
       // switches to a fresh thread instead of appending to the old chat.

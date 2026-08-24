@@ -163,7 +163,7 @@ test("compare preserves a materialized project chat", () => {
   );
   assert.match(
     landing,
-    /if \(resumed && pendingNewThreadId\) \{\s*useChatRuntimeStore\.getState\(\)\.setActiveThreadId\(pendingNewThreadId\);\s*return;/,
+    /if \(resumed && pendingNewThreadId\) \{[\s\S]*?useChatRuntimeStore\.getState\(\)\.setActiveThreadId\(pendingNewThreadId\);\s*return;/,
   );
 });
 
@@ -309,6 +309,29 @@ test("a publication landing mid-switch does not reclaim the view", () => {
     provider,
     /<ThreadBackendAutosave[\s\S]*?newThreadSwitchStateRef=\{newThreadSwitchStateRef\}[\s\S]*?\/>/,
   );
+});
+
+test("the landing does not restore a chat that was deleted while it was away", () => {
+  // Retaining the chat across the detour is what this PR added: at the merge base leaving
+  // the project view unmounted the landing, so there was nothing to restore. Nothing else
+  // clears the retained id -- it is component state, the sidebar deletes globally without
+  // reaching it, and compare does not hold the chat as the store's active id -- so without
+  // this check a chat deleted during compare comes back on screen with a composer pointed
+  // at it, and storage no longer has it.
+  const restore = page.slice(
+    page.indexOf("const resumed = active && !wasActiveRef.current;"),
+  );
+  const guard = restore.slice(0, restore.indexOf("// Leaving a created chat"));
+  assert.match(guard, /if \(!isChatThreadDeleted\(pendingNewThreadId\)\) \{/);
+  assert.ok(
+    guard.indexOf("isChatThreadDeleted(pendingNewThreadId)") <
+      guard.indexOf("setActiveThreadId(pendingNewThreadId)"),
+    "the check has to come before the restore it guards",
+  );
+  // Falling through rather than returning: the rotate below is what leaves the landing
+  // with a fresh thread to send into instead of a dangling retained id.
+  assert.doesNotMatch(guard, /isChatThreadDeleted\(pendingNewThreadId\)\) \{\s*return;/);
+  assert.match(page, /import \{ isChatThreadDeleted \} from "\.\/utils\/chat-thread-tombstones";/);
 });
 
 test("compare lists its threads once before it waits on any run", () => {
