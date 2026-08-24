@@ -2392,11 +2392,17 @@ def _rocm_windows_per_device_vram(
             # where the two agree. The free half of the reading is the untrusted
             # one either way, the total is fine.
             total_is_pool = False
+            # Whether the driver CONFIRMED this total reaches the pool, as opposed
+            # to it merely not having been widened. A probe that fails leaves a
+            # carve-out-sized total standing, and a unified part is exactly where
+            # that is possible, so the two are not the same question.
+            pool_confirmed = False
             try:
                 # Classifier inside the try: it is a probe, and a probe that
                 # throws must cost this device its correction, not its existence.
                 if _rocm_props_total_is_carve_out(props) and hasattr(mod, "mem_get_info"):
                     pool_bytes = int(mod.mem_get_info(ordinal)[1])
+                    pool_confirmed = pool_bytes >= total_bytes
                     # Only a WIDER total is worth adopting. The classifier says
                     # carve-out for a discrete card on an unsettled runtime too,
                     # and unlike the inventory this path carries a used: a shrunk
@@ -2431,6 +2437,7 @@ def _rocm_windows_per_device_vram(
                     # props.total_memory never counted. Same test
                     # get_gpu_memory_info applies before summing the two counters.
                     "positively_unified": _rocm_props_are_positively_unified(props),
+                    "pool_confirmed": pool_confirmed,
                 }
             )
         except Exception as e:
@@ -2468,13 +2475,20 @@ def _rocm_windows_per_device_vram(
     # Pool-scoped covers both ways to get there: a total this call widened, and a
     # confirmed APU whose props.total_memory already spanned the pool, which is
     # what the measured gfx1151 does. Keying on the widening alone would leave
-    # that host, the one this PR is about, on the plateaued counter.
-    pool_scoped = [m["total_is_pool"] or m["positively_unified"] for m in dev_meta]
+    # that host, the one this PR is about, on the plateaued counter. Being a UMA
+    # part is not enough by itself though: it says what the device is, not what
+    # scope the retained total has, and an APU whose driver probe failed still
+    # carries a carve-out-sized one that Dedicated Usage is the right numerator
+    # for. Hence pool_confirmed.
+    pool_scoped = [
+        m["total_is_pool"] or (m["positively_unified"] and m["pool_confirmed"])
+        for m in dev_meta
+    ]
     if any(pool_scoped):
         only = dev_meta[0] if len(dev_meta) == 1 else None
         unified_used = (
             _rocm_windows_unified_used_bytes(adapters)
-            if only is not None and only["positively_unified"]
+            if only is not None and pool_scoped[0] and only["positively_unified"]
             else None
         )
         if unified_used is not None:

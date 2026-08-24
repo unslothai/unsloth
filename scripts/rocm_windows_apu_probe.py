@@ -131,6 +131,8 @@ def read_counters_settled(
     need_stable: int = 3,
     interval_s: float = 3.0,
     baseline: Optional[tuple[float, float]] = None,
+    move_gb: float = 0.0,
+    min_wait_s: float = 0.0,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Poll until Dedicated and Shared Usage both stop moving, then take the reading.
 
@@ -149,22 +151,31 @@ def read_counters_settled(
     look exactly like three identical settled ones. So with a baseline the window
     is only trusted once the reading has actually left it; if it never does,
     that is reported rather than dressed up as a settled zero delta.
+
+    These totals are host-wide, so a display adapter twitching would otherwise
+    pass for the allocation landing. ``move_gb`` is therefore sized from the
+    amount actually held rather than from the noise tolerance, and ``min_wait_s``
+    holds the window shut for long enough that a lagged counter which happens to
+    be stable at its old value cannot be mistaken for a settled one.
     """
     import time
 
     samples: list[tuple[float, float]] = []
     counters = read_counters()
-    deadline = time.monotonic() + timeout_s
+    started = time.monotonic()
+    deadline = started + timeout_s
     settled = False
     moved = baseline is None
+    threshold = max(move_gb, tol_gb)
     while True:
         d, s = _usage_totals_gb(counters)
         samples.append((round(d, 3), round(s, 3)))
         if baseline is not None and not moved:
-            moved = any(abs(now - was) > tol_gb for now, was in zip((d, s), baseline))
+            moved = any(abs(now - was) >= threshold for now, was in zip((d, s), baseline))
         window = samples[-need_stable:]
         if (
             moved
+            and time.monotonic() - started >= min_wait_s
             and len(window) >= need_stable
             and all(max(col) - min(col) <= tol_gb for col in zip(*window))
         ):
@@ -177,6 +188,7 @@ def read_counters_settled(
     return counters, {
         "settled": settled,
         "moved_from_baseline": moved,
+        "movement_threshold_gb": round(threshold, 3),
         "samples_gb": samples,
         "tolerance_gb": tol_gb,
         "waited_s": round((len(samples) - 1) * interval_s, 1),
@@ -373,8 +385,9 @@ def render(obs: dict[str, Any]) -> str:
                 )
             elif not s.get("moved_from_baseline", True):
                 L.append(
-                    f"  **WARNING: never left the pre-allocation reading in "
-                    f"{s['waited_s']}s** (samples {s['samples_gb']} GB). The "
+                    f"  **WARNING: never moved {s['movement_threshold_gb']} GB off "
+                    f"the pre-allocation reading in {s['waited_s']}s** "
+                    f"(samples {s['samples_gb']} GB). The "
                     f"allocation is resident but no counter has caught up, so the "
                     f"delta below understates it. Raise --settle-timeout and re-run."
                 )
@@ -545,6 +558,11 @@ def main() -> int:
                 obs["counters_after"], obs["settle_after"] = read_counters_settled(
                     timeout_s = args.settle_timeout,
                     baseline = _usage_totals_gb(obs["counters_before"]),
+                    # Half the held amount: enough that a display adapter's blip
+                    # cannot pass for the allocation, loose enough that a counter
+                    # which only ever accounts for part of it still qualifies.
+                    move_gb = 0.5 * held["held_gb"],
+                    min_wait_s = 15.0,
                 )
         except Exception as e:  # noqa: BLE001
             obs["allocation_error"] = f"{type(e).__name__}: {e}"

@@ -800,6 +800,24 @@ def test_shared_usage_needs_a_positively_unified_part(win_rocm, monkeypatch):
     assert aggregate is None
 
 
+def test_a_failed_driver_probe_keeps_the_apu_on_the_dedicated_counter(win_rocm, monkeypatch):
+    """Being a UMA part says what the device is, not what scope its total has. A
+    confirmed APU whose mem_get_info probe fails keeps a carve-out-sized total,
+    and Dedicated Usage is the correct numerator for that one. Summing Shared
+    into it would clamp to a fabricated 100%."""
+    _apu_host(monkeypatch, unified_used = 40.0 * GB)
+    torch = sys.modules["torch"]
+    monkeypatch.setattr(
+        torch.cuda, "mem_get_info",
+        lambda i: (_ for _ in ()).throw(RuntimeError("hipMemGetInfo failed")),
+    )
+
+    devices, _ = hw._rocm_windows_per_device_vram([0])
+    assert devices[0]["total_gb"] == 8.0  # the carve-out, unwidened
+    assert devices[0]["used_gb"] == 2.0  # the Dedicated counter, not the sum
+    assert devices[0]["used_gb"] <= devices[0]["total_gb"]
+
+
 def test_a_confirmed_apu_takes_the_unified_sum_even_unwidened(win_rocm, monkeypatch):
     """The measured gfx1151 has props.total_memory already spanning the pool, so
     nothing widens and total_is_pool stays false. The total is pool-scoped all
