@@ -527,6 +527,47 @@ test("a bare letter is refused but function keys stand alone", () => {
   assert.ok(isAcceptableBinding(enter, true));
 });
 
+test("bare Escape is the recorder's own exit, so only a prompt-gated row takes it", async () => {
+  const bare = {
+    code: "Escape",
+    mod: false,
+    ctrl: false,
+    shift: false,
+    alt: false,
+  };
+  assert.equal(isAcceptableBinding(bare), false);
+  assert.ok(isAcceptableBinding(bare, true));
+  // Shift keeps it clear of the exit, which is where clearAllUnreads ships.
+  assert.ok(isAcceptableBinding({ ...bare, shift: true }));
+
+  // The recorder swallows every keydown, so bare Escape has to stay its way
+  // out, except on the rows whose own chord it is.
+  const tab = await readFile(
+    new URL(
+      "../src/features/settings/tabs/keyboard-shortcuts-tab.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    tab,
+    /event\.code === "Escape" &&\n(?:\s*![a-zA-Z.]+ &&\n)+\s*!def\?\.allowBareKey\n\s*\) \{\n\s*setRecording\(null\);/,
+  );
+
+  // Which leaves no shipped bare Escape that its own tab could not record.
+  for (const def of SHORTCUT_DEFS) {
+    for (const slot of SHORTCUT_SLOTS) {
+      for (const mac of [true, false]) {
+        if (defaultBindingFor(def, slot, mac) !== "Escape") continue;
+        assert.ok(
+          def.allowBareKey,
+          `${def.id}.${slot} ships bare Escape without allowBareKey`,
+        );
+      }
+    }
+  }
+});
+
 test("only prompt-gated actions ship a bare-key default", () => {
   for (const def of SHORTCUT_DEFS) {
     for (const slot of SHORTCUT_SLOTS) {

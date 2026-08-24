@@ -142,12 +142,17 @@ export function KeyboardShortcutsTab() {
     const onKeyDown = (event: KeyboardEvent) => {
       event.preventDefault();
       event.stopPropagation();
+      // Every keydown is swallowed above, so bare Escape is the only way out of
+      // recording. The exception is a row that takes bare keys: Escape is the
+      // chord it ships, so recording it has to be possible, and the pencil
+      // cancels there instead.
       if (
         event.code === "Escape" &&
         !event.metaKey &&
         !event.ctrlKey &&
         !event.altKey &&
-        !event.shiftKey
+        !event.shiftKey &&
+        !def?.allowBareKey
       ) {
         setRecording(null);
         setRecordingError(null);

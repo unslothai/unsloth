@@ -619,8 +619,8 @@ export function formatBindingValueLabel(
 
 /**
  * A binding with no modifier at all would swallow plain typing, so the
- * recorder refuses it. Function keys and Escape are self-contained, and an
- * action gated on an on-screen prompt (`allowBareKey`) may take any key.
+ * recorder refuses it. Function keys are self-contained, and an action gated on
+ * an on-screen prompt (`allowBareKey`) may take any key.
  */
 export function isAcceptableBinding(
   binding: ShortcutBinding,
@@ -628,5 +628,9 @@ export function isAcceptableBinding(
 ): boolean {
   if (binding.mod || binding.ctrl || binding.alt) return true;
   if (allowBareKey) return true;
-  return /^F\d{1,2}$/.test(binding.code) || binding.code === "Escape";
+  if (/^F\d{1,2}$/.test(binding.code)) return true;
+  // Escape is self-contained too, but bare it belongs to declining a tool call
+  // and is the way out of the recorder. Held with Shift it is free, which is
+  // where clearAllUnreads sits. Anything else has to say so with allowBareKey.
+  return binding.code === "Escape" && binding.shift;
 }
