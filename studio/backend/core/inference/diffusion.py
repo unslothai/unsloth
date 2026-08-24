@@ -2588,8 +2588,7 @@ class DiffusionBackend:
                         and not _dense_te_shard(s.rfilename)
                         and (components is None or _pipeline_selected_file(s.rfilename, components))
                     ]
-                    # diffusers prefers safetensors: drop a .bin whose dir also has a picked
-                    # .safetensors.
+                    # Prefer safetensors over sibling .bin weights.
                     st_dirs = {
                         s.rfilename.rsplit("/", 1)[0]
                         for s in candidates
