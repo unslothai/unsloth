@@ -199,10 +199,8 @@ async def get_current_subject(
             get_lan_access_unauthenticated_api,
             request_on_lan_access,
         )
-
-        allowed = (
-            request_on_lan_access(request)
-            and await run_in_threadpool(get_lan_access_unauthenticated_api)
+        allowed = request_on_lan_access(request) and await run_in_threadpool(
+            get_lan_access_unauthenticated_api
         )
     except Exception:
         allowed = False

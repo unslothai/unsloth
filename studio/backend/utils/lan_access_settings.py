@@ -51,7 +51,6 @@ def get_lan_access_unauthenticated_api() -> bool:
     """Whether the dedicated LAN listener may admit unauthenticated /v1 calls."""
     try:
         from storage.studio_db import get_app_setting
-
         stored = get_app_setting(LAN_ACCESS_UNAUTHENTICATED_API_KEY, None)
     except Exception:
         return False
