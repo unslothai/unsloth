@@ -431,7 +431,7 @@ export const fr = {
         connectionPlaceholder: "Sélectionner une connexion",
         customModelLabel: "Modèle",
         customVoiceDescription:
-          "Nom de la voix attendu par l'endpoint (facultatif)",
+          "Nom de la voix attendu par l'endpoint ; alloy par défaut",
         modelLabel: "Modèle TTS",
         modelDescription:
           "Chargez un modèle audio depuis le sélecteur de modèles (par exemple Orpheus TTS)",

@@ -268,7 +268,7 @@ export async function generateCustomTtsAudio(
   const { ttsProviderId, ttsProviderModel, ttsProviderVoice } =
     useVoiceSettingsStore.getState();
   const model = ttsProviderModel.trim();
-  const voice = ttsProviderVoice.trim();
+  const voice = ttsProviderVoice.trim() || "alloy";
   if (!ttsProviderId || !model) {
     throw new Error(
       "Custom TTS is not configured. Pick a connection and model in Settings → Voice.",
@@ -279,9 +279,37 @@ export async function generateCustomTtsAudio(
   const provider = providersState.providers.find(
     (candidate) => candidate.id === ttsProviderId,
   );
-  const legacyApiKey = provider?.hasApiKey
+  if (!provider) {
+    useVoiceSettingsStore.getState().setTtsProviderId("");
+    throw new Error(
+      "The custom TTS connection no longer exists. Pick another connection in Settings → Voice.",
+    );
+  }
+  const legacyApiKey = provider.hasApiKey
     ? ""
     : getExternalProviderApiKey(ttsProviderId).trim();
+  const encryptedApiKey = legacyApiKey
+    ? await encryptProviderApiKey(legacyApiKey)
+    : "";
+
+  // Encryption yields to the event loop. Recheck the frontend-only policy and
+  // provider membership before releasing assistant text or a retained key.
+  const currentProvidersState = useExternalProvidersStore.getState();
+  if (!currentProvidersState.connectionsEnabled) {
+    throw new Error(
+      "Connections are disabled. Turn on Enable connections in Settings → Connections to use a custom TTS endpoint.",
+    );
+  }
+  if (
+    !currentProvidersState.providers.some(
+      (candidate) => candidate.id === ttsProviderId,
+    )
+  ) {
+    useVoiceSettingsStore.getState().setTtsProviderId("");
+    throw new Error(
+      "The custom TTS connection no longer exists. Pick another connection in Settings → Voice.",
+    );
+  }
   const response = await authFetch("/api/inference/audio/speech", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -289,10 +317,8 @@ export async function generateCustomTtsAudio(
       input: text,
       provider_id: ttsProviderId,
       model,
-      ...(voice ? { voice } : {}),
-      ...(legacyApiKey
-        ? { encrypted_api_key: await encryptProviderApiKey(legacyApiKey) }
-        : {}),
+      voice,
+      ...(encryptedApiKey ? { encrypted_api_key: encryptedApiKey } : {}),
     }),
     signal,
   });

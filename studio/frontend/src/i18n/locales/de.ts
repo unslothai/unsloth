@@ -432,7 +432,7 @@ export const de = {
         connectionPlaceholder: "Verbindung auswählen",
         customModelLabel: "Modell",
         customVoiceDescription:
-          "Stimmenname, den der Endpunkt erwartet (optional)",
+          "Vom Endpunkt erwarteter Stimmenname; Standard ist alloy",
         modelLabel: "TTS-Modell",
         modelDescription:
           "Laden Sie ein Audiomodell über die Modellauswahl (z. B. Orpheus TTS)",

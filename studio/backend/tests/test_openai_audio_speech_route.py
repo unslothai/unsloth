@@ -388,6 +388,7 @@ def test_external_passes_response_format_through(monkeypatch):
             "input": "hi",
             "provider_id": "conn-1",
             "model": "kokoro",
+            "voice": "alloy",
             "response_format": "mp3",
         },
     )
@@ -403,12 +404,28 @@ def test_external_missing_model_is_400(monkeypatch):
     assert resp.status_code == 400
 
 
+def test_external_missing_voice_is_400(monkeypatch):
+    cli, _calls, _saved = _make_client(monkeypatch)
+    _install_external(monkeypatch)
+    resp = cli.post(
+        "/v1/audio/speech",
+        json = {"input": "hi", "provider_id": "conn-1", "model": "kokoro"},
+    )
+    assert resp.status_code == 400
+    assert "voice" in resp.json()["error"]["message"].lower()
+
+
 def test_external_unknown_provider_is_404(monkeypatch):
     cli, calls, saved = _make_client(monkeypatch)
     _install_external(monkeypatch)
     resp = cli.post(
         "/v1/audio/speech",
-        json = {"input": "hi", "provider_id": "missing", "model": "kokoro"},
+        json = {
+            "input": "hi",
+            "provider_id": "missing",
+            "model": "kokoro",
+            "voice": "alloy",
+        },
     )
     assert resp.status_code == 404
 
@@ -418,7 +435,12 @@ def test_external_disabled_provider_is_400(monkeypatch):
     _install_external(monkeypatch, enabled = False)
     resp = cli.post(
         "/v1/audio/speech",
-        json = {"input": "hi", "provider_id": "conn-1", "model": "kokoro"},
+        json = {
+            "input": "hi",
+            "provider_id": "conn-1",
+            "model": "kokoro",
+            "voice": "alloy",
+        },
     )
     assert resp.status_code == 400
 
@@ -440,7 +462,12 @@ def test_external_upstream_error_is_502(monkeypatch):
     monkeypatch.setattr(routes_module.ExternalProviderClient, "create_speech", _boom)
     resp = cli.post(
         "/v1/audio/speech",
-        json = {"input": "hi", "provider_id": "conn-1", "model": "kokoro"},
+        json = {
+            "input": "hi",
+            "provider_id": "conn-1",
+            "model": "kokoro",
+            "voice": "alloy",
+        },
     )
     assert resp.status_code == 502
     assert "upstream broke" in resp.json()["error"]["message"]
@@ -476,7 +503,9 @@ def test_external_disconnect_cancels_the_upstream_request(monkeypatch):
     async def _run():
         with pytest.raises(asyncio.CancelledError):
             await routes_module._external_tts_speech(
-                AudioSpeechRequest(input = "hi", provider_id = "conn-1", model = "kokoro"),
+                AudioSpeechRequest(
+                    input = "hi", provider_id = "conn-1", model = "kokoro", voice = "alloy"
+                ),
                 _DisconnectingRequest(),
             )
 
@@ -501,9 +530,99 @@ def test_external_forwards_a_legacy_browser_key(monkeypatch):
             "input": "hi",
             "provider_id": "conn-1",
             "model": "kokoro",
+            "voice": "alloy",
             "encrypted_api_key": "enc-legacy",
         },
     )
     assert resp.status_code == 200
     assert seen["encrypted_api_key"] == "enc-legacy"
     assert created[0]["api_key"] == "sk-from-legacy"
+
+
+def test_external_provider_reads_do_not_block_the_event_loop(monkeypatch):
+    import asyncio
+    import time
+
+    from models.inference import AudioSpeechRequest
+
+    _install_external(monkeypatch)
+    original_get_provider = routes_module.providers_db.get_provider
+
+    def _slow_get_provider(provider_id):
+        time.sleep(0.2)
+        return original_get_provider(provider_id)
+
+    monkeypatch.setattr(routes_module.providers_db, "get_provider", _slow_get_provider)
+
+    class _ConnectedRequest:
+        headers = {}
+
+        async def is_disconnected(self):
+            return False
+
+    async def _run():
+        started = time.perf_counter()
+        speech = asyncio.create_task(
+            routes_module._external_tts_speech(
+                AudioSpeechRequest(
+                    input = "hi", provider_id = "conn-1", model = "kokoro", voice = "alloy"
+                ),
+                _ConnectedRequest(),
+            )
+        )
+        await asyncio.sleep(0.02)
+        heartbeat_elapsed = time.perf_counter() - started
+        await speech
+        return heartbeat_elapsed
+
+    assert asyncio.run(_run()) < 0.1
+
+
+def test_external_rejects_a_cross_process_provider_edit_after_resolving_its_key(monkeypatch):
+    import asyncio
+
+    from models.inference import AudioSpeechRequest
+
+    old_config = {
+        "provider_type": "custom",
+        "display_name": "Old TTS",
+        "base_url": "http://old-tts.local:8880/v1",
+        "is_enabled": True,
+    }
+    new_config = {
+        **old_config,
+        "display_name": "New TTS",
+        "base_url": "http://new-tts.local:8880/v1",
+    }
+    # A second process is not covered by provider_config_guard. It can update
+    # the row and then the secret while this process is resolving that secret.
+    snapshots = iter((old_config, old_config, new_config))
+    monkeypatch.setattr(routes_module.providers_db, "get_provider", lambda _pid: next(snapshots))
+    monkeypatch.setattr(routes_module, "validate_provider_base_url", lambda url: url)
+    key_resolved = False
+
+    def _resolve(*_args, **_kwargs):
+        nonlocal key_resolved
+        key_resolved = True
+        return "new-key"
+
+    monkeypatch.setattr(routes_module, "resolve_provider_api_key_or_400", _resolve)
+
+    class _ConnectedRequest:
+        headers = {}
+
+        async def is_disconnected(self):
+            return False
+
+    async def _run():
+        with pytest.raises(HTTPException) as excinfo:
+            await routes_module._external_tts_speech(
+                AudioSpeechRequest(
+                    input = "hi", provider_id = "conn-1", model = "kokoro", voice = "alloy"
+                ),
+                _ConnectedRequest(),
+            )
+        assert excinfo.value.status_code == 409
+
+    asyncio.run(_run())
+    assert key_resolved

@@ -425,7 +425,7 @@ export const hi = {
         connectionPlaceholder: "कनेक्शन चुनें",
         customModelLabel: "मॉडल",
         customVoiceDescription:
-          "एंडपॉइंट द्वारा अपेक्षित वॉइस नाम (वैकल्पिक)",
+          "एंडपॉइंट द्वारा अपेक्षित वॉइस नाम; डिफ़ॉल्ट alloy है",
         modelLabel: "TTS मॉडल",
         modelDescription:
           "मॉडल सिलेक्टर से एक ऑडियो मॉडल लोड करें (जैसे Orpheus TTS)",

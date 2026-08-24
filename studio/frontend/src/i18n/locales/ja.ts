@@ -424,7 +424,7 @@ export const ja = {
           "OpenAI 互換サーバーは「接続」タブで追加できます",
         connectionPlaceholder: "接続を選択",
         customModelLabel: "モデル",
-        customVoiceDescription: "エンドポイントが期待する音声名（省略可）",
+        customVoiceDescription: "エンドポイントが期待する音声名（デフォルトは alloy）",
         modelLabel: "TTS モデル",
         modelDescription:
           "モデルセレクターから音声モデルを読み込んでください (例: Orpheus TTS)",

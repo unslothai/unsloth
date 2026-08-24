@@ -46,6 +46,14 @@ test("the row lands on the TTS selector, not the mode Audio was left in", () => 
   );
 });
 
+test("custom TTS explains the strict voice default", () => {
+  assert.match(
+    en,
+    /customVoiceDescription: "Voice name the endpoint expects; defaults to alloy",/,
+  );
+  assert.doesNotMatch(en, /customVoiceDescription: .*optional/i);
+});
+
 test("a studio preview shows the generate wait instead of an idle button", () => {
   // Stop during the generate wait read as idle, and extra clicks orphaned requests.
   assert.match(

@@ -412,7 +412,7 @@ export const zhCN = {
         connectionDescription: "在“连接”标签页中添加 OpenAI 兼容服务器",
         connectionPlaceholder: "选择连接",
         customModelLabel: "模型",
-        customVoiceDescription: "端点所需的语音名称（可选）",
+        customVoiceDescription: "端点所需的语音名称（默认为 alloy）",
         modelLabel: "TTS 模型",
         modelDescription: "从模型选择器加载音频模型（例如 Orpheus TTS）",
         openAudioAction: "打开音频",

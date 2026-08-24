@@ -20,12 +20,23 @@ function load(
   {
     providers = [{ id: "conn-1", hasApiKey: true }],
     legacyKey = "",
-  }: { providers?: { id: string; hasApiKey: boolean }[]; legacyKey?: string } = {},
+    voice = "af_sky",
+    encrypt = async (key: string) => `enc(${key})`,
+  }: {
+    providers?: { id: string; hasApiKey: boolean }[];
+    legacyKey?: string;
+    voice?: string;
+    encrypt?: (key: string) => Promise<string>;
+  } = {},
 ): {
   adapter: Adapter;
   posted: string[];
+  clearedProviderIds: string[];
+  setConnectionsEnabled: (enabled: boolean) => void;
 } {
   const posted: string[] = [];
+  const clearedProviderIds: string[] = [];
+  let currentConnectionsEnabled = connectionsEnabled;
   const adapter = loadWithStubs<Adapter>(
     new URL(
       "../src/features/chat/adapters/studio-speech-synthesis-adapter.ts",
@@ -43,11 +54,14 @@ function load(
       },
       "../stores/external-providers-store": {
         useExternalProvidersStore: {
-          getState: () => ({ connectionsEnabled, providers }),
+          getState: () => ({
+            connectionsEnabled: currentConnectionsEnabled,
+            providers,
+          }),
         },
       },
       "../api/providers-api": {
-        encryptProviderApiKey: async (key: string) => `enc(${key})`,
+        encryptProviderApiKey: encrypt,
       },
       "../external-providers": {
         getExternalProviderApiKey: () => legacyKey,
@@ -57,14 +71,22 @@ function load(
           getState: () => ({
             ttsProviderId: "conn-1",
             ttsProviderModel: "kokoro",
-            ttsProviderVoice: "af_sky",
+            ttsProviderVoice: voice,
+            setTtsProviderId: (value: string) => clearedProviderIds.push(value),
           }),
         },
       },
       "@/lib/toast": { toast: { error: () => {} } },
     },
   );
-  return { adapter, posted };
+  return {
+    adapter,
+    posted,
+    clearedProviderIds,
+    setConnectionsEnabled: (enabled) => {
+      currentConnectionsEnabled = enabled;
+    },
+  };
 }
 
 Object.assign(globalThis, {
@@ -90,6 +112,42 @@ test("custom TTS still reaches the saved connection while connections are on", a
     model: "kokoro",
     voice: "af_sky",
   });
+});
+
+test("custom TTS defaults a blank voice for strict OpenAI-compatible endpoints", async () => {
+  const { adapter, posted } = load(true, { voice: "  " });
+  await adapter.generateCustomTtsAudio("hello");
+  assert.equal(JSON.parse(posted[0]).voice, "alloy");
+});
+
+test("custom TTS rejects a deleted provider even when Voice settings is unmounted", async () => {
+  const { adapter, posted, clearedProviderIds } = load(true, { providers: [] });
+  await assert.rejects(
+    adapter.generateCustomTtsAudio("must stay local"),
+    /connection.*no longer exists/i,
+  );
+  assert.deepEqual(posted, []);
+  assert.deepEqual(clearedProviderIds, [""]);
+});
+
+test("custom TTS rechecks the global switch after legacy-key encryption", async () => {
+  let releaseEncryption: ((value: string) => void) | undefined;
+  const encryption = new Promise<string>((resolve) => {
+    releaseEncryption = resolve;
+  });
+  const { adapter, posted, setConnectionsEnabled } = load(true, {
+    providers: [{ id: "conn-1", hasApiKey: false }],
+    legacyKey: "sk-legacy",
+    encrypt: async () => encryption,
+  });
+
+  const pending = adapter.generateCustomTtsAudio("secret assistant reply");
+  await Promise.resolve();
+  setConnectionsEnabled(false);
+  releaseEncryption?.("enc(sk-legacy)");
+
+  await assert.rejects(pending, /Connections are disabled/);
+  assert.deepEqual(posted, []);
 });
 
 // #9214: a failed key migration leaves the connection selectable on the retained key.

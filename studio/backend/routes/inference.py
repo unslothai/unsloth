@@ -12096,18 +12096,28 @@ async def generate_audio(
 
 async def _external_tts_speech(body: AudioSpeechRequest, request: Request) -> Response:
     """Proxy CreateSpeech to a saved connection, so read-aloud skips the local model slot."""
-    config = providers_db.get_provider(body.provider_id)
+    provider_id = (body.provider_id or "").strip()
+    external_model = (body.model or "").strip()
+    external_voice = (body.voice or "").strip()
+    if not provider_id:
+        raise HTTPException(status_code = 400, detail = "provider_id cannot be empty.")
+    if not external_model:
+        raise HTTPException(
+            status_code = 400, detail = "model is required when using an external TTS connection."
+        )
+    if not external_voice:
+        raise HTTPException(
+            status_code = 400, detail = "voice is required when using an external TTS connection."
+        )
+
+    config = await asyncio.to_thread(providers_db.get_provider, provider_id)
     if config is None:
         raise HTTPException(
-            status_code = 404, detail = f"Provider config not found: {body.provider_id}"
+            status_code = 404, detail = f"Provider config not found: {provider_id}"
         )
     if not config["is_enabled"]:
         raise HTTPException(
             status_code = 400, detail = f"Provider '{config['display_name']}' is disabled."
-        )
-    if not body.model:
-        raise HTTPException(
-            status_code = 400, detail = "model is required when using an external TTS connection."
         )
     base_url = config["base_url"] or get_base_url(config["provider_type"])
     if not base_url:
@@ -12117,11 +12127,34 @@ async def _external_tts_speech(body: AudioSpeechRequest, request: Request) -> Re
         base_url = validate_provider_base_url(base_url)
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from None
-    api_key = resolve_provider_api_key_or_400(
-        body.provider_id,
-        body.encrypted_api_key,
-        allow_saved_key = not _request_has_api_key(request),
-    )
+    async with provider_config_guard(provider_id):
+        current = await asyncio.to_thread(providers_db.get_provider, provider_id)
+        routing_fields = ("provider_type", "base_url", "is_enabled")
+        if current is None or any(
+            current.get(field) != config.get(field) for field in routing_fields
+        ):
+            raise HTTPException(
+                status_code = 409,
+                detail = "Provider changed while the request was starting; retry.",
+            )
+        api_key = await asyncio.to_thread(
+            resolve_provider_api_key_or_400,
+            provider_id,
+            body.encrypted_api_key,
+            allow_saved_key = not _request_has_api_key(request),
+        )
+        # The guard coordinates this process, while Studio can also be edited by
+        # another backend process. Provider updates write routing metadata before
+        # the replacement secret, so a final row check prevents an old URL from
+        # being paired with the newly written key.
+        latest = await asyncio.to_thread(providers_db.get_provider, provider_id)
+        if latest is None or any(
+            latest.get(field) != current.get(field) for field in routing_fields
+        ):
+            raise HTTPException(
+                status_code = 409,
+                detail = "Provider changed while the request was starting; retry.",
+            )
     client = ExternalProviderClient(
         provider_type = config["provider_type"],
         base_url = base_url,
@@ -12132,8 +12165,8 @@ async def _external_tts_speech(body: AudioSpeechRequest, request: Request) -> Re
     speech_task = asyncio.create_task(
         client.create_speech(
             text = body.input,
-            model = body.model,
-            voice = body.voice,
+            model = external_model,
+            voice = external_voice,
             response_format = (body.response_format or "wav").strip().lower(),
             speed = body.speed,
         )

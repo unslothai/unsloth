@@ -426,7 +426,7 @@ export const ru = {
         connectionPlaceholder: "Выберите подключение",
         customModelLabel: "Модель",
         customVoiceDescription:
-          "Имя голоса, которое ожидает эндпоинт (необязательно)",
+          "Имя голоса, которое ожидает эндпоинт; по умолчанию alloy",
         modelLabel: "Модель TTS",
         modelDescription:
           "Загрузите аудиомодель из списка моделей (например, Orpheus TTS)",

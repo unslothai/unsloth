@@ -420,7 +420,7 @@ export const ar = {
         connectionPlaceholder: "اختر اتصالًا",
         customModelLabel: "النموذج",
         customVoiceDescription:
-          "اسم الصوت الذي تتوقعه نقطة النهاية (اختياري)",
+          "اسم الصوت الذي تتوقعه نقطة النهاية؛ القيمة الافتراضية alloy",
         modelLabel: "نموذج TTS",
         modelDescription:
           "حمّل نموذجًا صوتيًا من محدّد النماذج (مثل Orpheus TTS)",

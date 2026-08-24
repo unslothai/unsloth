@@ -420,7 +420,7 @@ export const ko = {
           "OpenAI 호환 서버는 연결 탭에서 추가할 수 있습니다",
         connectionPlaceholder: "연결 선택",
         customModelLabel: "모델",
-        customVoiceDescription: "엔드포인트가 기대하는 음성 이름 (선택 사항)",
+        customVoiceDescription: "엔드포인트가 기대하는 음성 이름 (기본값: alloy)",
         modelLabel: "TTS 모델",
         modelDescription:
           "모델 선택기에서 오디오 모델을 로드하세요(예: Orpheus TTS)",

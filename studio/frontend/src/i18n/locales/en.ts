@@ -420,7 +420,7 @@ export const en = {
           "Add an OpenAI-compatible server in the Connections tab",
         connectionPlaceholder: "Select a connection",
         customModelLabel: "Model",
-        customVoiceDescription: "Voice name the endpoint expects (optional)",
+        customVoiceDescription: "Voice name the endpoint expects; defaults to alloy",
         modelLabel: "TTS model",
         modelDescription:
           "Load an audio model from the model selector (e.g. Orpheus TTS)",

@@ -427,7 +427,7 @@ export const ptBR = {
         connectionPlaceholder: "Selecione uma conexão",
         customModelLabel: "Modelo",
         customVoiceDescription:
-          "Nome da voz esperado pelo endpoint (opcional)",
+          "Nome da voz esperado pelo endpoint; o padrão é alloy",
         modelLabel: "Modelo de TTS",
         modelDescription:
           "Carregue um modelo de áudio pelo seletor de modelos (por exemplo, Orpheus TTS)",
