@@ -4062,10 +4062,21 @@ def _chat_settings_match_expected(current: Any, expected: Any) -> bool:
     return current == expected
 
 
+def _chat_settings_path_exists(current: Any, path: Iterable[str]) -> bool:
+    """Whether every segment exists, without assigning meaning to its value."""
+    node = current
+    for segment in path:
+        if not isinstance(node, dict) or segment not in node:
+            return False
+        node = node[segment]
+    return True
+
+
 def upsert_chat_settings_merge_if_current(
     expected: dict[str, Any],
     updates: dict[str, Any],
     expected_absent: Iterable[str] = (),
+    expected_absent_paths: Iterable[Iterable[str]] = (),
 ) -> tuple[dict[str, Any], bool]:
     """Atomically merge ``updates`` only if ``expected`` still matches.
 
@@ -4078,7 +4089,12 @@ def upsert_chat_settings_merge_if_current(
         conn.execute("BEGIN IMMEDIATE")
         current, corrupt = _load_chat_settings_for_merge(conn)
         matches_expected = _chat_settings_match_expected(current, expected)
-        if any(key in current for key in expected_absent) or not matches_expected:
+        has_new_expected_field = any(key in current for key in expected_absent)
+        has_new_expected_path = any(
+            _chat_settings_path_exists(current, path)
+            for path in expected_absent_paths
+        )
+        if has_new_expected_field or has_new_expected_path or not matches_expected:
             conn.commit()
             return current, False
         unsafe_partial_keys = [

@@ -3118,6 +3118,35 @@ const scalarSettingMutationVersions = Object.fromEntries(
   SCALAR_SETTING_KEYS.map((key) => [key, 0]),
 ) as Record<ScalarSettingKey, number>;
 
+let loadedModelReasoningMode: {
+  checkpoint: string;
+  enabled: boolean;
+  reasoningMutationVersion: number;
+} | null = null;
+
+/**
+ * Record the mode a load/status response actually put the active model in.
+ * Persisted settings can describe the previous model and therefore cannot
+ * choose the migration table after a family default changed on load.
+ */
+export function noteLoadedModelReasoningMode(
+  checkpoint: string,
+  enabled: boolean,
+): void {
+  const state = useChatRuntimeStore.getState();
+  loadedModelReasoningMode = {
+    checkpoint,
+    // A thread pin is not a shared model default. When one is active, retain
+    // the installation value captured before that thread was applied.
+    enabled:
+      threadScopedOverride("reasoningEnabled") !== undefined
+        ? installationReasoningEnabled(state)
+        : enabled,
+    reasoningMutationVersion:
+      scalarSettingMutationVersions.reasoningEnabled,
+  };
+}
+
 function hasKeys(value: object): boolean {
   return Object.keys(value).length > 0;
 }
@@ -3748,6 +3777,14 @@ function qwenMigrationThinkingOn(
   if (state.reasoningAlwaysOn) {
     return true;
   }
+  if (
+    loadedModelReasoningMode?.checkpoint.toLowerCase() ===
+      state.params.checkpoint.toLowerCase() &&
+    loadedModelReasoningMode.reasoningMutationVersion ===
+      scalarSettingMutationVersions.reasoningEnabled
+  ) {
+    return loadedModelReasoningMode.enabled;
+  }
   return settings.reasoningEnabled !== undefined &&
     scalarSettingMutationVersions.reasoningEnabled === reasoningMutationVersion
     ? settings.reasoningEnabled
@@ -3783,6 +3820,17 @@ function qwenMigrationExpectedAbsent(
   );
 }
 
+function qwenMigrationExpectedAbsentPaths(
+  settings: PersistedChatSettings,
+  patch: PersistedChatSettings,
+): Array<[keyof PersistedChatSettings, string]> {
+  if (patch.inferenceParams === undefined) return [];
+  const global = settings.inferenceParams;
+  return (["topK", "repetitionPenalty"] as const)
+    .filter((field) => global === undefined || global[field] === undefined)
+    .map((field) => ["inferenceParams", field]);
+}
+
 function applyLegacyQwenDefaultsAfterPresetChange(
   ownedGlobalCheckpoint: string | null,
   migrateOwnedGlobalAlongsideModelMemory: boolean,
@@ -3813,6 +3861,13 @@ function applyLegacyQwenDefaultsAfterPresetChange(
     const activePatch = activeModelId
       ? migration.patch.inferenceParamsByModel?.[activeModelId]
       : migration.patch.inferenceParams;
+    if (activePatch) {
+      // The open chat may pin one of these values, but a later snapshot-less
+      // chat falls back to the installation copy captured when pairing began.
+      // Move that copy with the migrated shared defaults before restoring the
+      // active thread over the live params.
+      noteThreadScopedDefaults(activePatch);
+    }
     return {
       ...(migration.settings.inferenceParamsByModel
         ? { paramsByModel: migration.settings.inferenceParamsByModel }
@@ -3870,6 +3925,7 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
         confirmed,
         migration.patch,
         qwenMigrationExpectedAbsent(confirmed),
+        qwenMigrationExpectedAbsentPaths(confirmed, migration.patch),
       );
     }
     return true;
@@ -4280,6 +4336,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
                 confirmed,
                 migration.patch,
                 qwenMigrationExpectedAbsent(confirmed),
+                qwenMigrationExpectedAbsentPaths(
+                  confirmed,
+                  migration.patch,
+                ),
               );
               migration = {
                 ...migration,
@@ -4461,8 +4521,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       } else if (fromModelDefaults && !state.settingsHydrated) {
         noteModelDefaultsBeforeHydration(
           nextParams.checkpoint,
-          options?.migrateOwnedGlobalQwenDefaults === true ||
-            (checkpointChanged && state.params.checkpoint === ""),
+          options?.migrateOwnedGlobalQwenDefaults === true,
         );
       }
       return {
@@ -4480,11 +4539,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     // Once status applies that model's defaults, its checkpoint and reasoning
     // mode are known and the deferred active-row migration can run safely.
     if (options?.fromModelDefaults === true) {
+      const retryState = get();
+      const ownsPersistedGlobal =
+        options.migrateOwnedGlobalQwenDefaults === true;
       scheduleLegacyQwenDefaultsRetry(
-        options.migrateOwnedGlobalQwenDefaults === true
-          ? params.checkpoint
-          : null,
-        false,
+        ownsPersistedGlobal ? params.checkpoint : null,
+        ownsPersistedGlobal && !retryState.rememberParamsPerModel,
       );
     }
   },

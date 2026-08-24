@@ -19,6 +19,7 @@ import {
   loadOptionalBool,
   loadedGpuMemoryFields,
   normalizeSpeculativeType,
+  noteLoadedModelReasoningMode,
   resolvePreserveThinkingOnLoad,
   resolveToolsEnabledOnLoad,
   useChatRuntimeStore,
@@ -666,6 +667,11 @@ export function applyActiveModelStatusToStore(
     }
     useChatRuntimeStore.setState({ reasoningEnabled: reasoningDefault });
   }
+
+  noteLoadedModelReasoningMode(
+    checkpointId,
+    reasoningAlwaysOn || useChatRuntimeStore.getState().reasoningEnabled,
+  );
 
   // Every status merge carries the base family recommendation, including the
   // refresh immediately after performLoad. Layer the active Qwen mode over it

@@ -39,6 +39,22 @@ function matchesExpected(current: unknown, expected: unknown): boolean {
   return Object.is(current, expected);
 }
 
+function pathExists(current: unknown, path: string[]): boolean {
+  let node = current;
+  for (const segment of path) {
+    if (
+      node == null ||
+      typeof node !== "object" ||
+      Array.isArray(node) ||
+      !(segment in node)
+    ) {
+      return false;
+    }
+    node = (node as Record<string, unknown>)[segment];
+  }
+  return true;
+}
+
 function deepMerge(
   current: Record<string, unknown>,
   patch: Record<string, unknown>,
@@ -82,6 +98,7 @@ export async function authFetch(
     const request = JSON.parse(init.body ?? "{}") as {
       expected: Record<string, unknown>;
       expectedAbsent?: string[];
+      expectedAbsentPaths?: string[][];
       patch: Record<string, unknown>;
     };
     settingsHttp.beforeConditionalApply?.();
@@ -90,7 +107,11 @@ export async function authFetch(
     applied =
       (request.expectedAbsent ?? []).every(
         (key) => !(key in settingsHttp.settings),
-      ) && matchesExpected(settingsHttp.settings, request.expected);
+      ) &&
+      (request.expectedAbsentPaths ?? []).every(
+        (path) => !pathExists(settingsHttp.settings, path),
+      ) &&
+      matchesExpected(settingsHttp.settings, request.expected);
     if (applied) {
       settingsHttp.puts.push(request.patch);
       settingsHttp.settings = deepMerge(settingsHttp.settings, request.patch);

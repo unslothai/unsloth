@@ -518,6 +518,23 @@ def test_settings_compare_and_set_fences_an_expected_absent_field(tmp_path, monk
     assert settings["inferenceParams"]["presencePenalty"] == 0.0
 
 
+def test_settings_compare_and_set_fences_an_expected_absent_nested_path(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    original = {"inferenceParams": {"presencePenalty": 0.0}}
+    studio_db.upsert_chat_settings_merge(original)
+    studio_db.upsert_chat_settings_merge({"inferenceParams": {"topK": 40}})
+
+    settings, applied = studio_db.upsert_chat_settings_merge_if_current(
+        original,
+        {"inferenceParams": {"presencePenalty": 1.5}},
+        expected_absent_paths = [["inferenceParams", "topK"]],
+    )
+
+    assert applied is False
+    assert settings["inferenceParams"]["topK"] == 40
+    assert settings["inferenceParams"]["presencePenalty"] == 0.0
+
+
 def test_settings_merge_keeps_each_model_s_remembered_params(tmp_path, monkeypatch):
     """Per-model memory patches one model at a time, so the merge has to keep the
     others. Without this, tuning a second model would wipe the first one's settings

@@ -772,7 +772,7 @@ test("a queued settings patch is sent before a run reads it", () => {
   const body = flush.slice(0, flush.indexOf("\n}\n") + 2);
   // Nothing queued and nothing in flight is the common case and must not cost a
   // send anything.
-  assert.match(body, /if \(!queued && unsettledFlushes === 0\) return;/);
+  assert.match(body, /if \(!queued && unsettledFlushes === 0\) return true;/);
   // The debounce is cut short rather than waited out.
   assert.match(body, /clearTimeout\(pendingTimer\)/);
   // Bounded: a wedged PATCH must not hold the composer open.

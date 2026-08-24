@@ -5,6 +5,7 @@ import {
   getChatSettings,
   saveChatSettingsPatch,
   saveChatSettingsPatchIfCurrent,
+  type ChatSettingsPath,
   type PersistedChatPreset,
   type PersistedChatSettings,
   type PersistedInferenceParams,
@@ -505,11 +506,13 @@ export async function savePersistedChatSettingsPatchIfCurrent(
   expected: PersistedChatSettings,
   patch: PersistedChatSettings,
   expectedAbsent: Array<keyof PersistedChatSettings> = [],
+  expectedAbsentPaths: ChatSettingsPath[] = [],
 ): Promise<{ settings: PersistedChatSettings; applied: boolean }> {
   const result = await saveChatSettingsPatchIfCurrent(
     sanitizeChatSettings(expected),
     sanitizeChatSettings(patch),
     expectedAbsent,
+    expectedAbsentPaths,
   );
   return {
     settings: sanitizeChatSettings(result.settings),

@@ -83,6 +83,8 @@ interface ConditionalChatSettingsResponse extends ChatSettingsResponse {
   applied: boolean;
 }
 
+export type ChatSettingsPath = [keyof PersistedChatSettings, ...string[]];
+
 function parseErrorText(status: number, body: unknown): string {
   if (
     body &&
@@ -160,11 +162,17 @@ export async function saveChatSettingsPatchIfCurrent(
   expected: PersistedChatSettings,
   patch: PersistedChatSettings,
   expectedAbsent: Array<keyof PersistedChatSettings> = [],
+  expectedAbsentPaths: ChatSettingsPath[] = [],
 ): Promise<{ settings: PersistedChatSettings; applied: boolean }> {
   const response = await authFetch("/api/chat/settings/compare-and-set", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ expected, expectedAbsent, patch }),
+    body: JSON.stringify({
+      expected,
+      expectedAbsent,
+      expectedAbsentPaths,
+      patch,
+    }),
   });
   return parseJsonOrThrow<ConditionalChatSettingsResponse>(response);
 }

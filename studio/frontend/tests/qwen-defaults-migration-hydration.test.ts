@@ -12,7 +12,11 @@ localStorageFake.set("unsloth_chat_settings_imported_to_studio_db", "true");
 register("./store-settings-resolver.mjs", import.meta.url);
 
 const { settingsHttp } = await import("./helpers/store-stubs/settings-http.ts");
-const { flushPendingChatSettings, useChatRuntimeStore } = await import(
+const {
+  flushPendingChatSettings,
+  noteLoadedModelReasoningMode,
+  useChatRuntimeStore,
+} = await import(
   "../src/features/chat/stores/chat-runtime-store.ts"
 );
 
@@ -744,6 +748,8 @@ test("local migration preserves an active thread's sampling override", async () 
   assert.equal(migrated.paramsByModel[QWEN38]?.temperature, 0.6);
   assert.equal(migrated.paramsByModel[QWEN38]?.topP, 0.95);
   migrated.applyThreadScopedSettings(null, {});
+  assert.equal(useChatRuntimeStore.getState().params.minP, 0);
+  assert.equal(useChatRuntimeStore.getState().params.presencePenalty, 1.5);
   migrated.setActiveThreadId(null);
 });
 
@@ -824,10 +830,14 @@ test("a first user model load during hydration does not claim prior globals", as
 
   const hydration = useChatRuntimeStore.getState().hydratePersistedSettings();
   await new Promise((resolve) => setTimeout(resolve, 0));
-  useChatRuntimeStore.getState().setCheckpoint(QWEN38);
   const loading = useChatRuntimeStore.getState();
   loading.setParams(
-    { ...loading.params, minP: 0, presencePenalty: 1.5 },
+    {
+      ...loading.params,
+      checkpoint: QWEN38,
+      minP: 0,
+      presencePenalty: 1.5,
+    },
     { fromModelDefaults: true },
   );
   settingsHttp.release?.();
@@ -880,6 +890,172 @@ test("a normalized migration patch stays within the loaded context", async () =>
   const migrated = useChatRuntimeStore.getState();
   assert.equal(migrated.params.maxTokens, 4096);
   assert.equal(migrated.paramsByModel[QWEN38]?.presencePenalty, 1.5);
+});
+
+test("deferred adoption migrates the authoritative global when memory is off", async () => {
+  settingsHttp.getResponses.length = 0;
+  settingsHttp.settings = {
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    rememberParamsPerModel: false,
+    inferenceParams: {
+      temperature: 0.6,
+      topP: 0.95,
+      minP: 0.01,
+      presencePenalty: 0,
+      maxTokens: 8192,
+    },
+    inferenceParamsByModel: { [QWEN38]: LEGACY_SNAPSHOT },
+  };
+  settingsHttp.puts.length = 0;
+  useChatRuntimeStore.setState((state) => ({
+    params: { ...state.params, checkpoint: "" },
+    paramsByModel: {},
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    rememberParamsPerModel: true,
+    reasoningAlwaysOn: false,
+    reasoningEnabled: true,
+    settingsHydrated: false,
+  }));
+
+  await useChatRuntimeStore.getState().hydratePersistedSettings();
+  const adopting = useChatRuntimeStore.getState();
+  adopting.setParams(
+    {
+      ...adopting.params,
+      checkpoint: QWEN38,
+      minP: 0,
+      presencePenalty: 1.5,
+    },
+    {
+      fromModelDefaults: true,
+      migrateOwnedGlobalQwenDefaults: true,
+    },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const globalPatch = settingsHttp.puts.find(
+    (put) => put.inferenceParams !== undefined,
+  );
+  assert.deepEqual(globalPatch?.inferenceParams, {
+    minP: 0,
+    presencePenalty: 1.5,
+  });
+});
+
+test("a retry fences optional global fields added after confirmation", async () => {
+  await flushPendingChatSettings();
+  const legacySettings = {
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    inferenceParams: {
+      temperature: 0.6,
+      topP: 0.95,
+      minP: 0.01,
+      presencePenalty: 0,
+      maxTokens: 8192,
+    },
+  };
+  settingsHttp.getResponses.length = 0;
+  settingsHttp.settings = legacySettings;
+  settingsHttp.puts.length = 0;
+  settingsHttp.beforeConditionalApply = () => {
+    settingsHttp.settings = {
+      ...legacySettings,
+      inferenceParams: { ...legacySettings.inferenceParams, topK: 40 },
+    };
+  };
+  useChatRuntimeStore.setState((state) => ({
+    params: {
+      ...state.params,
+      ...LEGACY_SNAPSHOT,
+      checkpoint: QWEN38,
+      minP: 0,
+      presencePenalty: 1.5,
+    },
+    paramsByModel: {},
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    rememberParamsPerModel: true,
+    reasoningAlwaysOn: false,
+    reasoningEnabled: true,
+    settingsHydrated: true,
+  }));
+
+  const active = useChatRuntimeStore.getState();
+  active.setParams(
+    { ...active.params, minP: 0, presencePenalty: 1.5 },
+    {
+      fromModelDefaults: true,
+      migrateOwnedGlobalQwenDefaults: true,
+    },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  assert.equal(settingsHttp.puts.length, 0);
+  assert.equal(
+    (
+      settingsHttp.settings.inferenceParams as Record<string, unknown>
+    ).topK,
+    40,
+  );
+  assert.equal(
+    (
+      settingsHttp.settings.inferenceParams as Record<string, unknown>
+    ).presencePenalty,
+    0,
+  );
+});
+
+test("migration follows the reasoning mode established by the loaded model", async () => {
+  settingsHttp.getResponses.length = 0;
+  settingsHttp.settings = {
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    reasoningEnabled: true,
+    inferenceParamsByModel: { [QWEN38]: LEGACY_SNAPSHOT },
+  };
+  settingsHttp.puts.length = 0;
+  useChatRuntimeStore.setState((state) => ({
+    params: { ...state.params, ...LEGACY_SNAPSHOT, checkpoint: QWEN38 },
+    paramsByModel: { [QWEN38]: LEGACY_SNAPSHOT },
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    supportsReasoning: true,
+    reasoningAlwaysOn: false,
+    reasoningEnabled: false,
+    settingsHydrated: true,
+  }));
+  noteLoadedModelReasoningMode(QWEN38, false);
+
+  const active = useChatRuntimeStore.getState();
+  active.setParams(
+    {
+      ...active.params,
+      temperature: 0.7,
+      topP: 0.8,
+      minP: 0,
+      presencePenalty: 1.5,
+    },
+    { fromModelDefaults: true },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  assert.deepEqual(
+    settingsHttp.puts.find(
+      (put) => put.inferenceParamsByModel !== undefined,
+    )?.inferenceParamsByModel,
+    {
+      [QWEN38]: {
+        temperature: 0.7,
+        topP: 0.8,
+        minP: 0,
+        presencePenalty: 1.5,
+      },
+    },
+  );
+  noteLoadedModelReasoningMode(QWEN38, true);
 });
 
 test("routine model-default refreshes skip migration reads without a candidate", async () => {

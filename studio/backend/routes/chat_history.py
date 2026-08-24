@@ -507,6 +507,7 @@ class ConditionalChatSettingsPayload(BaseModel):
 
     expected: ChatSettingsPayload
     expectedAbsent: list[str] = Field(default_factory = list)
+    expectedAbsentPaths: list[list[str]] = Field(default_factory = list)
     patch: ChatSettingsPayload
 
     @field_validator("expectedAbsent")
@@ -516,6 +517,16 @@ class ConditionalChatSettingsPayload(BaseModel):
         if unknown:
             unknown_names = ", ".join(sorted(unknown))
             raise ValueError(f"Unknown chat settings field(s): {unknown_names}")
+        return value
+
+    @field_validator("expectedAbsentPaths")
+    @classmethod
+    def _known_absent_paths(cls, value: list[list[str]]) -> list[list[str]]:
+        for path in value:
+            if len(path) < 2 or any(not segment for segment in path):
+                raise ValueError("Expected-absent paths require at least two non-empty segments")
+            if path[0] not in ChatSettingsPayload.model_fields:
+                raise ValueError(f"Unknown chat settings field: {path[0]}")
         return value
 
 
@@ -1488,6 +1499,7 @@ def compare_and_set_settings(
             payload.expected.model_dump(exclude_unset = True),
             payload.patch.model_dump(exclude_unset = True),
             payload.expectedAbsent,
+            payload.expectedAbsentPaths,
         )
         return ConditionalChatSettingsResponse(settings = settings, applied = applied)
     except CorruptSettingsError as exc:
