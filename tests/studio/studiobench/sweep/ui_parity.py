@@ -183,10 +183,7 @@ class Outcome(int):
 
 
 def _floored(
-    worst: int,
-    compared: dict[str, set[tuple]],
-    seen: dict[str, set[tuple]],
-    min_compared: int,
+    worst: int, compared: dict[str, set[tuple]], seen: dict[str, set[tuple]], min_compared: int
 ) -> int:
     """`main`'s application of the coverage floor, once per payload pattern it scored.
 
@@ -2259,6 +2256,7 @@ def main(argv: list[str] | None = None) -> int:
     def note(pattern: str, out: "Outcome") -> None:
         compared_pairs.setdefault(pattern, set()).update(out.compared)
         seen_pairs.setdefault(pattern, set()).update(out.seen)
+
     vis_unstable: Optional[frozenset[tuple[str, str]]] = None
     vis_null_tiers: set[str] = set()
     vis_null_corpora: set[str] = set()
