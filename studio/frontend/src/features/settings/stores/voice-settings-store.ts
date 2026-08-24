@@ -145,7 +145,7 @@ export interface VoiceSettingsState {
   /** Model id sent to the custom endpoint (e.g. "kokoro"). */
   ttsProviderModel: string;
   setTtsProviderModel: (value: string) => void;
-  /** Optional voice name sent to the custom endpoint. */
+  /** Voice name sent to the custom endpoint; blank input defaults to alloy. */
   ttsProviderVoice: string;
   setTtsProviderVoice: (value: string) => void;
 
