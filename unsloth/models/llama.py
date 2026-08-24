@@ -3190,6 +3190,19 @@ class FastLlamaModel:
                 skip = _vllm_unmovable_embedding_modules(model, target_modules),
             )
             new_target_modules = list(requested_targets) + list(requested_saved or [])
+            # Tying is not in check_parameters and leaves both lists looking the same, so
+            # compare it separately. On what it actually does, not what was asked: on an
+            # untied model the request changes nothing either way.
+            _requested_tie = _resolve_ensure_weight_tying(
+                model, requested_saved, ensure_weight_tying,
+            )
+            _requested_ties = requested_saved != _drop_tied_output_module(
+                model, requested_saved, _requested_tie,
+            )
+            _stored_ties = bool(
+                getattr(model.peft_config["default"], "modules_to_tie", None)
+            )
+            check_all = check_all and (_requested_ties == _stored_ties)
             # Per-expert Linear MoE experts (e.g. gpt-oss bnb-4bit) were auto-added to the
             # saved target_modules when the adapter was first created. Recompute them so a
             # repeat get_peft_model call with the same args stays idempotent instead of
