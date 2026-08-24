@@ -695,8 +695,8 @@ def test_a_symlinked_session_cannot_serve_files_outside_the_sandbox(tmp_path, mo
 
 def test_the_executor_leaves_nothing_in_the_sandbox(tmp_path, monkeypatch):
     """Its scratch script lives outside the sandbox, so a chat whose tools only
-    printed holds nothing but our own bookkeeping and the empty scratch dir the
-    child got for TMPDIR, and is removable without the opt-in."""
+    printed holds just our bookkeeping and the empty TMPDIR dir, and is
+    removable without the opt-in."""
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
 
     from core.inference import tools
@@ -715,9 +715,8 @@ def test_the_executor_leaves_nothing_in_the_sandbox(tmp_path, monkeypatch):
 
 
 def test_a_file_under_the_scratch_dir_is_listed_and_blocks_removal(tmp_path, monkeypatch):
-    """On Windows the scratch dir is what /tmp resolves to, so a model writing
-    /tmp/report.csv lands here. It has to stay listed and keep its delete
-    prompt, exactly as it did when /tmp aliased the workdir itself."""
+    """On Windows the scratch dir is what /tmp resolves to, so /tmp/report.csv
+    lands here and has to keep its listing and its delete prompt."""
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
 
     from core.inference import tools
@@ -776,10 +775,10 @@ def test_the_download_route_serves_the_full_depth_under_the_scratch_dir(tmp_path
 
 
 def test_only_the_real_scratch_dir_skips_a_path_segment(tmp_path, monkeypatch):
-    """The walks are handed the stored spelling by os.walk and never follow links,
-    so the discount has to be the resolved directory's, not the name's. A link the
-    model made would otherwise serve a file neither walk lists, which is also the
-    shape of a wrong-case entry on NTFS or APFS."""
+    """The walks read the stored spelling off os.walk and never follow links, so
+    the discount is the resolved directory's, not the name's. A model-made link
+    would otherwise serve a file neither walk lists, as a wrong-case entry does
+    on NTFS or APFS."""
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
 
     from fastapi import HTTPException

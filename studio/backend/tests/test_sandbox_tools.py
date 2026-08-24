@@ -399,9 +399,8 @@ class TestSandboxEnvIsolation:
         assert env["TMPDIR"] == str(tmp_path / _SANDBOX_TEMP_DIRNAME)
 
     def test_temp_dir_is_a_created_child_of_the_workdir(self, tmp_path):
-        """Git for Windows mounts /tmp at %TEMP% (msys2 ``usertemp``), so a temp
-        var pointing AT the workdir made /tmp the shortest POSIX name for it and
-        ``pwd`` printed /tmp instead of the session sandbox (#8892). It must also
+        """A temp var pointing AT the workdir made /tmp its shortest POSIX name
+        under msys2 ``usertemp``, so ``pwd`` printed /tmp (#8892). It must also
         exist before the child starts, or every tempfile call fails.
         """
         from core.inference.tools import _sandbox_temp_dir
@@ -440,10 +439,9 @@ class TestSandboxEnvIsolation:
         assert _sandbox_temp_dir(str(workdir)) == str(workdir)
 
     def test_temp_dir_refuses_an_escape_islink_cannot_see(self, monkeypatch, tmp_path):
-        """A Windows directory junction carries a different reparse tag, so
-        os.path.islink is False for it while os.path.isdir follows it. Blinding
-        islink stands in for that: containment is decided by the resolved path,
-        or a junction would point TMPDIR out of the session sandbox.
+        """A junction carries a different reparse tag, so os.path.islink is
+        False while os.path.isdir follows it. Blinding islink stands in for that:
+        containment is decided by the resolved path.
         """
         import core.inference.tools as tools_mod
         from core.inference.tools import _SANDBOX_TEMP_DIRNAME, _sandbox_temp_dir
@@ -461,8 +459,8 @@ class TestSandboxEnvIsolation:
 
     def test_temp_dir_refuses_a_link_even_inside_the_workdir(self, tmp_path):
         """os.walk does not follow links, so `tmp -> .scratch` would send every
-        temporary artifact somewhere both artifact walks skip. Containment is not
-        the test; being the real directory is.
+        artifact where both walks skip. The test is being the real directory,
+        not containment.
         """
         from core.inference.tools import _SANDBOX_TEMP_DIRNAME, _sandbox_temp_dir
 
@@ -477,10 +475,9 @@ class TestSandboxEnvIsolation:
         assert _sandbox_temp_dir(str(workdir)) == str(workdir)
 
     def test_temp_dir_refuses_an_entry_stored_under_another_case(self, tmp_path):
-        """On a case-insensitive volume (default APFS, every NTFS) our lowercase
+        """On a case-insensitive volume (default APFS, every NTFS) the lowercase
         probe resolves onto a directory stored as another case, and realpath does
-        not canonicalise case. Adopting it left os.walk reporting the stored
-        spelling, which the segment discount then failed to recognise.
+        not canonicalise it, so os.walk reports a spelling the discount misses.
         """
         from core.inference.tools import _SANDBOX_TEMP_DIRNAME, _sandbox_temp_dir
 
@@ -490,8 +487,8 @@ class TestSandboxEnvIsolation:
         assert _sandbox_temp_dir(str(tmp_path)) == str(tmp_path)
 
     def test_temp_dir_refuses_an_unwritable_existing_directory(self, tmp_path):
-        """tempfile abandons an unwritable TMPDIR for the platform default, which
-        would put the child's temporary data outside the session sandbox.
+        """tempfile abandons an unwritable TMPDIR for the platform default,
+        putting the child's temporary data outside the session sandbox.
         """
         from core.inference.tools import _SANDBOX_TEMP_DIRNAME, _sandbox_temp_dir
 
@@ -506,9 +503,9 @@ class TestSandboxEnvIsolation:
             scratch.chmod(0o700)
 
     def test_the_scratch_dir_does_not_spend_a_path_segment(self, tmp_path):
-        """/tmp/a/b/c/result.csv used to reach the workdir as a four-segment path
-        and was downloadable. Nesting TMPDIR one level deeper must not push it
-        past _MAX_SANDBOX_PATH_SEGMENTS and drop it from the card.
+        """/tmp/a/b/c/result.csv was a four-segment path and downloadable.
+        Nesting TMPDIR a level deeper must not push it past
+        _MAX_SANDBOX_PATH_SEGMENTS and drop it from the card.
         """
         from core.inference.tools import (
             _SANDBOX_TEMP_DIRNAME,
@@ -527,9 +524,9 @@ class TestSandboxEnvIsolation:
         ]
 
     def test_scratch_files_are_still_offered_as_artifacts(self, tmp_path):
-        """On Windows this directory is what /tmp resolves to, so a model writing
-        /tmp/report.csv must still get a download card. A dot-named scratch dir
-        would be skipped by the snapshot walk and the file would vanish.
+        """On Windows this is what /tmp resolves to, so /tmp/report.csv must
+        still get a download card. A dot-named scratch dir would be skipped by
+        the snapshot walk and the file would vanish.
         """
         from core.inference.tools import (
             _SANDBOX_TEMP_DIRNAME,

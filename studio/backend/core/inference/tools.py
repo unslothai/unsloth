@@ -6726,21 +6726,15 @@ _SANDBOX_TEMP_DIRNAME = "unsloth-tmp"
 def _sandbox_temp_dir(workdir: str) -> str:
     """The scratch directory for a sandboxed child, created when missing.
 
-    Inside the workdir rather than the workdir itself. Git for Windows mounts
-    /tmp at %TEMP% (the msys2 ``usertemp`` fstab entry), so pointing TEMP at the
-    workdir made /tmp the shortest POSIX name for the session sandbox: ``pwd``
-    in the terminal tool printed /tmp, the model reported /tmp as its absolute
-    path, and the user had no way to find the real folder (#8892). One level
-    down keeps every temp write inside the session sandbox and leaves the
-    workdir with a name of its own, while staying somewhere the listings still
-    reach, so what a child writes to /tmp is offered exactly as before.
+    Inside the workdir, not the workdir itself: Git for Windows mounts /tmp at
+    %TEMP% (the msys2 ``usertemp`` fstab entry), so pointing TEMP at the workdir
+    made /tmp its shortest POSIX name and ``pwd`` printed /tmp, leaving the user
+    no way to find the real folder (#8892). One level down still sits where the
+    listings reach, so a /tmp write is offered exactly as before.
 
-    Falls back to the workdir on anything unexpected: an unwritable workdir, or
-    a name already held by a file or by a link or junction leaving the sandbox.
-    Handing a child a TMPDIR that does not exist breaks every tempfile call,
-    which is worse than the aliasing this avoids. One level only, never
-    os.makedirs, so a workdir deleted from under a call is not brought back as
-    an empty directory nothing knows about.
+    Falls back to the workdir when the name is unusable, since a TMPDIR that
+    does not exist breaks every tempfile call in the child. os.mkdir, never
+    os.makedirs, so a workdir deleted mid-call is not silently recreated.
     """
     temp_dir = os.path.join(workdir, _SANDBOX_TEMP_DIRNAME)
     try:
@@ -6756,16 +6750,11 @@ def _sandbox_temp_dir(workdir: str) -> str:
 def _is_sandbox_temp_dir(temp_dir: str, workdir: str) -> bool:
     """Whether *temp_dir* is the workdir's own scratch directory.
 
-    Both artifact walks decide the segment discount from the name they are
-    handed by os.walk, so this holds only when the filesystem stores that exact
-    spelling. A case-insensitive volume (default APFS, every NTFS) resolves our
-    lowercase probe onto a directory stored as ``TMP``, and os.path.realpath
-    does not canonicalise case, so a name comparison alone adopted it and then
-    failed to recognise the spelling the walk reported.
-
-    It must also be the real directory rather than a link or junction to one:
-    os.walk does not follow links, so the artifacts would land somewhere both
-    walks skip.
+    Exact stored spelling, because the walks read the name off os.walk: on a
+    case-insensitive volume (default APFS, every NTFS) our lowercase probe lands
+    on a directory stored as ``TMP``, and realpath does not canonicalise case.
+    And the real directory, not a link or junction to one, since os.walk does
+    not follow links and the artifacts would land where both walks skip.
     """
     try:
         with os.scandir(workdir) as entries:
@@ -6784,10 +6773,9 @@ def _is_sandbox_temp_dir(temp_dir: str, workdir: str) -> bool:
 def _reusable_sandbox_temp_dir(temp_dir: str, workdir: str) -> bool:
     """Whether an existing entry may serve as the scratch directory.
 
-    Identity plus writability: tempfile abandons an unwritable TMPDIR for the
-    platform default, putting the child's temporary data outside the session
-    sandbox. Path accounting asks _is_sandbox_temp_dir instead, since which
-    directory a segment belongs to does not depend on whether it can be written.
+    Identity plus writability, since tempfile abandons an unwritable TMPDIR for
+    the platform default. Path accounting asks _is_sandbox_temp_dir instead:
+    which directory a segment sits in does not depend on writability.
     """
     return _is_sandbox_temp_dir(temp_dir, workdir) and os.access(temp_dir, os.W_OK | os.X_OK)
 
@@ -12431,16 +12419,14 @@ _MAX_SNAPSHOT_DIRS = 2000  # nor a directory-writing one stall the next call
 def _user_path_parts(parts: "list[str]", root: "str | None" = None) -> "list[str]":
     """The segments _MAX_SANDBOX_PATH_SEGMENTS applies to.
 
-    The scratch directory is Studio's own container rather than a name the model
-    chose, and on Windows it is what /tmp resolves to. Charging it a segment
-    would drop one level of the /tmp artifacts that were served before the
-    workdir stopped being %TEMP%, so it is not counted.
+    The scratch container is Studio's, not a name the model chose, and on
+    Windows it is what /tmp resolves to, so charging it a segment would drop one
+    level of the /tmp artifacts served before the workdir stopped being %TEMP%.
 
-    *root* is for callers that resolve the path afterwards. os.walk hands the
-    walks the stored spelling and never follows links, so there the name is the
-    directory; the download route resolves, and without the root a link named
-    unsloth-tmp (or a wrong-case entry on NTFS or APFS) would take the discount
-    for a tree neither walk lists.
+    *root* is for callers that resolve the path afterwards. The walks read the
+    stored spelling off os.walk and never follow links; the download route
+    resolves, and without the root a link named unsloth-tmp (or a wrong-case
+    entry on NTFS or APFS) would take the discount for a tree neither walk lists.
     """
     if not parts or parts[0] != _SANDBOX_TEMP_DIRNAME:
         return parts
