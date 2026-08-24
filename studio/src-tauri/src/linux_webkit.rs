@@ -8,6 +8,7 @@ const GLES_V2: &[u8] = b"libGLESv2.so.2\0";
 
 const WAYLAND_DISPLAY: &str = "WAYLAND_DISPLAY";
 const X11_DISPLAY: &str = "DISPLAY";
+const DEFAULT_WAYLAND_SOCKET: &str = "wayland-0";
 const GDK_BACKEND: &str = "GDK_BACKEND";
 const FORCE_SHARED_MEMORY: &str = "WEBKIT_DMABUF_RENDERER_FORCE_SHM";
 const DISABLE_DMABUF: &str = "WEBKIT_DISABLE_DMABUF_RENDERER";
@@ -31,17 +32,19 @@ const APPIMAGE_GLES_REASON: &str = "AppImage without a usable GLES library";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RenderingWorkaround {
     ForceSharedMemory,
+    /// Only for a host the probe confirmed is NVIDIA. On a patched library isNVIDIA()
+    /// returns before mode.add(SharedMemory) in 2.50.4 and 2.52.6, so FORCE_SHM alone is
+    /// never read there; FORCE_DMABUF stands that check down so selection reaches it.
+    /// Unpatched libraries ignore the variable.
+    ForceSharedMemoryOnNvidia,
     DisableDmabuf,
 }
 
 impl RenderingWorkaround {
-    /// Forcing shared memory takes two variables on a patched library: isNVIDIA() returns
-    /// before mode.add(SharedMemory) in 2.50.4 and 2.52.6, so FORCE_SHM alone is never
-    /// read and the set is empty anyway. FORCE_DMABUF is what makes isNVIDIA() stand down
-    /// so selection reaches FORCE_SHM. Unpatched libraries ignore it.
     fn variables(self) -> &'static [&'static str] {
         match self {
-            Self::ForceSharedMemory => &[FORCE_SHARED_MEMORY, FORCE_DMABUF],
+            Self::ForceSharedMemory => &[FORCE_SHARED_MEMORY],
+            Self::ForceSharedMemoryOnNvidia => &[FORCE_SHARED_MEMORY, FORCE_DMABUF],
             Self::DisableDmabuf => &[DISABLE_DMABUF],
         }
     }
@@ -62,19 +65,25 @@ enum RenderingPlan {
 /// shared-memory switch and the empty transport set.
 ///
 /// A display cannot be opened here, so "opens" is the same environment GDK's own openers
-/// read. An explicitly named wayland still counts without WAYLAND_DISPLAY, because GDK
-/// falls back to the default wayland-0 socket.
+/// read: `wayland_display` covers WAYLAND_DISPLAY and the default wayland-0 socket
+/// wl_display_connect(NULL) falls back to. A named backend that cannot open is not the
+/// selection, it is skipped, so wayland,x11 lands on X11 when no compositor answers.
 fn selected_backend_is_wayland(backends: &OsStr, wayland_display: bool, x11_display: bool) -> bool {
+    let mut named_wayland = false;
     for backend in backends.to_string_lossy().split(',') {
         match backend {
-            "wayland" => return true,
+            "wayland" if wayland_display => return true,
+            "wayland" => named_wayland = true,
             "x11" if x11_display => return false,
             "*" if wayland_display => return true,
             "*" if x11_display => return false,
             _ => continue,
         }
     }
-    false
+    // Wayland was asked for and nothing else could open. GTK will fail to start if the
+    // compositor really is absent, so the workaround choice is moot either way; keep the
+    // Wayland one so a socket we cannot see from here is not treated as an X11 session.
+    named_wayland
 }
 
 fn supports_force_shared_memory((major, minor, _micro): (u32, u32, u32)) -> bool {
@@ -92,6 +101,7 @@ fn rendering_plan(
     webkit_version: (u32, u32, u32),
     gles_usable: bool,
     nvidia_driver_loaded: bool,
+    wayland_socket: bool,
 ) -> RenderingPlan {
     // Either renderer variable is an operator override when present, `=0` and an empty
     // value included, unless the marker says we wrote it. Without that test a launch
@@ -127,12 +137,14 @@ fn rendering_plan(
     let wayland_display = env(WAYLAND_DISPLAY)
         .map(|display| !display.is_empty())
         .unwrap_or(false);
-    // WAYLAND_DISPLAY is inherited by XWayland clients, so it only decides the backend
-    // when GDK_BACKEND leaves the choice open.
+    // WAYLAND_DISPLAY is inherited by XWayland clients, so it only decides the backend when
+    // GDK_BACKEND leaves the choice open. When GDK_BACKEND names backends, what matters is
+    // which one opens, and wl_display_connect(NULL) also falls back to the default
+    // wayland-0 socket, so an unset WAYLAND_DISPLAY alone does not mean wayland cannot open.
     let wayland_session = match env(GDK_BACKEND) {
         Some(backends) => selected_backend_is_wayland(
             &backends,
-            wayland_display,
+            wayland_display || wayland_socket,
             env(X11_DISPLAY).is_some_and(|display| !display.is_empty()),
         ),
         None => wayland_display,
@@ -179,7 +191,7 @@ fn rendering_plan(
         {
             RenderingWorkaround::DisableDmabuf
         } else {
-            RenderingWorkaround::ForceSharedMemory
+            RenderingWorkaround::ForceSharedMemoryOnNvidia
         };
         return RenderingPlan::Apply(workaround, reason);
     }
@@ -197,6 +209,9 @@ fn rendering_plan(
         // FORCE_SHM still reaches the failing libepoxy path in AppImages.
         RenderingWorkaround::DisableDmabuf
     } else if supports_force_shared_memory(webkit_version) {
+        // Plain FORCE_SHM: nothing here confirmed NVIDIA, so leave the library's own
+        // detection alone. Standing it down would force wl_shm on a host it would have
+        // taken off DMA-BUF itself, which is the commit path bug 315436 disconnects on.
         RenderingWorkaround::ForceSharedMemory
     } else {
         // FORCE_SHM was added with WebKitGTK 2.44. Older host libraries ignore
@@ -204,6 +219,16 @@ fn rendering_plan(
         RenderingWorkaround::DisableDmabuf
     };
     RenderingPlan::Apply(workaround, WAYLAND_REASON)
+}
+
+/// The socket wl_display_connect(NULL) falls back to when WAYLAND_DISPLAY is unset. A
+/// stat, so it touches no GL state and is safe before GTK initialization.
+fn wayland_socket_present() -> bool {
+    std::env::var_os("XDG_RUNTIME_DIR").is_some_and(|dir| {
+        std::path::Path::new(&dir)
+            .join(DEFAULT_WAYLAND_SOCKET)
+            .exists()
+    })
 }
 
 fn nvidia_driver_loaded() -> bool {
@@ -257,6 +282,7 @@ pub fn configure_renderer() -> Option<(&'static [&'static str], &'static str)> {
         runtime_webkit_version(),
         gles_usable,
         nvidia_driver_loaded(),
+        wayland_socket_present(),
     ) {
         RenderingPlan::Apply(workaround, reason) => {
             let variables = workaround.variables();
@@ -290,6 +316,22 @@ mod tests {
         gles_usable: bool,
         nvidia_driver_loaded: bool,
     ) -> RenderingPlan {
+        plan_on_host_with_socket(
+            vars,
+            webkit_version,
+            gles_usable,
+            nvidia_driver_loaded,
+            false,
+        )
+    }
+
+    fn plan_on_host_with_socket(
+        vars: &[(&str, &str)],
+        webkit_version: (u32, u32, u32),
+        gles_usable: bool,
+        nvidia_driver_loaded: bool,
+        wayland_socket: bool,
+    ) -> RenderingPlan {
         rendering_plan(
             |name| {
                 vars.iter()
@@ -299,6 +341,7 @@ mod tests {
             webkit_version,
             gles_usable,
             nvidia_driver_loaded,
+            wayland_socket,
         )
     }
 
@@ -349,7 +392,10 @@ mod tests {
         // backing store release builds dereference (block/buzz#3654).
         assert_eq!(
             plan_on_nvidia(&[]),
-            RenderingPlan::Apply(RenderingWorkaround::ForceSharedMemory, NVIDIA_REASON)
+            RenderingPlan::Apply(
+                RenderingWorkaround::ForceSharedMemoryOnNvidia,
+                NVIDIA_REASON
+            )
         );
     }
 
@@ -357,7 +403,10 @@ mod tests {
     fn nvidia_under_an_explicit_x11_backend_still_applies() {
         assert_eq!(
             plan_on_nvidia(&[(GDK_BACKEND, "x11")]),
-            RenderingPlan::Apply(RenderingWorkaround::ForceSharedMemory, NVIDIA_REASON)
+            RenderingPlan::Apply(
+                RenderingWorkaround::ForceSharedMemoryOnNvidia,
+                NVIDIA_REASON
+            )
         );
     }
 
@@ -427,7 +476,10 @@ mod tests {
         // The patch tests the first byte against '0', so "0" is not a request.
         assert_eq!(
             plan_on_nvidia(&[(FORCE_DMABUF, "0")]),
-            RenderingPlan::Apply(RenderingWorkaround::ForceSharedMemory, NVIDIA_REASON)
+            RenderingPlan::Apply(
+                RenderingWorkaround::ForceSharedMemoryOnNvidia,
+                NVIDIA_REASON
+            )
         );
     }
 
@@ -534,11 +586,61 @@ mod tests {
     }
 
     #[test]
+    fn a_generic_shared_memory_plan_leaves_webkits_own_nvidia_detection_alone() {
+        // Nothing here confirmed NVIDIA: /proc/driver/nvidia can be hidden by a container
+        // or a confined launch while WebKit's GL probe still sees it. Standing the patch
+        // down there would force the wl_shm commit path bug 315436 disconnects on.
+        assert_eq!(
+            plan(&[(WAYLAND_DISPLAY, "wayland-0")]),
+            RenderingPlan::Apply(RenderingWorkaround::ForceSharedMemory, WAYLAND_REASON)
+        );
+        assert_eq!(
+            RenderingWorkaround::ForceSharedMemory.variables(),
+            &[FORCE_SHARED_MEMORY]
+        );
+    }
+
+    #[test]
+    fn a_named_wayland_that_cannot_open_falls_through_to_the_next_backend() {
+        // GDK tries wayland first, its opener fails with no socket to connect to, and the
+        // loop continues to x11. Calling that a Wayland session hands an X11 host the
+        // empty transport set.
+        assert_eq!(
+            plan_on_nvidia(&[(GDK_BACKEND, "wayland,x11"), (X11_DISPLAY, ":0")]),
+            RenderingPlan::Apply(
+                RenderingWorkaround::ForceSharedMemoryOnNvidia,
+                NVIDIA_REASON
+            )
+        );
+        // Same list, but the default wayland-0 socket is there, so wayland does open.
+        assert_eq!(
+            plan_on_host_with_socket(
+                &[(GDK_BACKEND, "wayland,x11"), (X11_DISPLAY, ":0")],
+                MODERN_WEBKIT,
+                true,
+                true,
+                true
+            ),
+            RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_WAYLAND_REASON)
+        );
+    }
+
+    #[test]
+    fn a_lone_named_wayland_still_takes_the_wayland_workaround() {
+        // No fallback entry, so GTK either finds a compositor or fails to start. Treating
+        // it as X11 would be a guess against the only backend the operator named.
+        assert_eq!(
+            plan_on_nvidia(&[(GDK_BACKEND, "wayland")]),
+            RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_WAYLAND_REASON)
+        );
+    }
+
+    #[test]
     fn forcing_shared_memory_also_opts_out_of_the_distro_patch() {
         // isNVIDIA() returns before mode.add(SharedMemory) on 2.50.4 and 2.52.6, so
         // FORCE_SHM on its own is never read there and the set is empty regardless.
         assert_eq!(
-            RenderingWorkaround::ForceSharedMemory.variables(),
+            RenderingWorkaround::ForceSharedMemoryOnNvidia.variables(),
             &[FORCE_SHARED_MEMORY, FORCE_DMABUF]
         );
         assert_eq!(
@@ -558,7 +660,10 @@ mod tests {
                 (FORCE_DMABUF, "1"),
                 (APPLIED_WORKAROUND, &claimed),
             ]),
-            RenderingPlan::Apply(RenderingWorkaround::ForceSharedMemory, NVIDIA_REASON)
+            RenderingPlan::Apply(
+                RenderingWorkaround::ForceSharedMemoryOnNvidia,
+                NVIDIA_REASON
+            )
         );
     }
 
@@ -623,7 +728,10 @@ mod tests {
                 (WAYLAND_DISPLAY, "wayland-0"),
                 (X11_DISPLAY, ":0"),
             ]),
-            RenderingPlan::Apply(RenderingWorkaround::ForceSharedMemory, NVIDIA_REASON)
+            RenderingPlan::Apply(
+                RenderingWorkaround::ForceSharedMemoryOnNvidia,
+                NVIDIA_REASON
+            )
         );
         // Reverse the order and Wayland is what opens first.
         assert_eq!(
