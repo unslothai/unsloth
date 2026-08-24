@@ -3863,6 +3863,11 @@ class AudioGalleryItem(BaseModel):
     sample_rate: int
     duration_s: float
     created_at: str
+    archived: bool = Field(False, description = "Moved to the archived shelf, hidden from history")
+
+
+class AudioGalleryFlagsPatch(BaseModel):
+    archived: Optional[bool] = Field(None, description = "Archive (True) or restore (False) the clip")
 
 
 class AudioGalleryListResponse(BaseModel):

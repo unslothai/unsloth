@@ -1,12 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { ArchiveRestoreIcon, Delete02Icon } from "@hugeicons/core-free-icons";
+import {
+  ArchiveRestoreIcon,
+  AudioWave01Icon,
+  Delete02Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
+import {
+  deleteAudioClip,
+  listAudioGallery,
+  setAudioClipFlags,
+} from "@/features/audio/api";
 import {
   deleteGalleryImage,
   fetchGalleryObjectUrl,
@@ -35,7 +44,13 @@ const ARCHIVED_THUMB_BUDGET_BYTES = 32 * 1024 * 1024;
 const THUMB_RETRY_LIMIT = 2;
 const THUMB_RETRY_DELAY_MS = 750;
 
-export type ArchivedMediaKind = "images" | "videos";
+export type ArchivedMediaKind = "images" | "videos" | "audio";
+
+const NOUN: Record<ArchivedMediaKind, string> = {
+  images: "image",
+  videos: "video",
+  audio: "clip",
+};
 
 /** The shape both galleries share, once flattened for this list. */
 interface ArchivedRow {
@@ -63,7 +78,9 @@ function formatCreatedAt(ms: number): string {
  */
 export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
   const isImages = kind === "images";
-  const noun = isImages ? "image" : "video";
+  const isAudio = kind === "audio";
+  const noun = NOUN[kind];
+  const Noun = noun[0].toUpperCase() + noun.slice(1);
   const [rows, setRows] = useState<ArchivedRow[]>([]);
   // `showMore` reads the row count and the drop count from refs, not state: both can change while
   // its request is in flight, and a stale closure is exactly what makes it skip a row. The ref is
@@ -105,6 +122,18 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
           hasMore: page.has_more,
         };
       }
+      if (isAudio) {
+        const page = await listAudioGallery(offset, ARCHIVED_PAGE_SIZE, null, true);
+        return {
+          rows: page.audio.map((a) => ({
+            id: a.id,
+            prompt: a.prompt,
+            createdAtMs: Date.parse(a.created_at),
+            url: a.url,
+          })),
+          hasMore: page.has_more,
+        };
+      }
       const page = await getVideoGallery(offset, ARCHIVED_PAGE_SIZE, true);
       return {
         rows: page.videos.map((v) => ({
@@ -116,7 +145,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
         hasMore: page.has_more,
       };
     },
-    [isImages],
+    [isImages, isAudio],
   );
 
   useEffect(() => {
@@ -219,6 +248,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
     };
   }, []);
   useEffect(() => {
+    if (isAudio) return;
     let cancelled = false;
     void (async () => {
       for (const row of rows) {
@@ -285,7 +315,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
     return () => {
       cancelled = true;
     };
-  }, [rows, isImages, visible, retryTick]);
+  }, [rows, isImages, isAudio, visible, retryTick]);
 
   // Drop a row, then top the page back up if that emptied it while more remain, so the list never
   // dead-ends with rows still unreachable behind a hidden "Show more".
@@ -328,10 +358,11 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
     pendingMutations.current += 1;
     try {
       if (isImages) await setGalleryImageFlags(row.id, { archived: false });
+      else if (isAudio) await setAudioClipFlags(row.id, { archived: false });
       else await setGalleryVideoFlags(row.id, { archived: false });
       dropRow(row.id, true);
       pendingMutations.current -= 1;
-      toast.success(`${isImages ? "Image" : "Video"} restored`);
+      toast.success(`${Noun} restored`);
     } catch (err) {
       pendingMutations.current -= 1;
       toast.error(`Failed to restore ${noun}`, {
@@ -347,10 +378,11 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
     pendingMutations.current += 1;
     try {
       if (isImages) await deleteGalleryImage(row.id);
+      else if (isAudio) await deleteAudioClip(row.id);
       else await deleteGalleryVideo(row.id);
       dropRow(row.id, false);
       pendingMutations.current -= 1;
-      toast.success(`${isImages ? "Image" : "Video"} deleted`);
+      toast.success(`${Noun} deleted`);
     } catch (err) {
       pendingMutations.current -= 1;
       toast.error(`Failed to delete ${noun}`, {
@@ -418,8 +450,13 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
             data-archived-id={row.id}
             className="group flex items-center gap-4 border-b border-border/40 px-1 py-2.5 text-sm last:border-0"
           >
-            <span className="size-10 shrink-0 overflow-hidden rounded-md bg-muted/40">
-              {thumbs[row.id] ? (
+            <span className="flex size-10 shrink-0 items-center justify-center overflow-hidden rounded-md bg-muted/40">
+              {isAudio ? (
+                <HugeiconsIcon
+                  icon={AudioWave01Icon}
+                  className="size-4 text-muted-foreground"
+                />
+              ) : thumbs[row.id] ? (
                 isImages ? (
                   <img src={thumbs[row.id]} alt="" className="size-full object-cover" />
                 ) : (

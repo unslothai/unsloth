@@ -57,6 +57,7 @@ export interface AudioGalleryClip {
   sample_rate: number;
   duration_s: number;
   created_at: string;
+  archived?: boolean;
 }
 
 export interface AudioGalleryListResponse {
@@ -70,14 +71,30 @@ export async function listAudioGallery(
   offset: number,
   limit: number,
   before?: { mtime: number; id: string } | null,
+  archived = false,
 ): Promise<AudioGalleryListResponse> {
   const cursor = before
     ? `&before_mtime=${encodeURIComponent(before.mtime)}&before_id=${encodeURIComponent(before.id)}`
     : "";
   const response = await authFetch(
-    `/api/inference/audio/gallery?offset=${offset}&limit=${limit}${cursor}`,
+    `/api/inference/audio/gallery?offset=${offset}&limit=${limit}&archived=${archived}${cursor}`,
   );
   return parseJson<AudioGalleryListResponse>(response);
+}
+
+export async function setAudioClipFlags(
+  id: string,
+  flags: { archived?: boolean },
+): Promise<AudioGalleryClip> {
+  const response = await authFetch(
+    `/api/inference/audio/gallery/${encodeURIComponent(id)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(flags),
+    },
+  );
+  return parseJson<AudioGalleryClip>(response);
 }
 
 export async function deleteAudioClip(id: string): Promise<void> {

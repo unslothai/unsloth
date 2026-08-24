@@ -8,6 +8,7 @@
 
 import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import {
+  Archive02Icon,
   AudioWave01Icon,
   Copy01Icon,
   Delete02Icon,
@@ -77,8 +78,10 @@ import {
 } from "@/features/settings/lib/stt-download-mirror";
 import { sttModelSize } from "@/features/settings/stores/stt-model-catalog";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
+import { useSettingsDialogStore } from "@/features/settings";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
+import { subscribeGalleryChanged } from "@/lib/gallery-flags";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -91,6 +94,7 @@ import {
   fetchClipObjectUrl,
   generateAudio,
   listAudioGallery,
+  setAudioClipFlags,
 } from "./api";
 import {
   type AudioBusy,
@@ -210,12 +214,14 @@ function ClipRowMenu({
   onDownload,
   onCopyPrompt,
   onUseAsText,
+  onArchive,
   onDelete,
 }: {
   clip: AudioGalleryClip;
   onDownload: () => void;
   onCopyPrompt: () => void;
   onUseAsText: () => void;
+  onArchive: () => void;
   onDelete: () => void;
 }) {
   return (
@@ -248,6 +254,10 @@ function ClipRowMenu({
         <DropdownMenuItem onSelect={onDownload}>
           <HugeiconsIcon icon={Download01Icon} className="size-4" />
           Download WAV
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={onArchive}>
+          <HugeiconsIcon icon={Archive02Icon} className="size-4" />
+          Archive
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem variant="destructive" onSelect={onDelete}>
@@ -1762,21 +1772,25 @@ export function AudioPage({
 
   // --- Gallery actions ----------------------------------------------------
 
+  const dropClip = useCallback((id: string) => {
+    galleryCache.srcById.delete(id);
+    setSrcById(galleryCache.srcById.toRecord());
+    // Drop the row now, as the clear-all path does: refreshGallery swallows a failed
+    // GET and returns the cache without calling setClips, which left the deleted clip
+    // on screen against an object URL that has already been revoked.
+    galleryCache.clips = galleryCache.clips.filter((clip) => clip.id !== id);
+    setClips(galleryCache.clips);
+    if (galleryCache.selectedId === id) {
+      galleryCache.selectedId = null;
+      setSelectedId(null);
+    }
+  }, []);
+
   const handleDeleteClip = useCallback(
     async (id: string) => {
       try {
         await deleteAudioClip(id);
-        galleryCache.srcById.delete(id);
-        setSrcById(galleryCache.srcById.toRecord());
-        // Drop the row now, as the clear-all path does: refreshGallery swallows a failed
-        // GET and returns the cache without calling setClips, which left the deleted clip
-        // on screen against an object URL that has already been revoked.
-        galleryCache.clips = galleryCache.clips.filter((clip) => clip.id !== id);
-        setClips(galleryCache.clips);
-        if (galleryCache.selectedId === id) {
-          galleryCache.selectedId = null;
-          setSelectedId(null);
-        }
+        dropClip(id);
         await refreshGallery(id);
       } catch (error) {
         toast.error(
@@ -1784,6 +1798,40 @@ export function AudioPage({
         );
       }
     },
+    [dropClip, refreshGallery],
+  );
+
+  const handleArchiveClip = useCallback(
+    async (id: string) => {
+      try {
+        await setAudioClipFlags(id, { archived: true });
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : "Could not archive the clip.",
+        );
+        return;
+      }
+      dropClip(id);
+      await refreshGallery(id);
+      const toastId = toast(
+        <button
+          type="button"
+          onClick={() => {
+            toast.dismiss(toastId);
+            useSettingsDialogStore.getState().openArchivedMedia("audio");
+          }}
+          className="w-full cursor-pointer text-left"
+        >
+          You can view archived audio in Settings
+        </button>,
+        { closeButton: true },
+      );
+    },
+    [dropClip, refreshGallery],
+  );
+
+  useEffect(
+    () => subscribeGalleryChanged("audio", () => void refreshGallery()),
     [refreshGallery],
   );
 
@@ -2387,6 +2435,7 @@ export function AudioPage({
                           onUseAsText={() => {
                             if (transitionMode("speak")) setPrompt(clip.prompt);
                           }}
+                          onArchive={() => void handleArchiveClip(clip.id)}
                           onDelete={() => void handleDeleteClip(clip.id)}
                         />
                       </div>
