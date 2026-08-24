@@ -2171,6 +2171,7 @@ def test_mlx_generate_audio_input_deltas_and_reject(monkeypatch):
 
     backend = MLXInferenceBackend.__new__(MLXInferenceBackend)
     backend._generation_lock = __import__("threading").Lock()
+    backend._draft_model = None
     backend._model, backend._processor = _audio_model(), _audio_processor()
     backend.active_model_name = "m"
     backend.last_generation_stats = None
@@ -2197,6 +2198,60 @@ def test_mlx_generate_audio_input_deltas_and_reject(monkeypatch):
         next(backend.generate_audio_input_response(**args))
 
 
+def test_an_audio_request_speculates_and_releases_the_drafter_it_cut_short(monkeypatch):
+    """mlx_vlm prefills audio through the same get_input_embeddings the decoder uses, so an
+    attached drafter serves this path as it does vision. A stop sequence abandons the round
+    mid-flight and takes the same teardown; a run that ends on its own keeps the drafter."""
+    from core.inference import mlx_inference
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    stats = dict(prompt_tokens = 3, prompt_tps = 1.0, generation_tokens = 3, generation_tps = 1.0)
+    calls = {}
+
+    def _fake_stream(_model, _processor, _prompt, **kwargs):
+        calls["kwargs"] = kwargs
+        for text in ("keep ", "STOP", " never read"):
+            yield SimpleNamespace(text = text, **stats)
+
+    fake_vlm = types.ModuleType("mlx_vlm")
+    fake_vlm.stream_generate = _fake_stream
+    monkeypatch.setitem(sys.modules, "mlx_vlm", fake_vlm)
+    monkeypatch.setattr(
+        mlx_inference,
+        "_render_registered_vlm_prompt",
+        lambda *_a, num_images = 0, num_audios = 0: "P<audio>",
+    )
+    _install_fake_mlx(monkeypatch)
+    released = []
+    sys.modules["mlx.core"].clear_cache = lambda: released.append("cache")
+
+    backend = MLXInferenceBackend.__new__(MLXInferenceBackend)
+    backend._generation_lock = __import__("threading").Lock()
+    backend._model, backend._processor = _audio_model(), _audio_processor()
+    backend.active_model_name = "m"
+    backend.last_generation_stats = None
+    backend.models = {"m": {"audio_type": "audio_vlm"}}
+    backend._draft_model = SimpleNamespace(reset = lambda _m: released.append("reset"))
+    backend._draft_kind = "mtp"
+    backend._draft_block_size = 4
+    args = dict(
+        messages = [{"role": "user", "content": "what is said?"}],
+        system_prompt = "",
+        audio_array = [0.0, 0.1, -0.1],
+        max_new_tokens = 64,
+    )
+
+    assert list(backend.generate_audio_input_response(**args)) == ["keep ", "STOP", " never read"]
+    assert calls["kwargs"]["draft_model"] is backend._draft_model
+    assert calls["kwargs"]["draft_kind"] == "mtp"
+    assert calls["kwargs"]["draft_block_size"] == 4
+    # The stream ran out on its own, so the drafter keeps the round it finished.
+    assert released == []
+
+    assert list(backend.generate_audio_input_response(**args, stop = ["STOP"])) == ["keep "]
+    assert released == ["reset", "cache"]
+
+
 def test_mlx_audio_input_normalizes_split_native_reasoning_channels(monkeypatch):
     from core.inference import mlx_inference
     from core.inference.mlx_inference import MLXInferenceBackend
@@ -2218,6 +2273,7 @@ def test_mlx_audio_input_normalizes_split_native_reasoning_channels(monkeypatch)
 
     backend = MLXInferenceBackend.__new__(MLXInferenceBackend)
     backend._generation_lock = __import__("threading").Lock()
+    backend._draft_model = None
     # Protocol selection follows the template, never a Gemma model-name branch.
     backend._model = _audio_model(model_type = "template_declared_audio")
     backend._processor = _audio_processor()
@@ -2300,6 +2356,7 @@ def test_mlx_audio_input_honors_adapter_selection(monkeypatch):
 
     backend = MLXInferenceBackend.__new__(MLXInferenceBackend)
     backend._generation_lock = __import__("threading").Lock()
+    backend._draft_model = None
     backend._model, backend._processor = _audio_model(), _audio_processor()
     backend.active_model_name = "m"
     backend.last_generation_stats = None
@@ -5094,6 +5151,39 @@ def test_mlx_speculative_options_never_publishes_a_local_path(monkeypatch, targe
     assert options["experimental"] is True and options["candidates"] == []
 
 
+def test_a_snapshot_in_a_previously_configured_cache_still_names_its_repository(
+    tmp_path, monkeypatch
+):
+    """A target left in a cache Studio used to point at loads by snapshot path, and the
+    repository that snapshot came from is what a recommendation is allowed against. Only the
+    caches Studio knows say so: elsewhere the same three directory names vouch for nobody."""
+    from core.inference import mlx_speculative as spec
+
+    active, previous = tmp_path / "active" / "hub", tmp_path / "previous" / "hub"
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.known_hf_hub_caches", lambda: [active, previous]
+    )
+
+    def _snapshot(root):
+        snapshot = root / "models--Qwen--Qwen3.5-4B" / "snapshots" / "rev"
+        snapshot.mkdir(parents = True)
+        (snapshot / "config.json").write_text("{}", encoding = "utf-8")
+        return snapshot
+
+    cached = _snapshot(previous)
+    assert spec._target_repository_owner(str(cached)) == "qwen"
+    assert spec._target_repository_owner(str(cached / "config.json")) == "qwen"
+    # The active cache is still the ordinary case, and answers as it always did.
+    assert spec._target_repository_owner(str(_snapshot(active))) == "qwen"
+    # The same layout hand-written outside every known cache is a name, not a provenance.
+    assert spec._target_repository_owner(str(_snapshot(tmp_path / "elsewhere"))) is None
+    # Inside a known cache it is still only the layout that answers.
+    plain = previous / "downloads" / "Qwen3.5-4B"
+    plain.mkdir(parents = True)
+    assert spec._target_repository_owner(str(plain)) is None
+    assert spec._target_repository_owner("Qwen/Qwen3.5-4B") == "qwen"
+
+
 @pytest.mark.parametrize("door", ["load", "validate"])
 def test_an_unrunnable_speculative_method_is_refused_at_every_door(monkeypatch, door):
     # The frontend validates before it loads, so a guard on /load alone lets a pick pass
@@ -5830,6 +5920,82 @@ def test_a_runtime_self_heal_can_still_fix_is_probed_again(
     assert spec.mlx_speculative_runtime_capabilities()["reason"] is None
     # Settled now, so the imports are not walked again.
     assert len(imported) == settled
+
+
+class _Rewinds:
+    """A target class carrying the cache rewind every method needs, and MTP's captures."""
+
+    def rollback_speculative_cache(self, *_a, **_k):
+        return None
+
+    def __call__(
+        self,
+        x,
+        *,
+        return_hidden = False,
+        return_shared_kv = False,
+    ):
+        return x
+
+
+class _RewindsOnly(_Rewinds):
+    """The same, minus the captures: DFlash and EAGLE-3 never pass them, MTP cannot run."""
+
+    def __call__(self, x):
+        return x
+
+
+class _TakesAnything(_Rewinds):
+    def __call__(self, x, **_k):
+        return x
+
+
+class _Wrapper:
+    """The VLM wrapper mlx_vlm exports as ``Model``: it holds the language model rather than
+    implementing the contract, so reading it instead is a pairing the loaded check refuses."""
+
+    def __call__(self, x):
+        return x
+
+
+@pytest.mark.parametrize(
+    "target_class, mtp_ok",
+    [(_Rewinds, True), (_TakesAnything, True), (_RewindsOnly, False)],
+)
+def test_discovery_asks_for_the_captures_the_loaded_pair_is_checked_for(
+    monkeypatch, target_class, mtp_ok
+):
+    """The loaded check runs after the resident model has gone, so a pairing it would refuse
+    must not be offered: an explicit method is refused before anything is torn down. Discovery
+    and that check therefore have to read the same contract off the same class."""
+    pytest.importorskip("mlx_vlm")
+    from core.inference import mlx_inference
+    from core.inference import mlx_speculative as spec
+
+    # The real shape: in every mlx_vlm module carrying the contract, the wrapper delegates and
+    # LanguageModel is what implements it, which is also the class the loaded check reaches for.
+    module = types.ModuleType("fake_target_module")
+    module.Model = _Wrapper
+    module.LanguageModel = target_class
+    monkeypatch.setitem(
+        sys.modules,
+        "mlx_vlm.utils",
+        SimpleNamespace(get_model_and_args = lambda _c: (module, "fake")),
+    )
+    config = {"model_type": "fake"}
+
+    assert spec._target_method_contract_available("mtp", config) is mtp_ok
+    # Only MTP reads the captures back out, so the others are unaffected either way.
+    assert spec._target_method_contract_available("dflash", config) is True
+
+    # The loaded check agrees on the same class, which is the point of asking early.
+    target = SimpleNamespace(language_model = target_class())
+    drafter = SimpleNamespace(reset = lambda _t: None)
+    if mtp_ok:
+        mlx_inference.validate_speculative_target_contract(target, drafter, "mtp")
+    else:
+        with pytest.raises(RuntimeError, match = "mlx_speculative_target_capture_missing"):
+            mlx_inference.validate_speculative_target_contract(target, drafter, "mtp")
 
 
 def _drafter_snapshot(tmp_path, name, config):

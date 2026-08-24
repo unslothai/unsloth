@@ -3083,8 +3083,19 @@ class MLXInferenceBackend:
         stopped = False
         # Hold the adapter state for the whole stream, as text and vision do,
         # so Base-vs-LoRA compare doesn't run the adapter on both sides.
+        # An attached drafter serves this path too: mlx_vlm prefills audio through the same
+        # get_input_embeddings the decoder uses, and speculates over the text it decodes.
+        # Without these the load reports speculation active while audio requests decode plainly.
+        speculative_kwargs = {}
+        if self._draft_model is not None:
+            speculative_kwargs = {
+                "draft_model": self._draft_model,
+                "draft_kind": self._draft_kind,
+                "draft_block_size": self._draft_block_size,
+            }
         with self._generation_lock, _temporary_mlx_adapter_state(self._model, use_adapter):
             final_response = None
+            completed = False
             try:
                 for response in vlm_stream(
                     self._model,
@@ -3094,6 +3105,7 @@ class MLXInferenceBackend:
                     max_tokens = max_new_tokens,
                     # Greedy; the knobs below are load-time state, not caller kwargs.
                     temperature = 0.0,
+                    **speculative_kwargs,
                     **self._kv_quant_generate_kwargs(),
                     **self._kv_window_generate_kwargs(),
                 ):
@@ -3115,6 +3127,8 @@ class MLXInferenceBackend:
                         break
                     if cancel_event and cancel_event.is_set():
                         break
+                # Both early exits leave the stream mid-round, as the vision path explains.
+                completed = not stopped and (cancel_event is None or not cancel_event.is_set())
             finally:
                 # Derived as the vision path derives it: this backend reports no
                 # finish reason, and unset reads as a natural end.
@@ -3132,6 +3146,18 @@ class MLXInferenceBackend:
                             max_new_tokens,
                         ),
                     )
+                if self._draft_model is not None and not completed:
+                    # Released as the vision path releases it, and for the same reason.
+                    try:
+                        self._draft_model.reset(self._model)
+                    except Exception as exc:
+                        logger.warning("MLX speculative request cleanup failed: %s", exc)
+                    try:
+                        import mlx.core as mx
+                        _drain_generation_streams(mx)
+                        mx.clear_cache()
+                    except Exception as exc:
+                        logger.warning("MLX speculative cache release failed: %s", exc)
         # As in _generate_text: what was withheld is ordinary text now.
         if sequences and not stopped:
             delta = sampled[released:]

@@ -486,6 +486,23 @@ def _active_hf_cache_root() -> Optional[Path]:
         return None
 
 
+def _known_hf_cache_roots() -> list[Path]:
+    """Every hub cache Studio has pointed at, which is the same set local model resolution
+    trusts. Outside them a ``models--`` directory is a name anyone can write."""
+    try:
+        from utils.hf_cache_settings import known_hf_hub_caches
+        roots = known_hf_hub_caches()
+    except Exception:
+        return []
+    resolved = []
+    for root in roots:
+        try:
+            resolved.append(root.resolve())
+        except OSError:
+            continue
+    return resolved
+
+
 def _cached_config_path(repo_id: str) -> Optional[Path]:
     path = _local_path(repo_id)
     if path is None:
@@ -823,12 +840,26 @@ def _drafter_architecture_available(config: dict[str, Any]) -> bool:
         return False
 
 
+def _accepts_mtp_captures(target_class: Any) -> bool:
+    """Whether MTP's capture keywords reach this class's call. Mirrors the check the loaded
+    pair repeats; a class taking ``**kwargs`` passes them through."""
+    try:
+        parameters = inspect.signature(target_class.__call__).parameters
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
+    ) or all(name in parameters for name in ("return_hidden", "return_shared_kv"))
+
+
 def _target_method_contract_available(method: str, config: dict[str, Any]) -> bool:
     """Every method rewinds the target's cache, so a model class without that entry point is
     filtered during discovery rather than refused once both models are resident. An
     unrecognized target resolves to the generic text model, which lacks it too.
+
+    MTP also reads hidden states and shared KV back out of the target's call. The loaded pair is
+    checked for that again, which is after the resident model has gone, so it is asked here too.
     """
-    del method
     try:
         from mlx_vlm.utils import get_model_and_args
 
@@ -841,6 +872,7 @@ def _target_method_contract_available(method: str, config: dict[str, Any]) -> bo
             )
         return any(
             callable(getattr(candidate, "rollback_speculative_cache", None))
+            and (method != "mtp" or _accepts_mtp_captures(candidate))
             for candidate in (model, language_model)
             if candidate is not None
         )
@@ -919,22 +951,28 @@ def _target_repository_owner(target_id: str) -> Optional[str]:
     ):
         return None
     if path.is_absolute():
-        root = _active_hf_cache_root()
+        # The layout under any cache Studio knows, not only the active one: a target picked out
+        # of a previously configured cache loads by snapshot path, and the repository that
+        # snapshot came from is still what a recommendation is allowed against. Outside those
+        # roots the same three components are directory names that vouch for nobody.
         try:
             layout_path = path.parent.resolve() / path.name
-            relative = layout_path.relative_to(root.resolve()) if root is not None else None
-        except (OSError, ValueError):
-            relative = None
-        parts = relative.parts if relative is not None else ()
-        target_is_snapshot = len(parts) == 3 or (
-            len(parts) == 4 and parts[3].casefold() == "config.json" and path.is_file()
-        )
-        if target_is_snapshot and parts[1].casefold() == "snapshots":
-            encoded = parts[0]
+        except OSError:
+            return None
+        for root in _known_hf_cache_roots():
+            try:
+                parts = layout_path.relative_to(root).parts
+            except ValueError:
+                continue
+            target_is_snapshot = len(parts) == 3 or (
+                len(parts) == 4 and parts[3].casefold() == "config.json" and path.is_file()
+            )
+            if not (target_is_snapshot and parts[1].casefold() == "snapshots" and parts[2]):
+                continue
             prefix = "models--"
-            if encoded.casefold().startswith(prefix):
-                owner, separator, model = encoded[len(prefix) :].partition("--")
-                if separator and owner and model and parts[2]:
+            if parts[0].casefold().startswith(prefix):
+                owner, separator, model = parts[0][len(prefix) :].partition("--")
+                if separator and owner and model:
                     return owner.casefold()
         return None
     parts = normalized.split("/")

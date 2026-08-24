@@ -448,6 +448,19 @@ def test_validate_sends_the_mlx_speculative_tuple_it_will_load_with():
         assert f"{field}: payload.{field}" in sent, field
 
 
+def test_the_drafter_probe_asks_about_the_snapshot_the_pick_loads():
+    """`loadId` is the model_path a pick sends when it loads from elsewhere -- a repository
+    cached outside the active HF cache loads by snapshot path. Probing the repository id there
+    pairs a drafter against another revision's config and weights than the load opens."""
+    page = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
+    # The call, not the hook's own definition further up the same file.
+    start = page.index("const mlxSpeculative = useMlxSpeculativeOptions(")
+    call = page[start : page.index(")", start)]
+    assert "target.meta?.loadId" in call, call
+    # Falling back to the id, or a pick that loads by repository id probes nothing.
+    assert "target.id" in call, call
+
+
 def test_the_picker_offers_every_pairing_the_backend_defers():
     """A deferred reason is not a refusal -- the backend declines to judge until the load
     supplies the target's own files, then settles it. Drop one from the picker's set and the

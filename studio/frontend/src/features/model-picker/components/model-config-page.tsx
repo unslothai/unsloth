@@ -2583,7 +2583,14 @@ export function ModelConfigPage({
     platformDeviceType,
     platformChatOnlyReason,
   );
-  const mlxSpeculative = useMlxSpeculativeOptions(target.id, servedByMlx, hfToken);
+  // The snapshot this pick loads from, which is not always the repository id: one cached
+  // outside the active HF cache loads by path. Probing the id there reads another revision's
+  // config and weights, so the drafter offered is not the one the load would pair.
+  const mlxSpeculative = useMlxSpeculativeOptions(
+    target.meta?.loadId || target.id,
+    servedByMlx,
+    hfToken,
+  );
   const loadedMlxSpeculativeMode = useChatRuntimeStore(
     (s) => s.loadedMlxSpeculativeMode,
   );
