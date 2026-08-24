@@ -11,7 +11,6 @@ const LEGACY_QWEN_DEFAULTS = {
   minP: 0.01,
   repetitionPenalty: 1.0,
   presencePenalty: 0.0,
-  maxTokens: 8192,
 } as const;
 
 const LEGACY_GLOBAL_QWEN_DEFAULTS = {
@@ -19,7 +18,6 @@ const LEGACY_GLOBAL_QWEN_DEFAULTS = {
   topP: 0.95,
   minP: 0.01,
   presencePenalty: 0.0,
-  maxTokens: 8192,
 } as const;
 
 const LEGACY_OPTIONAL_GLOBAL_QWEN_DEFAULTS = {
@@ -155,7 +153,8 @@ function migrateStoredModelDefaults(
 /**
  * Upgrade the complete generic-Qwen snapshot that Studio used to remember for
  * Qwen3.5/3.6/3.8. Matching every sampling field keeps an explicit partial
- * override (including a deliberate presencePenalty=0) untouched. Globals are
+ * override (including a deliberate presencePenalty=0) untouched, while the
+ * context-derived maxTokens budget is deliberately preserved. Globals are
  * eligible only when the caller can establish that they describe the active
  * checkpoint; a per-model map alone is not proof of that ownership.
  */

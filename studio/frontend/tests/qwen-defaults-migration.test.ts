@@ -62,6 +62,30 @@ test("migrates the complete legacy Qwen3.8 default snapshot", () => {
   });
 });
 
+test("preserves context-derived token budgets while migrating sampling", () => {
+  for (const maxTokens of [4096, 32768]) {
+    const settings = settingsFor(QWEN38, {
+      ...LEGACY_SNAPSHOT,
+      maxTokens,
+    });
+    const migrated = migrateLegacyQwenDefaults(
+      settings,
+      QWEN38,
+      true,
+      true,
+    );
+
+    assert.equal(
+      migrated.settings.inferenceParamsByModel?.[QWEN38]?.maxTokens,
+      maxTokens,
+    );
+    assert.deepEqual(migrated.patch?.inferenceParamsByModel?.[QWEN38], {
+      minP: 0,
+      presencePenalty: 1.5,
+    });
+  }
+});
+
 test("migrates temperature and top-p for a non-thinking session", () => {
   const migrated = migrateLegacyQwenDefaults(
     settingsFor(QWEN38),
@@ -230,6 +254,21 @@ test("migrates a global-only legacy install when ownership is established", () =
       presencePenalty: 1.5,
     },
   });
+});
+
+test("preserves a global-only install's context-derived token budget", () => {
+  const settings = settingsFor(QWEN38);
+  settings.inferenceParamsByModel = undefined;
+  settings.inferenceParams = {
+    ...settings.inferenceParams,
+    maxTokens: 32768,
+  };
+
+  const migrated = migrateLegacyQwenDefaults(settings, QWEN38, true, true);
+
+  assert.equal(migrated.settings.inferenceParams?.maxTokens, 32768);
+  assert.equal(migrated.patch?.inferenceParams?.maxTokens, undefined);
+  assert.equal(migrated.patch?.inferenceParams?.presencePenalty, 1.5);
 });
 
 test("preserves customized optional fields in a global-only snapshot", () => {

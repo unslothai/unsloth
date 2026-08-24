@@ -61,3 +61,10 @@ test("the eviction branch is behind the same guard", () => {
   const guardAt = SYNC.indexOf("superseded()");
   assert.ok(guardAt !== -1 && guardAt < evictionAt);
 });
+
+test("normal startup status adoption owns the resident model's globals", () => {
+  assert.match(
+    SYNC,
+    /adoptingExistingServerModel: selectedCheckpoint === ""/,
+  );
+});
