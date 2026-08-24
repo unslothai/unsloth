@@ -210,8 +210,8 @@ def run_local_agent(
         popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     else:
         popen_kwargs["start_new_session"] = True
-    # --append-system-prompt and the task both span lines, and cmd.exe splits
-    # CR/LF inside `%*`, so a rescued .cmd goes through the npm parser.
+    # Same CR/LF hazard as the Codex bridge: --append-system-prompt and the task
+    # both span lines, so resolve npm shims rather than spawning the .cmd raw.
     process = subprocess.Popen(
         _resolved_launch_command(executable, command[1:], child_env),
         **popen_kwargs,

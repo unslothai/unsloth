@@ -229,9 +229,8 @@ def test_local_child_process_is_stopped_on_cancellation(monkeypatch, tmp_path):
 
 
 def test_local_child_is_spawned_through_the_shim_resolver(monkeypatch, tmp_path):
-    # The prompt always spans lines, and cmd.exe splits CR/LF inside `%*`, so a
-    # Windows .cmd must reach the npm parser rather than Popen directly (#9167).
-    # The parser itself is covered in test_start.py; this pins the wiring.
+    # Pins the wiring: a Windows .cmd must reach the npm parser, not Popen (#9167).
+    # The parser behaviour itself is covered in test_start.py.
     config = _write_config(tmp_path)
     monkeypatch.setenv(bridge._CODEX_SUBAGENT_CONFIG_ENV, str(config))
     monkeypatch.setattr(bridge.shutil, "which", lambda _: r"C:\\nodejs\\codex.cmd")
