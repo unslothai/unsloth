@@ -7,6 +7,7 @@ import {
   createJSONStorage,
   persist,
 } from "zustand/middleware";
+import { isTauri } from "../../../lib/api-base.ts";
 import type { ResolvedTheme } from "./theme-store";
 
 // Best-effort persistence: localStorage can be blocked (private browsing) and
@@ -848,11 +849,21 @@ export function applyCustomizationToDocument(
   style.removeProperty("font-size");
 
   const effectiveUiZoom = c.uiZoom ?? UI_ZOOM_RANGE.default;
-  if (effectiveUiZoom !== UI_ZOOM_RANGE.default) {
-    el.style.zoom = String(effectiveUiZoom / 100);
-    el.setAttribute("data-ui-zoom", String(effectiveUiZoom));
+  const zoomFactor = effectiveUiZoom / 100;
+  if (isTauri) {
+    el.style.removeProperty("zoom");
+    void import("@tauri-apps/api/core")
+      .then(({ invoke }) => invoke("set_webview_zoom", { scale: zoomFactor }))
+      .catch(() => {});
+  } else if (effectiveUiZoom !== UI_ZOOM_RANGE.default) {
+    el.style.zoom = String(zoomFactor);
   } else {
     el.style.removeProperty("zoom");
+  }
+
+  if (effectiveUiZoom !== UI_ZOOM_RANGE.default) {
+    el.setAttribute("data-ui-zoom", String(effectiveUiZoom));
+  } else {
     el.removeAttribute("data-ui-zoom");
   }
 

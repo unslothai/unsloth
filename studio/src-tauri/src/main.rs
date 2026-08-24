@@ -1967,6 +1967,7 @@ fn main() {
             commands::get_server_logs,
             commands::open_logs_dir,
             commands::open_models_dir,
+            commands::set_webview_zoom,
             commands::start_backend_update,
             commands::start_staged_update,
             commands::cancel_staged_update,
