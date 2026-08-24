@@ -26193,6 +26193,8 @@ async def diffusion_download_plan(
             cpu_offload = request.cpu_offload,
             transformer_prequant_path = request.transformer_prequant_path,
             loras = request.loras,
+            # Avoid opening a Studio CUDA context while training owns the GPU.
+            allow_device_probe = not training,
         )
         return DiffusionDownloadPlanResponse(**plan)
     except (ValueError, FileNotFoundError) as exc:

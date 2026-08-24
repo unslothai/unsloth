@@ -97,6 +97,7 @@ from .diffusion_memory import (
     reclaimable_snapshot_device_memory,
     refine_memory_plan_for_components,
     settled_snapshot_device_memory,
+    snapshot_device_memory,
     unified_memory_shortfall_message,
 )
 from .diffusion_speed import (
@@ -161,6 +162,7 @@ from .diffusion_auto_policy import (
     family_bf16_components_gb,
     precision_fallback_allowed,
     precision_refusal_message,
+    resident_bytes_from_declared,
     resolve_dense_quant_candidate,
 )
 from .diffusion_transformer_quant import (
@@ -461,6 +463,21 @@ def _fit_within(img: Any, max_w: int, max_h: int) -> Any:
     nw = max(1, int(round(w * scale)))
     nh = max(1, int(round(h * scale)))
     return img.resize((nw, nh), Image.LANCZOS)
+
+
+def _flatten_declared_sizes(per_repo: Any) -> list:
+    """Flatten per-repo file sizes without collapsing duplicate paths."""
+    flat: list = []
+    for files in (per_repo or {}).values():
+        flat.extend((name, size) for name, size in (files or {}).items())
+    return flat
+
+
+def _prequant_plan_bytes(te_files: Any) -> int:
+    """Return the hosted pre-cast encoder bytes in a download plan."""
+    return sum(
+        int(size or 0) for entry in (te_files or {}).values() for _name, size in (entry[1] or ())
+    )
 
 
 def _image_variant_hint(
@@ -2095,6 +2112,8 @@ class DiffusionBackend:
                 kwargs.get("gpu_ordinal"),
                 local_files_only = local_files_only,
             )
+            # Reuse the download metadata for the preflight memory estimate.
+            declared_sizes: dict[str, dict[str, int]] = {}
             expected, base_files = self._estimate_download_bytes(
                 kwargs["repo_id"],
                 kwargs.get("gguf_filename"),
@@ -2120,6 +2139,7 @@ class DiffusionBackend:
                 ),
                 skip_te_components = tuple(te_prequant_files),
                 local_files_only = local_files_only,
+                file_sizes_out = declared_sizes,
             )
             # Only shards this prefetch staged may be materialised by the dense fallback, so read it
             # off the staged list: a failed size estimate drops every base file too. A LOCAL base
@@ -2154,6 +2174,26 @@ class DiffusionBackend:
                 kwargs.get("hf_token"),
                 allow_network = not local_files_only,
             )
+            # Reject an impossible unified-memory load before prefetching it.
+            shortfall = self.declared_footprint_shortfall(
+                fam,
+                kwargs["repo_id"],
+                base,
+                kind = kind,
+                declared_files = _flatten_declared_sizes(declared_sizes),
+                # Dense encoder shards were skipped, so count their pre-cast replacement.
+                prequant_bytes = _prequant_plan_bytes(te_prequant_files),
+                gguf_filename = kwargs.get("gguf_filename"),
+                gpu_ordinal = kwargs.get("gpu_ordinal"),
+                memory_mode = kwargs.get("memory_mode"),
+                cpu_offload = bool(kwargs.get("cpu_offload")),
+            )
+            if shortfall is not None:
+                logger.error(
+                    "diffusion.memory: refusing oversized unified-memory load before download: %s",
+                    shortfall,
+                )
+                raise RuntimeError(shortfall)
             with self._lock:
                 # Stamp progress only if this load is still current (a superseder has its own token).
                 if self._load_token == token and self._loading is not None:
@@ -2575,6 +2615,7 @@ class DiffusionBackend:
         model_kind: Optional[str] = None,
         hf_token: Optional[str] = None,
         text_encoder_quant: Optional[str] = None,
+        allow_device_probe: bool = True,
         **load_kwargs: Any,
     ) -> dict[str, Any]:
         """The repos + exact files this pick needs, so the Hub download manager can fetch
@@ -2589,7 +2630,9 @@ class DiffusionBackend:
         loads a hosted PRE-CAST encoder, so the base repo's dense encoder shards must not be
         staged and the pre-cast checkpoint must be. Without it the manager stages the dense
         encoder (tens of GB the load never opens) and the load then pulls the pre-cast file
-        inline, outside the manager's progress and disk preflight."""
+        inline, outside the manager's progress and disk preflight.
+
+        ``allow_device_probe=False`` skips the memory verdict while training owns the GPU."""
         fam = detect_family_for_pick(repo_id, gguf_filename, family_override)
         kind = resolve_model_kind(gguf_filename, model_kind)
         if kind == "pipeline":
@@ -2812,6 +2855,21 @@ class DiffusionBackend:
             # A companion of the checkpoint, never the selected model itself.
             prequant_repo, prequant_file, prequant_size = dit_prequant
             add_missing_entry(prequant_repo, [prequant_file], {prequant_file: prequant_size})
+        # Preserve a more specific incompatibility already found above.
+        if incompatible is None and allow_device_probe:
+            incompatible = self.declared_footprint_shortfall(
+                fam,
+                repo_id,
+                base,
+                kind = kind,
+                declared_files = _flatten_declared_sizes(file_sizes),
+                # Count the pre-cast encoder that replaced skipped dense shards.
+                prequant_bytes = _prequant_plan_bytes(te_files),
+                gguf_filename = gguf_filename,
+                gpu_ordinal = load_kwargs.get("gpu_ordinal"),
+                memory_mode = load_kwargs.get("memory_mode"),
+                cpu_offload = bool(load_kwargs.get("cpu_offload")),
+            )
         return {
             "entries": entries,
             "total_bytes": sum(entry["bytes"] for entry in entries),
@@ -4938,6 +4996,60 @@ class DiffusionBackend:
             )
         except Exception:  # noqa: BLE001 — sizing aid only; refuse on the plan as built
             return plan
+
+    def declared_footprint_shortfall(
+        self,
+        fam: Optional[DiffusionFamily],
+        repo_id: str,
+        base: str,
+        *,
+        kind: str,
+        declared_files: Any,
+        prequant_bytes: int = 0,
+        gguf_filename: Optional[str] = None,
+        gpu_ordinal: Optional[int] = None,
+        memory_mode: Optional[str] = None,
+        cpu_offload: bool = False,
+    ) -> Optional[str]:
+        """Return a pre-download unified-memory refusal for a pipeline, if any.
+
+        The estimate comes from Hub metadata because a cold cache has no local size to inspect.
+        It uses total capacity so a currently loaded model does not make a valid swap look too
+        large. GGUF and single-file loads retain the existing in-load guard.
+        """
+        if fam is None or kind != "pipeline":
+            return None
+        resident_bytes = resident_bytes_from_declared(
+            fam, base, declared_files, prequant_bytes = prequant_bytes
+        )
+        if not resident_bytes:
+            return None
+        try:
+            target = self._target_for_ordinal(fam, gpu_ordinal)
+            # Scope the ordinal without pinning the route's pooled worker thread.
+            with diffusion_device_scope(target.ordinal if target.is_cuda_torch_device else None):
+                device_memory = snapshot_device_memory(target)
+            if device_memory.total_mib is None:
+                return None
+            capacity = replace(device_memory, free_mib = device_memory.total_mib)
+            resident_mib = int(resident_bytes) // (1024 * 1024)
+            variant_hint = _image_variant_hint(fam.name, gguf_filename, repo_id, base)
+            plan = plan_diffusion_memory(
+                target = target,
+                device_memory = capacity,
+                model_dense_mib = resident_mib,
+                # Match the default placement budget used by _plan_memory.
+                runtime_headroom_mib = estimate_image_runtime_mib(
+                    width = None, height = None, family = variant_hint
+                ),
+                requested_mode = memory_mode,
+                explicit_offload = bool(cpu_offload),
+            )
+            # The verdict used capacity, so do not quote an unrelated free-memory value.
+            plan = replace(plan, device_memory = replace(capacity, free_mib = None))
+        except Exception:  # noqa: BLE001 -- a sizing probe that fails must never refuse a load
+            return None
+        return unified_memory_shortfall_message(plan, family = fam.name)
 
     def _plan_memory(
         self,

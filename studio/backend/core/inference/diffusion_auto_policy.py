@@ -78,14 +78,75 @@ _BASE_REPO_HUB_DOWNLOAD_FACTOR: dict[str, float] = {
 }
 
 
-def _base_key(base_repo: Optional[str]) -> str:
-    """The key both per-base tables below are written against: canonical upstream id, lowercased.
+# Denoisers and companion components can use different storage precision.
+DENOISER_SUBFOLDERS = ("transformer/", "unconditional_transformer/")
 
-    ``canonical_base`` maps a mirror back to its upstream but preserves the caller's casing for
-    everything else, and a base repo reaches here however the user typed it: the trust gate and
-    every other base-keyed table compare case-insensitively, so these must too or a lowercase
-    custom base silently misses its override and gets sized as the family default.
+# Only verified raw low-precision bases may be estimated to grow at load time. This prevents
+# packed NF4 siblings in the same family from being treated like raw fp8 tensors.
+_UPCASTING_BASES: frozenset = frozenset({"ideogram-ai/ideogram-4-fp8"})
+
+# Download bytes per RESIDENT byte, as ``(denoiser, companions)``.
+# Unlisted families default to 1:1.
+_FAMILY_RESIDENT_FACTORS: dict = {
+    "z-image": (2.0, 1.0),
+    "lumina-2": (2.0, 2.0),
+    "ideogram-4": (0.5, 0.5),
+}
+
+# Per-base storage precision overrides.
+_BASE_RESIDENT_FACTORS: dict = {
+    "tongyi-mai/z-image": (1.0, 1.0),
+}
+
+
+def resident_factors(fam: Any, base_repo: Optional[str] = None) -> tuple:
+    """Return ``(denoiser, companions)`` download-per-resident factors."""
+    key = _base_key(base_repo) if base_repo else ""
+    override = _BASE_RESIDENT_FACTORS.get(key)
+    if override is not None:
+        return override
+    name = getattr(fam, "name", None) or ""
+    denoiser, companions = _FAMILY_RESIDENT_FACTORS.get(name, (1.0, 1.0))
+    if key not in _UPCASTING_BASES:
+        denoiser, companions = max(denoiser, 1.0), max(companions, 1.0)
+    return denoiser, companions
+
+
+def resident_bytes_from_declared(
+    fam: Any,
+    base_repo: Optional[str],
+    declared_files: Any,
+    *,
+    prequant_bytes: int = 0,
+) -> Optional[int]:
+    """Estimate resident bytes from Hub file sizes and component storage precision.
+
+    ``prequant_bytes`` is added unchanged because hosted pre-cast encoders are already stored at
+    their load precision. Unknown families are treated as 1:1 with their download size.
     """
+    denoiser_factor, companion_factor = resident_factors(fam, base_repo)
+    denoiser = 0
+    companions = 0
+    for path, size in declared_files or ():
+        size = int(size or 0)
+        if size <= 0:
+            continue
+        if str(path).startswith(DENOISER_SUBFOLDERS):
+            denoiser += size
+        else:
+            companions += size
+    prequant_bytes = max(0, int(prequant_bytes or 0))
+    if denoiser <= 0 and companions <= 0 and prequant_bytes <= 0:
+        return None
+    return (
+        int(denoiser / max(denoiser_factor, 0.01))
+        + int(companions / max(companion_factor, 0.01))
+        + prequant_bytes
+    )
+
+
+def _base_key(base_repo: Optional[str]) -> str:
+    """Return the canonical, case-insensitive key used by per-base tables."""
     from .diffusion_families import canonical_base
     return canonical_base(base_repo).strip().lower()
 
