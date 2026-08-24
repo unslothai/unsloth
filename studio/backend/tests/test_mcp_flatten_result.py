@@ -258,7 +258,9 @@ def test_oversized_embedded_resource_image_omitted():
 
 
 def test_embedded_text_resource_contributes_its_text():
-    assert _flatten_result(_result(_text_resource("saved to /out/gen.png"))) == "saved to /out/gen.png"
+    assert (
+        _flatten_result(_result(_text_resource("saved to /out/gen.png"))) == "saved to /out/gen.png"
+    )
 
 
 def test_embedded_non_image_blob_still_ignored():
