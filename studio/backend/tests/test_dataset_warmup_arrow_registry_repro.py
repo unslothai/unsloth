@@ -35,11 +35,11 @@ def test_datasets_can_be_reimported_after_a_failed_warm_is_purged():
     )
     result = subprocess.run(
         [sys.executable, "-c", probe],
-        cwd=BACKEND,
-        text=True,
-        capture_output=True,
-        timeout=60,
-        check=False,
+        cwd = BACKEND,
+        text = True,
+        capture_output = True,
+        timeout = 60,
+        check = False,
     )
     combined = result.stdout + result.stderr
     assert result.returncode == 0, combined

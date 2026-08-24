@@ -62,8 +62,7 @@ def _is_extension_module(name: str) -> bool:
 
 
 _DATASETS_ARROW_EXTENSION_TYPES = tuple(
-    f"datasets.features.features.Array{dimensions}DExtensionType"
-    for dimensions in range(2, 6)
+    f"datasets.features.features.Array{dimensions}DExtensionType" for dimensions in range(2, 6)
 )
 
 
@@ -149,9 +148,7 @@ def purge_partial_import(package: str) -> list:
             break
         if sys.modules.pop(name, None) is not None:
             removed.append(name)
-    fully_purged = package not in sys.modules and not any(
-        name in sys.modules for name in stale
-    )
+    fully_purged = package not in sys.modules and not any(name in sys.modules for name in stale)
     if fully_purged:
         _clear_external_import_state(package)
     if removed:
