@@ -3190,6 +3190,11 @@ class FastLlamaModel:
                 skip = _vllm_unmovable_embedding_modules(model, target_modules),
             )
             new_target_modules = list(requested_targets) + list(requested_saved or [])
+            if isinstance(model, PeftModelForSequenceClassification):
+                # PeftModelForSequenceClassification.__init__ extends modules_to_save with
+                # these unconditionally, so the stored config names modules the caller
+                # never asked for. Mirror it, or an unchanged request looks different.
+                new_target_modules += ["classifier", "score"]
             # Tying is not in check_parameters and leaves both lists looking the same, so
             # compare it separately. On what it actually does, not what was asked: on an
             # untied model the request changes nothing either way.

@@ -237,6 +237,35 @@ def test_flipping_ensure_weight_tying_is_seen_as_a_different_request():
 
 
 @pytest.mark.slow
+def test_a_classification_repeat_call_is_not_tripped_by_peft_added_modules():
+    """PeftModelForSequenceClassification.__init__ extends modules_to_save with
+    classifier/score unconditionally, so the stored config names modules the caller never
+    asked for. An unchanged request must still pass through."""
+    from unsloth import FastLanguageModel
+
+    core = [m for m in TARGET_MODULES if m not in ("embed_tokens", "lm_head")]
+    model, _ = FastLanguageModel.from_pretrained(
+        model_name = MODEL_NAME, load_in_4bit = True, max_seq_length = 512, num_labels = 2,
+    )
+    try:
+        model = FastLanguageModel.get_peft_model(model, r = 8, lora_alpha = 16,
+                                                 target_modules = list(core))
+        saved = model.peft_config["default"].modules_to_save or []
+        assert "score" in saved or "classifier" in saved, (
+            f"PEFT did not add its classifier modules ({saved}); this guard checks nothing"
+        )
+        FastLanguageModel.get_peft_model(model, r = 8, lora_alpha = 16,
+                                         target_modules = list(core))
+        # A genuinely different request is still rejected.
+        with pytest.raises(TypeError, match = "parameters are different"):
+            FastLanguageModel.get_peft_model(model, r = 8, lora_alpha = 16,
+                                             target_modules = ["q_proj"])
+    finally:
+        del model
+        torch.cuda.empty_cache()
+
+
+@pytest.mark.slow
 def test_embedding_only_target_list_raises_instead_of_training_nothing():
     """Redirecting every target would leave an adapter with no trainable LoRA."""
     from unsloth import FastLanguageModel
