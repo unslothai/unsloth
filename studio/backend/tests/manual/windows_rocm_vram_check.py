@@ -68,12 +68,17 @@ def run_holder(gib: float, max_seconds: int) -> int:
         chunks.append(t)
         held += step
     torch.cuda.synchronize()
-    print(json.dumps({
-        "status": "READY",
-        "pid": os.getpid(),
-        "held_gib": held / GIB,
-        "allocated_gib": torch.cuda.memory_allocated() / GIB,
-    }), flush = True)
+    print(
+        json.dumps(
+            {
+                "status": "READY",
+                "pid": os.getpid(),
+                "held_gib": held / GIB,
+                "allocated_gib": torch.cuda.memory_allocated() / GIB,
+            }
+        ),
+        flush = True,
+    )
 
     deadline = time.time() + max_seconds
     while time.time() < deadline:
@@ -234,9 +239,13 @@ def main() -> int:
         gates["amd_smi_allowed"] = f"error: {type(e).__name__}: {e}"
     gates["env"] = {
         k: os.environ.get(k)
-        for k in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES",
-                  "GPU_DEVICE_ORDINAL", "CUDA_VISIBLE_DEVICES",
-                  "UNSLOTH_ENABLE_AMD_SMI")
+        for k in (
+            "HIP_VISIBLE_DEVICES",
+            "ROCR_VISIBLE_DEVICES",
+            "GPU_DEVICE_ORDINAL",
+            "CUDA_VISIBLE_DEVICES",
+            "UNSLOTH_ENABLE_AMD_SMI",
+        )
     }
     report["gates"] = gates
 
@@ -257,9 +266,18 @@ def main() -> int:
     report["before"] = _reading(hw, torch)
 
     proc = subprocess.Popen(
-        [sys.executable, str(Path(__file__).resolve()), "--holder",
-         "--gib", str(args.gib), "--max-seconds", str(args.max_seconds)],
-        stdout = subprocess.PIPE, stderr = subprocess.DEVNULL, text = True,
+        [
+            sys.executable,
+            str(Path(__file__).resolve()),
+            "--holder",
+            "--gib",
+            str(args.gib),
+            "--max-seconds",
+            str(args.max_seconds),
+        ],
+        stdout = subprocess.PIPE,
+        stderr = subprocess.DEVNULL,
+        text = True,
     )
     ready = _wait_for_ready(proc, timeout = 180)
     report["holder"] = ready
@@ -317,11 +335,13 @@ def main() -> int:
     if new_drop < floor:
         problems.append(
             f"free_gb moved only {new_drop:.2f} GiB against {held:.2f} GiB held: "
-            f"the other process is largely invisible here")
+            f"the other process is largely invisible here"
+        )
     elif new_drop > ceiling:
         problems.append(
             f"free_gb moved {new_drop:.2f} GiB, more than {held:.2f} GiB held plus "
-            f"2.00 GiB of process overhead: free is being under-reported")
+            f"2.00 GiB of process overhead: free is being under-reported"
+        )
     if spawns:
         problems.append(f"amd-smi was spawned {len(spawns)}x: {spawns}")
 
