@@ -148,9 +148,7 @@ def _defined_names(node):
     # it. Only a value computed WITHOUT the old one replaces it, decided per name so
     # that `A, B = B, A` exempts both while `A, B = 1, 2` exempts neither.
     referenced = {sub.id for sub in ast.walk(value) if isinstance(sub, ast.Name)}
-    return [
-        (name, "constant") for name in _constant_targets(target) if name not in referenced
-    ]
+    return [(name, "constant") for name in _constant_targets(target) if name not in referenced]
 
 
 def _scope_duplicates(body, scope, out) -> None:
