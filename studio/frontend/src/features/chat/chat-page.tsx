@@ -731,22 +731,26 @@ const LoraCompareContent = memo(function LoraCompareContent({
   const markInitialHistoryReady = useCompareReloadReadiness(pairId);
   const active = useChatActive();
 
-  // This pair's own runs, not every run on the page. `runningByThreadId` is global, and
-  // it used to hold only compare runs while compare was on screen, because opening
-  // compare unmounted the base view and killed its run. The shared provider (#8908) keeps
-  // that run alive, so a base chat still generating made `compareRunning` true and this
-  // effect skipped listStoredChatThreads for the whole length of it: an existing compare
-  // opened on blank runtimes, and a user could start replacement pair threads over it.
-  // Undefined ids read as not running, which is the state this effect exists to leave.
-  const compareRunning = useChatRuntimeStore((s) =>
-    Boolean(
-      (baseThreadId && s.runningByThreadId[baseThreadId]) ||
-        (loraThreadId && s.runningByThreadId[loraThreadId]),
-    ),
+  // Deliberately global, and deliberately not scoped to this pair. A first compare run
+  // starts before either thread exists, so there is no pair id to scope BY: the run files
+  // its handles under "__default" and is re-keyed by adoptDefaultThreadRun() only once
+  // initialize() persists the row. What this gate is really for is that the ids feed
+  // ComparePane's `initialThreadId`, so learning them mid-run points ThreadAutoSwitch at a
+  // thread that is still generating. Waiting for every run to settle is the cheap way to
+  // guarantee they only ever arrive between runs.
+  const anyRunning = useChatRuntimeStore(
+    (s) => Object.keys(s.runningByThreadId).length > 0,
   );
+  // ...but only RE-lists wait. The shared provider (#8908) keeps a base chat's run alive
+  // across the switch into compare, so `anyRunning` is now true on arrival for a reason
+  // that has nothing to do with this pair; gating the FIRST list on it left an existing
+  // compare on blank runtimes for the whole length of that base generation, with no later
+  // edge to recover on. The first list has nothing to clobber, so it never needs to wait.
+  const listedPairRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (compareRunning) return;
+    if (anyRunning && listedPairRef.current === pairId) return;
+    listedPairRef.current = pairId;
     let isActive = true;
     setThreadsSettled(false);
     listStoredChatThreads({ pairId })
@@ -766,7 +770,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
     return () => {
       isActive = false;
     };
-  }, [pairId, compareRunning]);
+  }, [pairId, anyRunning]);
 
   useEffect(() => {
     if (!threadsSettled) return;
@@ -942,15 +946,12 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   const globalGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const globalIsDiffusion = useChatRuntimeStore((s) => s.loadedIsDiffusion);
   const active = useChatActive();
-  // This pair's own runs only; see the note on the Lora variant above. A base chat kept
-  // alive by the shared provider (#8908) is in the same global map, and letting it stand
-  // in for a compare run stalls this effect for as long as it generates.
-  const compareRunning = useChatRuntimeStore((s) =>
-    Boolean(
-      (model1ThreadId && s.runningByThreadId[model1ThreadId]) ||
-        (model2ThreadId && s.runningByThreadId[model2ThreadId]),
-    ),
+  // Global, with only RE-lists waiting on it; see the note on the Lora variant above for
+  // why a first compare run cannot be scoped by pair, and why the first list must not wait.
+  const anyRunning = useChatRuntimeStore(
+    (s) => Object.keys(s.runningByThreadId).length > 0,
   );
+  const listedPairRef = useRef<string | null>(null);
   const [model1, setModel1] = useState<CompareModelSelection>({
     id: globalCheckpoint || "",
     isLora: false,
@@ -976,7 +977,8 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   );
 
   useEffect(() => {
-    if (compareRunning) return;
+    if (anyRunning && listedPairRef.current === pairId) return;
+    listedPairRef.current = pairId;
     let isActive = true;
     setThreadsSettled(false);
     listStoredChatThreads({ pairId })
@@ -1004,7 +1006,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     return () => {
       isActive = false;
     };
-  }, [pairId, compareRunning]);
+  }, [pairId, anyRunning]);
 
   useEffect(() => {
     if (!threadsSettled) return;

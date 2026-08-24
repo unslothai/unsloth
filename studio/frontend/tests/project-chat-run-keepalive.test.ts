@@ -311,20 +311,31 @@ test("a publication landing mid-switch does not reclaim the view", () => {
   );
 });
 
-test("compare only waits on runs from its own pair", () => {
-  // runningByThreadId is global. Before the shared provider a base run could not outlive
-  // the base view, so "anything running" meant "a compare run". It can now, and a global
-  // check made this effect skip listStoredChatThreads for the whole length of a base
-  // generation: an existing compare opened on blank runtimes.
-  assert.doesNotMatch(
-    page,
-    /const compareRunning = useChatRuntimeStore\(\s*\(s\) => Object\.keys\(s\.runningByThreadId\)\.length > 0,/,
-  );
-  const scoped =
+test("compare lists its threads once before it waits on any run", () => {
+  // Two constraints that a single boolean cannot carry.
+  //
+  // The wait has to be GLOBAL: a first compare run starts before either thread exists, so
+  // it files its handles under "__default" and there is no pair id to scope by. And it has
+  // to exist at all, because these ids feed ComparePane's `initialThreadId`, so learning
+  // them mid-run points ThreadAutoSwitch at a thread that is still generating.
+  //
+  // But the shared provider now keeps a base chat's run alive across the switch into
+  // compare, so a global wait on the FIRST list left an existing compare on blank runtimes
+  // for the whole length of that generation, with no later edge to recover on. The first
+  // list has nothing to clobber, so only re-lists wait.
+  const waits =
     page.match(
-      /const compareRunning = useChatRuntimeStore\(\(s\) =>\s*Boolean\([\s\S]*?\),\s*\);/g,
+      /const anyRunning = useChatRuntimeStore\(\s*\(s\) => Object\.keys\(s\.runningByThreadId\)\.length > 0,\s*\);/g,
     ) ?? [];
-  assert.equal(scoped.length, 2, "both compare variants must be scoped");
-  assert.match(scoped[0]!, /baseThreadId[\s\S]*?loraThreadId/);
-  assert.match(scoped[1]!, /model1ThreadId[\s\S]*?model2ThreadId/);
+  assert.equal(waits.length, 2, "both compare variants share the global wait");
+  const gates =
+    page.match(
+      /if \(anyRunning && listedPairRef\.current === pairId\) return;\s*listedPairRef\.current = pairId;/g,
+    ) ?? [];
+  assert.equal(gates.length, 2, "both variants must exempt their first list");
+  assert.equal(
+    (page.match(/\}, \[pairId, anyRunning\]\);/g) ?? []).length,
+    2,
+    "the settle edge is what re-lists; without it a fresh pair never learns its ids",
+  );
 });
