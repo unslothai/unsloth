@@ -705,6 +705,13 @@ pub fn open_models_dir(window: tauri::WebviewWindow, path: String) -> Result<(),
     open_existing_dir(std::path::Path::new(&path))
 }
 
+/// Set native webview zoom level
+#[tauri::command]
+pub fn set_webview_zoom(window: tauri::WebviewWindow, scale: f64) -> Result<(), String> {
+    window.set_zoom(scale).map_err(|e| e.to_string())
+}
+
+
 /// Start the first-launch installation process.
 /// Runs the platform installer script with --tauri flag and streams progress events.
 /// Returns "NEEDS_ELEVATION" if system packages need elevated install (Linux only).
