@@ -705,7 +705,9 @@ def _assert_created_ref(path: Path, created_stat: os.stat_result) -> None:
         raise ConcurrentMainRefError("refs/main changed during promotion")
 
 
-def _write_staged_ref_copy(repo_dir: Path, payload: bytes, mode: int) -> tuple[Path, os.stat_result]:
+def _write_staged_ref_copy(
+    repo_dir: Path, payload: bytes, mode: int
+) -> tuple[Path, os.stat_result]:
     """Build a complete, durable copy of *payload* in the staging directory.
 
     The copy carries the source ref's permission bits and is fsynced before it
