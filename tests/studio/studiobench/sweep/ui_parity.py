@@ -2287,6 +2287,10 @@ def main(argv: list[str] | None = None) -> int:
         if len(win) > 8:
             print(f"    ... and {len(win) - 8} more windowed pair(s)")
         scored_windowed += len(win)
+        # Per pattern, and reset here rather than outside the loop: two payload patterns are two
+        # films and must not pool their coverage, which is the rule `_floored` already states.
+        windowed_compared: Optional[frozenset[tuple]] = None
+        windowed_seen: set[tuple] = set()
         # BOTH, and in this order. Visible-region parity is the verdict the off-screen exemption
         # asks for and it is the one that can FAIL a windowed arm for something a user would see.
         # The behavioural invariants are the complement: they catch what a viewport comparison
@@ -2337,7 +2341,8 @@ def main(argv: list[str] | None = None) -> int:
                 paths, f"UI PARITY: {pattern}", floor, select = win, min_reps = args.min_reps
             )
             worst = max(worst, int(vis))
-            note(pattern, vis)
+            windowed_compared = frozenset(vis.compared)
+            windowed_seen |= set(vis.seen)
         if args.mode in ("auto", "behaviour"):
             beh = behaviour_report(
                 paths,
@@ -2347,7 +2352,38 @@ def main(argv: list[str] | None = None) -> int:
                 min_reps = args.min_reps,
             )
             worst = max(worst, int(beh))
-            note(pattern, beh)
+            # Only where behavioural mode is the ONLY mode, i.e. `--mode behaviour`. Under
+            # `--mode auto` it adds nothing to the numerator; see below.
+            if windowed_compared is None:
+                windowed_compared = frozenset(beh.compared)
+            windowed_seen |= set(beh.seen)
+        # NOT UNIONED ACROSS THE TWO WINDOWED MODES. The union is right for the structural set
+        # below, which is a DISJOINT set of pairs -- coverage there really does add up. It is wrong
+        # here: under `--mode auto` these two are not two slices of the film, they are two verdicts
+        # on the SAME pairs, which is what the comment above says when it says neither subsumes the
+        # other. Unioned, one stood in for the other: behavioural mode reaching all 16 pairs while
+        # visible capture succeeded on 1 and returned NOT COMPARABLE for the other 15 still put 16
+        # keys in the set, cleared `--min-compared 16`, and exited 0 with essentially the whole
+        # appearance surface unmeasured.
+        #
+        # AND THE TWO ARE NOT INTERCHANGEABLE, so this is not an intersection either. The modes are
+        # asymmetric in what they even claim to reach: visible-region parity applies to EVERY
+        # windowed pair, while a behavioural invariant only exists for the handful of actions that
+        # declare one -- every other pair is reported UNCHECKED, which is explicitly not a pass and
+        # equally not a shortfall. Intersecting would therefore fail a run for pairs behavioural
+        # mode never had an opinion about, which is a false red measured at 1 of 4 on the coverage
+        # fixture here.
+        #
+        # So in `auto` the numerator is the visible verdict, the one that is owed on every pair.
+        # Behavioural coverage cannot vouch for the appearance of a pair the viewport comparison
+        # could not read, which is exactly the substitution above.
+        #
+        # `seen` stays a union: it is the denominator, the pairs the reports were OFFERED, and a
+        # pair offered to either was offered. Shrinking it alongside the numerator would hide the
+        # shortfall it exists to express.
+        if windowed_compared is not None:
+            compared_pairs.setdefault(pattern, set()).update(windowed_compared)
+            seen_pairs.setdefault(pattern, set()).update(windowed_seen)
 
     # AHEAD OF THE STRUCTURAL EARLY RETURN, because this mode does not read the plan at all.
     #

@@ -1828,6 +1828,68 @@ def _windowed_only_shard(
     return _write(tmp_path, name, rows)
 
 
+def _windowed_shard_visible_only_on_one(tmp_path, name, *, pairs = 4):
+    """Every pair carries a behavioural invariant; only the FIRST carries a visible capture.
+
+    One action at four cells, so all four are pairs behavioural mode declares an invariant for --
+    what varies is whether the visible-region capture is there to be read at all.
+    """
+    rows = []
+    for i in range(pairs):
+        for side in ("base", "treatment"):
+            windowed = side == "treatment"
+            rows.append(
+                _action(
+                    "select_text",
+                    f"r100K.{side}.rep{i}",
+                    parity = _capture(mounted = 9 if windowed else 18, total = 18),
+                    visible = _visible([1], [1], digest = "shipped") if i == 0 else None,
+                    expect = {"selected_chars": 100, "visible_chars": 100},
+                )
+            )
+    return _write(tmp_path, name, rows)
+
+
+def test_behavioural_coverage_does_not_stand_in_for_visible_coverage(tmp_path, capsys):
+    """THE SUBSTITUTION. The floor unioned the two windowed modes' compared sets.
+
+    They are not two slices of one film. Under `--mode auto` they are two verdicts on the SAME
+    pairs, so the union let one stand in for the other: behavioural mode reaching every pair while
+    the visible capture could be read on only ONE still filled the set, cleared the floor, and
+    exited 0 with essentially the whole appearance surface unmeasured. That is the same false green
+    the floor exists to refuse, arriving through the floor itself.
+
+    Four pairs here, all of them behaviourally checked, one of them visible. A floor of 4 has to
+    fire, and the count has to be the visible one.
+    """
+    from studiobench.sweep import ui_parity as U
+
+    _windowed_shard_visible_only_on_one(tmp_path, "winsub", pairs = 4)
+    code = U.main([str(tmp_path / "winsub"), "--min-compared", "4"])
+    out = capsys.readouterr().out
+    assert "TOO LITTLE COMPARED" in out, out
+    assert "1 of 4 pair(s) carry a verdict" in out, out
+    assert code == 3, out
+
+
+def test_a_pair_behavioural_mode_declares_no_invariant_for_is_not_a_shortfall(tmp_path, capsys):
+    """THE OTHER DIRECTION, and the reason this is not an intersection.
+
+    A behavioural invariant only exists for the handful of actions that declare one; every other
+    pair is reported UNCHECKED, which is not a pass and equally not a coverage shortfall. Requiring
+    both verdicts on every pair therefore fails a run for pairs behavioural mode never had an
+    opinion about -- measured at 1 of 4 on this very fixture, where visible mode read all four.
+    """
+    from studiobench.sweep import ui_parity as U
+
+    _windowed_only_shard(tmp_path, "winunchecked", pairs = 4)
+    code = U.main([str(tmp_path / "winunchecked"), "--min-compared", "4"])
+    out = capsys.readouterr().out
+    assert "UNCHECKED:                  3" in out, out
+    assert "TOO LITTLE COMPARED" not in out, out
+    assert code == 0, out
+
+
 def test_the_coverage_floor_applies_to_a_run_with_no_fully_mounted_pair(tmp_path, capsys):
     """THE HOLE. `--min-compared` was a parameter of `report()` and enforced at one site inside it,
     and `report()` is reached only from the structural loop BELOW `main`'s early return. A payload
