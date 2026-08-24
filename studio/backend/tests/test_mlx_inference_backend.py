@@ -5574,6 +5574,39 @@ def test_a_drafter_that_attached_reports_no_unmet_comparison(monkeypatch, pinned
     assert backend.models["fake/vlm"]["mlx_speculative_reason"] == reported
 
 
+@pytest.mark.parametrize(
+    "config, charged_on_disk",
+    [
+        ({"model_type": "qwen3"}, False),
+        ({"model_type": "qwen3", "quantization_config": {"bits": 4, "group_size": 64}}, True),
+    ],
+)
+def test_a_target_is_sized_at_the_precision_the_load_will_hold(
+    monkeypatch, config, charged_on_disk
+):
+    """The load quantizes a full-precision checkpoint, so charging its files would refuse a
+    drafter beside a target whose runtime fits with room to spare. A checkpoint that is already
+    quantized is loaded as it sits, so its files are what it costs."""
+    from core.inference import mlx_speculative as spec
+
+    on_disk = 100_000_000_000
+    monkeypatch.setattr(spec, "_snapshot_weight_bytes", lambda _r: on_disk)
+    monkeypatch.setattr(spec, "_read_config", lambda _r: config)
+
+    charged = spec._target_runtime_weight_bytes("org/target")
+    assert (charged == on_disk) is charged_on_disk
+    assert 0 < charged <= on_disk
+
+
+def test_a_target_that_is_not_cached_is_charged_nothing(monkeypatch):
+    """No snapshot means no measurement, and a guess would refuse pairs on a number nothing
+    supports."""
+    from core.inference import mlx_speculative as spec
+
+    monkeypatch.setattr(spec, "_snapshot_weight_bytes", lambda _r: 0)
+    assert spec._target_runtime_weight_bytes("org/target") == 0
+
+
 def _drafter_snapshot(tmp_path, name, config):
     snapshot = tmp_path / name / "snapshots" / "abc"
     snapshot.mkdir(parents = True)
