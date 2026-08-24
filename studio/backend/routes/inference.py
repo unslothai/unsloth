@@ -18387,11 +18387,14 @@ async def openai_chat_completions(
                         if nudge_should_retry(_data, _sf_heal, _sf_healing_tools):
                             # A failed retry must not 500 the request; keep the first
                             # response (GGUF nudge parity). The retry's generate()
-                            # overwrites stats_holder, so save the first attempt's
-                            # stats and fold whichever attempt loses back in: both
-                            # were generated, and reporting one hides tokens the
-                            # caller was charged for.
-                            _first_stats = stats_holder.get("stats")
+                            # overwrites stats_holder, so take the first attempt's
+                            # stats out and fold whichever attempt loses back in:
+                            # both were generated, and reporting one hides tokens
+                            # the caller was charged for. Popped, not read: a retry
+                            # that raises before publishing would otherwise leave
+                            # its own report indistinguishable from this one, and
+                            # folding it into itself doubles the completion count.
+                            _first_stats = stats_holder.pop("stats", None)
                             try:
                                 retry_messages = [
                                     *gen_kwargs["messages"],
@@ -18470,10 +18473,14 @@ async def openai_chat_completions(
                     _choice_usage = _choice_stats.get("usage") or {}
                     # The prompt is shared across all n choices, so its tokens count
                     # ONCE; only generated tokens accumulate (llama-server parity).
-                    _prompt_tokens = _choice_usage.get("prompt_tokens") or _prompt_tokens
-                    _sum_completion += _choice_usage.get("completion_tokens") or 0
-                    if _prompt_details is None:
+                    if _choice_usage.get("prompt_tokens"):
+                        _prompt_tokens = _choice_usage["prompt_tokens"]
+                        # Details describe that same count, so they come from the
+                        # choice that supplied it. Choosing them separately lets a
+                        # reply report more cached tokens than prompt tokens, since
+                        # the nudge rebuilds a longer prompt for some choices.
                         _prompt_details = _choice_usage.get("prompt_tokens_details")
+                    _sum_completion += _choice_usage.get("completion_tokens") or 0
             _msg, _finish = _monitor_replies[-1], _choices[-1].finish_reason
 
             # Built once, so what the monitor is told below is this same object and

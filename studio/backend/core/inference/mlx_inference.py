@@ -433,6 +433,10 @@ def _build_generation_stats(
             "prompt_tokens": total_prompt_n,
             "completion_tokens": gen_n,
             "total_tokens": total_prompt_n + gen_n,
+            # The reused prefix is inside prompt_tokens, so name it here as
+            # llama-server does. Reporting it only under timings.cache_n leaves a
+            # caller reading the OpenAI field a cached_tokens of 0 on every hit.
+            "prompt_tokens_details": {"cached_tokens": cached_n},
         },
         "timings": {
             "prompt_n": prompt_n,

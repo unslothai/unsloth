@@ -173,8 +173,13 @@ def _summed_tool_loop_stats(total, turn):
     usage["completion_tokens"] = completion
     # A turn that ended before reporting keeps the last count that arrived: the
     # prompt is the loop's, not that turn's, so dropping it erases the whole loop's.
+    # Its details describe that same count and move with it, or a fold could report
+    # more cached tokens than prompt tokens.
     if not usage.get("prompt_tokens"):
         usage["prompt_tokens"] = prior_usage.get("prompt_tokens") or 0
+        usage.pop("prompt_tokens_details", None)
+        if prior_usage.get("prompt_tokens_details") is not None:
+            usage["prompt_tokens_details"] = prior_usage["prompt_tokens_details"]
     usage["total_tokens"] = usage["prompt_tokens"] + completion
     # Details describe the completion, so they sum with it rather than being
     # carried from the last turn against a count they do not cover.

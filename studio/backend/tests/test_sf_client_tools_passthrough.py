@@ -840,6 +840,69 @@ def test_a_discarded_nudge_retry_still_bills_the_tokens_it_spent(monkeypatch):
     assert entry["completion_tokens"] == 3 + 99
 
 
+def test_a_nudge_retry_that_never_reported_is_not_billed_twice(monkeypatch):
+    # The retry raises before publishing, so stats_holder still holds the first
+    # attempt's report. Folding that into itself would double its completion count.
+    first_stats = {"usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}}
+
+    class _RetryRaisesBackend(_ScriptedBackend):
+        def __init__(self):
+            super().__init__(lambda m, t: ['<tool_call>{"name":"lookup"'])
+
+        def generate_chat_response(self, *, messages, tools = None, stats_holder = None, **kwargs):
+            self.calls.append({"messages": messages, "tools": tools, **kwargs})
+            if len(self.calls) > 1:
+                raise RuntimeError("retry blew up before reporting anything")
+            if stats_holder is not None:
+                stats_holder["stats"] = first_stats
+            for snap in self._responder(messages, tools):
+                yield snap
+
+    backend = _RetryRaisesBackend()
+    payload = _request(tools = [LOOKUP_TOOL], nudge_tool_calls = True, stream = False)
+    monitor = _install(monkeypatch, backend)
+
+    async def _run():
+        return await openai_chat_completions(payload, request = _Request(), current_subject = "u")
+
+    body = _json_body(asyncio.run(_run()))
+    assert len(backend.calls) == 2
+    assert body["usage"]["prompt_tokens"] == 7
+    assert body["usage"]["completion_tokens"] == 3
+    [entry] = monitor.snapshot()
+    assert entry["completion_tokens"] == 3
+
+
+def test_cached_prompt_tokens_reach_the_usage_details(monkeypatch):
+    # MLX folds its reused prefix into prompt_tokens, so a caller reading the
+    # OpenAI field must see the same count rather than a flat zero.
+    stats = {
+        "usage": {
+            "prompt_tokens": 1200, "completion_tokens": 4, "total_tokens": 1204,
+            "prompt_tokens_details": {"cached_tokens": 1100},
+        }
+    }
+    backend = _ScriptedBackend(_fixed("hi"), stats = stats)
+    body = _json_body(_call(_request(stream = False), monkeypatch, backend))
+    details = body["usage"]["prompt_tokens_details"]
+    assert details["cached_tokens"] == 1100
+    assert details["cached_tokens"] <= body["usage"]["prompt_tokens"]
+
+
+def test_cached_tokens_never_exceed_the_prompt_they_describe(monkeypatch):
+    # Two choices can report different prompt counts (the nudge rebuilds a longer
+    # prompt), so the count and its details must come from the same choice.
+    rich = {"usage": {"prompt_tokens": 1200, "completion_tokens": 4,
+                      "prompt_tokens_details": {"cached_tokens": 1100}}}
+    lean = {"usage": {"prompt_tokens": 1000, "completion_tokens": 4}}
+    backend = _ScriptedBackend(_fixed("hi"), stats = [rich, lean])
+    body = _json_body(_call(_request(stream = False, n = 2), monkeypatch, backend))
+    usage = body["usage"]
+    assert usage["prompt_tokens"] == 1000
+    assert usage["prompt_tokens_details"]["cached_tokens"] == 0
+    assert usage["prompt_tokens_details"]["cached_tokens"] <= usage["prompt_tokens"]
+
+
 def test_a_successful_nudge_retry_bills_both_attempts(monkeypatch):
     # The retry heals, so its reply is delivered and its prompt is reported --
     # but the first attempt generated tokens on the way there, and reporting the
