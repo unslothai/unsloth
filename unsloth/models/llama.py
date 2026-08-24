@@ -3172,9 +3172,9 @@ class FastLlamaModel:
                 bool(peft_config.get("use_dora", False)) == bool(kwargs.get("use_dora", False))
             )
 
-            # Check save_modules. Everything the stored adapter trains, wherever PEFT
-            # filed it: ensure_weight_tying moves the tied counterpart to modules_to_tie,
-            # which to_dict() drops, so read that off the config object.
+            # Everything the stored adapter trains, wherever PEFT filed it: tying moves
+            # the counterpart to modules_to_tie, which to_dict() drops, so read the
+            # config object.
             requested_modules_to_save = modules_to_save
             modules_to_save = list(peft_config["modules_to_save"] or [])
             old_target_modules = list(peft_config["target_modules"]) + modules_to_save
@@ -3182,9 +3182,8 @@ class FastLlamaModel:
                 getattr(model.peft_config["default"], "modules_to_tie", None) or []
             )
 
-            # The new side is what THIS call asks for, put through the same redirect the
-            # adapter was built with. Deriving it from the stored lists instead would make
-            # a narrowed request compare equal and be silently ignored.
+            # The new side is what THIS call asks for, through the same redirect. Built
+            # from the stored lists instead, a narrowed request would compare equal.
             requested_targets, requested_saved, _ = _redirect_embedding_targets(
                 target_modules,
                 requested_modules_to_save,
@@ -3197,9 +3196,8 @@ class FastLlamaModel:
             # tripping the mismatch below. No-op for non per-expert-Linear models.
             new_target_modules += get_moe_target_modules(model, target_modules)
 
-            # Now check! PEFT also stores the qualified name (model.embed_tokens) beside
-            # the leaf, so fold that alias away. Only that one: qualified targets are a
-            # real request, and layers.0.q_proj is not layers.1.q_proj.
+            # Now check! Fold away PEFT's model.embed_tokens alias, and only that one:
+            # layers.0.q_proj is a real target and is not layers.1.q_proj.
             def _leaf_name(module):
                 return _embedding_leaf(module) or module
 

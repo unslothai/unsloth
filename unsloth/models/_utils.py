@@ -4484,9 +4484,8 @@ EMBEDDING_MODULES = frozenset(("embed_tokens", "lm_head"))
 def _embedding_leaf(name):
     """`embed_tokens`/`lm_head` for any spelling of them, else None.
 
-    PEFT matches target_modules and modules_to_save on the module suffix, so
-    `model.embed_tokens` names the same module as `embed_tokens` and must be treated
-    the same way. Anything else keeps its full name: layers.0.q_proj is a real target.
+    PEFT matches on the module suffix, so `model.embed_tokens` is the same module.
+    Anything else keeps its full name: layers.0.q_proj is a real target.
     """
     if type(name) is not str:
         return None
@@ -4501,10 +4500,9 @@ def _embedding_leaves(names):
 def _vllm_unmovable_embedding_modules(model, target_modules):
     """Names to leave in `target_modules` under fast inference.
 
-    vLLM cannot sync a trainable embedding, so `modules_to_save` is refused below. Only
-    lm_head is spared: LoRA on it never trained under vLLM either, so redirecting it
-    would newly raise on scripts that run today. embed_tokens still redirects, and so
-    still raises, exactly as before.
+    vLLM cannot sync a trainable embedding, so modules_to_save is refused below. Only
+    lm_head is spared: LoRA on it never trained here either, so redirecting it would
+    newly raise on scripts that run today. embed_tokens still redirects, so still raises.
     """
     if getattr(model, "vllm_engine", None) is None:
         return ()
