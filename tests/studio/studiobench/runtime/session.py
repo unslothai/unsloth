@@ -185,6 +185,7 @@ def follow_verdict(follow: Mapping[str, Any]) -> tuple[bool, dict[str, Any]]:
         )
     return bool(pinned_ok and not coverage_short and not fell_behind), recorded
 
+
 # How long the composer may take to accept the click that starts the film. Not a performance
 # budget: the point is that the cell survives and the number gets recorded. See `_press_send`.
 # 90s because it has to be well clear of the worst real reading and still bounded, since a click
