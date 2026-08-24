@@ -252,8 +252,28 @@ def main() -> int:
     # --- question 2: does reading the summary spawn amd-smi at all? ---
     # Asked BEFORE anything below pins a context, since that is the state a real
     # idle backend is in.
+    #
+    # Two calls, because "0 spawns" means different things on different boxes.
+    # With a HIP SDK present amd-smi is ALLOWED and a spawn is correct, so the
+    # as-configured run cannot by itself exercise the guard. The forced run
+    # drives _amd_smi_allowed() to False explicitly, which every new call site
+    # must honour whatever the host looks like.
+    import shutil
+
     _summary, spawns = _count_amd_smi_spawns(hw.get_gpu_summary)
     report["amd_smi_spawns_during_summary"] = spawns
+    report["amd_smi_on_path"] = shutil.which("amd-smi") or shutil.which("amd-smi.exe")
+
+    prior = os.environ.get("UNSLOTH_ENABLE_AMD_SMI")
+    os.environ["UNSLOTH_ENABLE_AMD_SMI"] = "0"
+    try:
+        _s2, spawns_refused = _count_amd_smi_spawns(hw.get_gpu_summary)
+    finally:
+        if prior is None:
+            os.environ.pop("UNSLOTH_ENABLE_AMD_SMI", None)
+        else:
+            os.environ["UNSLOTH_ENABLE_AMD_SMI"] = prior
+    report["amd_smi_spawns_when_refused"] = spawns_refused
 
     # --- questions 1: does free move when someone ELSE holds memory? ---
     # Warm the primary context FIRST. _reading calls mem_get_info, which pins
@@ -325,7 +345,14 @@ def main() -> int:
     if mgi_drop is not None:
         print(f"torch.mem_get_info dropped   {mgi_drop:+.2f} GiB   (attribution only)")
     print(f"observer stayed a bystander  {during['observer_allocated_gb']:.2f} GiB allocated")
-    print(f"amd-smi spawns during summary {len(spawns)}")
+    allowed = gates.get("amd_smi_allowed")
+    print(f"amd-smi on PATH              {report['amd_smi_on_path'] or 'no'}")
+    print(f"amd-smi allowed here         {allowed}")
+    print(
+        f"amd-smi spawns, as configured {len(spawns)}"
+        f"{'  (allowed, so not a fault)' if allowed is True else ''}"
+    )
+    print(f"amd-smi spawns, when refused  {len(spawns_refused)}   (want 0)")
 
     problems = []
     if during["observer_allocated_gb"] >= 0.5:
@@ -342,8 +369,18 @@ def main() -> int:
             f"free_gb moved {new_drop:.2f} GiB, more than {held:.2f} GiB held plus "
             f"2.00 GiB of process overhead: free is being under-reported"
         )
-    if spawns:
-        problems.append(f"amd-smi was spawned {len(spawns)}x: {spawns}")
+    # A spawn is only a fault where the guard said no. With a HIP SDK present
+    # amd-smi is allowed and calling it is the intended behaviour.
+    if allowed is False and spawns:
+        problems.append(
+            f"amd-smi was spawned {len(spawns)}x despite _amd_smi_allowed() being "
+            f"False, which is the UAC/DiskPart prompt path: {spawns}"
+        )
+    if spawns_refused:
+        problems.append(
+            f"amd-smi was spawned {len(spawns_refused)}x with UNSLOTH_ENABLE_AMD_SMI=0, "
+            f"so a call site bypasses the guard: {spawns_refused}"
+        )
 
     print("=" * 62)
     if problems:
@@ -356,7 +393,18 @@ def main() -> int:
             print("  rather than this being a bug in the PR's own logic.")
         return 1
     print(f"PASS: free_gb tracked another process's {held:.2f} GiB, the old formula")
-    print("did not, and the summary spawned amd-smi zero times.")
+    print("did not, and no call site spawned amd-smi once the guard refused.")
+    # State the reach of the amd-smi result rather than letting PASS imply more.
+    if platform.system() != "Windows":
+        print("\n  Note: not Windows, so _amd_smi_allowed() returned True by")
+        print("  platform and the elevation guard was never under test.")
+    elif not report["amd_smi_on_path"]:
+        print("\n  Note: amd-smi is not on PATH, so zero spawns is trivially true.")
+        print("  The refusal path is confirmed, the real no-SDK case is not.")
+    elif allowed is True:
+        print("\n  Note: a HIP SDK is present, so amd-smi is legitimately allowed")
+        print("  here. The forced-refusal leg passed, but the genuine")
+        print("  Windows-without-a-HIP-SDK case needs a box without one.")
     return 0
 
 
