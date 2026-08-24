@@ -163,8 +163,10 @@ def read_counters_settled(
         if baseline is not None and not moved:
             moved = any(abs(now - was) > tol_gb for now, was in zip((d, s), baseline))
         window = samples[-need_stable:]
-        if moved and len(window) >= need_stable and all(
-            max(col) - min(col) <= tol_gb for col in zip(*window)
+        if (
+            moved
+            and len(window) >= need_stable
+            and all(max(col) - min(col) <= tol_gb for col in zip(*window))
         ):
             settled = True
             break
