@@ -21,6 +21,7 @@ would mask the regression.
 from __future__ import annotations
 
 import importlib
+import os
 import subprocess
 import sys
 import textwrap
@@ -617,6 +618,60 @@ def test_context_free_nvidia_smi_declines_whole_gpu_metrics_for_mig(monkeypatch)
     # 80 GiB parent. Capping the parent's 10 GiB free would falsely report the
     # instance as completely empty even when its own allocation is full.
     assert hw._context_free_cuda_memory_info(0, 10 * gib) is None
+
+
+def test_context_free_never_spawns_amd_smi_on_windows_without_a_hip_sdk(monkeypatch):
+    """The probe must stay behind amd.py's elevation guard.
+
+    amd-smi elevates a child on Windows without a HIP runtime, and the resulting
+    UAC/DiskPart prompt cannot be suppressed. This path reaches amd-smi through a
+    helper, so a later refactor calling it directly would reintroduce the prompt
+    with nothing failing. Assert on the spawn itself, not on the return value.
+    """
+    from utils.hardware import amd
+
+    spawned = []
+
+    def _spy(command, *args, **kwargs):
+        spawned.append(command)
+        raise FileNotFoundError("no amd-smi should be spawned here")
+
+    monkeypatch.setattr(amd, "platform", types.SimpleNamespace(system = lambda: "Windows"))
+    monkeypatch.setattr(amd, "_hip_sdk_present", lambda: False)
+    monkeypatch.setattr(amd.shutil, "which", lambda _n: r"C:\rocm\bin\amd-smi.exe")
+    monkeypatch.setattr(amd.subprocess, "run", _spy)
+    monkeypatch.delenv("UNSLOTH_ENABLE_AMD_SMI", raising = False)
+    monkeypatch.setattr(amd, "_amd_smi_disabled", False)
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(
+        hw,
+        "_get_parent_visible_gpu_spec",
+        lambda: {"raw": None, "numeric_ids": [0, 1], "supports_explicit_gpu_ids": True},
+    )
+    # Windows reads per-adapter counters, so declining amd-smi still answers.
+    monkeypatch.setattr(
+        hw,
+        "_rocm_windows_per_device_vram",
+        lambda ids: (
+            [{"index": 0, "visible_ordinal": 0, "name": "RX", "used_gb": 8.0, "total_gb": 24.0}],
+            8.0,
+        ),
+    )
+
+    assert hw._context_free_cuda_memory_info(0, 24 << 30) == 16 << 30
+    assert spawned == []
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "the guard is Windows-only")
+def test_amd_smi_is_refused_on_a_real_windows_host_without_a_hip_sdk():
+    # The test above fakes the platform. This one runs the same predicate against
+    # the real OS, PATH and environment, so the guard is pinned where it applies.
+    from utils.hardware import amd
+
+    if amd._hip_sdk_present() or os.environ.get("UNSLOTH_ENABLE_AMD_SMI"):
+        pytest.skip("this host may legitimately run amd-smi un-elevated")
+    assert amd._amd_smi_allowed() is False
 
 
 def test_context_free_rocm_smi_declines_whole_gpu_metrics_for_a_partition(monkeypatch):
