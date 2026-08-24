@@ -938,17 +938,18 @@ def test_the_luid_join_bounds_counters_by_the_carve_out_not_the_pool():
     """An impossible counter must still be impossible after the total widens.
     9 GiB fits no 8 GiB carve-out, so the join has to decline; ranked against a
     128 GiB pool it fits and would be published on a card that never held it."""
-    dev_meta = [{"name": "AMD Radeon(TM) 8060S Graphics", "total_bytes": 128 * GB,
-                 "dedicated_bytes": 8 * GB}]
-    matched = hw._attribute_adapter_useds_by_key(
-        {"k": [9.0 * GB]}, {"k": [0]}, dev_meta
-    )
+    dev_meta = [
+        {
+            "name": "AMD Radeon(TM) 8060S Graphics",
+            "total_bytes": 128 * GB,
+            "dedicated_bytes": 8 * GB,
+        }
+    ]
+    matched = hw._attribute_adapter_useds_by_key({"k": [9.0 * GB]}, {"k": [0]}, dev_meta)
     assert matched is None
 
     # Same device, a usage that does fit the carve-out: attributed normally.
-    matched = hw._attribute_adapter_useds_by_key(
-        {"k": [2.0 * GB]}, {"k": [0]}, dev_meta
-    )
+    matched = hw._attribute_adapter_useds_by_key({"k": [2.0 * GB]}, {"k": [0]}, dev_meta)
     assert matched is not None
     assigned, aggregate = matched
     assert assigned[0] == pytest.approx(2.0 * GB)
