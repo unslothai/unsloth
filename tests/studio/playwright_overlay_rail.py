@@ -621,8 +621,14 @@ def run_hit_testing(page) -> None:
 # Everything the rail's box can land on that is not protected by a layer above it: the
 # window's own eight resize targets, and the composer, which is ordinary in-page chrome.
 CAPTURE_TARGETS = [
-    "resize-north", "resize-south", "resize-west", "resize-east",
-    "resize-northwest", "resize-northeast", "resize-southwest", "resize-southeast",
+    "resize-north",
+    "resize-south",
+    "resize-west",
+    "resize-east",
+    "resize-northwest",
+    "resize-northeast",
+    "resize-southwest",
+    "resize-southeast",
     "obstacle-composer",
 ]
 # Raising the grips must not cost the window controls their own hit area, so they are
@@ -721,8 +727,10 @@ def run_reach_and_capture(page) -> None:
         "the lifted deck does not overflow, so the rail is click-through and the "
         "composer check proves nothing",
     )
-    info(f"    lifted: bottom={lifted['geometry']['bottom']} "
-         f"overflowing={lifted['geometry']['overflowing']}")
+    info(
+        f"    lifted: bottom={lifted['geometry']['bottom']} "
+        f"overflowing={lifted['geometry']['overflowing']}"
+    )
     report_capture(page, "lifted over the composer")
 
     # And the controls the grips now sit next to keep every pixel of their own.
