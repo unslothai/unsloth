@@ -182,6 +182,6 @@ test("the custom TTS selection is dropped when its connection disappears", () =>
   );
   assert.match(
     voiceTab,
-    /value=\{hasSelectedTtsConnection \? ttsProviderId : undefined\}/,
+    /value=\{hasSelectedTtsConnection \? ttsProviderId : ""\}/,
   );
 });

@@ -1368,7 +1368,7 @@ export function VoiceTab() {
                   )}
                 >
                   <Select
-                    value={hasSelectedTtsConnection ? ttsProviderId : undefined}
+                    value={hasSelectedTtsConnection ? ttsProviderId : ""}
                     onValueChange={setTtsProviderId}
                     disabled={ttsConnections.length === 0}
                   >
