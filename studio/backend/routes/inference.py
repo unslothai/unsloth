@@ -23341,8 +23341,8 @@ def _build_chat_request(
     _extra = getattr(payload, "model_extra", None)
     if isinstance(_extra, dict):
         _nested_reasoning = _chat_template_reasoning_kwargs(payload)
+        chat_kwargs.update(_nested_reasoning)
         if "enable_thinking" in _nested_reasoning:
-            chat_kwargs["enable_thinking"] = _nested_reasoning["enable_thinking"]
             explicit_enable_thinking = True
         # auto_heal_tool_calls / nudge_tool_calls are not typed on
         # ResponsesRequest; lift them from the extra-body so passthrough
@@ -23371,7 +23371,9 @@ def _build_chat_request(
     if response_format is not None:
         chat_kwargs["response_format"] = response_format
 
-    return ChatCompletionRequest(**chat_kwargs)
+    chat_request = ChatCompletionRequest(**chat_kwargs)
+    _normalize_chat_reasoning_controls(chat_request)
+    return chat_request
 
 
 def _chat_tool_calls_to_responses_output(tool_calls: list[dict]) -> list[dict]:
@@ -25095,6 +25097,7 @@ async def chat_count_tokens(
 
     # llama-server falls back to the load-time --chat-template-kwargs per key a request omits,
     # so omitting these prices the template in whatever mode the model was LOADED in.
+    _normalize_chat_reasoning_controls(payload)
     _template_kwargs = llama_backend._request_reasoning_kwargs(
         payload.enable_thinking,
         payload.reasoning_effort,
