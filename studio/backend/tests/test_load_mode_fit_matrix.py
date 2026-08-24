@@ -21,6 +21,7 @@ from core.inference.llama_cpp import LlamaCppBackend
 from core.inference.llama_server_args import (
     apply_load_mode_policy,
     apply_model_memory_policy,
+    split_policy_starves_devices,
 )
 
 GIB = 1024**3
@@ -1091,3 +1092,225 @@ def test_the_device_narrowing_is_counted_against_what_the_fit_credits(monkeypatc
             )
             == expected
         )
+
+
+# ------------------------------------------------- split policy overrides
+
+
+def _multi(footprint, avail_mib, monkeypatch, **kwargs):
+    """Two 12 GiB cards, both credited, so a starved split is observable."""
+    monkeypatch.setattr(hardware, "is_apple_silicon", lambda: False)
+    return LlamaCppBackend._fit_derived_load_mode(
+        _Stub(avail_mib),
+        model_size = footprint,
+        gpus = [(0, 12 * 1024), (1, 12 * 1024)],
+        shared_gpu_ids = set(),
+        is_vulkan_backend = False,
+        avail_mib = avail_mib,
+        **kwargs,
+    )
+
+
+@pytest.mark.parametrize(
+    "extras",
+    [
+        # One GPU holds everything, so the second card's credit is imaginary.
+        ["--split-mode", "none"],
+        ["-sm", "none"],
+        # An explicit zero starves its device.
+        ["--tensor-split", "1,0"],
+        ["-ts", "1,0"],
+        # A short list zero-fills the tail upstream, starving it just the same.
+        ["--tensor-split", "1"],
+        # Last-wins: the starving value is the one that reaches the child.
+        ["--split-mode", "layer", "--split-mode", "none"],
+    ],
+)
+def test_a_starving_split_voids_the_pooled_vram_credit(extras, monkeypatch):
+    """18 GiB across 2x12 GiB fits the pool but not one card, and RAM is far too
+    small to hold the spill. Crediting both cards anyway would emit the no-mmap
+    flag for weights that then have nowhere pageable to live."""
+    assert _multi(18 * GIB, 4 * 1024, monkeypatch, extra_args = extras) is None
+
+
+@pytest.mark.parametrize(
+    "env_value",
+    [{"LLAMA_ARG_SPLIT_MODE": "none"}, {"LLAMA_ARG_TENSOR_SPLIT": "1,0"}],
+)
+def test_an_inherited_starving_split_voids_it_too(env_value, monkeypatch):
+    """The child inherits these exactly as it inherits LLAMA_ARG_DEVICE."""
+    assert _multi(18 * GIB, 4 * 1024, monkeypatch, env = env_value) is None
+
+
+@pytest.mark.parametrize(
+    "extras",
+    [
+        # Every mode but "none" keeps all devices holding weights.
+        ["--split-mode", "layer"],
+        ["--split-mode", "row"],
+        ["--split-mode", "tensor"],
+        # A ratio that starves nobody is a restatement, not an override.
+        ["--tensor-split", "1,1"],
+        ["--tensor-split", "3,1"],
+        # Upstream throws on this and the child never starts, so nothing is
+        # mispriced; abstaining here would forfeit a real fit.
+        ["--tensor-split", "nonsense"],
+    ],
+)
+def test_a_split_that_starves_nobody_keeps_the_fit(extras, monkeypatch):
+    assert _multi(18 * GIB, 4 * 1024, monkeypatch, extra_args = extras) == FIT_MODE
+
+
+def test_a_starving_split_is_a_no_op_on_a_single_gpu(monkeypatch):
+    """--split-mode none confines the model to one card, which is where a
+    single-GPU load already put it."""
+    assert (
+        _mode(
+            "linux",
+            "nvidia_discrete",
+            8 * GIB,
+            4 * 1024,
+            monkeypatch,
+            extra_args = ["--split-mode", "none"],
+        )
+        == FIT_MODE
+    )
+
+
+def test_a_starving_split_still_takes_none_when_ram_holds_the_load(monkeypatch):
+    """The credit is dropped, not the answer, exactly as for the other overrides."""
+    assert _multi(18 * GIB, 64 * 1024, monkeypatch, extra_args = ["-sm", "none"]) == FIT_MODE
+
+
+@pytest.mark.parametrize(
+    "raw,n_credited,expected",
+    [
+        ("none", 2, True),
+        ("NONE", 2, True),
+        ("none", 1, False),
+        ("layer", 2, False),
+        ("row", 2, False),
+        ("tensor", 2, False),
+        (None, 2, False),
+    ],
+)
+def test_split_mode_starvation_is_value_aware(raw, n_credited, expected):
+    args = None if raw is None else ["--split-mode", raw]
+    assert split_policy_starves_devices(args, n_credited) is expected
+
+
+@pytest.mark.parametrize(
+    "raw,n_credited,expected",
+    [
+        ("1,0", 2, True),
+        ("0,1", 2, True),
+        ("1", 2, True),          # zero-filled tail
+        ("1/0", 2, True),        # upstream splits on "/" too
+        ("1,1", 2, False),
+        ("3,1", 2, False),
+        ("1,1,1", 2, False),     # only the credited prefix matters
+        ("1,0", 1, False),       # single GPU: nothing to starve
+    ],
+)
+def test_tensor_split_starvation_matches_upstream_parsing(raw, n_credited, expected):
+    assert split_policy_starves_devices(["-ts", raw], n_credited) is expected
+
+
+# ----------------------------------------------- vulkan device replacement
+
+
+def _vulkan(footprint, avail_mib, monkeypatch, **kwargs):
+    monkeypatch.setattr(hardware, "is_apple_silicon", lambda: False)
+    return LlamaCppBackend._fit_derived_load_mode(
+        _Stub(avail_mib),
+        model_size = footprint,
+        gpus = [(0, 12 * 1024), (1, 12 * 1024), (2, 12 * 1024)],
+        shared_gpu_ids = set(),
+        is_vulkan_backend = True,
+        avail_mib = avail_mib,
+        gpu_indices = [0, 1],
+        **kwargs,
+    )
+
+
+@pytest.mark.parametrize(
+    "extras",
+    [
+        # Same COUNT, different cards: a count cannot see this, a name can.
+        ["--device", "Vulkan1,Vulkan2"],
+        ["-dev", "Vulkan0,Vulkan2"],
+        # Longer: adds a device this footprint charged no compute or overhead for.
+        ["--device", "Vulkan0,Vulkan1,Vulkan2"],
+    ],
+)
+def test_a_replaced_vulkan_pin_voids_the_credit(extras, monkeypatch):
+    """Studio pins Vulkan0,Vulkan1 from the credited ordinals; a pass-through
+    --device lands after it and last-wins."""
+    assert _vulkan(18 * GIB, 4 * 1024, monkeypatch, extra_args = extras) is None
+
+
+@pytest.mark.parametrize(
+    "extras",
+    [
+        ["--device", "Vulkan0,Vulkan1"],
+        ["--device", "vulkan0,vulkan1"],   # ggml name-matching is not case sensitive here
+        ["--device", "Vulkan1,Vulkan0"],   # order is not a placement change
+    ],
+)
+def test_a_restated_vulkan_pin_keeps_the_fit(extras, monkeypatch):
+    assert _vulkan(18 * GIB, 4 * 1024, monkeypatch, extra_args = extras) == FIT_MODE
+
+
+def test_a_replaced_cuda_pin_is_still_judged_by_count(monkeypatch):
+    """Only Vulkan gets the exact match: CUDA/ROCm ordinals are assigned after a
+    visibility mask this launch has not written, so there is no name to compare."""
+    monkeypatch.setattr(hardware, "is_apple_silicon", lambda: False)
+    assert (
+        LlamaCppBackend._fit_derived_load_mode(
+            _Stub(4 * 1024),
+            model_size = 18 * GIB,
+            gpus = [(0, 12 * 1024), (1, 12 * 1024), (2, 12 * 1024)],
+            shared_gpu_ids = set(),
+            is_vulkan_backend = False,
+            avail_mib = 4 * 1024,
+            gpu_indices = [0, 1],
+            extra_args = ["--device", "CUDA1,CUDA2"],
+        )
+        == FIT_MODE
+    )
+
+
+# ------------------------------------------- CPU-pinned projector bytes
+
+
+def test_a_cpu_pinned_projector_is_charged_to_host_ram(monkeypatch):
+    """8 GiB of weights and a 10 GiB projector pinned to the CPU by
+    --no-mmproj-offload. The card has 24 GiB, so surplus VRAM would happily
+    cover all 18 GiB and answer yes without ever asking RAM -- but the projector
+    can only live in the 4 GiB of RAM this host has."""
+    assert (
+        _mode(
+            "linux",
+            "nvidia_discrete",
+            8 * GIB,
+            4 * 1024,
+            monkeypatch,
+            mmproj_pinned_bytes = 10 * GIB,
+        )
+        is None
+    )
+
+
+def test_a_cpu_pinned_projector_fits_when_ram_really_holds_it(monkeypatch):
+    """The same load with RAM that can take the projector still picks the mode."""
+    assert (
+        _mode(
+            "linux",
+            "nvidia_discrete",
+            8 * GIB,
+            64 * 1024,
+            monkeypatch,
+            mmproj_pinned_bytes = 10 * GIB,
+        )
+        == FIT_MODE
+    )

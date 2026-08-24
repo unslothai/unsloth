@@ -84,6 +84,7 @@ from core.inference.llama_server_args import (
     parse_gpu_layers_override,
     parse_split_mode_override,
     resolve_requested_ctx,
+    split_policy_starves_devices,
     strip_context_only,
     strip_shadowing_flags,
     strip_split_mode_only,
@@ -8854,6 +8855,19 @@ class LlamaCppBackend:
         _dev_names = [d for d in str(_dev_value or "").split(",") if d.strip()]
         _credited = len(list(gpu_indices)) if gpu_indices is not None else len(rows)
         _device_narrows = bool(_dev_names) and len(_dev_names) < _credited
+        # Vulkan is the one backend where the names ARE comparable: the pin this
+        # launch emits is built straight from the credited ordinals
+        # (_vulkan_device_pin -> "Vulkan<i>"), so a surviving --device can be held
+        # to an exact match instead of a count. That catches the two cases a count
+        # cannot -- a same-sized list naming DIFFERENT cards, and a longer one that
+        # adds devices this footprint never charged compute or overhead for.
+        _vulkan_pin_replaced = bool(
+            is_vulkan_backend
+            and gpu_indices is not None
+            and _dev_names
+            and {name.strip().lower() for name in _dev_names}
+            != {f"vulkan{idx}" for idx in gpu_indices}
+        )
         if (
             _extra_args_set_any_flag(extra_args, _GPU_LAYER_FLAGS)
             # And its env twin, which on the fitting path is the ONLY layer count
@@ -8869,6 +8883,12 @@ class LlamaCppBackend:
             # child and puts the whole load in host RAM.
             or _device_selection_is_cpu(extra_args, source_env)
             or _device_narrows
+            or _vulkan_pin_replaced
+            # The split policy is pass-through under auto-select and lands after
+            # this launch's flags, so --split-mode none (one GPU holds everything)
+            # or a --tensor-split that zeroes a device leaves the pooled credit
+            # paying for cards the child puts no weights on.
+            or split_policy_starves_devices(extra_args, _credited, source_env)
             or _args_place_tensors_on_cpu(extra_args)
             or _env_places_tensors_on_cpu(source_env)
         ):
@@ -8912,7 +8932,12 @@ class LlamaCppBackend:
             rows,
             gpu_indices = gpu_indices,
             shared_gpu_ids = shared,
-            host_only_bytes = max(0, host_only_bytes),
+            # A CPU-pinned projector is host-resident, so it belongs in the term
+            # free VRAM may NOT pay for. Priced in the footprint above as its own
+            # line (model_size no longer carries it), and charged to RAM here: a
+            # model that leaves surplus VRAM would otherwise let that surplus
+            # cover the projector and answer True without consulting RAM at all.
+            host_only_bytes = max(0, host_only_bytes) + max(0, mmproj_pinned_bytes),
             vram_margin_mib = fit_margin_mib,
             avail_mib = avail_mib,
         ):

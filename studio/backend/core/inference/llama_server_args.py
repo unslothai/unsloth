@@ -902,6 +902,56 @@ def fit_target_margin_in(
     return max(values) if values else None
 
 
+def split_policy_starves_devices(
+    args: Optional[Iterable[str]],
+    n_credited: int,
+    env: Optional[Mapping[str, str]] = None,
+) -> bool:
+    """True when the effective split leaves fewer devices holding weights than ``n_credited``.
+
+    ``--split-mode`` and ``--tensor-split`` are pass-through under auto-select
+    (``_SPLIT_SHADOWING_FLAGS`` is stripped only when the Tensor Parallelism toggle
+    owns the split), so both reach the child appended after Studio's own placement
+    flags. Either can quietly shrink the pool a pooled VRAM credit was priced for:
+
+    * ``--split-mode none`` is ``LLAMA_SPLIT_MODE_NONE`` (common/arg.cpp), which
+      puts the whole model on ``--main-gpu`` alone. ``row``/``layer``/``tensor``
+      all keep every device, so only ``none`` starves.
+    * ``--tensor-split`` is a per-device proportion list, and upstream zero-fills
+      every device past the end of the list (common/arg.cpp), so a short list
+      starves the tail just as an explicit ``0`` starves its own device.
+
+    Value-aware on purpose: a restatement that keeps all devices is not an
+    override, and voiding on it would abstain from a fit that is really there.
+    """
+    if n_credited <= 1:
+        return False
+    mode = _last_flag_value(args, _SPLIT_MODE_FLAGS)
+    if mode is None and env:
+        mode = env.get("LLAMA_ARG_SPLIT_MODE")
+    if str(mode or "").strip().lower() == "none":
+        return True
+    raw_split = _last_flag_value(args, _TENSOR_SPLIT_FLAGS)
+    if raw_split is None and env:
+        raw_split = env.get("LLAMA_ARG_TENSOR_SPLIT")
+    if raw_split is None:
+        return False
+    holding = 0
+    # Upstream splits on both "," and "/" (common/arg.cpp).
+    for part in str(raw_split).replace("/", ",").split(",")[:n_credited]:
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            if float(part) > 0.0:
+                holding += 1
+        except ValueError:
+            # Upstream throws on an unparseable proportion and the child never
+            # starts, so there is no placement to misprice. Leave the credit.
+            return False
+    return holding < n_credited
+
+
 def parse_cache_override_per_axis(
     args: Optional[Iterable[str]],
 ) -> tuple[Optional[str], Optional[str]]:
