@@ -146,9 +146,7 @@ def test_a_network_cache_keeps_the_stock_writer(tmp_path, monkeypatch):
     """
     for fstype in ("nfs4", "lustre", "gpfs", "cifs"):
         rp.invalidate_probe_cache()
-        monkeypatch.setattr(
-            rp, "_mounts", lambda: [(str(tmp_path), fstype)], raising = False
-        )
+        monkeypatch.setattr(rp, "_mounts", lambda: [(str(tmp_path), fstype)], raising = False)
         assert rp._filesystem_is_local(str(tmp_path)) is False, fstype
 
 

@@ -54,11 +54,36 @@ _CONTENDED = frozenset({errno.EWOULDBLOCK, errno.EAGAIN})
 
 # Mounts whose locking, if any, is a matter between clients rather than something a probe on one
 # host can settle. Anything not listed is judged local.
-_NETWORK_FSTYPES = frozenset({
-    "9p", "afpfs", "afs", "beegfs", "ceph", "cifs", "coda", "davfs", "davfs2", "fuse.cephfs",
-    "fuse.glusterfs", "fuse.sshfs", "gfs2", "glusterfs", "gpfs", "lustre", "ncpfs", "nfs", "nfs3",
-    "nfs4", "panfs", "smb", "smb2", "smb3", "smbfs", "webdav",
-})
+_NETWORK_FSTYPES = frozenset(
+    {
+        "9p",
+        "afpfs",
+        "afs",
+        "beegfs",
+        "ceph",
+        "cifs",
+        "coda",
+        "davfs",
+        "davfs2",
+        "fuse.cephfs",
+        "fuse.glusterfs",
+        "fuse.sshfs",
+        "gfs2",
+        "glusterfs",
+        "gpfs",
+        "lustre",
+        "ncpfs",
+        "nfs",
+        "nfs3",
+        "nfs4",
+        "panfs",
+        "smb",
+        "smb2",
+        "smb3",
+        "smbfs",
+        "webdav",
+    }
+)
 
 
 def _hub_version() -> tuple[int, ...]:
@@ -113,7 +138,6 @@ def _probe_dir() -> Optional[Path]:
 def _mounts() -> list[tuple[str, str]]:
     """``(mountpoint, fstype)`` for every mount, via psutil so macOS and Windows answer too."""
     import psutil
-
     return [(part.mountpoint, part.fstype or "") for part in psutil.disk_partitions(all = True)]
 
 
@@ -144,7 +168,9 @@ def _filesystem_is_local(directory: str) -> bool:
     if fstype in _NETWORK_FSTYPES:
         logger.info(
             "Download partials stay unresumable: %s is on %s, where locking is between clients "
-            "and cannot be established from this host.", path, fstype,
+            "and cannot be established from this host.",
+            path,
+            fstype,
         )
         return False
     return True
@@ -180,12 +206,15 @@ def _lock_is_honoured_at(directory: str) -> bool:
             # ENOLCK / EOPNOTSUPP / EINTR: not a refusal, so nothing has been shown.
             logger.info(
                 "Download partials stay unresumable: locking %s answered %s rather than "
-                "contention.", directory, errno.errorcode.get(exc.errno, exc.errno),
+                "contention.",
+                directory,
+                errno.errorcode.get(exc.errno, exc.errno),
             )
             return False
         logger.info(
             "Download partials stay unresumable: %s grants the same lock twice, so a shared "
-            "partial could be written by two processes at once.", directory,
+            "partial could be written by two processes at once.",
+            directory,
         )
         return False
     except Exception as exc:  # noqa: BLE001 - same, an unprovable lock is not a working one
