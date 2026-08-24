@@ -7524,3 +7524,53 @@ def test_the_h3_modular_refusal_reruns_when_the_prequant_checkpoint_does_not_lan
     assert sized == ["fp8", None]
     # ... and nothing was built.
     assert _FakeModularPipeline.instance.load_kwargs is None
+
+
+def test_generation_in_flight_tracks_a_background_job(fake_runtime, tmp_path, monkeypatch):
+    import core.inference.video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    monkeypatch.setattr(video_mod, "_backend", backend)
+
+    rendering = threading.Event()
+    release = threading.Event()
+    inside = {}
+
+    def _block(self, *, cancel_event = None, **gen_kwargs):
+        # Hold the worker open while liveness is checked.
+        inside["in_flight"] = video_mod.generation_in_flight()
+        rendering.set()
+        release.wait(10)
+        raise ValueError("stopped after the probe")
+
+    monkeypatch.setattr(VideoBackend, "generate", _block)
+
+    assert video_mod.generation_in_flight() is False
+    backend.begin_generate(prompt = "a clip")
+    assert rendering.wait(10), "the generate worker never started"
+    assert video_mod.generation_in_flight() is True, (
+        "liveness cannot tell this backend from a dead one while it renders a clip"
+    )
+    assert inside["in_flight"] is True
+
+    release.set()
+    deadline = time.monotonic() + 10
+    while backend.generate_progress()["active"] and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert video_mod.generation_in_flight() is False, (
+        "the marker stayed lit after the job ended, so the watchdog would hold the widened "
+        "budget against a backend that really did hang"
+    )
+
+
+def test_generation_in_flight_never_builds_a_backend(fake_runtime, monkeypatch):
+    import core.inference.video as video_mod
+
+    monkeypatch.setattr(video_mod, "_backend", None)
+    monkeypatch.setattr(
+        video_mod,
+        "VideoBackend",
+        lambda *a, **k: pytest.fail("liveness constructed a video backend"),
+    )
+    assert video_mod.generation_in_flight() is False

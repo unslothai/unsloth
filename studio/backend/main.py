@@ -1584,6 +1584,28 @@ def _torch_warm_in_progress() -> bool:
     return bool(status["started"] and not status["finished"] and status["alive"])
 
 
+# Media backend modules that expose generation_in_flight().
+_MEDIA_BACKEND_MODULES = (
+    "core.inference.video",
+    "core.inference.diffusion",
+    "core.inference.sd_cpp_backend",
+)
+
+
+def _media_generation_active() -> bool:
+    """Check imported media backends without importing, constructing, or locking them."""
+    for module_name in _MEDIA_BACKEND_MODULES:
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
+        try:
+            if module.generation_in_flight():
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def _inference_active() -> bool:
     """True while at least one generation is in flight.
 
@@ -1591,14 +1613,17 @@ def _inference_active() -> bool:
     one that has died: a saturated host can stall the event loop past a probe budget, and
     killing there ends a response the user is still waiting on.
 
-    A len() under a threading.Lock held only for that read, so the route stays cheap.
-    Failures report "not busy", the same answer as before this field existed.
+    A len() under a threading.Lock held only for that read, plus a bool off each resident
+    media backend, so the route stays cheap. Failures report "not busy", the same answer as
+    before this field existed.
     """
     try:
         from state import active_generations
-        return active_generations.count() > 0
+        if active_generations.count() > 0:
+            return True
     except Exception:
-        return False
+        pass
+    return _media_generation_active()
 
 
 @app.get("/api/liveness")

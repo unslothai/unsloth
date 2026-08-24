@@ -6116,3 +6116,9 @@ def get_video_backend() -> VideoBackend:
         if _backend is None:
             _backend = VideoBackend()
         return _backend
+
+
+def generation_in_flight() -> bool:
+    """Read the background-job marker without constructing or locking the backend."""
+    backend = _backend
+    return backend is not None and bool(backend._generate_job_active)

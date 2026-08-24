@@ -6462,3 +6462,9 @@ def get_diffusion_backend() -> DiffusionBackend:
     if _diffusion_backend is None:
         _diffusion_backend = DiffusionBackend()
     return _diffusion_backend
+
+
+def generation_in_flight() -> bool:
+    """Read the active-generation marker without constructing or locking the backend."""
+    backend = _diffusion_backend
+    return backend is not None and backend._gen is not None

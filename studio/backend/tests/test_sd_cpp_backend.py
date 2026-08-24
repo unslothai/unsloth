@@ -2432,3 +2432,38 @@ def test_an_unresolvable_device_pin_says_so_and_still_loads(tmp_path, capsys):
     # No selection is not an unresolved one, so it says nothing.
     assert bk.sd_cpp_device_name_for_ordinal(str(binary), None) is None
     assert "device_pin_unresolved" not in capsys.readouterr().out
+
+
+def test_generation_in_flight_tracks_a_generation(monkeypatch):
+    from core.inference import diffusion_lora
+
+    eng = _FakeEngine()
+    b = _loaded_backend(engine = eng)
+    monkeypatch.setattr(bk, "_sd_cpp_backend", b)
+    monkeypatch.setattr(diffusion_lora, "supports_lora", lambda **_k: True)
+
+    seen: dict = {}
+
+    def _resolve(active, *, family = None, hf_token = None, cancel_event = None):
+        # Check the marker during pre-generate setup.
+        seen["in_flight"] = bk.generation_in_flight()
+        return []
+
+    monkeypatch.setattr(diffusion_lora, "resolve_specs", _resolve)
+
+    assert bk.generation_in_flight() is False
+    b.generate(prompt = "a fox", width = 64, height = 64, steps = 8, loras = [("some/lora", 1.0)])
+    assert seen["in_flight"] is True, (
+        "liveness cannot tell this backend from a dead one while the native engine renders"
+    )
+    assert bk.generation_in_flight() is False
+
+
+def test_generation_in_flight_never_builds_a_backend(monkeypatch):
+    monkeypatch.setattr(bk, "_sd_cpp_backend", None)
+    monkeypatch.setattr(
+        bk,
+        "SdCppDiffusionBackend",
+        lambda *a, **k: pytest.fail("liveness constructed a native diffusion backend"),
+    )
+    assert bk.generation_in_flight() is False
