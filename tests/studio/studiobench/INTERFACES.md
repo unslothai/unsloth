@@ -96,7 +96,6 @@ injected actionability script -- selector resolution, visibility, stability and 
 indistinguishably from app work. At 500K the window is around 11 s against a `max_frame_ms` anchor
 whose worst case is 2,000 ms. It is instrumented and reported, and `scoring/from_payload.py` keeps
 it out of the frame pool via `UNSCORED_WINDOW_KINDS`.
-
 Opened as a context manager on the session:
 
 ```python

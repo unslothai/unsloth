@@ -110,7 +110,7 @@ UNSCORED_WINDOW_KINDS: frozenset[str] = frozenset({"idle", "setup"})
 # wait; `stream` is `stream:drain`, the window the session layer opens after the film to wait the
 # reply out. Both are quiet by construction, which is the property `_unaided` needs -- see there
 # for why the streaming numbers are taken only from these, and for what the `stream` half is worth.
-# `action` is excluded, and `idle` never reaches here (IDLE_WINDOW_KINDS strips it first).
+# `action` is excluded, and `idle` never reaches here (UNSCORED_WINDOW_KINDS strips it first).
 UNAIDED_WINDOW_KINDS: frozenset[str] = frozenset({"gap", "stream"})
 
 

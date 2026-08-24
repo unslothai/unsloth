@@ -46,7 +46,6 @@ from tests.studio.studiobench.scoring.from_payload import (  # noqa: E402
     FRAME_METRICS,
     UNSCORED_WINDOW_KINDS,
     STREAM_METRICS,
-    latest_attempt_rows,
     _actions_for,
     _frame_measures,
     _stream_measures,

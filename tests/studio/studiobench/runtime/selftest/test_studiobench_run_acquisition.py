@@ -590,9 +590,9 @@ def test_a_duplicate_is_still_refused_while_the_report_is_being_rendered(studio,
     monkeypatch.setattr(sb, "_render_ab", render_with_a_duplicate_arriving)
     assert sb.run(_args(studio, "--branch", "main", "--ab", "pr-9296"), ab_ref = "pr-9296") == 0
 
-    assert isinstance(seen["duplicate"], SystemExit), (
-        "a second run was admitted to the output directory while the first was still reporting"
-    )
+    assert isinstance(
+        seen["duplicate"], SystemExit
+    ), "a second run was admitted to the output directory while the first was still reporting"
     assert "still running" in str(seen["duplicate"])
     # Nothing of the first run's was moved, and nothing was installed on top of it.
     assert paths.payload_jsonl.exists(), "the duplicate archived the payload being reported on"
