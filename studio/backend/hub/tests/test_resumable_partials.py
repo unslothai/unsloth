@@ -346,7 +346,9 @@ def test_an_unrunnable_probe_reads_as_unprovable_not_as_an_error(tmp_path, monke
     """It still has to fail closed for the caller, just without being remembered."""
     rp.invalidate_probe_cache()
     monkeypatch.setattr(rp, "_probe_dir", lambda _c = None: tmp_path)
-    monkeypatch.setattr(rp, "_device_at", lambda _d: (_ for _ in ()).throw(rp._ProbeUnavailable("gone")))
+    monkeypatch.setattr(
+        rp, "_device_at", lambda _d: (_ for _ in ()).throw(rp._ProbeUnavailable("gone"))
+    )
     assert rp._exclusion_is_provable() is False
 
 
