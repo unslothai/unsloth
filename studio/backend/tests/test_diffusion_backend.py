@@ -10464,9 +10464,9 @@ def test_generation_in_flight_tracks_a_generation(fake_runtime, tmp_path, monkey
 
     assert diffusion_mod.generation_in_flight() is False
     backend.generate(prompt = "a sloth", steps = 4)
-    assert seen["in_flight"] is True, (
-        "liveness cannot tell this backend from a dead one while it renders an image"
-    )
+    assert (
+        seen["in_flight"] is True
+    ), "liveness cannot tell this backend from a dead one while it renders an image"
     assert diffusion_mod.generation_in_flight() is False
 
 

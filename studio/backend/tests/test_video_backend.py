@@ -7537,7 +7537,12 @@ def test_generation_in_flight_tracks_a_background_job(fake_runtime, tmp_path, mo
     release = threading.Event()
     inside = {}
 
-    def _block(self, *, cancel_event = None, **gen_kwargs):
+    def _block(
+        self,
+        *,
+        cancel_event = None,
+        **gen_kwargs,
+    ):
         # Hold the worker open while liveness is checked.
         inside["in_flight"] = video_mod.generation_in_flight()
         rendering.set()
@@ -7549,9 +7554,9 @@ def test_generation_in_flight_tracks_a_background_job(fake_runtime, tmp_path, mo
     assert video_mod.generation_in_flight() is False
     backend.begin_generate(prompt = "a clip")
     assert rendering.wait(10), "the generate worker never started"
-    assert video_mod.generation_in_flight() is True, (
-        "liveness cannot tell this backend from a dead one while it renders a clip"
-    )
+    assert (
+        video_mod.generation_in_flight() is True
+    ), "liveness cannot tell this backend from a dead one while it renders a clip"
     assert inside["in_flight"] is True
 
     release.set()

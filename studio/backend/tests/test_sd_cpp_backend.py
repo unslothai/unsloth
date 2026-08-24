@@ -2444,7 +2444,13 @@ def test_generation_in_flight_tracks_a_generation(monkeypatch):
 
     seen: dict = {}
 
-    def _resolve(active, *, family = None, hf_token = None, cancel_event = None):
+    def _resolve(
+        active,
+        *,
+        family = None,
+        hf_token = None,
+        cancel_event = None,
+    ):
         # Check the marker during pre-generate setup.
         seen["in_flight"] = bk.generation_in_flight()
         return []
@@ -2453,9 +2459,9 @@ def test_generation_in_flight_tracks_a_generation(monkeypatch):
 
     assert bk.generation_in_flight() is False
     b.generate(prompt = "a fox", width = 64, height = 64, steps = 8, loras = [("some/lora", 1.0)])
-    assert seen["in_flight"] is True, (
-        "liveness cannot tell this backend from a dead one while the native engine renders"
-    )
+    assert (
+        seen["in_flight"] is True
+    ), "liveness cannot tell this backend from a dead one while the native engine renders"
     assert bk.generation_in_flight() is False
 
 

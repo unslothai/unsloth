@@ -208,9 +208,7 @@ def test_liveness_reports_a_media_job_in_flight():
             f"liveness does not say the backend is busy while {backend} renders; the "
             f"watchdog kills the job at three missed probes and reports the app as crashed"
         )
-        assert not result[f"{backend}_idle"]["has_busy_key"], (
-            f"{backend} reported busy while idle"
-        )
+        assert not result[f"{backend}_idle"]["has_busy_key"], f"{backend} reported busy while idle"
         assert not result[f"{backend}_done"]["has_busy_key"], (
             f"{backend} still reports busy after the job ended; the widened budget would "
             f"stay armed for the rest of the session"
