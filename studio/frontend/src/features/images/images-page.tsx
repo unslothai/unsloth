@@ -164,6 +164,7 @@ import {
   shouldContinueGenerating,
   shouldReportGenerateError,
 } from "./lib/generation-stop";
+import { nextProgress, previewFrame } from "./lib/generation-preview";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useStagedDownload } from "@/features/hub/download-manager";
 import { DiffusionTrainPanel } from "./train/diffusion-train-panel";
@@ -1630,12 +1631,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     [images, selectedId],
   );
   const selectedSrc = selected ? srcById[selected.id] : undefined;
-  // Keep the last denoise frame up until the finished image can actually render, so the viewer
-  // never drops from a near-complete preview back to a spinner.
-  const previewSrc =
-    heldPreview !== null && (busy === "generating" || (selected !== null && !selectedSrc))
-      ? heldPreview
-      : null;
+  const previewSrc = previewFrame({
+    held: heldPreview,
+    generating: busy === "generating",
+    hasSelection: selected !== null,
+    finishedLoaded: Boolean(selectedSrc),
+  });
 
   // Fetch (once) the object URL for a record's PNG; cached across remounts.
   const ensureSrc = useCallback(async (image: GalleryImage) => {
@@ -2264,17 +2265,15 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         }
         if (p.preview) setHeldPreview(p.preview);
         setGenStep((prev) => {
-          // The persist window reports active at step 0; letting the bar fall back to "Preparing"
-          // after the last step reads as the run restarting.
-          if (prev && prev.step > 0 && p.step === 0) return prev;
+          const next = nextProgress(prev, p);
           if (
             prev &&
-            prev.step === p.step &&
-            prev.eta_seconds === p.eta_seconds &&
-            prev.preview === p.preview
+            prev.step === next.step &&
+            prev.eta_seconds === next.eta_seconds &&
+            prev.preview === next.preview
           )
             return prev;
-          return p;
+          return next;
         });
       } catch {
         // transient; keep polling
