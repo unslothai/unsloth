@@ -866,7 +866,7 @@ test("the chords that need one target do not fire where there are two", async ()
     chatPage,
     /const headerPickersShown = active && view\.mode !== "compare";/,
   );
-  assert.match(chatPage, /enabled: headerPickersShown \}/);
+  assert.match(chatPage, /enabled: headerPickersShown[,\s]*\}/);
   // Both panes mount the last message's fork button, and the chord would go
   // to whichever registered its listener first.
   assert.match(thread, /enabled: chatActive && !inComparePane && isLast/);
@@ -875,6 +875,37 @@ test("the chords that need one target do not fire where there are two", async ()
     toolCard,
     /soleRequest &&\n\s*!selectionActive &&\n\s*showControls &&/,
   );
+});
+
+// The tour's opener pins the picker open, and an effect shuts anything left
+// pinned while no tour is running. A chord routed through it would open the
+// picker and lose it on the next tick.
+test("the model picker chord opens without the tour's pin", async () => {
+  const chatPage = await readFile(
+    new URL("../src/features/chat/chat-page.tsx", import.meta.url),
+    "utf8",
+  );
+
+  // The pin, and the effect that keys on it.
+  assert.match(
+    chatPage,
+    /const openModelSelector = useCallback\(\(\) => \{\n\s*setModelSelectorLocked\(true\);/,
+  );
+  assert.match(
+    chatPage,
+    /if \(tour\.open\) return;\n\s*if \(!modelSelectorLocked\) return;[\s\S]{0,200}?setModelSelectorOpen\(false\);/,
+  );
+
+  // So the chord takes its own door, and stands aside while a step is on it.
+  assert.match(
+    chatPage,
+    /const toggleModelSelector = useCallback\(\(\) => \{\n(?:\s*\/\/[^\n]*\n)*\s*if \(modelSelectorLocked\) return;\n\s*setModelSelectorOpen\(\(open\) => !open\);/,
+  );
+  assert.match(chatPage, /useShortcut\("openModelPicker", toggleModelSelector/);
+
+  // Three mentions left, all the tour's: the declaration, the step builder's
+  // argument, and that memo's dependency. Nothing else may pin it open.
+  assert.equal((chatPage.match(/openModelSelector/g) ?? []).length, 3);
 });
 
 // The inline rename pill is rendered by the row, so it needs the row to be on

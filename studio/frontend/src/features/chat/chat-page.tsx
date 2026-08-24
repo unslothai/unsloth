@@ -3193,6 +3193,9 @@ export function ChatPage({
     })();
   }, [ejectModel, resetArtifacts]);
 
+  // Pins the picker open so a stray click cannot dismiss the step under it.
+  // Tour steps only: the effect below shuts anything left pinned once the tour
+  // is gone, so anyone else calling this would get a flash and nothing more.
   const openModelSelector = useCallback(() => {
     setModelSelectorLocked(true);
     setModelSelectorOpen(true);
@@ -3202,6 +3205,13 @@ export function ChatPage({
     setModelSelectorLocked(false);
     setModelSelectorOpen(false);
   }, []);
+
+  /** The chord's opener: no pin, so the picker stays dismissible. */
+  const toggleModelSelector = useCallback(() => {
+    // Pinned means a tour step is standing on it, and that step owns it.
+    if (modelSelectorLocked) return;
+    setModelSelectorOpen((open) => !open);
+  }, [modelSelectorLocked]);
 
   const handleModelSelectorOpenChange = useCallback(
     (open: boolean) => {
@@ -3225,11 +3235,9 @@ export function ChatPage({
   // where each pane carries its own picker instead. Without the check the
   // chord would toggle state nothing renders.
   const headerPickersShown = active && view.mode !== "compare";
-  useShortcut(
-    "openModelPicker",
-    () => (modelSelectorOpen ? closeModelSelector() : openModelSelector()),
-    { enabled: headerPickersShown },
-  );
+  useShortcut("openModelPicker", toggleModelSelector, {
+    enabled: headerPickersShown,
+  });
   useShortcut("openProjectPicker", () => setProjectPickerOpen(true), {
     enabled: headerPickersShown && Boolean(currentProjectId),
   });
