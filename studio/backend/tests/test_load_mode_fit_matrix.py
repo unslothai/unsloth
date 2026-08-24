@@ -166,10 +166,46 @@ def test_every_footprint_term_is_charged(monkeypatch):
         "mtp_bytes",
         "compute_buffer_flat",
         "compute_buffer_ctx",
+        "pipeline_overhead_bytes",
         "soft_overhead",
     ):
         assert _mode(footprint = rows_free, **base, **{term: 0}) == FIT_MODE
         assert _mode(footprint = rows_free, **base, **{term: 20 * GIB}) is None
+
+
+def test_the_extra_devices_pipeline_overhead_is_charged(monkeypatch):
+    """A layer split allocates a fixed CUDA context and scratch on every card, and
+    the placement reserves 1 GiB per EXTRA device for it (_subset_model_size). The
+    load-mode footprint has to carry the same term: 23 GiB across two 12 GiB cards
+    with no host RAM to spill into is a fit until the second card's share is
+    priced, and claiming that fit would hand the load a loader that cannot page."""
+    base = dict(platform = "linux", hw = "nvidia_multi", avail_mib = 0, monkeypatch = monkeypatch)
+    assert _mode(footprint = 23 * GIB, **base) == FIT_MODE
+    assert _mode(footprint = 23 * GIB, pipeline_overhead_bytes = 2 * GIB, **base) is None
+    # Single GPU: the launch's max(0, n - 1) is 0 there, so the term never moves it.
+    assert (
+        _mode(
+            platform = "linux",
+            hw = "nvidia_discrete",
+            footprint = 23 * GIB,
+            avail_mib = 0,
+            monkeypatch = monkeypatch,
+            pipeline_overhead_bytes = 0,
+        )
+        == FIT_MODE
+    )
+
+
+def test_the_launch_charges_the_pipeline_overhead_per_extra_device():
+    """max(0, n - 1), so a single-GPU load adds nothing, and ungated by whether
+    llama.cpp keeps the pipeline -- the per-device context is there either way,
+    which is why the placement's own term is ungated too."""
+    import inspect
+
+    from core.inference.llama_cpp import LlamaCppBackend as B
+
+    compact = "".join(inspect.getsource(B.load_model).split())
+    assert "pipeline_overhead_bytes=(max(0,_fit_devices-1)*_pipeline_overhead_bytes)" in compact
 
 
 # ------------------------------------------------- the CPU-pinned drafter
@@ -191,6 +227,7 @@ class _DraftStub:
         return self._kv
 
     _cpu_resident_draft_bytes = LlamaCppBackend._cpu_resident_draft_bytes
+    _MTP_DRAFT_COMPUTE_BYTES = LlamaCppBackend._MTP_DRAFT_COMPUTE_BYTES
 
 
 def test_no_cpu_pinned_drafter_charges_nothing():
@@ -198,11 +235,43 @@ def test_no_cpu_pinned_drafter_charges_nothing():
     assert stub._cpu_resident_draft_bytes(8192, drafter_path = None) == 0
 
 
-def test_a_cpu_pinned_drafter_is_charged_weights_plus_kv():
+def test_a_cpu_pinned_drafter_is_charged_weights_plus_kv_plus_its_graph():
     """``-ngld 0`` takes the drafter off the GPU. It does not delete it: those
-    bytes are in host RAM, and ``none`` allocates them anonymously there."""
+    bytes are in host RAM, and ``none`` allocates them anonymously there.
+
+    The decode graph goes with them. llama.cpp gives the drafter a context of its
+    own and decodes through it (common/speculative.cpp), and _soft_overhead only
+    charges _MTP_DRAFT_COMPUTE_BYTES while _mtp_reserves_gpu, which is False for
+    exactly this placement -- so left out here it is nowhere in the footprint."""
     stub = _DraftStub(3 * GIB, 512 * MIB)
-    assert stub._cpu_resident_draft_bytes(8192, drafter_path = "d.gguf") == 3 * GIB + 512 * MIB
+    assert stub._cpu_resident_draft_bytes(8192, drafter_path = "d.gguf") == (
+        3 * GIB + 512 * MIB + LlamaCppBackend._MTP_DRAFT_COMPUTE_BYTES
+    )
+
+
+def test_the_cpu_drafters_decode_graph_is_charged_to_host_ram(monkeypatch):
+    """And it is enough to move the answer on its own: 8 GiB of target against a
+    24 GiB card, with host RAM sized so the drafter's weights and KV clear the
+    headroom by less than the graph. Charged to RAM alone, like the rest of a
+    host-only term."""
+    monkeypatch.setattr(hardware, "is_apple_silicon", lambda: False)
+    stub = _DraftStub(2 * GIB, 0)
+    draft = stub._cpu_resident_draft_bytes(8192, drafter_path = "d.gguf")
+    # Room for the weights and the headroom, but not for the graph on top.
+    avail_mib = (2 * GIB + LlamaCppBackend._MTP_DRAFT_COMPUTE_BYTES // 2) // MIB + 2 * 1024
+
+    def _fit(host_only):
+        return LlamaCppBackend._fit_derived_load_mode(
+            _Stub(avail_mib),
+            model_size = 8 * GIB,
+            host_only_bytes = host_only,
+            gpus = [(0, 24 * 1024)],
+            avail_mib = avail_mib,
+        )
+
+    # Weights and KV alone still read as a fit; the graph is what tips it.
+    assert _fit(2 * GIB) == FIT_MODE
+    assert _fit(draft) is None
 
 
 @pytest.mark.parametrize("weights,kv", [(None, 512 * MIB), (0, 512 * MIB), (3 * GIB, None)])
@@ -251,6 +320,23 @@ def test_the_launch_charges_the_cpu_pinned_drafter_to_the_fit():
     # an allocation the child only ever makes in RAM), abstaining when unpriceable.
     assert "host_only_bytes=_cpu_draft_fit_bytesor0" in compact
     assert "or_cpu_draft_fit_bytesisNone" in compact
+
+
+def test_a_weights_only_drafter_reserve_counts_as_unsized():
+    """_flat_mtp_engages is "callback missing OR _mtp_kv_unsized", and the second
+    arm is the one this call site has to keep: _estimate_mtp_overhead_bytes returns
+    weights (plus any MLA/Mamba target copy) rather than None when the draft KV
+    cannot be sized, so the callback exists and prices no draft KV at all. Charging
+    that as a sized drafter understates a ctx-linear term the placement only covers
+    with a flat cushion the footprint has no room for. Re-narrowing to
+    "mtp_overhead_fn is None" absorbs the arm away, which is what it used to do."""
+    import inspect
+
+    from core.inference.llama_cpp import LlamaCppBackend as B
+
+    compact = "".join(inspect.getsource(B.load_model).split())
+    assert "mtp_unsized=bool(_flat_mtp_engagesor_cpu_draft_fit_bytesisNone)" in compact
+    assert "_flat_mtp_engagesandmtp_overhead_fnisNone" not in compact
 
 
 def test_a_cpu_pinned_drafter_is_not_paid_for_out_of_vram(monkeypatch):
@@ -868,6 +954,30 @@ def test_inherited_cpu_placement_env_voids_the_vram_credit(var, value, monkeypat
     """The child inherits these, so they outlive any token stripping."""
     monkeypatch.setenv(var, value)
     assert _mode("linux", "nvidia_discrete", 8 * GIB, 4 * 1024, monkeypatch) is None
+
+
+@pytest.mark.parametrize("value", ["0", "12", " 12 ", "all", "garbage"])
+def test_an_inherited_gpu_layer_count_voids_the_vram_credit(value, monkeypatch):
+    """The env twin of -ngl, and the sharper of the two: the fitting path emits
+    "--fit on" and no layer flag at all, so an inherited count is the ONLY layer
+    policy the child sees, and llama.cpp's fitter refuses to lower a count it did
+    not set (common/fit.cpp: "n_gpu_layers already set by user, abort", downgraded
+    to a warning). Nothing clears it on an automatic load -- only Manual mode owns
+    it -- so the weights the fit credited to a card load into host RAM instead."""
+    monkeypatch.setenv("LLAMA_ARG_N_GPU_LAYERS", value)
+    assert _mode("linux", "nvidia_discrete", 8 * GIB, 4 * 1024, monkeypatch) is None
+    # Dropped credit, not a dropped answer: RAM that holds the whole load is a fit
+    # wherever the count puts it.
+    assert _mode("linux", "nvidia_discrete", 8 * GIB, 64 * 1024, monkeypatch) == FIT_MODE
+
+
+@pytest.mark.parametrize("value", ["-1", "auto", "AUTO", "", "   "])
+def test_an_inherited_default_gpu_layer_count_keeps_the_fit(value, monkeypatch):
+    """-1 / "auto" IS llama.cpp's default (common/common.h, llama-model.cpp), so
+    the fitter still runs and still owns the placement this fit priced. An empty
+    value never reaches placement at all: std::stoi throws and the child dies."""
+    monkeypatch.setenv("LLAMA_ARG_N_GPU_LAYERS", value)
+    assert _mode("linux", "nvidia_discrete", 8 * GIB, 4 * 1024, monkeypatch) == FIT_MODE
 
 
 def test_the_launch_hands_the_fit_the_extras_the_child_will_get():

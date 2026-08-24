@@ -3264,6 +3264,29 @@ def _env_places_tensors_on_cpu(env: Optional[Mapping[str, str]] = None) -> bool:
     )
 
 
+def _env_fixes_gpu_layers(env: Optional[Mapping[str, str]] = None) -> bool:
+    """True when an inherited ``LLAMA_ARG_N_GPU_LAYERS`` owns the layer placement.
+
+    The env twin of ``_GPU_LAYER_FLAGS``, and it bites harder than the tokens do:
+    the fitting path emits ``--fit on`` and no ``-ngl`` at all, so an inherited
+    count is the ONLY layer policy the child sees. llama.cpp's fitter then refuses
+    to touch it -- ``common_params_fit_impl`` throws "n_gpu_layers already set by
+    user" (common/fit.cpp:377) on any value but the default, and the caller
+    downgrades that to a warning (common/fit.cpp:805) -- so the launch proceeds
+    with the count as given, placing a prefix of the weights and running the rest
+    out of host RAM the fit just credited to a card.
+
+    ``auto`` / ``-1`` is that default (common/common.h:465,
+    llama-model.cpp:2453), so it leaves the fitter free to choose and is not an
+    override. Everything else is, ``all`` included: a count that stands is a count
+    this fit did not price. Empty counts as unset -- llama.cpp's ``std::stoi``
+    would throw on it and the child would never start.
+    """
+    raw = (os.environ if env is None else env).get("LLAMA_ARG_N_GPU_LAYERS")
+    value = str(raw or "").strip().lower()
+    return bool(value) and value not in _LLAMA_ARG_AUTO_VALUES
+
+
 def _pipeline_parallel_disabled_by_args(
     extra_args: Optional[Iterable[str]],
     env: Optional[Mapping[str, str]] = None,
@@ -8735,6 +8758,7 @@ class LlamaCppBackend:
         host_only_bytes: int = 0,
         compute_buffer_flat: int = 0,
         compute_buffer_ctx: int = 0,
+        pipeline_overhead_bytes: int = 0,
         soft_overhead: int = 0,
         gpus: Optional[Iterable[tuple]] = None,
         gpu_indices: Optional[Iterable[int]] = None,
@@ -8795,7 +8819,10 @@ class LlamaCppBackend:
         inherited ``LLAMA_ARG_DEVICE=none``, which no automatic launch clears (only an
         explicit ``gpu_ids`` pin does). A ``--device`` naming FEWER devices than this
         fit credits voids the VRAM term for the same reason a CPU-valued one does: the
-        cards it leaves out hold nothing for this launch.
+        cards it leaves out hold nothing for this launch. ``LLAMA_ARG_N_GPU_LAYERS``
+        is the sharpest of them: the fitting path emits no ``-ngl`` for it to lose
+        to, so an inherited count is the whole layer policy (see
+        ``_env_fixes_gpu_layers``).
 
         ``fit_margin_mib`` is what llama.cpp's fitter keeps free per device when the
         fitter really runs, i.e. VRAM this load may not spend; see
@@ -8829,6 +8856,13 @@ class LlamaCppBackend:
         _device_narrows = bool(_dev_names) and len(_dev_names) < _credited
         if (
             _extra_args_set_any_flag(extra_args, _GPU_LAYER_FLAGS)
+            # And its env twin, which on the fitting path is the ONLY layer count
+            # the child sees: that arm emits "--fit on" and no -ngl at all, and
+            # nothing clears LLAMA_ARG_N_GPU_LAYERS on an automatic load (only
+            # Manual mode owns it, via _clear_manual_placement_env). llama.cpp's
+            # fitter will not lower a count it did not set (common/fit.cpp), so an
+            # inherited one stands and loads a prefix out of host RAM.
+            or _env_fixes_gpu_layers(source_env)
             # With the env twin: on an automatic load nothing clears
             # LLAMA_ARG_DEVICE (only an explicit gpu_ids pin does, via
             # _clear_device_placement_env), so an inherited "none" reaches the
@@ -8856,6 +8890,12 @@ class LlamaCppBackend:
             + max(0, host_only_bytes)
             + max(0, compute_buffer_flat)
             + max(0, compute_buffer_ctx)
+            # A layer split puts a fixed CUDA context and scratch on EVERY device.
+            # compute_buffer_flat is one lump covering one of them and the CUDA
+            # reserve inside soft_overhead is charged once, so the extra devices'
+            # share is a term of its own, the same one the placement reserves
+            # (_subset_model_size). 0 on a single GPU.
+            + max(0, pipeline_overhead_bytes)
             + max(0, soft_overhead)
         )
         # Unified memory is ONE pool: an APU's reported free VRAM is the same host RAM
@@ -9993,7 +10033,13 @@ class LlamaCppBackend:
         )
         if kv is None:
             return None
-        return int(weights) + max(0, int(kv))
+        # The drafter gets a llama_context of its own and is decoded through it
+        # like any other model (common/speculative.cpp: ctx_dft, llama_decode),
+        # so its decode graph is allocated wherever the drafter runs -- here, the
+        # host. _soft_overhead charges that constant only while _mtp_reserves_gpu,
+        # which is False for exactly this placement, so unless it is added here it
+        # is absent from the footprint altogether.
+        return int(weights) + max(0, int(kv)) + self._MTP_DRAFT_COMPUTE_BYTES
 
     def _estimate_mtp_overhead_bytes(
         self,
@@ -18429,9 +18475,17 @@ class LlamaCppBackend:
                         kv_cache_bytes = kv_cache_bytes,
                         kv_sized = self._can_estimate_kv(),
                         mtp_bytes = _mtp_bytes(effective_ctx),
+                        # _flat_mtp_engages whole, not re-narrowed to a missing
+                        # callback: its other arm is _mtp_kv_unsized, where the
+                        # callback exists but prices weights (plus any MLA/Mamba
+                        # target copy) and NO draft KV, because
+                        # _estimate_mtp_overhead_bytes returns that partial total
+                        # rather than None. The placement covers the gap with a flat
+                        # cushion this footprint has no term for, so a long context
+                        # would go missing from it entirely -- exactly the "engaged
+                        # but unsized" case the predicate abstains on.
                         mtp_unsized = bool(
-                            (_flat_mtp_engages and mtp_overhead_fn is None)
-                            or _cpu_draft_fit_bytes is None
+                            _flat_mtp_engages or _cpu_draft_fit_bytes is None
                         ),
                         # Host-only, not pooled: -ngld 0 puts the drafter in RAM, and
                         # free VRAM cannot pay for an allocation the child makes on
@@ -18439,6 +18493,13 @@ class LlamaCppBackend:
                         host_only_bytes = _cpu_draft_fit_bytes or 0,
                         compute_buffer_flat = _compute_buffer_pipeline,
                         compute_buffer_ctx = _cc_bytes(effective_ctx, _fit_devices),
+                        # Ungated, like the placement's own _subset_model_size: the
+                        # per-device CUDA context and scratch are there whether or
+                        # not llama.cpp keeps the pipeline (_cc_bytes is the term
+                        # that gates on it).
+                        pipeline_overhead_bytes = (
+                            max(0, _fit_devices - 1) * _pipeline_overhead_bytes
+                        ),
                         soft_overhead = _soft_overhead,
                         gpus = gpus,
                         gpu_indices = gpu_indices,
