@@ -10975,7 +10975,11 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
                         text = merged_text
             logger.info("RAG auto-inject: whole-document context (%d chunk(s))", len(sources))
 
-    if text is None and enabled:
+    # Thread attachments request grounding independently of the model-size Auto
+    # gate. If whole-document context is unavailable or over budget, retrieve
+    # top-K even when Auto resolved to false for a larger model. Explicit Off
+    # sets whole_doc=False, so it still exits above without retrieval.
+    if text is None and (enabled or whole_doc_requested):
         try:
             found = search_for_autoinject(
                 query = query,
