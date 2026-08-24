@@ -13442,7 +13442,9 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
                         if part_b64:
                             latest_image_b64 = part_b64
                         else:
-                            logger.warning(f"Ignoring image URL with no base64 payload: {url[:80]}...")
+                            logger.warning(
+                                f"Ignoring image URL with no base64 payload: {url[:80]}..."
+                            )
                     else:
                         logger.warning(f"Remote image URLs not yet supported: {url[:80]}...")
             combined_text = "\n".join(text_parts) if text_parts else ""
