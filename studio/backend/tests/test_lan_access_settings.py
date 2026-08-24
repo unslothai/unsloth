@@ -223,16 +223,14 @@ def test_a_loopback_launch_offers_a_startable_off_state():
 def test_lan_status_uses_one_fail_closed_keyless_state(monkeypatch):
     import utils.keyless_api_access as keyless
 
-    monkeypatch.setattr(keyless, "get_keyless_api_access_scope", lambda: "inference")
-    monkeypatch.setattr(keyless, "get_keyless_api_tools_enabled", lambda: True)
+    monkeypatch.setattr(keyless, "get_keyless_api_access_settings", lambda: ("inference", True))
     status = lan_settings.lan_access_status(_app())
     assert (status["keyless_scope"], status["keyless_tools"]) == ("inference", True)
 
     def unreadable():
         raise OSError("settings unavailable")
 
-    monkeypatch.setattr(keyless, "get_keyless_api_access_scope", unreadable)
-    monkeypatch.setattr(keyless, "get_keyless_api_tools_enabled", unreadable)
+    monkeypatch.setattr(keyless, "get_keyless_api_access_settings", unreadable)
     status = lan_settings.lan_access_status(_app())
     assert (status["keyless_scope"], status["keyless_tools"]) == ("off", False)
 

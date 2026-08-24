@@ -58,11 +58,14 @@ def _desktop_case(monkeypatch, threads):
     return authentication.authenticated_via_desktop_jwt(_credentials("token"))
 
 
-def _keyless_case(monkeypatch, threads):
+async def _keyless_case(monkeypatch, threads):
     monkeypatch.setattr(
         authentication, "get_user_and_secret", _record_thread(threads, ("s", "h", SECRET, False))
     )
-    return authentication.get_current_subject(authentication._KEYLESS_CREDENTIALS)
+    await authentication.get_current_subject(authentication._KEYLESS_CREDENTIALS)
+    from utils import keyless_api_access as keyless
+    monkeypatch.setattr(keyless, "get_keyless_api_tools_enabled", _record_thread(threads, True))
+    await keyless.KeylessToolPolicyMiddleware(lambda *_args: asyncio.sleep(0))({"type": "http"}, None, None)
 
 
 @pytest.mark.parametrize(
@@ -79,7 +82,7 @@ def test_the_dependency_reads_off_the_event_loop_thread(monkeypatch, build_call)
     loop_thread = asyncio.run(_drive())
 
     assert threads, "the credential read never ran"
-    assert threads[0] != loop_thread, "credential read ran on the event loop thread"
+    assert all(thread != loop_thread for thread in threads), "credential read ran on event loop"
 
 
 def test_the_status_route_reads_off_the_event_loop_thread(monkeypatch):

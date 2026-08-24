@@ -311,12 +311,9 @@ def lan_access_status(app) -> dict:
 
     controllable = block_reason is None
     try:
-        from utils.keyless_api_access import (
-            get_keyless_api_access_scope,
-            get_keyless_api_tools_enabled,
-        )
-        keyless_scope = get_keyless_api_access_scope()
-        keyless_tools = get_keyless_api_tools_enabled()
+        from utils.keyless_api_access import get_keyless_api_access_settings
+
+        keyless_scope, keyless_tools = get_keyless_api_access_settings()
     except Exception:
         keyless_scope, keyless_tools = "off", False
     return {

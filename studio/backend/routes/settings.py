@@ -98,8 +98,7 @@ from utils.openai_auto_switch_settings import (
 )
 from utils.keyless_api_access import (
     access_exposure,
-    get_keyless_api_access_scope,
-    get_keyless_api_tools_enabled,
+    get_keyless_api_access_settings,
     set_keyless_api_access,
 )
 from utils.preview_sharing_settings import (
@@ -2212,9 +2211,10 @@ def _require_ui_session_for_keyless(via_api_key: bool = Depends(authenticated_vi
 
 
 def _keyless_api_access_response(request: Request) -> KeylessApiAccessResponse:
+    scope, tools = get_keyless_api_access_settings()
     return KeylessApiAccessResponse(
-        scope = get_keyless_api_access_scope(),
-        tools = get_keyless_api_tools_enabled(),
+        scope = scope,
+        tools = tools,
         exposure = access_exposure(request.app.state),
     )
 

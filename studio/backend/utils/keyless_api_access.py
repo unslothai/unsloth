@@ -115,10 +115,10 @@ def _settings() -> tuple[str, bool]:
     """
     global _cached_settings
     now = time.monotonic()
-    cached = _cached_settings
-    if cached is not None and now - cached[0] < _SETTINGS_CACHE_TTL_S:
-        return cached[1], cached[2]
     with _cache_lock:
+        cached = _cached_settings
+        if cached is not None and now - cached[0] < _SETTINGS_CACHE_TTL_S:
+            return cached[1], cached[2]
         generation = _settings_generation
     scope, tools = _read_settings()
     with _cache_lock:
@@ -133,6 +133,11 @@ def _settings() -> tuple[str, bool]:
 
 def get_keyless_api_access_scope() -> str:
     return _settings()[0]
+
+
+def get_keyless_api_access_settings() -> tuple[str, bool]:
+    """Return the canonical scope and tool grant from one settings generation."""
+    return _settings()
 
 
 def get_keyless_api_tools_enabled() -> bool:
@@ -347,11 +352,14 @@ class KeylessToolPolicyMiddleware:
         self.app = app
 
     async def __call__(self, asgi_scope, receive, send):
-        if asgi_scope.get("type") != "http" or get_keyless_api_tools_enabled():
+        if asgi_scope.get("type") != "http":
             await self.app(asgi_scope, receive, send)
             return
         from starlette.concurrency import run_in_threadpool
 
+        if await run_in_threadpool(get_keyless_api_tools_enabled):
+            await self.app(asgi_scope, receive, send)
+            return
         admitted = await run_in_threadpool(asgi_request_is_keyless, asgi_scope)
         asgi_scope.setdefault("state", {})[KEYLESS_ADMISSION_STATE_KEY] = admitted
         if not admitted:
