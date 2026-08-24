@@ -3172,37 +3172,39 @@ class FastLlamaModel:
                 bool(peft_config.get("use_dora", False)) == bool(kwargs.get("use_dora", False))
             )
 
-            # Check save_modules
-            old_target_modules = list(peft_config["target_modules"])
-            modules_to_save = peft_config["modules_to_save"]
-            if modules_to_save is None:
-                modules_to_save = {}
-            modules_to_save = list(modules_to_save)
-            old_target_modules += modules_to_save
-            # ensure_weight_tying moves the tied counterpart (lm_head) into
-            # modules_to_tie, so the stored config names it on neither list above. Add it
-            # to both sides or a repeat call reports "parameters are different". Read it
-            # off the config object: to_dict() drops modules_to_tie.
-            modules_to_tie = list(
+            # Check save_modules. Everything the stored adapter trains, wherever PEFT
+            # filed it: ensure_weight_tying moves the tied counterpart to modules_to_tie,
+            # which to_dict() drops, so read that off the config object.
+            requested_modules_to_save = modules_to_save
+            modules_to_save = list(peft_config["modules_to_save"] or [])
+            old_target_modules = list(peft_config["target_modules"]) + modules_to_save
+            old_target_modules += list(
                 getattr(model.peft_config["default"], "modules_to_tie", None) or []
             )
-            old_target_modules += modules_to_tie
 
-            # Combine all
-            new_target_modules = (
-                list(target_modules)
-                + list(modules_to_save if modules_to_save is not None else [])
-                + modules_to_tie
+            # The new side is what THIS call asks for, put through the same redirect the
+            # adapter was built with. Deriving it from the stored lists instead would make
+            # a narrowed request compare equal and be silently ignored.
+            requested_targets, requested_saved, _ = _redirect_embedding_targets(
+                target_modules,
+                requested_modules_to_save,
+                skip = _vllm_unmovable_embedding_modules(model, target_modules),
             )
+            new_target_modules = list(requested_targets) + list(requested_saved or [])
             # Per-expert Linear MoE experts (e.g. gpt-oss bnb-4bit) were auto-added to the
             # saved target_modules when the adapter was first created. Recompute them so a
             # repeat get_peft_model call with the same args stays idempotent instead of
             # tripping the mismatch below. No-op for non per-expert-Linear models.
             new_target_modules += get_moe_target_modules(model, target_modules)
 
-            # Now check!
-            new_target_modules = set(new_target_modules)
-            check_all = check_all and (len(set(old_target_modules) ^ new_target_modules) == 0)
+            # Now check! PEFT also stores the qualified name (model.embed_tokens) beside
+            # the leaf, so compare leaves or the two sides never agree.
+            def _leaf_name(module):
+                return module.rsplit(".", 1)[-1] if type(module) is str else module
+
+            new_target_modules = {_leaf_name(x) for x in new_target_modules}
+            old_target_modules = {_leaf_name(x) for x in old_target_modules}
+            check_all = check_all and (len(old_target_modules ^ new_target_modules) == 0)
 
             check_all = check_all and (
                 (loftq_config == {} or loftq_config is None)

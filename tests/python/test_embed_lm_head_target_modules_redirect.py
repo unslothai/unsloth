@@ -141,6 +141,34 @@ def test_a_repeat_call_with_the_same_targets_still_passes_through():
 
 
 @pytest.mark.slow
+@pytest.mark.parametrize("first", [
+    TARGET_MODULES,
+    [m for m in TARGET_MODULES if m != "embed_tokens"],
+    [m for m in TARGET_MODULES if m != "lm_head"],
+])
+def test_dropping_the_embeddings_from_a_repeat_call_is_not_silently_ignored(first):
+    """The embeddings live in modules_to_save/modules_to_tie, so a narrowed request must
+    still be seen as different rather than returning the existing adapter."""
+    from unsloth import FastLanguageModel
+
+    core = [m for m in TARGET_MODULES if m not in ("embed_tokens", "lm_head")]
+    model, _ = FastLanguageModel.from_pretrained(
+        model_name = MODEL_NAME, load_in_4bit = True, max_seq_length = 512,
+    )
+    try:
+        model = FastLanguageModel.get_peft_model(
+            model, r = 8, lora_alpha = 16, target_modules = list(first),
+        )
+        with pytest.raises(TypeError, match = "parameters are different"):
+            FastLanguageModel.get_peft_model(
+                model, r = 8, lora_alpha = 16, target_modules = core,
+            )
+    finally:
+        del model
+        torch.cuda.empty_cache()
+
+
+@pytest.mark.slow
 def test_embedding_only_target_list_raises_instead_of_training_nothing():
     """Redirecting every target would leave an adapter with no trainable LoRA."""
     from unsloth import FastLanguageModel
