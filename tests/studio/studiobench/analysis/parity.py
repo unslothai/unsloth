@@ -777,7 +777,21 @@ def compare_visible(base: Optional[dict], treat: Optional[dict]) -> dict:
         label: int(side.get("ordinal_collisions") or 0)
         for label, side in (("base", base), ("treatment", treat))
     }
-    if any(collisions.values()):
+    # A SEVERE FINDING OUTRANKS THIS REFUSAL, and exactly one finding qualifies. "One arm's
+    # viewport ended EMPTY and the other's did not" is marked NOT SUPPRESSIBLE where it is raised,
+    # because losing the thread is a different kind of statement from a capture that could not be
+    # read -- and a collision provably cannot manufacture it. A collision needs TWO mounted rows
+    # at one position, so the map it corrupts still has at least one entry in it; it can merge two
+    # entries and never empty a map. So the one thing a collision cannot have caused is still
+    # reported rather than swallowed by a blanket refusal.
+    #
+    # Only that one. Every other comparison below IS corrupted by a collision: `ever_visible` loses
+    # an ordinal on one arm alone, so "the two arms put different messages on screen" can be
+    # entirely an artefact of the collision, and the per-ordinal digests are short by a row.
+    lost_the_thread = (len(base.get("messages") or {}) == 0) != (
+        len(treat.get("messages") or {}) == 0
+    )
+    if any(collisions.values()) and not lost_the_thread:
         which = ", ".join(
             f"{label} {n} at ordinal(s) "
             f"{sorted((base if label == 'base' else treat).get('collided_ordinals') or [])[:8]}"

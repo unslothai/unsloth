@@ -817,3 +817,44 @@ def test_a_collision_refuses_the_pair_instead_of_reporting_agreement(browser):
     verdict = P.compare_visible(clean, ghosted)
     assert verdict["verdict"] == P.NOT_COMPARABLE, verdict
     assert "SAME thread position" in verdict["reason"], verdict
+
+
+def test_losing_the_thread_outranks_the_collision_refusal(browser):
+    """THE ONE FINDING A COLLISION CANNOT HAVE MANUFACTURED, so the refusal must not swallow it.
+
+    "One arm's viewport ended EMPTY and the other's did not" is raised with `severe: True` and is
+    documented at that site as not suppressible, because losing the conversation is a different kind
+    of statement from a capture that could not be read. A blanket collision refusal placed ahead of
+    it downgraded it to NOT COMPARABLE.
+
+    A collision provably cannot cause it: a collision needs TWO mounted rows sharing one position,
+    so the map it corrupts still holds an entry. It can merge two entries and never empty a map.
+    """
+    from studiobench.analysis import parity as P
+
+    ghosted = _capture_with_ghost(browser, before = True)
+    assert ghosted["ordinal_collisions"] == 1, ghosted
+    # The other arm ended with nothing on screen at all, which is the 100K `model_change` shape:
+    # 12 mounted messages to 0, never recovered.
+    empty = dict(ghosted)
+    empty["messages"] = {}
+    empty["ordinal_collisions"] = 0
+    empty["collided_ordinals"] = []
+
+    verdict = P.compare_visible(empty, ghosted)
+    assert verdict["verdict"] == P.DIFFER, verdict
+    assert verdict.get("severe") is True, verdict
+    assert "lost the thread" in verdict["reason"], verdict
+
+
+def test_a_collision_with_both_viewports_alive_is_still_refused(browser):
+    """THE CONTROL for the one above. The severe finding is the only thing that outranks the
+    refusal, so a collision on an arm whose viewport is perfectly healthy must still refuse."""
+    from studiobench.analysis import parity as P
+
+    clean = _capture_with_ghost(browser, before = False)
+    clean["ordinal_collisions"] = 0
+    clean["collided_ordinals"] = []
+    ghosted = _capture_with_ghost(browser, before = True)
+    assert clean["messages"] and ghosted["messages"], (clean, ghosted)
+    assert P.compare_visible(clean, ghosted)["verdict"] == P.NOT_COMPARABLE
