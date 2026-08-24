@@ -76,7 +76,12 @@ UNTOUCHED_DEVICE_MAPS = [
 
 
 class _FakeCuda:
-    def __init__(self, count, count_raises = None, mem_raises = None):
+    def __init__(
+        self,
+        count,
+        count_raises = None,
+        mem_raises = None,
+    ):
         self._count = count
         self._count_raises = count_raises
         self._mem_raises = mem_raises
@@ -95,7 +100,11 @@ class _FakeCuda:
 class _Recorder:
     """Stands in for unsloth_zoo's planner and records whether it was consulted."""
 
-    def __init__(self, plan = None, raises = None):
+    def __init__(
+        self,
+        plan = None,
+        raises = None,
+    ):
         self.calls = []
         self._plan = plan
         self._raises = raises
@@ -178,9 +187,7 @@ def test_an_existing_device_map_is_identical_on_every_host(
     none of which may differ by so much as an object identity from what main returns."""
     monkeypatch.delenv("UNSLOTH_AUTO_DEVICE_MAP", raising = False)
     planner = _Recorder(plan = _Plan())
-    ns = _build(
-        device_type = device_type, devices = devices, distributed = False, planner = planner
-    )
+    ns = _build(device_type = device_type, devices = devices, distributed = False, planner = planner)
     resolved = ns["resolve_unsloth_device_map"](
         ns["requested_device_map"](device_map), "unsloth/Qwen3-0.6B"
     )
@@ -268,9 +275,7 @@ def test_the_env_var_opts_in_on_1_and_nothing_else(
     ambiguous. Only the literal "1" upgrades, on every host."""
     monkeypatch.setenv("UNSLOTH_AUTO_DEVICE_MAP", value)
     planner = _Recorder(plan = _Plan())
-    ns = _build(
-        device_type = device_type, devices = devices, distributed = False, planner = planner
-    )
+    ns = _build(device_type = device_type, devices = devices, distributed = False, planner = planner)
     requested = ns["requested_device_map"]("sequential")
     assert requested == ("unsloth" if value == "1" else "sequential")
     assert ns["resolve_unsloth_device_map"](requested, "unsloth/Qwen3-0.6B") != "unsloth"
@@ -285,17 +290,27 @@ def test_an_old_unsloth_zoo_without_a_planner_still_loads(host, monkeypatch):
     monkeypatch.delenv("UNSLOTH_AUTO_DEVICE_MAP", raising = False)
 
     # Shape one: the module is there but predates the entry point.
-    ns = _build(device_type = "cuda", devices = 4, distributed = False, planner = None,
-                planner_available = False)
+    ns = _build(
+        device_type = "cuda", devices = 4, distributed = False, planner = None, planner_available = False
+    )
     assert ns["resolve_unsloth_device_map"]("unsloth", "unsloth/Qwen3-0.6B") == "sequential"
 
     # Shape two: no such module. Block the import rather than deleting it from sys.modules,
     # which on a machine that has the real planner installed just imports it again.
     class _Blocked:
-        def find_module(self, name, path = None):
+        def find_module(
+            self,
+            name,
+            path = None,
+        ):
             return None
 
-        def find_spec(self, name, path = None, target = None):
+        def find_spec(
+            self,
+            name,
+            path = None,
+            target = None,
+        ):
             if name == "unsloth_zoo.device_map_planner":
                 raise ModuleNotFoundError(f"No module named {name!r}")
             return None

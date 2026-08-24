@@ -250,9 +250,7 @@ def resolve_unsloth_device_map(
     # parent handle, another process holding it in Exclusive_Process mode) would abort a
     # load that has a perfectly good "sequential" placement waiting for it.
     try:
-        max_memory = {
-            index: torch.cuda.mem_get_info(index)[0] for index in range(device_count)
-        }
+        max_memory = {index: torch.cuda.mem_get_info(index)[0] for index in range(device_count)}
     except Exception as error:
         return _fallback(f"free memory could not be read ({error})")
     try:
