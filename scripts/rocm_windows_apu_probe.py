@@ -337,14 +337,18 @@ def render(obs: dict[str, Any]) -> str:
         L.append(f"**{when}**")
         if s:
             if s["settled"]:
-                L.append(f"  (baseline settled after {s['waited_s']}s; "
-                         f"dedicated total samples {s['samples_gb']} GB)")
+                L.append(
+                    f"  (baseline settled after {s['waited_s']}s; "
+                    f"dedicated total samples {s['samples_gb']} GB)"
+                )
             else:
-                L.append(f"  **WARNING: still moving after {s['waited_s']}s** "
-                         f"(samples {s['samples_gb']} GB). These counters lag, so this "
-                         f"reading is contaminated by whatever ran last and the delta "
-                         f"below is not trustworthy. Wait for the GPU to go idle and "
-                         f"re-run.")
+                L.append(
+                    f"  **WARNING: still moving after {s['waited_s']}s** "
+                    f"(samples {s['samples_gb']} GB). These counters lag, so this "
+                    f"reading is contaminated by whatever ran last and the delta "
+                    f"below is not trustworthy. Wait for the GPU to go idle and "
+                    f"re-run."
+                )
         L.append("")
         L.append("| adapter instance | Dedicated Usage | Shared Usage |")
         L.append("|---|---|---|")
@@ -359,7 +363,9 @@ def render(obs: dict[str, Any]) -> str:
             f"reserved {a['torch_reserved_gb']} GB)."
         )
         L.append("")
-        before = {x["instance"]: x for x in (obs.get("counters_before") or {}).get("per_adapter", [])}
+        before = {
+            x["instance"]: x for x in (obs.get("counters_before") or {}).get("per_adapter", [])
+        }
         after = {x["instance"]: x for x in (obs.get("counters_after") or {}).get("per_adapter", [])}
         if before and after:
             L.append("| adapter instance | Dedicated delta | Shared delta |")
@@ -466,7 +472,8 @@ def main() -> int:
         obs["counters_before"] = read_counters()
     else:
         obs["counters_before"], obs["settle_before"] = read_counters_settled(
-            timeout_s = args.settle_timeout)
+            timeout_s = args.settle_timeout
+        )
 
     held = None
     if args.allocate > 0:
@@ -479,7 +486,8 @@ def main() -> int:
                 obs["counters_after"] = read_counters()
             else:
                 obs["counters_after"], obs["settle_after"] = read_counters_settled(
-                    timeout_s = args.settle_timeout)
+                    timeout_s = args.settle_timeout
+                )
         except Exception as e:  # noqa: BLE001
             obs["allocation_error"] = f"{type(e).__name__}: {e}"
 
