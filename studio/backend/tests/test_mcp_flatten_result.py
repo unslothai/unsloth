@@ -272,3 +272,13 @@ def test_resource_link_keeps_its_uri():
     assert _flatten_result(_result(_resource_link(name = "gen.png"))) == (
         "[resource: gen.png <file:///out/gen.png>]"
     )
+
+
+def test_resource_link_does_not_displace_structured_content():
+    flat = _flatten_result(_result(_resource_link(), structured = {"path": "/out/gen.png"}))
+    assert flat == "{'path': '/out/gen.png'}\n[resource: <file:///out/gen.png>]"
+
+
+def test_server_text_still_wins_over_structured_content():
+    flat = _flatten_result(_result(_resource_link(), _text("done"), structured = {"path": "/x"}))
+    assert flat == "[resource: <file:///out/gen.png>]\ndone"

@@ -1013,6 +1013,12 @@ def _block_text(block: Any) -> Optional[str]:
     if resource is not None:
         text = getattr(resource, "text", None)
         return str(text) if text else None
+    return None
+
+
+def _block_link(block: Any) -> Optional[str]:
+    # Kept apart from _block_text: this line is the host's own filler, so it must
+    # not pass for server text and suppress the structured_content fallback.
     uri = getattr(block, "uri", None)
     if uri and getattr(block, "type", None) == "resource_link":
         name = getattr(block, "name", None)
@@ -1040,11 +1046,17 @@ def _flatten_result(result: Any) -> str:
     parts = []
     images = []
     omitted = 0
+    has_text = False
     budget = MAX_IMAGE_PAYLOAD_CHARS
     for block in getattr(result, "content", None) or []:
         text = _block_text(block)
         if text:
             parts.append(text)
+            has_text = True
+            continue
+        link = _block_link(block)
+        if link:
+            parts.append(link)
             continue
         image = _block_image(block)
         if image is not None:
@@ -1055,9 +1067,10 @@ def _flatten_result(result: Any) -> str:
             budget -= len(data)
             images.append({"data": data, "mimeType": mime})
     body = "\n".join(parts)
-    if not body:
+    if not has_text:
         structured = getattr(result, "structured_content", None)
-        body = str(structured) if structured is not None else ""
+        if structured is not None:
+            body = f"{structured}\n{body}" if body else str(structured)
     if images or omitted:
         notes = []
         if images:
