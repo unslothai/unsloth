@@ -177,9 +177,9 @@ def _run_create_release(
 ):
     _stage_assets(tmp_path)
     if invalid_signature:
-        (
-            tmp_path / "desktop-release-assets" / "Unsloth-Desktop-Linux.AppImage.sig"
-        ).write_text("Tauri signer diagnostic, not a signature\n", encoding = "utf-8")
+        (tmp_path / "desktop-release-assets" / "Unsloth-Desktop-Linux.AppImage.sig").write_text(
+            "Tauri signer diagnostic, not a signature\n", encoding = "utf-8"
+        )
     env = {
         "DESKTOP_RELEASE_NOTES": workflow["env"]["DESKTOP_RELEASE_NOTES"],
         "APP_VERSION": "0.1.50",

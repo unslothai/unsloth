@@ -102,7 +102,14 @@ def _manifest(tag):
     }
 
 
-def _run(tmp_path, *, release_tag, releases, manifest, latest_tag = "v0.1.52-beta"):
+def _run(
+    tmp_path,
+    *,
+    release_tag,
+    releases,
+    manifest,
+    latest_tag = "v0.1.52-beta",
+):
     tmp_path.mkdir(parents = True, exist_ok = True)
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()

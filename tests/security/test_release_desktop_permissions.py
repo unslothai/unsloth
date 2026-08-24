@@ -128,9 +128,7 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
     assert re.search(r"^\s*break\b", loop_body, re.MULTILINE), wait_run
 
     names = [step.get("name") for step in publish["steps"]]
-    assert names.index("Wait for the build matrix") < names.index(
-        "Publish release assets"
-    )
+    assert names.index("Wait for the build matrix") < names.index("Publish release assets")
     # And it has to clear before the assets are pulled, or the download races the
     # legs and publish-release dies on artifacts that do not exist yet.
     download = next(
@@ -320,7 +318,8 @@ def test_the_updater_workflow_is_manual_dispatch_only():
 
     # Dropping the release trigger is only safe while the pointer repair stays reachable.
     restore = next(
-        step for step in job["steps"]
+        step
+        for step in job["steps"]
         if step.get("name") == "Restore latest complete Desktop release"
     )
     assert "inputs.repair_pointer" in restore["if"]
