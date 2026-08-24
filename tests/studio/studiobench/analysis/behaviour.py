@@ -360,21 +360,20 @@ def _extent_of(row: dict) -> tuple[Optional[float], bool]:
     """(the arm's scroll extent as `scroll_extent` measures it, was it reconstructed).
 
     `expect.bottom` is `scrollHeight - clientHeight`, read by `SCROLL_JS` before the gesture moves
-    anything. `scroll_extent` compares `census.viewport_scroll_height`, which is `scrollHeight`.
-    They are the same physical quantity offset by a constant, and that constant is not harmless:
-    `_drift` is proportional, so subtracting a shared `clientHeight` AMPLIFIES the drift by
-    `H / (H - C)`. On the 10,000 px extent and 800 px viewport measured here that is 1.087, so a
-    tolerance applied to `bottom` is a tolerance 8.7% tighter than the same number applied to the
-    extent, and the two checks print two different percentages for one scrollbar.
+    anything; `scroll_extent` compares `census.viewport_scroll_height`, which is `scrollHeight`.
+    Same physical quantity offset by a constant, and the constant is not harmless: `_drift` is
+    proportional, so subtracting a shared `clientHeight` AMPLIFIES the drift by `H / (H - C)` --
+    1.087 on the 10,000 px extent and 800 px viewport measured here, so a tolerance applied to
+    `bottom` is 8.7% tighter than the same number applied to the extent, and the two checks print
+    two different percentages for one scrollbar.
 
-    So the extent is put back together when both arms publish `viewport_client_height`, which
-    `scene/dom.js` has recorded in the census beside the scroll height all along, and the allowance
-    then means exactly what `EXTENT_TOLERANCE` says it means. `clientHeight` is the viewport's own
-    height and does not change while the viewport scrolls, so reading it from the census and
-    `bottom` from the gesture is not mixing two instants of a moving quantity.
+    So the extent is reconstructed from `viewport_client_height`, which `scene/dom.js` has recorded
+    in the census all along. `clientHeight` does not change while the viewport scrolls, so reading
+    it from the census and `bottom` from the gesture is not mixing two instants of a moving
+    quantity.
 
-    Falls back to `bottom` when either arm's census does not carry it -- a payload recorded before
-    that field, or a census that failed -- and the caller says which of the two it compared.
+    Falls back to `bottom` when the census does not carry it -- a payload recorded before that
+    field, or a census that failed -- and says which of the two it returned.
     """
     bottom = _expect(row, "bottom")
     if not isinstance(bottom, (int, float)):
@@ -395,27 +394,23 @@ def scroll_travelled(base_row: dict, treat_row: dict) -> list[dict]:
         bottom = _expect(row, "bottom")
         # BOUNDED ABOVE AS WELL AS BELOW, and the ceiling is DERIVED rather than chosen.
         #
-        # The lower bound is the one this invariant was written for: Studio's intent-aware
-        # autoscroll snapping a programmatic move back to the bottom leaves the gesture having
-        # covered nothing. But the predicate was `fraction >= 0.9` and nothing above it, so a
-        # treatment arm whose viewport moved TWICE as far as the gesture asked passed exactly as
-        # 1.0 did, on both arms, and the pair returned MATCH. That is the same anchor instability
-        # in the other direction: `travelled` is a sum of `|scrollTop_after - target_before|`, so
-        # every pixel above `commanded` is the viewport being moved by something other than the
-        # gesture, which is precisely what this action exists to detect.
+        # The lower bound is what this invariant was written for: Studio's intent-aware autoscroll
+        # snapping a programmatic move back to the bottom leaves the gesture having covered
+        # nothing. But the predicate was `fraction >= 0.9` and nothing above it, so an arm whose
+        # viewport moved TWICE as far as commanded passed exactly as 1.0 did and the pair returned
+        # MATCH. `travelled` sums `|scrollTop_after - target_before|`, so every pixel above
+        # `commanded` is the viewport being moved by something other than the gesture -- the same
+        # anchor instability this action exists to detect, in the other direction.
         #
         # WHY THIS CEILING AND NOT A NUMBER PICKED TO LOOK SYMMETRIC WITH 0.9. Overshoot has one
-        # legitimate source, a windowed list correcting estimated row heights as real rows are
-        # measured, and a correction moves the offset by the error in the estimate. The total of
-        # those errors is the error in the arm's extent, and this file already declares how far the
-        # extent may be wrong: `EXTENT_TOLERANCE`. So the gesture may travel further than it
-        # commanded by at most that fraction of the arm's own scrollable extent, both terms read
-        # off the row rather than assumed. No second constant, and it scales with the rung instead
-        # of being a 100K-era figure like the ones this suite keeps finding.
+        # legitimate source: a windowed list correcting estimated row heights, which moves the
+        # offset by the error in the estimate. Those errors total the error in the arm's extent,
+        # and this file already declares how far the extent may be wrong (`EXTENT_TOLERANCE`). So
+        # the gesture may exceed its command by that fraction of the arm's own extent, both terms
+        # read off the row. No second constant, and it scales with the rung.
         #
-        # It degrades to no ceiling rather than to a guess: an arm whose row carries no `bottom`
-        # gets the lower bound alone, said in the detail, because a ceiling of zero would fail
-        # every correct arm and a ceiling of infinity is what is being fixed.
+        # It degrades to no ceiling rather than to a guess: an arm carrying no extent gets the
+        # lower bound alone, said in the detail, because a ceiling of zero fails every correct arm.
         ceiling: Optional[float] = None
         if (
             isinstance(commanded, (int, float))
@@ -442,15 +437,13 @@ def scroll_travelled(base_row: dict, treat_row: dict) -> list[dict]:
         out.append(_check(f"scroll_travelled:{label}", ok, detail))
     # THE EXTENT, NOT `bottom`, AND AT THE EXTENT'S OWN ALLOWANCE. This compared `bottom` through
     # `_same_number` and so through `EXACT_TOLERANCE`, 2%, while `scroll_extent` grants the same
-    # physical quantity 10% a few checks earlier and says in its own comment why a correct
-    # virtualizer needs it. An arm inside the declared allowance was reported behaviourally BROKEN
-    # here, and a false red is not free: a broken behavioural invariant removes the cell from
-    # `readings_by_arm`, takes its healthy partner with it through the arm intersection, and since
-    # `unmeasured_planned_cells` learned to consult these gates it can VOID the plan.
+    # physical quantity 10% a few checks earlier and says why a correct virtualizer needs it. An
+    # arm inside the declared allowance was reported behaviourally BROKEN, and a false red is not
+    # free: it removes the cell from `readings_by_arm`, takes its healthy partner with it through
+    # the arm intersection, and `unmeasured_planned_cells` can then VOID the plan.
     #
-    # `_same_number` itself is deliberately NOT widened. Its other three keys are `selected_chars`,
-    # `visible_chars` and `clipboard_chars`, none of which is an extent and all of which are
-    # correctly strict at 2%.
+    # `_same_number` is deliberately NOT widened. Its other three keys -- `selected_chars`,
+    # `visible_chars`, `clipboard_chars` -- are not extents and are correctly strict at 2%.
     b_ext, b_full = _extent_of(base_row)
     t_ext, t_full = _extent_of(treat_row)
     drift = _drift(b_ext, t_ext)
