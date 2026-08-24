@@ -740,10 +740,13 @@ export function AppSidebar() {
   // already render in the platform's own notation.
   const searchShortcutLabel = useShortcutLabel("searchChats");
   const settingsShortcutLabel = useShortcutLabel("openSettings");
-  const { pathname, search } = useRouterState({
+  const { pathname, search, href } = useRouterState({
     select: (s) => ({
       pathname: s.location.pathname,
       search: s.location.search as Record<string, string | undefined>,
+      // Pathname and search as one string, so a dep can follow it without a
+      // fresh object every render.
+      href: s.location.href,
     }),
   });
   const {
@@ -765,6 +768,15 @@ export function AppSidebar() {
   const closeMobileIfOpen = () => {
     if (isMobile) setOpenMobile(false);
   };
+  // Every row below closes the drawer by hand, because SidebarProvider is
+  // mounted at the route root and outlives the navigation. The workspace
+  // chords are registered up there too, above this provider, so they have no
+  // way to call the same thing: the drawer would stay over the workspace they
+  // just switched to. Closing on the route covers both, and anything else that
+  // navigates from outside this file.
+  useEffect(() => {
+    if (isMobile) setOpenMobile(false);
+  }, [href, isMobile, setOpenMobile]);
 
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);

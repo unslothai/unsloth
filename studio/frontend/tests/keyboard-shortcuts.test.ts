@@ -918,6 +918,35 @@ test("the chords that need one target do not fire where there are two", async ()
   );
 });
 
+// The mobile drawer is a Sheet owned by SidebarProvider, which __root mounts
+// outside the Outlet, so it survives a navigation. Every sidebar row closes it
+// by hand afterwards; the chords are registered above that provider and cannot.
+test("the workspace chords do not leave the mobile drawer over the workspace", async () => {
+  const read = async (path: string) =>
+    readFile(new URL(path, import.meta.url), "utf8");
+  const root = await read("../src/app/routes/__root.tsx");
+  const sidebar = await read("../src/components/app-sidebar.tsx");
+
+  // The provider outlives the route, which is what makes this necessary.
+  assert.match(root, /<SidebarProvider/);
+  assert.match(root, /useShortcut\("switchToProjects", goTo\("\/projects"\)/);
+
+  // Closed on the location instead, which the chords change and the rows do
+  // too. href, not pathname: a new chat from /chat only moves the search.
+  assert.match(
+    sidebar,
+    /useEffect\(\(\) => \{\n\s*if \(isMobile\) setOpenMobile\(false\);\n\s*\}, \[href, isMobile, setOpenMobile\]\);/,
+  );
+  assert.match(sidebar, /href: s\.location\.href,/);
+
+  // The rows keep their own call: opening a chat moves neither, and the drawer
+  // still has to go.
+  assert.match(
+    sidebar,
+    /const closeMobileIfOpen = \(\) => \{\n\s*if \(isMobile\) setOpenMobile\(false\);\n\s*\};/,
+  );
+});
+
 // An action bar is the wrong place to register a chord from: ActionBarRoot
 // returns null when hidden, and the user bar is autohide="always", so its
 // children are gone unless that message is hovered. The assistant bar never
