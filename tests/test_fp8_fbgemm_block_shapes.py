@@ -163,8 +163,7 @@ def test_non_square_block_uses_dequant_fallback():
 @pytest.mark.parametrize("kind", ["per_tensor", "per_tensor_2d", "bf16_scale", "strided_3d"])
 def test_inputs_the_kernel_rejects_use_dequant_fallback(kind):
     # All four used to reach f8f8bf16_blockwise and raise: no block grid to unpack
-    # (0-dim or (1, 1)), a non-float32 scale, and a strided view that cannot be
-    # .view()ed. fp8_linear routes every numel() == 1 scale here.
+    # (0-dim or (1, 1)), a non-float32 scale, and a strided view no .view() flattens.
     from unsloth.kernels.fp8 import FP8_fbgemm_block_linear
 
     torch.manual_seed(0)
@@ -198,9 +197,8 @@ def test_inputs_the_kernel_rejects_use_dequant_fallback(kind):
 @pytest.mark.parametrize("block", [[128, 64], [64, 128]])  # square stays on the kernel
 @pytest.mark.parametrize("N,K", [(256, 512), (256, 256)])
 def test_transposed_weight_swaps_block_axes(block, N, K):
-    # fast_lora's backward passes downW.t(), so the transposed weight's block axes
-    # are swapped as well. At N == K both grids validate and only the stride tells
-    # them apart, which is where a rectangular block silently mis-scaled dX.
+    # fast_lora's backward passes downW.t(), whose block axes are swapped too. At
+    # N == K both grids validate, which is where a rectangular block mis-scaled dX.
     from unsloth.kernels.fp8 import FP8_fbgemm_block_linear
 
     torch.manual_seed(0)

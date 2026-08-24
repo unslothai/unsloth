@@ -553,15 +553,14 @@ class FP8_fbgemm_block_linear(torch.autograd.Function):
         m, n = weight.shape
         p, q = weight_scale.shape if weight_scale.ndim == 2 else (0, 0)
         fits = triton.cdiv(m, bs_n) == p and triton.cdiv(n, bs_k) == q
-        # numel() == 1 like fp8_linear and the dequant helper, so a (1, 1) per-tensor
-        # scale reaches the fallback too, which scales by it directly. A (1, 1) that
-        # really is this weight's grid still fits, and stays on the block path.
+        # numel() == 1 like fp8_linear and the dequant helper, but a (1, 1) that really
+        # is this weight's grid still fits, so only a true per-tensor scale falls back.
         per_tensor = weight_scale.numel() == 1 and not fits
         if not per_tensor:
             fits_transposed = triton.cdiv(n, bs_n) == p and triton.cdiv(m, bs_k) == q
-            # Backward passes W.t() (fast_lora's downW.t()), so its block axes are
-            # swapped too. Transpose the scale, not W, which X still has to matmul.
-            # Both grids fit at once when m == n, and only the stride separates them.
+            # Backward passes W.t() (fast_lora's downW.t()), so its block axes swap
+            # too; at m == n only the stride tells the two grids apart. Transpose the
+            # scale, not W, which X still has to matmul.
             if fits_transposed and (not fits or (bs_n != bs_k and weight.stride(0) == 1)):
                 weight_scale = weight_scale.T
                 bs_n, bs_k = bs_k, bs_n
