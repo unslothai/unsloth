@@ -6,6 +6,7 @@ import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { useSidebarWidth } from "@/hooks/use-sidebar-width";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
+import { Z_LAYER } from "@/lib/z-layers";
 import { CopyIcon, LayoutAlignLeftIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { Window as TauriWindow } from "@tauri-apps/api/window";
@@ -413,6 +414,11 @@ export function WindowTitlebar({
         />
         <div
           className="pointer-events-auto absolute right-1 top-0 flex h-full items-center gap-0.5 px-1"
+          // No z-index here: the header above is positioned and numbered, so it is a
+          // stacking context and anything written here is compared inside it, never against
+          // the grips. The overlap that invites one costs Close 92px and the other two 60px
+          // each, and measures the same before and after this PR; see
+          // tests/studio/playwright_overlay_rail.py.
           role="toolbar"
           aria-label="Window controls"
         >
@@ -458,42 +464,59 @@ export function WindowTitlebar({
       </header>
       <div
         aria-hidden="true"
-        className="pointer-events-auto fixed inset-x-2 top-0 z-[70] h-1 cursor-n-resize"
+        className="pointer-events-auto fixed inset-x-2 top-0 h-1 cursor-n-resize"
+        style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
         onPointerDown={handleResizePointerDown("North")}
       />
+      {/* All eight carry a named layer rather than z-[70], because the overlay stack out-
+          ranks that band and hit-tests its whole box while it scrolls. Anchored to the
+          bottom-right it still reaches five of them: `-mx-3` puts its border box 4px from
+          the right edge, the bottom gutter drops it to the floor, the top gutter lifts it
+          to 8px from the ceiling, and a card is `w-[calc(100vw-2rem)]`, so on a narrow
+          window it spans nearly the full width and the left-hand corners come into range
+          too. Measured, not reasoned: south-west 80 of 144px, north-east and north-west 32
+          of 144px each. The controls move up with them so the north-east corner does not
+          cost Close any of its own hit area. */}
       <div
         aria-hidden="true"
-        className="pointer-events-auto fixed inset-x-2 bottom-0 z-[70] h-1 cursor-s-resize"
+        className="pointer-events-auto fixed inset-x-2 bottom-0 h-1 cursor-s-resize"
+        style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
         onPointerDown={handleResizePointerDown("South")}
       />
       <div
         aria-hidden="true"
-        className="pointer-events-auto fixed inset-y-2 left-0 z-[70] w-1 cursor-w-resize"
+        className="pointer-events-auto fixed inset-y-2 left-0 w-1 cursor-w-resize"
+        style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
         onPointerDown={handleResizePointerDown("West")}
       />
       <div
         aria-hidden="true"
-        className="pointer-events-auto fixed inset-y-2 right-0 z-[70] w-1 cursor-e-resize"
+        className="pointer-events-auto fixed inset-y-2 right-0 w-1 cursor-e-resize"
+        style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
         onPointerDown={handleResizePointerDown("East")}
       />
       <div
         aria-hidden="true"
-        className="pointer-events-auto fixed left-0 top-0 z-[70] size-3 cursor-nw-resize"
+        className="pointer-events-auto fixed left-0 top-0 size-3 cursor-nw-resize"
+        style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
         onPointerDown={handleResizePointerDown("NorthWest")}
       />
       <div
         aria-hidden="true"
-        className="pointer-events-auto fixed right-0 top-0 z-[70] size-3 cursor-ne-resize"
+        className="pointer-events-auto fixed right-0 top-0 size-3 cursor-ne-resize"
+        style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
         onPointerDown={handleResizePointerDown("NorthEast")}
       />
       <div
         aria-hidden="true"
-        className="pointer-events-auto fixed bottom-0 left-0 z-[70] size-3 cursor-sw-resize"
+        className="pointer-events-auto fixed bottom-0 left-0 size-3 cursor-sw-resize"
+        style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
         onPointerDown={handleResizePointerDown("SouthWest")}
       />
       <div
         aria-hidden="true"
-        className="pointer-events-auto fixed bottom-0 right-0 z-[70] size-3 cursor-se-resize"
+        className="pointer-events-auto fixed bottom-0 right-0 size-3 cursor-se-resize"
+        style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
         onPointerDown={handleResizePointerDown("SouthEast")}
       />
     </>

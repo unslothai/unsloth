@@ -12,6 +12,7 @@
  * Ordered bottom to top:
  *
  *   OVERLAY_STACK        passive corner status, nothing to click through to
+ *   WINDOW_RESIZE_EDGE   the window's own bottom resize grips, under that stack
  *   FLOATING_PANEL       windows the user drags, resizes and closes
  *   FLOATING_PANEL_TOP   the one of those the user touched last
  *   STARTUP_SCREEN       blocks the app while the backend comes up or quits
@@ -32,6 +33,20 @@ export const Z_LAYER = {
    * loses.
    */
   OVERLAY_STACK: 9000,
+  /**
+   * The custom titlebar's window-resize targets, which the notification stack
+   * reaches: `-mx-3` puts its border box 4px from the window edge and the
+   * shadow gutter drops it the last 16px to the floor, and a scrolling stack is
+   * pointer-active over the whole box. All eight, not just the bottom two: a
+   * card is `w-[calc(100vw-2rem)]` up to its max, so a narrow window brings the
+   * north and west targets into range as well.
+   *
+   * This does not move them relative to the window controls. Those sit inside a
+   * positioned, numbered `header`, so the grips are compared against that
+   * header rather than the buttons inside it, and they were already above it at
+   * equal z-index by document order.
+   */
+  WINDOW_RESIZE_EDGE: 9050,
   /**
    * Floating panels: the Live resource monitor and the API monitor overlay.
    * Above the stack because a window the user is dragging, resizing and

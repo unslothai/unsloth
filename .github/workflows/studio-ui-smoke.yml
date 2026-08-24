@@ -601,6 +601,22 @@ jobs:
               python tests/studio/playwright_update_banner_layout.py
           done
 
+      # The rail's block gutter, in the two engines this runner has that the frontend CI
+      # does not. Serves its own vite rather than the Studio above it, so it needs no
+      # BASE_URL and does not care what state that Studio is in; it is here only because
+      # WebKit's install is already paid for on this shard.
+      - name: Overlay rail shadow gutter, other engines (Playwright)
+        if: matrix.shard == 'banner'
+        env:
+          SMOKE_PORT: '5197'
+          PW_ART_DIR: logs/playwright-overlay-rail
+        run: |
+          mkdir -p logs/playwright-overlay-rail
+          for engine in firefox webkit; do
+            STUDIO_PLAYWRIGHT_BROWSER="$engine" \
+              python tests/studio/playwright_overlay_rail.py
+          done
+
       - name: Image model full-footprint selector regression (Playwright)
         if: matrix.shard == 'extra'
         env:
@@ -762,6 +778,7 @@ jobs:
             logs/playwright_thread_settings
             logs/playwright_fontscale
             logs/playwright_update_banner
+            logs/playwright-overlay-rail
             logs/playwright_image_footprint
             logs/playwright_image_cancel_retry
             logs/playwright_image_cancel_retry_cold

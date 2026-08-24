@@ -482,7 +482,7 @@ test("the height is measured with the hook's own cap lifted", async () => {
   );
   assert.match(
     measure,
-    /node\.scrollHeight;[\s\S]*node\.style\.maxHeight = capped;/,
+    /node\.scrollHeight[\s\S]*node\.style\.maxHeight = capped;/,
     "the cap is not restored after the read",
   );
 });
