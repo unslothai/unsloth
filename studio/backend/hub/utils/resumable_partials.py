@@ -25,6 +25,15 @@ measures by taking the lock twice. Only ``EWOULDBLOCK``/``EAGAIN`` counts as exc
 filesystem with no locking answers ``ENOLCK`` or ``EOPNOTSUPP``, and reading that as "refused"
 would enable the shared writer on precisely the mounts that cannot support it.
 
+Neither can be shown on Windows, which has no ``fcntl`` and no way to establish who owns a file
+without pywin32, so the shared name stays off there and Windows keeps the stock writer.
+
+A predictable name is also something another account can get to first, so the partial itself is
+checked before a byte is appended: ``O_NOFOLLOW`` at open, and then owner, link count and file type
+on the descriptor rather than the path, since only the descriptor is the thing about to be written.
+See :func:`_objection_to`. Publishing re-checks that the name still holds what was written, because
+``_chmod_and_move`` resolves it again.
+
 The other corruption route, appending to a sparse XET or parallel-Range partial, belongs to the
 transport markers in :mod:`hub.utils.download_registry`. They are bypassed on >= 1.18 only because
 no resumer exists, so restoring one brings them back into force.
@@ -384,8 +393,10 @@ def _open_stable_partial(path: Path) -> Optional[Any]:
     everything else is settled on the open descriptor by :func:`_objection_to`. The one look at the
     path is for Windows, which has no ``O_NOFOLLOW`` and so cannot refuse a link at open time.
 
-    A partial that fails any of it is removed and a clean one started. Where even that is refused,
-    the caller falls back to the stock writer, which invents its own name and cannot be steered.
+    A partial that fails any of it is removed and a clean one started. One that cannot be opened
+    at all is left untouched instead: ``EACCES`` from another account's ``0600`` file is not a
+    position from which to judge or delete it. Either way the caller falls back to the stock
+    writer, which invents its own name and cannot be steered.
     """
     nofollow = getattr(os, "O_NOFOLLOW", 0)
     flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | nofollow | getattr(os, "O_BINARY", 0)
