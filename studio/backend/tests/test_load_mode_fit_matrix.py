@@ -1204,12 +1204,12 @@ def test_split_mode_starvation_is_value_aware(raw, n_credited, expected):
     [
         ("1,0", 2, True),
         ("0,1", 2, True),
-        ("1", 2, True),          # zero-filled tail
-        ("1/0", 2, True),        # upstream splits on "/" too
+        ("1", 2, True),  # zero-filled tail
+        ("1/0", 2, True),  # upstream splits on "/" too
         ("1,1", 2, False),
         ("3,1", 2, False),
-        ("1,1,1", 2, False),     # only the credited prefix matters
-        ("1,0", 1, False),       # single GPU: nothing to starve
+        ("1,1,1", 2, False),  # only the credited prefix matters
+        ("1,0", 1, False),  # single GPU: nothing to starve
     ],
 )
 def test_tensor_split_starvation_matches_upstream_parsing(raw, n_credited, expected):
@@ -1253,8 +1253,8 @@ def test_a_replaced_vulkan_pin_voids_the_credit(extras, monkeypatch):
     "extras",
     [
         ["--device", "Vulkan0,Vulkan1"],
-        ["--device", "vulkan0,vulkan1"],   # ggml name-matching is not case sensitive here
-        ["--device", "Vulkan1,Vulkan0"],   # order is not a placement change
+        ["--device", "vulkan0,vulkan1"],  # ggml name-matching is not case sensitive here
+        ["--device", "Vulkan1,Vulkan0"],  # order is not a placement change
     ],
 )
 def test_a_restated_vulkan_pin_keeps_the_fit(extras, monkeypatch):
