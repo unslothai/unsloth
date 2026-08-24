@@ -63,6 +63,7 @@ import {
   normalizeStoredRagAutoInject,
 } from "../utils/mirrored-chat-settings";
 import { retryablePatchAfterFailure } from "../utils/settings-retry";
+import { migrateLegacyQwenDefaults } from "../utils/qwen-defaults-migration";
 import { preserveThinkingDefaultFromLoad } from "../lib/resolve-preserve-thinking-default";
 import {
   THREAD_SCOPED_PARAM_KEYS,
@@ -3872,7 +3873,13 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     settingsHydrationPromise = (async () => {
       const hydrationVersions = getSettingsHydrationVersions();
       try {
-        const { settings, fromServer } = await loadChatSettingsWithLegacyImport();
+        const loaded = await loadChatSettingsWithLegacyImport();
+        const migration = migrateLegacyQwenDefaults(
+          loaded.settings,
+          get().params.checkpoint,
+        );
+        const { settings } = migration;
+        const { fromServer } = loaded;
         let applied = false;
         set((state) => {
           if (state.settingsHydrated) {
@@ -3891,6 +3898,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           return nextState;
         });
         if (applied) {
+          if (migration.patch) saveSettingsPatch(migration.patch);
           cacheHydratedSettings(settings, hydrationVersions);
           mirroredSettingsHydrated = true;
           // Only an authoritative read says a mirrored field is unset on the
