@@ -20,6 +20,7 @@ import { allowedHiddenModelIdMatches } from "../components/model-selector/audio-
 const PICKER_LOCAL_SOURCES: ReadonlySet<LocalSource> = new Set([
   "lmstudio",
   "models_dir",
+  "ollama",
   "custom",
 ]);
 

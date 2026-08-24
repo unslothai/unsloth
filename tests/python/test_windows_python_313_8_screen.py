@@ -24,10 +24,11 @@ import os
 import re
 import shutil
 import stat
-import subprocess
 from pathlib import Path
 
 import pytest
+
+from unsloth_pwsh_runner import run_pwsh
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -92,7 +93,9 @@ $result = Remove-SkippedPython ({candidate})
 if ($null -eq $result) {{ Write-Output "RESULT: rejected" }}
 else {{ Write-Output "RESULT: kept" }}
 """
-    completed = subprocess.run(
+    # The whole verdict is the single RESULT line this script prints, so a pwsh that
+    # aborts at startup would read as a screen that reached the opposite conclusion.
+    completed = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,
         text = True,
@@ -135,7 +138,9 @@ $result = Remove-SkippedPython (@{{ Version = "3.13"; Path = "{missing}" }})
 if ($null -eq $result) {{ Write-Output "RESULT: rejected" }}
 else {{ Write-Output "RESULT: kept" }}
 """
-    completed = subprocess.run(
+    # This case asserts the screen KEEPS an interpreter it could not probe, so an
+    # interpreter that dies would masquerade as the screen wrongly rejecting it.
+    completed = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,
         text = True,
@@ -261,7 +266,9 @@ $found = Find-CompatiblePython
 if ($null -eq $found) {{ Write-Output "RESULT: none" }}
 else {{ Write-Output "RESULT: $($found.Version)" }}
 """
-    completed = subprocess.run(
+    # The caller scrapes the resolver's chosen minor out of stdout; a crashed pwsh
+    # leaves nothing to scrape and would fail as if Find-CompatiblePython went silent.
+    completed = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,
         text = True,
@@ -324,7 +331,9 @@ $found = Find-CompatiblePython
 if ($null -eq $found) {{ Write-Output "RESULT: none" }}
 else {{ Write-Output "RESULT: $($found.Version)" }}
 """
-    completed = subprocess.run(
+    # -NoTorch must leave 3.13.8 in place, and dying before the RESULT line is printed
+    # is indistinguishable here from the screen having removed it.
+    completed = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,
         text = True,

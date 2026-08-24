@@ -20,10 +20,12 @@ from hub.schemas.inventory import (
 from hub.utils.gguf import (
     gguf_variant_key,
     is_gguf_filename as _is_gguf_filename,
+    is_imatrix_filename as _is_imatrix_filename,
     is_mmproj_filename as _is_mmproj_filename,
     is_mtp_drafter_path as _is_mtp_drafter_path,
 )
 from hub.utils.paths import is_valid_repo_id as _is_valid_repo_id
+from utils.paths.path_utils import drop_appledouble_metadata, is_appledouble_metadata
 
 ModelType = Literal["text", "vision", "audio", "embeddings"]
 LocalModelSource = Literal["models_dir", "hf_cache", "lmstudio", "ollama", "custom"]
@@ -65,14 +67,20 @@ _HF_CACHE_MODEL_FILE_PROBE_LIMIT = 2000
 
 
 def _is_model_directory(d: Path) -> bool:
-    """True when *d* has a config plus real weights; excludes mmproj GGUFs and non-weight ``.bin`` files (``tokenizer.bin``) to avoid false positives."""
+    """True when *d* has a config plus real weights; excludes mmproj GGUFs, calibration imatrices and non-weight ``.bin`` files (``tokenizer.bin``) to avoid false positives."""
 
     def _is_weight_file(f: Path) -> bool:
+        if is_appledouble_metadata(f):
+            return False
         suffix = f.suffix.lower()
         if suffix == ".safetensors":
             return True
         if suffix == ".gguf":
-            return "mmproj" not in f.name.lower() and not _is_mtp_drafter_path(f.name)
+            return (
+                "mmproj" not in f.name.lower()
+                and not _is_mtp_drafter_path(f.name)
+                and not _is_imatrix_filename(f.name)
+            )
         if suffix == ".bin":
             name = f.name.lower()
             return (
@@ -547,7 +555,10 @@ def _classify_non_gguf_model_format(
 
 def _is_main_gguf_filename(name: str) -> bool:
     return (
-        _is_gguf_filename(name) and not _is_mmproj_filename(name) and not _is_mtp_drafter_path(name)
+        _is_gguf_filename(name)
+        and not _is_mmproj_filename(name)
+        and not _is_mtp_drafter_path(name)
+        and not _is_imatrix_filename(name)
     )
 
 
@@ -564,6 +575,8 @@ def _iter_gguf_paths(root: Path):
                 if path.is_dir() and not path.is_symlink():
                     stack.append(path)
                 elif path.is_file() and _is_gguf_filename(path.name):
+                    if is_appledouble_metadata(path):
+                        continue
                     yield path
             except OSError:
                 continue
@@ -592,7 +605,7 @@ def _iter_hf_cache_model_files(path: Path) -> list[Path]:
         _is_main_gguf_filename(entry.name)
         or _is_transformers_safetensors_weight_file(entry)
         or _is_checkpoint_weight_file(entry)
-        for entry in files
+        for entry in drop_appledouble_metadata(files)
     ):
         return files
     try:
@@ -624,7 +637,7 @@ def _main_gguf_files(path: Path, *, include_symlinks: bool = False) -> list[Path
     return [
         entry
         for entry in _iter_immediate_files(path, include_symlinks = include_symlinks)
-        if _is_main_gguf_filename(entry.name)
+        if _is_main_gguf_filename(entry.name) and not is_appledouble_metadata(entry)
     ]
 
 
@@ -761,6 +774,7 @@ def _classify_local_path(
         if source == "hf_cache"
         else _iter_immediate_files(scan_path)
     )
+    files = [f for f in files if not is_appledouble_metadata(f)]
     if not files:
         return []
 

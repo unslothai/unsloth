@@ -539,7 +539,7 @@ jobs:
       # harden-runner v2.20.0; stay in audit until the macOS + Windows
       # codesign paths have been observed.
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
         with:
           egress-policy: audit
 
@@ -570,7 +570,7 @@ jobs:
         run: |
           # Install the GStreamer plugins needed for H.264 playback and capture.
           bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
-            'apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf xdg-utils gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav || { apt-get update && apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf xdg-utils gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav; }'
+            'apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf xdg-utils fonts-noto-color-emoji gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav || { apt-get update && apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf xdg-utils fonts-noto-color-emoji gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav; }'
 
       # ── Node.js ──
       - name: Setup Node.js
@@ -633,7 +633,11 @@ jobs:
 
           const workflow = readFileSync('.github/workflows/release-desktop.yml', 'utf8');
           const lines = workflow.split(/\r?\n/);
-          const linuxInstallLines = lines.filter((line) => line.includes('sudo apt-get install'));
+          // The needle is assembled rather than written as a literal: this file is
+          // what gets scanned, so a literal would match this very line and let a
+          // genuinely missing install slip through.
+          const aptInstallNeedle = ['apt-get', 'install'].join(' ');
+          const linuxInstallLines = lines.filter((line) => line.includes(aptInstallNeedle));
           const ayatanaPackage = ['libayatana', 'appindicator3-dev'].join('-');
           if (linuxInstallLines.some((line) => line.includes(ayatanaPackage))) {
             throw new Error('Desktop Linux release must not install the Ayatana appindicator dev package');
@@ -768,7 +772,7 @@ jobs:
           git diff -- Cargo.toml Cargo.lock
 
       - name: Rust cache
-        uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           workspaces: 'studio/src-tauri -> target'
 
@@ -1559,7 +1563,7 @@ jobs:
 
     steps:
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
         with:
           egress-policy: audit
 
@@ -2047,13 +2051,13 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
         with:
           egress-policy: audit
 
       # Sparse: a full checkout to fetch one file would be wasteful.
       - name: Check out the scan script
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
           sparse-checkout: scripts/virustotal_scan.py

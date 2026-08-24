@@ -195,6 +195,7 @@ export const ptBR = {
       chat: "Chat",
       connections: "Conexões",
       apiKeys: "API",
+      remoteLan: "Remoto e LAN",
       about: "Sobre",
       voice: "Voz",
       data: "Dados",
@@ -281,6 +282,17 @@ export const ptBR = {
         engineModel: "Transcrição local",
         engineModelDescription:
           "Executa um modelo de conversão de fala em texto (STT) localmente e funciona offline. Baixe e carregue o modelo; ele é descarregado após um período sem uso.",
+        engineCustom: "Endpoint personalizado",
+        engineCustomDescription:
+          "Envia o áudio gravado a um servidor STT compatível com OpenAI das suas conexões.",
+        connectionLabel: "Conexão",
+        connectionDescription:
+          "Adicione um servidor compatível com OpenAI e uma chave de API opcional em Conexões.",
+        connectionPlaceholder: "Selecione uma conexão",
+        connectionEmpty: "Nenhuma conexão disponível",
+        customModelLabel: "Modelo",
+        customModelDescription:
+          "Nome do modelo enviado para /v1/audio/transcriptions.",
         sttModelLabel: "Modelo de reconhecimento de fala",
         sttModelDescription:
           "Escolha ou busque um modelo STT para executar localmente.",
@@ -341,6 +353,7 @@ export const ptBR = {
         languageLabel: "Idioma do ditado",
         languageDescription: "Idioma a ser reconhecido",
         languageAuto: "Automático (idioma do navegador)",
+        languageAutoDetect: "Automático (detectar idioma)",
       },
       dictionary: {
         sectionTitle: "Dicionário de ditado",
@@ -513,7 +526,7 @@ export const ptBR = {
           "Salva o cache KV antes de um descarregamento por inatividade, para que chats retomados não releiam o histórico. Até 10 GB em disco.",
         apiOnly: "Descarregar apenas modelos carregados pela API",
         apiOnlyDescription:
-          "O descarregamento por inatividade mantém na memória o modelo que você carregou pelo Studio e libera apenas os que uma requisição da API carregou.",
+          "O descarregamento por inatividade mantém na memória o modelo que você carregou pelo Unsloth e libera apenas os que uma requisição da API carregou.",
       },
       previewSharing: {
         sectionTitle: "Compartilhamento de pré-visualização",
@@ -570,6 +583,7 @@ export const ptBR = {
         embeddingModel: "Modelo de embedding",
         embeddingModelDescription:
           "Modelo do Hugging Face ou caminho local usado para indexar e buscar seus documentos. O padrão é {defaultModel}.",
+        searchPlaceholder: "Buscar modelos de embedding",
         reindexWarning:
           "Afeta apenas documentos recém-indexados. Reenvie os documentos existentes após alterar o modelo.",
         emptyError: "Insira um id de modelo do Hugging Face ou um caminho local.",
@@ -846,6 +860,8 @@ export const ptBR = {
         title: "Dispositivos de GPU",
         ggufInference: "Inferência com GGUF",
         unavailable: "indisponível",
+        detecting: "Procurando GPUs...",
+        unreadable: "Não foi possível ler o hardware deste servidor.",
         noGpu: "Nenhuma GPU visível detectada. Os recursos somente CPU aparecem acima.",
         unknownDevice: "GPU desconhecida",
         deviceWithIndex: "GPU {index}",
@@ -1005,7 +1021,7 @@ export const ptBR = {
       quickstart: {
         title: "Montar um comando",
         description:
-          "Inicie um agente com o modelo carregado no Studio. Carregue um modelo primeiro e depois troque claude por qualquer agente compatível abaixo.",
+          "Inicie um agente com o modelo carregado no Unsloth. Carregue um modelo primeiro e depois troque claude por qualquer agente compatível abaixo.",
         noneDetected:
           "Nenhuma CLI de agente compatível foi encontrada no seu PATH.",
         installed: "Instalado",
@@ -1027,7 +1043,7 @@ export const ptBR = {
         description:
           "As flags do Unsloth são interpretadas primeiro; tudo o que ele não reconhecer é repassado direto ao agente.",
         model:
-          "Seleciona um modelo. Sem --model, o unsloth start usa o modelo carregado no Studio e retorna erro se não houver nenhum.",
+          "Seleciona um modelo. Sem --model, o unsloth start usa o modelo carregado no Unsloth e retorna erro se não houver nenhum.",
         contextLength:
           "Define o tamanho de contexto solicitado (alias: --max-seq-length).",
         ggufVariant: "Escolhe a variante de quantização GGUF.",
@@ -1043,12 +1059,16 @@ export const ptBR = {
           "Mantém o agente principal no modelo atual e registra o Unsloth como subagente local (Claude Code, Codex e OpenCode).",
         apiKey:
           "Informa sua chave de API do Unsloth (ou defina UNSLOTH_API_KEY).",
+        reasoning:
+          "Usar raciocínio no chat: on, off ou auto. Auto segue o chat template do modelo, o que normalmente significa on.",
+        reasoningEffort:
+          "Esforço de raciocínio passado ao chat template do modelo, por exemplo medium. Os níveis dependem do modelo, então use um que ele aceite. Sem valor, vale o do template.",
         yolo: "Pula os pedidos de aprovação. Use apenas em ambientes confiáveis.",
       },
       remote: {
-        title: "Conectar a um Studio remoto",
+        title: "Conectar a um Unsloth Studio remoto",
         description:
-          "Aponte o unsloth start para um Studio em execução em outro lugar, definindo estas variáveis antes de iniciar (ou passe --api-key diretamente):",
+          "Aponte o unsloth start para um Unsloth Studio em execução em outro lugar, definindo estas variáveis antes de iniciar (ou passe --api-key diretamente):",
       },
       passthrough: {
         title: "Repassar argumentos ao agente",
@@ -1087,7 +1107,7 @@ export const ptBR = {
         exportChat: "Exportar chat",
       },
       pastedTextThreshold: "Condensar colagens longas",
-      pastedTextThresholdDescription: "Texto colado maior que isso vira um anexo .txt em vez de encher a caixa de mensagem.",
+      pastedTextThresholdDescription: "Texto colado maior que isso vira um anexo .txt em vez de encher a caixa de mensagem. Pressione {shortcut} para colar na caixa de mensagem mesmo assim.",
       pastedTextThresholdOff: "Desativado",
       showResponseModel: "Mostrar o modelo da resposta",
       showResponseModelDescription:
@@ -1105,6 +1125,12 @@ export const ptBR = {
         collapseByDefault: "Recolher o raciocínio por padrão",
         collapseByDefaultDescription:
           "Mantém o raciocínio recolhido enquanto o modelo pensa, em vez de abri-lo automaticamente. Expanda um bloco para lê-lo.",
+      },
+      webSearch: {
+        title: "Busca na web",
+        images: "Mostrar imagens da busca na web",
+        imagesDescription:
+          "Permite que a busca na web retorne imagens e busca uma para cada item que uma resposta lista. As miniaturas são baixadas e redimensionadas pelo Studio, então o navegador nunca acessa os servidores de imagens.",
       },
       artifacts: {
         title: "Canvas",
@@ -1239,6 +1265,11 @@ export const ptBR = {
     connections: {
       title: "Conexões",
       description: "Gerencie provedores e conexões externas.",
+    },
+    remoteLan: {
+      title: "Remoto e LAN",
+      description:
+        "Acesse este Unsloth dos seus outros dispositivos, pela rede local ou por uma URL pública temporária.",
     },
     apiKeys: {
       title: "API",

@@ -1,13 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A dangling ``refs/<branch>`` must not hide an intact repo from the scan.
+"""A bad cache entry must not hide an otherwise usable repo.
 
-``scan_cache_dir`` raises CorruptedCacheException for a repo whose ref names a commit with no
-``snapshots/<commit>/`` directory and omits it from ``.repos``, so the model stays visible in the
-picker (a plain directory walk) but vanishes from every Hub inventory endpoint chat auto-load reads.
-The repair is read-only: refs are written with an unlocked in-place ``write_text``, so no external
-process can delete one race-free.
+Recovery handles dangling refs, broken snapshot links, and stray snapshot files without mutating
+the cache. Ref deletion cannot be race-free because Hub writes refs in place.
 """
 
 from __future__ import annotations
@@ -178,14 +175,44 @@ def test_a_download_that_has_only_written_its_ref_is_not_invented(tmp_path, monk
     assert _ref_names(repo_dir) == ["main"]
 
 
-def test_a_repo_corrupted_beyond_a_dangling_ref_stays_omitted(tmp_path, monkeypatch):
-    """A broken snapshot symlink is corruption hub rejects for its own reasons."""
-    repo_dir = _build_repo(tmp_path)
+def test_a_broken_symlink_costs_its_file_and_not_the_repo(tmp_path, monkeypatch):
+    """A broken link must not hide readable files beside it."""
+    repo_dir = _build_repo(tmp_path, ref = SNAPSHOT)
     broken = repo_dir / "snapshots" / SNAPSHOT / "weights.bin"
     try:
         os.symlink(repo_dir / "blobs" / "missing", broken)
     except (NotImplementedError, OSError):
         pytest.skip("symlinks unavailable (Windows without developer mode)")
+
+    repo = _only_repo(tmp_path, monkeypatch)
+
+    names = {file.file_name for revision in repo.revisions for file in revision.files}
+    assert names == {"model.safetensors"}, "the readable payload must survive"
+    assert _ref_names(repo_dir) == ["main"], "the repair stays read-only"
+
+
+def test_a_stray_file_under_snapshots_costs_itself_and_not_the_repo(tmp_path, monkeypatch):
+    """A stray snapshot file is not a revision."""
+    repo_dir = _build_repo(tmp_path, ref = SNAPSHOT)
+    (repo_dir / "snapshots" / "notes.txt").write_text("stray", encoding = "utf-8")
+
+    repo = _only_repo(tmp_path, monkeypatch)
+
+    assert {revision.commit_hash for revision in repo.revisions} == {SNAPSHOT}
+
+
+def test_a_repo_dropped_for_a_reason_this_cannot_see_is_not_invented(tmp_path):
+    """Do not invent a row when the on-disk state does not explain the omission."""
+    repo_dir = _build_repo(tmp_path, ref = SNAPSHOT)
+
+    assert inventory_scan._recover_repo_dropped_by_scan(repo_dir) is None
+
+
+def test_a_refs_file_where_the_refs_directory_belongs_stays_omitted(tmp_path, monkeypatch):
+    """Unreadable refs provide too little information to recover the repo."""
+    repo_dir = _build_repo(tmp_path, ref = None)
+    shutil.rmtree(repo_dir / "refs")
+    (repo_dir / "refs").write_text(SNAPSHOT, encoding = "utf-8")
 
     assert _scanned_repo_ids(tmp_path, monkeypatch) == []
 
@@ -211,7 +238,7 @@ def test_an_unreadable_repo_does_not_abort_the_recovery(tmp_path):
         pytest.skip("filesystem does not enforce directory permissions")
     try:
         scan = _empty_cache_info(HFCacheInfo)
-        merged = inventory_scan._with_repos_hidden_by_dangling_refs(scan, tmp_path)
+        merged = inventory_scan._with_repos_dropped_by_scan(scan, tmp_path)
         assert sorted(repo.repo_id for repo in merged.repos) == ["Org/Model"]
         assert _ref_names(hidden) == ["main"]
     finally:
@@ -603,6 +630,32 @@ def test_gguf_variants_still_list_when_no_snapshot_is_complete(
     assert load_dir == repo_dir / "snapshots" / NEWER
     assert _listed_gguf_variants(rows[0], tmp_path) == listed
     assert _local_gguf_variants_for_autoload(rows[0], tmp_path) == offered
+
+
+def test_a_broken_symlink_costs_its_quant_and_leaves_the_clean_one_loadable(tmp_path, monkeypatch):
+    """Recovery keeps a clean quant loadable without offering the broken one."""
+    repo_dir = tmp_path / "models--Org--Model"
+    snapshot = repo_dir / "snapshots" / SNAPSHOT
+    snapshot.mkdir(parents = True)
+    (repo_dir / "blobs").mkdir()
+    (repo_dir / "refs").mkdir()
+    (repo_dir / "refs" / "main").write_text(SNAPSHOT, encoding = "utf-8")
+    good = repo_dir / "blobs" / ("1" * 64)
+    good.write_bytes(b"\0" * 2048)
+    try:
+        os.symlink(good, snapshot / "Model-Q4_K_M.gguf")
+        os.symlink(repo_dir / "blobs" / ("2" * 64), snapshot / "Model-Q8_0.gguf")
+    except (NotImplementedError, OSError):
+        pytest.skip("symlinks unavailable (Windows without developer mode)")
+
+    rows = _autoload_gguf_rows(tmp_path, monkeypatch)
+
+    assert [row["repo_id"] for row in rows] == ["Org/Model"]
+    assert rows[0]["partial"] is False, "one dead quant must not cost the clean one can_chat"
+    assert rows[0]["capabilities"]["can_chat"] is True
+    # Keep both visible, but offer only the readable quant for loading.
+    assert _listed_gguf_variants(rows[0], tmp_path) == ["Q4_K_M", "Q8_0"]
+    assert _local_gguf_variants_for_autoload(rows[0], tmp_path) == ["Q4_K_M"]
 
 
 def test_a_whole_quant_in_a_mixed_newest_snapshot_beats_an_older_larger_one(tmp_path, monkeypatch):
@@ -1522,7 +1575,7 @@ _MTIME_READERS = {
     "hub/utils/gguf.py": frozenset(),
     "hub/services/models/cache_inventory.py": frozenset({"_blob_mtime"}),
     # Mirrors what huggingface_hub records per revision; it selects nothing.
-    "hub/utils/inventory_scan.py": frozenset({"_recover_repo_hidden_by_dangling_refs"}),
+    "hub/utils/inventory_scan.py": frozenset({"_recover_repo_dropped_by_scan"}),
     # The compatibility routes, listed so the two snapshot selectors cannot reintroduce their own
     # mtime reads. The names left rank directories or repo/blob mtimes, never snapshots.
     "routes/models.py": frozenset(

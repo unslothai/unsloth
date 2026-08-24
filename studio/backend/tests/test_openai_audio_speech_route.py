@@ -15,6 +15,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 import core.inference.audio_gallery as gallery_module
+from core.inference.api_monitor import api_monitor
 import routes.inference as routes_module
 from auth.authentication import get_current_subject
 from routes.inference import router
@@ -310,3 +311,98 @@ def test_non_latin_prompts_are_not_billed_at_the_latin_rate():
 
     # And CJK, which already worked, is unchanged.
     assert estimate("你好世界" * 50) >= 200
+
+
+def test_speech_opens_a_monitor_row(monkeypatch):
+    cli, calls, saved = _make_client(monkeypatch)
+    api_monitor.clear()
+    assert cli.post("/v1/audio/speech", json = {"input": "hello sloth"}).status_code == 200
+    rows = api_monitor.snapshot(include_details = False)
+    assert len(rows) == 1
+    assert rows[0]["endpoint"] == "/v1/audio/speech"
+    assert rows[0]["status"] == "completed"
+    assert rows[0]["prompt_preview"] == "hello sloth"
+    # Relabelled to the loaded TTS model, not the informational body.model.
+    assert rows[0]["model"] == "unsloth/orpheus-3b-0.1-ft"
+
+
+def test_tts_failure_records_an_error_row(monkeypatch):
+    async def _boom(text):
+        raise HTTPException(status_code = 400, detail = "No model loaded.")
+
+    cli, calls, saved = _make_client(monkeypatch, generate = _boom)
+    api_monitor.clear()
+    assert cli.post("/v1/audio/speech", json = {"input": "hi"}).status_code == 400
+    rows = api_monitor.snapshot(include_details = False)
+    assert len(rows) == 1
+    assert rows[0]["status"] == "error"
+    assert rows[0]["error"] == "No model loaded."
+
+
+def test_rejected_response_format_records_nothing(monkeypatch):
+    # Refused before any work, so it is not traffic the monitor should show.
+    cli, calls, saved = _make_client(monkeypatch)
+    api_monitor.clear()
+    resp = cli.post("/v1/audio/speech", json = {"input": "hi", "response_format": "mp3"})
+    assert resp.status_code == 400
+    assert api_monitor.snapshot(include_details = False) == []
+
+
+def test_client_abort_records_a_cancelled_row(monkeypatch):
+    # The disconnect watcher turns a client abort into a 499, not a CancelledError.
+    async def _cancelled(text):
+        raise HTTPException(status_code = 499, detail = "Audio generation cancelled")
+
+    cli, calls, saved = _make_client(monkeypatch, generate = _cancelled)
+    api_monitor.clear()
+    assert cli.post("/v1/audio/speech", json = {"input": "hi"}).status_code == 499
+    rows = api_monitor.snapshot(include_details = False)
+    assert len(rows) == 1
+    assert rows[0]["status"] == "cancelled"
+    assert not rows[0]["error"]
+
+
+@pytest.mark.parametrize(
+    "requested, expected",
+    [
+        ("/home/ana/models/orpheus-3b-0.1-ft", "orpheus-3b-0.1-ft"),
+        ("/srv/voices/Kokoro-82M-Q4_K_M.gguf", "Kokoro-82M-Q4_K_M"),
+        (r"C:\Users\ana\models\kokoro-82m.gguf", "kokoro-82m"),
+        (r"\\fileserver\share\models\orpheus-3b", "orpheus-3b"),
+    ],
+)
+def test_a_failure_before_the_relabel_does_not_leak_the_requested_path(
+    monkeypatch, requested, expected
+):
+    """body.model is informational and is echoed straight into the row, so the relabel on
+    the success path is the only thing that ever cleaned it. A failure before generation
+    (no audio model loaded) left the raw client string on a terminal row that the monitor
+    overlay polls and serves. Windows and UNC forms are covered because redacting a host
+    path is the whole point."""
+
+    async def _boom(text):
+        raise HTTPException(status_code = 400, detail = "No model loaded.")
+
+    cli, calls, saved = _make_client(monkeypatch, generate = _boom)
+    api_monitor.clear()
+    resp = cli.post("/v1/audio/speech", json = {"input": "hi", "model": requested})
+    assert resp.status_code == 400
+    row = api_monitor.snapshot(include_details = False)[0]
+    assert row["status"] == "error"
+    assert row["model"] == expected
+    assert "/" not in row["model"] and "\\" not in row["model"]
+
+
+def test_an_ordinary_model_id_is_still_recorded_verbatim(monkeypatch):
+    # The redaction must not rewrite the ids clients actually send.
+    async def _boom(text):
+        raise HTTPException(status_code = 400, detail = "No model loaded.")
+
+    cli, calls, saved = _make_client(monkeypatch, generate = _boom)
+    for requested in ("tts-1", "gpt-4o-mini-tts", "unsloth/orpheus-3b-0.1-ft"):
+        api_monitor.clear()
+        assert (
+            cli.post("/v1/audio/speech", json = {"input": "hi", "model": requested}).status_code
+            == 400
+        )
+        assert api_monitor.snapshot(include_details = False)[0]["model"] == requested

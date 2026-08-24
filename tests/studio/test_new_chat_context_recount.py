@@ -281,6 +281,26 @@ function findLatestUserAudioBase64(_messages: any): string | null {
   return null;
 }
 
+// refresh-context-usage.ts declines to price a prompt carrying video, the same way
+// it declines audio and images. The emulator replays that module's body with its
+// imports stripped, so every name it imports has to exist here or the bail throws
+// a ReferenceError and the recount never runs -- which is what happened: adding
+// this import took `counts` to 0 and read as "the empty New Chat view must be
+// priced exactly once" failing on a pricing bug. See
+// test_the_harness_stubs_every_name_refresh_context_usage_imports.
+function findLatestUserVideoBase64(_messages: any): string | null {
+  return null;
+}
+
+// refresh-context-usage.ts declines to price a prompt carrying video, the same way
+// it declines audio and images. The emulator replays that module's body with its
+// imports stripped, so every name it imports has to exist here or the bail throws
+// a ReferenceError and the recount never runs -- which is what happened: adding
+// this import took `counts` to 0 and read as "the empty New Chat view must be
+// priced exactly once" failing on a pricing bug. See
+// test_the_harness_stubs_every_name_refresh_context_usage_imports.
+
+
 // The real predicate's rule, so a test can put an image on a branch and see it declined.
 function messagesContainImage(messages: any): boolean {
   const isImage = (p: any) => p?.type === "image" && Boolean(p?.image);
@@ -510,7 +530,7 @@ def _harness_source() -> str:
 
 def _run(script: str) -> dict:
     require_node(SOURCES)
-    return run_harness(TEMP, _harness_source(), script)
+    return run_harness(TEMP, _harness_source(), script, sources = SOURCES)
 
 
 # The status response that hydrates a resident GGUF; neither field survives a reload.
@@ -521,6 +541,45 @@ LOADED_MODEL = """
       modelLoading: false,
     });
 """
+
+
+def test_the_harness_stubs_every_name_refresh_context_usage_imports() -> None:
+    """A new import in the real module must not silently zero the recount.
+
+    `_refresh_module_body()` replays that file with its import block stripped, so
+    an imported name that this harness does not define becomes a ReferenceError
+    the moment the replayed code reaches it. The failure does not look like a
+    missing stub: the effect bails, `counts` stays 0, and the assertion reads
+    "the empty New Chat view must be priced exactly once" -- a pricing bug that
+    is not there.
+
+    That is not hypothetical. #9056 added `findLatestUserVideoBase64` to decline
+    pricing a prompt carrying video, and took 41 tests in this file red.
+    """
+    text = read(REFRESH)
+    # The single braced import list this module takes from ../api/chat-adapter.
+    block = re.search(r"import \{(.*?)\} from \"\.\./api/chat-adapter\";", text, re.S)
+    assert block, "could not find the chat-adapter import block in refresh-context-usage.ts"
+    imported = [
+        name.strip()
+        for name in block.group(1).split(",")
+        if name.strip() and not name.strip().startswith("type ")
+    ]
+    assert imported, "parsed an empty import list; this guard would check nothing"
+
+    with open(__file__, encoding = "utf-8") as handle:
+        harness = handle.read()
+    missing = [
+        name
+        for name in imported
+        if f"function {name}(" not in harness and f"const {name} =" not in harness
+    ]
+    assert not missing, (
+        f"refresh-context-usage.ts imports {missing}, which this harness does not "
+        "define. The replayed module body would throw a ReferenceError and the "
+        "recount would silently report 0. Add a stub next to "
+        "findLatestUserAudioBase64."
+    )
 
 
 @pytest.mark.parametrize(

@@ -9,6 +9,7 @@
 // instance through the "?scenario=" query thread-sampling-resolver.mjs understands.
 // Register that resolver and install the localStorage fake before importing this.
 
+import { drainMockedTimers } from "./mock-timer-drain.ts";
 import { threadRows } from "./store-stubs/chat-history-storage.ts";
 import { settingsHttp } from "./store-stubs/settings-http.ts";
 
@@ -134,16 +135,25 @@ interface StoreModule {
     };
   };
   beginThreadScopedPairing: (threadId: string) => void;
+  awaitStartedThreadScopedSettingsWrites: () => Promise<void>;
 }
 
-/** Let the debounced writers and their promise chains finish. */
-async function drain(tick: (ms: number) => void): Promise<void> {
-  for (let round = 0; round < 3; round += 1) {
-    tick(1000);
-    for (let i = 0; i < 6; i += 1) {
-      await new Promise((resolve) => setImmediate(resolve));
-    }
-  }
+/** Let the debounced writers and their promise chains finish.
+ *
+ * On the store's own pending timers and its own write chains, not on a round count: a
+ * scenario whose write has not landed yet looks exactly like one that wrote the wrong
+ * value, so an under-drain here
+ * surfaces as an ORDERING violation ("chat A temperature: owed 0.6, shows 1.37") and sends
+ * the reader into the store instead of into the wait. drainMockedTimers throws when it
+ * gives up, which is the whole point of it; see tests/helpers/mock-timer-drain.ts for the
+ * measurements that killed the fixed count and for the observable NOT to drain on.
+ *
+ * The caller must have enabled the clock with enableCountedTimers(t). */
+async function drain(mod: StoreModule, tick: (ms: number) => void): Promise<void> {
+  await drainMockedTimers(tick, {
+    label: "runScenario drain",
+    barrier: () => mod.awaitStartedThreadScopedSettingsWrites(),
+  });
 }
 
 /**
@@ -416,7 +426,7 @@ export async function runScenario(
 
   for (const op of ops) {
     await perform(op);
-    await drain(tick);
+    await drain(mod, tick);
     check(op);
     if (violations.length > 0) break;
   }

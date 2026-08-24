@@ -39,6 +39,7 @@ from hub.utils.gguf import (
     list_local_gguf_variants,
     list_partial_gguf_variants_from_state,
     pick_best_gguf,
+    merge_sibling_snapshot_variants,
     select_gguf_cache_snapshot,
 )
 from hub.utils.paths import (
@@ -49,6 +50,7 @@ from hub.utils.paths import (
 # Loader's normalizer, not the hub's: they disagree on WSL, and only it names what the load opens.
 from utils.paths import normalize_path as _loader_normalize_path
 from hub.services.models.common import (
+    _is_imatrix_filename,
     _is_mmproj_filename,
     _is_mtp_drafter_path,
     _iter_gguf_paths,
@@ -59,6 +61,7 @@ from hub.utils.gguf_plan import (
     is_main_gguf_variant_path,
     plan_from_expected_files,
 )
+from utils.paths.path_utils import is_appledouble_metadata
 
 logger = get_logger(__name__)
 
@@ -514,6 +517,10 @@ def _local_main_gguf_blobs_by_quant(
                 normalized = str(path).replace("\\", "/")
                 if not hashes:
                     continue
+                if _is_imatrix_filename(normalized):
+                    # Not a companion either: nothing fetches an imatrix, so a stale copy
+                    # on disk must not vouch for a variant's blobs.
+                    continue
                 if _is_mmproj_filename(normalized) or _is_mtp_drafter_path(normalized):
                     companion_blobs.setdefault(normalized, set()).update(
                         str(blob) for blob in hashes if blob
@@ -722,7 +729,9 @@ def _direct_gguf_loads(path: Path) -> bool:
     return not (
         _is_mmproj_filename(path.name)
         or _is_mtp_drafter_path(context)
+        or _is_imatrix_filename(path.name)
         or is_big_endian_gguf_path(context, _extract_quant_label(context))
+        or is_appledouble_metadata(path)
     )
 
 
@@ -1051,6 +1060,31 @@ async def get_gguf_variants_answer(
         hub_cache = repo_cache_dir.parent if repo_cache_dir is not None else None
         snapshot_scope = _snapshot_scope_for_request(repo_id, local_path)
 
+        def _merge_when_the_repo_id_loads(response_repo_id, cached, root):
+            """*cached* widened, but only where the repo id is the load target.
+
+            ``cached_gguf_for_load`` searches the revisions only for such a row; one naming a
+            snapshot dir loads from it alone. Sufficient, not complete -- other shapes load by id
+            and keep listing one revision, since reconstructing the inventory's answer here from
+            less than it uses would offer quants the row cannot resolve.
+            """
+            variants, has_vision, complete, snapshot = cached
+            if not complete:
+                return cached
+            try:
+                from hub.utils.hf_cache_state import same_existing_path
+                from utils.hf_cache_settings import get_hf_cache_paths
+
+                repo_dir = snapshot.parent.parent
+                if not same_existing_path(repo_dir.parent, get_hf_cache_paths().hub_cache):
+                    return cached
+                default_snapshot = hf_cache_scan.default_ref_snapshot(repo_dir)
+                if default_snapshot is None or not same_existing_path(default_snapshot, snapshot):
+                    return cached
+            except (OSError, RuntimeError, ValueError):
+                return cached
+            return merge_sibling_snapshot_variants(response_repo_id, cached, root = root)
+
         def _local_response(
             response_repo_id: str,
             variants,
@@ -1262,7 +1296,9 @@ async def get_gguf_variants_answer(
                 return scoped_response
             cached = select_gguf_cache_snapshot(repo_id, root = hub_cache)
             if cached is not None:
-                variants, has_vision, complete, snapshot = cached
+                variants, has_vision, complete, snapshot = _merge_when_the_repo_id_loads(
+                    repo_id, cached, hub_cache
+                )
                 # Name the answering snapshot: a repo-wide walk could read a different cache's
                 # context length, and a repo-dir walk a sibling revision's.
                 answered_from[0] = str(snapshot)
@@ -1306,7 +1342,9 @@ async def get_gguf_variants_answer(
                 return scoped_response
             cached = select_gguf_cache_snapshot(repo_id, root = hub_cache)
             if cached is not None:
-                variants, has_vision, complete, snapshot = cached
+                variants, has_vision, complete, snapshot = _merge_when_the_repo_id_loads(
+                    repo_id, cached, hub_cache
+                )
                 answered_from[0] = str(snapshot)
                 # Same reason as the local_only branch above, state partials included:
                 # an unreachable Hub is exactly when a resume has nowhere else to surface.
@@ -1367,7 +1405,11 @@ async def get_gguf_variants_answer(
                         continue
                     key = rel.lower()
                     by_filename[key] = max(by_filename.get(key, 0), size)
-                    if _is_mmproj_filename(f.name) or _is_mtp_drafter_path(rel):
+                    if (
+                        _is_mmproj_filename(f.name)
+                        or _is_mtp_drafter_path(rel)
+                        or _is_imatrix_filename(f.name)
+                    ):
                         continue
                     q = gguf_variant_key(rel)
                     if is_big_endian_gguf_path(rel, extract_quant_label(rel)):

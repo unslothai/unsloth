@@ -12,6 +12,8 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { getClientPlatform } from "@/components/tauri/window-titlebar"
+import { PANEL_RESIZE_SCOPED_VARS_ENABLED } from "@/components/ui/panel-resize-recalc-flags"
+import { Z_LAYER } from "@/lib/z-layers"
 
 /** Pointer travel (px) below which a drag counts as a plain click. */
 const DRAG_SLOP = 4
@@ -19,6 +21,68 @@ const DRAG_SLOP = 4
 const CLICK_COMPAT_WINDOW_MS = 300
 /** Arrow-key resize step for keyboard users. */
 const RESIZE_STEP = 16
+
+// A drag needs one cursor over the whole viewport, because the pointer travels
+// across buttons and text that would otherwise claim their own. That used to be
+// `html[data-panel-resizing] *` plus `cursor`/`user-select` on <body>. Both
+// reach every element in the document: the universal selector matches all of
+// them, and `cursor` and `user-select` are inherited, so writing them on <body>
+// marks inherited style dirty for everything below it. The cost is therefore
+// proportional to the STANDING DOM rather than to the one thing that changed,
+// which is the same shape as the sidebar-width writes scoped in #9400/#9441.
+//
+// The same is true of the rule that blanked pointer events on the sidebar and
+// on [data-slot="sidebar-inset"], the <main> holding the whole app including
+// the thread: `pointer-events` is inherited too, so that write dirtied the
+// thread's subtree on both flips as well.
+//
+// A single fixed element on top of the viewport does both jobs with an
+// invalidation set of one element. It carries the cursor, and by being the hit
+// test target for the whole viewport it keeps hover and click off the content
+// underneath. It is transparent and it is removed the instant the drag ends, so
+// nothing about what the user sees changes.
+const DRAG_OVERLAY_SLOT = "panel-resize-drag-overlay"
+/** Nested drags cannot happen through pointer capture, but a stuck overlay would
+ *  swallow the whole UI, so ownership is explicit rather than assumed. */
+let dragOverlayOwners = 0
+
+function acquireDragOverlay(): void {
+  dragOverlayOwners += 1
+  if (dragOverlayOwners > 1) return
+  const el = document.createElement("div")
+  el.setAttribute("data-slot", DRAG_OVERLAY_SLOT)
+  // Decorative and non-interactive as far as assistive tech is concerned: it
+  // exists only to own the cursor while the pointer is already captured.
+  el.setAttribute("aria-hidden", "true")
+  const s = el.style
+  s.position = "fixed"
+  s.inset = "0"
+  // Top of the named scale, not a hand-picked large number: the rules it
+  // replaces were `!important` and blanked whole subtrees, so anything it did
+  // not out-rank it would only partly stand in for.
+  s.zIndex = String(Z_LAYER.DRAG_CURSOR_OVERLAY)
+  s.background = "transparent"
+  // Explicit, because it is load-bearing rather than incidental. Being the hit
+  // test target for the whole viewport is what keeps hover and click off the
+  // content underneath, which is the job `pointer-events: none` on
+  // [data-slot="sidebar-inset"] used to do by dirtying the thread's subtree.
+  s.pointerEvents = "auto"
+  // col-resize unconditionally, which is what the replaced rule did even when a
+  // collapsed edge was being dragged open.
+  s.cursor = "col-resize"
+  s.userSelect = "none"
+  s.touchAction = "none"
+  document.body.appendChild(el)
+}
+
+function releaseDragOverlay(): void {
+  if (dragOverlayOwners === 0) return
+  dragOverlayOwners -= 1
+  if (dragOverlayOwners > 0) return
+  document
+    .querySelector(`[data-slot="${DRAG_OVERLAY_SLOT}"]`)
+    ?.remove()
+}
 
 type DragState = {
   startX: number
@@ -56,6 +120,18 @@ export type PanelResizeHandleProps = {
   className?: string
   /** Mirrors the live width onto :root for chrome outside the panel. */
   rootVar?: string
+  /**
+   * Narrower element for `cssVar`, replacing `target()` under
+   * PANEL_RESIZE_SCOPED_VARS_ENABLED. Must hold every consumer and nothing
+   * else: the write invalidates inherited style for everything below it.
+   */
+  scopedTarget?: () => HTMLElement | null
+  /**
+   * The elements that actually read `rootVar`, replacing
+   * `document.documentElement` under PANEL_RESIZE_SCOPED_VARS_ENABLED. Empty
+   * means no consumer, so the write is skipped.
+   */
+  rootVarTargets?: () => HTMLElement[]
 }
 
 /**
@@ -86,6 +162,8 @@ export function PanelResizeHandle({
   dataSlot = "panel-resize-handle",
   className,
   rootVar,
+  scopedTarget,
+  rootVarTargets,
 }: PanelResizeHandleProps) {
   const ref = React.useRef<HTMLButtonElement>(null)
   const dragRef = React.useRef<DragState | null>(null)
@@ -112,11 +190,20 @@ export function PanelResizeHandle({
     committedRef.current = width
   }, [width])
 
+  // Where `rootVar` is painted, resolved once on pointer down. Always
+  // [document.documentElement] with the flag off, which is what shipped.
+  const rootTargetsRef = React.useRef<HTMLElement[]>([])
+  // Whether THIS handle is holding the cursor overlay. endDrag also runs as the
+  // effect cleanup, where no drag happened and nothing was acquired.
+  const overlayHeldRef = React.useRef(false)
+
   const paint = React.useCallback(
     (value: string) => {
       targetRef.current?.style.setProperty(cssVar, value)
       if (rootVar) {
-        document.documentElement.style.setProperty(rootVar, value)
+        for (const el of rootTargetsRef.current) {
+          el.style.setProperty(rootVar, value)
+        }
       }
     },
     [cssVar, rootVar],
@@ -148,20 +235,33 @@ export function PanelResizeHandle({
     // Hand the property back to the committed value. A commit re-renders with
     // the new width; a cancel or a no-commit drag keeps DOM and store in step.
     paint(`${committedRef.current}px`)
-    if (rootVar) document.documentElement.style.removeProperty(rootVar)
+    if (rootVar) {
+      for (const el of rootTargetsRef.current) el.style.removeProperty(rootVar)
+    }
+    rootTargetsRef.current = []
     targetRef.current?.removeAttribute("data-resizing")
     document.documentElement.removeAttribute("data-panel-resizing")
     targetRef.current = null
     setDragging(false)
-    document.body.style.removeProperty("cursor")
-    document.body.style.removeProperty("user-select")
+    if (overlayHeldRef.current) {
+      overlayHeldRef.current = false
+      releaseDragOverlay()
+    }
   }, [paint, rootVar])
 
   const handlePointerDown = (event: React.PointerEvent<HTMLButtonElement>) => {
     if (event.button !== 0) return
     event.preventDefault()
     event.currentTarget.setPointerCapture(event.pointerId)
-    targetRef.current = target()
+    // Resolved once per drag, never per frame: the write is what costs, and a
+    // DOM walk here is already how `target()` worked.
+    targetRef.current =
+      (PANEL_RESIZE_SCOPED_VARS_ENABLED && scopedTarget?.()) || target()
+    rootTargetsRef.current = !rootVar
+      ? []
+      : PANEL_RESIZE_SCOPED_VARS_ENABLED
+        ? (rootVarTargets?.() ?? [])
+        : [document.documentElement]
     // Collapsed: grow from the rendered size so the edge tracks the pointer.
     const start = open ? width : measure()
     dragRef.current = { startX: event.clientX, startWidth: start, moved: false }
@@ -170,8 +270,8 @@ export function PanelResizeHandle({
     targetRef.current?.setAttribute("data-resizing", "true")
     document.documentElement.setAttribute("data-panel-resizing", "true")
     setDragging(true)
-    document.body.style.setProperty("cursor", "col-resize")
-    document.body.style.setProperty("user-select", "none")
+    overlayHeldRef.current = true
+    acquireDragOverlay()
   }
 
   const handlePointerMove = (event: React.PointerEvent<HTMLButtonElement>) => {
