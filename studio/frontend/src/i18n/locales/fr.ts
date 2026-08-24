@@ -226,6 +226,18 @@ export const fr = {
       browserReserved:
         "Votre navigateur peut réserver cette combinaison. Elle fonctionne dans l’application de bureau.",
       actions: {
+        zoomIn: {
+          label: "Zoom avant",
+          description: "Agrandir l'interface",
+        },
+        zoomOut: {
+          label: "Zoom arrière",
+          description: "Réduire l'interface",
+        },
+        resetZoom: {
+          label: "Réinitialiser le zoom",
+          description: "Réinitialiser l'échelle à 100 %",
+        },
         openSettings: {
           label: "Ouvrir les paramètres",
           description: "Ouvrir la fenêtre des paramètres",

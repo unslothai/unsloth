@@ -225,6 +225,18 @@ export const es = {
       browserReserved:
         "Puede que tu navegador se reserve esta combinación. En la app de escritorio funciona.",
       actions: {
+        zoomIn: {
+          label: "Acercar",
+          description: "Aumentar la escala de la interfaz",
+        },
+        zoomOut: {
+          label: "Alejar",
+          description: "Reducir la escala de la interfaz",
+        },
+        resetZoom: {
+          label: "Restablecer zoom",
+          description: "Restablecer la escala al 100%",
+        },
         openSettings: {
           label: "Abrir ajustes",
           description: "Abrir el diálogo de ajustes",

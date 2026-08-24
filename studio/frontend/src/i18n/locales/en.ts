@@ -222,6 +222,18 @@ export const en = {
       browserReserved:
         "Your browser may keep this chord for itself. It works in the desktop app.",
       actions: {
+        zoomIn: {
+          label: "Zoom in",
+          description: "Increase UI scale",
+        },
+        zoomOut: {
+          label: "Zoom out",
+          description: "Decrease UI scale",
+        },
+        resetZoom: {
+          label: "Reset zoom",
+          description: "Reset UI scale to 100%",
+        },
         openSettings: {
           label: "Open settings",
           description: "Open the settings dialog",

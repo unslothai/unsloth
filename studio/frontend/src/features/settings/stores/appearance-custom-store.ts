@@ -199,6 +199,8 @@ export type AppearanceCustomization = {
   importedFonts: ImportedFont[];
   /** UI font size in px. null = app default (15). */
   uiFontSize: number | null;
+  /** UI zoom percentage (50–200). null = default (100). */
+  uiZoom: number | null;
   /** Code/pre font size in px. null = inherit each element's own size. */
   codeFontSize: number | null;
   /** 0–100; 50 is neutral (no adjustment). */
@@ -227,6 +229,7 @@ export const DEFAULT_CUSTOMIZATION: AppearanceCustomization = {
   codeFont: null,
   importedFonts: [],
   uiFontSize: null,
+  uiZoom: null,
   codeFontSize: null,
   contrast: 50,
   pointerCursors: false,
@@ -243,6 +246,7 @@ export const DEFAULT_CUSTOMIZATION: AppearanceCustomization = {
 };
 
 export const UI_FONT_SIZE_RANGE = { min: 12, max: 20, default: 15 } as const;
+export const UI_ZOOM_RANGE = { min: 50, max: 200, default: 100 } as const;
 export const CODE_FONT_SIZE_RANGE = { min: 10, max: 20, default: 13 } as const;
 const UI_FONT_SIZE_CSS_BASE = 16;
 
@@ -389,6 +393,7 @@ export function sanitizeCustomization(value: unknown): AppearanceCustomization {
     codeFont: sanitizeFont(source.codeFont),
     importedFonts: sanitizeImportedFonts(source.importedFonts),
     uiFontSize: sanitizeSize(source.uiFontSize, UI_FONT_SIZE_RANGE),
+    uiZoom: sanitizeSize(source.uiZoom, UI_ZOOM_RANGE),
     codeFontSize: sanitizeSize(source.codeFontSize, CODE_FONT_SIZE_RANGE),
     contrast,
     pointerCursors: source.pointerCursors === true,
@@ -841,6 +846,15 @@ export function applyCustomizationToDocument(
   // Older builds scaled the root font size directly; clear any stale inline
   // value so layout never scales with the preference again.
   style.removeProperty("font-size");
+
+  const effectiveUiZoom = c.uiZoom ?? UI_ZOOM_RANGE.default;
+  if (effectiveUiZoom !== UI_ZOOM_RANGE.default) {
+    el.style.zoom = String(effectiveUiZoom / 100);
+    el.setAttribute("data-ui-zoom", String(effectiveUiZoom));
+  } else {
+    el.style.removeProperty("zoom");
+    el.removeAttribute("data-ui-zoom");
+  }
 
   if (c.codeFontSize !== null) {
     el.setAttribute("data-code-font-size", "");

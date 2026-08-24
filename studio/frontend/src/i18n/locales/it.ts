@@ -190,6 +190,18 @@ export const it = {
       browserReserved:
         "Il browser potrebbe riservare questa combinazione per sé. Nell’app desktop funziona.",
       actions: {
+        zoomIn: {
+          label: "Ingrandisci",
+          description: "Aumenta la scala dell'interfaccia",
+        },
+        zoomOut: {
+          label: "Rimpicciolisci",
+          description: "Riduci la scala dell'interfaccia",
+        },
+        resetZoom: {
+          label: "Reimposta zoom",
+          description: "Reimposta la scala dell'interfaccia al 100%",
+        },
         openSettings: {
           label: "Apri le impostazioni",
           description: "Apri la finestra delle impostazioni",
