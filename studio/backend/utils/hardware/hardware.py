@@ -2240,14 +2240,10 @@ def _adapter_counter_capacity(meta: Dict[str, Any]) -> float:
     """The capacity a ``Dedicated Usage`` counter for this device can actually fill.
 
     That counter measures the dedicated segment, so the carve-out is its ceiling.
-    ``total_bytes`` is the figure DISPLAYED to the user, and on a unified-memory
-    APU that may be widened to the whole driver pool, which would tell every
-    capacity comparison in this file that a counter no visible card could hold
-    still fits. Anything ranking or bounding a counter wants this, never
-    ``total_bytes``.
-
-    ``dedicated_bytes`` is carried alongside for exactly this purpose; the
-    fallback keeps this correct against a ``dev_meta`` built before it existed.
+    ``total_bytes`` is what the user is SHOWN, and on a unified APU may be the
+    whole driver pool, against which a counter no visible card could hold still
+    fits. Rank or bound a counter with this, never ``total_bytes``. The fallback
+    keeps it right on a ``dev_meta`` built before ``dedicated_bytes`` existed.
     """
     return float(meta.get("dedicated_bytes", meta["total_bytes"]))
 
@@ -2347,24 +2343,22 @@ def _match_adapter_used_by_luid(
             positions_by_key.setdefault(device_key(meta), []).append(position)
         if "" in positions_by_key:  # a visible device carrying no such key
             continue
-        # AMD usage this key cannot place. The counter belongs to a record whose
-        # key matches no visible device, so this key is not identifying reliably:
-        # a visible card whose Description differs from its props.name leaves its
-        # own counter under one key while a hidden card sits under the device's,
-        # and the pairing below would hand the hidden card's bytes to the visible
-        # one. Declining costs a masked second AMD card its join and falls back to
-        # capacity ranking, which is where that case already was.
+        # AMD usage this key cannot place, so the key is not identifying
+        # reliably: a card whose Description differs from its props.name leaves
+        # its own counter under one key while a hidden card sits under the
+        # device's, and the pairing would hand over the hidden card's bytes.
+        # Declining drops a masked second AMD card back to capacity ranking,
+        # which is where it already was.
         if set(useds_by_key) - set(positions_by_key):
             continue
         matched = _attribute_adapter_useds_by_key(useds_by_key, positions_by_key, dev_meta)
         if matched is not None:
-            # A pass can succeed while naming no device: same-keyed cards leave
-            # per-device unknown and contribute only to the aggregate (#7452).
-            # That is a result, but not a reason to stop -- "a declined name join
-            # falls to the gfx target" has to cover a vacuous success too, or two
-            # same-named cards of different arch stay unknown where gfx separates
-            # them. Keep the first such result for its aggregate, prefer any later
-            # pass that actually attributes.
+            # Same-keyed cards leave per-device unknown and feed only the
+            # aggregate (#7452). That is a result, not a reason to stop: falling
+            # through to gfx has to cover a vacuous success too, or two
+            # same-named cards of different arch stay unknown where gfx would
+            # separate them. Keep the first for its aggregate, prefer any later
+            # pass that attributes.
             if any(used is not None for used in matched[0]):
                 return matched
             if vacuous is None:
