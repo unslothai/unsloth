@@ -172,6 +172,86 @@ def test_every_footprint_term_is_charged(monkeypatch):
         assert _mode(footprint = rows_free, **base, **{term: 20 * GIB}) is None
 
 
+# ------------------------------------------------- the CPU-pinned drafter
+
+
+class _DraftStub:
+    """Only the two readers _cpu_resident_draft_bytes consults."""
+
+    def __init__(self, weights, kv):
+        self._weights = weights
+        self._kv = kv
+
+    def _get_gguf_size_bytes(self, path):
+        if self._weights is None:
+            raise OSError(path)
+        return self._weights
+
+    def _mtp_draft_kv_bytes(self, n_ctx, **kwargs):
+        return self._kv
+
+    _cpu_resident_draft_bytes = LlamaCppBackend._cpu_resident_draft_bytes
+
+
+def test_no_cpu_pinned_drafter_charges_nothing():
+    stub = _DraftStub(3 * GIB, 512 * MIB)
+    assert stub._cpu_resident_draft_bytes(8192, drafter_path = None) == 0
+
+
+def test_a_cpu_pinned_drafter_is_charged_weights_plus_kv():
+    """``-ngld 0`` takes the drafter off the GPU. It does not delete it: those
+    bytes are in host RAM, and ``none`` allocates them anonymously there."""
+    stub = _DraftStub(3 * GIB, 512 * MIB)
+    assert stub._cpu_resident_draft_bytes(8192, drafter_path = "d.gguf") == 3 * GIB + 512 * MIB
+
+
+@pytest.mark.parametrize("weights,kv", [(None, 512 * MIB), (0, 512 * MIB), (3 * GIB, None)])
+def test_an_unpriceable_cpu_drafter_abstains(weights, kv):
+    """A drafter that is there but cannot be sized is exactly the case that must
+    not be silently charged as zero."""
+    stub = _DraftStub(weights, kv)
+    assert stub._cpu_resident_draft_bytes(8192, drafter_path = "d.gguf") is None
+
+
+def test_the_cpu_drafter_flips_a_fit_that_only_looked_like_one(monkeypatch):
+    """20 GiB of target onto an 8 GiB card with 16 GiB of RAM: the 12 GiB spill
+    clears the 2 GiB headroom and the fit reads as real. Add the 2.5 GiB drafter
+    ``-ngld 0`` leaves resident in host RAM and it does not."""
+    monkeypatch.setattr(hardware, "is_apple_silicon", lambda: False)
+    stub = _Stub(16 * 1024)
+
+    def _fit(mtp_bytes):
+        return LlamaCppBackend._fit_derived_load_mode(
+            stub,
+            model_size = 20 * GIB,
+            mtp_bytes = mtp_bytes,
+            gpus = [(0, 8 * 1024)],
+            avail_mib = 16 * 1024,
+        )
+
+    assert _fit(0) == FIT_MODE
+    assert _fit(int(2.5 * GIB)) is None
+
+
+def test_the_launch_charges_the_cpu_pinned_drafter_to_the_fit():
+    """The budget nulls the drafter path before its weights are sized, so the
+    fit has to keep its own copy. Checked at the source, like the other launch
+    ordering invariants here: the call site sits inside load_model's fit try."""
+    import inspect
+
+    from core.inference.llama_cpp import LlamaCppBackend as B
+
+    compact = "".join(inspect.getsource(B.load_model).split())
+    # Captured BEFORE the VRAM budget drops it.
+    assert "_cpu_draft_path=_mtp_draft_for_budgetif_draft_on_cpuelseNone" in compact
+    assert compact.index("_cpu_draft_path=_mtp_draft_for_budget") < compact.index(
+        "if_draft_on_cpu:_mtp_draft_for_budget=None"
+    )
+    # ... and charged to the footprint, abstaining when it cannot be priced.
+    assert "mtp_bytes=_mtp_bytes(effective_ctx)+(_cpu_draft_fit_bytesor0)" in compact
+    assert "or_cpu_draft_fit_bytesisNone" in compact
+
+
 # ------------------------------------------------------- the policy chain
 
 
@@ -419,3 +499,137 @@ def test_the_fit_on_retry_drops_the_fits_load_mode():
     retry = retry[: retry.index("_did_fit_retry = True")]
     assert "_fit_load_mode_flags" in retry
     assert "_without_subsequence" in retry
+
+
+def test_the_arch_crash_retry_voids_the_fit_the_weights_only_floor_still_allows():
+    """The premise behind the strip below, priced on real numbers.
+
+    A 40 GB card and a 4 GB one, 20 GB of RAM. The fit was proved against the card
+    the launch PINNED; the arch-crash retry moves to the survivor, and there the
+    same footprint no longer fits. The retry's own guard is a weights-only floor by
+    design, so it passes and cannot re-establish the proof.
+    """
+    rows = [(0, 40_000), (1, 4_000)]
+    footprint = 30 * GIB  # weights + KV + scratch
+    weights = 20 * GIB
+    stub = _Stub(20_000)
+
+    # The retry really does move off the fitted card.
+    assert LlamaCppBackend._arch_crash_retry_gpu_ids([0], [0, 1]) == [1]
+
+    assert stub._fits_without_paging(footprint, rows, gpu_indices = [0]) is True
+    assert stub._fits_without_paging(footprint, rows, gpu_indices = [1]) is False
+    # ...while the weights-only refusal the retry runs stays silent, so nothing on
+    # that path would take the fit's "none" back out on its own.
+    assert LlamaCppBackend._host_offload_shortfall_message(weights - 4_000 * MIB, 20_000) is None
+
+
+def test_the_arch_crash_retry_drops_the_fits_load_mode():
+    """The retry respawns from `cmd` on a device set the fit was never proved
+    against (cards the crashed launch never touched, or the discrete survivors of a
+    narrowing), so the mode that fit concluded cannot ride along. Checked at the
+    source, like the --fit on retry above, because this arm only runs behind a real
+    kernel-image crash."""
+    import inspect
+
+    from core.inference.llama_cpp import LlamaCppBackend as B
+
+    src = inspect.getsource(B.load_model)
+    retry = src[src.index("the llama.cpp build has no kernels") :]
+    # Bounded at the respawn, so the strip is proved to happen BEFORE it.
+    retry = retry[: retry.index('label = "-archfallback"')]
+    assert "_without_subsequence(cmd, self._fit_load_mode_flags)" in retry
+    assert "self._fit_load_mode_flags = []" in retry
+
+
+# ------------------------------------ pass-through args that move the weights
+
+
+# Every spelling llama.cpp accepts for "run this somewhere the planner did not
+# put it", each of which is appended AFTER Unsloth's own placement flags and so
+# wins by last-arg (common/arg.cpp assigns n_gpu_layers / devices per occurrence).
+PLACEMENT_OVERRIDES = [
+    ["-ngl", "0"],
+    ["--gpu-layers", "0"],
+    ["--n-gpu-layers", "0"],
+    ["--gpu-layers=0"],
+    # A partial count is the same problem: the planner priced full offload.
+    ["-ngl", "12"],
+    ["--device", "none"],
+    ["-dev", "cpu"],
+    ["--n-cpu-moe", "24"],
+    ["-ot", r".ffn_.*_exps.=CPU"],
+]
+
+
+@pytest.mark.parametrize("extras", PLACEMENT_OVERRIDES)
+def test_a_pass_through_placement_override_voids_the_vram_credit(extras, monkeypatch):
+    """8 GiB into a 24 GiB card, 4 GiB of host RAM: the fit that says "none" is
+    the VRAM one, and these flags run the weights out of RAM instead. Charging
+    that fit's VRAM anyway would disable mmap on a load RAM cannot hold, which is
+    an OOM kill where llama.cpp's own default would have demand-paged."""
+    assert _mode("linux", "nvidia_discrete", 8 * GIB, 4 * 1024, monkeypatch) == FIT_MODE
+    assert (
+        _mode("linux", "nvidia_discrete", 8 * GIB, 4 * 1024, monkeypatch, extra_args = extras) is None
+    )
+
+
+@pytest.mark.parametrize("extras", PLACEMENT_OVERRIDES)
+def test_an_override_still_takes_none_when_host_ram_holds_the_whole_load(extras, monkeypatch):
+    """The credit is dropped, not the answer: 8 GiB against 64 GiB of RAM is
+    resident wherever these flags put it, so the pick stands."""
+    assert (
+        _mode("linux", "nvidia_discrete", 8 * GIB, 64 * 1024, monkeypatch, extra_args = extras)
+        == FIT_MODE
+    )
+
+
+@pytest.mark.parametrize(
+    "extras",
+    [
+        [],
+        None,
+        ["-c", "8192"],
+        ["--flash-attn", "on"],
+        # -ncmoe 0 and -otd place nothing on this model's CPU side.
+        ["--n-cpu-moe", "0"],
+        ["-otd", r".*=CPU"],
+        ["--device", "CUDA0"],
+    ],
+)
+def test_extras_that_leave_placement_alone_keep_the_fit(extras, monkeypatch):
+    assert (
+        _mode("linux", "nvidia_discrete", 8 * GIB, 4 * 1024, monkeypatch, extra_args = extras)
+        == FIT_MODE
+    )
+
+
+@pytest.mark.parametrize(
+    "var,value",
+    [
+        ("LLAMA_ARG_OVERRIDE_TENSOR", r".ffn_.*_exps.=CPU"),
+        ("LLAMA_ARG_CPU_MOE", "1"),
+        ("LLAMA_ARG_N_CPU_MOE", "24"),
+    ],
+)
+def test_inherited_cpu_placement_env_voids_the_vram_credit(var, value, monkeypatch):
+    """The child inherits these, so they outlive any token stripping."""
+    monkeypatch.setenv(var, value)
+    assert _mode("linux", "nvidia_discrete", 8 * GIB, 4 * 1024, monkeypatch) is None
+
+
+def test_the_launch_hands_the_fit_the_extras_the_child_will_get():
+    """The predicate is only worth anything if the call site feeds it. Checked at
+    the source, like the fallback ordering tests above, because reaching this call
+    needs a real GPU probe."""
+    import inspect
+
+    from core.inference.llama_cpp import LlamaCppBackend as B
+
+    src = inspect.getsource(B.load_model)
+    call = src[src.index("_fit_load_mode = self._fit_derived_load_mode(") :]
+    call = call[: call.index("except Exception as e:")]
+    assert "extra_args" in call
+    # A gpu_ids pin drops the device flags from the emitted extras, so the fit has
+    # to classify on the stripped copy rather than the request.
+    assert "_strip_device_extra_args(extra_args)" in call
