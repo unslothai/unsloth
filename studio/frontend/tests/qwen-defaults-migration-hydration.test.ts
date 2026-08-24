@@ -565,3 +565,52 @@ test("hydration migrates the authoritative global when model memory is off", asy
     },
   );
 });
+
+test("a first user model load during hydration does not claim prior globals", async () => {
+  settingsHttp.getResponses.length = 0;
+  settingsHttp.settings = {
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    rememberParamsPerModel: true,
+    inferenceParams: {
+      temperature: 0.6,
+      topP: 0.95,
+      minP: 0.01,
+      presencePenalty: 0,
+      maxTokens: 8192,
+    },
+  };
+  settingsHttp.puts.length = 0;
+  settingsHttp.hold();
+  useChatRuntimeStore.setState((state) => ({
+    params: { ...state.params, checkpoint: "" },
+    paramsByModel: {},
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    rememberParamsPerModel: true,
+    reasoningAlwaysOn: false,
+    reasoningEnabled: true,
+    settingsHydrated: false,
+  }));
+
+  const hydration = useChatRuntimeStore.getState().hydratePersistedSettings();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  useChatRuntimeStore.getState().setCheckpoint(QWEN38);
+  const loading = useChatRuntimeStore.getState();
+  loading.setParams(
+    { ...loading.params, minP: 0, presencePenalty: 1.5 },
+    { fromModelDefaults: true },
+  );
+  settingsHttp.release?.();
+  await hydration;
+  settingsHttp.gate = null;
+  settingsHttp.release = null;
+
+  const hydrated = useChatRuntimeStore.getState();
+  assert.equal(hydrated.params.minP, 0);
+  assert.equal(hydrated.params.presencePenalty, 1.5);
+  assert.equal(
+    settingsHttp.puts.some((put) => put.inferenceParams !== undefined),
+    false,
+  );
+});

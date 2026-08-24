@@ -3398,9 +3398,9 @@ function loadedContextFor(checkpoint: string): number | null {
   return loadedContext?.checkpoint === checkpoint ? loadedContext.cap : null;
 }
 
-/** A model that took over from another while the request was in flight. Its
- * defaults lose to its own entry but outrank the global set, which belongs to
- * whichever model was used last. Not narrowed to the keys that moved. */
+/** A model selected while the request was in flight. Its defaults lose to its
+ * own entry but outrank the global set, which belongs to whichever model was
+ * used last. Not narrowed to the keys that moved. */
 let modelLoadedBeforeHydration: string | null = null;
 
 /** A model stepped off before hydration. Nothing can be filed for it yet, but the
@@ -3410,9 +3410,12 @@ let modelLeftBeforeHydration: string | null = null;
 
 function noteModelDefaultsBeforeHydration(
   checkpoint: string,
-  replacedAnotherModel: boolean,
+  ownsPersistedGlobal: boolean,
 ): void {
-  if (replacedAnotherModel) {
+  // A model the user selected while settings were in flight does not own the
+  // previous session's global snapshot, even when it was the first checkpoint
+  // in this tab. Server-resident startup adoption is the explicit exception.
+  if (!ownsPersistedGlobal) {
     modelLoadedBeforeHydration = checkpoint;
     return;
   }
@@ -4245,7 +4248,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       } else if (fromModelDefaults && !state.settingsHydrated) {
         noteModelDefaultsBeforeHydration(
           nextParams.checkpoint,
-          checkpointChanged && state.params.checkpoint !== "",
+          options?.migrateOwnedGlobalQwenDefaults === true ||
+            (checkpointChanged && state.params.checkpoint === ""),
         );
       }
       return {

@@ -129,6 +129,33 @@ test("migrates only the active model when several legacy Qwen rows are saved", (
   );
 });
 
+test("normalizes a case-insensitive saved key to the active checkpoint", () => {
+  const lowerCaseKey = QWEN38.toLowerCase();
+  const migrated = migrateLegacyQwenDefaults(
+    settingsFor(lowerCaseKey),
+    QWEN38,
+    true,
+  );
+
+  assert.deepEqual(migrated.migratedModelIds, [QWEN38]);
+  assert.equal(
+    migrated.settings.inferenceParamsByModel?.[QWEN38]?.presencePenalty,
+    1.5,
+  );
+  assert.equal(
+    migrated.settings.inferenceParamsByModel?.[lowerCaseKey],
+    undefined,
+  );
+  assert.deepEqual(
+    migrated.patch?.inferenceParamsByModel?.[QWEN38],
+    {
+      ...LEGACY_SNAPSHOT,
+      minP: 0,
+      presencePenalty: 1.5,
+    },
+  );
+});
+
 test("does not migrate dormant Qwen rows while a non-Qwen model is active", () => {
   const settings = settingsFor(QWEN38);
 

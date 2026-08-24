@@ -121,17 +121,30 @@ function migrateStoredModelDefaults(
   const migratedModelIds: string[] = [];
   const migratedByModel: Record<string, PersistedInferenceParams> = {};
   const patchByModel: Record<string, PersistedInferenceParams> = {};
-  for (const [modelId, entry] of Object.entries(stored ?? {})) {
-    const isActiveCheckpoint =
-      modelId.toLowerCase() === activeCheckpoint.toLowerCase();
+  const storedEntries = Object.entries(stored ?? {});
+  // Prefer an exact key when malformed/legacy storage contains two spellings.
+  // Otherwise normalize the sole case-insensitive match to the checkpoint
+  // spelling used by replay, which indexes the map by exact key.
+  const activeStoredId =
+    storedEntries.find(([modelId]) => modelId === activeCheckpoint)?.[0] ??
+    storedEntries.find(
+      ([modelId]) => modelId.toLowerCase() === activeCheckpoint.toLowerCase(),
+    )?.[0];
+  for (const [modelId, entry] of storedEntries) {
+    const isActiveCheckpoint = modelId === activeStoredId;
     if (
       isActiveCheckpoint &&
       isPresenceBumpQwen(modelId) &&
       isLegacyQwenDefaultSnapshot(entry)
     ) {
-      migratedModelIds.push(modelId);
-      migratedByModel[modelId] = { ...entry, ...currentDefaults };
-      patchByModel[modelId] = changedDefaults(entry, currentDefaults);
+      const normalizedModelId = activeCheckpoint;
+      const migratedEntry = { ...entry, ...currentDefaults };
+      migratedModelIds.push(normalizedModelId);
+      migratedByModel[normalizedModelId] = migratedEntry;
+      patchByModel[normalizedModelId] =
+        modelId === normalizedModelId
+          ? changedDefaults(entry, currentDefaults)
+          : migratedEntry;
     } else {
       migratedByModel[modelId] = entry;
     }
