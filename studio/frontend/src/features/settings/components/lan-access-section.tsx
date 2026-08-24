@@ -31,12 +31,7 @@ import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
-import {
-  Alert02Icon,
-  Copy01Icon,
-  QrCodeIcon,
-  Wifi01Icon,
-} from "@hugeicons/core-free-icons";
+import { Copy01Icon, QrCodeIcon, Wifi01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import QRCode from "react-qr-code";
@@ -222,15 +217,9 @@ function UnauthenticatedApiWarning({ enabled }: { enabled: boolean }) {
     return null;
   }
   return (
-    <output className="mb-3 flex items-start gap-2 rounded-md border border-bypass/30 bg-bypass/10 px-3 py-3 text-xs leading-snug text-foreground">
-      <HugeiconsIcon
-        icon={Alert02Icon}
-        className="size-4 shrink-0 text-bypass"
-      />
-      <span>
-        Trusted networks only. While LAN access is online, anyone on the private
-        network can use loaded models and agent tools on this machine.
-      </span>
+    <output className="mb-3 block text-xs leading-snug text-muted-foreground">
+      Trusted networks only. While LAN access is online, anyone on the private
+      network can use loaded models and agent tools on this machine.
     </output>
   );
 }
