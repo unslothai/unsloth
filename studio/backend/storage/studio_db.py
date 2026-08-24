@@ -4063,7 +4063,9 @@ def _chat_settings_match_expected(current: Any, expected: Any) -> bool:
 
 
 def upsert_chat_settings_merge_if_current(
-    expected: dict[str, Any], updates: dict[str, Any]
+    expected: dict[str, Any],
+    updates: dict[str, Any],
+    expected_absent: Iterable[str] = (),
 ) -> tuple[dict[str, Any], bool]:
     """Atomically merge ``updates`` only if ``expected`` still matches.
 
@@ -4075,7 +4077,8 @@ def upsert_chat_settings_merge_if_current(
     try:
         conn.execute("BEGIN IMMEDIATE")
         current, corrupt = _load_chat_settings_for_merge(conn)
-        if not _chat_settings_match_expected(current, expected):
+        matches_expected = _chat_settings_match_expected(current, expected)
+        if any(key in current for key in expected_absent) or not matches_expected:
             conn.commit()
             return current, False
         unsafe_partial_keys = [

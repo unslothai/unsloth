@@ -506,7 +506,17 @@ class ConditionalChatSettingsPayload(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
     expected: ChatSettingsPayload
+    expectedAbsent: list[str] = Field(default_factory = list)
     patch: ChatSettingsPayload
+
+    @field_validator("expectedAbsent")
+    @classmethod
+    def _known_absent_fields(cls, value: list[str]) -> list[str]:
+        unknown = set(value) - set(ChatSettingsPayload.model_fields)
+        if unknown:
+            unknown_names = ", ".join(sorted(unknown))
+            raise ValueError(f"Unknown chat settings field(s): {unknown_names}")
+        return value
 
 
 class ConditionalChatSettingsResponse(ChatSettingsResponse):
@@ -1477,6 +1487,7 @@ def compare_and_set_settings(
         settings, applied = upsert_chat_settings_merge_if_current(
             payload.expected.model_dump(exclude_unset = True),
             payload.patch.model_dump(exclude_unset = True),
+            payload.expectedAbsent,
         )
         return ConditionalChatSettingsResponse(settings = settings, applied = applied)
     except CorruptSettingsError as exc:

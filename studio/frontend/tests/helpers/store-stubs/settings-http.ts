@@ -69,12 +69,16 @@ export async function authFetch(
   if (url.endsWith("/compare-and-set") && init?.method === "POST") {
     const request = JSON.parse(init.body ?? "{}") as {
       expected: Record<string, unknown>;
+      expectedAbsent?: string[];
       patch: Record<string, unknown>;
     };
     settingsHttp.beforeConditionalApply?.();
     settingsHttp.beforeConditionalApply = null;
     responseSettings = settingsHttp.settings;
-    applied = matchesExpected(settingsHttp.settings, request.expected);
+    applied =
+      (request.expectedAbsent ?? []).every(
+        (key) => !(key in settingsHttp.settings),
+      ) && matchesExpected(settingsHttp.settings, request.expected);
     if (applied) {
       settingsHttp.puts.push(request.patch);
       settingsHttp.settings = deepMerge(settingsHttp.settings, request.patch);

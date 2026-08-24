@@ -504,10 +504,12 @@ export async function savePersistedChatSettingsPatch(
 export async function savePersistedChatSettingsPatchIfCurrent(
   expected: PersistedChatSettings,
   patch: PersistedChatSettings,
+  expectedAbsent: Array<keyof PersistedChatSettings> = [],
 ): Promise<{ settings: PersistedChatSettings; applied: boolean }> {
   const result = await saveChatSettingsPatchIfCurrent(
     sanitizeChatSettings(expected),
     sanitizeChatSettings(patch),
+    expectedAbsent,
   );
   return {
     settings: sanitizeChatSettings(result.settings),

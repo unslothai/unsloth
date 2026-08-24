@@ -3748,8 +3748,24 @@ function qwenMigrationRemembersPerModel(
     : state.rememberParamsPerModel;
 }
 
+const QWEN_MIGRATION_DECISION_FIELDS = [
+  "activePreset",
+  "activePresetSource",
+  "reasoningEnabled",
+  "rememberParamsPerModel",
+  "inferenceParamsByModel",
+] as const satisfies ReadonlyArray<keyof PersistedChatSettings>;
+
+function qwenMigrationExpectedAbsent(
+  settings: PersistedChatSettings,
+): Array<keyof PersistedChatSettings> {
+  return QWEN_MIGRATION_DECISION_FIELDS.filter(
+    (field) => settings[field] === undefined,
+  );
+}
+
 function applyLegacyQwenDefaultsAfterPresetChange(
-  includeOwnedGlobal: boolean,
+  ownedGlobalCheckpoint: string | null,
   migrateOwnedGlobalAlongsideModelMemory: boolean,
 ): void {
   useChatRuntimeStore.setState((state) => {
@@ -3760,6 +3776,8 @@ function applyLegacyQwenDefaultsAfterPresetChange(
       return state;
     }
     const checkpoint = state.params.checkpoint;
+    const includeOwnedGlobal =
+      ownedGlobalCheckpoint?.toLowerCase() === checkpoint.toLowerCase();
     const localSettings = localQwenMigrationSettings(state);
     const migration = migrateLegacyQwenDefaults(
       localSettings,
@@ -3796,11 +3814,11 @@ function applyLegacyQwenDefaultsAfterPresetChange(
 }
 
 async function retryLegacyQwenDefaultsAfterPresetChange(
-  includeOwnedGlobal: boolean,
+  ownedGlobalCheckpoint: string | null,
   migrateOwnedGlobalAlongsideModelMemory: boolean,
 ): Promise<void> {
   applyLegacyQwenDefaultsAfterPresetChange(
-    includeOwnedGlobal,
+    ownedGlobalCheckpoint,
     migrateOwnedGlobalAlongsideModelMemory,
   );
   try {
@@ -3816,6 +3834,9 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
       return;
     }
     const confirmed = await getChatSettings();
+    const includeOwnedGlobal =
+      ownedGlobalCheckpoint?.toLowerCase() ===
+      state.params.checkpoint.toLowerCase();
     const migration = migrateLegacyQwenDefaults(
       confirmed,
       state.params.checkpoint,
@@ -3827,6 +3848,7 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
       await savePersistedChatSettingsPatchIfCurrent(
         confirmed,
         migration.patch,
+        qwenMigrationExpectedAbsent(confirmed),
       );
     }
   } catch {
@@ -3835,14 +3857,25 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
 }
 
 let qwenDefaultsRetryScheduled = false;
-let qwenDefaultsRetryIncludesOwnedGlobal = false;
+let qwenDefaultsRetryOwnedGlobalCheckpoint: string | null = null;
+let qwenDefaultsRetryOwnedGlobalCheckpointConflicted = false;
 let qwenDefaultsRetryMigratesOwnedGlobalAlongsideModelMemory = false;
 
 function scheduleLegacyQwenDefaultsRetry(
-  includeOwnedGlobal: boolean,
-  migrateOwnedGlobalAlongsideModelMemory = includeOwnedGlobal,
+  ownedGlobalCheckpoint: string | null,
+  migrateOwnedGlobalAlongsideModelMemory = ownedGlobalCheckpoint !== null,
 ): void {
-  qwenDefaultsRetryIncludesOwnedGlobal ||= includeOwnedGlobal;
+  if (ownedGlobalCheckpoint !== null) {
+    if (
+      qwenDefaultsRetryOwnedGlobalCheckpoint !== null &&
+      qwenDefaultsRetryOwnedGlobalCheckpoint.toLowerCase() !==
+        ownedGlobalCheckpoint.toLowerCase()
+    ) {
+      qwenDefaultsRetryOwnedGlobalCheckpointConflicted = true;
+    } else if (!qwenDefaultsRetryOwnedGlobalCheckpointConflicted) {
+      qwenDefaultsRetryOwnedGlobalCheckpoint = ownedGlobalCheckpoint;
+    }
+  }
   qwenDefaultsRetryMigratesOwnedGlobalAlongsideModelMemory ||=
     migrateOwnedGlobalAlongsideModelMemory;
   if (qwenDefaultsRetryScheduled) {
@@ -3850,14 +3883,18 @@ function scheduleLegacyQwenDefaultsRetry(
   }
   qwenDefaultsRetryScheduled = true;
   queueMicrotask(() => {
-    const includeScheduledOwnedGlobal = qwenDefaultsRetryIncludesOwnedGlobal;
+    const scheduledOwnedGlobalCheckpoint =
+      qwenDefaultsRetryOwnedGlobalCheckpointConflicted
+        ? null
+        : qwenDefaultsRetryOwnedGlobalCheckpoint;
     const migrateScheduledOwnedGlobalAlongsideModelMemory =
       qwenDefaultsRetryMigratesOwnedGlobalAlongsideModelMemory;
     qwenDefaultsRetryScheduled = false;
-    qwenDefaultsRetryIncludesOwnedGlobal = false;
+    qwenDefaultsRetryOwnedGlobalCheckpoint = null;
+    qwenDefaultsRetryOwnedGlobalCheckpointConflicted = false;
     qwenDefaultsRetryMigratesOwnedGlobalAlongsideModelMemory = false;
     void retryLegacyQwenDefaultsAfterPresetChange(
-      includeScheduledOwnedGlobal,
+      scheduledOwnedGlobalCheckpoint,
       migrateScheduledOwnedGlobalAlongsideModelMemory,
     );
   });
@@ -4116,6 +4153,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
               const persisted = await savePersistedChatSettingsPatchIfCurrent(
                 confirmed,
                 migration.patch,
+                qwenMigrationExpectedAbsent(confirmed),
               );
               migration = {
                 ...migration,
@@ -4317,7 +4355,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     // mode are known and the deferred active-row migration can run safely.
     if (options?.fromModelDefaults === true) {
       scheduleLegacyQwenDefaultsRetry(
-        options.migrateOwnedGlobalQwenDefaults === true,
+        options.migrateOwnedGlobalQwenDefaults === true
+          ? params.checkpoint
+          : null,
         false,
       );
     }
@@ -4348,7 +4388,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // The settings sheet updates provenance before it applies the associated
       // parameter edit. Defer one microtask so a final slider move that restores
       // built-in Default has landed before the migration inspects and flushes it.
-      scheduleLegacyQwenDefaultsRetry(true);
+      scheduleLegacyQwenDefaultsRetry(
+        useChatRuntimeStore.getState().params.checkpoint,
+      );
     }
   },
   setModels: (models) => set({ models }),

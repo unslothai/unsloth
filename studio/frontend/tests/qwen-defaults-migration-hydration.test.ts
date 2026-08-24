@@ -614,6 +614,98 @@ test("a retry cannot overwrite an edit made after its confirming read", async ()
   );
 });
 
+test("a retry fences reasoning added after a confirming read", async () => {
+  const legacySettings = {
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    inferenceParamsByModel: { [QWEN38]: LEGACY_SNAPSHOT },
+  };
+  settingsHttp.getResponses.length = 0;
+  settingsHttp.settings = legacySettings;
+  settingsHttp.puts.length = 0;
+  settingsHttp.beforeConditionalApply = () => {
+    settingsHttp.settings = { ...legacySettings, reasoningEnabled: false };
+  };
+  useChatRuntimeStore.setState((state) => ({
+    params: { ...state.params, ...LEGACY_SNAPSHOT, checkpoint: QWEN38 },
+    paramsByModel: { [QWEN38]: LEGACY_SNAPSHOT },
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    rememberParamsPerModel: true,
+    reasoningAlwaysOn: false,
+    reasoningEnabled: true,
+    settingsHydrated: true,
+  }));
+
+  const state = useChatRuntimeStore.getState();
+  state.setParams(
+    { ...state.params, minP: 0, presencePenalty: 1.5 },
+    { fromModelDefaults: true },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  assert.equal(settingsHttp.puts.length, 0);
+  assert.equal(settingsHttp.settings.reasoningEnabled, false);
+  assert.equal(
+    (
+      settingsHttp.settings.inferenceParamsByModel as Record<
+        string,
+        Record<string, unknown>
+      >
+    )[QWEN38].presencePenalty,
+    0,
+  );
+});
+
+test("deferred global ownership cannot follow a later checkpoint", async () => {
+  settingsHttp.getResponses.length = 0;
+  settingsHttp.settings = {
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    inferenceParams: {
+      temperature: 0.6,
+      topP: 0.95,
+      minP: 0.01,
+      presencePenalty: 0,
+      maxTokens: 8192,
+    },
+  };
+  settingsHttp.puts.length = 0;
+  useChatRuntimeStore.setState((state) => ({
+    params: { ...state.params, ...LEGACY_SNAPSHOT, checkpoint: QWEN38 },
+    paramsByModel: {},
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    rememberParamsPerModel: true,
+    reasoningAlwaysOn: false,
+    reasoningEnabled: true,
+    settingsHydrated: true,
+  }));
+
+  const state = useChatRuntimeStore.getState();
+  state.setParams(
+    { ...state.params, minP: 0, presencePenalty: 1.5 },
+    {
+      fromModelDefaults: true,
+      migrateOwnedGlobalQwenDefaults: true,
+    },
+  );
+  useChatRuntimeStore.setState((current) => ({
+    params: {
+      ...current.params,
+      checkpoint: "unsloth/Qwen3.6-9B-GGUF",
+    },
+    reasoningEnabled: false,
+  }));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const persisted = settingsHttp.settings as {
+    inferenceParams?: { presencePenalty?: number; minP?: number };
+  };
+  assert.equal(persisted.inferenceParams?.presencePenalty, 0);
+  assert.equal(persisted.inferenceParams?.minP, 0.01);
+});
+
 test("local migration preserves an active thread's sampling override", async () => {
   settingsHttp.getResponses.length = 0;
   settingsHttp.settings = {

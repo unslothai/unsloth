@@ -501,6 +501,23 @@ def test_settings_compare_and_set_atomically_applies_a_matching_patch(tmp_path, 
     assert settings["inferenceParams"] == {"temperature": 0.6, "presencePenalty": 1.5}
 
 
+def test_settings_compare_and_set_fences_an_expected_absent_field(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    original = {"inferenceParams": {"presencePenalty": 0.0}}
+    studio_db.upsert_chat_settings_merge(original)
+    studio_db.upsert_chat_settings_merge({"reasoningEnabled": False})
+
+    settings, applied = studio_db.upsert_chat_settings_merge_if_current(
+        original,
+        {"inferenceParams": {"presencePenalty": 1.5}},
+        ["reasoningEnabled"],
+    )
+
+    assert applied is False
+    assert settings["reasoningEnabled"] is False
+    assert settings["inferenceParams"]["presencePenalty"] == 0.0
+
+
 def test_settings_merge_keeps_each_model_s_remembered_params(tmp_path, monkeypatch):
     """Per-model memory patches one model at a time, so the merge has to keep the
     others. Without this, tuning a second model would wipe the first one's settings
