@@ -26,7 +26,11 @@ from studiobench.analysis import behaviour as B  # noqa: E402
 from studiobench.analysis import parity as P  # noqa: E402
 
 
-def _capture(mounted: int, total: int, digest: str = "d") -> dict:
+def _capture(
+    mounted: int,
+    total: int,
+    digest: str = "d",
+) -> dict:
     """A parity capture in the shape scene/parity.js writes one; `mounted < total` is a window."""
     return {
         "parity_attempted": True,
@@ -60,7 +64,14 @@ def _row(action: str, capture: dict, **expect) -> dict:
 # ── the scroll gesture is bounded at both ends, at the extent's own allowance ─────
 
 
-def _scroll_row(mounted, *, fraction = 1.0, bottom = 9_200, commanded = 5_880, client = None):
+def _scroll_row(
+    mounted,
+    *,
+    fraction = 1.0,
+    bottom = 9_200,
+    commanded = 5_880,
+    client = None,
+):
     row = _row(
         "scroll_after",
         _capture(mounted, 18),

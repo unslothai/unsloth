@@ -417,8 +417,10 @@ def scroll_travelled(base_row: dict, treat_row: dict) -> list[dict]:
         # gets the lower bound alone, said in the detail, because a ceiling of zero would fail
         # every correct arm and a ceiling of infinity is what is being fixed.
         ceiling: Optional[float] = None
-        if isinstance(commanded, (int, float)) and commanded > 0 and isinstance(
-            bottom, (int, float)
+        if (
+            isinstance(commanded, (int, float))
+            and commanded > 0
+            and isinstance(bottom, (int, float))
         ):
             ceiling = (commanded + EXTENT_TOLERANCE * abs(bottom)) / commanded
         if fraction is None:
@@ -459,11 +461,7 @@ def scroll_travelled(base_row: dict, treat_row: dict) -> list[dict]:
             "scroll_bottom_agrees",
             None if drift is None else drift <= EXTENT_TOLERANCE,
             f"{what} {b_ext} vs {t_ext}"
-            + (
-                ""
-                if drift is None
-                else f" ({drift:.1%} drift, {EXTENT_TOLERANCE:.0%} allowed)"
-            ),
+            + ("" if drift is None else f" ({drift:.1%} drift, {EXTENT_TOLERANCE:.0%} allowed)"),
         )
     )
     return out
