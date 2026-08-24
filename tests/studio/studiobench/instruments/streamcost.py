@@ -122,13 +122,13 @@ class StreamCostInstrument(_PageInstrument):
         # different quantities -- the growth of the last mounted message against the characters
         # delivered to the page -- and nothing else in the row would tell them so.
         out["reply_chars_source"] = "sse_wire"
-        # ABOUT THE DECODER THAT WAS PENDING AT THE OPEN, named rather than assumed. The two halves
-        # of the refusal below are a buffer and a flush, and they were read at two different
-        # scopes: the buffer belonged to one decoder, the flush counter was page-wide. Since
-        # `send_turn` follows `stop_generation` in every shipped schedule, the abort's orphaned
-        # half frame was routinely paired with a carried flush produced by the NEW response's own
-        # split, and a window that had delivered every one of its characters was refused. Asking
-        # `wireIntegrity` about the open's decoder makes the pair a statement about one response.
+        # ABOUT THE DECODER THAT WAS PENDING AT THE OPEN, named rather than assumed. The refusal
+        # below pairs a buffer with a flush, and the two were read at different scopes: the buffer
+        # belonged to one decoder, the flush counter was page-wide. Since `send_turn` follows
+        # `stop_generation` in every shipped schedule, an abort's orphaned half frame was routinely
+        # paired with a carried flush produced by the NEW response's own split, refusing a window
+        # that had delivered every one of its characters. Naming the open's decoder makes the pair
+        # a statement about one response.
         integrity = (
             self._eval(
                 "(id) => window.__sb.streamcost.wireIntegrity(id)",

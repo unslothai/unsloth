@@ -153,22 +153,21 @@
   //: completes, so it never increments this and never costs the next response its reading.
   //:
   //: PER DECODER, alongside `pending`, and it was page-global on `S` until it was not. `close`
-  //: pairs the buffer that was pending AT THE OPEN with the carried flushes counted ACROSS the
-  //: window, and those were read at two different scopes: the pending buffer belonged to one
-  //: decoder and the counter could be moved by any of them. `stop_generation` leaves the old
-  //: decoder holding half a frame, `send_turn` follows it in all three shipped schedules, and if
-  //: that NEW response was itself split -- which is ordinary, and likeliest exactly when the
-  //: renderer is jammed and reads go ragged -- its own split incremented the shared counter and
-  //: the window was refused for a stale buffer that had never flushed. Measured before this
-  //: change: a two-chunk reply after an abort delivered all 13 of its characters inside the
-  //: window and was refused anyway, while the same traffic with no abort in front of it was
-  //: accepted. The loss is biased against the most expensive windows, in the flattering direction.
+  //: pairs the buffer pending AT THE OPEN with the flushes carried ACROSS the window, and those
+  //: were read at two scopes: the buffer belonged to one decoder, the counter to all of them.
+  //: `stop_generation` leaves the old decoder holding half a frame and `send_turn` follows it in
+  //: all three shipped schedules, so if that NEW response was itself split -- ordinary, and
+  //: likeliest exactly when the renderer is jammed -- its own split moved the shared counter and
+  //: the window was refused for a stale buffer that never flushed. Measured before this change: a
+  //: two-chunk reply after an abort delivered all 13 of its characters inside the window and was
+  //: refused, while the same traffic without the abort was accepted. The loss is biased against
+  //: the most expensive windows, in the flattering direction.
   const CARRIED_BY_ID = new Map();
-  //: A bounded history, on the same discipline as `MAX_PENDING_CHARS`. `close` has to ask about
-  //: the decoder that was pending when the window OPENED, which by then may no longer be the
-  //: active one and may have been collected, so its count cannot live only in the `WeakMap`. This
-  //: map is keyed by an integer and holds no reference to any `TextDecoder`, so it cannot defeat
-  //: the weak scoping above; it is trimmed so a long film cannot grow it without limit.
+  //: A bounded history, on the same discipline as `MAX_PENDING_CHARS`. `close` asks about the
+  //: decoder pending when the window OPENED, which by then may be neither active nor alive, so
+  //: the count cannot live only in the `WeakMap`. Keyed by an integer and holding no reference to
+  //: any `TextDecoder`, so it cannot defeat the weak scoping above, and trimmed so a long film
+  //: cannot grow it without limit.
   const MAX_DECODER_HISTORY = 64;
   let DECODER_SEQ = 0;
   const noteCarried = (st) => {
@@ -203,10 +202,9 @@
   //: `wireIntegrity` reports THIS buffer: half a frame of the response being measured is a short
   //: denominator and must refuse the window, while half a frame of a response that was aborted
   //: three slots ago says nothing about it.
-  //: Built by `newState()` rather than by hand, and that is load-bearing: a sentinel missing the
-  //: fields every real decoder state carries reads `undefined` on any window that opens before the
-  //: first stream, and `undefined` is not zero. Its id is a real one from the same sequence, so
-  //: `carriedFor` can answer about it like any other.
+  //: Built by `newState()` rather than by hand: a sentinel missing any field a real decoder state
+  //: carries reads `undefined` on a window that opens before the first stream, and `undefined` is
+  //: not zero. Its id comes from the same sequence, so `carriedFor` answers about it like any other.
   let active = newState();
   //: The decoder holding a speculative marker fragment, if any, and there is only ever one worth
   //: holding. A fragment is at most four characters and lives on the decoder that produced it, but
@@ -587,13 +585,12 @@
     // The two things that can make `wireChars` short by an unknown amount, read at the same O(1)
     // cost as the counter itself so a window boundary can capture both ends.
     // `forId` names the decoder to answer about, which `close` passes back from what `open`
-    // sampled. WHOSE BUFFER AND WHOSE FLUSH HAVE TO BE THE SAME DECODER, and reporting the active
-    // one at both ends is not enough to make them so: the response that was pending at the open
-    // can complete its carried frame inside the window and then be replaced as active before the
-    // close, and a comparison of the two ends' ids would call that a mismatch and discard the very
-    // carry it is looking for. Asking about the named decoder answers regardless of who is active
-    // now, so a window that really did count characters delivered before it opened is still
-    // refused.
+    // sampled. WHOSE BUFFER AND WHOSE FLUSH HAVE TO BE THE SAME DECODER, and reading the active
+    // one at both ends does not make them so: the decoder pending at the open can complete its
+    // carried frame inside the window and be replaced as active before the close, and comparing
+    // the two ends' ids would call that a mismatch and discard the very carry it looks for.
+    // Naming the decoder answers regardless of who is active now, so a window that really did
+    // count characters delivered before it opened is still refused.
     wireIntegrity(forId) {
       // The marker fragment counts as buffered, because it is: the frame it begins has not been
       // counted yet, so a window closing on it has a denominator that is short by that frame. The
