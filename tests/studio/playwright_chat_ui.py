@@ -29,6 +29,7 @@ from _playwright_robust import (  # noqa: E402
     recover_or_replace_page,
     robust_evaluate,
     wait_for_health,
+    click_forced,
 )
 
 BASE = os.environ["BASE_URL"]
@@ -1607,7 +1608,7 @@ with sync_playwright() as p:
             opened = False
             for attempt in range(2):
                 try:
-                    acct.click(force = True)
+                    click_forced(acct)
                 except Exception as exc:
                     if attempt == 1:
                         soft_fail(f"theme cycle {cycle + 1}: account-menu click failed ({exc!r})")
@@ -1641,10 +1642,10 @@ with sync_playwright() as p:
             for click_attempt in range(3):
                 try:
                     if click_attempt == 0:
-                        theme_item.click(force = True, timeout = 3_000)
+                        click_forced(theme_item, timeout = 3_000)
                     elif click_attempt == 1:
                         theme_item.scroll_into_view_if_needed(timeout = 2_000)
-                        theme_item.click(force = True, timeout = 3_000)
+                        click_forced(theme_item, timeout = 3_000)
                     else:
                         theme_item.evaluate("el => el.click()")
                     click_err = None
@@ -1739,7 +1740,7 @@ with sync_playwright() as p:
                 page.wait_for_timeout(500)
                 item = page.get_by_role("menuitem", name = re.compile(label, re.I)).first
                 if item.count() == 0:
-                    more_btn.click(force = True)
+                    click_forced(more_btn)
                     page.wait_for_timeout(500)
                     item = page.get_by_role("menuitem", name = re.compile(label, re.I)).first
                 if item.count() > 0:
@@ -1752,7 +1753,7 @@ with sync_playwright() as p:
         # though the button is visible + enabled (belt-and-suspenders
         # atop the startViewTransition neutraliser).
         try:
-            btn.click(force = True, timeout = 5_000)
+            click_forced(btn, timeout = 5_000)
         except Exception as exc:
             soft_fail(f"nav '{label}' click failed: {exc!r}")
             return False
@@ -1770,7 +1771,7 @@ with sync_playwright() as p:
     # Compare moved into the composer "Tools and attachments" menu.
     plus_btn = page.get_by_role("button", name = re.compile(r"Tools and attachments", re.I)).first
     if plus_btn.count() > 0:
-        plus_btn.click(force = True)
+        click_forced(plus_btn)
         page.wait_for_timeout(400)
         compare_item = page.get_by_role("menuitem", name = re.compile(r"Compare chat", re.I)).first
         if compare_item.count() == 0:
@@ -1784,13 +1785,13 @@ with sync_playwright() as p:
                     "menuitem", name = re.compile(r"Compare chat", re.I)
                 ).first
                 if compare_item.count() == 0:
-                    more_trigger.click(force = True)
+                    click_forced(more_trigger)
                     page.wait_for_timeout(400)
                     compare_item = page.get_by_role(
                         "menuitem", name = re.compile(r"Compare chat", re.I)
                     ).first
         if compare_item.count() > 0:
-            compare_item.click(force = True)
+            click_forced(compare_item)
             page.wait_for_timeout(800)
             if not re.search(r"/chat\?", page.url):
                 soft_fail(f"'Compare chat' didn't open compare; current: {page.url}")

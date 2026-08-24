@@ -134,6 +134,8 @@ import {
   ResearchActivityPanel,
   ResearchActivitySheet,
 } from "./components/research-activity-panel";
+import { ChatModelNotice } from "./components/chat-model-notice";
+import { chatModelSwitchMeta } from "./components/chat-model-notice-switch";
 import { ContextUsageBar } from "./components/context-usage-bar";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
 import { ProjectSwitcher } from "./components/project-switcher";
@@ -207,6 +209,7 @@ import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { buildChatTourSteps } from "./tour";
 import type { ChatView, MessageRecord } from "./types";
 import { clearNewChatDraft } from "./utils/composer-draft";
+import { isChatThreadDeleted } from "./utils/chat-thread-tombstones";
 import {
   getStoredChatThread,
   isExpectedBackgroundChatStorageError,
@@ -300,15 +303,11 @@ const ARTIFACT_SURFACE_POP_DELAY_MS = 150;
 
 const SingleContent = memo(function SingleContent({
   threadId,
-  newThreadNonce,
-  projectId,
   artifact,
   artifactSurface,
   onCloseArtifact,
 }: {
   threadId?: string;
-  newThreadNonce?: string;
-  projectId?: string | null;
   artifact?: ChatArtifact | null;
   artifactSurface: ChatArtifactSurface;
   onCloseArtifact: () => void;
@@ -418,13 +417,7 @@ const SingleContent = memo(function SingleContent({
   );
 
   return (
-    <ChatRuntimeProvider
-      modelType="base"
-      initialThreadId={threadId}
-      newThreadNonce={newThreadNonce}
-      projectId={projectId}
-      listThreads={false}
-    >
+    <>
       <ResizablePanelGroup
         orientation="horizontal"
         data-artifact-layout-animating={
@@ -512,7 +505,7 @@ const SingleContent = memo(function SingleContent({
           }}
         />
       ) : null}
-    </ChatRuntimeProvider>
+    </>
   );
 });
 
@@ -610,6 +603,7 @@ function ComparePane({
   handleName,
   header,
   borderClassName,
+  onInitialHistoryReady,
 }: {
   modelType: "base" | "lora" | "model1" | "model2";
   pairId: string;
@@ -618,7 +612,15 @@ function ComparePane({
   handleName: string;
   header: ReactElement;
   borderClassName?: string;
+  onInitialHistoryReady?: (pane: string) => void;
 }): ReactElement {
+  const signalInitialHistoryReady = useMemo(
+    () =>
+      onInitialHistoryReady
+        ? () => onInitialHistoryReady(modelType)
+        : undefined,
+    [modelType, onInitialHistoryReady],
+  );
   return (
     <div
       className={cn(
@@ -634,12 +636,39 @@ function ComparePane({
           projectId={projectId}
           initialThreadId={initialThreadId}
           syncActiveThreadId={false}
+          onInitialHistoryReady={signalInitialHistoryReady}
         >
           <RegisterCompareHandle name={handleName} />
           <Thread hideComposer={true} hideWelcome={true} />
         </ChatRuntimeProvider>
       </div>
     </div>
+  );
+}
+
+function useCompareReloadReadiness(pairId: string): (pane: string) => void {
+  const stateRef = useRef({
+    pairId,
+    panes: new Set<string>(),
+    sent: false,
+  });
+  if (stateRef.current.pairId !== pairId) {
+    stateRef.current = { pairId, panes: new Set<string>(), sent: false };
+  }
+  return useCallback(
+    (pane: string) => {
+      const state = stateRef.current;
+      if (state.pairId !== pairId || state.sent) {
+        return;
+      }
+      state.panes.add(pane);
+      if (state.panes.size < 2) {
+        return;
+      }
+      state.sent = true;
+      window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+    },
+    [pairId],
   );
 }
 
@@ -699,15 +728,29 @@ const LoraCompareContent = memo(function LoraCompareContent({
   const handlesRef = useRef<Record<string, CompareHandle>>({});
   const [baseThreadId, setBaseThreadId] = useState<string>();
   const [loraThreadId, setLoraThreadId] = useState<string>();
+  const [threadsSettled, setThreadsSettled] = useState(false);
+  const markInitialHistoryReady = useCompareReloadReadiness(pairId);
   const active = useChatActive();
 
-  const compareRunning = useChatRuntimeStore(
+  // Global on purpose: a first compare run starts before either thread exists, so there is
+  // no pair id to scope BY -- it files its handles under "__default" until initialize()
+  // persists the row. And the gate has to exist at all because these ids feed ComparePane's
+  // `initialThreadId`, so learning them mid-run points ThreadAutoSwitch at a thread that is
+  // still generating.
+  const anyRunning = useChatRuntimeStore(
     (s) => Object.keys(s.runningByThreadId).length > 0,
   );
+  // ...but only RE-lists wait. The shared provider (#8908) keeps a base chat's run alive
+  // across the switch into compare, so `anyRunning` is true on arrival for a reason that has
+  // nothing to do with this pair, and gating the FIRST list on it left an existing compare on
+  // blank runtimes with no later edge to recover on. That list has nothing to clobber.
+  const listedPairRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (compareRunning) return;
+    if (anyRunning && listedPairRef.current === pairId) return;
+    listedPairRef.current = pairId;
     let isActive = true;
+    setThreadsSettled(false);
     listStoredChatThreads({ pairId })
       .then((threads) => {
         if (!isActive) return;
@@ -718,11 +761,25 @@ const LoraCompareContent = memo(function LoraCompareContent({
         if (!isExpectedBackgroundChatStorageError(error)) {
           throw error;
         }
+      })
+      .finally(() => {
+        if (isActive) setThreadsSettled(true);
       });
     return () => {
       isActive = false;
     };
-  }, [pairId, compareRunning]);
+  }, [pairId, anyRunning]);
+
+  useEffect(() => {
+    if (!threadsSettled) return;
+    if (!baseThreadId) markInitialHistoryReady("base");
+    if (!loraThreadId) markInitialHistoryReady("lora");
+  }, [
+    baseThreadId,
+    loraThreadId,
+    markInitialHistoryReady,
+    threadsSettled,
+  ]);
 
   return (
     <CompareShell
@@ -747,6 +804,9 @@ const LoraCompareContent = memo(function LoraCompareContent({
           projectId={projectId}
           initialThreadId={baseThreadId}
           handleName="base"
+          onInitialHistoryReady={
+            threadsSettled ? markInitialHistoryReady : undefined
+          }
           header={
             <div className="shrink-0 px-3 py-1.5">
               <span className="text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground">
@@ -761,6 +821,9 @@ const LoraCompareContent = memo(function LoraCompareContent({
           projectId={projectId}
           initialThreadId={loraThreadId}
           handleName="lora"
+          onInitialHistoryReady={
+            threadsSettled ? markInitialHistoryReady : undefined
+          }
           borderClassName="border-t border-border/60 md:border-t-0 md:border-l"
           header={
             <div className="shrink-0 px-3 py-1.5 text-start md:text-end md:pr-[calc(4rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]">
@@ -874,14 +937,19 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   const handlesRef = useRef<Record<string, CompareHandle>>({});
   const [model1ThreadId, setModel1ThreadId] = useState<string>();
   const [model2ThreadId, setModel2ThreadId] = useState<string>();
+  const [threadsSettled, setThreadsSettled] = useState(false);
+  const markInitialHistoryReady = useCompareReloadReadiness(pairId);
 
   const globalCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const globalGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const globalIsDiffusion = useChatRuntimeStore((s) => s.loadedIsDiffusion);
   const active = useChatActive();
-  const compareRunning = useChatRuntimeStore(
+  // Global, with only RE-lists waiting on it; see the note on the Lora variant above for
+  // why a first compare run cannot be scoped by pair, and why the first list must not wait.
+  const anyRunning = useChatRuntimeStore(
     (s) => Object.keys(s.runningByThreadId).length > 0,
   );
+  const listedPairRef = useRef<string | null>(null);
   const [model1, setModel1] = useState<CompareModelSelection>({
     id: globalCheckpoint || "",
     isLora: false,
@@ -907,8 +975,10 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   );
 
   useEffect(() => {
-    if (compareRunning) return;
+    if (anyRunning && listedPairRef.current === pairId) return;
+    listedPairRef.current = pairId;
     let isActive = true;
+    setThreadsSettled(false);
     listStoredChatThreads({ pairId })
       .then((threads) => {
         if (!isActive) return;
@@ -927,11 +997,25 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
         if (!isExpectedBackgroundChatStorageError(error)) {
           throw error;
         }
+      })
+      .finally(() => {
+        if (isActive) setThreadsSettled(true);
       });
     return () => {
       isActive = false;
     };
-  }, [pairId, compareRunning]);
+  }, [pairId, anyRunning]);
+
+  useEffect(() => {
+    if (!threadsSettled) return;
+    if (!model1ThreadId) markInitialHistoryReady("model1");
+    if (!model2ThreadId) markInitialHistoryReady("model2");
+  }, [
+    markInitialHistoryReady,
+    model1ThreadId,
+    model2ThreadId,
+    threadsSettled,
+  ]);
 
   return (
     <CompareShell
@@ -958,6 +1042,9 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
           projectId={projectId}
           initialThreadId={model1ThreadId}
           handleName="model1"
+          onInitialHistoryReady={
+            threadsSettled ? markInitialHistoryReady : undefined
+          }
           header={
             <GeneralCompareHeader
               side="left"
@@ -989,6 +1076,9 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
           projectId={projectId}
           initialThreadId={model2ThreadId}
           handleName="model2"
+          onInitialHistoryReady={
+            threadsSettled ? markInitialHistoryReady : undefined
+          }
           borderClassName="border-t border-sidebar-border md:border-t-0 md:border-l"
           header={
             <GeneralCompareHeader
@@ -1119,17 +1209,32 @@ function ProjectLanding({
   projectId,
   projectName,
   items,
+  newThreadNonce,
+  rotateNewThreadNonce,
+  dataLoaded,
+  runtimeReady,
 }: {
   projectId: string;
   projectName: string;
   items: SidebarItem[];
+  newThreadNonce: string;
+  rotateNewThreadNonce: () => void;
+  dataLoaded: boolean;
+  // #9251 holds the reload shell until the landing can be drawn. Its provider is hoisted
+  // above the view switch now (#8908), so the owner of that one reports readiness down.
+  runtimeReady: boolean;
 }): ReactElement {
   const navigate = useNavigate();
   // Gates body-portaled surfaces so they can't linger or act while the landing
   // is off-route (e.g. behind another tab).
   const active = useChatActive();
+  const wasActiveRef = useRef(active);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
-  const initialActiveThreadRef = useRef<string | null>(null);
+  // Captured in render, not an effect: the shared provider's ThreadNewChatSwitch is an
+  // earlier sibling, so its mount effect blanks activeThreadId before an effect here runs.
+  const [initialActiveThreadId] = useState(
+    () => useChatRuntimeStore.getState().activeThreadId,
+  );
   // Land on Sources when the project was just created with dropped files.
   const [projectTab, setProjectTab] = useState<"chats" | "sources">(() =>
     hasProjectSourcesPending(projectId) ? "sources" : "chats",
@@ -1141,12 +1246,10 @@ function ProjectLanding({
   const [pendingNewThreadId, setPendingNewThreadId] = useState<string | null>(
     null,
   );
-  const [newThreadNonce, setNewThreadNonce] = useState(() =>
-    createThreadNonce(),
-  );
   const [previews, setPreviews] = useState<
     Record<string, { snippet: string; date: string }>
   >({});
+  const reloadReadySent = useRef(false);
   // Inline rename, mirroring the sidebar recent-row UX: edit the title in place,
   // commit on Enter/blur, cancel on Escape. Reuses the projectId-agnostic
   // renameChatItem so behavior matches the sidebar.
@@ -1214,15 +1317,13 @@ function ProjectLanding({
   }
 
   useEffect(() => {
-    initialActiveThreadRef.current =
-      useChatRuntimeStore.getState().activeThreadId;
     useChatRuntimeStore.getState().setActiveThreadId(null);
     useChatRuntimeStore.getState().setContextUsage(null);
     setPendingNewThreadId(null);
-    setNewThreadNonce(createThreadNonce());
+    rotateNewThreadNonce();
     setRenamingId(null);
     setPendingRename(null);
-  }, [projectId]);
+  }, [projectId, rotateNewThreadNonce]);
 
   useEffect(() => {
     if (!pendingRename) return;
@@ -1382,16 +1483,35 @@ function ProjectLanding({
   }, [newThreadNonce]);
 
   useEffect(() => {
+    const resumed = active && !wasActiveRef.current;
+    wasActiveRef.current = active;
+    if (!active) {
+      return;
+    }
     if (!activeThreadId) {
+      if (resumed && pendingNewThreadId) {
+        // ...unless it was deleted while another view held the screen. Nothing else clears this
+        // id: it is component state, so the sidebar's global delete cannot reach it, and compare
+        // does not hold the chat as the active id either. Restoring a tombstoned thread would put
+        // a conversation storage no longer has back on screen with a composer pointed at it. Fall
+        // through to the rotate below, which is what a landing owning no chat looks like.
+        if (!isChatThreadDeleted(pendingNewThreadId)) {
+          useChatRuntimeStore.getState().setActiveThreadId(pendingNewThreadId);
+          return;
+        }
+      }
       // Leaving a created chat for a new one: rotate the nonce so the runtime
       // switches to a fresh thread instead of appending to the old chat.
       if (pendingNewThreadId) {
-        setNewThreadNonce(createThreadNonce());
+        rotateNewThreadNonce();
         setPendingNewThreadId(null);
       }
       return;
     }
-    if (activeThreadId === initialActiveThreadRef.current) {
+    if (
+      activeThreadId === initialActiveThreadId ||
+      activeThreadId === pendingNewThreadId
+    ) {
       return;
     }
     // Hand the composer's attach choice to the chat it just created: setting
@@ -1407,7 +1527,14 @@ function ProjectLanding({
         captured?.nonce === newThreadNonce ? captured.claim : NO_SUCH_CLAIM,
       );
     setPendingNewThreadId(activeThreadId);
-  }, [activeThreadId, pendingNewThreadId, newThreadNonce]);
+  }, [
+    active,
+    activeThreadId,
+    initialActiveThreadId,
+    pendingNewThreadId,
+    newThreadNonce,
+    rotateNewThreadNonce,
+  ]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1454,13 +1581,22 @@ function ProjectLanding({
     };
   }, [items]);
 
+  useEffect(() => {
+    const previewsReady = items.every((item) => previews[item.id] !== undefined);
+    if (
+      !dataLoaded ||
+      !runtimeReady ||
+      !previewsReady ||
+      reloadReadySent.current
+    ) {
+      return;
+    }
+    reloadReadySent.current = true;
+    window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+  }, [dataLoaded, items, previews, runtimeReady]);
+
   return (
-    <ChatRuntimeProvider
-      key={projectId}
-      projectId={projectId}
-      newThreadNonce={newThreadNonce}
-      listThreads={false}
-    >
+    <>
       {pendingNewThreadId ? (
         <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
           <Thread hideWelcome={true} targetThreadId={pendingNewThreadId} />
@@ -1909,7 +2045,7 @@ function ProjectLanding({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </ChatRuntimeProvider>
+    </>
   );
 }
 
@@ -2078,9 +2214,10 @@ export function ChatPage({
   const currentProject = currentProjectId
     ? (projects.find((project) => project.id === currentProjectId) ?? null)
     : null;
-  const { items: currentProjectItems } = useChatSidebarItems({
+  const { items: currentProjectItems, loaded: currentProjectItemsLoaded } =
+    useChatSidebarItems({
     projectId: currentProjectId ?? "__no_project_selected__",
-  });
+    });
   const currentChatTitle = activeThreadId
     ? currentProjectItems.find((item) => item.id === activeThreadId)?.title
     : undefined;
@@ -2112,6 +2249,23 @@ export function ChatPage({
   const persistedActiveThreadId = isAssistantLocalThreadId(activeThreadId)
     ? null
     : activeThreadId;
+  // A ?new=<nonce> chat has no thread in the URL before or after its first send, so the
+  // model notice never saw the row that send created. The store does learn the id, but
+  // for the first render it still holds the PREVIOUS chat's, until ThreadNewChatSwitch
+  // blanks it in an effect -- using it then would show the previous chat's notice here.
+  // So latch on having seen it blanked for this nonce; before the first send there is
+  // nothing to offer anyway.
+  const newChatBlankedRef = useRef<string | null>(null);
+  if (
+    search.new &&
+    (activeThreadId === null || isAssistantLocalThreadId(activeThreadId))
+  ) {
+    newChatBlankedRef.current = search.new;
+  }
+  const newChatThreadId =
+    search.new && newChatBlankedRef.current === search.new
+      ? persistedActiveThreadId
+      : null;
   const modelOperationInProgress = useChatRuntimeStore(
     (state) => state.modelLoading,
   );
@@ -2482,6 +2636,13 @@ export function ChatPage({
     currentProjectId,
   ]);
 
+  const [projectNewThreadNonce, setProjectNewThreadNonce] = useState(() =>
+    createThreadNonce(),
+  );
+  const rotateProjectNewThreadNonce = useCallback(() => {
+    setProjectNewThreadNonce(createThreadNonce());
+  }, []);
+
   // Temporary chat only applies to a fresh single-view chat. Exit incognito
   // when we land on anything else (compare, a project, or an existing thread
   // via sidebar/deep link/back), so the toggle isn't stranded and the UI
@@ -2509,6 +2670,36 @@ export function ChatPage({
     view.mode === "single" && !search.thread && !search.new && !search.project
       ? "single:implicit"
       : artifactViewKey;
+
+  // Compare replaces the shared provider on screen, so the base view is kept mounted
+  // behind it (hidden + inert): unmounting runs useLocalRuntime's detach(), the backend
+  // cancels on the disconnect, and a project chat's run would die on opening a compare
+  // chat. Frozen to the last non-compare view so the provider's props don't churn.
+  const keptBaseViewRef = useRef<{
+    view: Exclude<ChatView, { mode: "compare" }>;
+    attachmentTargetKey: string;
+  } | null>(null);
+  if (view.mode !== "compare") {
+    keptBaseViewRef.current = { view, attachmentTargetKey: artifactViewKey };
+  }
+  const baseView = keptBaseViewRef.current?.view ?? null;
+  const baseAttachmentTargetKey =
+    keptBaseViewRef.current?.attachmentTargetKey ?? artifactViewKey;
+  const baseBackgrounded = view.mode === "compare";
+
+  // #9251's reload signal, taken here because the provider is hoisted. Stored as the
+  // project it belongs to, not a boolean: the hoisted provider is not remounted when the
+  // project changes, so a flag would stay true and release the next landing's shell early.
+  const projectLandingId =
+    baseView?.mode === "project" ? baseView.projectId : null;
+  const [projectRuntimeReadyFor, setProjectRuntimeReadyFor] = useState<
+    string | null
+  >(null);
+  const markProjectRuntimeReady = useCallback(() => {
+    setProjectRuntimeReadyFor(projectLandingId);
+  }, [projectLandingId]);
+  const projectRuntimeReady =
+    projectLandingId !== null && projectRuntimeReadyFor === projectLandingId;
 
   useEffect(() => {
     clearAutoOpenedArtifacts();
@@ -2743,14 +2934,34 @@ export function ChatPage({
     },
     [artifactViewKey],
   );
+  const handleNativeOpenDocumentDrop = useCallback(
+    (intents: NativeIntent[]) => {
+      useNativeIntentStore
+        .getState()
+        .addOpenDocumentAttachments(artifactViewKey, intents);
+    },
+    [artifactViewKey],
+  );
   const handleNativeAudioDrop = useCallback(
     (intents: NativeIntent[]) => {
       useNativeIntentStore.getState().addAudioAttachments(artifactViewKey, intents);
     },
     [artifactViewKey],
   );
+  const handleNativeVideoDrop = useCallback(
+    (intents: NativeIntent[]) => {
+      useNativeIntentStore.getState().addVideoAttachments(artifactViewKey, intents);
+    },
+    [artifactViewKey],
+  );
   const nativeModelDropState = useNativeModelDrop({
-    enabled: active && view.mode === "single",
+    // Compare used to disable this outright, so a drop there vanished with no overlay
+    // and no message (#9036). Keep listening and refuse out loud, models included.
+    enabled: active,
+    dropsUnsupportedReason:
+      view.mode === "single"
+        ? undefined
+        : "Dropped files need a single chat. Open one, then drop it there.",
     attachmentScope,
     attachmentTargetKey: artifactViewKey,
     nativePathLeasesSupported,
@@ -2759,7 +2970,9 @@ export function ChatPage({
     onAutoLoad: handleNativeModelDropAutoLoad,
     onAttach: handleNativeAttachmentDrop,
     onAttachImages: handleNativeImageDrop,
+    onAttachOpenDocuments: handleNativeOpenDocumentDrop,
     onAttachAudio: handleNativeAudioDrop,
+    onAttachVideo: handleNativeVideoDrop,
   });
 
   const handleCheckpointChange = useCallback(
@@ -3263,6 +3476,32 @@ export function ChatPage({
     return [...fromLoras, ...localModels];
   }, [lorasFromStore, localModels]);
 
+  // Everything the picker can offer right now, so the chat's own model is only proposed
+  // when selecting it would work: a deleted model or removed connection drops out.
+  const selectableModelIds = useMemo(
+    () =>
+      new Set<string>([
+        ...models.map((model) => model.id),
+        ...loraModels.map((model) => model.id),
+        ...externalModels.map((model) => model.id),
+      ]),
+    [models, loraModels, externalModels],
+  );
+
+  // The picker's own handler, reached the way the picker reaches it: with the row's
+  // metadata, not the bare id. A local or fine-tuned row is in neither
+  // `/api/models/list` nor the external ids, so without it the switch loads on
+  // different arguments than the menu would.
+  const handleSwitchBackToChatModel = useCallback(
+    (modelId: string) => {
+      handleCheckpointChange(
+        modelId,
+        chatModelSwitchMeta(modelId, loraModels),
+      );
+    },
+    [handleCheckpointChange, loraModels],
+  );
+
   const inventoryRefreshStartedRef = useRef(false);
   const refreshDeferredModelInventories = useCallback(() => {
     inventoryRefreshStartedRef.current = true;
@@ -3425,14 +3664,18 @@ export function ChatPage({
           render their own copy and the shared-composer menu would have none. It
           also portals to body, so gate it on `active` like the tour above. */}
       {active && <BypassPermissionsConfirmDialog />}
-      <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
+      {/* `--studio-chat-notice-height` is 0 until ChatModelNotice is on screen; the
+          thread viewport adds it to the top padding it reserves for the header, so
+          without it the first message reads under an opaque bar. Declared on the
+          nearest ancestor of BOTH so the two cannot disagree about its height. */}
+      <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden has-[[data-chat-model-notice]]:[--studio-chat-notice-height:2.25rem]">
         <NativeModelDropOverlay state={nativeModelDropState} />
         {/* Fade under the top bar so messages dissolve as they scroll
             beneath it, instead of a hard cut. */}
         {view.mode !== "compare" && (
           <div
             aria-hidden
-            className="chat-header-fade pointer-events-none absolute left-0 right-[10px] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px))] z-20 h-6 bg-gradient-to-b from-background to-transparent"
+            className="chat-header-fade pointer-events-none absolute left-0 right-[10px] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px)+var(--studio-chat-notice-height,0px))] z-20 h-6 bg-gradient-to-b from-background to-transparent"
           />
         )}
         <div
@@ -3678,32 +3921,78 @@ export function ChatPage({
           </div>
         </div>
 
-        {view.mode === "project" ? (
-          <ProjectLanding
-            key={view.projectId}
-            projectId={view.projectId}
-            projectName={currentProject?.name ?? "Project"}
-            items={currentProjectItems}
+        {view.mode === "single" && (
+          <ChatModelNotice
+            threadId={view.threadId ?? newChatThreadId ?? undefined}
+            checkpoint={inferenceParams.checkpoint}
+            selectableModelIds={selectableModelIds}
+            onSwitch={handleSwitchBackToChatModel}
           />
-        ) : view.mode === "single" ? (
-          // Keyed by project only (not thread / new-chat nonce) so switching threads or
-          // starting a New Chat reuses the same provider and switches in place. This keeps
-          // an in-flight generation streaming in the background (assistant-ui keeps every
-          // alive thread's runtime mounted) instead of remounting the provider and cutting
-          // it off; returning to that thread reattaches the live run rather than reloading
-          // a half-saved one.
-          <NativeAttachmentTargetContext.Provider value={artifactViewKey}>
-            <SingleContent
-              key={view.projectId ?? "single"}
-              threadId={view.threadId}
-              newThreadNonce={view.newThreadNonce}
-              projectId={view.projectId}
-              artifact={selectedArtifact}
-              artifactSurface={artifactSurface}
-              onCloseArtifact={closeArtifactSurface}
-            />
-          </NativeAttachmentTargetContext.Provider>
-        ) : (
+        )}
+
+        {/* One provider shared by the project and single views, never keyed on thread /
+            nonce / project, so switching between them reattaches the live run instead of
+            remounting the runtime and aborting generation (#8908). Any key here brings
+            the bug back. Compare renders as a sibling, not in its place, so it hides
+            this rather than unmounting it -- ComparePane builds its own providers and
+            useRemoteThreadListRuntime throws when they nest. */}
+        {baseView ? (
+          <div
+            className={
+              baseBackgrounded
+                ? "hidden"
+                : "flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden"
+            }
+            inert={baseBackgrounded || undefined}
+          >
+            <ChatActiveContext.Provider value={active && !baseBackgrounded}>
+              <ChatRuntimeProvider
+                modelType="base"
+                projectId={baseView.projectId}
+                initialThreadId={
+                  baseView.mode === "single" ? baseView.threadId : undefined
+                }
+                newThreadNonce={
+                  baseView.mode === "project"
+                    ? projectNewThreadNonce
+                    : baseView.newThreadNonce
+                }
+                listThreads={false}
+                backgrounded={baseBackgrounded}
+                onInitialHistoryReady={
+                  baseView.mode === "project"
+                    ? markProjectRuntimeReady
+                    : undefined
+                }
+              >
+                {baseView.mode === "project" ? (
+                  <ProjectLanding
+                    key={baseView.projectId}
+                    projectId={baseView.projectId}
+                    projectName={currentProject?.name ?? "Project"}
+                    items={currentProjectItems}
+                    newThreadNonce={projectNewThreadNonce}
+                    rotateNewThreadNonce={rotateProjectNewThreadNonce}
+                    dataLoaded={currentProjectItemsLoaded && !projectsLoading}
+                    runtimeReady={projectRuntimeReady}
+                  />
+                ) : (
+                  <NativeAttachmentTargetContext.Provider
+                    value={baseAttachmentTargetKey}
+                  >
+                    <SingleContent
+                      threadId={baseView.threadId}
+                      artifact={selectedArtifact}
+                      artifactSurface={artifactSurface}
+                      onCloseArtifact={closeArtifactSurface}
+                    />
+                  </NativeAttachmentTargetContext.Provider>
+                )}
+              </ChatRuntimeProvider>
+            </ChatActiveContext.Provider>
+          </div>
+        ) : null}
+        {view.mode === "compare" ? (
           <CompareContent
             key={view.pairId}
             pairId={view.pairId}
@@ -3717,7 +4006,7 @@ export function ChatPage({
             deleteDisabled={modelOperationInProgress}
             onExitCompare={exitCompare}
           />
-        )}
+        ) : null}
 
         {active && showArtifactOverlay && selectedArtifact ? (
           <ArtifactSurface

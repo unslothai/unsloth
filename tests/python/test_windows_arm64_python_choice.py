@@ -15,10 +15,11 @@ from __future__ import annotations
 import os
 import re
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
+
+from unsloth_pwsh_runner import run_pwsh
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -114,7 +115,10 @@ if ($found) {{ Write-Output "$($found.Version)|$($found.Arch)" }} else {{ Write-
 
 
 def _pwsh(script: str) -> str:
-    result = subprocess.run(
+    # Every ARM64 case below is decided by the one "version|arch" line this run prints,
+    # and check = True means a pwsh that aborts at startup would surface as the resolver
+    # block itself throwing.
+    result = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
         check = True,
         capture_output = True,

@@ -400,6 +400,8 @@ export function ModelsPage() {
   const activeGgufContextLength = useChatRuntimeStore(
     (s) => s.ggufContextLength,
   );
+  const [initialResidentStatusSettled, setInitialResidentStatusSettled] =
+    useState(false);
   // Live settings of the loaded model, so its page shows what it is running with.
   const { config: activeModelConfig } = useActiveModelConfig();
   // Shared with the chat model selector: list only models sized for this device.
@@ -476,11 +478,15 @@ export function ModelsPage() {
 
   // Mount, then whenever this tab could have missed an API-driven switch. Re-reading is safe.
   useEffect(() => {
-    void refreshResidentModelStatus();
+    let active = true;
+    void refreshResidentModelStatus().finally(() => {
+      if (active) setInitialResidentStatusSettled(true);
+    });
     const unsubscribe = subscribeResidentStatusRefresh(
       refreshResidentModelStatus,
     );
     return () => {
+      active = false;
       // A response still in flight adopts nothing once the Hub is gone.
       residentStatusSeq.current += 1;
       unsubscribe();
@@ -785,10 +791,29 @@ export function ModelsPage() {
     availableSet,
     partialSet,
     downloadedReady,
+    inventorySettled,
     inventoryError,
     inventoryWarning,
     refreshInventory,
   } = useHubInventory({ kind: isDatasetMode ? "datasets" : "models" });
+
+  const reloadReadySent = useRef(false);
+  useEffect(() => {
+    if (
+      reloadReadySent.current ||
+      !initialResidentStatusSettled ||
+      (isDiscoverTab ? isLoading : !inventorySettled)
+    ) {
+      return;
+    }
+    reloadReadySent.current = true;
+    window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+  }, [
+    initialResidentStatusSettled,
+    inventorySettled,
+    isDiscoverTab,
+    isLoading,
+  ]);
 
   const modelDiscoveryInventorySignature = useMemo(
     () => discoveryInventorySignature(effectiveCachedRows, effectiveLocalRows),

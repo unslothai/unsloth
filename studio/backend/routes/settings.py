@@ -66,6 +66,9 @@ from utils.vram_budget_settings import (
 from utils.openai_auto_switch_settings import (
     BATCH_SIZE_MAX,
     BATCH_SIZE_MIN,
+    CACHE_RAM_MAX_MIB,
+    CACHE_RAM_MIN_MIB,
+    CTX_CHECKPOINTS_MAX,
     DEFAULT_AUTO_UNLOAD_API_ONLY,
     DEFAULT_AUTO_UNLOAD_KEEP_KV,
     DEFAULT_MEDIA_AUTO_SWITCH_ENABLED,
@@ -76,6 +79,7 @@ from utils.openai_auto_switch_settings import (
     PARALLEL_SLOTS_MAX,
     PARALLEL_SLOTS_MIN,
     cached_repo_alias_keys,
+    is_cache_load_path_key,
     get_auto_unload_api_only,
     get_auto_unload_idle_seconds,
     get_auto_unload_keep_kv,
@@ -120,6 +124,11 @@ from utils.embedding_model_settings import (
     validate_embedding_model,
 )
 from utils.hf_cache_settings import cache_status, get_hf_cache_paths, set_hf_cache_home
+from utils.llama_cpp_path_settings import (
+    MAX_CUSTOM_LLAMA_CPP_PATH_LENGTH,
+    custom_llama_cpp_path_status,
+    set_custom_llama_cpp_path,
+)
 from utils.media_generation_preset_settings import (
     delete_media_generation_preset,
     get_media_generation_preset_settings,
@@ -626,6 +635,20 @@ class HuggingFaceCacheResponse(BaseModel):
     environment_variable: Optional[str] = None
 
 
+class LlamaCppPathPayload(BaseModel):
+    path: Optional[str] = Field(default = None, max_length = MAX_CUSTOM_LLAMA_CPP_PATH_LENGTH)
+
+
+class LlamaCppPathResponse(BaseModel):
+    path: Optional[str] = None
+    source: Literal["default", "studio", "environment"]
+    editable: bool
+    available: bool
+    resolved_binary: Optional[str] = None
+    environment_variable: Optional[str] = None
+    reload_required: bool = False
+
+
 class OpenAIAutoSwitchPayload(BaseModel):
     enabled: bool
     # None leaves the stored value untouched (partial updates can't clobber it).
@@ -702,7 +725,27 @@ class ModelOverridePayload(BaseModel):
     # prompt batch sizes (--batch-size / --ubatch-size), gguf-only; none = llama.cpp defaults
     n_batch: Optional[int] = Field(default = None, ge = BATCH_SIZE_MIN, le = BATCH_SIZE_MAX)
     n_ubatch: Optional[int] = Field(default = None, ge = BATCH_SIZE_MIN, le = BATCH_SIZE_MAX)
+    # The remaining llama-server tuning the picker remembers. model_override_load_kwargs
+    # already applies all four off a stored row, so a route that drops them leaves the
+    # setting reaching a picker load and nothing else, and the panel reads the gap back
+    # as unset. Load mode is a discrete set, left to the normalizer like the KV dtype.
+    load_mode: Optional[str] = Field(default = None, max_length = 32)
+    spec_draft_cache_type: Optional[str] = Field(default = None, max_length = 32)
+    # Stored on "is not None", not on truth: 0 checkpoints and a 0 or -1 cache are
+    # meaningful values (none kept; cache disabled; no limit). Bounds mirror LoadRequest.
+    ctx_checkpoints: Optional[int] = Field(default = None, ge = 0, le = CTX_CHECKPOINTS_MAX)
+    cache_ram: Optional[int] = Field(default = None, ge = CACHE_RAM_MIN_MIB, le = CACHE_RAM_MAX_MIB)
+    # Does this client know the four above exist? A save REPLACES the entry, so an
+    # omission from a build that predates them is indistinguishable from a user
+    # clearing them, and during an upgrade -- a cached bundle, or another LAN client
+    # still on the old build -- that silently deletes settings it never sent. Only a
+    # client that sets this may clear by omission; for anyone else the stored values
+    # are carried over. Default False so an old payload, which cannot set it, is the
+    # safe case. Not a blanket carry-over: that would make clearing impossible for
+    # everyone, trading a mixed-version window for a permanent bug.
+    mirrors_server_tuning: bool = False
     tensor_parallel: bool = False
+    disable_vision: bool = False
     # Validated in bytes below: pydantic counts characters, so a multi-byte template would pass.
     chat_template_override: Optional[str] = None
     gpu_memory_mode: Optional[Literal["auto", "manual"]] = None
@@ -737,6 +780,8 @@ class ModelOverridePayload(BaseModel):
         "n_parallel",
         "n_batch",
         "n_ubatch",
+        "ctx_checkpoints",
+        "cache_ram",
         "gpu_layers",
         "n_cpu_moe",
         "gpu_ids",
@@ -905,6 +950,27 @@ def _hugging_face_cache_response() -> HuggingFaceCacheResponse:
     return HuggingFaceCacheResponse(**cache_status(get_hf_cache_paths()))
 
 
+def _llama_cpp_path_reload_required() -> bool:
+    """Whether a running or pending GGUF server predates the path selection."""
+    try:
+        from routes.inference import get_llama_cpp_backend
+
+        backend = get_llama_cpp_backend()
+        pending = getattr(backend, "_binary_revision_pending", None)
+        if pending is not None:
+            return backend._binary_changed_since_revision(pending)
+        return bool(backend.is_active and backend._binary_changed_since_launch())
+    except Exception:
+        return False
+
+
+def _llama_cpp_path_response() -> LlamaCppPathResponse:
+    return LlamaCppPathResponse(
+        **custom_llama_cpp_path_status(),
+        reload_required = _llama_cpp_path_reload_required(),
+    )
+
+
 @router.get("/hugging-face-cache", response_model = HuggingFaceCacheResponse)
 def get_hugging_face_cache(
     current_subject: str = Depends(get_current_subject),
@@ -923,6 +989,35 @@ def update_hugging_face_cache(
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
     return _hugging_face_cache_response()
+
+
+@router.get("/llama-cpp-path", response_model = LlamaCppPathResponse)
+def get_llama_cpp_path(current_subject: str = Depends(get_current_subject)) -> LlamaCppPathResponse:
+    return _llama_cpp_path_response()
+
+
+@router.put("/llama-cpp-path", response_model = LlamaCppPathResponse)
+def update_llama_cpp_path(
+    payload: LlamaCppPathPayload,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> LlamaCppPathResponse:
+    # Only the interactive Studio UI may change this executable setting.
+    require_ui_session(via_api_key)
+    try:
+        set_custom_llama_cpp_path(payload.path)
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            # Validator messages are safe to expose to the UI.
+            str(exc),
+            event = "settings.update_llama_cpp_path_failed",
+            log = logger,
+        ) from exc
+    return _llama_cpp_path_response()
 
 
 @router.get("/upload-limit", response_model = UploadLimitResponse)
@@ -1379,18 +1474,34 @@ def update_openai_auto_switch_override(
             raise ValueError("fill_absent_fields cannot be combined with remove.")
         # Only model_id is the documented "remove"; otherwise omitted flags carry over.
         requested_extra_args = payload.llama_extra_args
-        # fill_absent_fields is a write mode, not a saved field: leaving it in would make
-        # every payload look non-empty and break the legacy "no fields means remove".
+        # fill_absent_fields and mirrors_server_tuning are write modes, not saved fields:
+        # leaving either in would make every payload look non-empty (they are bools, so
+        # exclude_none does not drop them) and break the legacy "no fields means remove".
         saved_fields = payload.model_dump(
-            exclude = {"model_id", "llama_extra_args", "remove", "fill_absent_fields"},
+            exclude = {
+                "model_id",
+                "llama_extra_args",
+                "remove",
+                "fill_absent_fields",
+                "mirrors_server_tuning",
+            },
             exclude_none = True,
         )
         if payload.remove is not None:
             is_removal = payload.remove
         else:
-            is_removal = not payload.tensor_parallel and not {
-                key: value for key, value in saved_fields.items() if key != "tensor_parallel"
-            }
+            # Both booleans are carried, not just counted: they are stored only when
+            # true, so an override whose one setting is either of them has no other
+            # saved field and would otherwise read as a removal and be deleted.
+            is_removal = (
+                not payload.tensor_parallel
+                and not payload.disable_vision
+                and not {
+                    key: value
+                    for key, value in saved_fields.items()
+                    if key not in ("tensor_parallel", "disable_vision")
+                }
+            )
         if requested_extra_args is None and not is_removal:
             stored = get_model_override(payload.model_id)
             # A fill keeps the stored flags without echoing them back through validation: one
@@ -1433,6 +1544,51 @@ def update_openai_auto_switch_override(
                 )
         else:
             extra_args = validate_extra_args(requested_extra_args)
+        # Same shape as the extra-args carry-over above, for the same reason: a save
+        # replaces the entry, so a field the caller never knew about must survive it.
+        # A client that declares it mirrors these clears by omission as usual; an
+        # older one keeps whatever is stored. On a remove the whole entry goes, so
+        # there is nothing to preserve.
+        # Gated on is_removal, not on payload.remove: the documented legacy contract is a
+        # payload carrying only model_id, which leaves remove None while is_removal is
+        # true. Carrying anything over there would rebuild a non-empty row and the clear
+        # would silently do nothing.
+        _tuning_fields = ("load_mode", "spec_draft_cache_type", "ctx_checkpoints", "cache_ram")
+        _kept_tuning = {name: getattr(payload, name) for name in _tuning_fields}
+        if not payload.mirrors_server_tuning and not is_removal:
+            # The same spellings the extra-args carry-over walks, and in the same order.
+            # A cached repo is not an ordinary folded match, so a save under the repo id
+            # while the row sits under the snapshot path finds nothing here and then
+            # retires that alias below, taking the tuning with it.
+            _alias_ids = [payload.model_id]
+            for _candidate in (
+                _bare_model_id(payload.model_id),
+                _legacy_standalone_gguf_key(payload.model_id),
+                *cached_repo_alias_keys(payload.model_id),
+            ):
+                if _candidate and _candidate not in _alias_ids:
+                    _alias_ids.append(_candidate)
+            # Load order, not the order they were collected in. A lookup reads the
+            # concrete load path before the advertised repo id, so on a cache upgraded
+            # from a build that keyed rows by path, the snapshot row is the one that
+            # applies and the one the retirement block below clears. Reading the repo
+            # row first would adopt tuning no load has ever used and drop the tuning
+            # that was live. Stable, so every other spelling keeps its position.
+            _alias_ids.sort(key = lambda _key: not is_cache_load_path_key(_key))
+            # Taken as a unit from the first row that exists, not field by field down
+            # the list. A load stops at the first non-empty row (resolve_override_for_load)
+            # rather than merging, so tuning in a row that never wins is dormant, and
+            # filling a gap in the winner from a loser would switch it on as a side effect
+            # of saving something unrelated. Single-valued above, so the distinction only
+            # shows up here.
+            for _alias_id in _alias_ids:
+                _stored_tuning = get_model_override(_alias_id)
+                if not _stored_tuning:
+                    continue
+                for name in _tuning_fields:
+                    if _kept_tuning[name] is None:
+                        _kept_tuning[name] = _stored_tuning.get(name)
+                break
         if payload.remove is True:
             # An explicit remove wins over any other field. Remove the key a load resolves to,
             # not the literal one sent (the browser normalizes casing), and every spelling:
@@ -1505,7 +1661,12 @@ def update_openai_auto_switch_override(
                 n_parallel = payload.n_parallel,
                 n_batch = payload.n_batch,
                 n_ubatch = payload.n_ubatch,
+                load_mode = _kept_tuning["load_mode"],
+                spec_draft_cache_type = _kept_tuning["spec_draft_cache_type"],
+                ctx_checkpoints = _kept_tuning["ctx_checkpoints"],
+                cache_ram = _kept_tuning["cache_ram"],
                 tensor_parallel = payload.tensor_parallel,
+                disable_vision = payload.disable_vision,
                 chat_template_override = payload.chat_template_override,
                 gpu_memory_mode = payload.gpu_memory_mode,
                 gpu_layers = payload.gpu_layers,

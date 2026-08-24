@@ -22,8 +22,10 @@ import {
   ComputerTerminal01Icon,
   CpuIcon,
   DatabaseSettingIcon,
+  EnergyRectangleIcon,
   Globe02Icon,
   HelpCircleIcon,
+  HomeWifiIcon,
   Message01Icon,
   PaintBrush02Icon,
   Search01Icon,
@@ -53,7 +55,7 @@ import {
   type SettingsTab,
   useSettingsDialogStore,
 } from "./stores/settings-dialog-store";
-// Statically imported, all twelve panels ran before first paint even though the dialog
+// Statically imported, every panel ran before first paint even though the dialog
 // starts closed. Load each on first view instead; this map also drives the prefetch.
 const TAB_LOADERS = {
   general: () => import("./tabs/general-tab").then((m) => ({ default: m.GeneralTab })),
@@ -67,7 +69,13 @@ const TAB_LOADERS = {
   connections: () =>
     import("./tabs/connections-tab").then((m) => ({ default: m.ConnectionsTab })),
   data: () => import("./tabs/data-tab").then((m) => ({ default: m.DataTab })),
+  "keyboard-shortcuts": () =>
+    import("./tabs/keyboard-shortcuts-tab").then((m) => ({
+      default: m.KeyboardShortcutsTab,
+    })),
   "api-keys": () => import("./tabs/api-keys-tab").then((m) => ({ default: m.ApiKeysTab })),
+  "remote-lan": () =>
+    import("./tabs/remote-lan-tab").then((m) => ({ default: m.RemoteLanTab })),
   agents: () => import("./tabs/agents-tab").then((m) => ({ default: m.AgentsTab })),
   debugging: () =>
     import("./tabs/debugging-tab").then((m) => ({ default: m.DebuggingTab })),
@@ -159,7 +167,6 @@ const TABS: TabDef[] = [
     id: "profile",
     labelKey: "settings.tabs.profile",
     icon: UserIcon,
-    badgeKey: "common.new",
   },
   {
     id: "appearance",
@@ -182,6 +189,12 @@ const TABS: TabDef[] = [
     icon: Globe02Icon,
   },
   {
+    id: "remote-lan",
+    labelKey: "settings.tabs.remoteLan",
+    icon: HomeWifiIcon,
+    badgeKey: "common.new",
+  },
+  {
     id: "connections",
     labelKey: "settings.tabs.connections",
     icon: CloudIcon,
@@ -190,18 +203,21 @@ const TABS: TabDef[] = [
     id: "agents",
     labelKey: "settings.tabs.agents",
     icon: BotIcon,
-    badgeKey: "common.new",
   },
   {
     id: "voice",
     labelKey: "settings.tabs.voice",
     iconComponent: MicIcon,
-    badgeKey: "common.new",
   },
   {
     id: "data",
     labelKey: "settings.tabs.data",
     icon: DatabaseSettingIcon,
+  },
+  {
+    id: "keyboard-shortcuts",
+    labelKey: "settings.tabs.keyboardShortcuts",
+    icon: EnergyRectangleIcon,
     badgeKey: "common.new",
   },
   {
@@ -344,8 +360,10 @@ export function SettingsDialog() {
     chat: null,
     voice: null,
     connections: null,
+    "keyboard-shortcuts": null,
     data: null,
     "api-keys": null,
+    "remote-lan": null,
     agents: null,
     debugging: null,
     about: null,
