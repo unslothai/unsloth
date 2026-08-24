@@ -152,6 +152,23 @@
       // content mounted for the animation, so a presence check reads every pane as open.
       return qa('[data-slot="reasoning-root"][data-state="open"]').length;
     },
+    // STILL MOUNTED IS NOT THE SAME AS STILL OPEN, and closing needs the other one.
+    //
+    // `reasoningOpenCount` flips on the click, because `data-state` is the state. The CHILDREN
+    // outlive it on both collapse mechanisms and by design: Radix's `Presence` suspends the
+    // unmount until `animationend` of `animate-collapsible-up`, and the grid arm's
+    // `UnmeasuredCollapsibleContent` renders `present && children` until the `grid-template-rows`
+    // `transitionend` or its 250 ms backstop. For that whole window every pane is closed, every
+    // span it contributed is still in the document, and a census asked whether it has stopped
+    // moving answers yes -- because it has not started.
+    //
+    // So a collapse is settled when the content is GONE, which is what this counts. Both arms are
+    // covered by one selector: Radix removes the element, the grid arm leaves it behind with
+    // `hidden`, and neither is a mounted pane.
+    reasoningContentMounted() {
+      return qa('[data-slot="reasoning-content"]').filter((el) => !el.hasAttribute("hidden"))
+        .length;
+    },
 
     // ── action bar ───────────────────────────────────────────────
     actionBar(message) {

@@ -43,7 +43,7 @@ from studiobench.runtime import browser as browser_mod  # noqa: E402
 from studiobench.runtime import bundle_guard, lifecycle  # noqa: E402
 from studiobench.runtime import session as session_mod  # noqa: E402
 from studiobench.runtime.lifecycle import StudioAuth, StudioInstall  # noqa: E402
-from studiobench.runtime.types import Paths  # noqa: E402
+from studiobench.runtime.types import OutDirLock, Paths  # noqa: E402
 
 
 class _Verdict:
@@ -509,6 +509,101 @@ def test_an_unreadable_probe_is_refused_before_the_payload_is_archived(studio, m
     assert sorted(p.name for p in paths.out.glob("payload-*.jsonl")) == []
     # The refusal is still ahead of everything it was ahead of before.
     assert studio["installed"] == ["main"]
+
+
+def test_a_duplicate_run_is_refused_before_it_archives_or_installs_anything(studio):
+    """REGRESSION. A run refused for the directory must not have moved the live payload first.
+
+    The guard against two runs in one `--out` used to be taken where the `Recorder` opens
+    `payload.jsonl`, which is after `prepare_payload` has archived what was already there and after
+    every clone, build and launch. A second launcher pointed at a busy directory therefore renamed
+    the FIRST run's live payload out from under it -- the writer keeps its inode through a rename,
+    so that run went on recording into `payload-<stamp>.jsonl` while `payload.jsonl`, the one name
+    `--report`, `--assert-liveness` and the next `--resume` open, was gone -- and put a clone and a
+    build on the machine the first run was measuring, before saying the word it could have said in
+    the first millisecond.
+
+    The holder here stands for that first run: it is the same lock a live run holds, so the second
+    invocation meets exactly what it meets in the field.
+    """
+
+    paths = Paths.under(studio["out"])
+    assert sb.run(_args(studio, "--branch", "main")) == 0
+    recorded = paths.payload_jsonl.read_text(encoding = "utf-8")
+
+    studio["installed"].clear()
+    holder = OutDirLock.take(paths.out)
+    try:
+        with pytest.raises(SystemExit) as excinfo:
+            sb.run(_args(studio, "--branch", "main"))
+    finally:
+        holder.release()
+
+    assert "still running" in str(excinfo.value)
+    assert (
+        paths.payload_jsonl.read_text(encoding = "utf-8") == recorded
+    ), "the refused duplicate archived the live payload of the run it was refused in favour of"
+    assert sorted(p.name for p in paths.out.glob("payload-*.jsonl")) == []
+    assert studio["installed"] == [], (
+        "the duplicate installed a Studio on a machine that was already measuring, which is the "
+        "contention the guard exists to prevent, paid as the cost of refusing it"
+    )
+    # And the directory is free again the moment the holder lets go.
+    assert sb.run(_args(studio, "--branch", "main", "--resume")) == 0
+
+
+def test_a_duplicate_is_still_refused_while_the_report_is_being_rendered(studio, monkeypatch):
+    """REGRESSION. The directory stays held until `run()` has finished READING the payload back.
+
+    `rec.close()` runs in the `finally` under the cells; `_render_ab` and `_summarise` then reopen
+    `payload.jsonl` after it and before `run()`'s own outer `finally` lets the directory go. While
+    `Recorder.close` released the lock it had ADOPTED from `run()`, the directory was free for the
+    whole of that window, and a duplicate arriving in it was admitted. It then did what the guard
+    exists to stop, to a run whose cells had all completed:
+
+      * `prepare_payload` renames `payload.jsonl` to `payload-<stamp>.jsonl` BEFORE it clones
+        anything, so for the minutes it spends installing there is no `payload.jsonl` at all and
+        the first run's reporting step dies with `FileNotFoundError` -- after every cell passed.
+      * once it has opened a payload of its own, that empty file is what `_render_ab` reads, so
+        `ab.md` is written out of another run's rows and the first run still exits 0.
+
+    The duplicate is driven through the real `run()`, from inside the reporting window, so it meets
+    the guard exactly where a second launcher meets it in the field. `flock` treats two descriptors
+    on one file independently even within a process, so the in-process contender is refused by the
+    same kernel lock a separate launcher is.
+    """
+
+    paths = Paths.under(studio["out"])
+    real_render = sb._render_ab
+    seen: dict = {}
+
+    def render_with_a_duplicate_arriving(*args, **kwargs):
+        if "duplicate" not in seen:
+            seen["installed_before"] = list(studio["installed"])
+            seen["payload_before"] = paths.payload_jsonl.read_text(encoding = "utf-8")
+            try:
+                seen["duplicate"] = sb.run(_args(studio, "--branch", "main"))
+            except SystemExit as exc:
+                seen["duplicate"] = exc
+        return real_render(*args, **kwargs)
+
+    monkeypatch.setattr(sb, "_render_ab", render_with_a_duplicate_arriving)
+    assert sb.run(_args(studio, "--branch", "main", "--ab", "pr-9296"), ab_ref = "pr-9296") == 0
+
+    assert isinstance(
+        seen["duplicate"], SystemExit
+    ), "a second run was admitted to the output directory while the first was still reporting"
+    assert "still running" in str(seen["duplicate"])
+    # Nothing of the first run's was moved, and nothing was installed on top of it.
+    assert paths.payload_jsonl.exists(), "the duplicate archived the payload being reported on"
+    assert paths.payload_jsonl.read_text(encoding = "utf-8") == seen["payload_before"]
+    assert sorted(p.name for p in paths.out.glob("payload-*.jsonl")) == []
+    assert studio["installed"] == seen["installed_before"]
+    # The report is the first run's own, over its own rows.
+    table = (paths.out / "ab.md").read_text(encoding = "utf-8")
+    assert "main -> pr-9296" in table
+    # And the control: the directory is released once `run()` has actually finished with it.
+    assert sb.run(_args(studio, "--branch", "main")) == 0
 
 
 def _clean_summary(studio) -> Path:
