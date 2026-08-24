@@ -170,7 +170,7 @@ docker run -d -e JUPYTER_PASSWORD="mypassword" \
 #### Remote HTTPS & LAN Access
 Server-side tools are on by default - so **be careful**! Keep your password safe, or use `--disable-tools` when exposing Unsloth.
 
-Global HTTPS Access:
+**Global HTTPS Access**:
 Creates a free Cloudflare link that serves Unsloth - you can access the link globally (even on your phone!)
 ```bash
 unsloth studio --secure
@@ -179,7 +179,7 @@ unsloth studio --secure
 ```bash
 unsloth studio -H 0.0.0.0 -p 8888
 ```
-LAN Access (home network): `Settings > API keys > LAN access`
+**LAN Access (home network)**: `Settings > API keys > LAN access`
 
 #### Password management & headless starts
 Headless starts:
@@ -249,6 +249,7 @@ Read our [guide](https://unsloth.ai/docs/get-started/fine-tuning-llms-guide). Ad
 
 <details>
   <summary>More News</summary>
+
   - **Connections**: Mix local models with API providers (OpenAI, Anthropic) or servers (vLLM, Ollama) in the same interface. [Guide](https://unsloth.ai/docs/integrations/connections)
   - **Introducing Unsloth Studio**: our new web UI for running and training LLMs. [Blog](https://unsloth.ai/docs/new/studio)
   - **DiffusionGemma**: Run and fine-tune Google's diffusion language model with 1.8x faster inference in Unsloth Studio. [Guide](https://unsloth.ai/docs/models/diffusiongemma)
