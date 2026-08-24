@@ -67,12 +67,14 @@ def _write_synthetic_gguf(
     path: Path,
     general_strings: Mapping[str, str],
     *,
+    tensor_names: Iterable[str] | None = None,
     extra_uint32: Mapping[str, int] | None = None,
     extra_uint64: Mapping[str, int] | None = None,
     extra_string_arrays: Mapping[str, Iterable[str]] | None = None,
     extra_bools: Mapping[str, bool] | None = None,
 ) -> Path:
-    """Minimal GGUF: header + KV body, no tensors."""
+    """Minimal GGUF header with optional tensor-table entries and no tensor data."""
+    tensor_names = list(tensor_names or ())
     extra_uint32 = extra_uint32 or {}
     extra_uint64 = extra_uint64 or {}
     extra_string_arrays = extra_string_arrays or {}
@@ -95,15 +97,22 @@ def _write_synthetic_gguf(
         body += _enc_kv_string_array(k, v)
     for k, v in extra_bools.items():
         body += _enc_kv_bool(k, v)
+    tensor_info = b""
+    for name in tensor_names:
+        tensor_info += _enc_string(name)
+        tensor_info += struct.pack("<I", 1)  # n_dimensions
+        tensor_info += struct.pack("<Q", 1)  # dimensions
+        tensor_info += struct.pack("<I", 0)  # GGML_TYPE_F32
+        tensor_info += struct.pack("<Q", 0)  # data offset
     header = struct.pack(
         "<IIQQ",
         _GGUF_MAGIC,
         3,  # version
-        0,  # tensor_count
+        len(tensor_names),
         kv_count,
     )
     path.parent.mkdir(parents = True, exist_ok = True)
-    path.write_bytes(header + body)
+    path.write_bytes(header + body + tensor_info)
     return path
 
 
@@ -630,3 +639,21 @@ def test_is_gguf_embedding_model_excludes_reranker_without_pooling(tmp_path: Pat
         is_gguf_embedding_model(str(p), model_identifier = "gpustack/bge-reranker-v2-m3-GGUF")
         is False
     )
+
+
+def test_is_gguf_embedding_model_accepts_generic_bert_without_classifier_head(tmp_path: Path):
+    p = _write_synthetic_gguf(
+        tmp_path / "model.gguf",
+        {"general.architecture": "bert", "general.name": "Bert Encoder"},
+    )
+    assert is_gguf_embedding_model(str(p), model_identifier = "local/model") is True
+
+
+def test_is_gguf_embedding_model_excludes_unnamed_bert_classifier_heads(tmp_path: Path):
+    for index, classifier_tensor in enumerate(("cls.weight", "cls.output.weight")):
+        p = _write_synthetic_gguf(
+            tmp_path / f"model-{index}.gguf",
+            {"general.architecture": "bert", "general.name": "MS MARCO MiniLM L6 v2"},
+            tensor_names = (classifier_tensor,),
+        )
+        assert is_gguf_embedding_model(str(p), model_identifier = "local/model") is False
