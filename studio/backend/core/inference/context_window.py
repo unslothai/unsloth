@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Callable
 from typing import Any, Optional
 
@@ -56,6 +57,67 @@ def estimate_messages_tokens_dense(messages: list[dict]) -> int:
             continue
         dense = sum(1 for char in text if ord(char) > 127)
         total += max(1, dense + (len(text) - dense) // 4)
+    return total
+
+
+# ASCII that runs this far without a break is not prose. Measured with Qwen3 over 16-20k
+# character samples, in characters per token: base64 1.35, hex 1.13, minified JSON 2.75,
+# against English prose at 3.27 and Python source at 4.38. The estimate above charges all
+# of them the English four, so a pasted blob is priced at a third of what it costs, and a
+# caller sizing the room LEFT then hands out room that is already occupied.
+#
+# The rule is per RUN rather than per message, so a blob pasted into a sentence is priced
+# as a blob: a run this long is the thing itself. 64 characters rather than a rounder
+# number because base64 is conventionally wrapped at 76, and at a threshold of 80 a
+# wrapped blob scores as ordinary prose. Measured on the samples above, runs of 64+
+# non-space characters cover 100% of an unwrapped blob, 98.6% of a wrapped one, 0% of the
+# Python source and 23.5% of a README -- and that 23.5% is its URLs and table rules, which
+# tokenise near this rate themselves rather than at the prose rate.
+_DENSE_RUN_CHARS = 64
+# Two characters per token, not one. It stays BELOW the measured cost of every sample, so
+# no turn is priced above what it really costs: over-pricing a turn spends the very room
+# this budget exists to hand out, and a result cut to pay for room that was never occupied
+# is the same waste from the other side.
+_DENSE_RUN_CHARS_PER_TOKEN = 2
+_DENSE_RUN_RE = re.compile(r"\S{%d,}" % _DENSE_RUN_CHARS)
+
+
+def estimate_messages_tokens_conservative(
+    messages: list[dict], *, dense_ascii: bool = False
+) -> int:
+    """`estimate_messages_tokens_dense`, with unbroken ASCII runs charged as the blobs
+    they are.
+
+    For the caller with no tokenizer and no rolling fit behind it: the native loop prices
+    what a thread has already spent, and if that number is low the result it then admits
+    is what pushes the next prompt past the window, with nothing downstream to recover.
+    Non-ASCII keeps its token per character, ordinary ASCII keeps the English four, and
+    only the long unbroken runs are charged at `_DENSE_RUN_CHARS_PER_TOKEN`.
+
+    ``dense_ascii`` charges ALL of a message's ASCII at that rate, for the messages that
+    are dense whether or not they hold an unbroken run: a tool result is `hexdump`, `ls
+    -l` or a stack trace as often as it is a blob, and those are space-separated. It
+    applies to the ASCII only, so a CJK result is not charged twice for being a result.
+    """
+    total = 0
+    for message in messages:
+        try:
+            text = json.dumps(message, ensure_ascii = False)
+        except Exception:
+            total += 1
+            continue
+        wide = sum(1 for char in text if ord(char) > 127)
+        if dense_ascii:
+            total += max(1, wide + (len(text) - wide) // _DENSE_RUN_CHARS_PER_TOKEN)
+            continue
+        # ASCII only: a run of CJK is already charged a token a character above, and
+        # charging it here as well would price it twice.
+        runs = sum(
+            sum(1 for char in match.group(0) if ord(char) <= 127)
+            for match in _DENSE_RUN_RE.finditer(text)
+        )
+        plain = len(text) - wide - runs
+        total += max(1, wide + runs // _DENSE_RUN_CHARS_PER_TOKEN + plain // 4)
     return total
 
 
@@ -242,6 +304,50 @@ def retrieval_budget(
     if reply_returns:
         room = min(room, int(target * _RETRIEVAL_BUDGET_SHARE))
     return room
+
+
+# Headroom against the tokenizer disagreeing with the estimate that sized a result. A
+# result is measured in characters and spent in tokens, so the conversion is the thing
+# that can be wrong; 1% of the budget absorbs that without noticeably shortening output.
+_TOOL_RESULT_BUDGET_BUFFER = 0.99
+
+# What a truncated result costs BESIDES its body: the notice naming the cut, the spill
+# path and the command that resumes it. Measured at 60-85 tokens, held clear of that.
+# Reserved rather than ignored because the body is sized and the notice appended after,
+# so a budget spent entirely on the body overshoots by the notice every time, and at zero
+# room, where the notice IS the message, by the whole of it.
+#
+# Charged by `tools._truncate`, at the point it knows the result really is being cut, and
+# NOT subtracted from the room below. A result that fits carries no notice, so holding
+# this back up front would cut a result that would have fitted whole and then spend more
+# than it saved: 200 tokens of room, a 100-token result, and reserving first leaves 72 for
+# the body and appends ~70 tokens of notice explaining the 28 that were dropped.
+_RESULT_NOTICE_RESERVE = 128
+
+
+def tool_result_budget(
+    context_length: int,
+    max_tokens: Optional[int],
+    prompt_tokens: int,
+    *,
+    buffer: float = _TOOL_RESULT_BUDGET_BUFFER,
+) -> int:
+    """Tokens a tool result may add without pushing the next prompt past its budget.
+
+    The cap before this was a share of the WINDOW, so it never fell as the conversation
+    filled: one result could take half a small context however little was left, and the
+    next fit cannot recover because it protects the newest turn, the very result that does
+    not fit. This prices the same result against the room actually remaining.
+
+    Against ``prompt_budget`` rather than ``context_length``: a result sized to fill the
+    physical window leaves the prompt fitting and nothing to answer in. Room for the reply
+    is not room for the result. The figure covers the whole tool message, notice included:
+    see `_RESULT_NOTICE_RESERVE`, which the truncation charges against this room when it
+    turns out to need one. A caller with several tool calls to serve divides what comes
+    back between them.
+    """
+    target = prompt_budget(context_length, max_tokens)
+    return max(0, int(target * buffer) - int(prompt_tokens or 0))
 
 
 def _latest_turn_count(

@@ -833,6 +833,8 @@ export const ja = {
         title: "GPU デバイス",
         ggufInference: "GGUF 推論",
         unavailable: "利用不可",
+        detecting: "GPU を確認しています...",
+        unreadable: "このサーバーのハードウェアを読み取れませんでした。",
         noGpu:
           "利用可能な GPU が検出されませんでした。CPU のみの環境向けのリソース情報は上に表示されています。",
         unknownDevice: "不明な GPU",
@@ -1080,7 +1082,7 @@ export const ja = {
         exportChat: "チャットをエクスポート",
       },
       pastedTextThreshold: "長い貼り付けを圧縮",
-      pastedTextThresholdDescription: "この長さを超える貼り付けテキストは、入力欄を埋める代わりに .txt 添付ファイルになります。",
+      pastedTextThresholdDescription: "この長さを超える貼り付けテキストは、入力欄を埋める代わりに .txt 添付ファイルになります。 {shortcut} を押すと、それでも入力欄に貼り付けます。",
       pastedTextThresholdOff: "オフ",
       showResponseModel: "応答モデルを表示",
       showResponseModelDescription:

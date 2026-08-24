@@ -842,6 +842,8 @@ export const it = {
         title: "Dispositivi GPU",
         ggufInference: "Inferenza GGUF",
         unavailable: "non disponibile",
+        detecting: "Ricerca di GPU...",
+        unreadable: "Impossibile leggere l'hardware di questo server.",
         noGpu:
           "Nessuna GPU visibile rilevata. Sopra sono mostrate le risorse della sola CPU.",
         unknownDevice: "GPU sconosciuta",
@@ -1091,7 +1093,7 @@ export const it = {
         exportChat: "Esporta chat",
       },
       pastedTextThreshold: "Condensa incolla lunghi",
-      pastedTextThresholdDescription: "Il testo incollato più lungo di questo valore diventa un allegato .txt invece di riempire il campo del messaggio.",
+      pastedTextThresholdDescription: "Il testo incollato più lungo di questo valore diventa un allegato .txt invece di riempire il campo del messaggio. Premi {shortcut} per incollare comunque nel campo del messaggio.",
       pastedTextThresholdOff: "Disattivato",
       showResponseModel: "Mostra il modello della risposta",
       showResponseModelDescription:

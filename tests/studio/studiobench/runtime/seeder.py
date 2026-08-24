@@ -67,6 +67,17 @@ def _assistant_content(unit: Unit) -> list[dict]:
     return parts
 
 
+def turn_marker(index: int, unit_index: int) -> str:
+    """The exact plain text this harness writes into the user turn at `index`.
+
+    ONE function rather than an f-string in two places, because the readiness gate matches on this
+    string in the DOM. A marker that the seeder writes and the gate looks for in slightly different
+    words is a gate that never passes, and the symptom would be a timeout that looks like a slow
+    app.
+    """
+    return f"studiobench turn {index}: continue with unit {unit_index}"
+
+
 @dataclass
 class SeededThread:
     thread_id: str
@@ -74,6 +85,12 @@ class SeededThread:
     seeded_chars: int
     seconds: float
     turns: int
+    # The markers on the FIRST and LAST user turns. The readiness gate uses `last_marker` to prove
+    # the end of the thread is mounted, and the completeness probe uses `first_marker` to prove a
+    # windowed arm still holds the head of the conversation. Plain text written by this harness,
+    # so neither is a guess about what a markdown renderer will do to the corpus.
+    first_marker: Optional[str] = None
+    last_marker: Optional[str] = None
 
 
 @dataclass
@@ -132,7 +149,7 @@ class Seeder:
                     "content": [
                         {
                             "type": "text",
-                            "text": f"studiobench turn {i}: continue with unit {unit.index}",
+                            "text": turn_marker(i, unit.index),
                         }
                     ],
                     "attachments": None,
@@ -169,12 +186,15 @@ class Seeder:
         self.log(
             f"  seeded {len(messages)} messages ({plan.seeded_chars:,} chars) " f"in {seconds:.1f}s"
         )
+        units = list(plan.seeded_units)
         return SeededThread(
             thread_id = thread_id,
             messages = len(messages),
             seeded_chars = plan.seeded_chars,
             seconds = seconds,
-            turns = len(plan.seeded_units),
+            turns = len(units),
+            first_marker = turn_marker(0, units[0].index) if units else None,
+            last_marker = turn_marker(len(units) - 1, units[-1].index) if units else None,
         )
 
     def read_back(self, thread_id: str) -> list[dict]:

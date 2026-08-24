@@ -234,6 +234,32 @@ def test_a_volatile_attribute_keeps_its_presence_even_though_its_value_is_droppe
     assert a == b
 
 
+def test_the_shared_signature_still_sees_virtualization_bookkeeping():
+    """WHERE THE `aria-posinset` EXCLUSION LIVES, and where it does not.
+
+    The VISIBLE-region digest drops `aria-posinset` and `aria-setsize`, because readiness.py lets a
+    windowed arm publish them on the message itself and the fully mounted arm publishes neither --
+    so comparing them reports every message as changed while the content is identical. That
+    exclusion is passed in by that one caller. The shared `signature`, which the whole-thread
+    digest, the per-message rows and the overlays all use, keeps them: those pairs are scored only
+    when NEITHER arm is windowing, and there an ordinal that appears or moves is a real difference.
+    """
+    plain, numbered = sigs(
+        {"tag": "div", "attrs": {}}, {"tag": "div", "attrs": {"aria-posinset": "3"}}
+    )
+    assert plain != numbered
+    three, four = sigs(
+        {"tag": "div", "attrs": {"aria-posinset": "3"}},
+        {"tag": "div", "attrs": {"aria-posinset": "4"}},
+    )
+    assert three != four
+    small, large = sigs(
+        {"tag": "div", "attrs": {"aria-setsize": "18"}},
+        {"tag": "div", "attrs": {"aria-setsize": "180"}},
+    )
+    assert small != large
+
+
 def test_added_and_removed_elements_move_the_signature():
     small, large = sigs(
         {"tag": "div", "children": [{"tag": "span"}]},
@@ -470,9 +496,25 @@ def test_an_action_that_never_ran_is_not_a_matching_surface():
     # still closes and the digest is still captured, so both arms agreed and `image_upload` was
     # reported as a stable, matching surface. Nobody had opened it.
     idle = {"ran": False, "reason": "no visible attachments button", "parity": capture()}
-    got = P.compare_rows(idle, {"ran": True, "parity": capture()})
+    got = P.compare_rows(idle, idle)
     assert got["verdict"] == P.NOT_EXERCISED
     assert "nothing touched" in got["reason"]
+    # NEITHER arm ran it, so nobody opened the surface on either build and the only thing lost is
+    # coverage. `one_sided` says so, and the caller needs it to keep that apart from the case below.
+    assert got["one_sided"] == ""
+
+
+def test_an_action_only_one_arm_could_perform_is_named_as_such():
+    # A control that stops opening leaves NO digest to differ: the arm that cannot reach it
+    # records `ran: false` and the pair carries no comparison at all. Folding that into the
+    # missed-slot case is how a button that no longer works reads as lost coverage.
+    idle = {"ran": False, "reason": "the control never became visible", "parity": capture()}
+    got = P.compare_rows({"ran": True, "parity": capture()}, idle)
+    assert got["verdict"] == P.NOT_EXERCISED
+    assert got["one_sided"] == "base"
+    assert "did not behave the same way" in got["reason"]
+    # And in the other direction, named after the arm that DID run it.
+    assert P.compare_rows(idle, {"ran": True, "parity": capture()})["one_sided"] == "treatment"
 
 
 def test_a_pair_that_ran_on_both_arms_is_compared_normally():
