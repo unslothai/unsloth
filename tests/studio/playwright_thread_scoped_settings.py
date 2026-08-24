@@ -129,7 +129,12 @@ def app_created_thread_id():
     return f"__LOCALID_{uuid.uuid4().hex}"
 
 
-def seed_thread(page, token, title, thread_id = None):
+def seed_thread(
+    page,
+    token,
+    title,
+    thread_id = None,
+):
     """Create a saved chat with one message, the state the sidebar and the loader expect."""
     thread_id = thread_id or str(uuid.uuid4())
     now = int(time.time() * 1000)
