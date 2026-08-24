@@ -37,7 +37,15 @@ export type ShortcutOverrides = Partial<
 /** Builds before alternates stored `id -> string | null`. Read that as the
  *  primary slot, or every existing customization reverts to defaults. */
 function normalizeEntry(value: unknown): ShortcutOverrideEntry | null {
-  if (value === null || typeof value === "string") return { primary: value };
+  // A null back then cleared the action, which had one chord, so it has to
+  // clear both now. Left to the primary alone it would pick up whatever
+  // alternate has shipped since and start answering again, which is the
+  // opposite of what the user asked for.
+  if (value === null) return { primary: null, alternate: null };
+  // A rebind is different: the user chose a primary and never saw an
+  // alternate, so that slot is untouched and takes the shipped default, the
+  // same as it does for someone who never opened the tab.
+  if (typeof value === "string") return { primary: value };
   if (!value || typeof value !== "object") return null;
   const entry: ShortcutOverrideEntry = {};
   for (const slot of SHORTCUT_SLOTS) {

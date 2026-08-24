@@ -633,7 +633,8 @@ test("the pre-alternate override shape migrates to the primary slot", () => {
   const migrated = migrateStoredOverrides(JSON.parse(legacy));
   assert.deepEqual(migrated, {
     toggleSidebar: { primary: "Mod+Alt+KeyB" },
-    searchChats: { primary: null },
+    // A clear reaches both slots, a rebind only the one the user set.
+    searchChats: { primary: null, alternate: null },
     newChat: { primary: "Mod+Alt+KeyJ" },
   });
   assert.equal(resolveBinding(migrated, "toggleSidebar"), "Mod+Alt+KeyB");
@@ -641,6 +642,27 @@ test("the pre-alternate override shape migrates to the primary slot", () => {
   // The alternate is untouched, so the shipped one still reaches a user who
   // rebound the primary before alternates existed.
   assert.equal(resolveBinding(migrated, "newChat", "alternate"), "Mod+KeyN");
+});
+
+// Back then an action had one chord, so a stored null meant the action was
+// off. Clearing only the primary would hand it whatever alternate has shipped
+// since and switch it back on, which is what newChat carries on ⌘N.
+test("an action cleared before alternates existed stays cleared", () => {
+  const migrated = migrateStoredOverrides(JSON.parse('{"newChat":null}'));
+  assert.deepEqual(migrated, { newChat: { primary: null, alternate: null } });
+  assert.deepEqual(resolveBindings(migrated, "newChat"), {
+    primary: null,
+    alternate: null,
+  });
+  // The shipped alternate is real, so this is the slot that would have come
+  // back had the clear stopped at the primary.
+  const shipped = SHORTCUT_DEFS.find((d) => d.id === "newChat");
+  assert.ok(shipped);
+  assert.equal(defaultBindingFor(shipped, "alternate", true), "Mod+KeyN");
+  // Both slots read as edits, so the tab offers to reset them.
+  for (const slot of SHORTCUT_SLOTS) {
+    assert.ok(isSlotOverridden(migrated, "newChat", slot), slot);
+  }
 });
 
 test("the current override shape round-trips unchanged", () => {
