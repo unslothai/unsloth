@@ -6,7 +6,7 @@
 import { Button } from "@/components/ui/button";
 import { resolveToolConfirmation } from "@/features/chat/api/chat-api";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { useShortcut } from "@/features/settings";
+import { COMPOSER_INPUT_SELECTOR, useShortcut } from "@/features/settings";
 import type {
   ToolCallMessagePartComponent,
   ToolCallMessagePartStatus,
@@ -132,6 +132,12 @@ export function ToolConfirmationControls({
   useShortcut("declineToolRequest", () => void resolve("deny"), {
     enabled: keyboardReady,
     skipInTextFields: true,
+    // A request usually arrives with the composer still focused from the
+    // prompt that caused it, and Escape types nothing there, so the gate would
+    // hold the decline back at the one moment it is most wanted. Enter above
+    // gets no such pass: that key sends. Every other field keeps its Escape,
+    // the queued-prompt editor and the settings search included.
+    textFieldException: COMPOSER_INPUT_SELECTOR,
   });
 
   if (!showControls) return null;

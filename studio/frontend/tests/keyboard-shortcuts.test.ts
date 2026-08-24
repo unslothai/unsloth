@@ -908,14 +908,56 @@ test("the chords that need one target do not fire where there are two", async ()
     /const headerPickersShown = active && view\.mode !== "compare";/,
   );
   assert.match(chatPage, /enabled: headerPickersShown[,\s]*\}/);
-  // Both panes mount the last message's fork button, and the chord would go
-  // to whichever registered its listener first.
-  assert.match(thread, /enabled: chatActive && !inComparePane && isLast/);
+  // Both panes mount the last message, and the chord would go to whichever
+  // registered its listener first. `If last` carries the other half.
+  assert.match(thread, /enabled: chatActive && !inComparePane && !forkDisabled/);
   // Same for a second parked tool request: neither card claims the keys.
   assert.match(
     toolCard,
     /soleRequest &&\n\s*!selectionActive &&\n\s*showControls &&/,
   );
+});
+
+// An action bar is the wrong place to register a chord from: ActionBarRoot
+// returns null when hidden, and the user bar is autohide="always", so its
+// children are gone unless that message is hovered. The assistant bar never
+// mounted the fork button at all, so a thread that ended with a reply, which is
+// every thread that ended normally, had no listener anywhere.
+test("the fork chord is registered where it mounts, not from an action bar", async () => {
+  const thread = await readFile(
+    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
+    "utf8",
+  );
+
+  // The registration is its own component, rendering nothing.
+  const start = thread.indexOf("const ForkChatShortcut: FC = () => {");
+  assert.notEqual(start, -1, "the fork registration moved");
+  const block = thread.slice(start, thread.indexOf("\n};", start));
+  assert.match(block, /useShortcut\("forkChat"/);
+  assert.match(block, /return null;/);
+
+  // The button keeps the click and takes no part in the chord.
+  const buttonAt = thread.indexOf("const ForkMessageButton: FC = () => {");
+  const button = thread.slice(buttonAt, thread.indexOf("\n};", buttonAt));
+  assert.ok(
+    !button.includes("useShortcut"),
+    "an autohidden bar cannot hold the registration",
+  );
+
+  // Mounted from both roles, since either can be the last message, and only
+  // for the last one, which is the message a fork may be taken from.
+  const mounts = thread.match(
+    /<MessagePrimitive\.If last=\{true\}>\n\s*<ForkChatShortcut \/>\n\s*<\/MessagePrimitive\.If>/g,
+  );
+  assert.equal(mounts?.length, 2);
+  for (const role of ["const AssistantMessage", "const UserMessage: FC"]) {
+    const at = thread.indexOf(role);
+    assert.notEqual(at, -1, `${role} moved`);
+    assert.ok(
+      thread.slice(at, thread.indexOf("\n};", at)).includes("<ForkChatShortcut />"),
+      `${role} does not mount the fork chord`,
+    );
+  }
 });
 
 // The tour's opener pins the picker open, and an effect shuts anything left
@@ -1399,8 +1441,11 @@ test("auto-repeat only reaches the actions that walk a list", async () => {
     /event\.preventDefault\(\);\n(?:\s*\/\/[^\n]*\n)*\s*if \(event\.repeat && !repeats\) return;/,
   );
   // Off by default, so a new call site is one-shot until it says otherwise.
-  assert.match(hook, /repeats = false \} = options;/);
-  assert.match(hook, /\[bindings, enabled, skipInTextFields, repeats\]/);
+  assert.match(hook, /repeats = false,\n\s*\} = options;/);
+  assert.match(
+    hook,
+    /\[bindings, enabled, skipInTextFields, textFieldException, repeats\]/,
+  );
 
   const sidebar = await read("../src/components/app-sidebar.tsx");
   const walkers = [
@@ -1487,7 +1532,28 @@ test("a selection does not outlive the rows it was made on", async () => {
   );
   assert.match(
     sidebar,
-    /\}, \[chatListsOnScreen, clearSelection, renderedChatIds\]\);/,
+    /\}, \[chatListsOnScreen, clearSelection, renderedChatIds, renderedProjectIds\]\);/,
+  );
+  // Folder rows are selectable too, and selectionActive counts them, so one
+  // left behind by a closed section keeps the tool card's Escape standing
+  // aside for a selection with nothing on screen to show for it.
+  assert.match(
+    sidebar,
+    /for \(const id of prev\) \{\n\s*if \(renderedProjectIds\.has\(id\)\) kept\.add\(id\);/,
+  );
+  assert.match(
+    sidebar,
+    /if \(projectAnchor && !renderedProjectIds\.has\(projectAnchor\)\) \{\n\s*projectAnchorRef\.current = null;/,
+  );
+  // The three ways a folder row leaves without the sidebar going with it.
+  assert.match(
+    sidebar,
+    /const renderedProjectIds = useMemo\(\(\) => \{\n\s*if \(!chatListsOnScreen \|\| organizeBy !== "project" \|\| !projectsOpen\) \{\n\s*return new Set<string>\(\);\n\s*\}\n\s*return new Set\(visibleProjectRecords\.map\(\(project\) => project\.id\)\);/,
+  );
+  // Both counts feed the flag, which is why both have to be pruned.
+  assert.match(
+    sidebar,
+    /const selectionActive =\n?\s*selectionCount > 0 \|\| projectSelectionCount > 0;/,
   );
   // Built from the three arrays that already carry every disclosure state, so
   // a collapse or a "show less" needs nothing restated here.

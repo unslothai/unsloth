@@ -1293,6 +1293,17 @@ export function AppSidebar() {
     for (const item of visibleRecentItems) ids.add(item.id);
     return ids;
   }, [visiblePinnedItems, renderedProjectChatItems, visibleRecentItems]);
+  // The folder rows themselves, which are selectable in their own right and
+  // leave the screen on their own terms: the section closes, the sidebar is
+  // organized by date instead, or a "show less" takes back everything past the
+  // limit. The chat sets above say nothing about any of that, since a folder
+  // with no chats in view is still a row.
+  const renderedProjectIds = useMemo(() => {
+    if (!chatListsOnScreen || organizeBy !== "project" || !projectsOpen) {
+      return new Set<string>();
+    }
+    return new Set(visibleProjectRecords.map((project) => project.id));
+  }, [chatListsOnScreen, organizeBy, projectsOpen, visibleProjectRecords]);
   // Rows wanting attention, most urgent first. Same rule the Priority sort uses.
   const attentionItemIds = useMemo(
     () =>
@@ -1434,7 +1445,23 @@ export function AppSidebar() {
       }
       return kept.size === prev.size ? prev : kept;
     });
-  }, [chatListsOnScreen, clearSelection, renderedChatIds]);
+    // Folder rows go the same way. Left behind, a selected project the user
+    // closed the section on keeps the selection alive with nothing on screen
+    // to show for it, and the tool card's Escape steps aside for it: the press
+    // that should have declined a call clears a selection instead.
+    const projectAnchor = projectAnchorRef.current;
+    if (projectAnchor && !renderedProjectIds.has(projectAnchor)) {
+      projectAnchorRef.current = null;
+    }
+    setSelectedProjectIds((prev) => {
+      if (prev.size === 0) return prev;
+      const kept = new Set<string>();
+      for (const id of prev) {
+        if (renderedProjectIds.has(id)) kept.add(id);
+      }
+      return kept.size === prev.size ? prev : kept;
+    });
+  }, [chatListsOnScreen, clearSelection, renderedChatIds, renderedProjectIds]);
 
   /** Select every chat row on screen, pinned block included. */
   const selectAllChats = useCallback(() => {

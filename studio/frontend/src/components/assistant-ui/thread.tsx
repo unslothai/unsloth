@@ -146,7 +146,7 @@ import {
 } from "@/features/chat/utils/continuation";
 import { holdAutoContinueRun } from "@/features/chat/utils/auto-continue-run-keeper";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
-import { useShortcut } from "@/features/settings";
+import { COMPOSER_INPUT_SELECTOR, useShortcut } from "@/features/settings";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
 import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
 import { BypassPermissionsMenuItem } from "@/features/chat/bypass-permissions-menu-item";
@@ -1860,7 +1860,9 @@ const GeneratedImageViewportOverlay: FC<{
     if (!overlay) {
       return;
     }
-    document.querySelector<HTMLTextAreaElement>(".aui-composer-input")?.focus();
+    document
+      .querySelector<HTMLTextAreaElement>(COMPOSER_INPUT_SELECTOR)
+      ?.focus();
   }, [overlay]);
 
   if (!overlay) {
@@ -7337,6 +7339,10 @@ const AssistantMessage: FC = () => {
         <BranchPicker className="mr-0.5" />
         <AssistantActionBar />
       </div>
+      {/* Renders nothing. `If last` keeps the hook off the other N-1. */}
+      <MessagePrimitive.If last={true}>
+        <ForkChatShortcut />
+      </MessagePrimitive.If>
 
       {/*
         The same reveal, for the other traversal direction.
@@ -7484,17 +7490,32 @@ const useForkMessageAction = () => {
   };
 };
 
-const ForkMessageButton: FC = () => {
+/**
+ * The chord's registration, which no action bar can hold.
+ *
+ * The button below is the user bar's, and that bar is `autohide="always"`, so
+ * ActionBarPrimitive.Root returns null and takes the registration with it on
+ * every message that is not hovered. The assistant bar has its own fork call
+ * and never mounts the button at all, so on a thread that ended the ordinary
+ * way, with a reply, no message carried the chord.
+ *
+ * Mounted from both message roots under `If last`, so it exists once, for
+ * whichever message is last, whatever its role and wherever the pointer is.
+ */
+const ForkChatShortcut: FC = () => {
   const { forkMessage, forkDisabled } = useForkMessageAction();
-  // Only the last message answers: any other would fork mid-thread.
-  const isLast = useAuiState(({ message }) => message.isLast);
   const chatActive = useChatActive();
-  // Compare mounts this button in both panes, and the chord would go to
-  // whichever registered first. Fork from the button there.
+  // Compare mounts a thread in each pane, and the chord would go to whichever
+  // registered first. Fork from the button there.
   const inComparePane = useInComparePane();
   useShortcut("forkChat", () => void forkMessage(), {
-    enabled: chatActive && !inComparePane && isLast && !forkDisabled,
+    enabled: chatActive && !inComparePane && !forkDisabled,
   });
+  return null;
+};
+
+const ForkMessageButton: FC = () => {
+  const { forkMessage, forkDisabled } = useForkMessageAction();
 
   return (
     <TooltipIconButton
@@ -7932,6 +7953,11 @@ const UserMessage: FC = () => {
           <BranchPicker className="aui-user-branch-picker ml-0.5" />
         </div>
       </div>
+      {/* The other half of the pair: last is a user message while a reply is
+          still to come, or once one has been deleted. */}
+      <MessagePrimitive.If last={true}>
+        <ForkChatShortcut />
+      </MessagePrimitive.If>
     </MessagePrimitive.Root>
   );
 };

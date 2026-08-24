@@ -59,6 +59,7 @@ export type {
   PersonalizationProfile,
 } from "./api/personalization";
 export {
+  COMPOSER_INPUT_SELECTOR,
   useShortcut,
   useShortcutLabel,
   useShortcutLabels,

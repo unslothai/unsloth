@@ -17,13 +17,19 @@ import {
   useKeyboardShortcutsStore,
 } from "../stores/keyboard-shortcuts-store";
 
-function isTextEntryFocused(): boolean {
+/** The chat composer's textarea, which some chords are allowed to fire from. */
+export const COMPOSER_INPUT_SELECTOR = ".aui-composer-input";
+
+/** Exported for the test: the gate is easier to pin here than through React. */
+export function isTextEntryFocused(exceptFor?: string): boolean {
   if (typeof document === "undefined") return false;
   const el = document.activeElement as HTMLElement | null;
   const tag = el?.tagName;
-  return (
-    tag === "INPUT" || tag === "TEXTAREA" || Boolean(el?.isContentEditable)
-  );
+  const typing =
+    tag === "INPUT" || tag === "TEXTAREA" || Boolean(el?.isContentEditable);
+  if (!typing) return false;
+  // A named field does not type this chord, so it does not shield it either.
+  return !(exceptFor && el?.matches(exceptFor) === true);
 }
 
 export interface UseShortcutOptions {
@@ -34,6 +40,13 @@ export interface UseShortcutOptions {
    * otherwise steal a keystroke the composer wants.
    */
   skipInTextFields?: boolean;
+  /**
+   * A selector for text fields the gate above does not apply to, for a chord
+   * that types nothing in them. Escape in the composer is the case: it leaves
+   * the text alone, so a prompt still focused from the message that opened a
+   * tool request must not be what stops the request being declined.
+   */
+  textFieldException?: string;
   /**
    * Run again on each auto-repeat while the chord is held. For walking a list,
    * where holding is the gesture. Everything else is one-shot: a toggle held
@@ -63,7 +76,12 @@ export function useShortcut(
   handler: (event: KeyboardEvent) => void,
   options: UseShortcutOptions = {},
 ): void {
-  const { enabled = true, skipInTextFields = false, repeats = false } = options;
+  const {
+    enabled = true,
+    skipInTextFields = false,
+    textFieldException,
+    repeats = false,
+  } = options;
   const values = useBindingValues(id);
   // A chord claimed by two actions is consumed by whichever listener runs
   // first, so a slot only registers when this action owns it. Otherwise the
@@ -96,7 +114,7 @@ export function useShortcut(
       if (event.defaultPrevented) return;
       const hit = bindings.find((binding) => matchesBinding(binding, event));
       if (!hit) return;
-      if (skipInTextFields && isTextEntryFocused()) return;
+      if (skipInTextFields && isTextEntryFocused(textFieldException)) return;
       // The focused control keeps its own Enter or Space.
       if (
         typeof document !== "undefined" &&
@@ -113,7 +131,7 @@ export function useShortcut(
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [bindings, enabled, skipInTextFields, repeats]);
+  }, [bindings, enabled, skipInTextFields, textFieldException, repeats]);
 }
 
 /**
