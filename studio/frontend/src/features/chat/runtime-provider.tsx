@@ -130,6 +130,10 @@ import {
   refreshContextUsage,
   setActiveBranchReader,
 } from "./utils/refresh-context-usage";
+import {
+  type RunCheckpointScheduler,
+  createRunCheckpointScheduler,
+} from "./utils/run-checkpoint-scheduler";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
 import { sanitizeThreadScopedSettings } from "./utils/thread-scoped-settings";
 import { VideoAttachmentAdapter } from "./video-attachment-adapter";
@@ -2561,15 +2565,18 @@ function ThreadBackendAutosave({
     [aui, modelType, newThreadSwitchStateRef, pairId],
   );
 
+  // Let checkpoints schedule their next timer after this write settles.
   const queueSave = useCallback(
-    (threadId: string): void => {
-      saveChainRef.current = saveChainRef.current
+    (threadId: string): Promise<void> => {
+      const queued = saveChainRef.current
         .catch(() => {})
         .then(async () => {
           await pendingFirstSavesRef.current.get(threadId);
           await saveThread(threadId);
         })
         .catch(reportAutosaveError);
+      saveChainRef.current = queued;
+      return queued;
     },
     [reportAutosaveError, saveThread],
   );
@@ -2591,11 +2598,33 @@ function ThreadBackendAutosave({
     [reportAutosaveError, saveThread],
   );
 
+  // Keep one scheduler for the component lifetime so its timers remain stoppable. The ref
+  // gives it the latest queueSave when dependencies change.
+  const queueSaveRef = useRef(queueSave);
+  useEffect(() => {
+    queueSaveRef.current = queueSave;
+  }, [queueSave]);
+  const checkpointsRef = useRef<RunCheckpointScheduler | null>(null);
+  const checkpoints = useCallback((): RunCheckpointScheduler => {
+    checkpointsRef.current ??= createRunCheckpointScheduler((threadId) =>
+      queueSaveRef.current(threadId),
+    );
+    return checkpointsRef.current;
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      checkpointsRef.current?.stopAll();
+    };
+  }, []);
+
   useAuiEvent("thread.runEnd", ({ threadId }) => {
+    checkpoints().stop(threadId);
     queueSave(threadId);
   });
 
   useAuiEvent("thread.runStart", ({ threadId }) => {
+    checkpoints().start(threadId);
     const runtime = aui.threads().__internal_getAssistantRuntime?.();
     const { remoteId } =
       runtime?.threads.getItemById(threadId).getState() ?? {};
