@@ -290,10 +290,13 @@ jobs:
             echo "::error::head commit $HEAD_SHA is not available locally; refusing to skip the check"
             exit 1
           fi
-          mapfile -t CHANGED < <(
-            git diff --name-only --diff-filter=ACMR \
+          # -z / -d '', because core.quotePath defaults on: a non-ASCII path comes out of a
+          # line-oriented git diff as "caf\303\251.py", whose suffix is .py" rather than
+          # .py, so the verifier would skip it and report success having checked nothing.
+          mapfile -d '' -t CHANGED < <(
+            git diff -z --name-only --diff-filter=ACMR \
               "$MERGE_BASE" "$HEAD_SHA" -- '*.py' \
-              | grep -vE '(^|/)(unsloth_compiled_cache|node_modules|build|dist)/' || true
+              | grep -zvE '(^|/)(unsloth_compiled_cache|node_modules|build|dist)/' || true
           )
           if [ "${#CHANGED[@]}" -eq 0 ]; then
             echo "no changed Python files to check"

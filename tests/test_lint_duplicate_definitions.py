@@ -123,6 +123,40 @@ def test_a_second_copy_of_an_already_duplicated_name_is_blocked(repo):
     assert result.returncode == 1, result.stdout
 
 
+def test_a_new_plain_import_duplicate_is_not_absorbed_by_a_different_one(repo):
+    """Same bound name, different source: two distinct duplicates, not one carried over.
+
+    Both findings would read as `import:None:x` if the identity dropped the module the
+    alias came from, so the counter for the pre-existing `alpha` pair would absorb the
+    `beta` pair this diff introduces and the gate would pass.
+    """
+    (repo / "mod.py").write_text("import alpha as x\nimport alpha as x\n")
+    before = _commit(repo, "base with a duplicate import")
+    (repo / "mod.py").write_text("import beta as x\nimport beta as x\n")
+    after = _commit(repo, "swap the source, keep the duplication")
+
+    result = _run(repo, before, after, "mod.py")
+    assert result.returncode == 1, result.stdout
+    assert "x is imported" in result.stdout
+
+
+def test_rename_of_a_non_ascii_path_is_matched_to_its_old_name(repo):
+    """core.quotePath escapes the path, and the escaped spelling matches nothing.
+
+    The before side then looks absent, every finding in the file reads as introduced, and
+    a branch that only moves a file gets blocked for a duplicate already on main.
+    """
+    (repo / "café.py").write_text(DUPLICATE)
+    before = _commit(repo, "base with duplicate")
+    _git(repo, "mv", "café.py", "resumé.py")
+    (repo / "resumé.py").write_text(DUPLICATE + "\n\ndef other():\n    return 3\n")
+    after = _commit(repo, "rename and edit")
+
+    result = _run(repo, before, after, "resumé.py")
+    assert result.returncode == 0, result.stdout
+    assert "not failing" in result.stdout
+
+
 def test_file_deleted_at_head_is_skipped(repo):
     (repo / "mod.py").write_text(DUPLICATE)
     before = _commit(repo, "base with duplicate")
