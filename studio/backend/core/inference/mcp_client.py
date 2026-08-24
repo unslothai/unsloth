@@ -1046,10 +1046,12 @@ _IMAGE_SUBTYPES = {
 def _image_mime(mime: Any) -> Optional[str]:
     if not isinstance(mime, str):
         return None
-    if mime.startswith("image/"):
-        return mime
-    subtype = mime.partition(";")[0].strip().lower()
-    subtype = subtype[len("application/") :] if subtype.startswith("application/") else ""
+    # Type and subtype are case-insensitive (RFC 9110 8.3.1), and the parameters
+    # are not part of what the data: URL needs, so both forms match on essence.
+    essence = mime.partition(";")[0].strip().lower()
+    if essence.startswith("image/"):
+        return essence
+    subtype = essence[len("application/") :] if essence.startswith("application/") else ""
     return _IMAGE_SUBTYPES.get(subtype)
 
 

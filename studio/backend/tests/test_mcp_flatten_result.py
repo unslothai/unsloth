@@ -313,3 +313,17 @@ def test_image_content_mime_is_passed_through_unchanged():
     flat = _flatten_result(_result(_image(mime = "image/png")))
     payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)[1]
     assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/png"}]
+
+
+def test_mixed_case_image_mime_is_matched():
+    # Media type type/subtype are case-insensitive (RFC 9110 8.3.1).
+    for mime in ("IMAGE/PNG", "Image/Png", "image/PNG"):
+        flat = _flatten_result(_result(_blob_resource(mime = mime)))
+        payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)[1]
+        assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/png"}], mime
+
+
+def test_mime_parameters_are_dropped_from_the_data_url_type():
+    flat = _flatten_result(_result(_image(mime = "image/png; charset=binary")))
+    payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)[1]
+    assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/png"}]
