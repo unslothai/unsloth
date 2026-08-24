@@ -1,16 +1,10 @@
-"""FP8 fbgemm blockwise linear must stay correct across output tile grids and shapes.
+"""FP8 fbgemm blockwise linear must stay correct across tile grids and shapes.
 
-Three things this guards:
-  * fbgemm <=1.3.0 silently corrupted whole outputs for some output tile grids
-    (raster-order bug in its vendored CUTLASS scheduler). The import-time probe
-    uses a 128^3 all-ones GEMM whose 1x1 tile grid can never trigger that class
-    of bug, so a regression would load fine and corrupt training. The shape
-    battery here covers both scheduler cluster buckets' former failure zones.
-  * f8f8bf16_blockwise only supports 128x128x128 blocks with
-    in_features % 16 == 0 and out_features % 8 == 0 (measured on H800 /
-    fbgemm 1.4.0); anything else crashed the kernel ("cutlass cannot
-    implement" / "Only 128x128x128 block size is supported") instead of
-    falling back to dequant + matmul.
+Guards three things:
+  * fbgemm <=1.3.0 corrupted whole outputs for some tile grids; the import-time
+    probe's 1x1 grid cannot catch that, so this battery covers the failure zones.
+  * f8f8bf16_blockwise takes only 128x128x128 blocks with in_features % 16 == 0
+    and out_features % 8 == 0; anything else crashed instead of falling back.
   * activations are (tokens, K): they quantize with block width bs_k, not bs_n.
 """
 
@@ -27,8 +21,7 @@ pytestmark = pytest.mark.skipif(not cuda_available, reason = "needs CUDA")
 
 
 def skip_without_fbgemm():
-    # Ask unsloth's own import-time probe rather than checking for sm_90: that is
-    # exactly when the kernel path is reachable, and future arches enable themselves.
+    # unsloth's own probe, not an sm_90 check, so future arches enable themselves.
     # Called inside the test so collection never imports unsloth.
     from unsloth.kernels import fp8
     if fp8.fp8_block_quant_linear is not fp8.fp8_fbgemm_block_linear:
@@ -64,9 +57,8 @@ def _reference(X, Wq, scale, block):
 
 
 def _check_grad(X, out, Wq, scale, block):
-    # out.sum() makes grad_output all-ones, so grad_X is the row-sum of the
-    # dequantized weight; the old backward dequantized with a hardcoded
-    # 128x128 block and produced finite but mis-scaled gradients here.
+    # grad_output is all-ones, so grad_X is the row-sum of the dequantized weight.
+    # The old backward hardcoded 128x128 and returned finite but mis-scaled grads.
     out.sum().backward()
     assert X.grad is not None and torch.isfinite(X.grad).all()
     grad_ref = torch.ones(out.shape, device = out.device, dtype = torch.float32) @ _dequant(
@@ -82,9 +74,8 @@ def _rel_err(out, ref):
 
 def test_output_tile_grid_battery_matches_reference():
     skip_without_fbgemm()
-    # Shapes cover both dispatch buckets' former failure zones plus safe ones.
-    # On fbgemm <=1.3.0 the failing ones returned whole outputs at ~0.7 relative
-    # error; the healthy bound (activation quant noise) sits around 0.04.
+    # Both dispatch buckets' former failure zones plus safe shapes. On fbgemm
+    # <=1.3.0 the bad ones hit ~0.7 rel error; healthy quant noise is ~0.04.
     from unsloth.kernels.fp8 import FP8_fbgemm_block_linear
 
     torch.manual_seed(0)
@@ -169,9 +160,8 @@ def test_non_square_block_uses_dequant_fallback():
 
 @pytest.mark.parametrize("kind", ["per_tensor", "bf16_scale", "strided_3d"])
 def test_inputs_the_kernel_rejects_use_dequant_fallback(kind):
-    # Each of these used to reach f8f8bf16_blockwise and raise: a per-tensor scale
-    # has no block grid to unpack, the kernel demands float32 scales, and a strided
-    # view cannot be .view()ed flat.
+    # All three used to reach f8f8bf16_blockwise and raise: no block grid to
+    # unpack, a non-float32 scale, and a strided view that cannot be .view()ed.
     from unsloth.kernels.fp8 import FP8_fbgemm_block_linear
 
     torch.manual_seed(0)
