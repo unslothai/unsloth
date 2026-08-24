@@ -12,6 +12,7 @@ this was found on). One helper so a fourth log directory cannot quietly opt out 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Optional
 
 DEFAULT_KEEP = 20
 
@@ -20,22 +21,61 @@ def prune_log_dir(
     log_dir: Path,
     pattern: str,
     keep: int = DEFAULT_KEEP,
+    protect: Optional[Path] = None,
 ) -> None:
     """Delete all but the ``keep`` most recently modified ``pattern`` files in ``log_dir``.
 
+    ``protect`` is the log the caller is about to write to, or is already writing to. It
+    is never deleted, and it counts as one of the ``keep``, so the directory settles at
+    ``keep`` files and not ``keep + 1``. Call this *after* opening it: pruning first
+    leaves an extra file on disk every time, and trusting the new file to sort newest is
+    not safe when two loads land in the same second or a clock steps back.
+
+    Only regular files are considered. A directory that happens to match the glob is not
+    a log, and a symlink is followed by ``stat`` but unlinked by name, so counting one
+    would silently shrink how many real logs are kept.
+
     Best effort in every direction: retention must never take down the thing it is
     logging for, and losing the race to a concurrent writer just leaves the file for the
-    next call.
+    next call. One unreadable entry skips that entry, not the whole directory -- a single
+    dangling symlink used to abort the sort and disable retention entirely.
     """
     if keep < 0:
         return
+
+    protected = None
+    if protect is not None:
+        try:
+            protected = Path(protect).resolve()
+        except OSError:
+            protected = Path(protect)
+
+    entries = []
+    saw_protected = False
     try:
-        entries = sorted(log_dir.glob(pattern), key = lambda p: p.stat().st_mtime)
+        candidates = list(log_dir.glob(pattern))
     except OSError:
         return
-    if keep:
-        entries = entries[:-keep]
-    for old in entries:
+    for path in candidates:
+        try:
+            stat = path.stat()
+            if not path.is_file():
+                continue
+            if protected is not None and path.resolve() == protected:
+                saw_protected = True
+                continue
+        except OSError:
+            # A dangling symlink, a vanished file, or a directory we cannot read. Skip
+            # this entry only: one bad name must not disable retention for the directory.
+            continue
+        entries.append((stat.st_mtime, path))
+
+    # The protected file occupies one of the slots, so the total stays at `keep`.
+    room = keep - 1 if saw_protected else keep
+    entries.sort(key = lambda item: item[0])
+    if room > 0:
+        entries = entries[:-room]
+    for _mtime, old in entries:
         try:
             old.unlink(missing_ok = True)
         except OSError:

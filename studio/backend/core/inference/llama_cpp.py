@@ -9620,9 +9620,10 @@ class LlamaCppBackend:
         try:
             log_dir = _swa_cache_path().parent / "logs" / "diffusion-server"
             log_dir.mkdir(parents = True, exist_ok = True)
-            prune_log_dir(log_dir, "diffusion-*.log")
             self._llama_log_path = log_dir / f"diffusion-{int(time.time())}-port-{self._port}.log"
             self._llama_log_fh = open(self._llama_log_path, "w", encoding = "utf-8", buffering = 1)
+            # After the open, so the cap counts this file and can never delete it.
+            prune_log_dir(log_dir, "diffusion-*.log", protect = self._llama_log_path)
             logger.info(f"diffusion runner stdout/stderr -> {self._llama_log_path}")
         except (OSError, UnicodeDecodeError) as e:
             logger.debug(f"Could not open diffusion runner log file: {e}")
@@ -13228,7 +13229,6 @@ class LlamaCppBackend:
         try:
             log_dir = _swa_cache_path().parent / "logs" / "llama-server"
             log_dir.mkdir(parents = True, exist_ok = True)
-            prune_log_dir(log_dir, "llama-*.log")
             self._llama_log_path = log_dir / f"llama-{int(time.time())}-port-{self._port}.log"
             self._llama_log_fh = open(
                 self._llama_log_path,
@@ -13236,6 +13236,8 @@ class LlamaCppBackend:
                 encoding = "utf-8",
                 buffering = 1,
             )
+            # After the open, so the cap counts this file and can never delete it.
+            prune_log_dir(log_dir, "llama-*.log", protect = self._llama_log_path)
             logger.info(f"llama-server stdout/stderr -> {self._llama_log_path}")
         except (OSError, UnicodeDecodeError) as e:
             # Best-effort; never block the load on logging.
@@ -16996,7 +16998,6 @@ class LlamaCppBackend:
                         try:
                             log_dir = _swa_cache_path().parent / "logs" / "llama-server"
                             log_dir.mkdir(parents = True, exist_ok = True)
-                            prune_log_dir(log_dir, "llama-*.log")
                             self._llama_log_path = log_dir / (
                                 f"llama-{int(time.time())}{label}-port-{self._port}"
                                 f"-try{_spawn_attempt}.log"
@@ -17007,6 +17008,11 @@ class LlamaCppBackend:
                                 encoding = "utf-8",
                                 buffering = 1,
                             )
+                            # After the open, so the cap counts this file and can never
+                            # delete it. This is the retry path, where the earlier
+                            # attempts' logs are the ones a reader actually wants; they
+                            # are the newest entries, so keep-newest holds on to them.
+                            prune_log_dir(log_dir, "llama-*.log", protect = self._llama_log_path)
                             logger.info(f"llama-server stdout/stderr -> {self._llama_log_path}")
                         except (OSError, UnicodeDecodeError) as e:
                             # Best-effort; never block the load on logging.
