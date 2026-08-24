@@ -28,7 +28,13 @@ export type ThreadCreationClaim = {
 
 const claimsByThreadId = new Map<string, ThreadCreationClaim & { claimedAt: number }>();
 
-/** Bounded so an abandoned send cannot leak; a claim outlives only its own conversion. */
+/**
+ * Bounded rather than consumed on read. A claim has two readers with no ordering guarantee
+ * between them -- `initialize()`, which files the row, and the run adapter, which resolves
+ * the project the RUN uses -- so releasing on the first read starves the second. Leaving it
+ * to expire is safe: a persisted row makes `ensureThreadRecord` early-return, a fresh thread
+ * always gets a fresh local id, and every send overwrites the ids it stamps.
+ */
 const CLAIM_TTL_MS = 10 * 60 * 1000;
 const MAX_CLAIMS = 64;
 
@@ -81,11 +87,6 @@ export function readThreadCreationClaim(
     modelId: claim.modelId,
     createdAt: claim.createdAt,
   };
-}
-
-/** Drop a claim once the thread it belongs to has been filed. */
-export function releaseThreadCreationClaim(threadId: string): void {
-  claimsByThreadId.delete(threadId);
 }
 
 export function __resetThreadCreationClaimsForTests(): void {

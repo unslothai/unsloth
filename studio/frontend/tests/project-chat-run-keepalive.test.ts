@@ -389,6 +389,25 @@ test("a delayed first send keeps the creation inputs it was sent under", () => {
   // A claim OF null/false must win over what the store holds now; `claim?.x ?? store` would
   // read it as no claim at all.
   assert.doesNotMatch(provider, /claim\?\.(projectId|incognito|modelId|createdAt) \?\?/);
+
+  // The RUN resolves its project separately from the record write, and takes the run's
+  // instructions, RAG sources and sandbox from it. It reads the same stamp.
+  const adapter = readFileSync(
+    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    adapter,
+    /const creationClaim = unstable_threadId\s*\? readThreadCreationClaim\(unstable_threadId\)\s*: undefined;\s*const composerProjectIdAtSend = creationClaim\s*\? creationClaim\.projectId/,
+  );
+  // ...and the claim has to outlive initialize(), because there is no ordering guarantee
+  // between the two readers. Consuming it on the first read starves the second.
+  assert.doesNotMatch(provider, /releaseThreadCreationClaim/);
+  const claimModule = readFileSync(
+    new URL("../src/features/chat/utils/chat-thread-creation-claim.ts", import.meta.url),
+    "utf8",
+  );
+  assert.doesNotMatch(claimModule, /export function releaseThreadCreationClaim/);
 });
 
 test("compare lists its threads once before it waits on any run", () => {

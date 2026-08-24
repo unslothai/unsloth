@@ -77,10 +77,7 @@ import {
 } from "./stores/research-run-store";
 import { ToolPaneScopeContext, toolPaneScope } from "./tool-output-scope";
 import { ChatProjectScopeContext } from "./chat-project-scope";
-import {
-  readThreadCreationClaim,
-  releaseThreadCreationClaim,
-} from "./utils/chat-thread-creation-claim";
+import { readThreadCreationClaim } from "./utils/chat-thread-creation-claim";
 import type { MessageRecord, ModelType, ThreadRecord } from "./types";
 import {
   chatContentPartAttachmentIdFromSignature,
@@ -826,7 +823,6 @@ function createStudioDbAdapter(
       // adapter is rebuilt with the new project, and ChatPage's view effect clears
       // `incognito`. A claim of null/false wins over the store for the same reason.
       const claim = readThreadCreationClaim(threadId);
-      releaseThreadCreationClaim(threadId);
       const runtimeStateAtInit = useChatRuntimeStore.getState();
       const incognitoAtInit = claim ? claim.incognito : runtimeStateAtInit.incognito;
       const modelIdAtInit = claim

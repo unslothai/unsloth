@@ -60,6 +60,7 @@ import {
   releasePreStreamRunForThreadIds,
   releasePreStreamRunReservation,
 } from "../utils/pre-stream-run-reservation";
+import { readThreadCreationClaim } from "../utils/chat-thread-creation-claim";
 import {
   consumeQueuedChatRunSettings,
   snapshotQueuedChatRunSettings,
@@ -3879,8 +3880,20 @@ export function createOpenAIStreamAdapter(
       // Before the first await: hydration and a model load both run ahead of the
       // first resolveProjectId, and a send survives navigation. Only consulted
       // while the thread's own row is still missing.
-      const composerProjectIdAtSend =
-        useChatRuntimeStore.getState().activeProjectId ?? null;
+      //
+      // ...which, for a fresh send, is exactly the window this has to be right in, and the
+      // store is no longer a safe reading of it. send() awaits document extraction before
+      // the run starts, and initialize() returns without awaiting its row write, so by the
+      // time this runs the user may be in another project and `activeProjectId` names that
+      // one. The run would then take its instructions, RAG sources and sandbox from a
+      // project the message was never sent to. Prefer what the send itself was stamped
+      // with; a stamp OF null is a send from outside any project and still wins.
+      const creationClaim = unstable_threadId
+        ? readThreadCreationClaim(unstable_threadId)
+        : undefined;
+      const composerProjectIdAtSend = creationClaim
+        ? creationClaim.projectId
+        : (useChatRuntimeStore.getState().activeProjectId ?? null);
       await useChatRuntimeStore.getState().hydratePersistedSettings();
       // After the hydrate, not before: the backend reads some settings out of
       // SQLite at call time rather than taking them from the request -- Search
