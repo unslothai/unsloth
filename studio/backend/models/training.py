@@ -538,9 +538,9 @@ class TrainingStartRequest(BaseModel):
 
     # Vision-specific LoRA parameters
     finetune_vision_layers: bool = Field(False, description = "Finetune vision layers")
-    finetune_language_layers: bool = Field(False, description = "Finetune language layers")
-    finetune_attention_modules: bool = Field(False, description = "Finetune attention modules")
-    finetune_mlp_modules: bool = Field(False, description = "Finetune MLP modules")
+    finetune_language_layers: bool = Field(True, description = "Finetune language layers")
+    finetune_attention_modules: bool = Field(True, description = "Finetune attention modules")
+    finetune_mlp_modules: bool = Field(True, description = "Finetune MLP modules")
     is_dataset_image: bool = Field(False, description = "Whether the dataset contains image data")
     is_dataset_audio: bool = Field(False, description = "Whether the dataset contains audio data")
     is_embedding: bool = Field(

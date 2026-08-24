@@ -76,6 +76,15 @@ type AutoScrollContextValue = {
    * re-attaches; explicit pins (run start, button) still work.
    */
   detachFromBottom: () => void;
+  /**
+   * `deltaPx` of content was inserted ABOVE the viewport; shift by it so the
+   * user keeps looking at the same thing. Progressive mounting (see
+   * progressive-mount-controller) is the only caller and calls on EVERY
+   * widening commit, zero included, since a zero correction still resyncs the
+   * intent bookkeeping below. A method rather than a scrollTop write at the
+   * inserting commit because this hook owns scrollTop.
+   */
+  adjustForContentInsertedAbove: (deltaPx: number) => void;
 };
 
 const noopContext: AutoScrollContextValue = {
@@ -87,6 +96,9 @@ const noopContext: AutoScrollContextValue = {
     /* no-op */
   },
   detachFromBottom: () => {
+    /* no viewport mounted */
+  },
+  adjustForContentInsertedAbove: () => {
     /* no viewport mounted */
   },
 };
@@ -111,6 +123,11 @@ export function useScrollThreadToBottom(): ScrollToBottom {
   return useContext(AutoScrollContext).scrollToBottom;
 }
 
+/** See AutoScrollContextValue.adjustForContentInsertedAbove. */
+export function useAdjustForContentInsertedAbove(): (deltaPx: number) => void {
+  return useContext(AutoScrollContext).adjustForContentInsertedAbove;
+}
+
 export function useIsThreadAtBottom(): boolean {
   const ctx = useContext(AutoScrollContext);
   return useSyncExternalStore(ctx.subscribe, ctx.getIsAtBottom, () => true);
@@ -132,6 +149,9 @@ export function useIntentAwareAutoScroll(): {
     /* no viewport mounted */
   });
   const detachImplRef = useRef<() => void>(() => {
+    /* no viewport mounted */
+  });
+  const adjustImplRef = useRef<(deltaPx: number) => void>(() => {
     /* no viewport mounted */
   });
 
@@ -160,6 +180,10 @@ export function useIntentAwareAutoScroll(): {
 
   const detachFromBottom = useCallback(() => {
     detachImplRef.current();
+  }, []);
+
+  const adjustForContentInsertedAbove = useCallback((deltaPx: number) => {
+    adjustImplRef.current(deltaPx);
   }, []);
 
   const attach = useCallback(
@@ -335,6 +359,50 @@ export function useIntentAwareAutoScroll(): {
         requestTick();
       };
 
+      // Content inserted above the viewport by a progressive-mount widening.
+      // THIS HOOK OWNS scrollTop; the progressive mount only reports the height
+      // it put above the fold, so the two never both write.
+      //
+      // While the user is FOLLOWING there is deliberately nothing to do: the
+      // MutationObserver below already runs onLayoutChange -> pinIfFollowing in
+      // the same frame before paint, and since widening only prepends, "pin to
+      // the bottom" and "shift by the height inserted above" are the same pixel.
+      // Correcting here too would double the forced layouts per frame and its
+      // scroll event could re-attach a user who deliberately detached within
+      // RE_ATTACH_THRESHOLD_PX of the bottom.
+      //
+      // While the user is DETACHED nothing else moves the viewport: extendFollow
+      // early-returns, stabilize only rebases its high-water mark, and
+      // pinIfFollowing returns without scrolling. So this is the only actor, and
+      // without it the page slides down under the reader every widening frame.
+      //
+      // `behavior: "instant"` is required: the viewport carries `scroll-smooth`,
+      // so an animated write would still be in flight at the next frame's write.
+      adjustImplRef.current = (deltaPx: number) => {
+        if (!userDetachedRef.current) {
+          return;
+        }
+        if (deltaPx !== 0) {
+          el.scrollTo({ top: el.scrollTop + deltaPx, behavior: "instant" });
+        }
+        // Advance the intent bookkeeping whether or not anything was written.
+        //
+        // With a write, this stops the scroll event it provokes from reading as
+        // reader movement: the `delta > 0` branch below would re-attach a user
+        // parked near the bottom and the next widening frame would yank them
+        // down.
+        //
+        // WITHOUT a write it matters just as much. When native scroll anchoring
+        // absorbs a widening in full the correction is zero, but the browser
+        // still moved scrollTop by the whole inserted height and still fires a
+        // scroll event for it (measured on Chromium 151, WebKit 26.5, Firefox
+        // 153). Returning early left lastScrollTop a whole insertion behind, so
+        // that event arrived as a large downward scroll nobody made. Layout
+        // effects run before it is dispatched, so resyncing here reads as zero.
+        lastScrollTop = el.scrollTop;
+        lastDistanceFromBottom = distanceFromBottom();
+      };
+
       const onWheel = (e: WheelEvent) => {
         if (
           e.deltaY < 0 &&
@@ -463,10 +531,7 @@ export function useIntentAwareAutoScroll(): {
         const needed = Math.max(0, shrink);
         if (needed !== stabilizerPx) {
           stabilizerPx = needed;
-          el.style.setProperty(
-            "--aui-scroll-stabilizer",
-            `${stabilizerPx}px`,
-          );
+          el.style.setProperty("--aui-scroll-stabilizer", `${stabilizerPx}px`);
         }
         return currentContent + stabilizerPx;
       };
@@ -571,6 +636,9 @@ export function useIntentAwareAutoScroll(): {
         detachImplRef.current = () => {
           /* no viewport mounted */
         };
+        adjustImplRef.current = () => {
+          /* no viewport mounted */
+        };
       };
     },
     [setIsAtBottom],
@@ -608,8 +676,20 @@ export function useIntentAwareAutoScroll(): {
   );
 
   const context = useMemo<AutoScrollContextValue>(
-    () => ({ scrollToBottom, getIsAtBottom, subscribe, detachFromBottom }),
-    [scrollToBottom, getIsAtBottom, subscribe, detachFromBottom],
+    () => ({
+      scrollToBottom,
+      getIsAtBottom,
+      subscribe,
+      detachFromBottom,
+      adjustForContentInsertedAbove,
+    }),
+    [
+      scrollToBottom,
+      getIsAtBottom,
+      subscribe,
+      detachFromBottom,
+      adjustForContentInsertedAbove,
+    ],
   );
 
   return { ref, context };

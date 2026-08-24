@@ -606,7 +606,11 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
         start_mlx_autorepair_if_needed()
     except Exception as _mlx_exc:
         import structlog as _structlog
-        _structlog.get_logger(__name__).debug("mlx autorepair skipped: %s", _mlx_exc)
+
+        # Warning, not debug: this decides the MLX verdict on every healthy Apple Silicon
+        # boot, so a half-applied update (new mlx_repair.py over older hardware.py) arrives
+        # here and would silently leave Train/Export greyed out for the session.
+        _structlog.get_logger(__name__).warning("mlx autorepair skipped: %s", _mlx_exc)
 
     if _post_warm_retired(generation):
         return

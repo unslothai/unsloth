@@ -75,7 +75,14 @@ export function ReferenceMediaPicker({
         )}
       >
         <HugeiconsIcon icon={icon} className="size-3.5 shrink-0 text-muted-foreground" />
-        <span className="min-w-0 flex-1 truncate text-ui-11 text-foreground">{value.name}</span>
+        {/* The file input is early-returned past in this branch, so the
+            type=file redaction never sees it: mark the name itself. */}
+        <span
+          data-reload-snapshot-sensitive
+          className="min-w-0 flex-1 truncate text-ui-11 text-foreground"
+        >
+          {value.name}
+        </span>
         <Tooltip>
           <TooltipTrigger asChild={true}>
             <Button

@@ -4775,14 +4775,28 @@ $SkipPythonDeps = $false
 
 if ($env:SKIP_STUDIO_BASE -ne "1" -and $env:STUDIO_LOCAL_INSTALL -ne "1") {
     # Only check when NOT called from install.ps1 (which just installed the package)
-    $InstalledVer = try { (& python -c "from importlib.metadata import version; print(version('$_PkgName'))" 2>$null | Out-String).Trim() } catch { "" }
+    $_InstalledVersionProbeExit = 1
+    $InstalledVer = try {
+        $_installedVersionOutput = & python -c "
+import sys
+sys.path.insert(0, sys.argv[2])
+import install_manifest
+version, conflict = install_manifest.installed_version_probe(sys.argv[1], ('unsloth-zoo',))
+print(version)
+sys.exit(2 if conflict else (0 if version else 1))
+" $_PkgName $PSScriptRoot 2>$null
+        $_InstalledVersionProbeExit = $LASTEXITCODE
+        ($_installedVersionOutput | Out-String).Trim()
+    } catch { "" }
     $LatestVer = ""
     try {
         $pypiJson = Invoke-RestMethod -Uri "https://pypi.org/pypi/$_PkgName/json" -TimeoutSec 5 -ErrorAction Stop
         $LatestVer = "$($pypiJson.info.version)".Trim()
     } catch { }
 
-    if ($InstalledVer -and $LatestVer -and ($InstalledVer -eq $LatestVer)) {
+    if ($_InstalledVersionProbeExit -eq 2) {
+        substep "duplicate metadata found for a core package -- forcing package repair..." "Cyan"
+    } elseif ($InstalledVer -and $LatestVer -and ($InstalledVer -eq $LatestVer)) {
         step "python" "$_PkgName $InstalledVer is up to date"
         $SkipPythonDeps = $true
         # A pre-#6483-fix install can be stuck on anyio>=4.14 even though
@@ -4826,6 +4840,30 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
         if ($_studioInstallIncomplete) {
             substep "studio install incomplete -- forcing dependency pass to repair..." "Cyan"
             $SkipPythonDeps = $false
+        }
+        # If the desktop app specifies a minimum required backend version and the installed
+        # package is older than that requirement, force the dependency pass to upgrade it.
+        if ($env:UNSLOTH_DESKTOP_BACKEND_VERSION) {
+            $_desktopVerBad = $false
+            try {
+                & python -c "
+import re, sys
+try:
+    from packaging.version import parse as parse_v
+except ImportError:
+    def parse_v(v):
+        match = re.fullmatch(r'(\d+)\.(\d+)\.(\d+)', (v or '').strip())
+        return (int(match.group(1)), int(match.group(2)), int(match.group(3))) if match else None
+installed = parse_v(sys.argv[1])
+required = parse_v(sys.argv[2])
+sys.exit(0 if installed is not None and required is not None and installed >= required else 1)
+" "$InstalledVer" "$env:UNSLOTH_DESKTOP_BACKEND_VERSION" 2>$null
+                if ($LASTEXITCODE -ne 0) { $_desktopVerBad = $true }
+            } catch {}
+            if ($_desktopVerBad) {
+                substep "$_PkgName $InstalledVer < $env:UNSLOTH_DESKTOP_BACKEND_VERSION (required by desktop app) -- forcing dependency pass to update..." "Cyan"
+                $SkipPythonDeps = $false
+            }
         }
         # ...but not if an AMD GPU is present and installed PyTorch is CPU-only
         # (host predates ROCm-wheel support, or GPU added later): the fast "up to
@@ -5303,6 +5341,8 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
 # install.ps1 sets SKIP_STUDIO_BASE=1 (base never reinstalled) and 'studio update'
 # goes through uv (--upgrade-package), whose pip fallback no-ops on the
 # already-satisfied bare unsloth/unsloth-zoo. Either way unsloth.exe stays.
+# Duplicate metadata repair is the one pass that DOES reinstall unsloth under
+# SKIP_STUDIO_BASE, so the CLI wraps this script in its launcher transaction.
 
 # Ordered heavy dependency installation -- shared cross-platform script
 substep "running ordered dependency installation..."
