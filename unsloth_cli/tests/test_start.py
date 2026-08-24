@@ -1740,7 +1740,9 @@ def test_prefer_cmd_sibling_leaves_an_unreadable_resolution_alone(monkeypatch, t
 
 def test_prefer_cmd_sibling_is_none_safe_and_posix_noop(monkeypatch, tmp_path):
     assert start._prefer_windows_cmd_sibling(None) is None
-    # Not simulated Windows: a POSIX host must never rewrite a which() result.
+    # Pin os.name instead of relying on the host: on a Windows runner the rescue
+    # would fire and this would assert the opposite of what it means to check.
+    monkeypatch.setattr(start.os, "name", "posix")
     shim = tmp_path / "fake-agent"
     shim.write_text("#!/bin/sh\n", encoding = "utf-8")
     (tmp_path / "fake-agent.cmd").write_text("@ECHO off\n", encoding = "utf-8")
@@ -1748,15 +1750,18 @@ def test_prefer_cmd_sibling_is_none_safe_and_posix_noop(monkeypatch, tmp_path):
 
 
 def test_resolved_launch_command_rescues_uppercase_cmd_sibling(monkeypatch, tmp_path):
-    # #9167's pnpm dir holds pi.CMD. Case-insensitive NTFS matches that on the .cmd
-    # probe, but a case-sensitive volume needs .CMD, as does this test on CI.
+    # #9167's pnpm dir holds pi.CMD. A case-sensitive volume needs the .CMD probe;
+    # a case-insensitive one answers the earlier .cmd probe with the same file, so
+    # compare identity rather than spelling or this passes only on Linux.
     _simulate_windows(monkeypatch)
     posix_shim = tmp_path / "fake-agent"
     posix_shim.write_text("#!/bin/sh\n", encoding = "utf-8")
     cmd = tmp_path / "fake-agent.CMD"
     cmd.write_text("@ECHO off\ncustom-wrapper %*\n", encoding = "utf-8")
 
-    assert start._resolved_launch_command(str(posix_shim), ["--flag"]) == [str(cmd), "--flag"]
+    resolved = start._resolved_launch_command(str(posix_shim), ["--flag"])
+    assert resolved[1:] == ["--flag"]
+    assert os.path.samefile(resolved[0], str(cmd))
 
 
 def test_which_with_install_dirs_applies_the_cmd_sibling_preference(monkeypatch, tmp_path):
