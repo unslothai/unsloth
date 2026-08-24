@@ -81,6 +81,9 @@ jobs:
               echo "${RELEASE_TAG} has updater metadata but only ${stable_count}/${#stable_names[@]} stable downloads; refusing a partial publication." >&2
               exit 1
             fi
+          elif grep -q '^Unsloth-Desktop-' "$asset_names"; then
+            echo "${RELEASE_TAG} has Desktop assets but no latest.json; refusing a partial publication." >&2
+            exit 1
           else
             echo "${RELEASE_TAG} carries no complete Desktop publication yet; nothing to validate."
             echo "proceed=false" >> "$GITHUB_OUTPUT"
