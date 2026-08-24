@@ -365,7 +365,11 @@ class OutDirLock:
         self._fd: Optional[int] = None
 
     @classmethod
-    def take(cls, out: Path, session_id: str = "starting") -> "OutDirLock":
+    def take(
+        cls,
+        out: Path,
+        session_id: str = "starting",
+    ) -> "OutDirLock":
         """Hold `out`, or raise `SystemExit` naming the run that already holds it.
 
         `session_id` is written into the marker so a refusal can name a holder. A run takes the
