@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 use std::ffi::{OsStr, OsString};
+use std::os::unix::net::UnixStream;
 
 const APPIMAGE: &str = "APPIMAGE";
 const GLES_V2: &[u8] = b"libGLESv2.so.2\0";
@@ -137,18 +138,15 @@ fn rendering_plan(
     let wayland_display = env(WAYLAND_DISPLAY)
         .map(|display| !display.is_empty())
         .unwrap_or(false);
-    // WAYLAND_DISPLAY is inherited by XWayland clients, so it only decides the backend when
-    // GDK_BACKEND leaves the choice open. When GDK_BACKEND names backends, what matters is
-    // which one opens, and wl_display_connect(NULL) also falls back to the default
-    // wayland-0 socket, so an unset WAYLAND_DISPLAY alone does not mean wayland cannot open.
-    let wayland_session = match env(GDK_BACKEND) {
-        Some(backends) => selected_backend_is_wayland(
-            &backends,
-            wayland_display || wayland_socket,
-            env(X11_DISPLAY).is_some_and(|display| !display.is_empty()),
-        ),
-        None => wayland_display,
-    };
+    // What matters is which backend opens, not WAYLAND_DISPLAY, which XWayland clients
+    // inherit too. wl_display_connect(NULL) falls back to the default wayland-0 socket, so
+    // an unset WAYLAND_DISPLAY alone does not mean wayland cannot open. An unset
+    // GDK_BACKEND is GDK's own "*", which tries wayland before x11 (gdk_backends[]).
+    let wayland_session = selected_backend_is_wayland(
+        env(GDK_BACKEND).as_deref().unwrap_or(OsStr::new("*")),
+        wayland_display || wayland_socket,
+        env(X11_DISPLAY).is_some_and(|display| !display.is_empty()),
+    );
 
     // The DMA-BUF transport breaks on the proprietary driver on either display server, so
     // this cannot be gated on a Wayland session. Upstream declined the fix (bug 262607
@@ -221,14 +219,18 @@ fn rendering_plan(
     RenderingPlan::Apply(workaround, WAYLAND_REASON)
 }
 
-/// The socket wl_display_connect(NULL) falls back to when WAYLAND_DISPLAY is unset. A
-/// stat, so it touches no GL state and is safe before GTK initialization.
-fn wayland_socket_present() -> bool {
-    std::env::var_os("XDG_RUNTIME_DIR").is_some_and(|dir| {
-        std::path::Path::new(&dir)
-            .join(DEFAULT_WAYLAND_SOCKET)
-            .exists()
+/// Whether the socket wl_display_connect(NULL) falls back to accepts connections. A
+/// crashed compositor leaves the file behind, and existence alone would then read as a
+/// Wayland session while GDK's opener fails over to x11. Connecting instead fails the same
+/// way GDK does (ECONNREFUSED), and touches no GL state, so it is safe before GTK init.
+fn wayland_socket_connectable(runtime_dir: Option<OsString>) -> bool {
+    runtime_dir.is_some_and(|dir| {
+        UnixStream::connect(std::path::Path::new(&dir).join(DEFAULT_WAYLAND_SOCKET)).is_ok()
     })
+}
+
+fn wayland_socket_present() -> bool {
+    wayland_socket_connectable(std::env::var_os("XDG_RUNTIME_DIR"))
 }
 
 fn nvidia_driver_loaded() -> bool {
@@ -823,5 +825,50 @@ mod tests {
             plan(&[(WAYLAND_DISPLAY, "wayland-0"), (DISABLE_DMABUF, "1")]),
             RenderingPlan::PreserveEnvironment
         );
+    }
+
+    // GDK_BACKEND unset is "*", so a live default socket opens wayland even with no
+    // WAYLAND_DISPLAY, and this must not be read as the X11 session FORCE_SHM is for.
+    #[test]
+    fn an_unset_gdk_backend_follows_the_default_socket() {
+        assert_eq!(
+            plan_on_host_with_socket(&[(X11_DISPLAY, ":0")], MODERN_WEBKIT, true, true, true),
+            RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_WAYLAND_REASON)
+        );
+        assert_eq!(
+            plan_on_host_with_socket(&[(X11_DISPLAY, ":0")], MODERN_WEBKIT, true, true, false),
+            RenderingPlan::Apply(
+                RenderingWorkaround::ForceSharedMemoryOnNvidia,
+                NVIDIA_REASON
+            )
+        );
+    }
+
+    fn socket_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("unsloth-wl-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_listening_wayland_socket_is_a_wayland_session() {
+        let dir = socket_dir("live");
+        let _listener =
+            std::os::unix::net::UnixListener::bind(dir.join(DEFAULT_WAYLAND_SOCKET)).unwrap();
+        assert!(wayland_socket_connectable(Some(dir.clone().into())));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // A crashed compositor leaves the file behind; GDK's opener still fails over to x11.
+    #[test]
+    fn a_stale_wayland_socket_is_not_a_wayland_session() {
+        let dir = socket_dir("stale");
+        let socket = dir.join(DEFAULT_WAYLAND_SOCKET);
+        std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        assert!(socket.exists());
+        assert!(!wayland_socket_connectable(Some(dir.clone().into())));
+        assert!(!wayland_socket_connectable(None));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
