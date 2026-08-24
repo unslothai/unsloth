@@ -1798,7 +1798,13 @@ def test_a_resume_that_failed_again_is_still_refused(tmp_path):
 # ── the coverage floor applies to every mode, not only the structural one ─────
 
 
-def _windowed_only_shard(tmp_path, name, *, pairs = 1, differ = False):
+def _windowed_only_shard(
+    tmp_path,
+    name,
+    *,
+    pairs = 1,
+    differ = False,
+):
     """A payload whose every pair is a WINDOWED mount, so `main` takes the structural early return.
 
     One clean, matching windowed pair per action. `--mode auto` classifies these on the capture's
