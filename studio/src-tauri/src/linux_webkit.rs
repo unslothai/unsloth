@@ -7,6 +7,7 @@ const APPIMAGE: &str = "APPIMAGE";
 const GLES_V2: &[u8] = b"libGLESv2.so.2\0";
 
 const WAYLAND_DISPLAY: &str = "WAYLAND_DISPLAY";
+const X11_DISPLAY: &str = "DISPLAY";
 const GDK_BACKEND: &str = "GDK_BACKEND";
 const FORCE_SHARED_MEMORY: &str = "WEBKIT_DMABUF_RENDERER_FORCE_SHM";
 const DISABLE_DMABUF: &str = "WEBKIT_DISABLE_DMABUF_RENDERER";
@@ -53,11 +54,27 @@ enum RenderingPlan {
     PreserveEnvironment,
 }
 
-fn backend_allows_wayland(backends: &OsStr) -> bool {
-    backends.to_string_lossy().split(',').any(|backend| {
-        let backend = backend.trim();
-        backend == "*" || backend.eq_ignore_ascii_case("wayland")
-    })
+/// Resolve GDK_BACKEND the way gdk_display_manager_open_display does: g_strsplit on ',',
+/// no trimming, g_str_equal so matching is exact and case sensitive, entries tried in
+/// order, and the first backend whose display opens wins. '*' expands to the built-in
+/// order, which is wayland before x11 on Linux. Membership is not selection: `x11,wayland`
+/// runs on X11 whenever an X display opens, and on NVIDIA that decides between the
+/// shared-memory switch and the empty transport set.
+///
+/// A display cannot be opened here, so "opens" is the same environment GDK's own openers
+/// read. An explicitly named wayland still counts without WAYLAND_DISPLAY, because GDK
+/// falls back to the default wayland-0 socket.
+fn selected_backend_is_wayland(backends: &OsStr, wayland_display: bool, x11_display: bool) -> bool {
+    for backend in backends.to_string_lossy().split(',') {
+        match backend {
+            "wayland" => return true,
+            "x11" if x11_display => return false,
+            "*" if wayland_display => return true,
+            "*" if x11_display => return false,
+            _ => continue,
+        }
+    }
+    false
 }
 
 fn supports_force_shared_memory((major, minor, _micro): (u32, u32, u32)) -> bool {
@@ -107,19 +124,19 @@ fn rendering_plan(
             .is_some_and(force_dmabuf_requested);
 
     let is_appimage = env(APPIMAGE).is_some();
-    let configured_backends = env(GDK_BACKEND);
-    let explicit_wayland = configured_backends
-        .as_deref()
-        .map(backend_allows_wayland)
+    let wayland_display = env(WAYLAND_DISPLAY)
+        .map(|display| !display.is_empty())
         .unwrap_or(false);
-    // GDK can connect to the default wayland-0 socket when its backend is explicitly
-    // Wayland even if WAYLAND_DISPLAY is absent. Conversely, WAYLAND_DISPLAY is inherited
-    // by XWayland apps, so an X11-only GDK_BACKEND must take precedence.
-    let wayland_session = explicit_wayland
-        || (configured_backends.is_none()
-            && env(WAYLAND_DISPLAY)
-                .map(|display| !display.is_empty())
-                .unwrap_or(false));
+    // WAYLAND_DISPLAY is inherited by XWayland clients, so it only decides the backend
+    // when GDK_BACKEND leaves the choice open.
+    let wayland_session = match env(GDK_BACKEND) {
+        Some(backends) => selected_backend_is_wayland(
+            &backends,
+            wayland_display,
+            env(X11_DISPLAY).is_some_and(|display| !display.is_empty()),
+        ),
+        None => wayland_display,
+    };
 
     // The DMA-BUF transport breaks on the proprietary driver on either display server, so
     // this cannot be gated on a Wayland session. Upstream declined the fix (bug 262607
@@ -582,11 +599,59 @@ mod tests {
     }
 
     #[test]
-    fn a_gdk_wildcard_can_select_wayland_without_a_display_variable() {
+    fn a_gdk_wildcard_selects_wayland_only_when_a_wayland_display_is_there() {
+        // '*' expands to the built-in order, wayland before x11, and takes the first that
+        // opens. With no WAYLAND_DISPLAY the wayland opener has nothing to connect to.
         assert_eq!(
-            plan(&[(GDK_BACKEND, "*")]),
+            plan(&[(GDK_BACKEND, "*"), (WAYLAND_DISPLAY, "wayland-0")]),
             RenderingPlan::Apply(RenderingWorkaround::ForceSharedMemory, WAYLAND_REASON)
         );
+        assert_eq!(
+            plan(&[(GDK_BACKEND, "*"), (X11_DISPLAY, ":0")]),
+            RenderingPlan::PreserveEnvironment
+        );
+    }
+
+    #[test]
+    fn an_ordered_backend_list_takes_the_first_that_opens() {
+        // GDK tries entries in order, so x11,wayland runs on X11 whenever DISPLAY opens.
+        // Membership said Wayland, which on NVIDIA picked the empty transport set for a
+        // session that is actually X11.
+        assert_eq!(
+            plan_on_nvidia(&[
+                (GDK_BACKEND, "x11,wayland"),
+                (WAYLAND_DISPLAY, "wayland-0"),
+                (X11_DISPLAY, ":0"),
+            ]),
+            RenderingPlan::Apply(RenderingWorkaround::ForceSharedMemory, NVIDIA_REASON)
+        );
+        // Reverse the order and Wayland is what opens first.
+        assert_eq!(
+            plan_on_nvidia(&[
+                (GDK_BACKEND, "wayland,x11"),
+                (WAYLAND_DISPLAY, "wayland-0"),
+                (X11_DISPLAY, ":0"),
+            ]),
+            RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_WAYLAND_REASON)
+        );
+        // x11 named first but no X display: GDK falls through to the next entry.
+        assert_eq!(
+            plan_on_nvidia(&[(GDK_BACKEND, "x11,wayland"), (WAYLAND_DISPLAY, "wayland-0")]),
+            RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_WAYLAND_REASON)
+        );
+    }
+
+    #[test]
+    fn backend_matching_is_exact_like_g_str_equal() {
+        // g_strsplit does not trim and g_str_equal is case sensitive, so neither of these
+        // names a backend GDK will match; it falls through to the next entry.
+        for value in [" wayland", "Wayland", "wayland-egl"] {
+            assert_eq!(
+                plan(&[(GDK_BACKEND, value), (WAYLAND_DISPLAY, "wayland-0")]),
+                RenderingPlan::PreserveEnvironment,
+                "GDK_BACKEND={value} matches no GDK backend"
+            );
+        }
     }
 
     #[test]
