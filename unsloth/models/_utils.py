@@ -4595,9 +4595,8 @@ def _resolve_ensure_weight_tying(model, modules_to_save, requested):
 def _embedding_name_is_unambiguous(model, name):
     """Whether `name` and its bare leaf select the same single module.
 
-    On a composite model (audio tower plus language model, encoder-decoder) two modules
-    can share the embed_tokens leaf, and PEFT suffix-matches, so the bare name would wrap
-    both. Only safe to rewrite a qualified name when exactly one module matches.
+    A composite model can hold two embed_tokens, and PEFT suffix-matches, so the bare
+    name would wrap both. Rewriting is only safe when exactly one module matches.
     """
     leaf = _embedding_leaf(name)
     if leaf is None:
@@ -4617,9 +4616,9 @@ def _embedding_name_is_unambiguous(model, name):
 def _effective_weight_tying(model, modules_to_save, requested):
     """Whether PEFT will really retie, not just whether it was asked to.
 
-    Tying rebuilds the output from the INPUT embedding's wrapper, so that one has to be
-    saved: peft 0.18 raises AttributeError when only lm_head is, and later versions
-    quietly tie nothing. Untied models have no counterpart to rebuild either.
+    Tying rebuilds the output from the INPUT embedding's wrapper, so that one must be
+    saved: peft 0.18 raises AttributeError otherwise, later versions tie nothing. An
+    untied model has no counterpart to rebuild either.
     """
     if not _resolve_ensure_weight_tying(model, modules_to_save, requested):
         return False
@@ -4657,8 +4656,8 @@ def _drop_tied_output_module(model, modules_to_save, ensure_weight_tying):
         elif _embedding_name_is_unambiguous(model, entry):
             normalized.append(leaf)
         else:
-            # Rewriting would widen the caller's scope to another subtree's embedding.
-            # Keep both entries instead: two copies beats a silently frozen head.
+            # Rewriting would widen the scope to another subtree's embedding. Keep
+            # both entries: two copies beats a silently frozen head.
             return modules_to_save
     return normalized
 
