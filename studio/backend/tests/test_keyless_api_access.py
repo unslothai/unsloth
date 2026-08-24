@@ -602,9 +602,7 @@ def test_full_scope_accepts_only_authoritative_loopback_transports(server, clien
 )
 def test_public_tunnel_and_colab_transports_fail_closed(state_overrides):
     set_keyless_api_access("inference")
-    assert keyless_request_allowed(
-        request_for(app_state = app_state(**state_overrides))
-    ) is False
+    assert keyless_request_allowed(request_for(app_state = app_state(**state_overrides))) is False
 
 
 def test_an_active_public_tunnel_fails_closed(monkeypatch):

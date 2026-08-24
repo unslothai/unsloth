@@ -207,7 +207,12 @@ def normalize_request_path(path: str, root_path: str = "") -> str:
     return path.rstrip("/") or "/"
 
 
-def scope_covers(scope: str, method: str, path: str, root_path: str = "") -> bool:
+def scope_covers(
+    scope: str,
+    method: str,
+    path: str,
+    root_path: str = "",
+) -> bool:
     """Whether ``scope`` includes this exact method and normalized route."""
     normalized = normalize_request_path(path, root_path)
     normalized_method = method.upper() if isinstance(method, str) else ""
@@ -250,7 +255,6 @@ def _public_tunnel_active(app_state: Any) -> bool:
         return True
     try:
         from utils.host_policy import tunnel_connector_active
-
         return tunnel_connector_active()
     except Exception:
         return True
@@ -369,7 +373,6 @@ def asgi_request_is_keyless(asgi_scope) -> bool:
     """
     try:
         from starlette.requests import Request
-
         request = Request(asgi_scope)
     except Exception:
         return False
@@ -385,8 +388,4 @@ def asgi_request_is_keyless(asgi_scope) -> bool:
     if len(authorization) != 1:
         return False
     scheme, separator, token = authorization[0].partition(" ")
-    return bool(
-        separator
-        and scheme.lower() == "bearer"
-        and token in APPROVED_DUMMY_BEARERS
-    )
+    return bool(separator and scheme.lower() == "bearer" and token in APPROVED_DUMMY_BEARERS)

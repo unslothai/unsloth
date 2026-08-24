@@ -472,7 +472,6 @@ async def _get_current_credential(
 
     if credentials.scheme == KEYLESS_FALLBACK_SCHEME:
         from utils.keyless_api_access import APPROVED_DUMMY_BEARERS
-
         if credentials.credentials not in APPROVED_DUMMY_BEARERS:
             raise HTTPException(
                 status_code = status.HTTP_401_UNAUTHORIZED,

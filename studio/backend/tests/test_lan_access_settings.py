@@ -157,9 +157,9 @@ def test_private_lan_classification_accepts_the_exact_live_listener(
         "lan_listener_status",
         lambda: {"running": True, "port": 8888, "addresses": [listener_address]},
     )
-    assert lan_settings.request_on_lan_access(
-        _transport_request(server = server, client = client)
-    ) is True
+    assert (
+        lan_settings.request_on_lan_access(_transport_request(server = server, client = client)) is True
+    )
 
 
 @pytest.mark.parametrize(
@@ -206,9 +206,10 @@ def test_private_lan_classification_rejects_wrong_or_untrusted_live_sockets(
     monkeypatch, server, client, listener
 ):
     monkeypatch.setattr(lan_access, "lan_listener_status", lambda: listener)
-    assert lan_settings.request_on_lan_access(
-        _transport_request(server = server, client = client)
-    ) is False
+    assert (
+        lan_settings.request_on_lan_access(_transport_request(server = server, client = client))
+        is False
+    )
 
 
 def test_private_lan_classification_ignores_forwarding_and_host_headers(monkeypatch):

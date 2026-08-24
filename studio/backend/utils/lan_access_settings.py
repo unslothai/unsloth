@@ -216,7 +216,9 @@ def configure_lan_access(
     )
     # An unresolved hostname is launch-managed but never trusted for keyless LAN
     # admission: request_on_lan_access requires its resolved address set.
-    app_state.lan_access_launch_managed = app_state.lan_access_wildcard_bind or not resolved_loopback
+    app_state.lan_access_launch_managed = (
+        app_state.lan_access_wildcard_bind or not resolved_loopback
+    )
     # --secure forces the loopback bind precisely so the raw port is never exposed
     app_state.lan_access_secure_launch = bool(secure)
     app_state.lan_access_is_colab = bool(is_colab)
@@ -313,7 +315,6 @@ def lan_access_status(app) -> dict:
             get_keyless_api_access_scope,
             get_keyless_api_tools_enabled,
         )
-
         keyless_scope = get_keyless_api_access_scope()
         keyless_tools = get_keyless_api_tools_enabled()
     except Exception:
