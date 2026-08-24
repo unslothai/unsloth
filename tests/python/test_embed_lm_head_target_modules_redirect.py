@@ -180,6 +180,29 @@ def test_dropping_the_embeddings_from_a_repeat_call_is_not_silently_ignored(firs
 
 
 @pytest.mark.slow
+def test_qualified_targets_are_not_collapsed_to_their_leaf():
+    """Only PEFT's model.embed_tokens alias is folded away. layers.0.q_proj is a real
+    request and is not the same module as layers.1.q_proj."""
+    from unsloth import FastLanguageModel
+
+    model, _ = FastLanguageModel.from_pretrained(
+        model_name = MODEL_NAME, load_in_4bit = True, max_seq_length = 512,
+    )
+    try:
+        model = FastLanguageModel.get_peft_model(
+            model, r = 8, lora_alpha = 16, target_modules = ["layers.0.self_attn.q_proj"],
+        )
+        for different in (["layers.1.self_attn.q_proj"], ["q_proj"]):
+            with pytest.raises(TypeError, match = "parameters are different"):
+                FastLanguageModel.get_peft_model(
+                    model, r = 8, lora_alpha = 16, target_modules = different,
+                )
+    finally:
+        del model
+        torch.cuda.empty_cache()
+
+
+@pytest.mark.slow
 def test_embedding_only_target_list_raises_instead_of_training_nothing():
     """Redirecting every target would leave an adapter with no trainable LoRA."""
     from unsloth import FastLanguageModel

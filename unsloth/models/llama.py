@@ -3198,9 +3198,13 @@ class FastLlamaModel:
             new_target_modules += get_moe_target_modules(model, target_modules)
 
             # Now check! PEFT also stores the qualified name (model.embed_tokens) beside
-            # the leaf, so compare leaves or the two sides never agree.
+            # the leaf, so fold that alias away. Only that one: qualified targets are a
+            # real request, and layers.0.q_proj is not layers.1.q_proj.
             def _leaf_name(module):
-                return module.rsplit(".", 1)[-1] if type(module) is str else module
+                if type(module) is not str:
+                    return module
+                leaf = module.rsplit(".", 1)[-1]
+                return leaf if leaf in EMBEDDING_MODULES else module
 
             new_target_modules = {_leaf_name(x) for x in new_target_modules}
             old_target_modules = {_leaf_name(x) for x in old_target_modules}
