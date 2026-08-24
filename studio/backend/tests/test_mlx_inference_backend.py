@@ -2929,6 +2929,183 @@ def test_a_vision_override_is_checked_even_when_the_native_render_needs_recovery
     assert backend._processor.chat_template == "{{ native }}"
 
 
+# ── Per-request seed ────────────────────────────────────────────────
+
+
+def test_vlm_seed_rides_on_the_sampler_not_a_seed_kwarg(monkeypatch):
+    """The pinned mlx-vlm has no seed parameter, and a newer one ignores it at
+    Studio's default min_p/top_k -- so the seed must ride on the sampler, built
+    with the whole filtering chain the runtime would otherwise have built."""
+    from core.inference import mlx_inference
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    seen, built = [], []
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.prompt_utils = SimpleNamespace(
+        MODEL_CONFIG = {}, apply_chat_template = lambda *_a, **_k: "<image> prompt"
+    )
+
+    def _vlm_stream(*_args, **kwargs):
+        seen.append(kwargs)
+        yield SimpleNamespace(text = "ok", prompt_tokens = 1, generation_tokens = 1)
+
+    mlx_vlm.stream_generate = _vlm_stream
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda *_a, **_k: "<image> prompt",
+    )
+    monkeypatch.setattr(
+        mlx_inference, "_temporary_mlx_adapter_state", lambda *_a, **_k: contextlib.nullcontext()
+    )
+    # Stubbed so the wiring is checked without an mlx wheel: what matters here is
+    # which seed and stages reach the builder, not the array maths inside it.
+    monkeypatch.setattr(
+        mlx_inference,
+        "_make_seeded_mlx_sampler",
+        lambda seed, **kw: built.append((seed, kw)) or (lambda _l: _l),
+    )
+    backend = MLXInferenceBackend()
+    backend._model = SimpleNamespace(config = {"model_type": "generic_vlm"})
+    backend._processor = SimpleNamespace(chat_template = "template")
+    args = (
+        [{"role": "user", "content": [{"type": "image"}]}],
+        object(),
+        0.7,
+        0.9,
+        40,
+        0.01,
+        4,
+        1.0,
+        None,
+    )
+
+    assert list(backend._generate_vlm(*args, seed = 4242)) == ["ok"]
+    assert callable(seen[-1]["sampler"]) and "seed" not in seen[-1]
+    assert built == [(4242, {"temp": 0.7, "top_p": 0.9, "top_k": 40, "min_p": 0.01})]
+    assert list(backend._generate_vlm(*args)) == ["ok"]
+    assert "sampler" not in seen[-1] and len(built) == 1
+
+
+@pytest.mark.parametrize(
+    "factory_name, factory_args, vocab, sequence, expected",
+    [
+        # Frequency counts multiplicity where presence charges once.
+        (
+            "_make_mlx_frequency_penalty_processor",
+            (0.5,),
+            20,
+            [10, 11, 5, 5, 5, 6, 99, -1],
+            {5: -1.5, 6: -0.5, 10: 0.0, 19: 0.0, 0: 0.0},
+        ),
+        # Bias is history-free, so it also applies on the prompt-only first call.
+        (
+            "_make_mlx_logit_bias_processor",
+            ({1: 4.0, 3: -2.5, 99: 100.0, -1: 100.0},),
+            8,
+            [10, 11],
+            {1: 4.0, 3: -2.5, 0: 0.0, 7: 0.0},
+        ),
+    ],
+)
+def test_mlx_processors_penalize_in_range_ids_and_route_strays_away(
+    factory_name, factory_args, vocab, sequence, expected
+):
+    # MLX does no bounds checking, so a stray id is undefined behaviour.
+    mx = pytest.importorskip("mlx.core")
+    from core.inference import mlx_inference
+
+    proc = getattr(mlx_inference, factory_name)(*factory_args)
+    proc(mx.array([10, 11]), mx.zeros((1, vocab)))  # first call latches prompt_len
+    out = proc(mx.array(sequence), mx.zeros((1, vocab)))
+    for token, value in expected.items():
+        assert float(out[0, token]) == pytest.approx(value), token
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        SimpleNamespace(config = {"model_type": "generic_vlm", "eos_token_id": [1, 2]}),
+        SimpleNamespace(config = SimpleNamespace(eos_token_id = [1, 2])),
+        SimpleNamespace(_config = {"eos_token_id": [1, 2]}),
+        SimpleNamespace(_config = SimpleNamespace(eos_token_id = [1, 2])),
+        SimpleNamespace(config = {"model_type": "g"}, _config = {"eos_token_id": [1, 2]}),
+    ],
+    ids = ["dict-config", "object-config", "dict-_config", "object-_config", "config-then-_config"],
+)
+def test_eos_ids_are_read_from_every_shape_a_config_arrives_in(model):
+    """A checkpoint's config is a dict on some models and an object on others,
+    under config or _config -- the spread _mlx_vlm_model_config already walks. A
+    getattr-only read silently fell through to the tokenizer, which is the source
+    the priority order exists to outrank, so an EOS sampled on the last allowed
+    token was reported as truncation."""
+    from core.inference.mlx_inference import _mlx_finish_reason, _mlx_stop_token_ids
+
+    tokenizer = SimpleNamespace(eos_token_id = 9)  # disagrees with the config
+    stop_ids = _mlx_stop_token_ids(tokenizer, model)
+    assert stop_ids == (1, 2)
+    at_cap = SimpleNamespace(finish_reason = None, token = 2)
+    assert _mlx_finish_reason(at_cap, stop_ids, 10, 10) == "stop"
+
+
+def test_the_tokenizer_is_still_the_fallback_when_no_config_carries_eos():
+    from core.inference.mlx_inference import _mlx_stop_token_ids
+
+    tokenizer = SimpleNamespace(eos_token_id = 9)
+    assert _mlx_stop_token_ids(tokenizer, SimpleNamespace(config = {"model_type": "g"})) == (9,)
+    assert _mlx_stop_token_ids(tokenizer, None) == (9,)
+
+
+def test_finish_reason_separates_truncation_from_natural_end():
+    """At the limit the count alone is ambiguous -- a stop token sampled as the
+    final allowed token looks identical to exhaustion -- so the last token
+    decides, against the ids read from the source the runtime stops on. Those
+    sources disagree on real repos: Kimi-VL lists two config ids and a different
+    tokenizer id, and each may be a bare int (Qwen2-VL) rather than a list."""
+    from core.inference.mlx_inference import _mlx_finish_reason, _mlx_stop_token_ids
+
+    model = SimpleNamespace(config = SimpleNamespace(eos_token_id = [163584, 163586]))
+    ids = _mlx_stop_token_ids(SimpleNamespace(eos_token_ids = 163594), model)
+    assert ids == (163584, 163586)
+    assert _mlx_stop_token_ids(SimpleNamespace(eos_token_ids = 151645)) == (151645,)
+    assert _mlx_stop_token_ids(SimpleNamespace()) == ()
+    assert _mlx_finish_reason(SimpleNamespace(token = 5), ids, 3, 8) == "stop"
+    assert _mlx_finish_reason(SimpleNamespace(token = 5), ids, 8, 8) == "length"
+    assert _mlx_finish_reason(SimpleNamespace(token = 163584), ids, 8, 8) == "stop"
+
+
+# ── Stop sequences ──────────────────────────────────────────────────
+
+
+def test_stop_sequences_cut_the_reply_and_never_show_a_partial_match():
+    """The matcher decides how much of a reply may be shown: text that could still
+    grow into a sequence is held back, since a client cannot unsee a fragment the
+    next token completes."""
+    from core.inference.mlx_inference import _mlx_stop_cut
+
+    # Held back while it could still grow into "ab"; released once it cannot.
+    assert [_mlx_stop_cut(t, ["ab"]) for t in ("xa", "xac", "xab")] == [
+        (1, False),
+        (3, False),
+        (1, True),
+    ]
+    # A sequence at position 0 ends the turn with nothing shown.
+    assert _mlx_stop_cut("abc", ["a"]) == (0, True)
+    # The longest partial across all sequences wins; a shorter one cannot release it.
+    assert _mlx_stop_cut("aaAB", ["ABC", "BX"]) == (2, False)
+    # The earliest match ends the turn, whether one sequence matches twice or two
+    # sequences match in a different order than they were declared.
+    assert _mlx_stop_cut("a then a", ["a"]) == (0, True)
+    assert _mlx_stop_cut("early late", ["late", "early"]) == (0, True)
+    # An unresolved character is not a character yet: it can neither be shown nor
+    # complete a sequence, and dropping it can uncover the start of one. Only the
+    # trailing run is unresolved -- one the reply has already written past is text.
+    assert _mlx_stop_cut("hi\ufffd", ["END"]) == (2, False)
+    assert _mlx_stop_cut("a\ufffd", ["a"]) == (0, True)
+    assert _mlx_stop_cut("a\ufffd\ufffd", ["\ufffd"]) == (1, False)
+    assert _mlx_stop_cut("a\ufffdb", ["\ufffd"]) == (1, True)
+
+
 def _fake_rng_state(monkeypatch, words):
     from core.inference import mlx_inference
 
