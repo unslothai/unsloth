@@ -270,12 +270,13 @@ def test_build_rag_autoinject_large_model_auto_falls_back_over_budget(rag_conn, 
     scope = store.thread_scope("t1")
     _add_doc(rag_conn, scope, "d1", "big.pdf", "h1", ["overflow"], tokens = [50_000])
 
-    sentinel = ("TOPK_LARGE_MODEL_FALLBACK", [{"citationId": 1, "filename": "big.pdf", "text": "x"}])
+    sentinel = (
+        "TOPK_LARGE_MODEL_FALLBACK",
+        [{"citationId": 1, "filename": "big.pdf", "text": "x"}],
+    )
     monkeypatch.setattr(tool, "search_for_autoinject", lambda **kw: sentinel)
 
-    result = inf_tools.build_rag_autoinject(
-        _convo(), {"thread_id": "t1", "autoinject": False}
-    )
+    result = inf_tools.build_rag_autoinject(_convo(), {"thread_id": "t1", "autoinject": False})
     assert result is not None
     assert _injected_text(result) == "TOPK_LARGE_MODEL_FALLBACK"
 
