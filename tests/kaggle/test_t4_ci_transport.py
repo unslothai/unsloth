@@ -24,6 +24,7 @@ import types
 from pathlib import Path
 
 import pytest
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SMOKE_DIR = REPO_ROOT / "tests" / "kaggle" / "t4_smoke"
@@ -2288,6 +2289,45 @@ def test_the_merged_kernel_runs_both_reporters():
     assert ".github/scripts/kaggle_t4_ci/report.py" in source
     assert ".github/scripts/kaggle_studio_ci/report.py" in source
     assert ".github/scripts/kaggle_studio_ci/collect_evidence.py" in source
+
+
+def test_the_workflow_can_actually_reach_studio_concurrent():
+    """A CLI flag nothing passes is dead code that reads as a feature.
+
+    This is not hypothetical. Run 32674263571 was dispatched as the VARIANT of
+    an A/B on exactly this behaviour. `--studio-concurrent` existed in
+    build_kernel's argument parser and was threaded all the way to
+    AFTER_GPU_CONCURRENT, the unit tests for it passed, and the workflow never
+    passed the flag -- so the kernel built with it False, the "variant" ran the
+    control's schedule, and the comparison was a configuration against itself.
+    Nothing was red. `AFTER_GPU_SHARED` was simply absent from kernel.log, and
+    absence is not something a green tick reports.
+
+    So the chain is asserted end to end: the input exists, something converts
+    it into the flag, and the flag reaches the build command.
+    """
+    source = NOTEBOOK_WORKFLOW.read_text(encoding = "utf-8")
+    workflow = yaml.safe_load(source)
+    inputs = workflow[True]["workflow_dispatch"]["inputs"]
+    assert "studio_concurrent" in inputs, sorted(inputs)
+    # Off by default. Sharing costs the coverage property that Studio picks its
+    # own card out of two, which the Studio builder keeps deliberately, so this
+    # has to be something a dispatch asks for rather than the default shape.
+    assert inputs["studio_concurrent"].get("default") is False, inputs["studio_concurrent"]
+
+    build = source.split("build_kernel.py")[1].split("- name:")[0]
+    assert "$STUDIO_CONCURRENT" in build, (
+        "the build command does not interpolate STUDIO_CONCURRENT, so the "
+        "input cannot reach the kernel no matter what it is set to"
+    )
+    assert "inputs.studio_concurrent" in source
+    assert "'--studio-concurrent'" in source or '"--studio-concurrent"' in source
+
+    # And the flag the workflow spells must be one the CLI accepts. A rename on
+    # either side would otherwise land as an unrecognised argument at build
+    # time, or worse, be silently ignored.
+    cli = (CI_DIR / "build_kernel.py").read_text(encoding = "utf-8")
+    assert '"--studio-concurrent"' in cli, "build_kernel.py does not define the flag"
 
 
 def test_the_t4_reporter_is_told_the_leg_count_not_the_payload_count():

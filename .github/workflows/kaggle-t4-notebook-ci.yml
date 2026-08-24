@@ -300,6 +300,10 @@ on:
         description: 'unslothai/unsloth ref to install and test'
         type: string
         default: ''
+      studio_concurrent:
+        description: 'Let the Studio GPU half share a card with a small leg instead of waiting for the queue to drain. Costs the both-T4s-visible coverage, so it is off by default and is an experiment rather than the shape'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -793,6 +797,18 @@ jobs:
             SKIP='--skip-reference'
             echo "::warning title=Reference band check skipped::this run is $MAX_STEPS steps and the committed reference was captured at $REF_STEPS, which are not comparable. The band check is off for this run; everything else the control leg asserts still applies."
           fi
+          # Empty unless asked for. build_kernel defaults AFTER_GPU_CONCURRENT
+          # to False, so an unset input and a missing flag agree -- but they
+          # agreed silently once before, on run 32674263571, where the flag
+          # existed in the CLI and nothing here passed it: the "variant" ran the
+          # control's schedule and the A/B compared a configuration against
+          # itself. test_the_workflow_can_actually_reach_studio_concurrent is
+          # what stops that recurring.
+          STUDIO_CONCURRENT=''
+          if [ "${{ inputs.studio_concurrent }}" = "true" ]; then
+            STUDIO_CONCURRENT='--studio-concurrent'
+            echo "::notice title=Studio shares a card::the Studio GPU half is pinned to one T4 beside a small leg, so this run does NOT cover Studio's own choice between two cards."
+          fi
           python .github/scripts/kaggle_t4_ci/build_kernel.py \
             --payload-dir tests/kaggle/t4_smoke \
             --out kernel \
@@ -803,6 +819,7 @@ jobs:
             --with-studio \
             --studio-args "--max-steps 8" \
             --per-run-timeout 3900 \
+            $STUDIO_CONCURRENT \
             $SKIP
 
       # kernel-timeout-sec is passed to Kaggle at push time as a BACKSTOP, not
