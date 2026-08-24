@@ -228,7 +228,10 @@ def test_the_ceiling_grants_the_tolerance_against_the_extent_not_against_bottom(
     got = B.compare_behaviour(base, inside)
     assert got["verdict"] == P.MATCH, got
     checks = {c["invariant"]: c for c in got["checks"]}
-    assert "of the pair's 10000.0 px reference extent" in checks["scroll_travelled:treatment"]["detail"]
+    assert (
+        "of the pair's 10000.0 px reference extent"
+        in checks["scroll_travelled:treatment"]["detail"]
+    )
 
     outside = _scroll_row(6, fraction = 1.171, bottom = 9_200, client = 800)
     beyond = B.compare_behaviour(base, outside)
@@ -261,8 +264,9 @@ def test_the_ceiling_and_the_extent_check_enforce_one_tolerance_on_one_quantity(
     assert "9.5% drift, 10% allowed" in checks["scroll_extent"]["detail"], checks
     assert checks["scroll_travelled:treatment"]["ok"] is True, checks
     assert "allowed 0.9 to 1.170" in checks["scroll_travelled:treatment"]["detail"], checks
-    assert "of the pair's 10000.0 px reference extent" in (
-        checks["scroll_travelled:treatment"]["detail"]
+    assert (
+        "of the pair's 10000.0 px reference extent"
+        in (checks["scroll_travelled:treatment"]["detail"])
     ), checks
 
     # Still a ceiling: past the pair's reference allowance it is reported.
