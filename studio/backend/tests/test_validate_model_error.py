@@ -100,6 +100,7 @@ def _drive_validate(
     *,
     is_gguf: bool,
     mlx_speculative_mode: str = "off",
+    on_fetch = None,
 ):
     """Run validate_model with both security helpers forced True; return the response."""
     from types import SimpleNamespace
@@ -119,7 +120,13 @@ def _drive_validate(
         is_vision = False,
         gguf_file = None,
     )
-    monkeypatch.setattr(inf.ModelConfig, "from_identifier", staticmethod(lambda **_kw: config))
+
+    def _from_identifier(**_kw):
+        if on_fetch is not None:
+            on_fetch()
+        return config
+
+    monkeypatch.setattr(inf.ModelConfig, "from_identifier", staticmethod(_from_identifier))
     # No LoRA base to resolve; keep it offline.
     monkeypatch.setattr(mc, "get_base_model_from_lora_identifier", lambda *_a, **_k: None)
     # Both gates WOULD flag this repo (mixed repo with auto_map + an unsafe pickle).
@@ -177,19 +184,24 @@ def test_a_comparison_the_target_cannot_answer_yet_is_not_a_refusal(monkeypatch)
 def test_the_pairing_is_judged_once_the_target_configuration_arrives(monkeypatch):
     # Judged after the fetch, and only then: asked earlier it would answer from whatever
     # revision happened to be cached, which is not the one the load goes on to use.
-    asked = []
+    order = []
 
     def _reason(*_a, **_k):
-        asked.append(1)
+        order.append("judged")
         return "checkpoint_not_compatible"
 
     monkeypatch.setattr(inf, "mlx_speculative_request_reason", _reason)
     with pytest.raises(HTTPException) as excinfo:
-        _drive_validate(monkeypatch, is_gguf = False, mlx_speculative_mode = "mtp")
+        _drive_validate(
+            monkeypatch,
+            is_gguf = False,
+            mlx_speculative_mode = "mtp",
+            on_fetch = lambda: order.append("fetched"),
+        )
     assert excinfo.value.status_code == 400
-    # Once, and only after the fetch: a second, earlier ask would answer from the cached
-    # revision instead of the one this load resolved.
-    assert len(asked) == 1
+    # Once, and after the fetch: asked before it, the answer comes from whatever revision was
+    # cached rather than the one this load resolved.
+    assert order == ["fetched", "judged"]
     assert "vision-language" not in excinfo.value.detail
 
 

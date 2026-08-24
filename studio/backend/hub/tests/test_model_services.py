@@ -1849,6 +1849,61 @@ def test_cached_models_scan_hides_non_gguf_embedder(monkeypatch, tmp_path):
     assert [row["repo_id"] for row in result["cached"]] == ["Org/Chat"]
 
 
+_CHAT_REV, _DRAFTER_REV = "a" * 40, "b" * 40
+
+
+def _mixed_revision_repo(active_hub: Path, name: str, main_ref: str):
+    """One cached repo holding a chat revision and a drafter revision, newest being the drafter."""
+    repo_path = active_hub / f"models--Org--{name}"
+    revisions = []
+    for rev, config in (
+        (_CHAT_REV, {"model_type": "qwen3", "num_hidden_layers": 40}),
+        (_DRAFTER_REV, {"model_type": "qwen3", "dflash_config": {"num_layers": 6}}),
+    ):
+        snapshot = repo_path / "snapshots" / rev
+        snapshot.mkdir(parents = True)
+        (snapshot / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+        (snapshot / "model.safetensors").write_bytes(b"\0" * 4096)
+        revisions.append(
+            SimpleNamespace(
+                files = [_file("config.json", 12), _file("model.safetensors", 80_000_000)],
+                snapshot_path = snapshot,
+                commit_hash = rev,
+            )
+        )
+    os.utime(repo_path / "snapshots" / _CHAT_REV, (1, 1))
+    (repo_path / "refs").mkdir(parents = True)
+    (repo_path / "refs" / "main").write_text(main_ref)
+    return SimpleNamespace(
+        repo_id = f"Org/{name}", repo_type = "model", repo_path = repo_path, revisions = revisions
+    )
+
+
+def test_cached_models_scan_hides_a_drafter_by_the_snapshot_the_row_loads(monkeypatch, tmp_path):
+    """Both repositories hold a drafter as their newest revision, so only the snapshot each row
+    hands out separates them: one loads the chat revision refs/main names, the other the drafter.
+    """
+    active_hub = tmp_path / "hub"
+    repos = [
+        _mixed_revision_repo(active_hub, "Chat", _CHAT_REV),
+        _mixed_revision_repo(active_hub, "Drafter", _DRAFTER_REV),
+    ]
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = active_hub),
+    )
+    monkeypatch.setattr(
+        cache_inventory, "all_hf_cache_scans", lambda: [SimpleNamespace(repos = repos)]
+    )
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan, "is_snapshot_partial", lambda *_a, **_kw: False
+    )
+
+    rows = cache_inventory._scan_cached_models()
+
+    assert [row["repo_id"] for row in rows] == ["Org/Chat"]
+
+
 def test_cached_models_scan_emits_curated_and_custom_whisper_as_stt(monkeypatch, tmp_path):
     curated_path = tmp_path / "hub" / "models--unsloth--whisper-tiny"
     curated_path.mkdir(parents = True)

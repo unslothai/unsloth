@@ -5108,7 +5108,7 @@ def test_the_options_endpoint_reports_the_drafters_the_sources_found(monkeypatch
     )
     monkeypatch.setattr(spec, "_token_id_map", lambda _t: _TOKENS)
     monkeypatch.setattr(spec, "_token_id_map_from_path", lambda _p: _TOKENS)
-    monkeypatch.setattr(spec, "_snapshot_weight_bytes", lambda _t: 0)
+    monkeypatch.setattr(spec, "_snapshot_weight_bytes", lambda _t: 1)
     monkeypatch.setattr(
         spec, "mlx_speculative_runtime_capabilities",
         lambda: {"common": True, "methods": {"mtp": True}, "reason": None},
@@ -5273,7 +5273,7 @@ def test_a_target_with_its_own_head_is_offered_before_any_download(
         spec, "native_mtp_evidence",
         lambda _s, _c: SimpleNamespace(weight_bytes = 4096),
     )
-    monkeypatch.setattr(spec, "_snapshot_weight_bytes", lambda _t: 0)
+    monkeypatch.setattr(spec, "_snapshot_weight_bytes", lambda _t: 1)
     monkeypatch.setattr(spec, "_mlx_speculative_memory_ready", lambda _b: memory)
 
     caps = {"common": True, "methods": {"mtp": runtime_ready}, "reason": None}
@@ -5463,7 +5463,7 @@ def test_a_matched_drafter_reports_why_it_cannot_run(
     monkeypatch.setattr(spec, "_drafter_method", lambda _c: "mtp")
     monkeypatch.setattr(spec, "_dynamic_candidate_config_matches", lambda *a: match)
     monkeypatch.setattr(spec, "_dynamic_materialization_bytes", lambda _c: 0)
-    monkeypatch.setattr(spec, "_snapshot_weight_bytes", lambda _t: 0)
+    monkeypatch.setattr(spec, "_snapshot_weight_bytes", lambda _t: 1)
     monkeypatch.setattr(spec, "_mlx_speculative_memory_ready", lambda _b: memory)
 
     rows = list(spec._cached_candidate_rows(
@@ -5612,6 +5612,55 @@ def test_a_deferred_comparison_is_settled_before_the_drafter_is_chosen(
     assert backend.models["fake/vlm"]["mlx_speculative_reason"] == reported
     # Asked again only for a comparison that was deferred.
     assert bool(asked) is (pinned_reason is not None)
+
+
+def test_a_target_whose_weights_are_not_here_defers_the_memory_verdict(monkeypatch):
+    """Charging an absent target nothing approves a drafter beside a model of any size, and the
+    pair crosses the cap only after the switch. Deferred instead, for the load to settle."""
+    from core.inference import mlx_speculative as spec
+
+    monkeypatch.setattr(
+        spec,
+        "_active_cached_drafter_configs",
+        lambda: iter([("org/drafter", {"model_type": "gemma4_assistant"}, Path("/nowhere"), 1)]),
+    )
+    monkeypatch.setattr(spec, "_drafter_method", lambda _c: "mtp")
+    monkeypatch.setattr(spec, "_dynamic_candidate_config_matches", lambda *a: True)
+    monkeypatch.setattr(spec, "_dynamic_materialization_bytes", lambda _c: 0)
+    monkeypatch.setattr(spec, "_mlx_speculative_memory_ready", lambda _b: True)
+    monkeypatch.setattr(spec, "_snapshot_weight_bytes", lambda _t: 0)
+
+    caps = {"common": True, "methods": {"mtp": True}, "reason": None}
+    rows = list(
+        spec._cached_candidate_rows(
+            "org/target",
+            _MTP_TARGET,
+            caps,
+            frozenset({"mtp"}),
+        )
+    )
+    assert [row.reason for row in rows] == ["target_weights_unmeasured"]
+    assert rows[0].fields["loadable"] is False
+    # Not a refusal: the load runs and settles it once the weights are on disk.
+    assert spec.mlx_speculative_reason_is_unproven(rows[0].reason)
+    assert (
+        spec.mlx_speculative_refusal(
+            "mtp", spec.MlxSpeculativeResolution("mtp", "org/drafter", rows[0].reason)
+        )
+        is None
+    )
+
+    # Measured, so the verdict is the gate's own.
+    monkeypatch.setattr(spec, "_snapshot_weight_bytes", lambda _t: 1)
+    measured = list(
+        spec._cached_candidate_rows(
+            "org/target",
+            _MTP_TARGET,
+            caps,
+            frozenset({"mtp"}),
+        )
+    )
+    assert [row.reason for row in measured] == [None]
 
 
 def _drafter_snapshot(tmp_path, name, config):

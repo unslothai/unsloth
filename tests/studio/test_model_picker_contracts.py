@@ -441,9 +441,11 @@ def test_validate_sends_the_mlx_speculative_tuple_it_will_load_with():
     while /load judges the drafter, and the refusal lands after the switch is committed to."""
     body = _code_only(_read("features/chat/api/chat-api.ts"))
     start = body.index("/api/inference/validate")
-    end = body.index("mlx_draft_block_size", start)
-    for field in ("mlx_speculative_mode:", "mlx_draft_model:", "mlx_draft_block_size:"):
-        assert field in body[start : end + 40], field
+    sent = body[start : body.index("});", start)]
+    # The caller's own tuple, not a placeholder: hardcoding "off" here typechecks and keeps the
+    # field names, while validate judges a request nothing sent.
+    for field in ("mlx_speculative_mode", "mlx_draft_model", "mlx_draft_block_size"):
+        assert f"{field}: payload.{field}" in sent, field
 
 
 def test_hidden_infra_model_needles_present():

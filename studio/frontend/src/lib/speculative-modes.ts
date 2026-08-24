@@ -291,6 +291,12 @@ export function mlxDraftRowCheckpoint(
   };
 }
 
+/** Either side of the pair still to fetch. */
+const DOWNLOAD_PENDING_REASONS = new Set([
+  "checkpoint_not_downloaded",
+  "target_weights_unmeasured",
+]);
+
 /** Loadable now, or one download away: what no download can fix stays out. */
 export function isSelectableMlxDraftCandidate(
   candidate: MlxSpeculativeCandidate,
@@ -301,7 +307,7 @@ export function isSelectableMlxDraftCandidate(
       candidate.compatible &&
       candidate.runtime_supported &&
       candidate.integration_ready &&
-      candidate.reason === "checkpoint_not_downloaded")
+      DOWNLOAD_PENDING_REASONS.has(candidate.reason ?? ""))
   );
 }
 

@@ -1099,9 +1099,6 @@ def _scan_cached_models(
                 is_whisper_stt = bool(snapshot_metadata.get("_hidden_stt"))
                 if is_hidden_infra and not is_curated_stt and not is_whisper_stt:
                     continue
-                # A drafter is cached by the speculative picker, never chosen as a chat model.
-                if bool(snapshot_metadata.get("_hidden_drafter")):
-                    continue
                 has_main_gguf = _repo_has_gguf_files(repo_info)
                 payload = _repo_non_gguf_model_payload(repo_info)
                 if payload.size_bytes == 0:

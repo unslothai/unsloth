@@ -227,6 +227,17 @@ test("a method one download away is offered, since the picker offers the downloa
     selectMlxSpeculativeCandidate([undownloaded], "mtp", null)?.repo_id,
     "org/d",
   );
+  // The target is the undownloaded half here, so the drafter is on disk and still offered.
+  assert.equal(
+    isSelectableMlxDraftCandidate(
+      candidate({
+        loadable: false,
+        downloaded: true,
+        reason: "target_weights_unmeasured",
+      }),
+    ),
+    true,
+  );
   // What downloading cannot fix stays out, and so does the head: nothing to fetch for it.
   for (const broken of [
     { compatible: false },
