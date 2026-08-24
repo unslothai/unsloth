@@ -404,6 +404,20 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: python3 tests/studio/playwright_settings_tabs.py
 
+      # The overlay rail's shadow gutter is block padding compensated for by two offsets and
+      # discounted back out of the measurement. Every part of that is a browser reading, so
+      # the node suite cannot see any of it, and the suites that boot Studio assert the
+      # horizontal gutter and the cap. Firefox and WebKit run it in studio-ui-smoke.yml,
+      # where they are already installed.
+      - name: Browser smoke for the overlay rail's shadow gutter
+        working-directory: ${{ github.workspace }}
+        env:
+          SMOKE_PORT: '5197'
+          PW_ART_DIR: logs/playwright_overlay_rail
+        run: |
+          mkdir -p logs/playwright_overlay_rail
+          python3 tests/studio/playwright_overlay_rail.py
+
       # A panel that cannot be fetched is new with lazy loading, and nothing above the
       # root-mounted dialog catches, so unguarded it unmounts Studio, not one panel.
       - name: Browser smoke for a settings panel that cannot load

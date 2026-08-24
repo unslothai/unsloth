@@ -330,6 +330,30 @@ test("a scrolling rail takes pointer input, a fitting one stays click-through", 
     "the overflow flag is not derived from the placement",
   );
   assert.ok(!/setOverflowing/.test(STORE), "a latched DOM reading is back");
+  // The one place the flag can still latch is the empty-stack return, which
+  // publishes nothing and leaves. Before the rail carried a gutter that cost
+  // nothing: an empty rail was a zero-height box, so a stale "it scrolls"
+  // bought pointer input over no pixels. The gutter gives that box a height,
+  // so the corner would answer clicks with nothing in it. Every reading the
+  // branch leaves behind has to be cleared, the DOM one included.
+  const emptied = STORE.slice(
+    STORE.indexOf("node.childElementCount === 0"),
+    STORE.indexOf('node.style.transition = "none"'),
+  );
+  assert.ok(emptied.length > 0, "the empty-stack branch moved");
+  for (const cleared of [
+    "setNeededRoom",
+    "setFloorRoom",
+    "setCollapsedRoom",
+    "setPersistentTail",
+    "setDomOverflowing",
+  ]) {
+    assert.match(
+      emptied,
+      new RegExp(`${cleared}\\(`),
+      `an emptied rail keeps its ${cleared} reading, so it still holds the corner`,
+    );
+  }
   // The probe writes max-height twice and reads scrollHeight between the
   // writes. transition-property: all reaches the rail, so unsuppressed each
   // write starts a transition, and a transition computes its start value

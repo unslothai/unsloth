@@ -124,6 +124,16 @@ const MONITOR_GRIP = 16;
  * The horizontal gutter's negative margin cannot do this. `bottom` anchors the
  * margin edge, and with `top` and `height` auto the engine solves for `top`, so
  * in Chromium the padding moved the card instead of the box.
+ *
+ * The dropped edge does reach into what `dodgeInset` reserves for the Live
+ * monitor's resize grip when the stack is seated inside a tall one: the cards
+ * stay 24px above `frame.bottom`, the rail's box ends 8px above it. That costs
+ * nothing, and not by luck. The rail is `Z_LAYER.OVERLAY_STACK` and the monitor
+ * is `Z_LAYER.FLOATING_PANEL`, so the panel hit-tests above the rail wherever
+ * the two meet, which is the resolution z-layers.ts states for exactly this
+ * case: the stack keeps clear geometrically where it can, and loses where it
+ * cannot. Measured down every row of the grip band in all three engines with
+ * the rail scrolling and pointer-active; the panel answers all of them.
  */
 export function railBottomOffset(cardsInset: number): number {
   return cardsInset - STACK_SHADOW_GUTTER_BOTTOM;
@@ -131,9 +141,12 @@ export function railBottomOffset(cardsInset: number): number {
 
 /**
  * The rail's `max-height`, given the band its cards may fill. Both gutters are
- * added back so neither is spent on them, which also leaves that much slack:
- * the clip is at the padding box, so a cap landing a few px short of a card now
- * shows it whole rather than taking its corners off.
+ * added back so neither is spent on them, which also leaves slack: the clip is
+ * at the padding box, so a cap landing a few px short of a card now shows it
+ * whole rather than taking its corners off. The slack is the room below, not
+ * both, since the cards sit against the top of the band; measured across the
+ * three engines, a cap short by up to STACK_SHADOW_GUTTER_BOTTOM clips nothing
+ * and one short by more clips only the excess.
  */
 export function railMaxHeight(cardsRoom: number): number {
   return cardsRoom + STACK_SHADOW_GUTTER_BOTTOM + STACK_SHADOW_GUTTER_TOP;
@@ -534,11 +547,18 @@ export function useStackGeometry(): StackPlacement {
   const ref = useCallback((node: HTMLElement | null) => {
     if (node === null || typeof ResizeObserver === "undefined") return;
     const measure = () => {
-      // An empty stack asks for nothing, so nothing is dodged for it.
+      // An empty stack asks for nothing, so nothing is dodged for it. Every reading it
+      // published is cleared, the overflow one included: a rail whose last card goes while
+      // it is scrolling would otherwise stay latched to that reading, and `overflowing` is
+      // what decides whether the rail takes pointer input. Before the gutter that cost
+      // nothing, since an empty rail was a zero-height box and there was nothing to click;
+      // it now has the gutter's own height and would hold the corner.
       if (node.childElementCount === 0) {
         setNeededRoom((current) => (current === 0 ? current : 0));
         setFloorRoom((current) => (current === 0 ? current : 0));
         setCollapsedRoom((current) => (current === 0 ? current : 0));
+        setPersistentTail((current) => (current === 0 ? current : 0));
+        setDomOverflowing((current) => (current === false ? current : false));
         return;
       }
       // Drop the cap and put it back in one synchronous block, so scrollHeight

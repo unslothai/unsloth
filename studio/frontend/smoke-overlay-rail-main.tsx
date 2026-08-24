@@ -1,0 +1,231 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+// Harness for tests/studio/playwright_overlay_rail.py, shaped like smoke-settings.html: a
+// vite entry with no backend and no auth, driving the real useStackGeometry against the real
+// frame store.
+//
+// The node suite has no DOM, so everything the rail's geometry actually rests on -- the
+// computed padding read in measure(), both scrollHeight probes, the clip, the hit box -- is
+// only reachable from a browser. The full app can reach it too, but only behind a backend, a
+// router and four polling cards, which is why the layout suites that boot Studio assert the
+// horizontal gutter and the cap and nothing about the block one.
+//
+// The rail below is a copy of the one in src/app/provider.tsx, className and style keys
+// included; playwright_overlay_rail.py pins the two against each other so this cannot drift.
+
+/* eslint-disable no-restricted-imports -- a harness entry point, not app code. */
+import {
+  STACK_SHADOW_GUTTER_BOTTOM,
+  STACK_SHADOW_GUTTER_TOP,
+  type MonitorFrame,
+  railBottomOffset,
+  railMaxHeight,
+  useMonitorFrameStore,
+  useStackGeometry,
+} from "@/features/settings/stores/monitor-frame-store";
+/* eslint-enable no-restricted-imports */
+import { Z_LAYER } from "@/lib/z-layers";
+import { cn } from "@/lib/utils";
+import { StrictMode, useSyncExternalStore } from "react";
+import { createRoot } from "react-dom/client";
+import "./src/index.css";
+
+/** One card in the rail, as the driver describes it. */
+type CardSpec = {
+  /** Natural height, the card's own `min-h-[...]` floor equivalent. */
+  height: number;
+  /** How far it may be squeezed. Equal to `height` models a card that cannot. */
+  floor?: number;
+  /** Transient banners carry this; the download and loaded-model cards do not. */
+  dismissible?: boolean;
+  /** Dragged out of the rail's flow, the way the loaded-models card can be. */
+  dragged?: boolean;
+};
+
+declare global {
+  interface Window {
+    // Optional: the app typechecks this entry, but only the harness page installs it.
+    __railSmoke?: {
+      setCards: (cards: CardSpec[]) => void;
+      publish: (who: string, frame: MonitorFrame) => void;
+      clear: (who: string) => void;
+      /** What the hook last handed the rail, before either offset is applied. */
+      geometry: () => { bottom: number; maxHeight: number; overflowing: boolean };
+      /** The reserved room, so the driver asserts against the source, not a copy. */
+      gutter: () => { top: number; bottom: number };
+      state: () => { cards: CardSpec[]; errors: string[] };
+      errors: () => string[];
+    };
+  }
+}
+
+const seenErrors: string[] = [];
+window.addEventListener("error", (e) => {
+  seenErrors.push(String(e.message));
+});
+window.addEventListener("unhandledrejection", (e) => {
+  seenErrors.push(String(e.reason));
+});
+
+// Publisher tokens are compared by identity and the store folds frames one at a time, so each
+// synthetic obstacle needs its own stable token. Publishing their union under one token is a
+// different input, and a wrong one.
+const publishers = new Map<string, object>();
+function publisherFor(who: string): object {
+  let token = publishers.get(who);
+  if (!token) {
+    token = {};
+    publishers.set(who, token);
+  }
+  return token;
+}
+
+// A store of one value, so setCards re-renders without pulling in any app state.
+let cards: CardSpec[] = [];
+const listeners = new Set<() => void>();
+function setCards(next: CardSpec[]): void {
+  cards = next;
+  for (const listener of listeners) listener();
+}
+function subscribe(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+function Card({ spec, index }: { spec: CardSpec; index: number }) {
+  const floor = spec.floor ?? spec.height;
+  return (
+    <div
+      className={cn(
+        "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[448px] flex-col",
+        spec.dragged && "fixed top-2 left-2 z-[9999] w-fit",
+      )}
+      data-overlay-dismissible={spec.dismissible ? "true" : undefined}
+      data-card-index={index}
+      style={{ minHeight: floor, flex: floor === spec.height ? "none" : "0 1 auto" }}
+    >
+      {/* The shadow the gutter is sized against: the same pair every rail surface carries. */}
+      <div
+        className="menu-soft-surface menu-soft-edgeless relative flex min-h-0 flex-col overflow-hidden rounded-[24px] bg-card"
+        data-card-surface={index}
+        style={{ height: spec.height, minHeight: floor }}
+      >
+        {/* Its own scroller, so the squeeze the rail probes for is a real one. */}
+        <div className="min-h-0 flex-1 overflow-y-auto p-4 text-sm">
+          {`card ${index}`}
+          <div style={{ height: spec.height * 2 }} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// What the hook last returned. Read by the driver, so an assertion can compare the band the
+// cards were given against the box that was actually laid out.
+let lastGeometry = { bottom: 0, maxHeight: 0, overflowing: false };
+
+function Rail() {
+  const live = useSyncExternalStore(subscribe, () => cards);
+  const stack = useStackGeometry();
+  lastGeometry = {
+    bottom: stack.bottom,
+    maxHeight: stack.maxHeight,
+    overflowing: stack.overflowing,
+  };
+  return (
+    <div
+      ref={stack.ref}
+      data-testid="overlay-rail"
+      // Copied from src/app/provider.tsx. Keep both in step; the driver asserts it.
+      className={cn(
+        "fixed right-4 -mx-3 flex flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-3",
+        stack.overflowing ? "pointer-events-auto" : "pointer-events-none",
+      )}
+      style={{
+        bottom: railBottomOffset(stack.bottom),
+        maxHeight: railMaxHeight(stack.maxHeight),
+        paddingTop: STACK_SHADOW_GUTTER_TOP,
+        paddingBottom: STACK_SHADOW_GUTTER_BOTTOM,
+        zIndex: Z_LAYER.OVERLAY_STACK,
+      }}
+    >
+      {live.map((spec, index) => (
+        <Card key={index} spec={spec} index={index} />
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Stand-ins for the two surfaces that publish a frame: the Live monitor, which is a floating
+ * panel and so paints over the rail, and the chat composer, which does not.
+ */
+function Obstacles() {
+  const frames = useMonitorFrameStore((s) => s.frames);
+  const boxes: Array<[string, MonitorFrame]> = [];
+  for (const [token, frame] of frames) {
+    for (const [who, mine] of publishers) {
+      if (mine === token) boxes.push([who, frame]);
+    }
+  }
+  return (
+    <>
+      {boxes.map(([who, frame]) => (
+        <div
+          key={who}
+          data-testid={`obstacle-${who}`}
+          className="fixed rounded-xl border border-border/70 bg-muted"
+          style={{
+            left: frame.left,
+            top: frame.top,
+            width: Math.max(0, frame.right - frame.left),
+            height: Math.max(0, frame.bottom - frame.top),
+            // The Live monitor is a floating panel, which outranks the rail; the composer is
+            // in-page chrome and sits below it.
+            zIndex: who === "monitor" ? Z_LAYER.FLOATING_PANEL : 100,
+            resize: who === "monitor" ? "both" : "none",
+            overflow: who === "monitor" ? "auto" : "hidden",
+          }}
+        />
+      ))}
+    </>
+  );
+}
+
+function Harness() {
+  return (
+    <>
+      <Obstacles />
+      <Rail />
+    </>
+  );
+}
+
+window.__railSmoke = {
+  setCards,
+  publish: (who, frame) =>
+    useMonitorFrameStore.getState().setFrame(publisherFor(who), frame),
+  clear: (who) => {
+    useMonitorFrameStore.getState().clearFrame(publisherFor(who));
+    publishers.delete(who);
+  },
+  geometry: () => ({ ...lastGeometry }),
+  gutter: () => ({
+    top: STACK_SHADOW_GUTTER_TOP,
+    bottom: STACK_SHADOW_GUTTER_BOTTOM,
+  }),
+  state: () => ({ cards, errors: [...seenErrors] }),
+  errors: () => [...seenErrors],
+};
+
+const rootElement = document.getElementById("root");
+if (!rootElement) throw new Error("Root element not found");
+const root = createRoot(rootElement);
+// StrictMode attaches and detaches the ref twice, and the ref's cleanup tears the observers
+// down; the driver takes ?nostrict so a measurement is never read mid-remount.
+const strict = !new URLSearchParams(window.location.search).has("nostrict");
+const tree = <Harness />;
+root.render(strict ? <StrictMode>{tree}</StrictMode> : tree);
