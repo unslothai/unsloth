@@ -168,25 +168,25 @@ docker run -d -e JUPYTER_PASSWORD="mypassword" \
 ```
 
 #### Remote HTTPS & LAN Access
-- Global HTTPS Access:
+Server-side tools are on by default - so **be careful**! Keep your password safe, or use `--disable-tools` when exposing Unsloth.
+
+Global HTTPS Access:
 Creates a free Cloudflare link that serves Unsloth - you can access the link globally (even on your phone!)
 ```bash
 unsloth studio --secure
 ```
-- Using `-H 0.0.0.0` and different ports also work:
+`-H 0.0.0.0` and different ports also work:
 ```bash
 unsloth studio -H 0.0.0.0 -p 8888
 ```
-- LAN Access (home network): Settings > API keys > **LAN access**
-
-Server-side tools are on by default - so **be careful**! Keep your password safe, or use `--disable-tools` when exposing Unsloth.
+LAN Access (home network): `Settings > API keys > LAN access`
 
 #### Password management & headless starts
-- Headless starts:
+Headless starts:
 ```bash
 UNSLOTH_STUDIO_PASSWORD='your-strong-password' unsloth studio --secure   # via env var
 ```
-- Reset your password:
+Reset your password:
 ```bash
 unsloth studio reset-password
 ```
