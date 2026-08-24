@@ -810,6 +810,13 @@ class EstimateMemoryResponse(BaseModel):
         "of it. Included in total_bytes, and in gpu_bytes unless --no-mmproj-offload "
         "keeps the projector in host RAM.",
     )
+    drafter_kv_unsized: bool = Field(
+        False,
+        description = "True when a drafter is charged whose cache could not be sized: "
+        "--spec-draft-hf names a repository whose header is not on this disk. Its weights "
+        "are in weights_bytes but its context-scaled cache is missing, so total_bytes is a "
+        "lower bound.",
+    )
     total_bytes: int = Field(0, description = "Weights + KV + compute, wherever they land")
     gpu_bytes: int = Field(
         0, description = "The share of total_bytes that lands on the GPU under this offload"

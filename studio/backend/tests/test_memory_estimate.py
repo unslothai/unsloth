@@ -1835,3 +1835,92 @@ class TestInheritedEnvironment:
         fake_main._system_gpu_cache = None
         assert ri._cached_inference_devices() is None
         assert ri._tensor_split_possible(None) is True
+
+
+class TestManualNormalizationAndRemoteDrafters:
+    """Two more places the panel described a command the loader would not send."""
+
+    @pytest.fixture
+    def bare(self, gqa_gguf):
+        return SimpleNamespace(
+            identifier = "local/bare",
+            gguf_file = gqa_gguf,
+            is_gguf = True,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
+        )
+
+    def test_manual_prices_the_stripped_extras(self, bare, gqa_gguf, monkeypatch):
+        # -ncmoe pushes into tensor_buft_overrides, which turns pipeline parallelism
+        # off and drops the context-buffer multiplier. Manual strips the flag before
+        # launch, so the multiplier survives and the panel has to say so; Auto keeps
+        # the flag, so there it does not.
+        monkeypatch.setattr(ri, "_gguf_resident_file_gb", lambda cfg, **kw: 1.0)
+        priced = dict(n_ctx = 32768, gpu_layers = 99, n_devices = 2)
+
+        def compute(mode: str, extras):
+            return ri._gguf_memory_breakdown(
+                bare, gqa_gguf, gpu_memory_mode = mode, llama_extra_args = extras, **priced
+            ).compute_bytes
+
+        moe = ["--n-cpu-moe", "8"]
+        assert compute("manual", moe) == compute("manual", None)
+        assert compute("auto", moe) < compute("auto", None)
+
+    def test_a_remote_drafter_is_declared_unsized_rather_than_priced_at_zero(
+        self, bare, gqa_gguf, monkeypatch
+    ):
+        # --spec-draft-hf names a repository. Its weights are charged by the files term,
+        # but its cache cannot be read off a header that is not on this disk, and a
+        # confident total missing a context-scaled cache is the one answer this row
+        # must never give.
+        from core.inference.llama_cpp import _extra_args_draft_offloaded_to_cpu as pinned
+
+        def _files(
+            cfg,
+            *,
+            llama_extra_args = None,
+            **kw,
+        ):
+            args = list(llama_extra_args or ())
+            remote = "--spec-draft-hf" in args
+            return 1.0 + (2.0 if remote and not pinned(args) else 0.0)
+
+        monkeypatch.setattr(ri, "_gguf_resident_file_gb", _files)
+        remote = ri._gguf_memory_breakdown(
+            bare, gqa_gguf, n_ctx = 32768, llama_extra_args = ["--spec-draft-hf", "org/drafter-GGUF"]
+        )
+        assert remote.drafter_kv_unsized is True
+        # The weights are still counted, so the floor is as high as it can be made.
+        assert remote.weights_bytes == 3 * _GIB
+        assert remote.drafter_runtime_bytes == 0
+        # And a load with no drafter at all is not flagged.
+        assert ri._gguf_memory_breakdown(bare, gqa_gguf, n_ctx = 32768).drafter_kv_unsized is False
+
+    def test_the_route_carries_the_unsized_flag(self, bare, gqa_gguf, monkeypatch):
+        from core.inference.llama_cpp import _extra_args_draft_offloaded_to_cpu as pinned
+
+        monkeypatch.setattr(ri, "_cached_estimate_config", lambda *a, **kw: bare)
+
+        def _files(
+            cfg,
+            *,
+            llama_extra_args = None,
+            **kw,
+        ):
+            # Mirrors the real term, including that a CPU-pinned drafter is dropped:
+            # the breakdown identifies the drafter's bytes by re-pricing with that pin.
+            args = list(llama_extra_args or ())
+            return 1.0 + (2.0 if "--spec-draft-hf" in args and not pinned(args) else 0.0)
+
+        monkeypatch.setattr(ri, "_gguf_resident_file_gb", _files)
+        resp = _estimate(
+            model_path = gqa_gguf,
+            n_ctx = 8192,
+            llama_extra_args = ["--spec-draft-hf", "org/drafter-GGUF"],
+        )
+        assert resp.available is True
+        # available, but not silent about what is missing from the total.
+        assert resp.drafter_kv_unsized is True

@@ -7744,6 +7744,9 @@ class _GgufMemoryBreakdown(NamedTuple):
     drafter_runtime_bytes: int
     # The vision encoder's buffers, about 0.4x the projector file on top of it.
     projector_runtime_bytes: int
+    # A drafter was charged whose cache could not be sized: --spec-draft-hf names a
+    # repository, whose header is not on this disk to read.
+    drafter_kv_unsized: bool
     # Weights + KV + compute, wherever they sit: GPU, host RAM, or a unified pool.
     total_bytes: int
     # The part that lands on the GPU under the requested offload.
@@ -8219,7 +8222,34 @@ def _gguf_memory_breakdown(
     since they do not move while the panel is open, and the KV cache plus compute
     buffers, re-derived every call because that is the half that does.
     """
-    from core.inference.llama_server_args import _effective_tensor_parallel
+    from core.inference.llama_server_args import (
+        _effective_tensor_parallel,
+        parse_gpu_layers_override,
+        strip_shadowing_flags,
+    )
+
+    # Manual owns the offload flags: /load translates the last -ngl into the field and
+    # then strips the raw flags, so the launch carries neither. Price that same list,
+    # or a stale -ncmoe here reads as pipeline parallelism off and charges one context
+    # buffer where the launch replicates them per device.
+    if gpu_memory_mode == "manual" and llama_extra_args:
+        try:
+            _manual_ngl = parse_gpu_layers_override(llama_extra_args)
+        except ValueError:
+            _manual_ngl = None
+        if _manual_ngl is not None:
+            gpu_layers = _manual_ngl
+        llama_extra_args = strip_shadowing_flags(
+            llama_extra_args,
+            strip_context = False,
+            strip_cache = False,
+            strip_spec = False,
+            strip_template = False,
+            strip_split_mode = False,
+            # _should_strip_tensor_split's rule, from the same two values it reads.
+            strip_tensor_split = gpu_layers is not None and gpu_layers >= 0,
+            strip_offload = True,
+        )
 
     # A --split-mode in the extras last-wins over the toggle, and an inherited tensor
     # LLAMA_ARG_SPLIT_MODE turns it on: the same helper load_model budgets with, so a
@@ -8399,6 +8429,10 @@ def _gguf_memory_breakdown(
         if _resolved_mmproj_offload(llama_extra_args) is False:
             host_companion_bytes = min(companion_bytes, mmproj_bytes)
     gpu_weights = int(main_bytes * gpu_fraction) + companion_bytes - host_companion_bytes
+    # Charged bytes with no local file behind them: a --spec-draft-hf repository. Its
+    # weights are in the files term, but its cache grows with context like any other
+    # and cannot be read off a header that is not here, so the total is a floor.
+    drafter_kv_unsized = bool((host_drafter_bytes or gpu_drafter_bytes) and not charged_drafter)
     runtime_bytes = (
         runtime.kv_bytes + runtime.compute_bytes + drafter_runtime_bytes + projector_runtime_bytes
     )
@@ -8428,6 +8462,7 @@ def _gguf_memory_breakdown(
         compute_bytes = runtime.compute_bytes,
         drafter_runtime_bytes = drafter_runtime_bytes,
         projector_runtime_bytes = projector_runtime_bytes,
+        drafter_kv_unsized = drafter_kv_unsized,
         total_bytes = weights_bytes + runtime_bytes,
         gpu_bytes = gpu_bytes,
         kv_estimable = runtime.kv_estimable,
@@ -12047,6 +12082,7 @@ async def estimate_memory(
             compute_bytes = breakdown.compute_bytes,
             drafter_runtime_bytes = breakdown.drafter_runtime_bytes,
             projector_runtime_bytes = breakdown.projector_runtime_bytes,
+            drafter_kv_unsized = breakdown.drafter_kv_unsized,
             total_bytes = breakdown.total_bytes,
             gpu_bytes = breakdown.gpu_bytes,
             kv_estimable = breakdown.kv_estimable,

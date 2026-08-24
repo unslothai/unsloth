@@ -1032,19 +1032,24 @@ function MemoryEstimateRow({
         tone: "warn",
         text: "This GGUF's header doesn't carry the attention dimensions, so the KV cache can't be sized. The figures above are a floor, and the cache is usually the term that grows fastest with context.",
       }
-    : estimate.moeOffloadUnmodelled
+    : estimate.drafterKvUnsized
       ? {
-          tone: "muted",
-          text: "Expert layers held on the CPU aren't modelled here, so the GPU figure reads high.",
+          tone: "warn",
+          text: "The draft model is a repository, not a local file, so its cache can't be sized from here. Its weights are counted; its cache, which grows with context like the main one, is not.",
         }
-      : (singleMemoryPool ? totalFit : gpuFit) === "exceeds"
+      : estimate.moeOffloadUnmodelled
         ? {
-            tone: "warn",
-            text: singleMemoryPool
-              ? "More than this machine's memory. The GPU and the rest of the system share one pool here, so there is nothing to offload to."
-              : "More than this GPU holds. Layers will spill to system RAM, or the context will be fitted down to what fits.",
+            tone: "muted",
+            text: "Expert layers held on the CPU aren't modelled here, so the GPU figure reads high.",
           }
-        : null;
+        : (singleMemoryPool ? totalFit : gpuFit) === "exceeds"
+          ? {
+              tone: "warn",
+              text: singleMemoryPool
+                ? "More than this machine's memory. The GPU and the rest of the system share one pool here, so there is nothing to offload to."
+                : "More than this GPU holds. Layers will spill to system RAM, or the context will be fitted down to what fits.",
+            }
+          : null;
   return (
     <div className="space-y-2">
       <div className={ROW_CLASS}>
