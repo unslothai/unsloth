@@ -104,6 +104,44 @@ test("also repairs the same auto-generated snapshot for Qwen3.5 and Qwen3.6", ()
   }
 });
 
+test("migrates only the active model when several legacy Qwen rows are saved", () => {
+  const qwen36Small = "unsloth/Qwen3.6-9B-GGUF";
+  const settings = settingsFor(QWEN38);
+  settings.inferenceParamsByModel = {
+    [QWEN38]: LEGACY_SNAPSHOT,
+    [qwen36Small]: LEGACY_SNAPSHOT,
+  };
+
+  const migrated = migrateLegacyQwenDefaults(settings, QWEN38, true);
+
+  assert.deepEqual(migrated.migratedModelIds, [QWEN38]);
+  assert.equal(
+    migrated.settings.inferenceParamsByModel?.[QWEN38]?.presencePenalty,
+    1.5,
+  );
+  assert.deepEqual(
+    migrated.settings.inferenceParamsByModel?.[qwen36Small],
+    LEGACY_SNAPSHOT,
+  );
+  assert.equal(
+    migrated.patch?.inferenceParamsByModel?.[qwen36Small],
+    undefined,
+  );
+});
+
+test("does not migrate dormant Qwen rows while a non-Qwen model is active", () => {
+  const settings = settingsFor(QWEN38);
+
+  const migrated = migrateLegacyQwenDefaults(
+    settings,
+    "unsloth/Llama-3.2-3B-Instruct-GGUF",
+    true,
+  );
+
+  assert.equal(migrated.patch, null);
+  assert.equal(migrated.settings, settings);
+});
+
 test("preserves an explicit partial presence override", () => {
   const settings = settingsFor(QWEN38, { presencePenalty: 0.0 });
   const migrated = migrateLegacyQwenDefaults(settings, QWEN38, true);
@@ -165,6 +203,22 @@ test("migrates a global-only legacy install when ownership is established", () =
       presencePenalty: 1.5,
     },
   });
+});
+
+test("preserves customized optional fields in a global-only snapshot", () => {
+  for (const override of [{ topK: 40 }, { repetitionPenalty: 1.1 }]) {
+    const settings = settingsFor(QWEN38);
+    settings.inferenceParamsByModel = undefined;
+    settings.inferenceParams = {
+      ...settings.inferenceParams,
+      ...override,
+    };
+
+    const migrated = migrateLegacyQwenDefaults(settings, QWEN38, false, true);
+
+    assert.equal(migrated.patch, null);
+    assert.equal(migrated.settings, settings);
+  }
 });
 
 test("leaves global-only settings alone when active ownership is unknown", () => {

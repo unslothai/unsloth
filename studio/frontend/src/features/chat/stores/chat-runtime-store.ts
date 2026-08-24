@@ -3699,7 +3699,23 @@ function localQwenMigrationSettings(
   };
 }
 
-function applyLegacyQwenDefaultsAfterPresetChange(): void {
+function qwenMigrationThinkingOn(
+  settings: PersistedChatSettings,
+  state: ChatRuntimeStore,
+  reasoningMutationVersion = scalarSettingMutationVersions.reasoningEnabled,
+): boolean {
+  if (state.reasoningAlwaysOn) {
+    return true;
+  }
+  return settings.reasoningEnabled !== undefined &&
+    scalarSettingMutationVersions.reasoningEnabled === reasoningMutationVersion
+    ? settings.reasoningEnabled
+    : state.reasoningEnabled;
+}
+
+function applyLegacyQwenDefaultsAfterPresetChange(
+  includeOwnedGlobal: boolean,
+): void {
   useChatRuntimeStore.setState((state) => {
     if (
       !state.settingsHydrated ||
@@ -3712,8 +3728,8 @@ function applyLegacyQwenDefaultsAfterPresetChange(): void {
       localQwenMigrationSettings(state),
       checkpoint,
       state.reasoningAlwaysOn || state.reasoningEnabled,
-      true,
-      true,
+      includeOwnedGlobal,
+      includeOwnedGlobal,
     );
     if (!migration.patch) return state;
 
@@ -3734,8 +3750,10 @@ function applyLegacyQwenDefaultsAfterPresetChange(): void {
   });
 }
 
-async function retryLegacyQwenDefaultsAfterPresetChange(): Promise<void> {
-  applyLegacyQwenDefaultsAfterPresetChange();
+async function retryLegacyQwenDefaultsAfterPresetChange(
+  includeOwnedGlobal: boolean,
+): Promise<void> {
+  applyLegacyQwenDefaultsAfterPresetChange(includeOwnedGlobal);
   try {
     // First land the preset selection and its generic Default values. The
     // confirming GET can then recognize that exact legacy snapshot, while a
@@ -3752,9 +3770,9 @@ async function retryLegacyQwenDefaultsAfterPresetChange(): Promise<void> {
     const migration = migrateLegacyQwenDefaults(
       confirmed,
       state.params.checkpoint,
-      state.reasoningAlwaysOn || state.reasoningEnabled,
-      true,
-      true,
+      qwenMigrationThinkingOn(confirmed, state),
+      includeOwnedGlobal,
+      includeOwnedGlobal,
     );
     if (migration.patch) {
       await savePersistedChatSettingsPatch(migration.patch);
@@ -3762,6 +3780,25 @@ async function retryLegacyQwenDefaultsAfterPresetChange(): Promise<void> {
   } catch {
     warnSettingsPersistenceFailure();
   }
+}
+
+let qwenDefaultsRetryScheduled = false;
+let qwenDefaultsRetryIncludesOwnedGlobal = false;
+
+function scheduleLegacyQwenDefaultsRetry(includeOwnedGlobal: boolean): void {
+  qwenDefaultsRetryIncludesOwnedGlobal ||= includeOwnedGlobal;
+  if (qwenDefaultsRetryScheduled) {
+    return;
+  }
+  qwenDefaultsRetryScheduled = true;
+  queueMicrotask(() => {
+    const includeScheduledOwnedGlobal = qwenDefaultsRetryIncludesOwnedGlobal;
+    qwenDefaultsRetryScheduled = false;
+    qwenDefaultsRetryIncludesOwnedGlobal = false;
+    void retryLegacyQwenDefaultsAfterPresetChange(
+      includeScheduledOwnedGlobal,
+    );
+  });
 }
 
 export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
@@ -3956,14 +3993,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       try {
         const { settings, fromServer } = await loadChatSettingsWithLegacyImport();
         const checkpoint = get().params.checkpoint;
-        const storedReasoning = settings.reasoningEnabled;
-        const thinkingOn =
-          get().reasoningAlwaysOn ||
-          (storedReasoning !== undefined &&
-          scalarSettingMutationVersions.reasoningEnabled ===
-            hydrationVersions.scalarSettings.reasoningEnabled
-            ? storedReasoning
-            : get().reasoningEnabled);
+        const thinkingOn = qwenMigrationThinkingOn(
+          settings,
+          get(),
+          hydrationVersions.scalarSettings.reasoningEnabled,
+        );
         // A model loaded while the settings GET was in flight replaced the model
         // whose global fallback was saved. Only the model already resident at
         // startup can establish ownership of a global-only legacy snapshot.
@@ -3985,7 +4019,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
             migration = migrateLegacyQwenDefaults(
               confirmed,
               checkpoint,
-              thinkingOn,
+              qwenMigrationThinkingOn(
+                confirmed,
+                get(),
+                hydrationVersions.scalarSettings.reasoningEnabled,
+              ),
               globalBelongsToActiveCheckpoint,
             );
             if (migration.patch) {
@@ -4078,7 +4116,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }),
   setModelRequiresTrustRemoteCode: (modelRequiresTrustRemoteCode) =>
     set({ modelRequiresTrustRemoteCode }),
-  setParams: (params, options) =>
+  setParams: (params, options) => {
     set((state) => {
       // Mirror setCheckpoint: the local load path can mutate params.checkpoint
       // via setParams() before setCheckpoint runs, leaving stale per-turn
@@ -4175,7 +4213,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           ? { contextUsage: null, contextUsageByThreadId: {} }
           : {}),
       };
-    }),
+    });
+    // Startup can hydrate settings before the server's active model is adopted.
+    // Once status applies that model's defaults, its checkpoint and reasoning
+    // mode are known and the deferred active-row migration can run safely.
+    if (options?.fromModelDefaults === true) {
+      scheduleLegacyQwenDefaultsRetry(false);
+    }
+  },
   setCustomPresets: (customPresets) =>
     set(() => {
       customPresetsMutationVersion += 1;
@@ -4199,7 +4244,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return { activePresetSource };
     });
     if (returnedToBuiltInDefault) {
-      void retryLegacyQwenDefaultsAfterPresetChange();
+      // The settings sheet updates provenance before it applies the associated
+      // parameter edit. Defer one microtask so a final slider move that restores
+      // built-in Default has landed before the migration inspects and flushes it.
+      scheduleLegacyQwenDefaultsRetry(true);
     }
   },
   setModels: (models) => set({ models }),

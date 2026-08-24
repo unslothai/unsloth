@@ -22,6 +22,11 @@ const LEGACY_GLOBAL_QWEN_DEFAULTS = {
   maxTokens: 8192,
 } as const;
 
+const LEGACY_OPTIONAL_GLOBAL_QWEN_DEFAULTS = {
+  topK: 20,
+  repetitionPenalty: 1.0,
+} as const;
+
 const CURRENT_QWEN_THINKING_DEFAULTS = {
   temperature: 0.6,
   topP: 0.95,
@@ -62,6 +67,15 @@ function isLegacyGlobalQwenDefaultSnapshot(
     params !== undefined &&
     Object.entries(LEGACY_GLOBAL_QWEN_DEFAULTS).every(
       ([key, value]) => params[key as keyof PersistedInferenceParams] === value,
+    ) &&
+    Object.entries(LEGACY_OPTIONAL_GLOBAL_QWEN_DEFAULTS).every(
+      ([key, value]) => {
+        const stored = params[key as keyof PersistedInferenceParams];
+        // Old global settings did not always serialize these two unchanged
+        // defaults. A present value must still match, so customized snapshots
+        // cannot be mistaken for generated legacy data.
+        return stored === undefined || stored === value;
+      },
     )
   );
 }
@@ -97,6 +111,7 @@ export type QwenDefaultsMigration = {
 
 function migrateStoredModelDefaults(
   stored: Record<string, PersistedInferenceParams> | undefined,
+  activeCheckpoint: string,
   currentDefaults: PersistedInferenceParams,
 ): {
   migratedModelIds: string[];
@@ -107,7 +122,13 @@ function migrateStoredModelDefaults(
   const migratedByModel: Record<string, PersistedInferenceParams> = {};
   const patchByModel: Record<string, PersistedInferenceParams> = {};
   for (const [modelId, entry] of Object.entries(stored ?? {})) {
-    if (isPresenceBumpQwen(modelId) && isLegacyQwenDefaultSnapshot(entry)) {
+    const isActiveCheckpoint =
+      modelId.toLowerCase() === activeCheckpoint.toLowerCase();
+    if (
+      isActiveCheckpoint &&
+      isPresenceBumpQwen(modelId) &&
+      isLegacyQwenDefaultSnapshot(entry)
+    ) {
       migratedModelIds.push(modelId);
       migratedByModel[modelId] = { ...entry, ...currentDefaults };
       patchByModel[modelId] = changedDefaults(entry, currentDefaults);
@@ -148,7 +169,7 @@ export function migrateLegacyQwenDefaults(
   };
 
   const { migratedModelIds, migratedByModel, patchByModel } =
-    migrateStoredModelDefaults(stored, currentDefaults);
+    migrateStoredModelDefaults(stored, activeCheckpoint, currentDefaults);
 
   const migrateGlobal =
     (stored === undefined || migrateOwnedGlobalAlongsideModelMemory) &&

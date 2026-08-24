@@ -80,6 +80,68 @@ test("hydration replaces and persists the stale Qwen3.8 default snapshot", async
   });
 });
 
+test("active-model adoption retries a migration deferred during hydration", async () => {
+  settingsHttp.getResponses.length = 0;
+  settingsHttp.settings = {
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    inferenceParams: {
+      temperature: 0.6,
+      topP: 0.95,
+      minP: 0.01,
+      presencePenalty: 0,
+      maxTokens: 8192,
+    },
+    inferenceParamsByModel: { [QWEN38]: LEGACY_SNAPSHOT },
+  };
+  settingsHttp.puts.length = 0;
+  useChatRuntimeStore.setState((state) => ({
+    params: { ...state.params, checkpoint: "" },
+    paramsByModel: {},
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    reasoningAlwaysOn: false,
+    reasoningEnabled: true,
+    settingsHydrated: false,
+  }));
+
+  await useChatRuntimeStore.getState().hydratePersistedSettings();
+  assert.equal(
+    useChatRuntimeStore.getState().paramsByModel[QWEN38]?.presencePenalty,
+    0,
+  );
+
+  useChatRuntimeStore.getState().setCheckpoint(QWEN38);
+  const active = useChatRuntimeStore.getState();
+  active.setParams(
+    {
+      ...active.params,
+      checkpoint: QWEN38,
+      minP: 0,
+      presencePenalty: 1.5,
+    },
+    { fromModelDefaults: true },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const migrated = useChatRuntimeStore.getState();
+  assert.equal(migrated.paramsByModel[QWEN38]?.minP, 0);
+  assert.equal(migrated.paramsByModel[QWEN38]?.presencePenalty, 1.5);
+  assert.equal(
+    settingsHttp.puts.some((put) => put.inferenceParams !== undefined),
+    false,
+  );
+  assert.equal(
+    settingsHttp.puts.some(
+      (put) =>
+        (put.inferenceParamsByModel as Record<string, unknown> | undefined)?.[
+          QWEN38
+        ] !== undefined,
+    ),
+    true,
+  );
+});
+
 test("hydration upgrades a global-only non-thinking installation", async () => {
   settingsHttp.getResponses.length = 0;
   settingsHttp.settings = {
@@ -175,6 +237,56 @@ test("a confirming read preserves a newer edit from another tab", async () => {
   );
 });
 
+test("a confirming read uses the latest reasoning mode", async () => {
+  const thinkingSettings = {
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    reasoningEnabled: true,
+    inferenceParamsByModel: { [QWEN38]: LEGACY_SNAPSHOT },
+  };
+  const nonThinkingSettings = {
+    ...thinkingSettings,
+    reasoningEnabled: false,
+  };
+  settingsHttp.settings = nonThinkingSettings;
+  settingsHttp.getResponses = [thinkingSettings, nonThinkingSettings];
+  settingsHttp.puts.length = 0;
+  useChatRuntimeStore.setState((state) => ({
+    params: { ...state.params, checkpoint: QWEN38 },
+    paramsByModel: {},
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    reasoningAlwaysOn: false,
+    reasoningEnabled: true,
+    settingsHydrated: false,
+  }));
+
+  await useChatRuntimeStore.getState().hydratePersistedSettings();
+
+  const hydrated = useChatRuntimeStore.getState();
+  assert.equal(hydrated.reasoningEnabled, false);
+  assert.equal(hydrated.params.temperature, 0.7);
+  assert.equal(hydrated.params.topP, 0.8);
+  assert.deepEqual(
+    settingsHttp.puts.find(
+      (put) =>
+        (put.inferenceParamsByModel as Record<string, unknown> | undefined)?.[
+          QWEN38
+        ] !== undefined,
+    ),
+    {
+      inferenceParamsByModel: {
+        [QWEN38]: {
+          temperature: 0.7,
+          topP: 0.8,
+          minP: 0,
+          presencePenalty: 1.5,
+        },
+      },
+    },
+  );
+});
+
 test("returning from a custom preset retries the guarded migration", async () => {
   settingsHttp.getResponses.length = 0;
   settingsHttp.settings = {
@@ -208,6 +320,54 @@ test("returning from a custom preset retries the guarded migration", async () =>
 
   useChatRuntimeStore.getState().setActivePreset("Default");
   useChatRuntimeStore.getState().setActivePresetSource("builtin-default");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const state = useChatRuntimeStore.getState();
+  assert.equal(state.params.minP, 0);
+  assert.equal(state.params.presencePenalty, 1.5);
+  assert.equal(state.paramsByModel[QWEN38]?.presencePenalty, 1.5);
+  assert.equal(
+    settingsHttp.puts.some(
+      (put) =>
+        (put.inferenceParamsByModel as Record<string, unknown> | undefined)?.[
+          QWEN38
+        ] !== undefined,
+    ),
+    true,
+  );
+});
+
+test("restoring the final modified field retries after the parameter edit", async () => {
+  const modifiedSnapshot = {
+    ...LEGACY_SNAPSHOT,
+    presencePenalty: 0.4,
+  };
+  settingsHttp.getResponses.length = 0;
+  settingsHttp.settings = {
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    inferenceParamsByModel: { [QWEN38]: LEGACY_SNAPSHOT },
+  };
+  settingsHttp.puts.length = 0;
+  useChatRuntimeStore.setState((state) => ({
+    params: {
+      ...state.params,
+      ...modifiedSnapshot,
+      checkpoint: QWEN38,
+    },
+    paramsByModel: { [QWEN38]: modifiedSnapshot },
+    activePreset: "Default",
+    activePresetSource: "modified",
+    reasoningAlwaysOn: false,
+    reasoningEnabled: true,
+    settingsHydrated: true,
+  }));
+
+  useChatRuntimeStore.getState().setActivePresetSource("builtin-default");
+  useChatRuntimeStore.getState().setParams({
+    ...useChatRuntimeStore.getState().params,
+    presencePenalty: 0,
+  });
   await new Promise((resolve) => setTimeout(resolve, 50));
 
   const state = useChatRuntimeStore.getState();
