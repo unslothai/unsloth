@@ -192,12 +192,44 @@ print("{PAYLOAD_SENTINEL} sources " + json.dumps(sorted(FILES)), flush=True)
 # differs between the control leg and the version canary. They are printed
 # before they run so the kernel log alone says what was asked for, which is
 # what makes a canary failure attributable without downloading anything.
-import json, subprocess, sys, time
+import glob, json, os, re, subprocess, sys, time
 print("{PAYLOAD_SENTINEL} leg {leg.name}: {leg.summary}", flush=True)
 GROUPS = {json.dumps(groups)}
 print("{PAYLOAD_SENTINEL} install plan " + json.dumps(GROUPS), flush=True)
 
+# Wheels the driver built ONCE, before any leg started, from the very SHAs
+# these groups name. Empty or missing means the build did not happen or did not
+# finish, and every spec below then resolves exactly as it did before -- a
+# failed wheel build costs its own time and changes nothing about what is
+# tested.
+WHEEL_DIR = os.environ.get("UNSLOTH_CI_WHEEL_DIR", "")
+
+
+# `name @ git+...@sha` -> the prebuilt wheel for `name`, when there is one.
+#
+# Matched on the DISTRIBUTION NAME, normalised the way a wheel filename is
+# (PEP 503: runs of -_. collapse to _), because `unsloth_zoo` on the left of the
+# `@` arrives as `unsloth_zoo-2026.8.1-py3-none-any.whl` on disk. Getting that
+# wrong is invisible: no wheel matches, every leg falls back to its git spec,
+# and the run is merely as slow as it was before.
+#
+# A comment and not a docstring: this whole cell is generated from an f-string
+# delimited by triple quotes, so a docstring here ENDS the template and the
+# build dies with a SyntaxError in build_kernel.py rather than in the cell.
+def _localise(spec):
+    if not WHEEL_DIR or "@ git+" not in spec:
+        return spec
+    name = spec.split("@ git+", 1)[0].strip()
+    key = re.sub(r"[-_.]+", "_", name).lower()
+    for cand in sorted(glob.glob(os.path.join(WHEEL_DIR, "*.whl"))):
+        stem = os.path.basename(cand).split("-", 1)[0]
+        if re.sub(r"[-_.]+", "_", stem).lower() == key:
+            return cand
+    return spec
+
+
 def pip(args):
+    args = [_localise(a) for a in args]
     cmd = [sys.executable, "-m", "pip", "install", "-q", *args]
     print("  $ " + " ".join(cmd[3:]), flush=True)
     # github.com occasionally 500s on a git fetch, and PyPI occasionally
@@ -235,7 +267,15 @@ def pip(args):
         raise SystemExit(f"pip install failed: {{args}}")
 
 for group in GROUPS:
+    _g0 = time.time()
     pip(group)
+    # Per group, because "install took 191s" was all any artifact ever said and
+    # it is not actionable: it hides which of the four groups was the cost, and
+    # therefore whether the shared wheels helped at all.
+    print("{PAYLOAD_SENTINEL} install group " + json.dumps({{
+        "seconds": round(time.time() - _g0, 1),
+        "spec": [_localise(a) for a in group],
+    }}), flush=True)
 print("{PAYLOAD_SENTINEL} install done", flush=True)
 """
 
@@ -506,6 +546,7 @@ def build_driver(
     prefetch_repos: tuple[str, ...] = (),
     vram_source: dict | None = None,
     after_gpu_concurrent: bool = False,
+    shared_wheel_specs: tuple[str, ...] = (),
 ) -> dict:
     """Kernel notebook that runs the payloads across the session's GPUs.
 
@@ -584,6 +625,12 @@ except OSError:
     # that fitted there before co-scheduling.
     VENV_ROOT = WORK
 print("{DRIVER_SENTINEL}_VENV_ROOT " + json.dumps({{"path": str(VENV_ROOT)}}), flush=True)
+# Defined HERE, not beside the build below. run_one exports it into every
+# payload's env, and the Studio CPU lane calls run_one before the build block
+# is reached -- so assigning it there is a NameError on the first payload to
+# start, which is the one that runs earliest and would take the whole kernel
+# down with it.
+WHEEL_DIR = VENV_ROOT / "wheels"
 PAYLOADS = {json.dumps(encoded)}
 # Which payloads may see the Kaggle image's site-packages. A leg that
 # replaces torch must not: pip would then treat torch's pinned NVIDIA
@@ -613,6 +660,13 @@ N_GPU = len(GPUS)
 # it -- it is the leg that sets the makespan. Declaration order comes from
 # legs.KERNELS, so the packing decision lives beside the legs it packs.
 ORDER = {order!r}
+
+# Requirement specs that EVERY leg installs identically, built once up front.
+# Derived from the legs' own install groups rather than written out again here,
+# because a second copy of the two SHAs is a second thing to keep in step -- and
+# one that drifts silently, since a wheel built from the wrong ref installs
+# perfectly.
+SHARED_WHEEL_SPECS = {shared_wheel_specs!r}
 
 # Payloads that are NOT in the card queue.
 #
@@ -751,6 +805,41 @@ def run_one(name, gpu_index, idx):
     # `import unsloth` in the verify cell.
     env["UNSLOTH_COMPILE_LOCATION"] = str(
         WORK / ("unsloth_compiled_cache_" + pathlib.Path(name).stem))
+
+    # The OTHER three caches, which a separate venv does not protect.
+    #
+    # UNSLOTH_COMPILE_LOCATION above covered unsloth's generated modules and
+    # was assumed to be the whole story. It is not. torch and triton key their
+    # caches off $TMPDIR, not off the interpreter, so on torch 2.9.1 an unset
+    # TORCHINDUCTOR_CACHE_DIR resolves to `tempfile.gettempdir()/torchinductor_
+    # $USER` (torch/_inductor/runtime/cache_dir_utils.py:22) and the triton
+    # cache lands UNDER that same directory. Every leg on the box therefore
+    # shared /tmp/torchinductor_root -- four payloads whose entire purpose is
+    # to install DIFFERENT transformers/TRL/peft versions and compile the same
+    # modules, writing one cache between them.
+    #
+    # Per-leg directories rather than TORCHINDUCTOR_FORCE_DISABLE_CACHES or
+    # TRITON_ALWAYS_COMPILE, which are the blunter knobs and do exist
+    # (torch/compiler/config.py:85 and triton/knobs.py:358). Those force every
+    # leg to recompile from cold, which spends time on the critical path this
+    # kernel is being shortened along, and makes the legs measure a machine no
+    # user has. Isolation is what is wanted here, not cache defeat.
+    #
+    # TMPDIR is set too, and it is the belt to the braces: anything else that
+    # resolves a cache through gettempdir() follows it without this file having
+    # to know the variable's name.
+    _leg_tmp = VENV_ROOT / ("tmp_" + pathlib.Path(name).stem)
+    for _sub in ("", "inductor", "triton"):
+        try:
+            (_leg_tmp / _sub).mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+    env["TMPDIR"] = str(_leg_tmp)
+    env["TORCHINDUCTOR_CACHE_DIR"] = str(_leg_tmp / "inductor")
+    env["TRITON_CACHE_DIR"] = str(_leg_tmp / "triton")
+    # Where the once-built wheels are. Read by the install cell, which falls
+    # back to its git specs when the directory is empty or absent.
+    env["UNSLOTH_CI_WHEEL_DIR"] = str(WHEEL_DIR)
 
     made = _make_venv(idx, SYSTEM_SITE.get(name, True))
     if not made:
@@ -958,6 +1047,46 @@ if CPU_LANE:
     cpu_thread = threading.Thread(target = _cpu_lane, daemon = False)
     cpu_thread.start()
     print("{DRIVER_SENTINEL}_CPU_LANE " + json.dumps({{"payload": CPU_LANE}}), flush=True)
+
+# Build unsloth and unsloth_zoo ONCE, before any leg starts.
+#
+# Every leg's first two install groups are byte-identical -- the same two
+# pinned SHAs, zoo from main and unsloth from the ref under test -- and pip
+# does not cache a VCS build, so run 32679427416 cloned and built both of them
+# FOUR times. Install was 149-191s per leg there, the single largest phase of
+# every leg and 41% of gpt-oss.
+#
+# Synchronous, and that is the whole design. A background lane would lose the
+# race it exists to win: the legs are admitted to their cards and start
+# installing at t=0, so a wheel that is still building when they get there
+# saves nothing. Studio's CPU lane is started FIRST so its 345s overlaps this
+# rather than queueing behind it.
+#
+# Building from the same SHAs the groups name is what keeps this honest: the
+# wheel IS main-plus-the-PR, not a substitute for it. A leg whose wheel is
+# missing falls back to its original git spec, so a failed build costs the time
+# it took and changes nothing about what is tested.
+if SHARED_WHEEL_SPECS:
+    _t0 = time.time()
+    try:
+        WHEEL_DIR.mkdir(parents=True, exist_ok=True)
+        _proc = subprocess.run(
+            [sys.executable, "-m", "pip", "wheel", "--no-deps", "-q",
+             "-w", str(WHEEL_DIR), *SHARED_WHEEL_SPECS],
+            capture_output=True, text=True, timeout=900)
+        _built = sorted(p.name for p in WHEEL_DIR.glob("*.whl"))
+        print("{DRIVER_SENTINEL}_WHEELS " + json.dumps({{
+            "seconds": round(time.time() - _t0, 1),
+            "returncode": _proc.returncode,
+            "built": _built,
+            "error": None if _proc.returncode == 0 else _proc.stderr.strip()[-400:],
+        }}), flush=True)
+    except BaseException as _exc:  # noqa: BLE001
+        # Never fatal. The legs still carry their git specs.
+        print("{DRIVER_SENTINEL}_WHEELS " + json.dumps({{
+            "seconds": round(time.time() - _t0, 1), "returncode": None,
+            "built": [], "error": f"{{type(_exc).__name__}}: {{_exc}}",
+        }}), flush=True)
 
 # MAX_LEGS_PER_CARD workers per card, not one. The extra worker is what lets a
 # card pick up a second small leg beside the one it is already running; it
@@ -1187,6 +1316,7 @@ def build_kernel(
     payloads = {}
     isolation = {}
     legs_by_payload = {}
+    leg_groups: dict[str, list[list[str]]] = {}
     for leg in resolve(leg_names):
         name = f"t4_{leg.name}.ipynb"
         payloads[name] = build_payload_notebook(
@@ -1199,11 +1329,16 @@ def build_kernel(
         )
         isolation[name] = leg.system_site_packages
         legs_by_payload[name] = leg
+        leg_groups[name] = expand_install(
+            leg, unsloth_ref = unsloth_ref, zoo_ref = zoo_ref,
+            payload_dir = payload_dir,
+        )
     # The card queue is the LEGS. Studio's two halves ride the same kernel but
     # not the same queue, so expected_gpus is derived before they are added:
     # they are what the cards are freed FOR, not more work to schedule onto
     # them.
     expected_gpus = min(len(payloads), SESSION_GPUS)
+    shared_wheel_specs = _shared_vcs_specs(leg_groups)
     cpu_lane = after_gpu = None
     if studio:
         payloads.update(studio_payloads(**studio))
@@ -1228,7 +1363,38 @@ def build_kernel(
         prefetch_repos = prefetch_repos,
         vram_source = legs_by_payload,
         after_gpu_concurrent = after_gpu_concurrent,
+        shared_wheel_specs = shared_wheel_specs,
     )
+
+
+def _shared_vcs_specs(leg_groups: dict[str, list[list[str]]]) -> tuple[str, ...]:
+    """VCS requirements that EVERY leg installs identically.
+
+    Derived rather than declared. The two SHAs already live in the install
+    groups, and a second copy here would be a second thing to keep in step --
+    one that drifts silently, because a wheel built from the wrong ref installs
+    perfectly and fails nothing.
+
+    "Every leg" is the point of the intersection. A spec only one leg carries is
+    part of what that leg is testing and must keep its own resolution; building
+    it once and sharing it would quietly make the legs agree about something
+    they exist to disagree about. Two legs pinning the SAME package to
+    DIFFERENT refs therefore yields nothing shared, which is the safe answer.
+    """
+    if not leg_groups:
+        return ()
+    sets = []
+    for groups in leg_groups.values():
+        specs = set()
+        for group in groups:
+            for token in group:
+                if "@ git+" in token or token.startswith("git+"):
+                    specs.add(token)
+        sets.append(specs)
+    common = set.intersection(*sets) if sets else set()
+    # Sorted for a stable kernel: an unordered set would rebuild the notebook
+    # differently run to run and make a diff of two kernels unreadable.
+    return tuple(sorted(common))
 
 
 def main() -> int:

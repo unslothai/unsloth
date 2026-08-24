@@ -80,6 +80,10 @@ class _Stub:
                     "cuda": env.get("CUDA_VISIBLE_DEVICES"),
                     "kernel": cmd[cmd.index("-k") + 1],
                     "compile_location": env.get("UNSLOTH_COMPILE_LOCATION"),
+                    # The whole env, because the caches this file now asserts
+                    # on are several variables and a recorder that names them
+                    # one at a time goes stale the moment another is added.
+                    "env": dict(env),
                 }
             )
             Path(cmd[cmd.index("papermill") + 2]).write_text("{}", encoding = "utf-8")
@@ -2290,6 +2294,86 @@ def test_the_merged_kernel_runs_both_reporters():
     assert ".github/scripts/kaggle_t4_ci/report.py" in source
     assert ".github/scripts/kaggle_studio_ci/report.py" in source
     assert ".github/scripts/kaggle_studio_ci/collect_evidence.py" in source
+
+
+def test_the_shared_wheels_are_the_specs_every_leg_holds_in_common():
+    """Built once from the very SHAs the legs name -- main AND the ref tested.
+
+    Every leg installs unsloth_zoo and unsloth from the same two pinned SHAs,
+    and pip does not cache a VCS build, so run 32679427416 cloned and built
+    both FOUR times: install was 149-191s per leg, the largest single phase of
+    each and 41% of gpt-oss.
+
+    The list is DERIVED from the legs' own groups, never declared again, and
+    that is what keeps it honest. A hand-written copy of the two SHAs would
+    drift silently, because a wheel built from the wrong ref installs perfectly
+    and fails nothing at all.
+
+    The intersection is the safety property, not an optimisation: a spec only
+    one leg carries is part of what that leg tests, and sharing it would make
+    the legs agree about the thing they exist to disagree about.
+    """
+    common = build_kernel._shared_vcs_specs({
+        "a": [["unsloth_zoo @ git+u@S1"], ["transformers==5.5.0"]],
+        "b": [["unsloth_zoo @ git+u@S1"], ["--upgrade", "transformers"]],
+    })
+    assert common == ("unsloth_zoo @ git+u@S1",), common
+
+    # Different refs for the same package share NOTHING. Returning either one
+    # would hand a leg a wheel built from the other leg's commit.
+    assert build_kernel._shared_vcs_specs({
+        "a": [["unsloth @ git+u@S1"]], "b": [["unsloth @ git+u@S2"]],
+    }) == ()
+
+    # A spec only one leg carries is never shared.
+    assert build_kernel._shared_vcs_specs({
+        "a": [["x @ git+u@S1"], ["y @ git+u@S9"]], "b": [["x @ git+u@S1"]],
+    }) == ("x @ git+u@S1",)
+
+    # And on the real legs: BOTH packages, at the refs asked for.
+    driver = build_kernel.build_kernel(
+        SMOKE_DIR, ALL_FOUR, unsloth_ref = "PRSHA", zoo_ref = "MAINSHA",
+        extra_args = (), per_run_timeout = 60, skip_reference = True,
+    )
+    src = "".join("".join(c["source"]) for c in driver["cells"])
+    specs = re.search(r"SHARED_WHEEL_SPECS = (.+)", src).group(1)
+    assert "unsloth @ git+" in specs and "unsloth_zoo @ git+" in specs, specs
+    assert "PRSHA" in specs and "MAINSHA" in specs, specs
+    # Built before any leg can start. A background build loses the race it
+    # exists to win: the legs are admitted and start installing at t=0.
+    assert src.index('"pip", "wheel"') < src.index("threads = []"), (
+        "the wheels are built after the leg workers start, so no leg can use them"
+    )
+
+
+def test_every_leg_gets_its_own_torch_and_triton_cache(tmp_path):
+    """A separate venv never protected these, and nobody noticed.
+
+    UNSLOTH_COMPILE_LOCATION was set per leg and assumed to be the whole story.
+    torch and triton key their caches off $TMPDIR rather than off the
+    interpreter: on torch 2.9.1 an unset TORCHINDUCTOR_CACHE_DIR resolves to
+    `tempfile.gettempdir()/torchinductor_$USER`
+    (torch/_inductor/runtime/cache_dir_utils.py:22) and the triton cache lands
+    under that same directory. So four legs whose entire purpose is to install
+    DIFFERENT transformers/TRL/peft versions and compile the same modules were
+    sharing one /tmp/torchinductor_root.
+
+    Asserted as DISTINCT per leg rather than merely present -- one directory
+    named once and handed to everybody would satisfy "is set" and reproduce the
+    bug exactly.
+    """
+    driven = _drive_packed(tmp_path, ALL_FOUR, gpus = 2)
+    seen: dict[str, set] = {}
+    for call in driven["stub"].papermill:
+        env = call.get("env") or {}
+        for key in ("TORCHINDUCTOR_CACHE_DIR", "TRITON_CACHE_DIR", "TMPDIR",
+                    "UNSLOTH_COMPILE_LOCATION"):
+            assert env.get(key), f"{call['notebook']} has no {key}"
+            seen.setdefault(key, set()).add(env[key])
+    for key, values in seen.items():
+        assert len(values) == len(driven["stub"].papermill), (
+            f"{key} is shared between legs: {sorted(values)}"
+        )
 
 
 def test_the_workflow_can_actually_reach_studio_concurrent():
