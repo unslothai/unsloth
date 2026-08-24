@@ -12,14 +12,16 @@ use tauri::{AppHandle, Emitter, Manager};
 
 const MAX_LOG_LINES: usize = 1000;
 
-// The complete AppImage's library path belongs only to its GTK/WebKit GUI.
-// Never leak AppDir entries—or activated Python overrides—into the managed
-// host Python environment. Caller-provided host paths remain available for
-// CUDA and private runtime discovery.
+// Where the AppRun parks the host LD_LIBRARY_PATH it must keep away from the bundle.
+#[cfg(target_os = "linux")]
+const APPIMAGE_HOST_LIBRARY_PATH: &str = "UNSLOTH_HOST_LD_LIBRARY_PATH";
+
+// Keep AppImage GUI paths and Python overrides out of managed host Python.
 #[cfg(target_os = "linux")]
 fn scrub_appimage_library_path() -> Option<std::ffi::OsString> {
     let appdir = std::env::var_os("APPDIR")?;
-    let library_path = std::env::var_os("LD_LIBRARY_PATH")?;
+    let library_path = std::env::var_os("LD_LIBRARY_PATH")
+        .or_else(|| std::env::var_os(APPIMAGE_HOST_LIBRARY_PATH))?;
     let host_paths: Vec<_> = std::env::split_paths(&library_path)
         .filter(|path| !path.starts_with(&appdir))
         .collect();
@@ -32,6 +34,7 @@ fn scrub_appimage_library_path() -> Option<std::ffi::OsString> {
 
 #[cfg(target_os = "linux")]
 fn apply_scrubbed_appimage_library_path(cmd: &mut Command) {
+    cmd.env_remove(APPIMAGE_HOST_LIBRARY_PATH);
     match scrub_appimage_library_path() {
         Some(library_path) => {
             cmd.env("LD_LIBRARY_PATH", library_path);
@@ -47,6 +50,9 @@ pub(crate) fn scrub_appimage_python_env(cmd: &mut Command) {
     if std::env::var_os("APPIMAGE").is_some() {
         apply_scrubbed_appimage_library_path(cmd);
 
+        if let Some(path) = appdir_entries_demoted("PATH") {
+            cmd.env("PATH", path);
+        }
         for name in APPIMAGE_GUI_ONLY_VARS {
             cmd.env_remove(name);
         }
@@ -55,12 +61,10 @@ pub(crate) fn scrub_appimage_python_env(cmd: &mut Command) {
     }
 }
 
-// A host launcher hands the target to a host browser or file manager, so it
-// must not inherit the bundle's GUI runtime: the host's own GLib/GTK binaries
-// fail to load against Ubuntu 22.04 copies. Bundled tools stay reachable as a
-// fallback because the AppDir PATH entries are demoted rather than dropped.
+// Restore a host-safe environment before launching browsers and file managers.
 #[cfg(target_os = "linux")]
-const APPIMAGE_GUI_ONLY_VARS: [&str; 12] = [
+const APPIMAGE_GUI_ONLY_VARS: &[&str] = &[
+    "FONTCONFIG_FILE",
     "GIO_MODULE_DIR",
     "GIO_EXTRA_MODULES",
     "GTK_PATH",
@@ -71,6 +75,12 @@ const APPIMAGE_GUI_ONLY_VARS: [&str; 12] = [
     "GSETTINGS_SCHEMA_DIR",
     "GST_PLUGIN_SYSTEM_PATH",
     "GST_PLUGIN_SYSTEM_PATH_1_0",
+    "GST_PLUGIN_PATH",
+    "GST_PLUGIN_PATH_1_0",
+    "GST_PLUGIN_SCANNER",
+    "GST_PLUGIN_SCANNER_1_0",
+    "GST_PTP_HELPER_1_0",
+    "GST_REGISTRY_REUSE_PLUGIN_SCANNER",
     "QT_PLUGIN_PATH",
     "PERLLIB",
 ];
@@ -103,7 +113,7 @@ fn scrub_appimage_launcher_env(cmd: &mut Command) {
     cmd.env_remove("PYTHONPATH");
 }
 
-/// `open::that_detached`, with the launcher handed a host environment.
+/// Open a target detached with a host-safe environment.
 #[cfg(target_os = "linux")]
 pub(crate) fn open_detached(target: impl AsRef<std::ffi::OsStr>) -> std::io::Result<()> {
     let mut last_error = None;
@@ -145,6 +155,7 @@ pub(crate) fn open_detached(target: impl AsRef<std::ffi::OsStr>) -> std::io::Res
 #[cfg(target_os = "linux")]
 pub(crate) fn scrub_appimage_python_env_tokio(cmd: &mut tokio::process::Command) {
     if std::env::var_os("APPIMAGE").is_some() {
+        cmd.env_remove(APPIMAGE_HOST_LIBRARY_PATH);
         match scrub_appimage_library_path() {
             Some(library_path) => {
                 cmd.env("LD_LIBRARY_PATH", library_path);
@@ -152,6 +163,9 @@ pub(crate) fn scrub_appimage_python_env_tokio(cmd: &mut tokio::process::Command)
             None => {
                 cmd.env_remove("LD_LIBRARY_PATH");
             }
+        }
+        if let Some(path) = appdir_entries_demoted("PATH") {
+            cmd.env("PATH", path);
         }
         for name in APPIMAGE_GUI_ONLY_VARS {
             cmd.env_remove(name);
@@ -188,12 +202,14 @@ mod appimage_environment_tests {
         let old_appimage = std::env::var_os("APPIMAGE");
         let old_appdir = std::env::var_os("APPDIR");
         let old_library_path = std::env::var_os("LD_LIBRARY_PATH");
+        let old_path = std::env::var_os("PATH");
         std::env::set_var("APPIMAGE", "/tmp/Unsloth.AppImage");
         std::env::set_var("APPDIR", "/tmp/.mount_Unsloth");
         std::env::set_var(
             "LD_LIBRARY_PATH",
             "/tmp/.mount_Unsloth/usr/lib:/opt/cuda/lib64:/private/runtime",
         );
+        std::env::set_var("PATH", "/tmp/.mount_Unsloth/usr/bin:/usr/bin:/bin");
         let mut cmd = Command::new("/usr/bin/env");
         cmd.env("PYTHONHOME", "/activated/python")
             .env("PYTHONPATH", "/activated/modules");
@@ -204,6 +220,9 @@ mod appimage_environment_tests {
         let output = cmd.output().expect("run isolated child");
         let env = String::from_utf8(output.stdout).unwrap();
         assert!(env.contains("LD_LIBRARY_PATH=/opt/cuda/lib64:/private/runtime"));
+        // The bundled xdg-utils must not shadow the host copies for a child
+        // that reaches the desktop, but they stay available as a fallback.
+        assert!(env.contains("PATH=/usr/bin:/bin:/tmp/.mount_Unsloth/usr/bin"));
         assert!(!env.contains(appimage_isolated_path().to_string_lossy().as_ref()));
         assert!(!env.contains("PYTHONHOME="));
         assert!(!env.contains("PYTHONPATH="));
@@ -217,8 +236,36 @@ mod appimage_environment_tests {
             ("APPIMAGE", old_appimage),
             ("APPDIR", old_appdir),
             ("LD_LIBRARY_PATH", old_library_path),
+            ("PATH", old_path),
         ] {
             match old_value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+    }
+
+    #[test]
+    fn managed_child_recovers_the_library_path_the_apprun_parked() {
+        let _guard = env_lock();
+        let old = ["APPIMAGE", "APPDIR", "LD_LIBRARY_PATH", APPIMAGE_HOST_LIBRARY_PATH]
+            .map(|key| (key, std::env::var_os(key)));
+        std::env::set_var("APPIMAGE", "/tmp/Unsloth.AppImage");
+        std::env::set_var("APPDIR", "/tmp/.mount_Unsloth");
+        // The AppRun cleared it so the host copies could not outrank the bundle.
+        std::env::remove_var("LD_LIBRARY_PATH");
+        std::env::set_var(
+            APPIMAGE_HOST_LIBRARY_PATH,
+            "/tmp/.mount_Unsloth/usr/lib:/opt/rocm/lib",
+        );
+        let mut cmd = Command::new("/usr/bin/env");
+        scrub_appimage_python_env(&mut cmd);
+        let output = cmd.output().expect("run managed child");
+        let env = String::from_utf8(output.stdout).unwrap();
+        assert!(env.lines().any(|line| line == "LD_LIBRARY_PATH=/opt/rocm/lib"), "{env}");
+        assert!(!env_contains_name(&env, APPIMAGE_HOST_LIBRARY_PATH), "{env}");
+        for (key, value) in old {
+            match value {
                 Some(value) => std::env::set_var(key, value),
                 None => std::env::remove_var(key),
             }
@@ -267,7 +314,8 @@ mod appimage_environment_tests {
         );
         std::env::set_var("PATH", "/tmp/.mount_Unsloth/usr/bin:/usr/bin:/bin");
         let mut cmd = Command::new("/usr/bin/env");
-        cmd.env("GTK_PATH", "/tmp/.mount_Unsloth/usr/lib/gtk-3.0")
+        cmd.env("FONTCONFIG_FILE", "/tmp/.mount_Unsloth/usr/etc/fonts/fonts.conf")
+            .env("GTK_PATH", "/tmp/.mount_Unsloth/usr/lib/gtk-3.0")
             .env("QT_PLUGIN_PATH", "/tmp/.mount_Unsloth/usr/lib/qt5/plugins")
             .env("PYTHONPATH", "/tmp/.mount_Unsloth/usr/share/pyshared");
         scrub_appimage_launcher_env(&mut cmd);
@@ -276,6 +324,7 @@ mod appimage_environment_tests {
         // The host's own GLib binaries must win, and the bundled tools stay last.
         assert!(env.contains("LD_LIBRARY_PATH=/opt/cuda/lib64"));
         assert!(env.contains("PATH=/usr/bin:/bin:/tmp/.mount_Unsloth/usr/bin"));
+        assert!(!env.contains("FONTCONFIG_FILE="));
         assert!(!env.contains("GTK_PATH="));
         assert!(!env.contains("QT_PLUGIN_PATH="));
         assert!(!env.contains("PYTHONPATH="));
@@ -1591,8 +1640,9 @@ fn is_inside_windows_dir(path: &std::path::Path, windirs: &[std::path::PathBuf])
 /// so a late-mounting profile recovers, and never falls back to a temp dir.
 pub(crate) fn managed_cli_working_dir() -> Result<std::path::PathBuf, String> {
     let windirs = windows_roots();
+    let appdir = std::env::var_os("APPDIR").map(std::path::PathBuf::from);
     if let Ok(cwd) = std::env::current_dir() {
-        if !is_unusable_cwd(&cwd, &windirs) {
+        if !is_unusable_cwd(&cwd, &windirs, appdir.as_deref()) {
             return Ok(cwd);
         }
     }
@@ -1602,7 +1652,16 @@ pub(crate) fn managed_cli_working_dir() -> Result<std::path::PathBuf, String> {
 /// The directories the CLI guard refuses to run from, and only those. The rest of
 /// the Windows tree still disqualifies a *home*, but a child already running from
 /// C:\Windows\Temp keeps doing so: the guard allowed that before this change.
-fn is_unusable_cwd(path: &std::path::Path, windirs: &[std::path::PathBuf]) -> bool {
+///
+/// Managed children must not inherit the AppImage's read-only `$APPDIR/usr` directory.
+fn is_unusable_cwd(
+    path: &std::path::Path,
+    windirs: &[std::path::PathBuf],
+    appdir: Option<&std::path::Path>,
+) -> bool {
+    if appdir.is_some_and(|appdir| path.starts_with(appdir)) {
+        return true;
+    }
     windirs.iter().any(|windir| {
         ["System32", "SysWOW64"]
             .iter()
@@ -4987,6 +5046,29 @@ mod managed_cli_working_dir_tests {
     }
 
     #[test]
+    fn a_mounted_appimage_is_never_a_managed_child_working_directory() {
+        let appdir = PathBuf::from("/tmp/.mount_Unsloth1a2b3c");
+        for unusable in ["/tmp/.mount_Unsloth1a2b3c", "/tmp/.mount_Unsloth1a2b3c/usr"] {
+            assert!(
+                is_unusable_cwd(std::path::Path::new(unusable), &[], Some(&appdir)),
+                "{unusable} must be replaced"
+            );
+        }
+        for usable in ["/home/me/projects", "/tmp/.mount_Other/usr"] {
+            assert!(
+                !is_unusable_cwd(std::path::Path::new(usable), &[], Some(&appdir)),
+                "{usable} must be kept"
+            );
+        }
+        // A native package sets no APPDIR, so nothing changes for it.
+        assert!(!is_unusable_cwd(
+            std::path::Path::new("/tmp/.mount_Unsloth1a2b3c/usr"),
+            &[],
+            None
+        ));
+    }
+
+    #[test]
     fn only_the_folders_the_cli_refuses_count_as_unusable() {
         let windirs = [PathBuf::from("C:\\Windows")];
         for unusable in [
@@ -4996,7 +5078,7 @@ mod managed_cli_working_dir_tests {
             "\\\\?\\C:\\Windows\\System32",
         ] {
             assert!(
-                is_unusable_cwd(std::path::Path::new(unusable), &windirs),
+                is_unusable_cwd(std::path::Path::new(unusable), &windirs, None),
                 "{unusable} must be replaced"
             );
         }
@@ -5009,7 +5091,7 @@ mod managed_cli_working_dir_tests {
             "C:\\Users\\me\\projects",
         ] {
             assert!(
-                !is_unusable_cwd(std::path::Path::new(usable), &windirs),
+                !is_unusable_cwd(std::path::Path::new(usable), &windirs, None),
                 "{usable} must be kept"
             );
         }

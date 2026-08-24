@@ -82,7 +82,7 @@
     },
     "linux": {
       "appimage": {
-        "bundleMediaFramework": false,
+        "bundleMediaFramework": true,
         "files": {
           "/usr/lib/libappindicator3.so.1": "/usr/lib/x86_64-linux-gnu/libappindicator3.so.1"
         }

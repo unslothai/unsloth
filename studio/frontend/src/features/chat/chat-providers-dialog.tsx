@@ -40,9 +40,12 @@ import { ApiProviderLogo } from "./api-provider-logo";
 
 import { OpenAICodexConnect } from "./openai-codex-connect";
 import {
+  type CodexSubscriptionModels,
+  type ProviderAuthStatus,
   type ProviderRegistryEntry,
   createProviderConfig,
   deleteProviderConfig,
+  fetchCodexSubscriptionModels,
   listProviderModels,
   listProviderRegistry,
   testProviderConnection,
@@ -50,6 +53,7 @@ import {
 } from "./api/providers-api";
 
 import { resolveProviderCredentialEdit } from "./provider-credential-edit";
+import { getExternalMinOutputTokens } from "./provider-capabilities";
 import type { ExternalProviderConfig } from "./external-providers";
 import {
   CUSTOM_PROVIDER_PRESETS,
@@ -58,20 +62,23 @@ import {
   customProviderDisplayName,
   customProviderModelIdsPlaceholder,
   customPresetSkipsApiKeyField,
-  CUSTOM_MAX_OUTPUT_TOKENS_MIN,
+  PROVIDER_MAX_OUTPUT_TOKENS_MIN,
   getExternalProviderApiKey,
   isCustomProviderType,
   LEGACY_CUSTOM_PROVIDER_TYPE,
   CUSTOM_PROVIDER_DISPLAY_NAME,
+  getProviderModelCapabilities,
   providerModelSupportsStudioTools,
+  setProviderModelCapabilities,
   removeExternalProviderApiKey,
-  supportsCustomMaxOutputTokens,
+  supportsProviderMaxOutputTokens,
   supportsProviderReasoningToggle,
   supportsRemoteModelCatalog,
   toExternalBackendProviderType,
 } from "./external-providers";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import {
+  mergeLearnedModelCapabilities,
   pruneProviderModelIds,
   syncExternalProvidersFromBackend,
 } from "./sync-external-providers";
@@ -152,12 +159,83 @@ interface ChatProvidersSettingsProps {
   onProvidersChange: (providers: ExternalProviderConfig[]) => void;
 }
 
+export function codexCapabilitiesWithPlanModels(
+  entry: ProviderRegistryEntry | undefined,
+  listed: CodexSubscriptionModels | null,
+  stored: Record<string, { vision?: boolean; studio_tools?: boolean }> | undefined,
+): Record<string, { vision?: boolean; studio_tools?: boolean }> | null {
+  if (!listed || listed.source !== "subscription") return null;
+  // The registry row is what says which slugs the plan is allowed to describe and what
+  // the provider-wide studio_tools answer is. Without it every seed model reads as one
+  // the registry never listed, so the plan's modalities are written over the registry's
+  // for slugs the registry does describe, and the wildcard entry that carries
+  // studio_tools for the whole provider type is dropped rather than rewritten. Both are
+  // persisted, so an editor opened before the registry finished loading, or after that
+  // fetch failed, leaves the composer wrong until the next successful sync. Learning
+  // nothing here is the honest answer; the next fetch with a registry in hand records it.
+  if (!entry) return null;
+  const registryCapabilities = entry.model_capabilities ?? {};
+  // The map is keyed by provider type, not by connection, so it must start from what
+  // is already learned: a second ChatGPT connection lists its own slugs, and rebuilding
+  // from the registry alone would drop the first one's.
+  const capabilities = mergeLearnedModelCapabilities(
+    stored,
+    registryCapabilities,
+    entry?.supports_studio_tools,
+  );
+  // Hidden entries are described too: they stay selectable, so the composer needs their
+  // modalities as much as the offered ones.
+  for (const model of listed.known ?? listed.models) {
+    // Only the plan describes a slug the registry never listed. Without it the
+    // composer reads "unknown" as "allowed" and offers image attachments that the
+    // backend then refuses on every send. A catalog entry carrying no modality list
+    // normalizes to null upstream and the backend gate is bool(vision), so the honest
+    // mirror here is false rather than recording nothing at all.
+    if (!(model.id in registryCapabilities)) {
+      capabilities[model.id] = {
+        ...capabilities[model.id],
+        vision: model.vision === true,
+      };
+    }
+  }
+  return capabilities;
+}
+
+
+export function resolveCodexPickerModels(
+  curated: string[],
+  savedModels: string[],
+  listed: CodexSubscriptionModels | null,
+): { catalog: string[]; selected: string[] } {
+  // Only the plan's own catalog can retire a saved slug. The backend answers with the
+  // curated seed when it could not reach upstream, so treating that as the catalog
+  // would drop a saved model and the next unrelated save would make the loss stick.
+  const planListed = listed?.source === "subscription" && listed.models.length > 0;
+  if (!planListed) {
+    const catalog = [...new Set([...curated, ...savedModels])];
+    const offered = new Set(catalog);
+    return { catalog, selected: savedModels.filter((model) => offered.has(model)) };
+  }
+  const offeredIds = listed.models.map((model) => model.id);
+  // A saved slug the plan still returns is kept even when it is no longer offered:
+  // "hide" retires a model from the picker, it does not revoke one already in use.
+  // Only a slug the plan does not return at all is retired from the selection.
+  const known = new Set((listed.known ?? listed.models).map((model) => model.id));
+  const selected = savedModels.filter((model) => known.has(model));
+  const catalog = [...new Set([...offeredIds, ...selected])];
+  return { catalog, selected };
+}
+
+
 export function ChatProvidersSettings({
   providers,
   onProvidersChange,
 }: ChatProvidersSettingsProps) {
   const providersRef = useRef(providers);
   const seededProviderTypeRef = useRef<string | null>(null);
+  // Latches the one-shot auto-open below. Every navigation the user drives sets
+  // it too, so a slow first sync cannot pull them back into the form.
+  const autoOpenedAddFormRef = useRef(false);
   const [page, setPage] = useState<"list" | "form">("list");
   const [providerType, setProviderType] = useState<string>("");
   const [apiKey, setApiKey] = useState("");
@@ -178,6 +256,8 @@ export function ChatProvidersSettings({
   const [syncingProviders, setSyncingProviders] = useState(false);
   const [registryLoading, setRegistryLoading] = useState(false);
   const [modelsLoading, setModelsLoading] = useState(false);
+  // Only the newest Codex catalog request may write to the form.
+  const codexCatalogRequestRef = useRef(0);
   const [mutatingProvider, setMutatingProvider] = useState(false);
   const [manualModelIds, setManualModelIds] = useState("");
   const [modelSearchQuery, setModelSearchQuery] = useState("");
@@ -193,9 +273,8 @@ export function ChatProvidersSettings({
     (s) => s.setConnectionsEnabled,
   );
   const isCustomProvider = isCustomProviderType(providerType);
-  // Keyed on the STORED type, not the displayed one. A connection being created has
-  // no server row yet, so the helper falls back to what the create call will send.
-  const supportsMaxOutputTokens = supportsCustomMaxOutputTokens(
+  // a connection being created has no stored type yet, so only the UI type can decide
+  const supportsMaxOutputTokens = supportsProviderMaxOutputTokens(
     providerType,
     editingProviderId ? editingBackendProviderType : null,
   );
@@ -274,8 +353,10 @@ export function ChatProvidersSettings({
   const loadModelsTitle =
     isManualModelList && isCustomProvider
       ? "This connection uses manual model IDs"
-      : isCuratedModelList
-        ? "Full catalog is not fetched for this connection"
+      : providerType === "openai_codex"
+        ? "Load the models this ChatGPT plan can reach"
+        : isCuratedModelList
+          ? "Full catalog is not fetched for this connection"
         : missingModelCatalogBaseUrl
           ? "Enter a Base URL before loading models"
           : missingModelCatalogApiKey
@@ -350,7 +431,8 @@ export function ChatProvidersSettings({
         syncSucceeded = true;
         // Hidden entries are fetched for their capabilities only; the dropdown
         // surfaces them through CUSTOM_PROVIDER_PRESETS instead.
-        setRegistry(registryRows.filter((entry) => !entry.hidden));
+        const selectableRegistry = registryRows.filter((entry) => !entry.hidden);
+        setRegistry(selectableRegistry);
         setProviderType((current) => {
           if (
             current &&
@@ -365,6 +447,16 @@ export function ChatProvidersSettings({
         // removed (often from another tab); mirror that locally, else stale
         // entries become un-removable here until localStorage is cleared.
         onProvidersChange(syncedProviders);
+        // An empty list never says what this page is for, so open the form
+        // instead. Reads the synced response, not the local snapshot, so a
+        // stale empty list cannot flash the form at an existing user. Once
+        // only, else the focus re-sync would pull the user back here.
+        if (!autoOpenedAddFormRef.current) {
+          autoOpenedAddFormRef.current = true;
+          if (syncedProviders.length === 0 && selectableRegistry.length > 0) {
+            setPage("form");
+          }
+        }
       } catch (error) {
         // Only surface a toast for real failures, not for the silent
         // background re-sync on tab focus.
@@ -403,6 +495,11 @@ export function ChatProvidersSettings({
   }, [onProvidersChange]);
 
   function resetForm() {
+    // Any form transition retires an in-flight Codex catalog request. Its spinner goes
+    // with it: the state is shared across forms, so leaving it set would hold the next
+    // form's Load and Save controls disabled until the abandoned request times out.
+    codexCatalogRequestRef.current += 1;
+    setModelsLoading(false);
     setEditingProviderId(null);
     setApiKey("");
 
@@ -425,11 +522,13 @@ export function ChatProvidersSettings({
     if (entry?.model_list_mode === "curated") {
       setAvailableModels([...entry.default_models]);
     }
+    autoOpenedAddFormRef.current = true;
     setPage("form");
   }
 
   function closeForm() {
     resetForm();
+    autoOpenedAddFormRef.current = true;
     setPage("list");
   }
 
@@ -500,9 +599,14 @@ export function ChatProvidersSettings({
     if (!Number.isSafeInteger(value)) {
       throw new Error("Max Tokens limit must be a safe integer.");
     }
-    if (value < CUSTOM_MAX_OUTPUT_TOKENS_MIN) {
+    // getExternalMaxOutputTokens raises a sub-floor cap anyway, so say so instead of storing it
+    const floor = Math.max(
+      PROVIDER_MAX_OUTPUT_TOKENS_MIN,
+      getExternalMinOutputTokens(providerType),
+    );
+    if (value < floor) {
       throw new Error(
-        `Max Tokens limit must be at least ${CUSTOM_MAX_OUTPUT_TOKENS_MIN.toLocaleString()}.`,
+        `Max Tokens limit must be at least ${floor.toLocaleString()}.`,
       );
     }
     return value;
@@ -515,6 +619,32 @@ export function ChatProvidersSettings({
     }
     if (isCustomProvider && !supportsRemoteModelCatalog(providerType)) {
       toast.info("This connection uses manual model IDs.");
+      return;
+    }
+    if (providerType === "openai_codex") {
+      // Registry-curated, but the real catalog comes from the plan, so this control has
+      // to refetch it. Falling into the branch below would leave the only way to retry a
+      // failed catalog fetch closing and reopening the form.
+      if (!editingProviderId) {
+        toast.info("Connect this ChatGPT subscription to load the models it can reach.");
+        return;
+      }
+      const provider = providersRef.current.find(
+        (candidate) => candidate.id === editingProviderId,
+      );
+      setModelsLoading(true);
+      // The live checkboxes, not the persisted list: a manual reload re-reads the
+      // catalog, it does not revert edits the user has not saved yet.
+      const applied = await applyCodexSubscriptionModels(
+        editingProviderId,
+        selectedModelIds,
+        provider?.authStatus,
+        true,
+      ).catch(() => true);
+      // Only the request that still owns the form clears the shared flag. An abandoned
+      // one would re-enable Save while the newer request is out, letting the form be
+      // saved and then mutated when that request lands.
+      if (applied) setModelsLoading(false);
       return;
     }
     if (isCuratedModelList) {
@@ -761,6 +891,7 @@ export function ChatProvidersSettings({
         provider,
       ]);
       resetForm();
+      autoOpenedAddFormRef.current = true;
       setPage("list");
       toast.success("Connection added.");
     } catch (error) {
@@ -910,6 +1041,7 @@ export function ChatProvidersSettings({
       );
       toast.success("Connection updated.");
       resetForm();
+      autoOpenedAddFormRef.current = true;
       setPage("list");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
@@ -919,8 +1051,72 @@ export function ChatProvidersSettings({
     }
   }
 
+  async function applyCodexSubscriptionModels(
+    providerId: string,
+    savedModels: string[],
+    authStatus: ProviderAuthStatus | undefined,
+    refresh = false,
+  ): Promise<boolean> {
+    const request = ++codexCatalogRequestRef.current;
+    const curated = registryByType.get("openai_codex")?.default_models ?? [];
+    let listed: CodexSubscriptionModels | null = null;
+    if (authStatus === "connected") {
+      try {
+        listed = await fetchCodexSubscriptionModels(providerId, { refresh });
+      } catch {
+        // Keep the curated seed: the form must still open when upstream is unreachable.
+      }
+    }
+    if (request !== codexCatalogRequestRef.current) {
+      // The form moved to another connection while this catalog was in flight, and
+      // applying it here would save the first connection's models onto the second.
+      return false;
+    }
+    const capabilities = codexCapabilitiesWithPlanModels(
+      registryByType.get("openai_codex"),
+      listed,
+      getProviderModelCapabilities("openai_codex"),
+    );
+    if (capabilities) setProviderModelCapabilities("openai_codex", capabilities);
+    if (listed?.source === "reauthorization_required") {
+      // The backend already marked the bundle; resync so the connect panel offers
+      // Reconnect instead of leaving the connection looking healthy.
+      void syncExternalProvidersFromBackend(providersRef.current)
+        .then((synced) => {
+          providersRef.current = synced;
+          onProvidersChange(synced);
+        })
+        .catch(() => undefined);
+    }
+    const picker = resolveCodexPickerModels(curated, savedModels, listed);
+    if (refresh && listed?.source !== "subscription") {
+      // A curated fallback is not the account's catalog, so it retires nothing: keep
+      // whatever is on screen, including a model checked while the request was out.
+      setAvailableModels((previous) => [...new Set([...picker.catalog, ...previous])]);
+      setManualModelIds("");
+      return true;
+    }
+    setAvailableModels(picker.catalog);
+    if (refresh) {
+      // The checkboxes stay live while the request is out, so reconcile against the
+      // latest selection rather than the snapshot taken when the reload began. This is
+      // what the remote-catalog path above already does.
+      const offered = new Set(picker.catalog);
+      setSelectedModelIds((previous) => previous.filter((id) => offered.has(id)));
+    } else {
+      setSelectedModelIds(picker.selected);
+    }
+    setManualModelIds("");
+    return true;
+  }
+
   async function editProvider(provider: ExternalProviderConfig) {
+    // Switching connections retires an in-flight catalog request, including on the
+    // branches below that never reach applyCodexSubscriptionModels.
+    codexCatalogRequestRef.current += 1;
+    setModelsLoading(false);
     setEditingProviderId(provider.id);
+    autoOpenedAddFormRef.current = true;
     setPage("form");
     setProviderType(provider.providerType);
     setCustomProviderName(
@@ -933,7 +1129,16 @@ export function ChatProvidersSettings({
     setClearApiKeyRequested(false);
     setShowApiKey(false);
     setBaseUrlDraft(provider.baseUrl);
-    setMaxOutputTokensDraft(provider.maxOutputTokens?.toString() ?? "");
+    // Seeded at the floor: parseMaxOutputTokens throws below it, so a row stored under
+    // one would fail every unrelated edit. The resolver already reads it as the floor.
+    setMaxOutputTokensDraft(
+      provider.maxOutputTokens == null
+        ? ""
+        : Math.max(
+            provider.maxOutputTokens,
+            getExternalMinOutputTokens(provider.providerType),
+          ).toString(),
+    );
     setEditingBackendProviderType(provider.backendProviderType ?? null);
     setModelSearchQuery("");
     setIsReasoningModel(
@@ -967,6 +1172,19 @@ export function ChatProvidersSettings({
       setManualModelIds(
         provider.models.filter((model) => !catalogSet.has(model)).join("\n"),
       );
+      return;
+    }
+    if (provider.authKind === "chatgpt_oauth") {
+      // The form is already on screen and the reset emptied the catalog, so this fetch
+      // needs the same spinner the manual reload has. Without it the editor looks like a
+      // connection with no models, and Save answers "load available models first".
+      setModelsLoading(true);
+      const applied = await applyCodexSubscriptionModels(
+        provider.id,
+        provider.models,
+        provider.authStatus,
+      ).catch(() => true);
+      if (applied) setModelsLoading(false);
       return;
     }
     const entry = registryByType.get(provider.providerType);
@@ -1216,6 +1434,7 @@ export function ChatProvidersSettings({
                     <Input
                       id="provider-api-key"
                       type={showApiKey ? "text" : "password"}
+                      data-reload-snapshot-sensitive
                       value={apiKey}
                       onChange={(event) => {
                         setApiKey(event.target.value);
@@ -1324,7 +1543,9 @@ export function ChatProvidersSettings({
                       id="provider-max-output-tokens-help"
                       className="text-xs leading-snug text-muted-foreground"
                     >
-                      Leave blank to use the 32,768-token default.
+                      Caps Max Tokens for this connection. Never raises it past a
+                      model's documented limit. Leave blank to use that limit, or
+                      32,768 for a model without one.
                     </p>
                   </div>
                   <div className="flex min-w-0 flex-col gap-1.5">
@@ -1408,9 +1629,51 @@ export function ChatProvidersSettings({
               authStatus={providers.find((provider) => provider.id === editingProviderId)?.authStatus}
               ensureProvider={ensureCodexProvider}
               onChanged={async () => {
-                const synced = await syncExternalProvidersFromBackend(providersRef.current);
-                providersRef.current = synced;
-                onProvidersChange(synced);
+                // The form can move while this sync is out, and the id below is the one
+                // captured when the flow started. Every transition retires the catalog
+                // generation, so a change here means this continuation is for a form the
+                // user has already left.
+                // Taking a generation rather than reading one, the way every other
+                // transition does. Reading it shares a ticket with a catalog request that
+                // is already out, and an authorization change retires that request
+                // anyway: leaving it owning the form let it land, clear the shared
+                // loading flag and re-enable Save while this continuation was still
+                // syncing, which is the state the flag exists to prevent.
+                const request = ++codexCatalogRequestRef.current;
+                const changedProviderId = editingProviderId;
+                // Save is gated on this flag. Leaving it clear here lets the connection
+                // be saved with the pre-authorization seed selection before the plan's
+                // own catalog arrives, and those slugs then fail on every send.
+                setModelsLoading(true);
+                let owned = true;
+                try {
+                  const synced = await syncExternalProvidersFromBackend(providersRef.current);
+                  providersRef.current = synced;
+                  onProvidersChange(synced);
+                  if (request !== codexCatalogRequestRef.current) {
+                    owned = false;
+                    return;
+                  }
+                  const connected = synced.find(
+                    (provider) => provider.id === changedProviderId,
+                  );
+                  if (connected) {
+                    owned = await applyCodexSubscriptionModels(
+                      connected.id,
+                      connected.models,
+                      connected.authStatus,
+                    );
+                  }
+                } catch (error) {
+                  // A failed sync still has to answer the ownership question: the user
+                  // can cancel this form while it is out and start another request, and
+                  // clearing the flag then would re-enable Save during that one.
+                  owned = request === codexCatalogRequestRef.current;
+                  throw error;
+                } finally {
+                  // Only the request that still owns the form clears the shared flag.
+                  if (owned) setModelsLoading(false);
+                }
               }}
             />
           ) : null}

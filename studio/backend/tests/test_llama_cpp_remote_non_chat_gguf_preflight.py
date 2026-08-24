@@ -20,6 +20,7 @@ from __future__ import annotations
 import contextlib
 import inspect
 import struct
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -621,3 +622,382 @@ def test_a_handoff_for_another_model_is_not_taken(monkeypatch):
         hf_repo = "owner/a", hf_variant = "Q8_0", hf_token = None, model_identifier = "owner/a"
     )
     assert calls == ["owner/a", "owner/b", "owner/a"]
+
+
+# Cached GGUF reuse
+
+
+def _intent(**changes) -> GgufLoadIntent:
+    base = dict(
+        model_identifier = "owner/model",
+        hf_repo = "owner/model",
+        hf_variant = "Q4_K_M",
+    )
+    base.update(changes)
+    return GgufLoadIntent(**base)
+
+
+def _hub_cache(monkeypatch, root):
+    """Point the active Hub cache at ``root``."""
+    import types as _types
+
+    import utils.hf_cache_settings as hf_cache_settings
+
+    monkeypatch.setattr(
+        hf_cache_settings,
+        "get_hf_cache_paths",
+        lambda: _types.SimpleNamespace(hub_cache = Path(root)),
+    )
+
+
+def _cached_gguf(root: Path, name: str, payload: bytes) -> Path:
+    """Create a cached GGUF under ``root``."""
+    snapshot = root / "models--owner--model" / "snapshots" / ("a" * 40)
+    snapshot.mkdir(parents = True, exist_ok = True)
+    path = snapshot / name
+    path.write_bytes(payload)
+    return path
+
+
+def _verified(
+    path: Path,
+    repo: str = "owner/model",
+    variant: str = "Q4_K_M",
+):
+    """What config resolution carries for a cached copy it just verified."""
+    return (
+        repo,
+        variant,
+        str(path),
+        llama_cpp_module._cached_variant_sizes(repo, variant, str(path)),
+    )
+
+
+def test_a_verified_cached_file_is_judged_without_resolving_it_again(monkeypatch, tmp_path):
+    """The probe reuses the file verified during config resolution."""
+    _hub_cache(monkeypatch, tmp_path)
+    cached = _cached_gguf(tmp_path, "ltx-2-19b-dev-Q4_K_M.gguf", _gguf_bytes(arch = "ltxv"))
+
+    def _no_hub(*_a, **_k):
+        raise AssertionError("the probe went back to the Hub for a file it was handed")
+
+    monkeypatch.setattr(llama_cpp_module, "_resolve_variant_gguf_files", _no_hub)
+    monkeypatch.setattr(llama_cpp_module, "cached_gguf_for_load", _no_hub)
+    monkeypatch.setattr(diffusion_compat, "_read_gguf_header", _no_hub)
+
+    intent = _intent(verified_gguf = _verified(cached))
+    verdict = LlamaCppBackend.non_chat_gguf_refusal_for_intent(intent)
+    assert verdict is not None and "Video page" in verdict
+
+    # The verdict is also handed to the in-load probe.
+    assert (
+        LlamaCppBackend._remote_non_chat_gguf_refusal(
+            hf_repo = "owner/model",
+            hf_variant = "Q4_K_M",
+            hf_token = None,
+            model_identifier = None,
+        )
+        == verdict
+    )
+
+
+def test_a_chat_gguf_carried_the_same_way_is_still_not_refused(monkeypatch, tmp_path):
+    _hub_cache(monkeypatch, tmp_path)
+    cached = _cached_gguf(tmp_path, "chat-Q4_K_M.gguf", _gguf_bytes(arch = "llama"))
+
+    def _no_hub(*_a, **_k):
+        raise AssertionError("the probe went back to the Hub for a file it was handed")
+
+    monkeypatch.setattr(llama_cpp_module, "_resolve_variant_gguf_files", _no_hub)
+    monkeypatch.setattr(llama_cpp_module, "cached_gguf_for_load", _no_hub)
+
+    intent = _intent(verified_gguf = _verified(cached))
+    assert LlamaCppBackend.non_chat_gguf_refusal_for_intent(intent) is None
+
+
+def test_a_carried_path_is_only_used_for_the_repo_and_variant_it_was_verified_for(
+    monkeypatch, tmp_path
+):
+    """A carried path is valid only for its verified repo and variant."""
+    _hub_cache(monkeypatch, tmp_path)
+    cached = _cached_gguf(tmp_path, "model-Q4_K_M.gguf", b"GGUF")
+    verified = _verified(cached)
+    take = LlamaCppBackend._verified_cached_gguf
+
+    assert take(_intent(verified_gguf = verified), "owner/model", "Q4_K_M") == str(cached)
+    # Repo and variant matching is case-insensitive.
+    assert take(_intent(verified_gguf = verified), "Owner/Model", "Q4_K_M") == str(cached)
+    assert take(_intent(verified_gguf = verified), "owner/model", "q4_k_m") == str(cached)
+
+    # Other repos and variants fall back to normal resolution.
+    assert take(_intent(verified_gguf = verified), "owner/model", "Q8_0") is None
+    assert take(_intent(verified_gguf = verified), "other/model", "Q4_K_M") is None
+    assert take(_intent(verified_gguf = verified), "owner/model", None) is None
+
+    # Missing or malformed values are ignored.
+    assert take(_intent(), "owner/model", "Q4_K_M") is None
+    assert take(_intent(verified_gguf = ("owner/model",)), "owner/model", "Q4_K_M") is None
+    assert (
+        take(
+            _intent(verified_gguf = ("owner/model", "Q4_K_M", str(cached))),
+            "owner/model",
+            "Q4_K_M",
+        )
+        is None
+    )
+    assert take(_intent(verified_gguf = "just-a-path"), "owner/model", "Q4_K_M") is None
+
+
+def test_a_file_deleted_between_the_request_and_the_launch_is_not_reused(monkeypatch, tmp_path):
+    """A deleted carried file must not be reused."""
+    _hub_cache(monkeypatch, tmp_path)
+    cached = _cached_gguf(tmp_path, "model-Q4_K_M.gguf", b"GGUF")
+    intent = _intent(verified_gguf = _verified(cached))
+    assert LlamaCppBackend._verified_cached_gguf(intent, "owner/model", "Q4_K_M") == str(cached)
+
+    cached.unlink()
+    assert LlamaCppBackend._verified_cached_gguf(intent, "owner/model", "Q4_K_M") is None
+
+    # A directory at the path is not a model either.
+    cached.mkdir()
+    assert LlamaCppBackend._verified_cached_gguf(intent, "owner/model", "Q4_K_M") is None
+
+
+def test_a_file_truncated_after_config_resolution_is_not_reused(monkeypatch, tmp_path):
+    _hub_cache(monkeypatch, tmp_path)
+    cached = _cached_gguf(tmp_path, "model-Q4_K_M.gguf", b"GGUF payload")
+    intent = _intent(verified_gguf = _verified(cached))
+
+    cached.write_bytes(b"GGUF")
+
+    assert LlamaCppBackend._verified_cached_gguf(intent, "owner/model", "Q4_K_M") is None
+
+
+def test_an_incomplete_shard_set_after_config_resolution_is_not_reused(monkeypatch, tmp_path):
+    _hub_cache(monkeypatch, tmp_path)
+    main = _cached_gguf(
+        tmp_path,
+        "model-Q4_K_M-00001-of-00002.gguf",
+        b"first shard",
+    )
+    sibling = _cached_gguf(
+        tmp_path,
+        "model-Q4_K_M-00002-of-00002.gguf",
+        b"second shard",
+    )
+    intent = _intent(verified_gguf = _verified(main))
+    assert LlamaCppBackend._verified_cached_gguf(intent, "owner/model", "Q4_K_M") == str(main)
+
+    sibling.unlink()
+
+    assert LlamaCppBackend._verified_cached_gguf(intent, "owner/model", "Q4_K_M") is None
+
+
+def test_a_shard_truncated_after_config_resolution_is_not_reused(monkeypatch, tmp_path):
+    """A shard that shrinks is as unusable as one that disappears.
+
+    The shard set alone only proves the siblings exist, so the carried value records
+    every shard's byte count and Phase 2 rechecks all of them.
+    """
+    _hub_cache(monkeypatch, tmp_path)
+    main = _cached_gguf(tmp_path, "model-Q4_K_M-00001-of-00003.gguf", b"first shard")
+    second = _cached_gguf(tmp_path, "model-Q4_K_M-00002-of-00003.gguf", b"second shard")
+    _cached_gguf(tmp_path, "model-Q4_K_M-00003-of-00003.gguf", b"third shard")
+    intent = _intent(verified_gguf = _verified(main))
+    assert LlamaCppBackend._verified_cached_gguf(intent, "owner/model", "Q4_K_M") == str(main)
+
+    second.write_bytes(b"sec")
+
+    assert LlamaCppBackend._verified_cached_gguf(intent, "owner/model", "Q4_K_M") is None
+
+    # A shard that grows past its recorded size is a different set too.
+    second.write_bytes(b"second shard and more")
+    assert LlamaCppBackend._verified_cached_gguf(intent, "owner/model", "Q4_K_M") is None
+
+
+def test_the_probe_falls_back_to_resolving_when_nothing_usable_is_carried(monkeypatch, tmp_path):
+    """An unusable carried file falls back to normal resolution."""
+    missing = tmp_path / "gone-Q4_K_M.gguf"
+    header = _gguf_bytes(arch = "flux")
+    requests: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(
+        llama_cpp_module,
+        "_resolve_variant_gguf_files",
+        lambda *_a, **_k: ("model-Q4_K_M.gguf", []),
+    )
+    monkeypatch.setattr(llama_cpp_module, "cached_gguf_for_load", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        diffusion_compat,
+        "_read_gguf_header",
+        lambda repo_id, gguf_filename, hf_token: (
+            requests.append((repo_id, gguf_filename)) or header
+        ),
+    )
+
+    _hub_cache(monkeypatch, tmp_path)
+    intent = _intent(verified_gguf = ("owner/model", "Q4_K_M", str(missing), 123))
+    verdict = LlamaCppBackend.non_chat_gguf_refusal_for_intent(intent)
+    assert verdict is not None and "Images page" in verdict
+    assert requests == [("owner/model", "model-Q4_K_M.gguf")]
+
+
+def test_the_launch_reuses_the_carried_file_instead_of_resolving_it_again():
+    """The launch checks the carried file before downloading."""
+    src = inspect.getsource(llama_cpp_module.LlamaCppBackend.load_model)
+    teardown = src.index("# ── Phase 1: kill old process")
+    reuse = src.index("self._verified_cached_gguf(intent, hf_repo, hf_variant)")
+    # Search after teardown to skip the placement preflight download.
+    download = src.index("model_path = self._download_gguf(", teardown)
+    assert teardown < reuse < download, "the carried file is not consulted before the download"
+
+
+def test_a_carried_path_outside_the_active_cache_is_not_reused(monkeypatch, tmp_path):
+    """A carried path must remain inside the active Hub cache."""
+    old_root, new_root = tmp_path / "old", tmp_path / "new"
+    _hub_cache(monkeypatch, old_root)
+    cached = _cached_gguf(old_root, "model-Q4_K_M.gguf", b"GGUF")
+    intent = _intent(verified_gguf = _verified(cached))
+
+    assert LlamaCppBackend._verified_cached_gguf(intent, "owner/model", "Q4_K_M") == str(cached)
+
+    # Moving the cache leaves the old file readable but no longer active.
+    new_root.mkdir()
+    _hub_cache(monkeypatch, new_root)
+    assert cached.is_file()
+    assert LlamaCppBackend._verified_cached_gguf(intent, "owner/model", "Q4_K_M") is None
+
+    # Restoring the cache root makes the file valid again.
+    _hub_cache(monkeypatch, old_root)
+    assert LlamaCppBackend._verified_cached_gguf(intent, "owner/model", "Q4_K_M") == str(cached)
+
+    # Reject paths outside the cache and unreadable cache settings.
+    loose = tmp_path / "loose-Q4_K_M.gguf"
+    loose.write_bytes(b"GGUF")
+    loose_intent = _intent(verified_gguf = _verified(loose))
+    assert LlamaCppBackend._verified_cached_gguf(loose_intent, "owner/model", "Q4_K_M") is None
+
+    import utils.hf_cache_settings as hf_cache_settings
+
+    def _unreadable():
+        raise RuntimeError("cache settings unavailable")
+
+    monkeypatch.setattr(hf_cache_settings, "get_hf_cache_paths", _unreadable)
+    assert LlamaCppBackend._verified_cached_gguf(intent, "owner/model", "Q4_K_M") is None
+
+
+def test_the_probe_resolves_normally_when_the_cache_moved_under_it(monkeypatch, tmp_path):
+    """A moved cache falls back to normal resolution."""
+    old_root, new_root = tmp_path / "old", tmp_path / "new"
+    new_root.mkdir()
+    cached = _cached_gguf(old_root, "model-Q4_K_M.gguf", _gguf_bytes(arch = "ltxv"))
+    _hub_cache(monkeypatch, new_root)
+
+    requests: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        llama_cpp_module,
+        "_resolve_variant_gguf_files",
+        lambda *_a, **_k: ("model-Q4_K_M.gguf", []),
+    )
+    monkeypatch.setattr(llama_cpp_module, "cached_gguf_for_load", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        diffusion_compat,
+        "_read_gguf_header",
+        lambda repo_id, gguf_filename, hf_token: (
+            requests.append((repo_id, gguf_filename)) or _gguf_bytes(arch = "ltxv")
+        ),
+    )
+
+    intent = _intent(verified_gguf = _verified(cached))
+    verdict = LlamaCppBackend.non_chat_gguf_refusal_for_intent(intent)
+    assert verdict is not None and "Video page" in verdict
+    assert requests == [("owner/model", "model-Q4_K_M.gguf")]
+
+
+def test_the_launch_opens_the_carried_file_instead_of_resolving_it(monkeypatch, tmp_path):
+    """Phase 2 opens the carried file; with nothing carried it resolves and verifies again."""
+    _hub_cache(monkeypatch, tmp_path)
+    cached = _cached_gguf(tmp_path, "m-Q4_K_M.gguf", _gguf_bytes(arch = "llama"))
+
+    def _load(verified) -> list[str]:
+        order: list[str] = []
+        backend = LlamaCppBackend()
+        # A route ask no load came for is still handed over for this key.
+        monkeypatch.setattr(LlamaCppBackend, "_route_verdict_handoff", None)
+        _repo_load(monkeypatch, backend, order)
+        monkeypatch.setattr(
+            backend, "_download_gguf", lambda **_k: order.append("download") or str(cached)
+        )
+        monkeypatch.setattr(
+            diffusion_compat, "_read_gguf_header", lambda *_a, **_k: _gguf_bytes(arch = "llama")
+        )
+
+        def _stop(**_kwargs):
+            raise RuntimeError("stop here")
+
+        # The first companion fetch past the download decision, so the load stops there.
+        monkeypatch.setattr(backend, "_download_mtp", _stop)
+        with pytest.raises(RuntimeError, match = "stop here"):
+            backend.load_model(_intent(verified_gguf = verified))
+        return order
+
+    assert _load(_verified(cached)) == ["kill"]
+    assert _load(None) == ["kill", "download"]
+
+
+def _launchable_backend(monkeypatch) -> LlamaCppBackend:
+    """A backend whose launch succeeds without a real llama-server."""
+
+    class _Process:
+        pid = 123
+        stdout = ()
+        returncode = None
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            return None
+
+        def wait(self, timeout = None):
+            return None
+
+        def kill(self):
+            return None
+
+    backend = LlamaCppBackend()
+    backend._find_llama_server_binary = lambda include_denied = False: "/fake/llama-server"
+    backend._get_gpu_memory = lambda _binary = None, **_kw: []
+    backend._get_gpu_free_memory = lambda _binary = None, **_kw: []
+    backend._read_gguf_metadata = lambda _path: None
+    backend._can_estimate_kv = lambda: False
+    backend._get_gguf_size_bytes = lambda _path: 1024
+    backend._resolve_launch_mmproj_path = lambda **_kwargs: None
+    backend._record_server_pid = lambda _pid: None
+    backend._clear_server_pid = lambda: None
+    backend._llama_server_env_for_binary = lambda _binary: {}
+    backend._wait_for_health = lambda timeout: True
+    backend.probe_server_capabilities = lambda _binary: {"found": True}
+    monkeypatch.setattr(
+        LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: False)
+    )
+    monkeypatch.setattr(llama_cpp_module.subprocess, "Popen", lambda cmd, **_kw: _Process())
+    return backend
+
+
+def test_the_snapshot_kept_for_a_respawn_carries_no_verified_file(monkeypatch, tmp_path):
+    """_respawn_if_dead replays this snapshot arbitrarily later, so it holds no path this
+    request happened to verify: recovery resolves and verifies the file again."""
+    gguf = tmp_path / "m-Q4_K_M.gguf"
+    gguf.write_bytes(_gguf_bytes(arch = "llama"))
+    intent = GgufLoadIntent(
+        model_identifier = "owner/model",
+        gguf_path = str(gguf),
+        hf_variant = "Q4_K_M",
+        verified_gguf = _verified(gguf),
+    )
+
+    backend = _launchable_backend(monkeypatch)
+    assert backend.load_model(intent) is True
+    # Only the hint is dropped; everything else the replay needs survives.
+    assert backend.last_load_intent == replace(intent, verified_gguf = None)

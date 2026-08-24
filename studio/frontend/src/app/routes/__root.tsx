@@ -24,7 +24,11 @@ import { bootstrapPersistedCredentials } from "@/features/credentials/bootstrap"
 import { backfillModelOverrides } from "@/features/model-picker/api/migrate-model-overrides";
 import { usePersonalizationSync } from "@/features/profile";
 import { RemoteCodeConsentDialog } from "@/features/security";
-import { SettingsDialog, useSettingsDialogStore } from "@/features/settings";
+import {
+  SettingsDialog,
+  useSettingsDialogStore,
+  useShortcut,
+} from "@/features/settings";
 import { useTrainingUnloadGuard } from "@/features/training";
 import { TransformersUpgradeDialog } from "@/features/transformers-upgrade";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
@@ -67,6 +71,56 @@ function RouteFallback() {
     <div className="flex h-full min-h-0 flex-1 items-center justify-center text-muted-foreground text-sm">
       {t("common.loading")}
     </div>
+  );
+}
+
+// Retires the retained reload shell (public/reload-snapshot.js). It rides
+// inside the route's own Suspense boundary, so a lazy page that is still
+// resolving keeps the shell up instead of uncovering RouteFallback.
+function signalReloadSnapshotReady() {
+  window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+}
+
+function ReloadSnapshotReady() {
+  useLayoutEffect(() => {
+    signalReloadSnapshotReady();
+  }, []);
+  return null;
+}
+
+// reload-snapshot.js runs outside React during pageswap. Mirror the in-memory
+// privacy state onto the document so Temporary Chat is never serialized even
+// briefly into sessionStorage.
+function ReloadSnapshotPrivacy() {
+  const incognito = useChatRuntimeStore((state) => state.incognito);
+
+  useLayoutEffect(() => {
+    document.documentElement.toggleAttribute(
+      "data-reload-snapshot-private",
+      incognito,
+    );
+    return () => {
+      document.documentElement.removeAttribute(
+        "data-reload-snapshot-private",
+      );
+    };
+  }, [incognito]);
+
+  return null;
+}
+
+function RouteBoundary({
+  children,
+  readyWhenCommitted = true,
+}: {
+  children: ReactNode;
+  readyWhenCommitted?: boolean;
+}) {
+  return (
+    <Suspense fallback={<RouteFallback />}>
+      {readyWhenCommitted && <ReloadSnapshotReady />}
+      {children}
+    </Suspense>
   );
 }
 
@@ -212,6 +266,16 @@ function RootLayout() {
   const t = useT();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const hideNavbar = HIDDEN_NAVBAR_ROUTES.includes(pathname);
+  const routeOwnsReloadReadiness =
+    pathname === "/hub" ||
+    pathname === "/projects" ||
+    pathname === "/export" ||
+    pathname === "/studio" ||
+    pathname === "/api-monitor" ||
+    pathname === "/login" ||
+    pathname === "/change-password" ||
+    pathname === "/data-recipes" ||
+    pathname.startsWith("/data-recipes/");
   const isAuthFlowRoute = useMatches({
     select: (matches) => matches.some((match) => match.staticData.isAuthFlow),
   });
@@ -324,31 +388,32 @@ function RootLayout() {
     if (isAuthFlowRoute) {
       useSettingsDialogStore.getState().closeDialog();
     }
-    const handler = (e: KeyboardEvent) => {
-      if (e.defaultPrevented) return;
-      if ((e.metaKey || e.ctrlKey) && e.key === ",") {
-        if (isAuthFlowRoute) return;
-        e.preventDefault();
-        useSettingsDialogStore.getState().openDialog();
-        return;
-      }
-      // Cmd/Ctrl+Shift+O opens a new chat.
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.code === "KeyO") {
-        e.preventDefault();
-        clearNewChatDraft(); // fresh chat starts empty, no bleed from the last one
-        const chatRuntime = useChatRuntimeStore.getState();
-        chatRuntime.setActiveThreadId(null);
-        chatRuntime.setActiveProjectId(null);
-        chatRuntime.setIncognito(false);
-        void navigate({
-          to: "/chat",
-          search: { new: crypto.randomUUID() },
-        });
-      }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [isAuthFlowRoute, navigate]);
+  }, [isAuthFlowRoute]);
+
+  // Chords come from the shortcuts store (Settings -> Shortcuts), so a rebind
+  // applies without a reload. The auth flow has no shell to act on.
+  useShortcut(
+    "openSettings",
+    () => useSettingsDialogStore.getState().openDialog(),
+    { enabled: !isAuthFlowRoute },
+  );
+  useShortcut(
+    "openKeyboardShortcuts",
+    () =>
+      useSettingsDialogStore.getState().openDialog("keyboard-shortcuts"),
+    { enabled: !isAuthFlowRoute },
+  );
+  useShortcut("newChat", () => {
+    clearNewChatDraft(); // fresh chat starts empty, no bleed from the last one
+    const chatRuntime = useChatRuntimeStore.getState();
+    chatRuntime.setActiveThreadId(null);
+    chatRuntime.setActiveProjectId(null);
+    chatRuntime.setIncognito(false);
+    void navigate({
+      to: "/chat",
+      search: { new: crypto.randomUUID() },
+    });
+  });
 
   useEffect(() => {
     if (isChatRoute) return;
@@ -367,6 +432,7 @@ function RootLayout() {
   const content = (
     <>
       <PersonalizationSyncMount />
+      <ReloadSnapshotPrivacy />
       {!isAuthFlowRoute && <ChatSettingsHydrationMount />}
       {!isAuthFlowRoute && <SettingsDialog />}
       {/* Opens itself when API traffic arrives; hides on the full monitor page. */}
@@ -378,9 +444,9 @@ function RootLayout() {
       <StopRunningChatsDialog />
       {hideNavbar ? (
         <main className="flex-1 pt-[var(--studio-hidden-route-top-inset,0px)] [--studio-titlebar-height:var(--studio-hidden-route-top-inset,0px)]">
-          <Suspense fallback={<RouteFallback />}>
+          <RouteBoundary readyWhenCommitted={!routeOwnsReloadReadiness}>
             <Outlet />
-          </Suspense>
+          </RouteBoundary>
         </main>
       ) : (
         <SidebarProvider
@@ -424,7 +490,10 @@ function RootLayout() {
                   inert={!isImagesRoute || undefined}
                 >
                   <Suspense fallback={<RouteFallback />}>
-                    <ImagesPage active={isImagesRoute} />
+                    <ImagesPage
+                      active={isImagesRoute}
+                      onInitialReady={signalReloadSnapshotReady}
+                    />
                   </Suspense>
                 </div>
               )}
@@ -439,7 +508,10 @@ function RootLayout() {
                   inert={!isVideoRoute || undefined}
                 >
                   <Suspense fallback={<RouteFallback />}>
-                    <VideoPage active={isVideoRoute} />
+                    <VideoPage
+                      active={isVideoRoute}
+                      onInitialReady={signalReloadSnapshotReady}
+                    />
                   </Suspense>
                 </div>
               )}
@@ -454,7 +526,10 @@ function RootLayout() {
                   inert={!isAudioRoute || undefined}
                 >
                   <Suspense fallback={<RouteFallback />}>
-                    <AudioPage active={isAudioRoute} />
+                    <AudioPage
+                      active={isAudioRoute}
+                      onInitialReady={signalReloadSnapshotReady}
+                    />
                   </Suspense>
                 </div>
               )}
@@ -473,9 +548,9 @@ function RootLayout() {
                     transition={{ duration: 0.06 }}
                     className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-visible"
                   >
-                    <Suspense fallback={<RouteFallback />}>
+                    <RouteBoundary readyWhenCommitted={!routeOwnsReloadReadiness}>
                       <Outlet />
-                    </Suspense>
+                    </RouteBoundary>
                   </motion.div>
                 </AnimatePresence>
               )}

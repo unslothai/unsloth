@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Drive the packaged Linux AppImage through its real WebKitGTK webview.
-
-The backend is deterministic and serves no model bytes. The assertion is the
-historical Linux Mint failure boundary: selecting a GGUF in the packaged model
-picker must send POST /api/hub/download, paint progress, and send the cancel
-request. A live window alone cannot prove that the bundled WebKit network
-process works.
-"""
+"""Exercise model download and cancellation through the packaged WebKitGTK view."""
 
 from __future__ import annotations
 
@@ -115,12 +108,19 @@ def _write_backend_fixture(home: Path, request_log: Path) -> None:
     server.write_text(
         textwrap.dedent(
             f"""\
+            import ctypes
             import hashlib
             import json
             import os
+            import signal
             import sys
             from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
             from urllib.parse import parse_qs, urlparse
+
+            # Do not leave the fixture bound after the app exits.
+            ctypes.CDLL("libc.so.6").prctl(1, signal.SIGTERM)
+            if os.getppid() == 1:
+                raise SystemExit(0)
 
             REPO_ID = {REPO_ID!r}
             FILENAME = {FILENAME!r}
@@ -371,6 +371,80 @@ def _request_log_contains(request_log: Path, path: str) -> bool:
     )
 
 
+def _install_colrv1_probe_font(config_dir: Path, data_dir: Path) -> dict[str, str] | None:
+    source_value = os.environ.get("APPIMAGE_COLRV1_FONT", "")
+    if not source_value:
+        return None
+
+    source = Path(source_value).resolve()
+    expected_sha = os.environ.get("APPIMAGE_COLRV1_FONT_SHA256", "").lower()
+    if not source.is_file() or not expected_sha:
+        raise RuntimeError("APPIMAGE_COLRV1_FONT and its SHA-256 are required together")
+    actual_sha = hashlib.sha256(source.read_bytes()).hexdigest()
+    if actual_sha != expected_sha:
+        raise RuntimeError(f"COLRv1 font digest mismatch: {actual_sha} != {expected_sha}")
+    font_bytes = source.read_bytes()
+    for table in (b"COLR", b"CPAL"):
+        if table not in font_bytes:
+            raise RuntimeError(f"COLRv1 regression font has no {table.decode()} table")
+
+    font_dir = data_dir / "fonts"
+    font_dir.mkdir(parents = True, exist_ok = True)
+    installed = font_dir / "Noto-COLRv1.ttf"
+    shutil.copy2(source, installed)
+    fontconfig_dir = config_dir / "fontconfig/conf.d"
+    fontconfig_dir.mkdir(parents = True, exist_ok = True)
+    (fontconfig_dir / "10-unsloth-colrv1-regression.conf").write_text(
+        """<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
+<fontconfig>
+  <match target="scan">
+    <test name="file" compare="contains"><string>Noto-COLRv1.ttf</string></test>
+    <edit name="family" mode="assign"><string>Unsloth Test COLRv1</string></edit>
+  </match>
+  <match target="pattern">
+    <edit name="family" mode="prepend" binding="strong">
+      <string>Unsloth Test COLRv1</string>
+    </edit>
+  </match>
+</fontconfig>
+""",
+        encoding = "utf-8",
+    )
+    font_env = {
+        **os.environ,
+        "HOME": str(data_dir.parents[1]),
+        "XDG_CONFIG_HOME": str(config_dir),
+        "XDG_DATA_HOME": str(data_dir),
+    }
+    subprocess.run(
+        ["fc-cache", "-f", str(font_dir)],
+        check = True,
+        env = font_env,
+        stdout = subprocess.DEVNULL,
+    )
+    selected_by_charset = {}
+    for charset in ("1f680", "1faea"):
+        selected = subprocess.check_output(
+            ["fc-match", "-f", "%{file}\t%{family}\t%{color}\n", f"sans-serif:charset={charset}"],
+            env = font_env,
+            text = True,
+        ).strip()
+        if str(installed) not in selected:
+            raise RuntimeError(
+                f"Host Fontconfig did not select the COLRv1 fixture for U+{charset.upper()}: "
+                f"{selected}"
+            )
+        selected_by_charset[charset] = selected
+    result = {
+        "path": str(installed),
+        "sha256": actual_sha,
+        "host_fc_match": selected_by_charset,
+    }
+    (ART_DIR / "colrv1-host-font.json").write_text(json.dumps(result, indent = 2), encoding = "utf-8")
+    return result
+
+
 def main() -> None:
     appimage_value = os.environ.get("APPIMAGE_PATH", "")
     if not appimage_value:
@@ -397,6 +471,8 @@ def main() -> None:
     data_dir.mkdir(parents = True)
     cache_dir.mkdir(parents = True)
     state_dir.mkdir(parents = True)
+
+    colrv1_font = _install_colrv1_probe_font(config_dir, data_dir)
     request_log = ART_DIR.resolve() / "backend-requests.jsonl"
     _write_backend_fixture(home, request_log)
 
@@ -470,6 +546,49 @@ def main() -> None:
             "return document.body && !document.body.innerText.includes('Starting Unsloth')",
             "the deterministic desktop backend handoff",
         )
+
+        if colrv1_font is not None:
+            clicked = _wait_for(
+                base,
+                session_id,
+                "const b=document.querySelector('[data-testid=\"nav-row-hub\"]')||[...document.querySelectorAll('button')].find((e)=>(e.innerText||'').trim()==='Model hub');if(b){b.click();return true;}return false;",
+                "the Model hub sidebar destination",
+                timeout = 30,
+            )
+            assert clicked, "Could not click the Model hub sidebar destination"
+            _wait_for(
+                base,
+                session_id,
+                "return location.pathname==='/hub'&&document.body?.innerText.includes('Model hub')",
+                "the Model hub route",
+                timeout = 60,
+            )
+            inserted = _execute(
+                base,
+                session_id,
+                "const d=document.createElement('div');d.id='appimage-colrv1-probe';d.textContent='🚀 🇬🇧 👨‍👩‍👧 ⭐ ✅ 🫪 🫯';d.style.cssText=\"position:fixed;z-index:2147483647;left:320px;top:90px;padding:16px;background:white;color:black;font-size:48px;font-family:'Unsloth Test COLRv1',sans-serif\";document.body.appendChild(d);return d.textContent;",
+            )
+            assert inserted, "Could not inject the COLRv1 renderer probe"
+            evidence = {**colrv1_font, "route": "/hub", "survived_seconds": 0}
+            for elapsed in range(1, 31):
+                time.sleep(1)
+                state = _execute(
+                    base,
+                    session_id,
+                    "return {path:location.pathname,probe:document.getElementById('appimage-colrv1-probe')?.textContent||false,body:(document.body?.innerText||'').slice(0,12000)};",
+                )
+                assert state["path"] == "/hub", f"Left Model hub during COLRv1 probe: {state}"
+                assert state["probe"], f"COLRv1 probe disappeared or renderer stopped: {state}"
+                evidence["survived_seconds"] = elapsed
+            evidence["result"] = "PASS"
+            (ART_DIR / "colrv1-model-hub.json").write_text(
+                json.dumps(evidence, indent = 2, ensure_ascii = False), encoding = "utf-8"
+            )
+            _execute(
+                base,
+                session_id,
+                "document.getElementById('appimage-colrv1-probe')?.remove();return true;",
+            )
         clicked = _wait_for(
             base,
             session_id,
@@ -583,6 +702,23 @@ def main() -> None:
             timeout = 15,
         )
 
+        # Verify the packaged WebKit view exposes the required media formats.
+        media = json.loads(
+            _execute(
+                base,
+                session_id,
+                "const v=document.createElement('video'); const a=document.createElement('audio');"
+                "return JSON.stringify({"
+                "mp4:v.canPlayType('video/mp4'), webm:v.canPlayType('video/webm'),"
+                "wav:a.canPlayType('audio/wav'),"
+                "capture:!!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia)});",
+            )
+        )
+        (ART_DIR / "media-support.json").write_text(json.dumps(media, indent = 2), encoding = "utf-8")
+        for media_type in ("mp4", "webm", "wav"):
+            assert media[media_type], f"The packaged webview cannot play {media_type}: {media}"
+        assert media["capture"], f"The packaged webview exposes no capture device API: {media}"
+
         screenshot = _request(base, "GET", f"/session/{session_id}/screenshot")
         (ART_DIR / "model-download-cancelled.png").write_bytes(
             base64.b64decode(screenshot["value"])
@@ -594,7 +730,10 @@ def main() -> None:
             home / ".unsloth/studio/tauri.log",
         )
 
-        print("PASS packaged AppImage model picker sent download, rendered progress, and cancelled")
+        print(
+            "PASS packaged AppImage survived the COLRv1 Model hub probe, "
+            "then sent, rendered, and cancelled a model download"
+        )
     except Exception:
         if session_id:
             try:

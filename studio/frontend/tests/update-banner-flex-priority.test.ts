@@ -190,9 +190,11 @@ test("only the dismissible cards licence covering the composer", () => {
   );
   // Measured up from the corner, so the run that stops a cover is the one that
   // would land on the composer, not any persistent card anywhere in the stack.
+  // Over `cards`, the rail's in-flow children: a dragged loaded models card is
+  // `position: fixed` somewhere else and lands on nothing.
   assert.match(
     STORE,
-    /for \(let i = node\.children\.length - 1; i >= 0; i -= 1\)/,
+    /for \(let i = cards\.length - 1; i >= 0; i -= 1\)/,
     "the persistent run is no longer counted from the bottom of the stack",
   );
 });
@@ -274,11 +276,12 @@ test("a scrolling rail takes pointer input, a fitting one stays click-through", 
   // latches: the stack scrolls for a frame, the placement then changes to one
   // that fits, and nothing resizes afterwards to correct the flag, so a rail
   // with nothing to scroll to keeps the pointer input it took. Compared
-  // against the floor rather than the natural height, since the cards absorb
-  // everything in between.
+  // against the height the cards collapse to, not their natural height nor the
+  // floor the placement asks for: a card clipped below its floor is not a fold
+  // to scroll to.
   assert.match(
     STORE,
-    /overflowing: floorRoom > geometry\.maxHeight/,
+    /overflowing: collapsedRoom > geometry\.maxHeight/,
     "the overflow flag is not derived from the placement",
   );
   assert.ok(!/setOverflowing/.test(STORE), "a latched DOM reading is back");

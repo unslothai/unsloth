@@ -89,8 +89,8 @@ test("every sidebar row pill sits in one shared box", async () => {
   );
   // New Chat and the footer sit outside the scroller.
   assert.equal(source.match(/(?<!const )rowPadding[,}]/g)?.length, 2);
-  // Nav rows, pinned projects, Recents, training runs sit inside it.
-  assert.equal(source.match(/scrollRowPadding[,}]/g)?.length, 4);
+  // Nav rows, pinned chats, Projects, Recents, training runs sit inside it.
+  assert.equal(source.match(/scrollRowPadding[,}]/g)?.length, 5);
   assert.equal(source.match(/"pl-2 pr-\[5px\]"/g), null);
 });
 

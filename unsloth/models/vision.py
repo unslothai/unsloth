@@ -1134,11 +1134,22 @@ class FastBaseModel:
                 revision = _revision,
             )
         model_class = resolve_model_class(auto_model, auto_config)
+        # Check if using forced float32 - we load it in bfloat16, then cast to float16!
+        # Resolved here rather than at the load, because attention resolution below and the
+        # device-map planner both have to size the same dtype the load will really use.
+        torch_dtype = dtype
+        if do_forced_float32:
+            torch_dtype = torch.bfloat16
+        # What attention actually runs in, not the checkpoint load dtype: the
+        # UNSLOTH_FORCE_CUSTOM_DTYPE families (csm, falcon_h1, nemotron_h) load float32 to keep
+        # Mamba precision, then cast projections back to correct_dtype (float16), so flash stays.
+        attn_dtype = correct_dtype if correct_dtype is not None else torch_dtype
         attn_impl = resolve_attention_implementation(
             model_class,
             auto_config,
             requested_attn_implementation = kwargs.get("attn_implementation", None),
             supports_sdpa = supports_sdpa,
+            dtype = attn_dtype,
         )
 
         # Handle FP8 models: get_model_name has already redirected this to BF16 sibling if the model ships with
@@ -1169,13 +1180,6 @@ class FastBaseModel:
             load_in_4bit = False
             load_in_8bit = False
             load_in_16bit = False
-
-        # Check if using forced float32 - we load it in bfloat16, then cast to float16!
-        # Resolved here rather than at the load, because the planner below has to size the
-        # same dtype the load will really use.
-        torch_dtype = dtype
-        if do_forced_float32:
-            torch_dtype = torch.bfloat16
 
         # text_only loads the decoder alone, but the planner only gets `model_name` and
         # rebuilds the repo's own config, the whole VLM: it budgets a vision tower this
@@ -1939,7 +1943,7 @@ class FastBaseModel:
         temporary_location = "_unsloth_temporary_saved_buffers",
         qat_scheme = None,
         target_parameters = None,  # For MoE expert layers (nn.Parameter)
-        ensure_weight_tying = False,  # [TODO] Add `ensure_weight_tying` for `modules_to_save` for vision models
+        ensure_weight_tying = None,  # None = auto (tie when we redirect a tied pair)
         finetune_audio_layers = False,  # placed last to preserve existing positional argument order
         **kwargs,
     ):
@@ -1993,6 +1997,34 @@ class FastBaseModel:
         # only the auto (None / "all-linear") path relies on the regex, whose mlp
         # block is the sole remaining MLP-intent signal on fused-expert models.
         _moe_detect_target = target_modules if type(target_modules) in (list, tuple) else None
+
+        # get_peft_regex drops these (no attention/MLP ancestor) and LoRA on them never
+        # trains, so redirect before scoping, matching FastLanguageModel.
+        target_modules, modules_to_save, _moved = _redirect_embedding_targets(
+            target_modules,
+            modules_to_save,
+            allow_redirect = finetune_language_layers,
+            skip = _vllm_unmovable_embedding_modules(model, target_modules),
+        )
+        _raise_if_no_lora_targets_left(target_modules, _moved, target_parameters)
+        ensure_weight_tying = _effective_weight_tying(
+            model,
+            modules_to_save,
+            ensure_weight_tying,
+        )
+        modules_to_save = _drop_tied_output_module(
+            model,
+            modules_to_save,
+            ensure_weight_tying,
+        )
+        if _moved:
+            logger.warning_once(
+                f"Unsloth: Moved {', '.join(_moved)} from `target_modules` to "
+                f"`modules_to_save`, so they are trained as full weight matrices.\n"
+                f"This uses more VRAM than LoRA. Please list them in `modules_to_save` directly."
+            )
+        _raise_if_fast_inference_modules_to_save(model, modules_to_save)
+
         if target_modules is None or target_modules == "all-linear":
             target_modules = get_peft_regex(
                 model,
@@ -2437,9 +2469,9 @@ class FastBaseModel:
             # Set a flag for generation!
             if hasattr(m, "_flag_for_generation"):
                 try:
-                    # Weirdly sometimes cannot succeed so do a try except
+                    # A PEFT wrapper delegates the read but owns nothing to delete
                     del m._flag_for_generation
-                except:
+                except AttributeError:
                     pass
 
         m = model

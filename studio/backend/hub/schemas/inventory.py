@@ -24,6 +24,14 @@ class GgufVariantDetail(BaseModel):
     )
     size_bytes: int = Field(0, description = "File size in bytes")
     download_size_bytes: int = Field(0, description = "Total bytes needed to download this variant")
+    download_remaining_bytes: Optional[int] = Field(
+        None,
+        description = (
+            "Bytes a resume still has to fetch: the total minus what is already on disk "
+            "and reusable. Set only on a partial variant; null when not partial or when "
+            "the plan cannot be resolved."
+        ),
+    )
     downloaded: bool = Field(
         False, description = "Whether this variant is already in the local HF cache"
     )
@@ -45,8 +53,15 @@ class GgufVariantDetail(BaseModel):
         None,
         description = (
             'Transport recorded for the partial state ("http" or '
-            '"xet"), or null if not partial / unknown. Frontend uses '
-            "this to pick Resume (http) vs Redownload (xet) labels."
+            '"xet"), or null if not partial / unknown.'
+        ),
+    )
+    partial_resumable: bool = Field(
+        False,
+        description = (
+            "Whether THIS partial can be continued byte for byte, which is what picks "
+            "Resume over Continue. False for a Xet partial, and for an HTTP one no "
+            "installed writer can reopen."
         ),
     )
     dependency_key: Optional[str] = Field(
@@ -177,6 +192,10 @@ class LocalModelInfo(BaseModel):
             '"xet"), or null if not partial / unknown.'
         ),
     )
+    partial_resumable: bool = Field(
+        False,
+        description = "Whether THIS partial can be continued byte for byte.",
+    )
 
 
 class LocalModelListResponse(BaseModel):
@@ -210,6 +229,7 @@ class CachedRepoBase(BaseModel):
     last_modified: Optional[float] = None
     partial: bool = False
     partial_transport: Optional[str] = None
+    partial_resumable: bool = False
     inventory_id: Optional[str] = None
     load_id: Optional[str] = None
     model_format: ModelFormat = "unknown"
@@ -276,6 +296,10 @@ class ScanFolderInfo(BaseModel):
     id: int = Field(..., description = "Database row ID")
     path: str = Field(..., description = "Normalized absolute path")
     created_at: str = Field(..., description = "ISO 8601 creation timestamp")
+    status: str = Field(
+        default = "ok",
+        description = "Last scan result: ok, permission_denied, missing, or unreadable",
+    )
 
 
 class ScanFoldersResponse(BaseModel):

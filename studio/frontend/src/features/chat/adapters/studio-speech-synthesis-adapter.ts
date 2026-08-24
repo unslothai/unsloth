@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { stripSearchImageTokens } from "../search-images/search-images";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { toast } from "@/lib/toast";
 import type { SpeechSynthesisAdapter } from "@assistant-ui/react";
@@ -336,7 +337,9 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
     );
   }
 
-  speak(text: string): SpeechSynthesisAdapter.Utterance {
+  speak(spokenText: string): SpeechSynthesisAdapter.Utterance {
+    // Renderer markup: without this the reader says the token id out loud.
+    const text = stripSearchImageTokens(spokenText);
     const subscribers = new Set<() => void>();
 
     const handleEnd = (

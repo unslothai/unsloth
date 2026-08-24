@@ -94,6 +94,8 @@ export const ar = {
       export: "تصدير",
       recents: "العناصر الأخيرة",
       noChatsYet: "لا توجد محادثات بعد",
+      showMore: "عرض المزيد",
+      showLess: "عرض أقل",
       settings: "الإعدادات",
       api: "API",
       lightMode: "الوضع الفاتح",
@@ -107,6 +109,44 @@ export const ar = {
       title: "الصفحة غير موجودة",
       description: "{path} غير موجود.",
       backToChat: "العودة إلى المحادثة",
+    },
+    selection: {
+      pinProjects: "تثبيت المشاريع",
+      unpinProjects: "إلغاء تثبيت المشاريع",
+      deleteProjects: "حذف المشاريع",
+      deleteProjectsTitle: "حذف المشاريع",
+      deleteProjectsDescription:
+        "هل تريد حذف {count} مشاريع؟ ستُحذف محادثاتها نهائيًا.",
+      deleteProjectsFilesDescription:
+        "يُحذف مجلد مساحة عمل كل مشروع من القرص.",
+      countSelected: "{count} محددة",
+      pinChats: "تثبيت المحادثات",
+      unpinChats: "إلغاء تثبيت المحادثات",
+      archiveChats: "أرشفة المحادثات",
+      markUnread: "وضع علامة كغير مقروءة",
+      deleteChats: "حذف المحادثات",
+      deleteTitle: "حذف المحادثات",
+      deleteDescription: "هل تريد حذف {count} محادثة؟ لا يمكن التراجع عن ذلك.",
+      deleteFilesDescription:
+        "يُحذف مجلد بيئة العزل الخاص بكل محادثة من القرص. أما الملفات التي كتبتها داخل مشروع فتبقى في مساحة عمل ذلك المشروع.",
+      deleteFilesLabel: "حذف الملفات ومجلد بيئة العزل",
+      deleteChatFilesDescription:
+        "يُزال مجلد بيئة العزل الخاص بهذه المحادثة من القرص. أما الملفات التي كتبتها داخل مشروع فتبقى في مساحة عمل ذلك المشروع.",
+    },
+    organize: {
+      sidebarHeading: "تنظيم الشريط الجانبي",
+      byProject: "حسب المشروع",
+      inOneList: "في قائمة واحدة",
+      sortChatsBy: "ترتيب المحادثات حسب",
+      sortPinnedBy: "ترتيب المثبتة حسب",
+      priority: "الأولوية",
+      lastUpdated: "آخر تحديث",
+      manualOrder: "ترتيب يدوي",
+      moveUp: "تحريك لأعلى",
+      moveDown: "تحريك لأسفل",
+      organizeChats: "تنظيم المحادثات",
+      organizeProjects: "تنظيم المشاريع",
+      sortPinnedChats: "ترتيب المحادثات المثبتة",
     },
     dialog: {
       deleteChat: {
@@ -142,6 +182,8 @@ export const ar = {
       closeAriaLabel: "إغلاق الإعدادات",
       searchPlaceholder: "ابحث في الإعدادات…",
       searchNoResults: "لم يُعثر على أي إعداد.",
+      panelFailed: "تعذر تحميل هذا القسم.",
+      panelReload: "إعادة التحميل",
     },
     tabs: {
       general: "عام",
@@ -151,11 +193,56 @@ export const ar = {
       chat: "المحادثة",
       connections: "الاتصالات",
       apiKeys: "API",
+      remoteLan: "الوصول عن بُعد والشبكة المحلية",
       about: "حول",
       data: "البيانات",
       agents: "الوكلاء",
       debugging: "السجلات",
       voice: "الصوت",
+      keyboardShortcuts: "الاختصارات",
+    },
+    keyboardShortcuts: {
+      title: "اختصارات لوحة المفاتيح",
+      description:
+        "غيّر أي اختصار، أو امسحه لتحرير التركيبة لمتصفحك أو نظام التشغيل.",
+      searchPlaceholder: "بحث في الاختصارات…",
+      noResults: "لا توجد اختصارات مطابقة لهذا البحث.",
+      unassigned: "غير معيّن",
+      recording: "اضغط المفاتيح…",
+      recordingHint: "اضغط التركيبة الجديدة، أو Esc للإلغاء.",
+      needsModifier: "أضف ⌘ أو Ctrl أو Alt. المفتاح المجرد سيبتلع الكتابة.",
+      conflict: "مستخدم أيضاً في اختصار آخر",
+      conflictShadowed: "اختصار آخر يملك هذه التركيبة ويعمل بدلاً منه",
+      edit: "تغيير الاختصار",
+      clear: "إزالة الاختصار",
+      reset: "استعادة الافتراضي",
+      resetAll: "إعادة تعيين الكل إلى الافتراضي",
+      groups: {
+        general: "عام",
+        chat: "المحادثة",
+      },
+      actions: {
+        newChat: {
+          label: "محادثة جديدة",
+          description: "بدء محادثة جديدة",
+        },
+        searchChats: {
+          label: "بحث في المحادثات",
+          description: "فتح مربع حوار بحث المحادثات",
+        },
+        toggleSidebar: {
+          label: "تبديل الشريط الجانبي",
+          description: "إظهار الشريط الجانبي أو إخفاؤه",
+        },
+        openSettings: {
+          label: "فتح الإعدادات",
+          description: "فتح مربع حوار الإعدادات",
+        },
+        openKeyboardShortcuts: {
+          label: "اختصارات لوحة المفاتيح",
+          description: "فتح قائمة الاختصارات هذه",
+        },
+      },
     },
     debugging: {
       logSection: "ملف السجل",
@@ -193,6 +280,16 @@ export const ar = {
         engineModel: "التفريغ النصي المحلي",
         engineModelDescription:
           "يشغّل نموذج تحويل الكلام إلى نص (STT) محليًا ويعمل دون اتصال. نزّله ثم حمّله، ويُفرَغ من الذاكرة بعد فترة من عدم الاستخدام.",
+        engineCustom: "نقطة نهاية مخصصة",
+        engineCustomDescription:
+          "يرسل الصوت المسجّل إلى خادم STT متوافق مع OpenAI من الاتصالات.",
+        connectionLabel: "الاتصال",
+        connectionDescription:
+          "أضف خادمًا متوافقًا مع OpenAI ومفتاح API اختياريًا في الاتصالات.",
+        connectionPlaceholder: "اختر اتصالًا",
+        connectionEmpty: "لا توجد اتصالات متاحة",
+        customModelLabel: "النموذج",
+        customModelDescription: "اسم النموذج المرسل إلى /v1/audio/transcriptions.",
         sttModelLabel: "نموذج التعرّف على الكلام",
         sttModelDescription: "اختر نموذج STT أو ابحث عنه لتشغيله محليًا.",
         sttModelSearchPlaceholder: "ابحث عن نموذج",
@@ -242,6 +339,8 @@ export const ar = {
         allowMicrophone: "السماح بالميكروفون",
         micAccessBlocked:
           "تم حظر الوصول إلى الميكروفون. اسمح بالوصول إلى الميكروفون لصفحة Unsloth هذه ثم أعد المحاولة.",
+        micAccessBlockedDesktop:
+          "تم حظر الوصول إلى الميكروفون. أعد المحاولة واختر السماح، أو مكّن الميكروفون من إعدادات الخصوصية في النظام.",
         micAccessUnsupported:
           "الوصول إلى الميكروفون غير مدعوم في هذا المتصفح أو السياق.",
         systemDefault: "الإعداد الافتراضي للنظام",
@@ -249,6 +348,7 @@ export const ar = {
         languageLabel: "لغة الإملاء",
         languageDescription: "اللغة المراد التعرّف عليها",
         languageAuto: "تلقائي (لغة المتصفح)",
+        languageAutoDetect: "تلقائي (اكتشاف اللغة)",
       },
       dictionary: {
         sectionTitle: "قاموس الإملاء",
@@ -314,6 +414,7 @@ export const ar = {
         modelLabel: "نموذج TTS",
         modelDescription:
           "حمّل نموذجًا صوتيًا من محدّد النماذج (مثل Orpheus TTS)",
+        openAudioAction: "فتح الصوت",
         voiceLabel: "الصوت",
         voiceDescription: "أفضل الأصوات على هذا الجهاز",
         speedLabel: "السرعة",
@@ -323,6 +424,7 @@ export const ar = {
         previewDescription: "تشغيل عيّنة قصيرة",
         previewFailed: "فشلت معاينة تحويل النص إلى كلام",
         previewAction: "معاينة",
+        preparingAction: "جارٍ الإنشاء…",
         stopAction: "إيقاف",
         ttsLabel: "تحويل النص إلى كلام",
         notSupported: "غير مدعوم في هذا المتصفح",
@@ -394,13 +496,16 @@ export const ar = {
           "حرّر ذاكرة VRAM بعد هذا العدد من ثواني الخمول. تُبقي القيمة 0 النموذج محمّلًا، والحد الأدنى 60 ثانية.",
         idleSecondsAriaLabel:
           "عدد الثواني قبل التفريغ التلقائي عند الخمول",
+        mediaEnable: "تبديل نموذج الصور والفيديو حسب الطلب",
+        mediaEnableDescription:
+          "تحميل نموذج صور أو فيديو منزّل ومذكور في طلب API قبل التوليد. إعداد مستقل: الإعداد أعلاه يخص نموذج المحادثة فقط. مُعطّل افتراضيًا.",
         mediaIdleUnload: "التفريغ التلقائي عند الخمول للصور والفيديو",
         mediaIdleUnloadDescription:
           "حرّر ذاكرة VRAM بتفريغ نموذجَي الصور والفيديو بعد هذا العدد من ثواني الخمول. إنه إعداد مستقل: الإعداد أعلاه يخصّ نموذج المحادثة فقط. تُبقي القيمة 0 النموذجين محمَّلين، والحد الأدنى 60 ثانية.",
         mediaIdleSecondsAriaLabel:
           "عدد الثواني قبل التفريغ التلقائي عند الخمول للصور والفيديو",
         mediaIdlePaused:
-          "متوقف مؤقتًا ما دام «إبقاء النموذج في ذاكرة كرت الرسوميات» أو «تفريغ النماذج التي حمّلتها واجهة API فقط» مفعّلًا.",
+          "متوقف مؤقتًا أثناء تفعيل إبقاء النموذج في ذاكرة وحدة معالجة الرسوميات.",
         idleNeedsEnable: "فعّل «تبديل النموذج حسب الطلب» أولًا.",
         idleActiveViaEnv:
           "التفريغ التلقائي عند الخمول مُفعَّل عبر متغير البيئة UNSLOTH_MODEL_IDLE_TTL.",
@@ -415,7 +520,7 @@ export const ar = {
           "يحفظ ذاكرة KV المؤقتة قبل التفريغ التلقائي عند الخمول، حتى لا تعيد المحادثات المستأنفة قراءة السجل. بحد أقصى 10 جيجابايت على القرص.",
         apiOnly: "تفريغ النماذج التي حمّلتها واجهة API فقط",
         apiOnlyDescription:
-          "يُبقي التفريغ التلقائي عند الخمول النموذج الذي حمّلته من Studio في الذاكرة، ولا يفرّغ سوى النماذج التي حمّلها طلب عبر واجهة API.",
+          "يُبقي التفريغ التلقائي عند الخمول النموذج الذي حمّلته من Unsloth في الذاكرة، ولا يفرّغ سوى النماذج التي حمّلها طلب عبر واجهة API.",
       },
       previewSharing: {
         sectionTitle: "مشاركة المعاينة",
@@ -468,6 +573,7 @@ export const ar = {
         embeddingModel: "نموذج التضمين (Embedding)",
         embeddingModelDescription:
           "نموذج Hugging Face أو مسار محلي يُستخدم لفهرسة مستنداتك والبحث فيها. القيمة الافتراضية هي {defaultModel}.",
+        searchPlaceholder: "ابحث عن نماذج التضمين",
         reindexWarning:
           "يؤثر فقط في المستندات التي تُفهرس حديثًا. أعِد رفع المستندات الحالية بعد تغيير النموذج.",
         emptyError: "أدخل معرّف نموذج Hugging Face أو مسارًا محليًا.",
@@ -744,6 +850,8 @@ export const ar = {
         title: "أجهزة GPU",
         ggufInference: "استدلال GGUF",
         unavailable: "غير متاح",
+        detecting: "جارٍ البحث عن وحدات GPU...",
+        unreadable: "تعذّرت قراءة عتاد هذا الخادم.",
         noGpu: "لم يُكتشف أي GPU مرئي. تُعرض موارد CPU فقط أعلاه.",
         unknownDevice: "GPU غير معروف",
         deviceWithIndex: "GPU {index}",
@@ -767,6 +875,24 @@ export const ar = {
         switchFailed: "تعذّر تغيير خلفية llama.cpp.",
         switchInterrupted: "توقفت عملية التبديل قبل اكتمالها.",
         envLocked: "تم ضبطها على {backend} عبر متغيّر البيئة UNSLOTH_LLAMA_CPP_BACKEND، وهو يتجاوز هذا الإعداد.",
+        customPath: {
+          label: "مجلد llama.cpp مخصّص",
+          description: "استخدم إصدار llama-server الخاص بك.",
+          hint: "اختر مجلد llama.cpp الذي يحتوي على llama-server، أو إصدارًا يوجد فيه ضمن build/bin. يُستخدم وقت التشغيل المخصّص لمحادثة GGUF والتضمينات ونماذج الصوت المدعومة. تبقى لمتغيرات البيئة الأولوية.",
+          automatic: "تلقائي (مضمّن)",
+          bundled: "يستخدم وقت تشغيل llama.cpp الذي ثبّته Unsloth.",
+          active: "سيُستخدم llama-server المخصّص عند تحميل النموذج التالي.",
+          environmentManaged: "تديره متغير البيئة {variable}.",
+          missingBinary: "لم يعد llama-server متاحًا في هذا المجلد. اختر مجلدًا آخر أو استخدم وقت التشغيل المضمّن.",
+          reloadRequired: "أعد تحميل النموذج لاستخدام llama-server المحدد.",
+          change: "تغيير",
+          saving: "جارٍ الحفظ...",
+          useBundled: "استخدام المضمّن",
+          chooseTitle: "اختر مجلد llama.cpp",
+          chooseAction: "استخدام هذا المجلد",
+          saved: "تم تحديث مجلد llama.cpp",
+          saveError: "تعذّر تحديث مجلد llama.cpp",
+        },
         backends: {
           auto: "تلقائي",
           cpu: "CPU",
@@ -779,6 +905,7 @@ export const ar = {
           notInstalled: "لم يُعثر على تثبيت llama.cpp مُدار، لذا لا توجد خلفية لتبديلها.",
           localLink: "llama.cpp مجلد محلي ربطته بنفسك، ولن يستبدله Unsloth.",
           sourceBuild: "بُني هذا الإصدار من llama.cpp من الشيفرة المصدرية، لذا لا يمكن تبديل خلفيته من هنا.",
+          customPath: "تم تحديد مجلد llama.cpp مخصّص. يحدد هذا الإصدار خلفية الحوسبة.",
           unresolved: "تعذّر التحقق من الخلفيات المتاحة. تحقّق من اتصالك وحاول مرة أخرى.",
         },
         // لا يظهر: كلمات إضافية لبحث الإعدادات.
@@ -883,7 +1010,7 @@ export const ar = {
       quickstart: {
         title: "بناء أمر",
         description:
-          "شغّل وكيلًا على النموذج المُحمَّل حاليًا في Studio. حمّل نموذجًا أولًا، ثم استبدل claude بأي وكيل مدعوم أدناه.",
+          "شغّل وكيلًا على النموذج المُحمَّل حاليًا في Unsloth. حمّل نموذجًا أولًا، ثم استبدل claude بأي وكيل مدعوم أدناه.",
         noneDetected: "لم يُعثر في متغيّر PATH لديك على أي واجهة أوامر لوكيل مدعوم.",
         installed: "مثبّت",
       },
@@ -904,7 +1031,7 @@ export const ar = {
         description:
           "تُحلَّل رايات Unsloth أولًا؛ وأي شيء لا يتعرّف عليه يُمرَّر كما هو إلى الوكيل.",
         model:
-          "يختار نموذجًا. بدون ‎--model يستخدم unsloth start النموذج المُحمَّل حاليًا في Studio، ويُظهر خطأ إن لم يكن هناك أي نموذج محمَّل.",
+          "يختار نموذجًا. بدون ‎--model يستخدم unsloth start النموذج المُحمَّل حاليًا في Unsloth، ويُظهر خطأ إن لم يكن هناك أي نموذج محمَّل.",
         contextLength:
           "يحدد طول السياق المطلوب (اسم بديل: ‎--max-seq-length).",
         ggufVariant: "يختار نسخة تكميم GGUF.",
@@ -917,12 +1044,16 @@ export const ar = {
         asSubagent:
           "يبقي الوكيل الأصلي على نموذجه الحالي ويسجّل Unsloth كوكيل فرعي محلي (Claude Code وCodex وOpenCode).",
         apiKey: "يمرّر مفتاح API الخاص بـ Unsloth (أو اضبط UNSLOTH_API_KEY).",
+        reasoning:
+          "استخدام الاستدلال في المحادثة: on أو off أو auto. ويتبع auto قالب المحادثة الخاص بالنموذج، وهو غالبًا on.",
+        reasoningEffort:
+          "جهد الاستدلال المُمرَّر إلى قالب المحادثة الخاص بالنموذج، مثل medium. وتختلف المستويات بحسب النموذج، فاستخدم مستوى يقبله. وبدون قيمة يبقى مستوى القالب.",
         yolo: "يتخطى طلبات الموافقة. استخدمه في البيئات الموثوقة فقط.",
       },
       remote: {
-        title: "الاتصال بنسخة بعيدة من Studio",
+        title: "الاتصال بنسخة بعيدة من Unsloth Studio",
         description:
-          "وجّه unsloth start إلى نسخة من Studio تعمل في مكان آخر بضبط ما يلي قبل التشغيل (أو مرّر ‎--api-key مباشرة):",
+          "وجّه unsloth start إلى نسخة من Unsloth Studio تعمل في مكان آخر بضبط ما يلي قبل التشغيل (أو مرّر ‎--api-key مباشرة):",
       },
       passthrough: {
         title: "تمرير وسائط إلى الوكيل",
@@ -936,6 +1067,9 @@ export const ar = {
       },
     },
     chat: {
+      projectsSection: "إظهار قسم المشاريع",
+      projectsSectionDescription:
+        "يجمع محادثات المشروع تحت عنوان المشاريع. أوقف هذا الخيار لعرضها ضمن الأخيرة بدلاً من ذلك.",
       title: "المحادثة",
       description: "خصّص طريقة عمل المحادثة على هذا الجهاز.",
       modelSelection: {
@@ -957,16 +1091,31 @@ export const ar = {
         compareChat: "مقارنة المحادثات",
         exportChat: "تصدير المحادثة",
       },
+      pastedTextThreshold: "ضغط النصوص الملصقة الطويلة",
+      pastedTextThresholdDescription: "النص الملصق الأطول من هذا الحد يصبح مرفق \u200e.txt بدلاً من ملء مربع الرسالة. اضغط {shortcut} للصق في مربع الرسالة على أي حال.",
+      pastedTextThresholdOff: "إيقاف",
       showResponseModel: "إظهار نموذج الاستجابة",
       showResponseModelDescription:
         "إظهار البيانات الوصفية للنموذج في ردود المساعد.",
       modelDisclaimer: "إظهار إخلاء مسؤولية النموذج",
       modelDisclaimerDescription:
         'إظهار عبارة "LLMs can make mistakes" أسفل مربع المحادثة.',
+      projectAttachments: "مشاركة الملفات عبر المشروع",
+      projectAttachmentsDescription:
+        "الإعداد الافتراضي للملفات المرفقة في محادثة تنتمي إلى مشروع: فهرستها للمشروع بأكمله حتى تتمكن كل محادثة فيه من استخدامها. يمكن لكل محادثة تجاوز ذلك من قائمة الإرفاق.",
+      rememberParamsPerModel: "تذكر الإعدادات لكل نموذج",
+      rememberParamsPerModelDescription:
+        "عند تبديل النموذج تُستعاد درجة الحرارة والموجّه وبقية الإعدادات التي استخدمتها آخر مرة مع ذلك النموذج. عند الإيقاف تبقى مجموعة إعدادات واحدة لكل النماذج.",
       thinking: {
         collapseByDefault: "طيّ التفكير افتراضيًا",
         collapseByDefaultDescription:
           "إبقاء التفكير مطويًا أثناء تفكير النموذج بدلًا من فتحه تلقائيًا. وسّع أي كتلة لقراءتها.",
+      },
+      webSearch: {
+        title: "البحث على الويب",
+        images: "عرض الصور من البحث على الويب",
+        imagesDescription:
+          "يتيح للبحث على الويب إرجاع صور، ويجلب صورة لكل عنصر تعدّده الإجابة. يجلب Studio الصور المصغّرة ويغيّر حجمها، لذا لا يتصل المتصفح بمضيفي الصور أبدًا.",
       },
       artifacts: {
         title: "Canvas",
@@ -1053,6 +1202,9 @@ export const ar = {
       archivedVideos: "الفيديوهات المؤرشفة",
       archivedVideosDescription: "اعرض الفيديوهات التي أرشفتها وأدرها.",
       manageAction: "إدارة",
+      manageChats: "إدارة المحادثات",
+      manageChatsDescription:
+        "حدد عدة محادثات لنقلها أو تثبيتها أو أرشفتها أو تصديرها أو حذفها.",
       exportArchivedChats: "تصدير",
       exportingArchivedChats: "جارٍ التصدير...",
       exportedOneArchivedChat: "تم تصدير محادثة مؤرشفة واحدة",
@@ -1075,6 +1227,9 @@ export const ar = {
       confirmBeforeDeleting: "التأكيد قبل الحذف",
       confirmBeforeDeletingDescription:
         "يطلب تأكيدًا قبل حذف أي محادثة. عطّله للحذف الفوري.",
+      alwaysDeleteFiles: "حذف الملفات دائمًا",
+      alwaysDeleteFilesDescription:
+        "حذف المحادثة يزيل أيضًا مجلد بيئة العزل الخاص بها من القرص. أما الملفات التي كتبتها داخل مشروع فتبقى في مساحة عمل ذلك المشروع.",
       filesSection: "الملفات",
       uploadedFiles: "الملفات المرفوعة",
       uploadedFilesDescription:
@@ -1096,6 +1251,11 @@ export const ar = {
     connections: {
       title: "الاتصالات",
       description: "إدارة المزوّدين والاتصالات الخارجية.",
+    },
+    remoteLan: {
+      title: "الوصول عن بُعد والشبكة المحلية",
+      description:
+        "الوصول إلى Unsloth من أجهزتك الأخرى عبر شبكتك المحلية أو عنوان URL عام مؤقت.",
     },
     apiKeys: {
       title: "API",

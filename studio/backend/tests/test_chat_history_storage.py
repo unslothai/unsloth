@@ -471,6 +471,24 @@ def test_settings_merge_preserves_nested_keys(tmp_path, monkeypatch):
     assert params == {"temperature": 0.9, "topP": 0.8}
 
 
+def test_settings_merge_keeps_each_model_s_remembered_params(tmp_path, monkeypatch):
+    """Per-model memory patches one model at a time, so the merge has to keep the
+    others. Without this, tuning a second model would wipe the first one's settings
+    and the switch back would land on whatever the last edit happened to be."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_settings_merge(
+        {"inferenceParamsByModel": {"qwen": {"temperature": 0.2, "topP": 0.8}}}
+    )
+    studio_db.upsert_chat_settings_merge(
+        {"inferenceParamsByModel": {"llama": {"temperature": 0.9}}}
+    )
+    # A second edit to the first model merges into its own entry.
+    studio_db.upsert_chat_settings_merge({"inferenceParamsByModel": {"qwen": {"temperature": 0.4}}})
+
+    by_model = studio_db.list_chat_settings()["inferenceParamsByModel"]
+    assert by_model == {"qwen": {"temperature": 0.4, "topP": 0.8}, "llama": {"temperature": 0.9}}
+
+
 def test_settings_merge_quarantines_corrupt_json_and_rejects_partial_patch(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_settings_merge({"inferenceParams": {"temperature": 0.5, "topP": 0.8}})
@@ -828,6 +846,40 @@ def test_count_forks_for_message(tmp_path, monkeypatch):
         id_factory = id_factory,
     )
     assert studio_db.count_forks_for_message("src", "m1") == 2
+
+
+def test_fork_counts_for_thread(tmp_path, monkeypatch):
+    """One read for the whole thread, so a rendered thread costs one request, not one per message."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread("src"))
+    studio_db.sync_chat_messages(
+        "src", [_msg("m1", None, 1), _msg("m2", "m1", 2), _msg("m3", "m2", 3)]
+    )
+    assert studio_db.fork_counts_for_thread("src") == {}
+
+    counter = {"i": 0}
+
+    def id_factory():
+        counter["i"] += 1
+        return f"id-{counter['i']}"
+
+    for index, (branch, new_id) in enumerate([("m1", "f1"), ("m1", "f2"), ("m2", "f3")]):
+        studio_db.fork_chat_thread(
+            source_thread_id = "src",
+            branch_message_id = branch,
+            new_thread_id = new_id,
+            new_title = new_id,
+            created_at = 10 + index,
+            id_factory = id_factory,
+        )
+
+    counts = studio_db.fork_counts_for_thread("src")
+    assert counts == {"m1": 2, "m2": 1}
+    # Same answer as the per-message read it replaces, message for message.
+    for message_id in ["m1", "m2", "m3"]:
+        assert counts.get(message_id, 0) == studio_db.count_forks_for_message("src", message_id)
+    # Another thread's forks never leak in.
+    assert studio_db.fork_counts_for_thread("f1") == {}
 
 
 def _research_thread(

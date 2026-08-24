@@ -10,8 +10,16 @@ import {
 } from "./clipboard-payload.ts";
 
 const PASTED_TEXT_MIME = "text/plain";
-export const PASTED_TEXT_MIN_CHARS = 2000;
-export const PASTED_TEXT_MIN_LINES = 40;
+// Threshold the user picks in Settings > Chat. 0 keeps every paste inline.
+export const PASTED_TEXT_THRESHOLD_OFF = 0;
+export const PASTED_TEXT_DEFAULT_MIN_CHARS = 4000;
+export const PASTED_TEXT_THRESHOLD_CHOICES = [
+  PASTED_TEXT_THRESHOLD_OFF,
+  2000,
+  PASTED_TEXT_DEFAULT_MIN_CHARS,
+  8000,
+  16000,
+] as const;
 const PASTED_TEXT_NAME_MAX_CHARS = 32;
 // Enough for the name after whitespace collapses, without copying a line.
 const PASTED_TEXT_NAME_SCAN_CHARS = 256;
@@ -32,28 +40,101 @@ type ClipboardTextPasteEvent = {
   preventDefault: () => void;
 };
 
+type PlainPasteKeyEvent = {
+  readonly code?: string;
+  readonly key?: string;
+  /** Deprecated, but layout-independent, and every engine still sets it. */
+  readonly keyCode?: number;
+  readonly metaKey: boolean;
+  readonly ctrlKey: boolean;
+  readonly shiftKey: boolean;
+  readonly altKey: boolean;
+};
+
+/** `KeyboardEvent.keyCode` for V, which follows the physical key, not the
+ *  character the layout and Option produce. */
+const V_KEY_CODE = 86;
+
+// Resolved once: the chord below is read on every keydown in the composer, and
+// the platform cannot change under a live document.
+let macPlatform: boolean | null = null;
+
+function isMacPlatform(): boolean {
+  if (macPlatform !== null) return macPlatform;
+  if (typeof navigator === "undefined") return false;
+  macPlatform = /mac|iphone|ipad|ipod/i.test(
+    `${navigator.platform ?? ""} ${navigator.userAgent ?? ""}`,
+  );
+  return macPlatform;
+}
+
+/**
+ * The paste-without-formatting chord: ⌥⇧⌘V on macOS, which is what its Edit
+ * menu carries and so the only one that actually pastes there, and Ctrl+Shift+V
+ * elsewhere. It asks for the clipboard in the field, so a paste made with it
+ * stays inline however long it is.
+ */
+export function isPlainPasteChord(
+  event: PlainPasteKeyEvent,
+  mac: boolean = isMacPlatform(),
+): boolean {
+  if (!event.shiftKey) return false;
+  // The other platform's modifier is a different chord, not this one.
+  if (mac ? !event.metaKey || event.ctrlKey : !event.ctrlKey || event.metaKey) {
+    return false;
+  }
+  // Option belongs to the chord on macOS and to nothing off it. ⇧⌘V is taken
+  // on macOS too: web apps bind it, so a host that maps it should reach the
+  // field rather than the attachment path.
+  if (event.altKey && !mac) return false;
+  // The layout decides where paste lives, not the board: Dvorak puts V on the
+  // QWERTY period key and moves the chord with it. So a key that types a
+  // letter answers for itself, and a letter that is not v is not this chord
+  // however it is wired.
+  const typed = (event.key ?? "").toLowerCase();
+  if (!event.altKey && typed.length === 1 && typed >= "a" && typed <= "z") {
+    return typed === "v";
+  }
+  // No letter to read: Option rewrote it, ⌥V being "√" and ⌥⇧V "◊", or the
+  // layout types none at all. The two signals left disagree on a remapped
+  // board -- `code` is the position the key sits at, `keyCode` the letter it
+  // stands for -- and only one of them can be pointing at the chord, so either
+  // saying V is enough. The wrong one costing us nothing is what makes that
+  // safe: this only counts while the keys are still down, and the one paste
+  // that can land by then is the chord's own.
+  return event.code === "KeyV" || event.keyCode === V_KEY_CODE;
+}
+
+/**
+ * How long a plain-paste chord stands for the paste it asks for. The browser
+ * dispatches that paste while it is still handling the keydown, so the window
+ * only has to survive one task. It has to expire, though: on macOS ⇧⌘V is a
+ * web-app convention rather than a menu command, so it can be pressed and
+ * paste nothing, and the Edit-menu paste the user reaches for next arrives
+ * with no keydown of its own to clear the chord.
+ */
+export const PLAIN_PASTE_GESTURE_MS = 1000;
+
+/** True when the paste being handled is the one that chord asked for. */
+export function plainPasteStillCounts(chordAt: number, now: number): boolean {
+  return chordAt > 0 && now - chordAt < PLAIN_PASTE_GESTURE_MS;
+}
+
 // Identity separates a pasted blob from a .txt the user attached. A sent
 // message keeps no File, so the wrapper below carries it over instead.
 const pastedTextFiles = new WeakSet<File>();
 // The text as pasted, so draft autosave never re-reads the File on a keystroke.
 const pastedTextByFile = new WeakMap<File, string>();
 
-function countLines(text: string): number {
-  let lines = 1;
-  for (let index = 0; index < text.length; index += 1) {
-    if (text[index] === "\n") lines += 1;
-  }
-  return lines;
-}
-
-// No upper bound, and whitespace is not exempt: the bigger the paste, the
+// Length alone decides. Whitespace is not exempt: the bigger the paste, the
 // worse it is inline.
-export function shouldAttachPastedText(text: string): boolean {
+export function shouldAttachPastedText(
+  text: string,
+  minChars: number = PASTED_TEXT_DEFAULT_MIN_CHARS,
+): boolean {
   if (text.length === 0) return false;
-  return (
-    text.length >= PASTED_TEXT_MIN_CHARS ||
-    countLines(text) >= PASTED_TEXT_MIN_LINES
-  );
+  if (minChars <= PASTED_TEXT_THRESHOLD_OFF) return false;
+  return text.length >= minChars;
 }
 
 // Splitting a multi-megabyte paste to read one line allocates every other
@@ -269,6 +350,7 @@ export function pasteLongTextAsFile(
   event: ClipboardTextPasteEvent,
   addFile: (file: File) => void | Promise<void>,
   onError?: () => void,
+  minChars?: number,
 ): boolean {
   if (event.defaultPrevented) return false;
   const { clipboardData } = event;
@@ -278,7 +360,7 @@ export function pasteLongTextAsFile(
   if (clipboardAdvertisesFiles(clipboardData)) return false;
 
   const text = clipboardText(clipboardData);
-  if (!shouldAttachPastedText(text)) return false;
+  if (!shouldAttachPastedText(text, minChars)) return false;
 
   // Build the file first: if that throws, the browser can still paste.
   let file: File;

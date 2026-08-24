@@ -794,9 +794,7 @@ def test_detect_load_family_cached_hub_arch_fallback(monkeypatch):
         "try_to_load_from_cache",
         lambda repo_id, filename, **kw: "/fake/cache/blobs/model.gguf",
     )
-    monkeypatch.setattr(
-        gguf_meta, "read_gguf_general_metadata", lambda path: {"general.architecture": "ltxv"}
-    )
+    monkeypatch.setattr(gguf_meta, "read_gguf_architecture", lambda path: "ltxv")
     fam = _detect_load_family("someorg/opaque-quants", "model.gguf", None)
     assert fam is not None and fam.name == "ltx-2"
 
@@ -808,9 +806,7 @@ def test_detect_load_family_cached_hub_arch_fallback(monkeypatch):
     monkeypatch.setattr(
         huggingface_hub, "try_to_load_from_cache", lambda *a, **k: "/fake/cache/blobs/model.gguf"
     )
-    monkeypatch.setattr(
-        gguf_meta, "read_gguf_general_metadata", lambda path: {"general.architecture": "wan"}
-    )
+    monkeypatch.setattr(gguf_meta, "read_gguf_architecture", lambda path: "wan")
     assert _detect_load_family("someorg/opaque-quants", "model.gguf", None) is None
 
     # The blob lives in a NON-active cache root: the active probe misses, but the per-root probe finds it.
@@ -818,9 +814,7 @@ def test_detect_load_family_cached_hub_arch_fallback(monkeypatch):
 
     monkeypatch.setattr(hub_paths, "legacy_hf_cache_dir", lambda: "/fake/legacy")
     monkeypatch.setattr(hub_paths, "hf_default_cache_dir", lambda: "/fake/default")
-    monkeypatch.setattr(
-        gguf_meta, "read_gguf_general_metadata", lambda path: {"general.architecture": "ltxv"}
-    )
+    monkeypatch.setattr(gguf_meta, "read_gguf_architecture", lambda path: "ltxv")
     monkeypatch.setattr(
         huggingface_hub,
         "try_to_load_from_cache",
@@ -1269,7 +1263,21 @@ def _ltx23_assembly_stubs(monkeypatch, tmp_path):
             _FakeLTX2Pipeline.last = kwargs
 
         @staticmethod
-        def load_config(base_repo, token = None):
+        # An exact hand-written signature, so it follows the production one: the assembly bypasses
+        # the caller's guarded pipe_kwargs, and this base-repo read is the first of the calls that
+        # a load nobody asked for must not turn into a fetch.
+        def load_config(
+            base_repo,
+            token = None,
+            local_files_only = False,
+            cache_dir = None,
+        ):
+            _FakeLTX2Pipeline.last_config_kwargs = {
+                "local_files_only": local_files_only,
+                # Pinned to Studio's LIVE root: unset, this resolves through huggingface_hub's
+                # import-time constant, which a mid-session cache-folder change leaves stale.
+                "cache_dir": cache_dir,
+            }
             return {
                 "scheduler": ["diffusers", "_Loaded"],
                 "tokenizer": ["transformers", "_Loaded"],
@@ -2084,10 +2092,15 @@ def test_base_download_files_scopes_pipeline_pull():
 
 
 def test_base_download_files_gguf_drops_transformer():
-    # A GGUF/single-file checkpoint replaces the DiT: the base transformer never pulls.
+    # A GGUF/single-file checkpoint replaces the DiT: the base transformer WEIGHTS never pull.
     info = types.SimpleNamespace(siblings = _LTX2_SIBLINGS)
     names = [n for n, _ in VideoBackend._base_download_files(info, "gguf")]
-    assert not any(n.startswith("transformer/") for n in names)
+    transformer = [n for n in names if n.startswith("transformer/")]
+    # config.json is the one exception, and it is not an oversight: from_single_file resolves
+    # config = <repo id> through the Hub, so an API load that promised to download nothing needs
+    # this ~1 KB file staged, and the locality gate needs to count it. Everything else under
+    # transformer/ is supplied by the checkpoint itself.
+    assert transformer == ["transformer/config.json"]
     assert "text_encoder/model-00001-of-00002.safetensors" in names
 
 
@@ -2371,23 +2384,23 @@ def test_detect_load_family_arch_fallback_for_local_gguf(tmp_path, monkeypatch):
 
     # ltxv arch resolves to the ltx-2 family via the arch fallback.
     monkeypatch.setattr(
-        "utils.models.gguf_metadata.read_gguf_general_metadata",
-        lambda p: {"general.architecture": "ltxv"},
+        "utils.models.gguf_metadata.read_gguf_architecture",
+        lambda p: "ltxv",
     )
     fam = vid._detect_load_family(str(d), "model.gguf", None)
     assert fam is not None and fam.name == "ltx-2"
 
     # A video arch with no backend family (wan) stays None, so the loader 400s as before.
     monkeypatch.setattr(
-        "utils.models.gguf_metadata.read_gguf_general_metadata",
-        lambda p: {"general.architecture": "wan"},
+        "utils.models.gguf_metadata.read_gguf_architecture",
+        lambda p: "wan",
     )
     assert vid._detect_load_family(str(d), "model.gguf", None) is None
 
     # An explicit family_override skips the arch read entirely (worker parity).
     monkeypatch.setattr(
-        "utils.models.gguf_metadata.read_gguf_general_metadata",
-        lambda p: {"general.architecture": "ltxv"},
+        "utils.models.gguf_metadata.read_gguf_architecture",
+        lambda p: "ltxv",
     )
     assert vid._detect_load_family(str(d), "model.gguf", "ltx-2").name == "ltx-2"
 

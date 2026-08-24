@@ -24,11 +24,12 @@ retry's text can then be discarded, which costs the user a visible answer.
 Measured when this landed, over the 300 turns:
 
     tree                          nudged      retry discarded
-    origin/main (pre-PR)          36 (12.0%)  60 (20.2%)
-    this PR                        5 ( 1.7%)   1 ( 0.3%)
+    before the classifier landed  36 (12.0%)  60 (20.2%)
+    classifier as first landed     5 ( 1.7%)   1 ( 0.3%)
+    with the #8907 sign-off fix    4 ( 1.3%)   0 ( 0.0%)
 
 The budgets below sit above the measured counts so that innocuous wording changes
-do not fail the build, and far below the pre-PR counts so a real regression does.
+do not fail the build, and far below the first row so a real regression does.
 A failure prints the offending turns: fix the pattern, or if the turn really is a
 stall, correct its label here.
 """
@@ -41,9 +42,9 @@ from core.inference.tool_call_parser import is_short_intent_without_action
 
 DATA = Path(__file__).parent / "data" / "plan_vs_answer.jsonl"
 
-# Measured 5 of 300; pre-PR was 36.
+# above the measured count in the table above, so wording changes alone do not fail the build
 NUDGE_BUDGET = 9
-# Measured 1 of 300; pre-PR was 60. Tighter, because this one destroys output.
+# tighter than the nudge budget, because a discarded retry destroys output
 DISCARD_BUDGET = 4
 
 

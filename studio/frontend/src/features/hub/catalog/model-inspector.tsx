@@ -52,6 +52,9 @@ import {
 import { confirmExternalLink } from "../stores/external-link-confirm";
 import type { SelectedModelView } from "../types";
 import { DatasetDownloadSection } from "./dataset-download-section";
+import { taskForMediaPick } from "@/features/model-picker/components/model-selector/audio-picker-policy";
+import { routableToMediaPage } from "../lib/local-path";
+import { studioPageForTask } from "../lib/unsloth-support";
 import { DownloadSection } from "./download-section";
 import { LocalDatasetCard } from "./local-dataset-card";
 import { LocalOnDeviceCard } from "./local-on-device-card";
@@ -570,13 +573,24 @@ export const ModelInspector = memo(function ModelInspector({
           c.key === "vision" ||
           c.key === "audio",
       ));
+  // An image / video model runs on its own page, which onLoad already routes to;
+  // the chat gates below would leave it greyed out as if it were unusable. Only when the
+  // row is one onLoad can actually route there: those pages resolve a routed `model` as a
+  // Hub id, so a filesystem row fails routableToMediaPage and the click falls through to
+  // the chat loader, which unloads the resident model for a load that can only fail.
+  const runsOnMediaPage =
+    studioPageForTask(
+      taskForMediaPick(model.pipelineTag, model.task) ?? undefined,
+    ) !== undefined &&
+    routableToMediaPage(model.kind, model.localSource);
   // Chat-only hosts (no supported GPU / usable MLX) run inference only through
   // llama.cpp, so only GGUF is loadable.
   const canRunModel =
     !isDataset &&
-    (model.runtimeCapabilities?.canChat ?? true) &&
-    !isEmbeddingOnly &&
-    (model.isGguf || (!chatOnly && unslothSupported));
+    (runsOnMediaPage ||
+      ((model.runtimeCapabilities?.canChat ?? true) &&
+        !isEmbeddingOnly &&
+        (model.isGguf || (!chatOnly && unslothSupported))));
   const canTrainModel =
     !isDataset &&
     (model.runtimeCapabilities?.canTrain ?? false) &&
@@ -664,6 +678,7 @@ export const ModelInspector = memo(function ModelInspector({
               isDownloaded={model.isDownloaded}
               isPartial={model.isPartial ?? false}
               partialTransport={model.partialTransport ?? null}
+              partialResumable={model.partialResumable === true}
               cachePath={model.path}
               knownBytes={model.cachedBytes}
               onTrain={onTrain}
@@ -730,6 +745,7 @@ export const ModelInspector = memo(function ModelInspector({
               isDownloaded={model.isDownloaded}
               isPartial={model.isPartial ?? false}
               partialTransport={model.partialTransport ?? null}
+              partialResumable={model.partialResumable === true}
               modelFormat={model.modelFormat}
               canRun={canRunModel}
               isActive={isActive}
