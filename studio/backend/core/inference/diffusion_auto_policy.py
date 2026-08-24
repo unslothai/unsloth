@@ -81,35 +81,20 @@ _BASE_REPO_HUB_DOWNLOAD_FACTOR: dict[str, float] = {
 # Denoisers and companion components can use different storage precision.
 DENOISER_SUBFOLDERS = ("transformer/", "unconditional_transformer/")
 
-# Only verified raw low-precision bases may be estimated to grow at load time. This prevents
-# packed NF4 siblings in the same family from being treated like raw fp8 tensors.
-_UPCASTING_BASES: frozenset = frozenset({"ideogram-ai/ideogram-4-fp8"})
-
-# Download bytes per RESIDENT byte, as ``(denoiser, companions)``.
-# Unlisted families default to 1:1.
-_FAMILY_RESIDENT_FACTORS: dict = {
-    "z-image": (2.0, 1.0),
-    "lumina-2": (2.0, 2.0),
-    "ideogram-4": (0.5, 0.5),
-}
-
-# Per-base storage precision overrides.
+# Download bytes per RESIDENT byte for bases whose storage precision is verified.
+# Unknown and custom bases stay 1:1 so family detection cannot shrink or inflate them.
 _BASE_RESIDENT_FACTORS: dict = {
+    "tongyi-mai/z-image-turbo": (2.0, 1.0),
     "tongyi-mai/z-image": (1.0, 1.0),
+    "alpha-vllm/lumina-image-2.0": (2.0, 2.0),
+    "ideogram-ai/ideogram-4-fp8": (0.5, 0.5),
 }
 
 
 def resident_factors(fam: Any, base_repo: Optional[str] = None) -> tuple:
     """Return ``(denoiser, companions)`` download-per-resident factors."""
     key = _base_key(base_repo) if base_repo else ""
-    override = _BASE_RESIDENT_FACTORS.get(key)
-    if override is not None:
-        return override
-    name = getattr(fam, "name", None) or ""
-    denoiser, companions = _FAMILY_RESIDENT_FACTORS.get(name, (1.0, 1.0))
-    if key not in _UPCASTING_BASES:
-        denoiser, companions = max(denoiser, 1.0), max(companions, 1.0)
-    return denoiser, companions
+    return _BASE_RESIDENT_FACTORS.get(key, (1.0, 1.0))
 
 
 def resident_bytes_from_declared(

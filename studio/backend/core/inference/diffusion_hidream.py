@@ -25,6 +25,9 @@ HIDREAM_FAMILY_NAME = "hidream-i1"
 
 # Open mirror of the gated meta-llama/Meta-Llama-3.1-8B-Instruct the pipeline expects.
 HIDREAM_LLAMA_REPO = "unsloth/Meta-Llama-3.1-8B-Instruct"
+# Dense bf16 weight bytes from the mirror's Hub metadata. The HiDream pipeline repos do not
+# contain these weights, so their own file declarations cannot account for TE4.
+HIDREAM_LLAMA_BF16_BYTES = 16_060_556_376
 
 
 def hidream_te4_kwargs(

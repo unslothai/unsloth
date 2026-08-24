@@ -77,7 +77,12 @@ from .diffusion_device import (
     resolve_selected_cuda_ordinal,
 )
 from .diffusion_ideogram4 import ideogram4_repo_is_fp8, load_ideogram4_pipeline
-from .diffusion_hidream import HIDREAM_FAMILY_NAME, hidream_te4_kwargs
+from .diffusion_hidream import (
+    HIDREAM_FAMILY_NAME,
+    HIDREAM_LLAMA_BF16_BYTES,
+    HIDREAM_LLAMA_REPO,
+    hidream_te4_kwargs,
+)
 from .diffusion_krea2 import KREA2_FAMILY_NAME, load_krea2_pipeline
 from .diffusion_memory import (
     MEMORY_MODE_BALANCED,
@@ -478,6 +483,20 @@ def _prequant_plan_bytes(te_files: Any) -> int:
     return sum(
         int(size or 0) for entry in (te_files or {}).values() for _name, size in (entry[1] or ())
     )
+
+
+def _predownload_encoder_bytes(
+    fam: Any, te_files: Any, *, pipeline_declared: bool = True
+) -> int:
+    """Return encoder bytes that are absent from the selected pipeline declaration."""
+    total = _prequant_plan_bytes(te_files)
+    if (
+        getattr(fam, "name", None) == HIDREAM_FAMILY_NAME
+        and "text_encoder_4" not in (te_files or {})
+        and pipeline_declared
+    ):
+        total += HIDREAM_LLAMA_BF16_BYTES
+    return total
 
 
 def _image_variant_hint(
@@ -2111,6 +2130,7 @@ class DiffusionBackend:
                 kwargs.get("hf_token"),
                 kwargs.get("gpu_ordinal"),
                 local_files_only = local_files_only,
+                base_repo = base,
             )
             # Reuse the download metadata for the preflight memory estimate.
             declared_sizes: dict[str, dict[str, int]] = {}
@@ -2182,7 +2202,9 @@ class DiffusionBackend:
                 kind = kind,
                 declared_files = _flatten_declared_sizes(declared_sizes),
                 # Dense encoder shards were skipped, so count their pre-cast replacement.
-                prequant_bytes = _prequant_plan_bytes(te_prequant_files),
+                prequant_bytes = _predownload_encoder_bytes(
+                    fam, te_prequant_files, pipeline_declared = bool(declared_sizes)
+                ),
                 gguf_filename = kwargs.get("gguf_filename"),
                 gpu_ordinal = kwargs.get("gpu_ordinal"),
                 memory_mode = kwargs.get("memory_mode"),
@@ -2298,6 +2320,7 @@ class DiffusionBackend:
         hf_token: Optional[str],
         gpu_ordinal: Optional[int] = None,
         local_files_only: bool = False,
+        base_repo: Optional[str] = None,
     ) -> dict[str, tuple[str, list[tuple[str, int]]]]:
         """``{component: (repo_id, [(rfilename, size)])}`` for the text encoders this pick will
         take PRE-CAST from a hosted checkpoint instead of the base repo's dense weights.
@@ -2314,18 +2337,41 @@ class DiffusionBackend:
         try:
             from huggingface_hub import HfApi
 
-            from .diffusion_te_prequant import te_prequant_hub_files, te_prequant_sources
+            from .diffusion_te_prequant import (
+                TE_PREQUANT_COMPONENTS,
+                te_base_equivalent,
+                te_prequant_hub_files,
+                te_prequant_sources,
+            )
 
-            sources = te_prequant_sources(
-                fam,
-                te_quant_mode = text_encoder_quant,
+            source_kwargs = {
+                "te_quant_mode": text_encoder_quant,
                 # The selected card, for the same reason the dense-quant probe uses it.
-                target = (
+                "target": (
                     resolve_diffusion_device_target()
                     if gpu_ordinal is None
                     else resolve_diffusion_device_target(ordinal = gpu_ordinal)
                 ),
-            )
+            }
+            if getattr(fam, "name", None) == HIDREAM_FAMILY_NAME:
+                source_kwargs["components"] = (*TE_PREQUANT_COMPONENTS, "text_encoder_4")
+            sources = te_prequant_sources(fam, **source_kwargs)
+            if base_repo:
+                compatible = {}
+                for component, source in sources.items():
+                    external_te4 = (
+                        getattr(fam, "name", None) == HIDREAM_FAMILY_NAME
+                        and component == "text_encoder_4"
+                    )
+                    checkpoint_base = (
+                        HIDREAM_LLAMA_REPO
+                        if external_te4
+                        else str(getattr(fam, "base_repo", "") or "")
+                    )
+                    selected_base = HIDREAM_LLAMA_REPO if external_te4 else base_repo
+                    if checkpoint_base and te_base_equivalent(checkpoint_base, selected_base):
+                        compatible[component] = source
+                sources = compatible
             if not sources:
                 return {}
             files = te_prequant_hub_files(sources, HfApi(token = hf_token or None), logger)
@@ -2656,7 +2702,11 @@ class DiffusionBackend:
         ) or speech_pick_refusal(repo_id, gguf_filename, hf_token)
         # Only a checkpoint that really resolves on the Hub earns the right to drop dense shards.
         te_files = self._te_prequant_plan_files(
-            fam, text_encoder_quant, hf_token, load_kwargs.get("gpu_ordinal")
+            fam,
+            text_encoder_quant,
+            hf_token,
+            load_kwargs.get("gpu_ordinal"),
+            base_repo = base,
         )
         sizes: dict[str, int] = {}
         file_sizes: dict[str, dict[str, int]] = {}
@@ -2864,7 +2914,9 @@ class DiffusionBackend:
                 kind = kind,
                 declared_files = _flatten_declared_sizes(file_sizes),
                 # Count the pre-cast encoder that replaced skipped dense shards.
-                prequant_bytes = _prequant_plan_bytes(te_files),
+                prequant_bytes = _predownload_encoder_bytes(
+                    fam, te_files, pipeline_declared = bool(file_sizes)
+                ),
                 gguf_filename = gguf_filename,
                 gpu_ordinal = load_kwargs.get("gpu_ordinal"),
                 memory_mode = load_kwargs.get("memory_mode"),

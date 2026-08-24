@@ -233,6 +233,91 @@ def test_a_bf16_repo_is_counted_as_it_downloads():
     )
 
 
+@pytest.mark.parametrize(
+    ("family", "base"),
+    [
+        pytest.param("z-image", "unsloth/custom-z-image-bf16", id = "z-image"),
+        pytest.param("lumina-2", "unsloth/custom-lumina-bf16", id = "lumina"),
+    ],
+)
+def test_a_custom_pipeline_does_not_inherit_family_storage_precision(family, base):
+    from core.inference.diffusion_auto_policy import resident_bytes_from_declared
+
+    files = _files(transformer = 20_000, text_encoder = 8_000)
+    assert resident_bytes_from_declared(_family(name = family, base_repo = base), base, files) == sum(
+        size for _name, size in files
+    )
+
+
+def test_only_a_compatible_prequant_can_replace_dense_encoder_shards(monkeypatch):
+    from core.inference import diffusion_te_prequant as te_prequant
+
+    source = te_prequant.TePrequantSource(
+        kind = "repo", location = "unsloth/Qwen-Image-FP8", filename = "encoder.pt"
+    )
+    monkeypatch.setattr(
+        te_prequant,
+        "te_prequant_sources",
+        lambda *_a, **_k: {"text_encoder": source},
+    )
+    monkeypatch.setattr(
+        te_prequant,
+        "te_prequant_hub_files",
+        lambda sources, *_a, **_k: {component: [("encoder.pt", 8 * MIB)] for component in sources},
+    )
+    monkeypatch.setattr(diffusion_mod, "resolve_diffusion_device_target", lambda *_a, **_k: _target())
+    fam = _family(name = "qwen-image", base_repo = "Qwen/Qwen-Image")
+
+    assert (
+        DiffusionBackend._te_prequant_plan_files(
+            fam, "fp8", None, base_repo = "unsloth/custom-qwen-image"
+        )
+        == {}
+    )
+    assert "text_encoder" in DiffusionBackend._te_prequant_plan_files(
+        fam, "fp8", None, base_repo = "Qwen/Qwen-Image"
+    )
+
+
+def test_hidream_te4_uses_its_standalone_base_for_prequant_compatibility(monkeypatch):
+    from core.inference import diffusion_te_prequant as te_prequant
+
+    seen: dict = {}
+    source = te_prequant.TePrequantSource(
+        kind = "repo", location = "unsloth/HiDream-I1-Full-FP8", filename = "te4.pt"
+    )
+
+    def _sources(*_a, **kwargs):
+        seen["components"] = tuple(kwargs["components"])
+        return {"text_encoder_4": source}
+
+    monkeypatch.setattr(te_prequant, "te_prequant_sources", _sources)
+    monkeypatch.setattr(
+        te_prequant,
+        "te_prequant_hub_files",
+        lambda sources, *_a, **_k: {component: [("te4.pt", 8 * MIB)] for component in sources},
+    )
+    monkeypatch.setattr(diffusion_mod, "resolve_diffusion_device_target", lambda *_a, **_k: _target())
+    fam = _family(name = "hidream-i1", base_repo = "HiDream-ai/HiDream-I1-Full")
+
+    planned = DiffusionBackend._te_prequant_plan_files(
+        fam, "fp8", None, base_repo = "HiDream-ai/HiDream-I1-Dev"
+    )
+    assert "text_encoder_4" in seen["components"]
+    assert "text_encoder_4" in planned
+
+
+def test_hidream_dense_te4_is_counted_when_no_prequant_is_selected():
+    from core.inference.diffusion import _predownload_encoder_bytes
+    from core.inference.diffusion_hidream import HIDREAM_LLAMA_BF16_BYTES
+
+    fam = _family(name = "hidream-i1", base_repo = "HiDream-ai/HiDream-I1-Full")
+    assert _predownload_encoder_bytes(fam, {}) == HIDREAM_LLAMA_BF16_BYTES
+    assert _predownload_encoder_bytes(fam, {}, pipeline_declared = False) == 0
+    hosted = {"text_encoder_4": ("unsloth/HiDream-I1-Full-FP8", [("te4.pt", 8 * MIB)])}
+    assert _predownload_encoder_bytes(fam, hosted) == 8 * MIB
+
+
 # -- boundaries ----------------------------------------------------------------
 
 
@@ -480,4 +565,30 @@ def test_both_entry_points_size_a_hosted_encoder_the_same(monkeypatch):
     )
     plan = planner.download_plan("unsloth/Lumina-Image-2.0", model_kind = "pipeline")
     assert plan["incompatible_reason"] is not None
+    assert plan["incompatible_reason"] == staged._loading.error
+
+
+def test_both_entry_points_count_hidreams_external_dense_te4(monkeypatch):
+    fam = _real_family("HiDream-ai/HiDream-I1-Full")
+    declared = _files(transformer = 47_000)
+
+    calls: list = []
+    staged = _staged_backend(
+        monkeypatch,
+        files = declared,
+        calls = calls,
+        total_mib = STRIX_HALO_POOL_MIB,
+        family = fam,
+    )
+    staged._run_load(repo_id = "HiDream-ai/HiDream-I1-Full", model_kind = "pipeline", _load_token = 1)
+    assert calls == []
+    assert "usable on this device" in staged._loading.error
+
+    planner = _plan_backend(
+        monkeypatch,
+        files = declared,
+        total_mib = STRIX_HALO_POOL_MIB,
+        family = fam,
+    )
+    plan = planner.download_plan("HiDream-ai/HiDream-I1-Full", model_kind = "pipeline")
     assert plan["incompatible_reason"] == staged._loading.error

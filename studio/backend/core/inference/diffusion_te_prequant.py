@@ -197,10 +197,17 @@ def resolve_te_prequant_source(
 
 
 def te_prequant_sources(
-    fam: Any, *, te_quant_mode: Optional[str], target: Any
+    fam: Any,
+    *,
+    te_quant_mode: Optional[str],
+    target: Any,
+    components: Iterable[str] = TE_PREQUANT_COMPONENTS,
 ) -> dict[str, TePrequantSource]:
     """``{component: source}`` for every text encoder this pick would load PRE-CAST rather
     than dense; ``{}`` when none apply.
+
+    ``components`` defaults to the generic pipeline injection set; callers that assemble an
+    additional component separately may request it explicitly.
 
     Pure (no IO, no ``torch.load``) and gated exactly like ``te_prequant_pipe_kwargs``
     below, which calls it. Download planning uses the same resolver so a plan can never
@@ -226,7 +233,7 @@ def te_prequant_sources(
         if not te_quant_supported(target, mode):
             return {}
         sources: dict[str, TePrequantSource] = {}
-        for component in TE_PREQUANT_COMPONENTS:
+        for component in components:
             source = resolve_te_prequant_source(fam, component, mode)
             if source is not None:
                 sources[component] = source
