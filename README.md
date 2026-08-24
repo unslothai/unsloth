@@ -78,8 +78,9 @@ Unsloth lets you run, train, and deploy AI models locally, with support for all 
 * **Search & RAG:** Use private and unlimited web search, deep research, and RAG.
 * **Image and video:** Run and train [image](https://unsloth.ai/docs/basics/diffusion-image) and video diffusion or multimodal models
 * **Search:** Use private and unlimited web search, deep research, and RAG.
+* **Auto-compaction:** Auto-compact long conversations with a rolling context window and automatic recall.
 * **Hardware:** Supports CPU, Apple, NVIDIA, AMD, Intel, and multi GPU setups.
-* **Remote Access:** Serve your local models remotely through secure [Cloudflare](https://unsloth.ai/docs/basics/how-to-serve-local-llms-anywhere-secure-remote-access-with-cloudflare-and-unsloth) HTTPS.
+* **Remote & LAN:** Access your local models from any device on your [LAN](https://unsloth.ai/docs/basics/lan) or remotely through secure [Cloudflare](https://unsloth.ai/docs/basics/how-to-serve-local-llms-anywhere-secure-remote-access-with-cloudflare-and-unsloth) HTTPS.
 * **Connect:** Serve models through an [OpenAI compatible API](https://unsloth.ai/docs/basics/api). Also connect your ChatGPT/Codex subscription and [cloud providers](https://unsloth.ai/docs/integrations/connections)
 
 
