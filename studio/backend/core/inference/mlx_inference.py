@@ -2431,9 +2431,8 @@ class MLXInferenceBackend:
                     if cancel_event and cancel_event.is_set():
                         break
             finally:
-                # Derived as the vision path derives it: this backend has no
-                # finish reason of its own, and leaving it unset reports every
-                # exhausted turn as a natural end.
+                # Derived as the vision path derives it: this backend reports no
+                # finish reason, and unset reads as a natural end.
                 if final_response is not None:
                     tokenizer = getattr(self._processor, "tokenizer", self._processor)
                     self.last_generation_stats = _build_generation_stats(

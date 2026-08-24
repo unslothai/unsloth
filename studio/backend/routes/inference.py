@@ -18386,14 +18386,12 @@ async def openai_chat_completions(
                         }
                         if nudge_should_retry(_data, _sf_heal, _sf_healing_tools):
                             # A failed retry must not 500 the request; keep the first
-                            # response (GGUF nudge parity). The retry's generate()
-                            # overwrites stats_holder, so take the first attempt's
-                            # stats out and fold whichever attempt loses back in:
-                            # both were generated, and reporting one hides tokens
-                            # the caller was charged for. Popped, not read: a retry
-                            # that raises before publishing would otherwise leave
-                            # its own report indistinguishable from this one, and
-                            # folding it into itself doubles the completion count.
+                            # response (GGUF nudge parity). Both attempts generated,
+                            # so whichever loses is folded back in rather than
+                            # dropped. Popped, not read: a retry that raises before
+                            # publishing would leave its report indistinguishable
+                            # from this one, and folding it into itself doubles the
+                            # completion count.
                             _first_stats = stats_holder.pop("stats", None)
                             try:
                                 retry_messages = [

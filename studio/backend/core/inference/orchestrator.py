@@ -171,18 +171,17 @@ def _summed_tool_loop_stats(total, turn):
     usage = dict(turn.get("usage") or {})
     completion = (usage.get("completion_tokens") or 0) + (prior_usage.get("completion_tokens") or 0)
     usage["completion_tokens"] = completion
-    # A turn that ended before reporting keeps the last count that arrived: the
-    # prompt is the loop's, not that turn's, so dropping it erases the whole loop's.
-    # Its details describe that same count and move with it, or a fold could report
-    # more cached tokens than prompt tokens.
+    # The prompt is the loop's, not one turn's, so a turn that ended before
+    # reporting keeps the last count that arrived. Its details describe that same
+    # count and move with it, or cached tokens could outnumber prompt tokens.
     if not usage.get("prompt_tokens"):
         usage["prompt_tokens"] = prior_usage.get("prompt_tokens") or 0
         usage.pop("prompt_tokens_details", None)
         if prior_usage.get("prompt_tokens_details") is not None:
             usage["prompt_tokens_details"] = prior_usage["prompt_tokens_details"]
     usage["total_tokens"] = usage["prompt_tokens"] + completion
-    # Details describe the completion, so they sum with it rather than being
-    # carried from the last turn against a count they do not cover.
+    # Details describe the completion, so they sum with it rather than describing
+    # one turn against every turn's tokens.
     details = dict(prior_usage.get("completion_tokens_details") or {})
     for field, value in (usage.get("completion_tokens_details") or {}).items():
         details[field] = (details.get(field) or 0) + (value or 0)

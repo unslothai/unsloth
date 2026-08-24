@@ -2108,9 +2108,8 @@ def normalize_reasoning_snapshots(
 ):
     """Normalize a prefix-monotonic cumulative text stream when supported.
 
-    ``ended`` is read after the stream to ask whether the turn ended by itself,
-    since a stop sequence ends it as a stop token does and still owes the block
-    it cut inside a close, even if a cancel landed on the same step."""
+    ``ended`` is read after the stream: a turn a stop sequence ended still owes
+    its open block a close, even if a cancel landed on the same step."""
     markers = markers or detect_reasoning_channel_markers(tokenizer, tools = tools)
     if markers is None:
         yield from stream
