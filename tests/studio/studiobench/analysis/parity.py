@@ -654,10 +654,16 @@ def summarise(results: Iterable[dict[str, Any]]) -> dict[str, int]:
 
 # ── visible-region parity ───────────────────────────────────────────
 #
-# THE POLICY. All changes must preserve UI and UX idempotency, with two exemptions: a difference
-# may be accepted deliberately when performance improves dramatically, and a difference that exists
+# THE POLICY. All changes must preserve UI and UX idempotency, with three exemptions: a difference
+# may be accepted deliberately when performance improves dramatically; a difference that exists
 # only OFF SCREEN is fine by definition, because rendering only what is visible is an accepted
-# technique rather than a parity violation.
+# technique rather than a parity violation; and a select-all need not select all, PROVIDED the copy
+# it produces stays complete.
+#
+# The third is what makes deferral and virtualization cheap: the copy path stops depending on what
+# is mounted, so it may serialise the thread from the message store as markdown or plain text
+# instead of reproducing a DOM selection. Completeness of the copied content is REQUIRED -- silent
+# truncation is data loss -- and visual selection fidelity is NOT.
 #
 # `compare()` above cannot express the second exemption. It digests the thread whether or not any
 # of it is on screen, so deferred off-screen work fails it by construction: virtualization,
@@ -700,12 +706,20 @@ CLAIM_BEHAVIOURAL = (
 #:
 #: The exemptions are not loopholes. The first is a decision someone makes on the record with a
 #: number attached; the second is a definition, because rendering only what is visible is an
-#: accepted technique rather than a parity violation. Neither removes the need for a floor: a
-#: difference that is exempt still has to be shown to be the difference you think it is, which is
-#: what the null control is for.
+#: accepted technique rather than a parity violation; the third is CONDITIONAL, and the condition
+#: is the part that is required -- the copy must be complete, and only the visual fidelity of the
+#: selection is given up. None of the three removes the need for a floor: a difference that is
+#: exempt still has to be shown to be the difference you think it is, which is what the null
+#: control is for.
+#:
+#: NO MODE GRANTS THE THIRD ON A DIGEST. `--mode behaviour` is the only one that speaks to it at
+#: all, through `clipboard_carries_the_whole_thread`, which scores the copy against the THREAD
+#: rather than against the other arm. Where a payload carries no readable `select_all_copy` the
+#: gate records that the exemption exists and does not grant it.
 POLICY = (
-    "UI and UX idempotency is required, with two exemptions: a deliberate difference accepted "
-    "for a dramatic performance improvement, and a difference that exists only OFF SCREEN"
+    "UI and UX idempotency is required, with three exemptions: a deliberate difference accepted "
+    "for a dramatic performance improvement, a difference that exists only OFF SCREEN, and a "
+    "select-all that does not select all PROVIDED the copy it produces stays complete"
 )
 
 #: What each mode can and cannot decide under that policy. The point of the second half of each
@@ -727,7 +741,10 @@ POLICY_BY_MODE = {
         f"{POLICY}. This mode judges neither requirement directly. It checks invariants a "
         "windowed mount breaks first -- scroll extent, what the clipboard carries, whether the "
         "thread survives being reopened -- so a pass here is evidence about BEHAVIOUR and says "
-        "nothing about appearance. It cannot grant either exemption"
+        "nothing about appearance. It cannot grant the performance or off-screen exemptions, and "
+        "it is the only mode that speaks to the select-all one: clipboard completeness is scored "
+        "against the THREAD, which is the half of that exemption that is required. Without a "
+        "readable select_all_copy it records the exemption rather than granting it"
     ),
 }
 

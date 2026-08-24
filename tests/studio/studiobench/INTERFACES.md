@@ -445,11 +445,16 @@ limitation next to the passing verdict rather than leaving it in a source commen
 
 ### The policy, and the three claims
 
-All changes must preserve UI and UX idempotency, with two exemptions:
+All changes must preserve UI and UX idempotency, with three exemptions:
 
 1. a UI difference may be accepted DELIBERATELY when performance improves dramatically;
 2. a difference that exists only OFF SCREEN is fine by definition, because rendering only what is
-   visible is an accepted technique rather than a parity violation.
+   visible is an accepted technique rather than a parity violation;
+3. a select-all need not select all, PROVIDED the copy it produces stays complete. Copy may
+   serialise the thread from the message store as markdown or plain text instead of reproducing a
+   DOM selection. Completeness of the copied content is REQUIRED, silent truncation being data
+   loss; visual selection fidelity is NOT. This is what makes deferral and virtualization cheap,
+   because the copy path stops depending on what is mounted.
 
 The whole-document digest cannot express exemption 2. It compares everything in the DOM, so every
 deferred-off-screen technique fails it by construction: virtualization, deferred fence
@@ -459,11 +464,13 @@ rather than giving one, so there is now a mode that gives one.
 `sweep/ui_parity.py --mode auto|digest|visible|behaviour`. Every report prints the CLAIM it is
 making AND the POLICY it is being judged against, because "PARITY OK" has meant three different
 things in this file's history and none of them is "the UI is unchanged". The claim says what was
-compared; the policy says what a pass is worth, and the two exemptions are what decide that. Only
+compared; the policy says what a pass is worth, and the three exemptions are what decide that. Only
 the `visible` mode can GRANT the off-screen exemption, and its policy line says so, together with
-the reminder that the exemption does not remove the floor. `analysis/parity.py` holds both as
-`POLICY` and `POLICY_BY_MODE`, and a test fails if any mode prints a claim without a policy beside
-it -- a constant nothing prints is a constant nobody reads.
+the reminder that the exemption does not remove the floor. No mode grants exemption 3 off a digest:
+`behaviour` is the only one that speaks to it, through `clipboard_carries_the_whole_thread`, and
+where there is no readable `select_all_copy` it records the exemption rather than granting it.
+`analysis/parity.py` holds both as `POLICY` and `POLICY_BY_MODE`, and a test fails if any mode
+prints a claim without a policy beside it -- a constant nothing prints is a constant nobody reads.
 
 | mode | claim | fails on |
 | --- | --- | --- |

@@ -286,10 +286,13 @@
 
   // ── VISIBLE-REGION PARITY ────────────────────────────────────────────────────────────────────
   //
-  // THE POLICY THIS SERVES. All changes must preserve UI and UX idempotency, with two exemptions:
-  // a difference may be accepted deliberately when performance improves dramatically, and a
-  // difference that exists only OFF SCREEN is fine by definition, because rendering only what is
-  // visible is an accepted technique rather than a parity violation.
+  // THE POLICY THIS SERVES. All changes must preserve UI and UX idempotency, with three
+  // exemptions: a difference may be accepted deliberately when performance improves dramatically;
+  // a difference that exists only OFF SCREEN is fine by definition, because rendering only what is
+  // visible is an accepted technique rather than a parity violation; and a select-all need not
+  // select all, PROVIDED the copy stays complete. Nothing in this file can see the third -- the
+  // clipboard is scored behaviourally, in analysis/behaviour.py -- so a selection that shrank is
+  // not a finding here.
   //
   // The whole-document digest above cannot express the second exemption. It compares everything
   // that is in the DOM, so ANY deferred off-screen work fails it by construction -- virtualization,

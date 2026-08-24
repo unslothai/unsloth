@@ -133,19 +133,28 @@ were junk.
 
 ## 4. Parity: prove you did not change what is rendered
 
-### The policy, and the two exemptions
+### The policy, and the three exemptions
 
-**UI and UX idempotency is required for every change, with exactly two exemptions:**
+**UI and UX idempotency is required for every change, with exactly three exemptions:**
 
 1. **A deliberate difference accepted for a dramatic performance improvement.** This is a decision
    somebody makes on the record with the number attached, not a default. If you are relying on it,
    say so in the pull request and say what the difference is.
 2. **A difference that exists only OFF SCREEN.** This one is a definition rather than a judgement:
    rendering only what is visible is an accepted technique, not a parity violation.
+3. **Select-all need not select all, PROVIDED copy stays complete.** Copy may be implemented as
+   "emit the whole thread as markdown, or as plain text, read from the source" rather than as a
+   faithful reproduction of a DOM selection.
+   - **Completeness of the copied content is REQUIRED.** Silent truncation is data loss.
+   - **Visual selection fidelity is NOT required.**
 
-Neither exemption removes the need for a floor. An exemption changes what counts as a pass; it does
+   This is what makes deferral and virtualization cheap: the copy path stops depending on what is
+   mounted. Do not reject a design on the grounds that it breaks DOM-based select-all.
+
+No exemption removes the need for a floor. An exemption changes what counts as a pass; it does
 not make an unmeasured claim into a measured one, so the null control still has to run on the same
-scale.
+scale. The third carries a condition on top of that, and the condition is the required half: an
+exemption you are relying on for the selection does not excuse the copy.
 
 **A bare "PARITY OK" reads far stronger than any of the three modes can support**, which is why
 each mode prints the CLAIM it is making and the POLICY it is judging against, and why you should
@@ -156,6 +165,11 @@ read both before quoting a pass:
 | `--mode digest` | the thread root and declared overlays serialise identically, on screen and off | no, it does not know what was on screen |
 | `--mode visible` | every message the viewport showed is present and identical, and every difference lies off screen | **yes** -- this is the mode that can say so |
 | `--mode behaviour` | scroll extent matches and the invariants a windowed mount breaks first still hold | no, and it says nothing about appearance |
+
+No mode grants exemption 3 off a digest. `--mode behaviour` is the only one that speaks to it,
+through `clipboard_carries_the_whole_thread`, which scores the copy against the THREAD rather than
+against the other arm -- that is the required half. Where a payload carries no readable
+`select_all_copy`, the gate records that the exemption exists and does not grant it.
 
 The digest is **sidebar-blind and layout-blind**: run against a real sidebar-drag change it reported
 0 of 34 differing pairs, and so did its own null control. So a digest pass is not a statement that

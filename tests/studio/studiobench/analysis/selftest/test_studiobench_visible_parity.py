@@ -3,9 +3,11 @@
 
 """VISIBLE-REGION PARITY, held to the policy it exists to serve.
 
-The policy: all changes preserve UI and UX idempotency, with two exemptions. A difference may be
-accepted deliberately when performance improves dramatically, and a difference that exists only OFF
-SCREEN is fine by definition, because rendering only what is visible is an accepted technique.
+The policy: all changes preserve UI and UX idempotency, with three exemptions. A difference may be
+accepted deliberately when performance improves dramatically; a difference that exists only OFF
+SCREEN is fine by definition, because rendering only what is visible is an accepted technique; and
+a select-all need not select all, PROVIDED the copy stays complete. Only the second is a question
+this file can answer -- the third is scored behaviourally, on the clipboard.
 
 The structural digest cannot express the second exemption -- it digests the thread on screen and
 off, so every deferred-off-screen technique fails it by construction -- and answering NOT_APPLICABLE
@@ -245,9 +247,14 @@ def test_every_mode_names_the_policy_it_is_judging_against():
     """A BARE "PARITY OK" READS FAR STRONGER THAN ANY MODE CAN SUPPORT.
 
     Each mode already prints the CLAIM it is making. The claim says what was compared; it does not
-    say what a pass is worth, and the two exemptions are exactly what decide that. So the policy is
-    printed beside the claim, per mode, and this holds that every mode has one, that all three name
-    both exemptions, and that only the visible mode says it can grant the off-screen one.
+    say what a pass is worth, and the three exemptions are exactly what decide that. So the policy
+    is printed beside the claim, per mode, and this holds that every mode has one, that all three
+    name all three exemptions, and that each says which of them it can grant.
+
+    THE THIRD IS THE ONE A READER IS LIKELIEST TO BE MISSING, and it is the one with a condition
+    attached: the copy must stay complete, only the visual fidelity of the selection is given up.
+    A policy line that named the exemption without its condition would read as permission to lose
+    conversation, so the condition is asserted alongside it.
     """
     from studiobench.analysis import parity as P
 
@@ -256,9 +263,15 @@ def test_every_mode_names_the_policy_it_is_judging_against():
         assert "idempotency" in text, mode
         assert "performance improvement" in text, mode
         assert "OFF SCREEN" in text or "off-screen" in text, mode
+        assert "select-all that does not select all" in text, mode
+        assert "PROVIDED the copy it produces stays complete" in text, mode
     assert "can GRANT the off-screen exemption" in P.POLICY_BY_MODE["visible"]
     assert "cannot grant" in P.POLICY_BY_MODE["structural"]
-    assert "cannot grant either exemption" in P.POLICY_BY_MODE["behaviour"]
+    # The behavioural mode grants neither of the first two and is the only one that speaks to the
+    # third, so "either" would be the wrong word for it now.
+    assert "cannot grant the performance or off-screen exemptions" in P.POLICY_BY_MODE["behaviour"]
+    assert "clipboard completeness is scored" in P.POLICY_BY_MODE["behaviour"]
+    assert "records the exemption rather than granting it" in P.POLICY_BY_MODE["behaviour"]
     # The floor survives the exemption. An exemption changes what counts as a pass; a measurement
     # with no floor under it is not a pass in the first place.
     assert "does not remove the floor" in P.POLICY_BY_MODE["visible"]
