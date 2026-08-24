@@ -186,12 +186,14 @@ def _listener_urls(addresses, port: Optional[int]) -> list[str]:
     return [f"http://{address}:{port}" for address in addresses]
 
 
-def _public_urls(urls: list[str]) -> list[str]:
+def _public_urls(urls: list[str], resolved_addresses: tuple[str, ...] = ()) -> list[str]:
     """The subset reachable from the internet rather than only this network."""
     from urllib.parse import urlparse
 
     from lan_access import is_public_address
 
+    if any(is_public_address(address) for address in resolved_addresses):
+        return list(urls)
     return [url for url in urls if is_public_address(urlparse(url).hostname or "")]
 
 
@@ -235,7 +237,10 @@ def lan_access_status(app) -> dict:
     return {
         "state": state,
         "urls": urls,
-        "public_urls": _public_urls(urls),
+        "public_urls": _public_urls(
+            urls,
+            getattr(app_state, "lan_access_launch_addresses", ()) if launch_managed else (),
+        ),
         "error": listener["error"],
         "auto_start": get_lan_access_auto_start(),
         "unauthenticated_api": get_lan_access_unauthenticated_api(),

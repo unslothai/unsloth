@@ -192,6 +192,29 @@ def test_a_specific_host_launch_reports_the_address_it_was_given():
     assert status["can_stop"] is False
 
 
+def test_a_public_hostname_bind_is_flagged_using_its_resolved_address(monkeypatch):
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda host, port, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("64.227.100.5", port))
+        ],
+    )
+    app = _app(server_url = "http://studio.example:8888")
+    lan_settings.configure_lan_access(
+        app.state,
+        port = 8888,
+        bind_host = "studio.example",
+        secure = False,
+        is_colab = False,
+        frontend_served = True,
+    )
+
+    status = lan_settings.lan_access_status(app)
+    assert status["urls"] == ["http://studio.example:8888"]
+    assert status["public_urls"] == ["http://studio.example:8888"]
+
+
 def test_a_wildcard_launch_shows_lan_addresses_not_the_public_sharing_address(monkeypatch):
     """server_url resolves the public IP for sharing, which behind NAT reaches
     nothing on the LAN and would trip the public-address warning as well."""
@@ -982,14 +1005,15 @@ def test_management_rejects_api_keys():
         args = node.args.args + node.args.kwonlyargs
         gated[node.name] = any(a.arg == "_ui_session" for a in args)
     assert len(gated) == 5, f"expected 5 lan-access handlers, found {sorted(gated)}"
-    assert all(
-        gated.values()
-    ), f"ungated lan-access handlers: {sorted(k for k, v in gated.items() if not v)}"
+    assert all(gated.values()), (
+        f"ungated lan-access handlers: {sorted(k for k, v in gated.items() if not v)}"
+    )
 
 
 def _api_request(
     path: str,
     *,
+    method: str = "GET",
     server: tuple[str, int] = ("192.168.1.24", 8888),
     client: tuple[str, int] | None = ("192.168.1.90", 54321),
     authorization: str | None = None,
@@ -1001,7 +1025,7 @@ def _api_request(
     scope = {
         "type": "http",
         "http_version": "1.1",
-        "method": "GET",
+        "method": method,
         "scheme": "http",
         "path": path,
         "raw_path": path.encode("ascii"),
@@ -1030,6 +1054,8 @@ def test_unauthenticated_openai_api_is_limited_to_the_live_lan_listener(
     for refused in (
         _api_request("/api/inference/models"),
         _api_request("/api/settings/lan-access"),
+        _api_request("/v1/load", method = "POST"),
+        _api_request("/v1/unload", method = "POST"),
         _api_request("/v1/models", server = ("127.0.0.1", 8888)),
         _api_request("/v1/models", client = ("8.8.8.8", 54321)),
         _api_request("/v1/models", client = None),
@@ -1128,7 +1154,7 @@ def test_unauthenticated_openai_api_accepts_a_private_wildcard_bind(monkeypatch,
         lan_access_wildcard_bind = True,
         server_url = "http://64.227.100.5:8888",
     )
-    request = _api_request("/v1/chat/completions", app = app)
+    request = _api_request("/v1/chat/completions", method = "POST", app = app)
 
     assert (
         asyncio.run(authentication.get_current_subject(credentials = None, request = request))
@@ -1154,7 +1180,7 @@ def test_lan_guest_is_treated_as_external_api_traffic(monkeypatch, stored_settin
 
     stored_settings[lan_settings.LAN_ACCESS_UNAUTHENTICATED_API_KEY] = True
     monkeypatch.setattr(lan_access, "_bound_addresses", ("192.168.1.24",))
-    request = _api_request("/v1/chat/completions")
+    request = _api_request("/v1/chat/completions", method = "POST")
     asyncio.run(authentication.get_current_subject(credentials = None, request = request))
 
     assert inference._request_has_api_key(request) is True
@@ -1172,13 +1198,13 @@ def test_fastapi_injects_the_lan_guest_and_keeps_dependency_overrides_working(
     monkeypatch.setattr(lan_access, "_bound_addresses", ("testserver",))
     app = FastAPI()
 
-    @app.get("/v1/probe")
+    @app.get("/v1/models")
     @app.get("/api/probe")
     def probe(subject: str = Depends(authentication.get_current_subject)):
         return {"subject": subject}
 
     with TestClient(app, client = ("192.168.1.90", 54321)) as client:
-        guest = client.get("/v1/probe")
+        guest = client.get("/v1/models")
         assert guest.status_code == 200
         assert guest.json() == {"subject": authentication.LAN_API_GUEST_SUBJECT}
         assert client.get("/api/probe").status_code == 403

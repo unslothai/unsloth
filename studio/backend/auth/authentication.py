@@ -30,6 +30,30 @@ optional_security = HTTPBearer(auto_error = False)
 
 LAN_API_GUEST_SUBJECT = "__lan_api_guest__"
 _LAN_API_GUEST_STATE_KEY = "lan_api_guest"
+_LAN_API_GUEST_ENDPOINTS = frozenset(
+    {
+        ("GET", "/v1/models"),
+        ("POST", "/v1/audio/speech"),
+        ("POST", "/v1/audio/transcriptions"),
+        ("POST", "/v1/chat/completions"),
+        ("POST", "/v1/completions"),
+        ("POST", "/v1/embeddings"),
+        ("POST", "/v1/images/generations"),
+        ("POST", "/v1/responses"),
+    }
+)
+
+
+def _lan_api_guest_endpoint_allowed(request: Request) -> bool:
+    """Whether this method and path belong to the public inference contract."""
+    method = request.scope.get("method", "")
+    path = request.scope.get("path", "")
+    if not isinstance(method, str) or not isinstance(path, str):
+        return False
+    method = method.upper()
+    if (method, path) in _LAN_API_GUEST_ENDPOINTS:
+        return True
+    return method == "GET" and path.startswith("/v1/models/")
 
 
 def _get_secret_for_subject(subject: str) -> str:
@@ -187,8 +211,7 @@ async def get_current_subject(
             detail = "Invalid authentication credentials",
         )
 
-    path = request.scope.get("path", "")
-    if not isinstance(path, str) or not (path == "/v1" or path.startswith("/v1/")):
+    if not _lan_api_guest_endpoint_allowed(request):
         raise HTTPException(
             status_code = status.HTTP_403_FORBIDDEN,
             detail = "Not authenticated",
