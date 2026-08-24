@@ -624,10 +624,9 @@ export type ExtraArgsDiagnostic = {
 };
 
 /**
- * Controls in this panel that emit the same flag. Not a denial: the backend appends
- * extras last and reconciles the ones that move its own sizing (`parse_ctx_override`
- * and friends exist for exactly that), and the CLI has always allowed it. The user
- * just deserves to be told which one wins.
+ * Controls in this panel that own the same llama-server setting. For pass-through
+ * flags, the mapping explains which value wins. For managed flags such as parallel
+ * slots, it points the refusal at the supported control instead of leaving a dead end.
  */
 const CONTROL_OWNED_FLAGS: Record<string, string> = {
   "--ctx-size": "Context Length",
@@ -636,6 +635,9 @@ const CONTROL_OWNED_FLAGS: Record<string, string> = {
   "-b": "Batch Size",
   "--ubatch-size": "Micro-batch Size",
   "-ub": "Micro-batch Size",
+  "--parallel": "Parallel Slots",
+  "--n-parallel": "Parallel Slots",
+  "-np": "Parallel Slots",
   "--cache-type-k": "KV Cache Dtype",
   "-ctk": "KV Cache Dtype",
   "--cache-type-v": "KV Cache Dtype",
