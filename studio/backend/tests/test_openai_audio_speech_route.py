@@ -516,9 +516,7 @@ def test_external_disconnect_cancels_the_upstream_request(monkeypatch):
     async def _run():
         with pytest.raises(asyncio.CancelledError):
             await routes_module._external_tts_speech(
-                AudioSpeechRequest(
-                    input = "hi", provider_id = "conn-1", model = "kokoro", voice = "alloy"
-                ),
+                AudioSpeechRequest(input = "hi", provider_id = "conn-1", model = "kokoro", voice = "alloy"),
                 _DisconnectingRequest(),
             )
 
@@ -577,9 +575,7 @@ def test_external_provider_reads_do_not_block_the_event_loop(monkeypatch):
         started = time.perf_counter()
         speech = asyncio.create_task(
             routes_module._external_tts_speech(
-                AudioSpeechRequest(
-                    input = "hi", provider_id = "conn-1", model = "kokoro", voice = "alloy"
-                ),
+                AudioSpeechRequest(input = "hi", provider_id = "conn-1", model = "kokoro", voice = "alloy"),
                 _ConnectedRequest(),
             )
         )
@@ -630,15 +626,15 @@ def test_external_rejects_a_cross_process_provider_edit_after_resolving_its_key(
     async def _run():
         with pytest.raises(HTTPException) as excinfo:
             await routes_module._external_tts_speech(
-                AudioSpeechRequest(
-                    input = "hi", provider_id = "conn-1", model = "kokoro", voice = "alloy"
-                ),
+                AudioSpeechRequest(input = "hi", provider_id = "conn-1", model = "kokoro", voice = "alloy"),
                 _ConnectedRequest(),
             )
         assert excinfo.value.status_code == 409
 
     asyncio.run(_run())
     assert key_resolved
+
+
 def test_speech_opens_a_monitor_row(monkeypatch):
     cli, calls, saved = _make_client(monkeypatch)
     api_monitor.clear()

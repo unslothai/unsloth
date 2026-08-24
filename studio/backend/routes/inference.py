@@ -12331,9 +12331,7 @@ async def _external_tts_speech(body: AudioSpeechRequest, request: Request) -> Re
 
     config = await asyncio.to_thread(providers_db.get_provider, provider_id)
     if config is None:
-        raise HTTPException(
-            status_code = 404, detail = f"Provider config not found: {provider_id}"
-        )
+        raise HTTPException(status_code = 404, detail = f"Provider config not found: {provider_id}")
     if not config["is_enabled"]:
         raise HTTPException(
             status_code = 400, detail = f"Provider '{config['display_name']}' is disabled."

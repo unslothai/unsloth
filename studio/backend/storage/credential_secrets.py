@@ -252,9 +252,7 @@ def save_provider_api_key_if_absent(provider_id: str, api_key: str) -> bool:
 
 
 def delete_provider_api_key(
-    provider_id: str,
-    *,
-    connection: sqlite3.Connection | None = None,
+    provider_id: str, *, connection: sqlite3.Connection | None = None
 ) -> bool:
     return delete_secret(PROVIDER_API_KEY_KIND, provider_id, connection = connection)
 
