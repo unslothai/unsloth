@@ -174,9 +174,9 @@ class TestSetupServerDiskLogging:
             "run_server must install the tee, then configure structlog, then log; "
             f"got tee@{tee_idx} setup@{setup_idx} first-log@{first_log_idx}"
         )
-        assert "LogConfig.setup_logging(" not in src[:body], (
-            "configuring structlog at import time pins it to the pre-tee sys.stdout"
-        )
+        assert (
+            "LogConfig.setup_logging(" not in src[:body]
+        ), "configuring structlog at import time pins it to the pre-tee sys.stdout"
 
     def test_run_py_does_not_import_a_loggers_submodule_at_module_scope(self):
         """`loggers` must be a real package for `loggers.config` to resolve.
