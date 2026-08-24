@@ -429,6 +429,29 @@ def _comparable_extents(base_row: dict, treat_row: dict) -> tuple[Any, Any, str]
 def scroll_travelled(base_row: dict, treat_row: dict) -> list[dict]:
     """scroll_after: the gesture covers the ground it commanded and no more, on both arms."""
     out = []
+    # THE PAIR'S REFERENCE EXTENT, NOT THE ARM'S OWN, and for the same reason `_drift` divides by
+    # the larger of the two: an estimate correction is the arm closing the gap to the REAL extent,
+    # so the gap is what bounds it, and the arm that is wrong is the one whose own extent is the
+    # worse yardstick. Taken per arm the two checks read one tolerance off two denominators, and
+    # disagreed inside it: extents of 10,000 and 9,050 pass `scroll_extent` at 9.5% drift while
+    # the 950 px correction that closes that very gap came out BROKEN against a ceiling granting
+    # 10% of 9,050. A false red is not free here -- it removes the cell from `readings_by_arm`,
+    # takes its healthy partner with it through the arm intersection, and
+    # `unmeasured_planned_cells` can then VOID the plan -- so the two now enforce the same
+    # allowance on the same quantity.
+    #
+    # It only ever loosens: `max` is never below the arm's own extent. An arm carrying NO extent
+    # still gets no ceiling rather than borrowing its partner's, because that would newly bound an
+    # arm this check has always left unbounded above, which is the one direction that could invent
+    # a red rather than retire one.
+    reference = max(
+        (
+            abs(extent)
+            for extent, _ in (_extent_of(base_row), _extent_of(treat_row))
+            if isinstance(extent, (int, float))
+        ),
+        default = None,
+    )
     for label, row in (("base", base_row), ("treatment", treat_row)):
         fraction = _expect(row, "travel_fraction")
         commanded = _expect(row, "commanded_px")
@@ -464,7 +487,7 @@ def scroll_travelled(base_row: dict, treat_row: dict) -> list[dict]:
             and commanded > 0
             and isinstance(extent, (int, float))
         ):
-            ceiling = (commanded + EXTENT_TOLERANCE * abs(extent)) / commanded
+            ceiling = (commanded + EXTENT_TOLERANCE * reference) / commanded
         if fraction is None:
             ok: Optional[bool] = None
             detail = "the row records no travel fraction"
@@ -479,7 +502,7 @@ def scroll_travelled(base_row: dict, treat_row: dict) -> list[dict]:
             detail = (
                 f"the gesture travelled {fraction} of what it commanded "
                 f"({travelled} of {commanded} px, allowed 0.9 to {ceiling:.3f}: "
-                f"{EXTENT_TOLERANCE:.0%} of the arm's own {extent} px extent)"
+                f"{EXTENT_TOLERANCE:.0%} of the pair's {reference} px reference extent)"
             )
         out.append(_check(f"scroll_travelled:{label}", ok, detail))
     # THE EXTENT, NOT `bottom`, AND AT THE EXTENT'S OWN ALLOWANCE. This compared `bottom` through

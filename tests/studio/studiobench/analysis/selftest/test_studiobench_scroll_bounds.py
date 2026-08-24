@@ -204,8 +204,9 @@ def test_an_ordinary_estimate_correction_still_passes_the_ceiling():
     """THE CONTROL, and the reason the ceiling is DERIVED rather than picked to look symmetric with
     0.9. A windowed list correcting estimated row heights moves the offset by the error in the
     estimate, and this file already declares how far the extent may be wrong. So the allowance is
-    `EXTENT_TOLERANCE` of the arm's OWN extent -- 1,000px of a 10,000px extent against a 5,880px
-    gesture, a ceiling of 1.170 -- and a correction inside it is ordinary rather than a finding."""
+    `EXTENT_TOLERANCE` of the PAIR'S reference extent -- 1,000px of a 10,000px extent against a
+    5,880px gesture, a ceiling of 1.170 -- and a correction inside it is ordinary rather than a
+    finding."""
     base = _scroll_row(18, fraction = 1.0, bottom = 9_200, client = 800)
     treat = _scroll_row(6, fraction = 1.1, bottom = 9_200, client = 800)
     got = B.compare_behaviour(base, treat)
@@ -227,12 +228,62 @@ def test_the_ceiling_grants_the_tolerance_against_the_extent_not_against_bottom(
     got = B.compare_behaviour(base, inside)
     assert got["verdict"] == P.MATCH, got
     checks = {c["invariant"]: c for c in got["checks"]}
-    assert "of the arm's own 10000.0 px extent" in checks["scroll_travelled:treatment"]["detail"]
+    assert "of the pair's 10000.0 px reference extent" in checks["scroll_travelled:treatment"]["detail"]
 
     outside = _scroll_row(6, fraction = 1.171, bottom = 9_200, client = 800)
     beyond = B.compare_behaviour(base, outside)
     assert beyond["verdict"] == B.BROKEN, beyond
     assert "scroll_travelled:treatment" in beyond["reason"], beyond
+
+
+def test_the_ceiling_and_the_extent_check_enforce_one_tolerance_on_one_quantity():
+    """TWO DENOMINATORS FOR ONE TOLERANCE, and the pair disagreed inside it.
+
+    `scroll_extent` scores drift through `_drift`, which divides by the LARGER of the two extents.
+    The ceiling divided by the arm's OWN. So extents of 10,000 and 9,050 pass `scroll_extent` at
+    9.5% drift, while the 950px correction that closes that very gap was BROKEN against a ceiling
+    granting 10% of 9,050 -- 1.162 travelled against 1.154 allowed. The arm that most needs the
+    allowance is exactly the arm whose own extent is the worse yardstick for it.
+
+    A false red is not free: it removes the cell from `readings_by_arm`, takes its healthy partner
+    with it through the arm intersection, and `unmeasured_planned_cells` can then VOID the plan.
+
+    Pinned at both edges, so this is a bound and not merely a bigger number: the reference ceiling
+    is 1.170, and a gesture past it is still reported."""
+    base = _scroll_row(18, fraction = 1.0, bottom = 9_200, client = 800)
+    treat = _scroll_row(6, fraction = (5_880 + 950) / 5_880, bottom = 8_250, client = 800)
+    treat["census"]["viewport_scroll_height"] = 9_050
+
+    got = B.compare_behaviour(base, treat)
+    checks = {c["invariant"]: c for c in got["checks"]}
+    # The pair really is inside the extent allowance; that is what makes the red false.
+    assert checks["scroll_extent"]["ok"] is True, checks
+    assert "9.5% drift, 10% allowed" in checks["scroll_extent"]["detail"], checks
+    assert checks["scroll_travelled:treatment"]["ok"] is True, checks
+    assert "allowed 0.9 to 1.170" in checks["scroll_travelled:treatment"]["detail"], checks
+    assert "of the pair's 10000.0 px reference extent" in (
+        checks["scroll_travelled:treatment"]["detail"]
+    ), checks
+
+    # Still a ceiling: past the pair's reference allowance it is reported.
+    beyond = _scroll_row(6, fraction = (5_880 + 1_060) / 5_880, bottom = 8_250, client = 800)
+    beyond["census"]["viewport_scroll_height"] = 9_050
+    worse = B.compare_behaviour(base, beyond)
+    assert worse["verdict"] == B.BROKEN, worse
+    assert "scroll_travelled:treatment" in worse["reason"], worse
+
+
+def test_an_arm_with_no_extent_does_not_borrow_its_partners_ceiling():
+    """The degradation stays a degradation. Bounding an arm this check has always left unbounded
+    above is the one direction that could INVENT a red rather than retire one, so an arm carrying
+    no extent of its own still gets the lower bound alone and says so."""
+    base = _scroll_row(18, fraction = 1.0, bottom = 9_200, client = 800)
+    treat = _scroll_row(6, fraction = 2.0, bottom = None, client = 800)
+    treat["census"]["viewport_scroll_height"] = None
+
+    checks = {c["invariant"]: c for c in B.compare_behaviour(base, treat)["checks"]}
+    assert checks["scroll_travelled:treatment"]["ok"] is True, checks
+    assert "NO CEILING" in checks["scroll_travelled:treatment"]["detail"], checks
 
 
 def test_the_lower_bound_still_catches_a_gesture_that_was_snapped_back():
