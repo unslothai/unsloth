@@ -2132,9 +2132,7 @@ def normalize_reasoning_snapshots(
             yield normalized_output
 
     cancelled = (
-        not (ended is not None and ended())
-        and cancel_event is not None
-        and cancel_event.is_set()
+        not (ended is not None and ended()) and cancel_event is not None and cancel_event.is_set()
     )
     tail = normalizer.drain() if cancelled else normalizer.finish()
     if tail:

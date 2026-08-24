@@ -849,10 +849,19 @@ def test_a_successful_nudge_retry_bills_both_attempts(monkeypatch):
 
     class _HealsOnRetryBackend(_ScriptedBackend):
         def __init__(self):
-            super().__init__(lambda m, t: [_CALL_XML if len(self.calls) > 1 else '<tool_call>{"name":"lookup"'])
+            super().__init__(
+                lambda m, t: [_CALL_XML if len(self.calls) > 1 else '<tool_call>{"name":"lookup"']
+            )
             self._stats_seq = [first_stats, retry_stats]
 
-        def generate_chat_response(self, *, messages, tools = None, stats_holder = None, **kwargs):
+        def generate_chat_response(
+            self,
+            *,
+            messages,
+            tools = None,
+            stats_holder = None,
+            **kwargs,
+        ):
             self.calls.append({"messages": messages, "tools": tools, **kwargs})
             if stats_holder is not None:
                 stats_holder["stats"] = self._stats_seq[
@@ -1030,7 +1039,13 @@ def _fold(*turns):
     return total
 
 
-def _turn(prompt, completion, *, timings = True, **extra):
+def _turn(
+    prompt,
+    completion,
+    *,
+    timings = True,
+    **extra,
+):
     usage = {
         "prompt_tokens": prompt,
         "completion_tokens": completion,

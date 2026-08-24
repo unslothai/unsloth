@@ -169,9 +169,7 @@ def _summed_tool_loop_stats(total, turn):
         return turn
     prior_usage = total.get("usage") or {}
     usage = dict(turn.get("usage") or {})
-    completion = (usage.get("completion_tokens") or 0) + (
-        prior_usage.get("completion_tokens") or 0
-    )
+    completion = (usage.get("completion_tokens") or 0) + (prior_usage.get("completion_tokens") or 0)
     usage["completion_tokens"] = completion
     # A turn that ended before reporting keeps the last count that arrived: the
     # prompt is the loop's, not that turn's, so dropping it erases the whole loop's.

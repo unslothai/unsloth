@@ -2968,7 +2968,17 @@ def test_vlm_seed_rides_on_the_sampler_not_a_seed_kwarg(monkeypatch):
     backend = MLXInferenceBackend()
     backend._model = SimpleNamespace(config = {"model_type": "generic_vlm"})
     backend._processor = SimpleNamespace(chat_template = "template")
-    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0.7, 0.9, 40, 0.01, 4, 1.0, None)
+    args = (
+        [{"role": "user", "content": [{"type": "image"}]}],
+        object(),
+        0.7,
+        0.9,
+        40,
+        0.01,
+        4,
+        1.0,
+        None,
+    )
 
     assert list(backend._generate_vlm(*args, seed = 4242)) == ["ok"]
     assert callable(seen[-1]["sampler"]) and "seed" not in seen[-1]
@@ -3060,6 +3070,8 @@ def test_stop_sequences_cut_the_reply_and_never_show_a_partial_match():
     assert _mlx_stop_cut("a\ufffd", ["a"]) == (0, True)
     assert _mlx_stop_cut("a\ufffd\ufffd", ["\ufffd"]) == (1, False)
     assert _mlx_stop_cut("a\ufffdb", ["\ufffd"]) == (1, True)
+
+
 def _fake_rng_state(monkeypatch, words):
     from core.inference import mlx_inference
 
