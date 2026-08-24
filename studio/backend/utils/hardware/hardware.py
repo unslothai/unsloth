@@ -1046,6 +1046,16 @@ def _context_free_cuda_memory_info(
         device_ids = (
             numeric_ids if numeric_ids else list(range(_torch_get_physical_gpu_count() or 0))
         )
+        # Only when the counter instances ARE the visible set. With extras present
+        # the capacity ranking may hand a hidden adapter's smaller reading to a
+        # busier visible card: simulated over 89/89/8 GiB, a card really holding
+        # 86 GiB reports 10, overstating free by 76 GiB. The System tab can carry
+        # that best-effort mapping, but free_gb feeds training-method selection,
+        # where overstating free is what OOMs. Same cardinality assumption
+        # _rocm_windows_aggregate_used_bytes already rests on.
+        adapters = _rocm_windows_perf_counter_vram_by_adapter()
+        if adapters is None or len(adapters) != len(device_ids):
+            return None
         devices, _aggregate = _rocm_windows_per_device_vram(device_ids)
         for device in devices:
             if device.get("visible_ordinal") != idx:

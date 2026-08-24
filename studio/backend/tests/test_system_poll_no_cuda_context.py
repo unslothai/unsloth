@@ -728,6 +728,12 @@ def test_context_free_never_spawns_amd_smi_on_windows_without_a_hip_sdk(monkeypa
         lambda: {"raw": None, "numeric_ids": [0, 1], "supports_explicit_gpu_ids": True},
     )
     # Windows reads per-adapter counters, so declining amd-smi still answers.
+    # One instance per visible device, so the identity check upstream holds.
+    monkeypatch.setattr(
+        hw,
+        "_rocm_windows_perf_counter_vram_by_adapter",
+        lambda counter = "Dedicated Usage": [("a", 8.0 * (1 << 30)), ("b", 0.0)],
+    )
     monkeypatch.setattr(
         hw,
         "_rocm_windows_per_device_vram",
@@ -1392,3 +1398,36 @@ def test_decision_helper_does_not_mutate(monkeypatch):
     snapshot = dict(devices[0])
     assert hw._rocm_system_wide_vram_by_index(devices) == {0: (32.0, 64.0)}
     assert devices[0] == snapshot
+
+
+def test_context_free_windows_rocm_declines_when_counters_outnumber_devices(monkeypatch):
+    # A hidden adapter makes the counter set larger than the visible set. The
+    # capacity ranking can then hand its reading to a visible card: over 89/89/8
+    # GiB a card really holding 86 GiB reports 10, overstating free by 76 GiB.
+    # The System tab tolerates that mapping; free_gb feeds training-method
+    # selection, where overstating free is what OOMs. So decline instead.
+    gib = 1 << 30
+    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(hw, "_rocm_device_ordinal_active", lambda: False)
+    monkeypatch.setattr(
+        hw,
+        "_get_parent_visible_gpu_spec",
+        lambda: {"raw": "0,1", "numeric_ids": [0, 1], "supports_explicit_gpu_ids": True},
+    )
+    monkeypatch.setattr(hw, "_smi_query", lambda *a, **k: {"available": False, "devices": []})
+    monkeypatch.setattr(
+        hw,
+        "_rocm_windows_per_device_vram",
+        lambda _ids: (_ for _ in ()).throw(
+            AssertionError("must decline before consulting the capacity mapping")
+        ),
+    )
+    # Three instances, two visible devices: not an identity mapping.
+    monkeypatch.setattr(
+        hw,
+        "_rocm_windows_perf_counter_vram_by_adapter",
+        lambda counter = "Dedicated Usage": [("a", 0.0), ("b", 1.0 * gib), ("hidden", 20.0 * gib)],
+    )
+
+    assert hw._context_free_cuda_memory_info(0, 48 * gib) is None
