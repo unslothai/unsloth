@@ -1106,13 +1106,20 @@ with sync_playwright() as p:
         # after a single post-delete read found it gone -- which puts back exactly the
         # contamination this cleanup exists to remove. So absence is confirmed over a short
         # window rather than at one instant, and a row that comes back is removed again.
+        # EVERY INTERVAL, not until the first empty one. Breaking on the first empty sample
+        # confirms absence at one instant plus 250 ms, which is the same single-read weakness one
+        # step further along: a queued PUT arriving in the third interval still recreates the row
+        # before hydration reads it. The window is only a window if it is sampled to the end.
         left: list[str] | None = []
         for _ in range(4):
             page.wait_for_timeout(250)
-            left = rows_for_model()
-            if not left:
+            seen_now = rows_for_model()
+            if seen_now is None:
+                left = None
                 break
-            remove_rows(left)
+            if seen_now:
+                remove_rows(seen_now)
+            left = seen_now
         if left is None:
             runtime_warn(
                 "could not re-read the server override inventory after clearing it, so whether "
