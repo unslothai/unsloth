@@ -416,6 +416,15 @@ def _make_payload(**overrides) -> CreateResearchRun:
     return CreateResearchRun(**payload)
 
 
+def test_budgets_reject_a_boolean_instead_of_reading_it_as_unlimited():
+    # bool subclasses int, so False would land on the 0 sentinel and drop the deadline.
+    with pytest.raises(Exception, match = "not a boolean"):
+        _make_payload(budgets = {"modelTimeoutSeconds": False})
+    assert _make_payload(budgets = {"modelTimeoutSeconds": 0}).budgets == {
+        "modelTimeoutSeconds": 0,
+    }
+
+
 def test_sanitize_config_rejects_nested_inference_credential():
     payload = _make_payload(inferenceRequest = {"model": {"api_key": "sk-should-not-persist"}})
     with pytest.raises(Exception):
@@ -724,7 +733,11 @@ def test_wait_for_local_model_still_honors_cancellation(monkeypatch):
         asyncio.run(supervisor._wait_for_local_model(_waiting_run(30.0)))
 
 
-def _install_fake_client(monkeypatch, responses: list) -> list:
+def _install_fake_client(
+    monkeypatch,
+    responses: list,
+    timeouts: list[httpx.Timeout] | None = None,
+) -> list:
     """Serve ``responses`` in order to the completion path and record the sends. An entry that
     is an exception is raised instead, standing in for a transport failure."""
     sent: list = []
@@ -736,7 +749,8 @@ def _install_fake_client(monkeypatch, responses: list) -> list:
 
     class _FakeClient:
         def __init__(self, **kwargs):
-            pass
+            if timeouts is not None:
+                timeouts.append(kwargs["timeout"])
 
         async def __aenter__(self):
             return self
@@ -818,6 +832,109 @@ def _run_stream(supervisor, timeout_seconds: float = 30.0) -> tuple:
             report_progress = False,
         )
     )
+
+
+def test_unlimited_stream_keeps_header_and_idle_timeouts(monkeypatch):
+    timeouts: list[httpx.Timeout] = []
+    _install_fake_client(monkeypatch, [_response(200, body = _stream_body())], timeouts)
+    supervisor = _make_supervisor(_noop_check_active)
+    run = _waiting_run(0)
+    run["config"]["budgets"]["firstOutputTimeoutSeconds"] = 10
+
+    assert asyncio.run(
+        supervisor._stream_completion(run, [{"role": "user"}], report_progress = False)
+    ) == ("report", "", "stop", None)
+    assert len(timeouts) == 1
+    assert timeouts[0].connect == 10
+    # Strictly looser than the idle guard, so the named stall wins the race against HTTPX.
+    assert timeouts[0].read > research_runs._MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS
+
+
+class _QueuedThenSilentResponse:
+    """A backend that announces it is queueing and then never says anything else."""
+
+    status_code = 200
+
+    def raise_for_status(self):
+        return None
+
+    async def aclose(self):
+        return None
+
+    async def aiter_lines(self):
+        yield research_runs._ADMISSION_WAIT_COMMENT
+        await asyncio.sleep(3600)
+
+
+# Queueing is not charged to the request budget, so with no wall clock behind it a backend
+# that queues then goes quiet would hold the run open forever.
+def test_unlimited_still_bounds_silence_after_a_queue_notice(monkeypatch):
+    _install_fake_client(monkeypatch, [_QueuedThenSilentResponse()])
+    monkeypatch.setattr(research_runs, "_MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS", 0.2)
+    supervisor = _make_supervisor(_noop_check_active)
+    run = _waiting_run(0)
+    run["config"]["budgets"]["firstOutputTimeoutSeconds"] = 1
+
+    with pytest.raises(research_runs.ModelFirstOutputTimeout):
+        asyncio.run(
+            asyncio.wait_for(
+                supervisor._stream_completion(run, [{"role": "user"}], report_progress = False),
+                timeout = 30,
+            )
+        )
+
+
+class _ReadTimeoutResponse:
+    """A transport that times out reading the body, which HTTPX reports with no message."""
+
+    status_code = 200
+
+    def __init__(self, lines = ()):
+        self._lines = list(lines)
+
+    def raise_for_status(self):
+        return None
+
+    async def aclose(self):
+        return None
+
+    async def aiter_lines(self):
+        for line in self._lines:
+            yield line
+        raise httpx.ReadTimeout("")
+
+
+# Unlimited leaves no wall clock to convert, so a bare ReadTimeout would reach the user as
+# an empty error string instead of naming the stall.
+@pytest.mark.parametrize(
+    ("lines", "expected"),
+    (
+        ((), research_runs.ModelFirstOutputTimeout),
+        (
+            ('data: {"choices": [{"delta": {"content": "hi"}}]}',),
+            research_runs.ModelOutputIdleTimeout,
+        ),
+    ),
+)
+def test_a_bare_read_timeout_is_reported_as_a_named_stall(monkeypatch, lines, expected):
+    _install_fake_client(monkeypatch, [_ReadTimeoutResponse(lines)])
+    supervisor = _make_supervisor(_noop_check_active)
+    with pytest.raises(expected):
+        asyncio.run(
+            supervisor._stream_completion(
+                _waiting_run(0), [{"role": "user"}], report_progress = False
+            )
+        )
+
+
+def test_model_wait_budget_stays_bounded_for_any_request_budget():
+    waits = research_runs._MAX_MODEL_WAITS + 1
+    # Unchanged for every budget the shipped range already allowed.
+    assert research_runs._model_wait_budget(_waiting_run(3600)) == 3600 / waits
+    assert research_runs._model_wait_budget(_waiting_run(1800)) == 1800 / waits
+    # Unlimited uses the shipped default, and an oversized finite budget is capped.
+    assert research_runs._model_wait_budget(_waiting_run(0)) == 900 / waits
+    assert research_runs._model_wait_budget(_waiting_run(10**9)) == 3600 / waits
 
 
 def test_stream_completion_keeps_channels_separate_and_streams_content(monkeypatch):
@@ -1133,10 +1250,56 @@ def test_stream_completion_rejects_in_band_error_after_partial_report(monkeypatc
     sent = _install_fake_client(monkeypatch, [_response(200, body = stream)])
     supervisor = _make_supervisor(_noop_check_active)
 
-    with pytest.raises(RuntimeError, match = "Local model stream failed"):
+    # The server's own text is the only account of the cause there is, so it is what the
+    # user must be shown. This used to be replaced with "Local model stream failed".
+    with pytest.raises(RuntimeError, match = "generation failed"):
         _run_stream(supervisor)
 
     assert len(sent) == 1
+
+
+def test_stream_completion_reports_an_oversize_context_refusal_with_its_counts(monkeypatch):
+    # Observed live: Deep Research sent 2358 tokens into a 2048 token window. The counts
+    # are what tell the user which setting to change and by how much.
+    error = json.dumps(
+        {
+            "error": {
+                "message": (
+                    "request (2358 tokens) exceeds the available context size "
+                    "(2048 tokens), try increasing it"
+                )
+            }
+        }
+    )
+    stream = f"data: {error}\n\ndata: [DONE]\n\n"
+    _install_fake_client(monkeypatch, [_response(200, body = stream)])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        _run_stream(supervisor)
+
+    # .friendly, not str(): str stays the server's own text so the token-count regex in
+    # routes/inference.py still matches and rewrites it into the "Message too long" wording.
+    message = excinfo.value.friendly
+    assert "2358" in message and "2048" in message
+    assert "Context Length in Model settings" in message
+    assert excinfo.value.context_oversize
+
+
+def test_stream_completion_explains_a_shared_kv_starvation(monkeypatch):
+    # Observed live: two chats generating at once starved one unified KV cache and
+    # llama.cpp killed both. Neither request was too long, so the server's own wording
+    # would have misdirected the user.
+    error = json.dumps({"error": {"message": "Context size has been exceeded."}})
+    stream = f"data: {error}\n\ndata: [DONE]\n\n"
+    _install_fake_client(monkeypatch, [_response(200, body = stream)])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        _run_stream(supervisor)
+
+    assert "at the same time" in excinfo.value.friendly
+    assert excinfo.value.kv_starvation
 
 
 def test_stream_completion_timeout_is_absolute_despite_keepalives(monkeypatch):
@@ -1947,6 +2110,14 @@ def test_wall_clock_timeout_supports_python_without_asyncio_timeout(monkeypatch)
         asyncio.run(run())
 
 
+def test_wall_clock_timeout_can_be_disabled():
+    async def run():
+        async with research_runs._wall_clock_timeout(None):
+            await asyncio.sleep(0.01)
+
+    asyncio.run(run())
+
+
 def test_wall_clock_timeout_does_not_swallow_shutdown_cancellation(monkeypatch):
     # raising=False: on Python 3.10 asyncio.timeout does not exist to begin with,
     # which is the very case these tests cover.
@@ -2070,3 +2241,48 @@ def test_stream_completion_gives_a_model_switch_more_than_the_generic_backoff(mo
     assert len(sent) == research_runs._MAX_MODEL_WAITS + 1
     # Each wait is longer than the last: a swap that has not finished in 5s needs more, not less.
     assert sum(delays) == 30.0
+
+
+def _slow_admission_stream(gap_seconds: float):
+    """A queue that announces itself on a slow heartbeat, then admits and answers."""
+
+    class _SlowQueue:
+        status_code = 200
+
+        def raise_for_status(self):
+            return self
+
+        async def aclose(self):
+            return None
+
+        async def aiter_lines(self):
+            for _ in range(2):
+                yield ": admission-wait"
+                await asyncio.sleep(gap_seconds)
+            yield ": admission-done"
+            for line in _stream_body().splitlines():
+                yield line
+
+    return _SlowQueue()
+
+
+def test_a_slow_admission_heartbeat_widens_the_queue_gap_bound(monkeypatch):
+    """The gap between queue notices is bounded by the heartbeat operators configured."""
+    monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_KEEPALIVE_INTERVAL", "300")
+    timeouts: list[httpx.Timeout] = []
+    _install_fake_client(monkeypatch, [_response(200, body = _stream_body())], timeouts)
+    supervisor = _make_supervisor(_noop_check_active)
+
+    assert _run_stream(supervisor, timeout_seconds = 0) == ("report", "", "stop", None)
+    assert timeouts[0].read == 300 * 3 + research_runs._STREAM_READ_TIMEOUT_MARGIN_SECONDS
+
+
+def test_an_unlimited_run_survives_a_gap_past_the_default_queue_bound(monkeypatch):
+    """A healthy queue on a slow heartbeat must not be failed as a first-output stall."""
+    monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(research_runs, "_MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_KEEPALIVE_INTERVAL", "0.1")
+    _install_fake_client(monkeypatch, [_slow_admission_stream(0.15)])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    assert _run_stream(supervisor, timeout_seconds = 0) == ("report", "", "stop", None)

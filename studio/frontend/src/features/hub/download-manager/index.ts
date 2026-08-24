@@ -52,6 +52,7 @@ export { scopedVariant } from "./download-manager-types";
 export {
   getTransportMode,
   useDownloadTransportCapabilities,
+  useHttpPartialsResumable,
   useTransportMode,
 } from "./transport-preference";
 export type { TransportConflictInfo } from "./types";

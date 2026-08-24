@@ -2773,9 +2773,11 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 swa_full = False,
                 kv_unified = False,
                 n_ubatch = None,
+                ctx_checkpoints = 0,
                 flash_attn = True,
             ):
                 seen["ctx"] = ctx
+                seen["ctx_checkpoints"] = ctx_checkpoints
                 seen["cache_type"] = cache_type
                 seen["n_parallel"] = n_parallel
                 seen["swa_full"] = swa_full

@@ -305,3 +305,48 @@ def test_the_guard_is_not_vacuous() -> None:
         len(found) >= 10
     ), f"only {len(found)} workflows matched; the detector looks broken: {found}"
     assert sum(found.values()) >= 15, f"only {sum(found.values())} apt steps matched: {found}"
+
+
+def test_install_deps_does_not_let_apt_retry_inside_the_attempt() -> None:
+    """
+    `playwright install-deps` runs its own `apt-get update`, and that is the one apt
+    call in this repo that cannot be restructured to try the image's lists first.
+    So it is the one step where a stalled mirror is still paid in full, and the only
+    lever left is how many times apt repeats the stall before giving up.
+
+    On 2026-08-19 the helper's 20s transfer cap was applied and confirmed in the log
+    -- "apt configured to fail fast: 20s transfer timeout" -- and the update still
+    burned 4m31s of a 300s attempt, twice, so the step failed having never reached
+    the download. Four InRelease URIs stalling to the cap, repeated over apt's
+    default `Acquire::Retries "3"`, is 4 x 4 x 20s, which is what was measured.
+
+    Retrying belongs in the outer loop, not inside apt: the outer loop re-runs the
+    command under a fresh timeout and prints which way each attempt went, whereas
+    apt's internal retries are invisible and are charged to the caller's budget.
+
+    This is a guard rather than a comment because reverting it looks harmless. The
+    value would go back to apt's default, the step would still be "bounded and
+    retried" by every other assertion in this file, and the symptom would return as
+    a step that fails slowly against a mirror -- which reads as bad luck, not as a
+    setting someone changed.
+    """
+    steps = [
+        (f"{path.name}: {step.get('name', '<unnamed>')}", step)
+        for path in _workflows()
+        for _job_id, _job, step in _steps(yaml.safe_load(path.read_text(encoding = "utf-8")))
+        if "install-deps" in step["run"]
+    ]
+    assert steps, "no step runs `playwright install-deps`; this guard checks nothing"
+
+    for name, step in steps:
+        retries = (step.get("env") or {}).get("APT_ACQUIRE_RETRIES")
+        assert retries is not None, (
+            f"step '{name}' runs `playwright install-deps` without setting "
+            f"APT_ACQUIRE_RETRIES, so apt falls back to 3 internal retries and a "
+            f"stalled mirror costs roughly four times the per-URI timeout"
+        )
+        assert str(retries) == "0", (
+            f"step '{name}' sets APT_ACQUIRE_RETRIES={retries!r}; anything above 0 "
+            f"spends the attempt budget inside apt, where the retries are invisible "
+            f"and the outer attempt loop cannot see or report them"
+        )

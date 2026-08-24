@@ -126,6 +126,27 @@ def test_already_in_target_state_uses_gguf_path_when_present(tmp_path):
     )
 
 
+def test_already_loaded_model_reloads_when_selected_binary_changes():
+    backend = _loaded_backend()
+    backend._binary_changed_since_launch = lambda: True
+
+    assert (
+        _matches(
+            backend,
+            gguf_path = None,
+            model_identifier = "owner/repo",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = None,
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+        )
+        is False
+    )
+
+
 def test_already_in_target_state_rejects_different_gguf_path(tmp_path):
     a = tmp_path / "a.gguf"
     a.write_bytes(b"")

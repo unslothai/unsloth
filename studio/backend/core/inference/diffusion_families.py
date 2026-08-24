@@ -22,11 +22,54 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import NamedTuple, Optional, Sequence
+from utils.paths.path_utils import is_appledouble_metadata
 
 
 # Runtime->route contract: the /images/generate route matches these messages EXACTLY for a 409 (vs a 500), so both engines raise them verbatim.
 DIFFUSION_NOT_LOADED_MSG = "No diffusion model is loaded."
 DIFFUSION_CANCELLED_MSG = "Diffusion generation was cancelled."
+
+
+@dataclass(frozen = True)
+class LoadIdentity:
+    """What a caller's derived request parameters depend on, as one comparable value.
+
+    ``repo_id`` alone is not one: /images/load takes ``base_repo`` and ``family_override``
+    independently of the path, so a local checkpoint reloads as a different model while the
+    path stays put, and the images route derives steps/guidance from ``base_repo`` and its
+    edit-only verdict from the family (#9448). Loads agreeing on all three derive identical
+    parameters, which is exactly when accepting one for the other is correct.
+
+    A type rather than a tuple, so pinning a bare repo id compares unequal and is refused
+    instead of matching some other shape by accident.
+    """
+
+    repo_id: str
+    base_repo: str
+    family: str
+
+
+def load_identity(repo_id, base_repo, family) -> LoadIdentity:
+    """``LoadIdentity`` for one load. None and "" describe the same absent field."""
+    return LoadIdentity(str(repo_id or ""), str(base_repo or ""), str(family or ""))
+
+
+class DiffusionModelReplacedError(RuntimeError):
+    """Both engines' ``generate`` refusing a ``LoadIdentity`` that is no longer loaded.
+
+    Keeps a caller's per-model steps/guidance and workflow verdict, taken from an earlier
+    ``status()`` read, off a model they never validated (#9448). Here rather than in
+    ``diffusion`` so the native engine can raise it without importing the torch backend.
+    """
+
+    def __init__(self, expected: LoadIdentity, actual: LoadIdentity):
+        super().__init__(
+            f"The image model was replaced while this request waited "
+            f"(expected {expected.repo_id!r}, loaded {actual.repo_id!r}); "
+            "retry with fresh parameters."
+        )
+        self.expected = expected
+        self.actual = actual
 
 
 @dataclass(frozen = True)
@@ -719,7 +762,12 @@ def _root_holds_upstream(root: Path, repo_id: str, wanted: Sequence[str]) -> boo
             if wanted:
                 if all((rev / name).exists() for name in wanted):
                     return True
-            elif any(p.suffix.lower() in _WEIGHT_SUFFIXES and p.is_file() for p in rev.rglob("*")):
+            elif any(
+                p.suffix.lower() in _WEIGHT_SUFFIXES
+                and p.is_file()
+                and not is_appledouble_metadata(p)
+                for p in rev.rglob("*")
+            ):
                 return True
         return False
     except Exception:  # noqa: BLE001 -- an unreadable/absent cache just means "not cached"

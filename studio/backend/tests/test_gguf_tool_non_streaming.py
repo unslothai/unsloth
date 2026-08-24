@@ -22,6 +22,7 @@ from .llama_backend_double import FakeLlamaCppBackend
 
 class _ToolGgufBackend(FakeLlamaCppBackend):
     supports_tools = True
+    context_length = 8192
 
     def generate_chat_completion_with_tools(self, **kwargs):
         # The agentic loop runs one tool, then the model answers. Event shapes
@@ -167,3 +168,37 @@ def test_non_streaming_preserves_cached_tokens(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["usage"]["prompt_tokens_details"]["cached_tokens"] == 16
+
+
+def test_non_streaming_preserves_accumulated_context_truncation(monkeypatch):
+    events = [
+        {
+            "type": "context_truncated",
+            "dropped_messages": 2,
+            "prompt_tokens_before": 9000,
+            "prompt_tokens_after": 7000,
+            "context_length": 8192,
+            "fits": True,
+        },
+        {
+            "type": "context_truncated",
+            "dropped_messages": 3,
+            "prompt_tokens_before": 8100,
+            "prompt_tokens_after": 6500,
+            "context_length": 8192,
+            "fits": True,
+        },
+        {"type": "content", "text": "hi"},
+    ]
+    response = _client(monkeypatch, _EventsBackend(events)).post(
+        "/chat/completions", json = _payload(stream = False)
+    )
+
+    assert response.status_code == 200
+    assert response.json()["context_truncated"] == {
+        "dropped_messages": 5,
+        "prompt_tokens_before": 9000,
+        "prompt_tokens_after": 6500,
+        "context_length": 8192,
+        "fits": True,
+    }

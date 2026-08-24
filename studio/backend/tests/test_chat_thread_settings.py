@@ -597,3 +597,74 @@ def test_the_newest_writer_is_not_the_first_evicted(tmp_path, monkeypatch):
 
     got = thread_from_row(studio_db.get_chat_thread("thread-1")).settings
     assert got.toolsEnabled is False
+
+
+def test_sampling_params_are_part_of_the_snapshot():
+    """The reported gap: a chat's system prompt and sampling did not travel with it."""
+    settings = ChatThreadSettings.model_validate(
+        {
+            "temperature": 0.2,
+            "topP": 0.85,
+            "topK": 40,
+            "minP": 0.02,
+            "repetitionPenalty": 1.1,
+            "presencePenalty": 0.5,
+            "systemPrompt": "You are a terse reviewer.",
+            "systemVariables": "name=Ada",
+        }
+    )
+    assert settings.temperature == 0.2
+    assert settings.systemPrompt == "You are a terse reviewer."
+    assert settings.systemVariables == "name=Ada"
+
+
+@pytest.mark.parametrize(
+    "field, inside, outside",
+    [
+        ("temperature", 2, 2.5),
+        ("temperature", 0, -0.1),
+        ("topP", 1, 1.5),
+        ("topK", 100, 101),
+        # -1 disables top-k; the floor is below it, not at zero.
+        ("topK", -1, -2),
+        ("minP", 0, -1),
+        ("repetitionPenalty", 1, 0.5),
+        ("presencePenalty", 2, 3),
+    ],
+)
+def test_sampling_params_take_the_slider_range_and_no_more(field, inside, outside):
+    """Both halves: extra="forbid" alone would refuse the out-of-range value too."""
+    assert getattr(ChatThreadSettings.model_validate({field: inside}), field) == inside
+    with pytest.raises(ValidationError):
+        ChatThreadSettings.model_validate({field: outside})
+
+
+def test_the_disabled_top_k_value_round_trips():
+    """ChatCompletionRequest allows -1 and default.yaml falls back to it, so a chat
+    running with top-k off has to be able to store that."""
+    assert ChatThreadSettings.model_validate({"topK": -1}).topK == -1
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_sampling_params_refuse_nan_and_infinity(bad):
+    """Stored bare, these parse back in Python but are not valid JSON for anything else."""
+    assert ChatThreadSettings.model_validate({"temperature": 0.5}).temperature == 0.5
+    with pytest.raises(ValidationError):
+        ChatThreadSettings.model_validate({"temperature": bad})
+
+
+def test_a_long_system_prompt_is_stored_whole():
+    """Truncating would silently change what the chat runs with."""
+    prompt = "x" * 20_000
+    settings = ChatThreadSettings.model_validate({"systemPrompt": prompt})
+    assert settings.systemPrompt == prompt
+
+
+def test_an_older_build_drops_only_the_sampling_it_cannot_read():
+    """readable_thread_settings keeps the rest of a snapshot a newer build wrote."""
+    from routes.chat_history import readable_thread_settings
+
+    kept = readable_thread_settings(
+        {"toolsEnabled": True, "temperature": 0.3, "somethingNewer": "?"}
+    )
+    assert kept == {"toolsEnabled": True, "temperature": 0.3}

@@ -64,7 +64,6 @@ export {
 export { resolveStagedDiffusionClassification } from "./lib/gpu-placement";
 export {
   preferFullToolOutput,
-
   preferSanitizedFullToolOutput,
   toolOutputKey,
   toolThreadScope,
@@ -112,6 +111,7 @@ export {
 } from "./utils/prompt-queue-boundary";
 export {
   adoptPreStreamRunReservation,
+  cancelPreStreamRunReservations,
   findPreStreamRunReservation,
   hasPreStreamRunReservation,
   preStreamRunThreadIdsForAdapter,
@@ -120,6 +120,13 @@ export {
   releasePreStreamRunReservation,
   reservePreStreamRun,
 } from "./utils/pre-stream-run-reservation";
+export { claimThreadCreation } from "./utils/chat-thread-creation-claim";
+export { useChatProjectScope } from "./chat-project-scope";
+// Audio swaps the same llama-server Chat decodes on, so it needs the same confirmation.
+export {
+  confirmStopRunningChatsIfNeeded,
+  type StopRunningChatsDecision,
+} from "./utils/confirm-stop-running-chats";
 export {
   promptQueueActiveItemChanged,
   reorderPromptQueueItems,
@@ -157,6 +164,7 @@ export {
   useChatModelRuntime,
   resyncInferenceStatusAfterServerModelChange,
 } from "./hooks/use-chat-model-runtime";
+export { compareModelDisplayName } from "./lib/external-model-label";
 export { chatModelLoaded } from "./lib/chat-model-loaded";
 export type { ChatModelLoadedInput } from "./lib/chat-model-loaded";
 export {
@@ -165,6 +173,17 @@ export {
   isExternalModelId,
   parseExternalModelId,
 } from "./external-providers";
+export {
+  type AttachmentText,
+  assertDocumentAttachmentSize,
+  attachmentAudioSrc,
+  attachmentTextLanguage,
+  countAttachmentTextLines,
+  isAudioAttachment,
+  parseAttachmentText,
+  readAttachmentText,
+  truncateAttachmentPreviewText,
+} from "./attachment-content";
 export { ApiProviderLogo } from "./api-provider-logo";
 export { useExternalProvidersStore } from "./stores/external-providers-store";
 export { DeleteChatFilesSwitch } from "./components/delete-chat-files-switch";
@@ -176,6 +195,12 @@ export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
 export { offerToDeleteKeptSandboxes } from "./utils/offer-kept-sandbox-files";
 export { pasteClipboardFiles } from "./utils/clipboard-files";
 export { extractYoutubeVideoId } from "./utils/youtube-url";
+export {
+  isSearchImagesToolResult,
+  searchImagePath,
+  stripSearchImageTokens,
+  type SearchImageEntry,
+} from "./search-images/search-images";
 export { YoutubeTranscriptPrompt } from "./components/youtube-transcript-prompt";
 export {
   formatMcpToolName,
@@ -188,7 +213,9 @@ export {
   createPastedTextFile,
   isPastedTextContent,
   isPastedTextFile,
+  isPlainPasteChord,
   pasteLongTextAsFile,
+  plainPasteStillCounts,
   pastedTextContentBytes,
   pastedTextContentPreview,
   pastedTextOf,
@@ -315,5 +342,7 @@ export {
   StudioSpeechSynthesisAdapter,
   createConfiguredUtterance,
   curateSystemVoices,
+  generateCustomTtsAudio,
   generateStudioTtsAudio,
+  releaseTtsAudioUrl,
 } from "./adapters/studio-speech-synthesis-adapter";

@@ -36,6 +36,83 @@ assert_not_contains() {
     fi
 }
 
+# Anywhere on the line, not just at the start: a documented command is regularly prefixed,
+# by a shell prompt, by `sudo`, or by an inline env assignment, and
+# `UNSLOTH_STUDIO_PASSWORD=... unsloth studio -H 0.0.0.0` is the same wildcard bind as the
+# bare one. Anchoring on the line start let that shape through.
+studio_commands() {
+    printf '%s\n' "$1" \
+        | awk '/(^|[[:space:]])unsloth[[:space:]]+studio([[:space:]]|$)/'
+}
+
+assert_studio_wildcard_host_state() {
+    _label="$1"; _haystack="$2"; _expected="$3"
+    _commands=$(studio_commands "$_haystack")
+    if printf '%s\n' "$_commands" \
+        | grep -Eq '(^|[[:space:]])(-H|--host)(=|[[:space:]]+)0\.0\.0\.0([[:space:]]|$)'; then
+        _actual="present"
+    else
+        _actual="absent"
+    fi
+    if [ "$_actual" = "$_expected" ]; then
+        echo "  PASS: $_label"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL: $_label (expected wildcard host $_expected, found $_actual)"
+        FAIL=$((FAIL + 1))
+    fi
+}
+
+assert_wildcard_detection() {
+    _label="$1"; _fixture="$2"; _expected="$3"
+    _commands=$(studio_commands "$_fixture")
+    if printf '%s\n' "$_commands" \
+        | grep -Eq '(^|[[:space:]])(-H|--host)(=|[[:space:]]+)0\.0\.0\.0([[:space:]]|$)'; then
+        _actual="present"
+    else
+        _actual="absent"
+    fi
+    if [ "$_actual" = "$_expected" ]; then
+        echo "  PASS: $_label"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL: $_label (expected $_expected, detector said $_actual)"
+        FAIL=$((FAIL + 1))
+    fi
+}
+
+echo ""
+# The assertions below are only as good as the detector they share. Every negative
+# assertion in this file passes when the detector sees nothing, so a detector that quietly
+# stops matching turns the whole file green while guarding nothing. These fixtures pin what
+# it must catch and what it must not, against the shapes README commands actually take.
+echo "=== wildcard-host detector ==="
+
+assert_wildcard_detection "detector: bare wildcard bind" \
+    'unsloth studio -H 0.0.0.0' "present"
+assert_wildcard_detection "detector: long flag" \
+    'unsloth studio --host 0.0.0.0' "present"
+assert_wildcard_detection "detector: long flag with =" \
+    'unsloth studio --host=0.0.0.0' "present"
+assert_wildcard_detection "detector: trailing flags after the bind" \
+    'unsloth studio -H 0.0.0.0 -p 8888' "present"
+assert_wildcard_detection "detector: shell-prompt prefix" \
+    '$ unsloth studio -H 0.0.0.0' "present"
+assert_wildcard_detection "detector: inline env assignment prefix" \
+    "UNSLOTH_STUDIO_PASSWORD='x' unsloth studio --host=0.0.0.0" "present"
+assert_wildcard_detection "detector: indented inside a fenced block" \
+    '    unsloth studio -H 0.0.0.0' "present"
+assert_wildcard_detection "detector: loopback default is not a wildcard" \
+    'unsloth studio' "absent"
+assert_wildcard_detection "detector: an explicit loopback bind is not a wildcard" \
+    'unsloth studio -H 127.0.0.1' "absent"
+assert_wildcard_detection "detector: a longer address starting 0.0.0.0 is not the wildcard" \
+    'unsloth studio -H 0.0.0.01' "absent"
+assert_wildcard_detection "detector: another program's wildcard bind is not ours" \
+    'jupyter lab --ip 0.0.0.0' "absent"
+assert_wildcard_detection "detector: an empty window finds nothing" \
+    '' "absent"
+
 echo ""
 echo "=== install.sh launcher template ==="
 
@@ -88,19 +165,20 @@ assert_not_contains \
 echo ""
 echo "=== README.md Launch section ==="
 
-# The primary Launch example must not include -H 0.0.0.0; the LAN/cloud
-# note is an opt-in line outside it. Stop at the next heading of any level:
+# The primary Launch example must not include -H 0.0.0.0. Stop at the next heading:
 # '#### Update' was later deleted, silently extending the section to the file end.
 _readme_launch=$(awk '/^#### Launch$/{found=1; print; next} found && /^#{1,6} /{exit} found{print}' "$README")
+# The opt-in belongs anywhere in the Studio quickstart, including a sibling subsection.
+_readme_studio=$(awk '/^### Unsloth Studio \(web UI\)$/{found=1; print; next} found && /^#{1,3} /{exit} found{print}' "$README")
 assert_contains \
     "README: Launch section exists" \
     "$_readme_launch" "unsloth studio"
-assert_not_contains \
-    "README: Launch section primary command has no -H 0.0.0.0" \
-    "$_readme_launch" "studio -H 0.0.0.0"
-assert_contains \
-    "README: Launch section documents -H 0.0.0.0 opt-in" \
-    "$_readme_launch" "0.0.0.0"
+assert_studio_wildcard_host_state \
+    "README: Launch section primary command has no wildcard host" \
+    "$_readme_launch" "absent"
+assert_studio_wildcard_host_state \
+    "README: Studio quickstart documents a wildcard-host opt-in" \
+    "$_readme_studio" "present"
 
 echo ""
 echo "=== Results ==="
