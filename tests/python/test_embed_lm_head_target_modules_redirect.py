@@ -217,14 +217,16 @@ def test_flipping_ensure_weight_tying_is_seen_as_a_different_request():
     from unsloth import FastLanguageModel
 
     model, _ = FastLanguageModel.from_pretrained(
-        model_name = MODEL_NAME, load_in_4bit = True, max_seq_length = 512,
+        model_name = MODEL_NAME,
+        load_in_4bit = True,
+        max_seq_length = 512,
     )
     try:
         kwargs = dict(r = 8, lora_alpha = 16, target_modules = list(TARGET_MODULES))
         model = FastLanguageModel.get_peft_model(model, **kwargs)
-        assert getattr(model.peft_config["default"], "modules_to_tie", None), (
-            "model is not tied here; this guard would check nothing"
-        )
+        assert getattr(
+            model.peft_config["default"], "modules_to_tie", None
+        ), "model is not tied here; this guard would check nothing"
         with pytest.raises(TypeError, match = "parameters are different"):
             FastLanguageModel.get_peft_model(model, ensure_weight_tying = False, **kwargs)
         # Asking for the mode it already has is still the same request.

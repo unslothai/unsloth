@@ -3194,14 +3194,16 @@ class FastLlamaModel:
             # compare it separately. On what it actually does, not what was asked: on an
             # untied model the request changes nothing either way.
             _requested_tie = _resolve_ensure_weight_tying(
-                model, requested_saved, ensure_weight_tying,
+                model,
+                requested_saved,
+                ensure_weight_tying,
             )
             _requested_ties = requested_saved != _drop_tied_output_module(
-                model, requested_saved, _requested_tie,
+                model,
+                requested_saved,
+                _requested_tie,
             )
-            _stored_ties = bool(
-                getattr(model.peft_config["default"], "modules_to_tie", None)
-            )
+            _stored_ties = bool(getattr(model.peft_config["default"], "modules_to_tie", None))
             check_all = check_all and (_requested_ties == _stored_ties)
             # Per-expert Linear MoE experts (e.g. gpt-oss bnb-4bit) were auto-added to the
             # saved target_modules when the adapter was first created. Recompute them so a
