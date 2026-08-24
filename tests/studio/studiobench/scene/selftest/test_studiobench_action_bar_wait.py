@@ -179,6 +179,11 @@ const getComputedStyle = () => ({ pointerEvents: "auto" });
 const window = {};
 // The real one is frames.js's rAF promise. A timer is the same shape and does not need a compositor.
 window.__sbNextPaint = () => new Promise((r) => setTimeout(r, 16));
+// dom.js's follow sampler survives a navigation by writing itself to sessionStorage on `pagehide`,
+// so installing it REGISTERS a listener. Nothing here ever fires it -- the registration only has to
+// not throw -- and the read side is already inside its own try/catch, which is why sessionStorage
+// itself does not need shimming.
+window.addEventListener = () => {};
 
 (new Function("window", "document", "PointerEvent", domSrc))(window, document, PointerEvent);
 

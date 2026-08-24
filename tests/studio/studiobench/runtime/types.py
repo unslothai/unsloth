@@ -370,10 +370,20 @@ class Recorder:
         name: str,
         passed: bool,
         detail: Optional[dict] = None,
+        cell_id: Optional[str] = None,
     ) -> None:
-        self.emit(
-            {"row_type": "gate", "name": name, "passed": bool(passed), "detail": detail or {}}
-        )
+        """A pass/fail verdict row. `cell_id` NAMES THE CELL THE VERDICT IS ABOUT.
+
+        Optional because a few gates really are run-level, but almost none are. `excluded_from_rows`
+        reads `row.get("cell_id") or "run"`, so a per-cell gate emitted without one is attributed to
+        the synthetic cell "run": a failure that says one arm at one rung lost messages is presented
+        as a run-level self-check failure, and the report cannot say which arm or which rung. Pass
+        it whenever the verdict is about a cell.
+        """
+        row = {"row_type": "gate", "name": name, "passed": bool(passed), "detail": detail or {}}
+        if cell_id is not None:
+            row["cell_id"] = cell_id
+        self.emit(row)
 
     def failure(
         self,

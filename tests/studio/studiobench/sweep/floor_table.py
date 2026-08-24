@@ -40,6 +40,7 @@ if __package__ in (None, ""):  # pragma: no cover
     # bad first minute.
     sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
+from tests.studio.studiobench.runtime.ab import failed_invalidating_gates  # noqa: E402
 from tests.studio.studiobench.scoring.from_payload import (  # noqa: E402
     ACTION_SOURCES,
     FRAME_METRICS,
@@ -48,6 +49,7 @@ from tests.studio.studiobench.scoring.from_payload import (  # noqa: E402
     _actions_for,
     _frame_measures,
     _stream_measures,
+    latest_attempt_rows,
     refuse_if_probed,
 )
 
@@ -131,9 +133,45 @@ def cell_metrics(records: list[dict]) -> dict[str, dict[str, float]]:
     frame metrics dilutes `time_in_jank_pct` and `jank_index` away from the film that was measured.
     A metric here has to be the same quantity the rest of the tool calls by that name.
     """
+    # A CELL THAT FAILED AN INVALIDATING GATE IS NOT A READING, HERE EITHER. Both gates are
+    # advisory where they are emitted, so such a cell arrives `completed=True` with a full set of
+    # timings that are CHEAPER than a correct cell's, and this table is where a floor is built and
+    # where a result is scored against it. `paired` divides treatment by base per pair, so a
+    # one-sided failure is not cancelled by the null control being same-build: it lands in
+    # `delta_pct` and `spread_pct` directly. On the result side it is worse, because a gate-failed
+    # treatment cell pairs against a clean base cell and prints as `faster`.
+    #
+    # This is not hypothetical. The virtualization negative result recorded in CONTRIBUTING-perf.md
+    # was measured through this workflow and contains both facts at once: the treatment arm's
+    # census going from 12 mounted messages to 0 and never recovering, and a headline of 28.2%
+    # faster weighted. Nothing between the two noticed.
+    #
+    # Read from the RAW stream, because `failed_invalidating_gates` scopes the gate to its own
+    # attempt by hand -- a gate row is not one of the row types `latest_attempt_rows` covers -- and
+    # it names the winning attempt from the last `cell` row of ANY completion state.
+    gate_failures = failed_invalidating_gates(records)
+
+    # A SUPERSEDED ATTEMPT'S COMPLETION IS NOT THIS CELL'S READING, and the session scoping below
+    # cannot say so: it answers "which rows belong to this completed cell row", not "is this
+    # completed cell row still the cell". `ab.skippable_cells` re-runs an A/B pair WHOLE, so a
+    # resume with any work left re-attempts cells that had already completed, and a retry that
+    # dies leaves the older completed row as the only one carrying a full set of timings.
+    #
+    # Left raw, that row is admitted -- and the guard above it disagrees about which attempt is
+    # being scored. `failed_invalidating_gates` names the winner from the LAST cell row, so a
+    # retry that crashed and wrote its `completed=False` row supersedes the dead attempt's FAILED
+    # gate while this loop keeps that same attempt's numbers. A cell refused for losing its
+    # thread's middle before the resume was published after it, pairing its cheaper timings
+    # against a clean base arm and printing as `faster`: the 28.2% failure described above,
+    # arriving through the resume. Same rows, same rule, one lens -- as `runtime/ab.readings_by_arm`
+    # and `sweep/ui_parity.collect` already read them.
+    records = latest_attempt_rows(records)
+
     out: dict[str, dict[str, float]] = {}
     for row in records:
         if row.get("row_type") != "cell" or not row.get("completed"):
+            continue
+        if str(row.get("cell_id")) in gate_failures:
             continue
         cid = row["cell_id"]
         # Scoped to this cell's OWN attempt: `--resume` re-runs a died cell under a new
@@ -180,9 +218,13 @@ def cell_sessions(records: list[dict]) -> dict[str, str]:
     Same last-writer-wins rule as `cell_metrics`, so the session reported here is the session whose
     numbers that function returned. Anything else would pair a reading against a session it did not
     come from, which is the thing the caller is trying to stop.
+
+    THROUGH `latest_attempt_rows`, because `cell_metrics` is. A superseded attempt it no longer
+    returns must not still be able to name a session here, or this answers about one attempt while
+    the numbers came from another -- the same lens split this pair of functions exists to close.
     """
     out: dict[str, str] = {}
-    for row in records:
+    for row in latest_attempt_rows(records):
         if row.get("row_type") == "cell" and row.get("completed"):
             out[row["cell_id"]] = str(row.get("session_id") or "")
     return out

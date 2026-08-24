@@ -280,6 +280,33 @@ class SceneRunner:
         except Exception as exc:  # noqa: BLE001
             return {"census_attempted": False, "reason": f"{type(exc).__name__}: {exc}"}
 
+    def _watch_visible(self) -> None:
+        """Install the visible-region observer BEFORE the window opens.
+
+        Before, not after, because the compared set is the union of everything the viewport showed
+        during the action. An action that scrolls reveals messages and hides them again, and an
+        observer installed at the close would compare only wherever the scroll happened to stop.
+        """
+        try:
+            self.page.evaluate("() => window.__sb.parityVisible.watch()")
+        except Exception:  # noqa: BLE001
+            # A page that cannot install it still gets a structural digest; the visible-region
+            # capture reports itself absent rather than empty, which the analysis refuses.
+            pass
+
+    def _visible(self) -> dict:
+        """The visible-region capture, taken at the close and BEFORE the census and the digest.
+
+        It closes an accumulating observation rather than reading a static DOM, so it goes first;
+        see the comment at the call site for what its tail costs when it does not.
+        """
+        try:
+            got = self.page.evaluate("async () => await window.__sb.parityVisible.capture()")
+            self.page.evaluate("() => window.__sb.parityVisible.stop()")
+            return got
+        except Exception as exc:  # noqa: BLE001
+            return {"visible_attempted": False, "reason": f"{type(exc).__name__}: {exc}"}
+
     def _parity(self) -> dict:
         """A structural digest of what is on screen, for the UI-parity check across arms.
 
@@ -348,11 +375,21 @@ class SceneRunner:
         # payload this tool has already written and in the analysis scripts pointed at them;
         # renaming it would break those silently, which is a worse failure than a misleading name
         # that is now documented in INTERFACES.md and contradicted by the kind beside it.
+        # THE CENSUS IS TAKEN BEFORE THE GAP WINDOW OPENS, not at its close. Same defect as the
+        # action windows (workspace task #102) and the same fix, but the placement is different:
+        # a gap window is the QUIET stretch, and its whole purpose is to measure the page doing
+        # nothing but stream. Nineteen querySelectorAll passes over 195,000 elements at the end of
+        # it is not nothing, and it landed on the frame-rate reading for the idle phase.
+        #
+        # Before rather than after, because the gap ends the instant the next slot is due: taking
+        # it afterwards would push the action's start past its own slot and turn an instrument cost
+        # into a missed slot, which is a worse failure than the one being fixed.
+        census = self._census()
         with self.open_window(name, "gap") as window:
+            window.note("census_before_gap", census)
             while (time.monotonic() - t0) * 1000 < until_ms:
                 time.sleep(min(0.2, max(0.01, (until_ms - (time.monotonic() - t0) * 1000) / 1000)))
             window.note("waited_to_ms", until_ms)
-            window.note("census", self._census())
 
     def _run_slot(self, slot: Slot, t0: float) -> dict:
         entry = get_action(slot.action)
@@ -388,6 +425,7 @@ class SceneRunner:
                 expect = {"t_start_ms": slot.t_start_ms, "reached_at_ms": round(now_ms, 1)},
             ).row(slot.action, window_name, self.cell.cell_id)
 
+        self._watch_visible()
         with self.open_window(window_name, "action") as window:
             ctx = ActionContext(
                 page = self.page,
@@ -406,23 +444,79 @@ class SceneRunner:
                 result = not_run(f"the action raised {type(exc).__name__}: {exc}")
             window.note("action", slot.action)
             window.note("ran", result.ran)
-            # A CENSUS PER ACTION, taken at the close of every window.
-            #
-            # Not a nicety. The end-of-cell census is taken after the film has finished, and the
-            # film ENDS with thread_reopen and delete_message -- so the "final" census of the
-            # first working run read 0 assistant messages and 0 characters, having faithfully
-            # measured a thread the benchmark had just deleted. A census per window gives the
-            # occupancy at the moment each action ran, which is the denominator every per-action
-            # cost needs anyway, and it makes the peak recoverable no matter what the last action
-            # did. Measured cost on a 1,500-element tree: 0.2ms.
-            window.note("census", self._census())
-            window.note("parity", self._parity())
 
-        over_ms = ((time.monotonic() - t0) * 1000) - deadline_ms
+        # THE CENSUS AND THE PARITY DIGEST ARE TAKEN OUTSIDE THE WINDOW. Workspace task #102.
+        #
+        # Both used to run inside the `with`, one line above this comment, on the strength of a
+        # measurement -- "0.2ms on a 1,500-element tree" -- taken on a tree three orders of
+        # magnitude smaller than the one this benchmark exists to study. At 100K+ tokens the
+        # census walks nineteen querySelectorAll passes over ~195,000 elements and the parity
+        # digest serialises 5.6 MB of structure, and every millisecond of it was being charged to
+        # the action that happened to precede it. Measured cost of the mistake:
+        #
+        #   delete_message   reported 14.3 fps, true 49.0 fps
+        #   message_menu     reported 17.1 fps, true 73.8 fps
+        #
+        # That is not a correction at the margin. It inverted the ranking of the actions this
+        # campaign is about, and it did it in the direction that makes the standing DOM look like
+        # a smaller problem than it is, because the instrument's own cost grows with exactly the
+        # quantity under investigation.
+        #
+        # They still run at the same MOMENT -- immediately after the window closes, before the
+        # scheduler starts waiting for the next slot -- so the digest and the occupancy still come
+        # from one reading of one DOM taken at the end of the action. Only the accounting moved.
+        #
+        # The consequence, stated: the emitted `window` row no longer carries them in its notes,
+        # because the row is emitted when the window closes. They live on the ACTION row, which is
+        # where every consumer already reads them from.
+        # THE DEADLINE IS SAMPLED HERE, BEFORE THE OBSERVATIONS. Moving the census and the digest
+        # out of the measured window but leaving `over_ms` to be taken after them would have left
+        # half the defect in place: an action that finished comfortably inside its budget would
+        # still be flagged `over_budget` on the strength of a multi-megabyte serialisation that is
+        # explicitly not its cost. Charging instrument time to the thing being measured is the
+        # whole of task #102, and the budget flag is not exempt from it.
+        window_closed_at = time.monotonic()
+        over_ms = ((window_closed_at - t0) * 1000) - deadline_ms
+
+        # THE VISIBLE CAPTURE GOES FIRST, AND THE ORDER IS THE MEASUREMENT. The other two read a
+        # DOM that is sitting still; this one CLOSES an observation that has been accumulating
+        # since `_watch_visible`, and every millisecond it stays open is another millisecond in
+        # which a row can scroll into view and be counted as having been visible during the
+        # action. Taken after the census and the digest, that tail was as long as those two probes
+        # take -- and they are the one thing on this path whose cost is proportional to the arm.
+        #
+        # A fully mounted arm serialises the whole thread, a windowed arm serialises the dozen
+        # rows it has mounted, so the two arms' observers stayed open for materially different
+        # intervals: the numbers above this comment are 14.3 fps against 49.0, which is the same
+        # asymmetry expressed as time. With streaming and autoscroll still running at the close of
+        # `scroll_during_generation`, the mounted arm had the longer tail in which to admit an
+        # ordinal the windowed arm never saw, and `compare_visible` has no tolerance for that --
+        # it returns DIFFER on strict set inequality of `ever_visible`. The null control cannot
+        # absorb it either, being same-build against same-build, where both sides pay the same
+        # digest and the asymmetry does not exist.
+        #
+        # Taking it first does not make the tail zero: `capture()` still waits two frames, on
+        # purpose, so a quiet action does not report an empty viewport. It makes the tail the SAME
+        # ON BOTH ARMS, which is the property the comparison actually needs.
+        visible = self._visible()
+        census = self._census()
+        parity = self._parity()
+        # The observations DO consume wall clock before the next slot, so their cost is recorded
+        # rather than dropped -- it is simply recorded as theirs.
+        observation_ms = (time.monotonic() - window_closed_at) * 1000
         row = result.row(slot.action, window_name, self.cell.cell_id)
         row["window_ms"] = window.duration_ms
-        row["census"] = window.notes.get("census")
-        row["parity"] = window.notes.get("parity")
+        # READ FROM THE LOCALS ABOVE, not from `window.notes`. The three observations were moved
+        # out of the measured window, so by the time this row is built they are values this method
+        # holds rather than notes the window carries.
+        row["census"] = census
+        row["parity"] = parity
+        row["visible"] = visible
+        # The observation cost itself, so it is never invisible again. `census_cost_ms` is the
+        # page's own timing of the walk; if this pair ever comes to dominate the film's wall clock
+        # the number is in the payload rather than in someone's hypothesis.
+        row["observation_outside_window"] = True
+        row["observation_ms"] = round(observation_ms, 1)
         # THE SCREENSHOT IS TAKEN OUTSIDE THE WINDOW, on purpose and not as a tidiness point.
         # The film runs on a wall clock and every slot has an absolute start, so an encode charged
         # to the measured window eats the gap before the next slot -- which is how an action comes

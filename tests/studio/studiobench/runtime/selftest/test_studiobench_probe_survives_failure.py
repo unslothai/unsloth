@@ -123,8 +123,17 @@ class _Seeder:
     auth = None
 
     def seed(self, plan):
-        # No messages, so the mount wait is the selector and not a count that never arrives.
-        return types.SimpleNamespace(thread_id = "t-1", seconds = 0.0, messages = 0)
+        # No messages, so the mount wait is the selector and not a count that never arrives, and
+        # both markers `SeededThread` declares are present and `None` for the same reason:
+        # `_wait_for_thread` reads `last_marker` unconditionally, and a stub that omits it fails on
+        # the attribute rather than on the failure these tests are about.
+        return types.SimpleNamespace(
+            thread_id = "t-1",
+            seconds = 0.0,
+            messages = 0,
+            first_marker = None,
+            last_marker = None,
+        )
 
 
 def _unit() -> Unit:

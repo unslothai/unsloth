@@ -230,6 +230,60 @@ def test_more_timer_ticks_than_the_clamp_allows_is_excluded():
     assert any("clamp is wrong" in reason for reason in rejected)
 
 
+def _unscoreable(window: dict, reason: str = "") -> dict:
+    """What `instruments/streamcost.py` writes when a frame failed to parse inside the window, or
+    an unterminated one was still buffered at its close."""
+    sc = window["instruments"]["stream_cost"]
+    sc["reply_chars_scoreable"] = False
+    sc["wire_parse_failures_in_window"] = 1
+    sc["wire_pending_chars_at_close"] = 41
+    sc["reply_chars_unscoreable_reason"] = (
+        reason or "the wire character count is short by an unknown amount"
+    )
+    return window
+
+
+def test_a_window_the_instrument_marked_unscoreable_is_excluded_from_scoring():
+    """THE DEFECT. The instrument publishes `reply_chars_scoreable: false` when it knows the wire
+    count is short -- an SSE event is dispatched only at the blank line that terminates it, so an
+    unterminated frame at the close is characters delivered and not counted -- and the scoring path
+    summed the delta anyway. Every official cost-per-character was then divided by a denominator
+    the instrument had already disowned, which inflates it by an unknown factor.
+    """
+    picked, rejected = _stream_windows([_unscoreable(_window("stream:gap1"))])
+    assert picked == []
+    assert any("short by an unknown amount" in reason for reason in rejected)
+
+
+def test_an_unscoreable_window_does_not_reach_the_cost_per_character():
+    """The rate is not merely nudged by an unscoreable window: with nothing else in the cell there
+    is no rate at all, and the reason travels instead of a number."""
+    m = _stream_measures([_unscoreable(_window("stream:gap1"))])
+    for key in STREAM_METRICS:
+        assert m[key].value is None, (key, m[key])
+    assert "short by an unknown amount" in (m["stream_delta_cost_ms_per_kchar"].note or "")
+
+
+def test_a_payload_recorded_before_the_flag_existed_is_scored_exactly_as_before():
+    """`is False`, not falsiness. Rows written before the instrument published the flag carry no
+    key at all, and voiding them would retro-actively delete every streaming metric this project
+    has already recorded."""
+    w = _window("stream:gap1")
+    assert "reply_chars_scoreable" not in w["instruments"]["stream_cost"]
+    picked, rejected = _stream_windows([w])
+    assert len(picked) == 1
+    assert rejected == {}
+
+
+def test_a_window_the_instrument_scored_is_still_admitted():
+    """The control. A flag that is present and true changes nothing."""
+    w = _window("stream:gap1")
+    w["instruments"]["stream_cost"]["reply_chars_scoreable"] = True
+    picked, rejected = _stream_windows([w])
+    assert len(picked) == 1
+    assert rejected == {}
+
+
 def test_a_window_the_instrument_never_ran_in_is_refused():
     picked, rejected = _stream_windows([_window("stream:gap1", attempted = False)])
     assert picked == []
