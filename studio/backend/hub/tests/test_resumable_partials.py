@@ -11,6 +11,7 @@ cannot prove that is safe, which is the whole reason 1.18 removed it.
 from __future__ import annotations
 
 from pathlib import Path
+import errno
 import os
 import sys
 import types
@@ -466,6 +467,40 @@ def test_a_partial_left_by_another_user_is_not_built_on(monkeypatch, tmp_path):
 
     assert calls["http_get"] == [{"resume_size": 0, "mode": "ab"}], "it resumed on foreign bytes"
     assert partial.read_bytes() == b"x" * 10, "the foreign prefix survived into the blob"
+
+
+def test_an_unopenable_partial_defers_instead_of_failing_the_download(monkeypatch, tmp_path):
+    """A 0600 partial from another account answers EACCES, and that is not a reason to give up.
+
+    Stock writes a file of its own and never touches this one, so the download still happens.
+    Raising here would fail every attempt at that blob for good, which is worse than not resuming.
+    """
+    module, calls = _fake_file_download(monkeypatch)
+    assert rp.restore_resumable_partials() is True
+
+    partial = tmp_path / "abc.incomplete"
+    partial.write_bytes(b"someone else's")
+    real_open = os.open
+
+    def refuse(target, *args, **kwargs):
+        if str(target) == str(partial):
+            raise PermissionError(errno.EACCES, "Permission denied", str(target))
+        return real_open(target, *args, **kwargs)
+
+    monkeypatch.setattr(rp.os, "open", refuse)
+
+    _patched_writer(module)(
+        incomplete_path = partial,
+        destination_path = tmp_path / "abc",
+        url_to_download = "https://example/f",
+        headers = {},
+        expected_size = 50,
+        filename = "f",
+    )
+
+    assert len(calls["stock"]) == 1, "the download was abandoned rather than handed to stock"
+    assert calls["http_get"] == []
+    assert partial.read_bytes() == b"someone else's", "it deleted a partial it could not read"
 
 
 def test_a_planted_hard_link_is_not_appended_to(monkeypatch, tmp_path):

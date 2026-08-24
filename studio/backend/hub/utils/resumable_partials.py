@@ -385,9 +385,18 @@ def _open_stable_partial(path: Path) -> Optional[Any]:
                 descriptor = os.open(path, flags, 0o600)
             except OSError as exc:
                 # ELOOP, or EMLINK on some BSDs: O_NOFOLLOW refused a symlink.
-                if exc.errno not in (errno.ELOOP, errno.EMLINK):
-                    raise
-                objection = "a symlink"
+                if exc.errno in (errno.ELOOP, errno.EMLINK):
+                    objection = "a symlink"
+                else:
+                    # Anything else is a partial this account cannot use and must not judge: a
+                    # 0600 one left by another user answers EACCES, a directory in its place
+                    # EISDIR. Raising would fail every attempt at the blob for good, while the
+                    # stock writer creates a file of its own and does not need this one at all.
+                    logger.warning(
+                        "Cannot open the download partial at %s (%s); leaving it alone and "
+                        "letting the stock writer fetch the file.", path, exc,
+                    )
+                    return None
             else:
                 objection = _objection_to(descriptor)
                 if objection is None:
