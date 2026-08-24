@@ -592,16 +592,22 @@ def _choice_seed(
     """A seed of its own per choice, so a seeded request samples n times rather
     than repeating one run. Shared by both drains so they cannot disagree.
 
-    llama-server reads a negative seed as "pick one at random", and offsetting
-    that would make every choice after the first deterministic. MLX maps every
-    seed onto its key domain instead, so a negative one is as fixed as any other
-    and must be offset like any other.
+    llama-server holds the seed as a uint32 and draws at random for exactly one
+    value, LLAMA_DEFAULT_SEED (0xFFFFFFFF); ``-1`` is the only request seed that
+    converts to it, and offsetting that would make every choice after the first
+    deterministic. Every other negative is an ordinary fixed seed there, so it
+    must be offset like any other or all n choices repeat one run. The offset is
+    taken in that same uint32 domain, so a shifted seed cannot land on the
+    sentinel and turn one choice random. MLX maps every seed onto its key domain
+    instead, so nothing is exempt on that side.
     """
     if seed is None or not choice_index:
         return seed
-    if negative_is_random and seed < 0:
+    if not negative_is_random:
+        return seed + choice_index
+    if seed == -1:
         return seed
-    return seed + choice_index
+    return ((seed & 0xFFFFFFFF) + choice_index) % 0xFFFFFFFF
 
 
 def _raise_unsupported_n(path_label: str, monitor_id: Optional[str] = None) -> None:

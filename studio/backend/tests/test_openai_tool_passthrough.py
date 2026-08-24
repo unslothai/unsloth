@@ -7774,3 +7774,35 @@ class TestGgufChatHistoryAlternation:
         roles = [m["role"] for m in rebuilt]
         assert roles == ["system", "user"]
         assert all(roles[i] != roles[i + 1] for i in range(len(roles) - 1)), roles
+
+
+# ── Per-choice seeds on the GGUF drain ──────────────────────────────
+
+
+def test_every_gguf_choice_gets_a_seed_of_its_own():
+    """llama-server holds the seed as a uint32 and draws at random for exactly
+    one value, LLAMA_DEFAULT_SEED (0xFFFFFFFF). Only -1 converts to it, so every
+    other negative is an ordinary fixed seed there: exempting all of them from
+    the offset sent n identical requests and returned n copies of one run."""
+    from routes.inference import _choice_seed
+
+    sent = 0xFFFFFFFF
+    for seed in (-2, -3, 0, 5, 2 ** 32 - 2):
+        served = [_choice_seed(seed, i, negative_is_random = True) for i in range(3)]
+        as_read = [v & 0xFFFFFFFF for v in served]
+        assert len(set(as_read)) == 3, (seed, served)
+        # A shifted seed that landed on the sentinel would sample at random where
+        # the caller asked for a fixed run.
+        assert sent not in as_read, (seed, served)
+
+    # -1 is the sentinel itself: offsetting it would make every choice after the
+    # first deterministic, which is the opposite of what was asked for.
+    assert [_choice_seed(-1, i, negative_is_random = True) for i in range(3)] == [-1, -1, -1]
+
+    # MLX maps every seed onto its key domain, so nothing is exempt there.
+    assert [_choice_seed(-2, i) for i in range(3)] == [-2, -1, 0]
+    assert [_choice_seed(5, i) for i in range(3)] == [5, 6, 7]
+
+    # Choice 0 is always the caller's own seed, on both drains.
+    assert _choice_seed(-2, 0, negative_is_random = True) == -2
+    assert _choice_seed(None, 2, negative_is_random = True) is None
