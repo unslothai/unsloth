@@ -366,11 +366,9 @@ fn append_log_sections(
     let server_log_dir = logs_dir().join("server");
     let server_logs = newest_server_logs_in(&server_log_dir, SERVER_LOG_TAIL_FILES, warnings);
     if server_logs.is_empty() {
-        // Name the directory. A backend the app adopted rather than spawned can
-        // resolve its own studio root from sys.prefix (backend
-        // utils/paths/storage_roots.py `_infer_studio_home_from_venv`), which no
-        // environment scrub reaches, so "unavailable" is otherwise ambiguous
-        // between "no crash logs" and "the backend writes somewhere else".
+        // Name the directory: an adopted backend can take its studio root from
+        // sys.prefix (storage_roots.py `_infer_studio_home_from_venv`), past any
+        // env scrub, so bare "unavailable" cannot be told from "logs elsewhere".
         out.push_str(&format!(
             "backend_session_logs=unavailable searched={}\n",
             server_log_dir.display()
@@ -411,37 +409,32 @@ fn append_log_sections(
     }
 }
 
-/// How many backend session logs to tail. Two, so a crash and the restart that
-/// followed it both land in one report.
+/// Two, so a crash and the restart after it both land in one report.
 const SERVER_LOG_TAIL_FILES: usize = 2;
 
-/// Smaller than the other tails on purpose. enforce_report_limit chops the END of the
-/// body, so bytes spent here come out of the phase logs below; a faulthandler dump is
-/// a few KB and lands at the end of the file, which is the half read_tail returns.
+/// Smaller than the other tails on purpose: enforce_report_limit chops the END of
+/// the body, so bytes spent here come out of the phase logs below, and a faulthandler
+/// dump is a few KB at the end of the file, which is the half read_tail returns.
 const SERVER_LOG_TAIL_MAX_LINES: usize = 400;
 const SERVER_LOG_TAIL_MAX_BYTES: usize = 64 * 1024;
 
 /// Newest `server-*.log` files, most recent first.
 ///
-/// The backend aims faulthandler at this directory (run.py's
-/// `_setup_server_disk_logging`), so when the GPU runtime aborts, the Python stack
-/// naming the call that died is written here and nowhere else Studio keeps. Without
-/// it a report shows the process exiting and nothing about what it was doing.
+/// run.py's `_setup_server_disk_logging` aims faulthandler here, so when the GPU
+/// runtime aborts this holds the Python stack naming the call that died, and no
+/// other file Studio keeps does.
 ///
-/// Only two files are collected, so anything rejected has to be rejected HERE and
-/// not later in `read_tail`: an entry that merely matches the name would otherwise
-/// spend one of the two slots and push the real crash log out of the report. Same
-/// reason `collect_phase_groups` screens symlinks during selection rather than at
-/// read time (phase_log.rs).
+/// Only two are collected, so an entry is rejected HERE rather than later in
+/// `read_tail`: one that merely matches the name would otherwise spend a slot and
+/// push the real crash log out. `scan_phase_logs_in_dir` screens during selection
+/// for the same reason.
 fn newest_server_logs_in(dir: &Path, max: usize, warnings: &mut Vec<String>) -> Vec<PathBuf> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(error) => {
-            // A missing directory is the ordinary case, not a fault: a --no-torch
-            // host, UNSLOTH_STUDIO_NO_FILE_LOG=1, or an install that has never
-            // started a backend all have none. Anything else (a permission wall,
-            // most of all) is worth saying out loud, the way scan_phase_logs_in_dir
-            // reports its own read_dir failures.
+            // Missing is the ordinary case, not a fault: a --no-torch host,
+            // UNSLOTH_STUDIO_NO_FILE_LOG=1, or a backend never started. Anything
+            // else, a permission wall above all, is worth saying out loud.
             if error.kind() != std::io::ErrorKind::NotFound {
                 warnings.push(format!(
                     "backend session log dir unavailable: {} ({})",
@@ -461,9 +454,9 @@ fn newest_server_logs_in(dir: &Path, max: usize, warnings: &mut Vec<String>) -> 
         if !name.starts_with("server-") || !name.ends_with(".log") {
             continue;
         }
-        // The report is line-oriented and fences tails with ```text. A filename may
-        // hold a newline or a backtick on Unix, and both the header and the path are
-        // printed verbatim, so a matching name could forge report structure.
+        // The header and the path print verbatim into a line-oriented, ```text-fenced
+        // report, and a Unix filename may hold a newline or a backtick, so a matching
+        // name could forge report structure.
         if name.contains(|ch: char| ch.is_control() || ch == '`') {
             warnings.push(format!(
                 "ignored backend session log with an unprintable name in {}",
@@ -481,9 +474,9 @@ fn newest_server_logs_in(dir: &Path, max: usize, warnings: &mut Vec<String>) -> 
         let Ok(metadata) = entry.metadata() else {
             continue;
         };
-        // Regular files only. A directory with this name reads back as EISDIR, and a
-        // FIFO is worse than useless: `File::open` on one blocks until a writer shows
-        // up, which would hang report generation rather than fail it.
+        // Regular files only. A directory reads back as EISDIR; a FIFO is worse,
+        // since `File::open` on one blocks until a writer appears, hanging report
+        // generation rather than failing it.
         if !metadata.is_file() {
             warnings.push(format!(
                 "ignored non-regular backend session log: {}",
@@ -496,9 +489,8 @@ fn newest_server_logs_in(dir: &Path, max: usize, warnings: &mut Vec<String>) -> 
         };
         logs.push((modified, path));
     }
-    // mtime decides; the name only breaks an exact tie, and does so descending like
-    // the mtime itself. The `pidN` suffix is not zero-padded, so that tie-break is an
-    // arbitrary-but-stable order, not a chronological one.
+    // mtime decides; the name breaks an exact tie, descending like the mtime. `pidN`
+    // is not zero-padded, so that tie-break is stable, not chronological.
     logs.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
     logs.truncate(max);
     logs.into_iter().map(|(_, path)| path).collect()
@@ -776,10 +768,9 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// The one above cannot say WHICH key ordered the result: its names and its
-    /// mtimes agree. Make them disagree, so it can only pass on mtime. A restored
-    /// or copied log carries a stamp that is not its mtime, and the crash the
-    /// report is for is the one written last.
+    /// The test above cannot say WHICH key ordered it, since its names and mtimes
+    /// agree. Make them disagree. A copied or restored log carries a stamp that is
+    /// not its mtime, and the crash we want is the one written last.
     #[test]
     fn server_logs_order_by_mtime_not_by_name() {
         let dir = server_log_dir("order-key");
@@ -807,10 +798,8 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// Only two files are collected, so an entry that matches the name but cannot be
-    /// read must not spend a slot: it would push the real crash log out of the report
-    /// while `read_tail` merely notes it later. A directory reads back as EISDIR and a
-    /// FIFO blocks `File::open` outright, which would hang the report.
+    /// An entry that matches the name but cannot be read must not spend one of the
+    /// two slots: rejecting it later in `read_tail` still costs the real crash log.
     #[test]
     fn unreadable_entries_never_take_a_slot_from_a_real_log() {
         let dir = server_log_dir("crowding");
@@ -833,9 +822,8 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// The report is line-oriented and fences tails with ```text, and both the header
-    /// and the path are printed verbatim, so a name carrying a newline could forge
-    /// `key=value` lines inside a report a maintainer then reads as structure.
+    /// A newline in the name forges `key=value` lines in a report a maintainer then
+    /// reads as structure.
     #[cfg(unix)]
     #[test]
     fn server_logs_reject_names_that_could_forge_report_structure() {
@@ -875,11 +863,10 @@ mod tests {
             &mut warnings,
         );
 
-        // A literal, not a multiple of the constant under test: an assert derived from
-        // SERVER_LOG_TAIL_MAX_BYTES would scale with any raise and never catch one.
-        // 80 KiB clears the 64 KiB cap plus its header with room to spare, and sits
-        // far enough below TAIL_MAX_BYTES to catch a raise well short of it. At the
-        // 128 KiB this used to allow, a mutation to 100 KiB passed unnoticed.
+        // A literal, not a multiple of the constant under test, which would scale with
+        // any raise and never catch one. 80 KiB clears the 64 KiB cap and its header
+        // while still catching a raise far short of TAIL_MAX_BYTES; at the 128 KiB
+        // this once allowed, a mutation to 100 KiB passed unnoticed.
         assert!(
             out.len() < 80 * 1024,
             "section grew into the phase-log budget: {}",
@@ -901,8 +888,7 @@ mod tests {
         let _ = fs::remove_dir_all(&missing);
         let mut warnings = Vec::new();
         assert!(newest_server_logs_in(&missing, 2, &mut warnings).is_empty());
-        // An install that has never started a backend is the ordinary case, so it
-        // must not spend a line of the collection-warnings budget on it.
+        // A backend that never started is the ordinary case, not a warning.
         assert!(warnings.is_empty(), "{warnings:?}");
     }
 
@@ -920,11 +906,10 @@ mod tests {
         let _ = fs::remove_file(path);
     }
 
-    /// The worst of the three: `File::open` on a FIFO with no writer blocks, and
-    /// `read_tail` runs on the blocking pool behind the support-report command, so
-    /// reaching one does not skip a log, it wedges the thread and the report never
-    /// comes back. Assert on a deadline, since a regression here hangs the suite
-    /// rather than failing it.
+    /// The worst of the three. `read_tail` runs on the blocking pool behind the
+    /// support-report command, so reaching a FIFO does not skip a log, it wedges the
+    /// thread and the report never returns. On a deadline, because a regression here
+    /// hangs the suite rather than failing it.
     #[cfg(unix)]
     #[test]
     fn a_fifo_named_like_a_log_cannot_wedge_the_report() {
