@@ -193,9 +193,8 @@ def read_studio(repo: Path) -> dict[str, Any]:
         obs["raw_adapters"] = adapters
         if adapters:
             import torch
-            totals = [
-                int(torch.cuda.get_device_properties(i).total_memory) for i in indices
-            ]
+
+            totals = [int(torch.cuda.get_device_properties(i).total_memory) for i in indices]
             useds = [u for _, u in adapters]
             obs["matcher_result"] = hw._match_adapter_used_to_devices(useds, totals)
             obs["aggregate_helper"] = hw._rocm_windows_aggregate_used_bytes(useds, totals)
