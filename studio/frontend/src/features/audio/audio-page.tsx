@@ -580,19 +580,25 @@ export function AudioPage({
       windowSize = PAGE_SIZE,
     ): Promise<AudioGalleryClip[]> => {
       const generation = ++galleryRefreshGeneration.current;
+      const wanted = Math.max(PAGE_SIZE, windowSize);
+      const asked = Math.min(wanted, MAX_PAGE_SIZE);
       try {
-        const page = await listAudioGallery(
-          0,
-          Math.min(Math.max(PAGE_SIZE, windowSize), MAX_PAGE_SIZE),
-        );
+        const page = await listAudioGallery(0, asked);
         // The caller's own fetch: a generation whose clip persisted must not be told otherwise.
         if (generation !== galleryRefreshGeneration.current) return page.audio;
-        const { clips: merged, stitched } = mergeGalleryPage(
-          page.audio,
-          galleryCache.clips,
-          removedId,
-          page.has_more,
-        );
+        // A window past the route's cap cannot be covered in one page, and stitching the old
+        // scrollback back on keeps a cursor that starts BELOW it: a clip restored into the
+        // uncovered middle is then in neither the list nor any later page. Reset to what was
+        // fetched instead. Shorter scrollback, but nothing is stranded behind the cursor.
+        const { clips: merged, stitched } =
+          wanted > asked
+            ? { clips: [...page.audio], stitched: false }
+            : mergeGalleryPage(
+                page.audio,
+                galleryCache.clips,
+                removedId,
+                page.has_more,
+              );
         galleryCache.clips = merged;
         // A clip record carries no mtime, so kept scrollback has no cursor; keep the deeper one.
         if (!stitched) {

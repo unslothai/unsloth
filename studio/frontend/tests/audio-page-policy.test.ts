@@ -370,7 +370,7 @@ test("a clip this client deleted leaves the merged gallery", () => {
 test("the selection only moves when its clip left the merged gallery", () => {
   assert.match(
     audioPageSource,
-    /const \{ clips: merged, stitched \} = mergeGalleryPage\([\s\S]*!merged\.some\(\(c\) => c\.id === galleryCache\.selectedId\)/,
+    /const \{ clips: merged, stitched \} =[\s\S]*mergeGalleryPage\([\s\S]*!merged\.some\(\(c\) => c\.id === galleryCache\.selectedId\)/,
   );
   // Play an older clip, delete another, and the player must not jump to the newest.
   assert.doesNotMatch(
@@ -591,6 +591,16 @@ test("the gallery-changed subscription asks for the window that is loaded", () =
   );
   assert.match(
     audioPageSource,
-    /const page = await listAudioGallery\(\s*0,\s*Math\.min\(Math\.max\(PAGE_SIZE, windowSize\), MAX_PAGE_SIZE\),\s*\);/,
+    /const wanted = Math\.max\(PAGE_SIZE, windowSize\);\s*const asked = Math\.min\(wanted, MAX_PAGE_SIZE\);/,
+  );
+});
+
+test("a window past the route cap resets the strip instead of stranding the restore", () => {
+  // Asking for more than the route returns leaves the middle of the window unfetched. Keeping
+  // the old scrollback there also keeps its cursor, which starts BELOW that middle, so a clip
+  // restored into it is in neither the merged list nor any page the cursor can still reach.
+  assert.match(
+    audioPageSource,
+    /wanted > asked\s*\?\s*\{ clips: \[\.\.\.page\.audio\], stitched: false \}\s*:\s*mergeGalleryPage\(/,
   );
 });

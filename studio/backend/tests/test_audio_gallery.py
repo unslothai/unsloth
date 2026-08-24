@@ -486,3 +486,32 @@ def test_prune_skips_when_the_flag_store_cannot_be_read(monkeypatch):
     assert gallery.audio_path(shelved["id"]) is not None
     # Nothing was pruned at all: the clips over the cap wait for a save that can read the store.
     assert len(list(gallery.gallery_dir().glob("*.wav"))) == 4
+
+
+def test_prune_spares_a_clip_archived_after_its_snapshot(monkeypatch):
+    # The prune picks its victims from a listing and unlinks afterwards. An archive landing
+    # in that window read as active from the stale snapshot and the clip was deleted anyway,
+    # after the PATCH had already told the user it was archived.
+    from core.inference import gallery_flags
+
+    doomed = _save_with_mtime("doomed", 100.0)
+    _save_with_mtime("b", 200.0)
+    _save_with_mtime("c", 300.0)
+
+    real = gallery._list_audio_entries
+    fired = []
+
+    def racing(*args, **kwargs):
+        entries = real(*args, **kwargs)
+        if not fired:
+            fired.append(True)
+            gallery_flags.set_flags_locked(gallery.gallery_dir(), doomed["id"], archived = True)
+        return entries
+
+    monkeypatch.setattr(gallery, "_list_audio_entries", racing)
+    # Capped only now, so the seeding saves do not prune `doomed` before the hook is in place.
+    monkeypatch.setenv("UNSLOTH_AUDIO_GALLERY_MAX_CLIPS", "2")
+    gallery.save(_wav(), _meta(prompt = "d"))
+
+    assert gallery.audio_path(doomed["id"]) is not None
+    assert [r["prompt"] for r in gallery.list_audio(archived = True)] == ["doomed"]

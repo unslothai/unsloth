@@ -115,39 +115,66 @@ def _prune_to_cap() -> int:
     byte_cap = _max_bytes()
     if cap <= 0 and byte_cap <= 0:
         return 0
+    directory = gallery_dir()
+    removed = 0
     try:
-        # This deletes, so it needs the proof clear() needs: read() answers "nothing is archived"
-        # for a store it cannot parse, which here would drop exactly the clips the shelf exists to
-        # keep. Skipping only leaves files over the cap, which the next save retries.
-        gallery_flags.read_trusted(gallery_dir())
-        entries = _list_audio_entries()
+        # Selection AND deletion under one lock, the way clear() takes it. Choosing victims
+        # from a snapshot and unlinking afterwards leaves a window an archive can land in:
+        # the clip reads active from the stale snapshot and is deleted anyway, after the
+        # PATCH has already told the user it was archived.
+        with gallery_flags.exclusive(directory):
+            entries = _list_audio_entries()
+
+            # Newest first, so the index where either budget runs out is the cut point. The
+            # newest clip is always kept: it is the one the caller just generated, and dropping
+            # it would make a single oversized request look like a silent failure.
+            keep = len(entries) if cap <= 0 else min(cap, len(entries))
+            if byte_cap > 0:
+                running = 0
+                for index, (record, _cursor) in enumerate(entries[:keep]):
+                    running += _clip_bytes(record["id"])
+                    if running > byte_cap and index > 0:
+                        keep = index
+                        break
+            if keep >= len(entries):
+                return 0
+
+            # Read again, immediately before deleting, and read it TRUSTED. This deletes, so
+            # it needs the proof clear() needs: read() answers "nothing is archived" for a
+            # store it cannot parse, which here would drop exactly the clips the shelf exists
+            # to keep. Re-reading rather than reusing the listing's flags also covers the
+            # filesystems where the cross-process lock degrades to a no-op, since there the
+            # window above is still open. Skipping only leaves files over the cap.
+            flags = gallery_flags.read_trusted(directory)
+            pruned: list[str] = []
+            for record, _cursor in entries[keep:]:
+                audio_id = record["id"]
+                if gallery_flags.is_archived(flags, audio_id):
+                    continue
+                # Unlinked here rather than through delete(), which takes the flag lock on a
+                # second descriptor and would block against the one held here.
+                path = audio_path(audio_id)
+                if path is None or _read_meta(_sidecar_path(audio_id)) is None:
+                    continue
+                try:
+                    path.unlink()
+                except OSError as exc:
+                    logger.warning("audio_gallery.delete_failed: %s", exc)
+                    continue
+                removed += 1
+                pruned.append(audio_id)
+                try:
+                    _sidecar_path(audio_id).unlink()
+                except OSError:
+                    pass
+            if pruned:
+                gallery_flags.forget_locked(directory, pruned)
     except gallery_flags.FlagsUnavailable:
         logger.warning("audio_gallery.prune_skipped: the archive flags could not be read")
         return 0
     except Exception:  # noqa: BLE001 - never fail the save that triggered this
-        return 0
+        return removed
 
-    # Newest first, so the index where either budget runs out is the cut point. The newest
-    # clip is always kept: it is the one the caller just generated, and dropping it would
-    # make a single oversized request look like a silent failure.
-    keep = len(entries) if cap <= 0 else min(cap, len(entries))
-    if byte_cap > 0:
-        running = 0
-        for index, (record, _cursor) in enumerate(entries[:keep]):
-            running += _clip_bytes(record["id"])
-            if running > byte_cap and index > 0:
-                keep = index
-                break
-    if keep >= len(entries):
-        return 0
-
-    removed = 0
-    for record, _cursor in entries[keep:]:
-        try:
-            if delete(record["id"]):
-                removed += 1
-        except Exception:  # noqa: BLE001
-            continue
     if removed:
         logger.info(
             "audio_gallery.pruned: removed %d clip(s) over the %d clip / %d byte cap",
