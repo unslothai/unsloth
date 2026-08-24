@@ -108,14 +108,22 @@ def _prune_to_cap() -> int:
     """Drop the oldest owned pairs beyond the count or byte cap; return the count removed.
 
     Best-effort: a save must not fail because housekeeping did. Only Studio-owned pairs are
-    considered, so a foreign or orphan wav is never destroyed. Archived clips are exempt.
+    considered, so a foreign or orphan wav is never destroyed. Archived clips are exempt, and a
+    flag store that cannot be read skips the prune rather than guess one is not archived.
     """
     cap = _max_clips()
     byte_cap = _max_bytes()
     if cap <= 0 and byte_cap <= 0:
         return 0
     try:
+        # This deletes, so it needs the proof clear() needs: read() answers "nothing is archived"
+        # for a store it cannot parse, which here would drop exactly the clips the shelf exists to
+        # keep. Skipping only leaves files over the cap, which the next save retries.
+        gallery_flags.read_trusted(gallery_dir())
         entries = _list_audio_entries()
+    except gallery_flags.FlagsUnavailable:
+        logger.warning("audio_gallery.prune_skipped: the archive flags could not be read")
+        return 0
     except Exception:  # noqa: BLE001 - never fail the save that triggered this
         return 0
 

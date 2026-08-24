@@ -471,3 +471,18 @@ def test_clear_route_refuses_with_an_unreadable_store():
         asyncio.run(clear_gallery_audio(current_subject = "tester"))
     assert excinfo.value.status_code == 503
     assert gallery.audio_path(record["id"]) is not None
+
+
+def test_prune_skips_when_the_flag_store_cannot_be_read(monkeypatch):
+    # The prune deletes on the strength of "not archived", so an unreadable store must stop it
+    # the way it stops clear(). Reading it fail-safe instead dropped the archived clip.
+    monkeypatch.setenv("UNSLOTH_AUDIO_GALLERY_MAX_CLIPS", "2")
+    shelved = _save_with_mtime("shelved", 100.0)
+    gallery.set_flags(shelved["id"], archived = True)
+    _save_with_mtime("b", 200.0)
+    _save_with_mtime("c", 300.0)
+    (gallery.gallery_dir() / ".flags.json").write_text("corrupt", encoding = "utf-8")
+    gallery.save(_wav(), _meta(prompt = "d"))
+    assert gallery.audio_path(shelved["id"]) is not None
+    # Nothing was pruned at all: the clips over the cap wait for a save that can read the store.
+    assert len(list(gallery.gallery_dir().glob("*.wav"))) == 4

@@ -152,6 +152,8 @@ const HUB_TASKS_BY_MODE = {
 } as const;
 
 const PAGE_SIZE = 50;
+// The list route clamps a page to 200, so asking for more silently gets 200 back.
+const MAX_PAGE_SIZE = 200;
 // Mirrors the STT sidecar's own limits (_MAX_AUDIO_SECONDS, STT_AUDIO_B64_MAX_CHARS), so a
 // recording is stopped at the boundary rather than uploaded and refused.
 const RECORDING_MAX_SECONDS = 30 * 60;
@@ -573,10 +575,16 @@ export function AudioPage({
   }, []);
 
   const refreshGallery = useCallback(
-    async (removedId?: string): Promise<AudioGalleryClip[]> => {
+    async (
+      removedId?: string,
+      windowSize = PAGE_SIZE,
+    ): Promise<AudioGalleryClip[]> => {
       const generation = ++galleryRefreshGeneration.current;
       try {
-        const page = await listAudioGallery(0, PAGE_SIZE);
+        const page = await listAudioGallery(
+          0,
+          Math.min(Math.max(PAGE_SIZE, windowSize), MAX_PAGE_SIZE),
+        );
         // The caller's own fetch: a generation whose clip persisted must not be told otherwise.
         if (generation !== galleryRefreshGeneration.current) return page.audio;
         const { clips: merged, stitched } = mergeGalleryPage(
@@ -1830,8 +1838,15 @@ export function AudioPage({
     [dropClip, refreshGallery],
   );
 
+  // This page stays mounted across route changes, so a restore from the Settings archive would
+  // otherwise not reach History until a full reload. Refresh the window that is actually loaded:
+  // a restored clip re-enters the shelf at its own age, and a first-page refresh leaves one
+  // below that page invisible AND unreachable, since the kept cursor now starts past it.
   useEffect(
-    () => subscribeGalleryChanged("audio", () => void refreshGallery()),
+    () =>
+      subscribeGalleryChanged("audio", () => {
+        void refreshGallery(undefined, galleryCache.clips.length);
+      }),
     [refreshGallery],
   );
 

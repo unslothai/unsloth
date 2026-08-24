@@ -280,7 +280,7 @@ test("file transcription cannot overlap a pending microphone permission", () => 
 test("gallery refresh preserves fallback selection and pagination identity", () => {
   assert.match(
     audioPageSource,
-    /const generation = \+\+galleryRefreshGeneration\.current;[\s\S]*listAudioGallery\(0, PAGE_SIZE\);[\s\S]*if \(generation !== galleryRefreshGeneration\.current\) return/,
+    /const generation = \+\+galleryRefreshGeneration\.current;[\s\S]*listAudioGallery\(\s*0,[\s\S]*if \(generation !== galleryRefreshGeneration\.current\) return/,
   );
   assert.match(
     audioPageSource,
@@ -552,5 +552,45 @@ test("generation is claimed before the transcribe release is awaited", () => {
   assert.match(
     audioPageSource,
     /if \(releaseInFlight && !\(await releaseInFlight\)\) \{\s*busyRef\.current = null;\s*setBusy\(null\);\s*setMode\("transcribe"\);/,
+  );
+});
+
+test("a restore refreshes the loaded window, not just the first page", () => {
+  // A restored clip re-enters History at its own age, so with more than a page scrolled it lands
+  // below the first page. Refreshing only that page left it out of the strip AND unreachable:
+  // the kept cursor starts below the loaded window, so no later page ever returns it.
+  const shelf = Array.from({ length: 120 }, (_, i) => ({ id: `c${i}` }));
+  const loaded = shelf.slice(0, 100);
+  const restored = { id: "restored" };
+  const afterRestore = [...shelf.slice(0, 70), restored, ...shelf.slice(70)];
+
+  const firstPageOnly = mergeGalleryPage(afterRestore.slice(0, 50), loaded, undefined, true);
+  assert.equal(
+    firstPageOnly.clips.some((clip) => clip.id === "restored"),
+    false,
+  );
+
+  const wholeWindow = mergeGalleryPage(
+    afterRestore.slice(0, loaded.length),
+    loaded,
+    undefined,
+    true,
+  );
+  assert.equal(
+    wholeWindow.clips.some((clip) => clip.id === "restored"),
+    true,
+  );
+  // Still contiguous: the row the longer page pushed out is stitched back on, not dropped.
+  assert.deepEqual(wholeWindow.clips, [...afterRestore.slice(0, 100), shelf[99]]);
+});
+
+test("the gallery-changed subscription asks for the window that is loaded", () => {
+  assert.match(
+    audioPageSource,
+    /subscribeGalleryChanged\("audio", \(\) => \{\s*void refreshGallery\(undefined, galleryCache\.clips\.length\);/,
+  );
+  assert.match(
+    audioPageSource,
+    /const page = await listAudioGallery\(\s*0,\s*Math\.min\(Math\.max\(PAGE_SIZE, windowSize\), MAX_PAGE_SIZE\),\s*\);/,
   );
 });
