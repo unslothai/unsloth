@@ -337,10 +337,19 @@ def _mlx_stop_token_ids(tokenizer, model = None):
         getattr(getattr(tokenizer, "stopping_criteria", None), "eos_token_ids", None),
         getattr(getattr(model, "config", None), "eos_token_id", None),
         getattr(tokenizer, "eos_token_ids", None),
+        getattr(tokenizer, "eos_token_id", None),
     ):
         if source is None:
             continue
-        return (source,) if isinstance(source, int) else tuple(source)
+        if isinstance(source, (list, tuple, set, frozenset)):
+            # An empty collection falls through too: a source present but unset is
+            # not an answer, and stopping on nothing misreads a real stop as
+            # truncation. A bare id is kept as-is, since 0 is a valid token.
+            if not source:
+                continue
+            return tuple(source)
+        # int() so a numpy scalar cannot raise here, inside a caller's finally.
+        return (int(source),)
     return ()
 
 
@@ -2232,6 +2241,7 @@ class MLXInferenceBackend:
             tools = tools,
             prompt = prompt,
             continued = vlm_continued,
+            ended = lambda: stopped,
         )
         if stopped:
             self._mark_stopped()
@@ -2329,12 +2339,22 @@ class MLXInferenceBackend:
                     if cancel_event and cancel_event.is_set():
                         break
             finally:
+                # Derived as the vision path derives it: this backend has no
+                # finish reason of its own, and leaving it unset reports every
+                # exhausted turn as a natural end.
                 if final_response is not None:
+                    tokenizer = getattr(self._processor, "tokenizer", self._processor)
                     self.last_generation_stats = _build_generation_stats(
                         getattr(final_response, "prompt_tokens", 0),
                         getattr(final_response, "prompt_tps", 0.0),
                         getattr(final_response, "generation_tokens", 0),
                         getattr(final_response, "generation_tps", 0.0),
+                        finish_reason = _mlx_finish_reason(
+                            final_response,
+                            _mlx_stop_token_ids(tokenizer, self._model),
+                            getattr(final_response, "generation_tokens", 0),
+                            max_new_tokens,
+                        ),
                     )
         # As in _generate_text: what was withheld is ordinary text now.
         if sequences and not stopped:

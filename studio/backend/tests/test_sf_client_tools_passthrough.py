@@ -795,10 +795,11 @@ def test_failed_nudge_retry_keeps_original_response(monkeypatch):
     assert body["choices"][0]["message"]["content"] == '<tool_call>{"name":"lookup"'
 
 
-def test_discarded_nudge_retry_reports_first_attempt_usage(monkeypatch):
+def test_a_discarded_nudge_retry_still_bills_the_tokens_it_spent(monkeypatch):
     # Double-failure nudge: the first response is delivered, but the retry's
-    # generate() overwrites stats_holder. The monitor must record the FIRST
-    # attempt's usage, not the discarded retry's.
+    # generate() overwrites stats_holder. The prompt reported is the delivered
+    # attempt's, never the discarded retry's -- but both attempts ran, so their
+    # completions are summed rather than one being dropped.
     first_stats = {"usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}}
     retry_stats = {"usage": {"prompt_tokens": 99, "completion_tokens": 99, "total_tokens": 198}}
 
@@ -833,9 +834,46 @@ def test_discarded_nudge_retry_reports_first_attempt_usage(monkeypatch):
     asyncio.run(_run())
     assert len(backend.calls) == 2  # first attempt + one discarded retry
     [entry] = monitor.snapshot()
-    # The delivered response is the first attempt, so its usage must be reported.
+    # The delivered response is the first attempt, so its prompt is the one
+    # reported; the retry's 99 completion tokens were still generated.
     assert entry["prompt_tokens"] == 7
-    assert entry["completion_tokens"] == 3
+    assert entry["completion_tokens"] == 3 + 99
+
+
+def test_a_successful_nudge_retry_bills_both_attempts(monkeypatch):
+    # The retry heals, so its reply is delivered and its prompt is reported --
+    # but the first attempt generated tokens on the way there, and reporting the
+    # retry alone hides them from the caller's usage.
+    first_stats = {"usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}}
+    retry_stats = {"usage": {"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25}}
+
+    class _HealsOnRetryBackend(_ScriptedBackend):
+        def __init__(self):
+            super().__init__(lambda m, t: [_CALL_XML if len(self.calls) > 1 else '<tool_call>{"name":"lookup"'])
+            self._stats_seq = [first_stats, retry_stats]
+
+        def generate_chat_response(self, *, messages, tools = None, stats_holder = None, **kwargs):
+            self.calls.append({"messages": messages, "tools": tools, **kwargs})
+            if stats_holder is not None:
+                stats_holder["stats"] = self._stats_seq[
+                    min(len(self.calls) - 1, len(self._stats_seq) - 1)
+                ]
+            for snap in self._responder(messages, tools):
+                yield snap
+
+    backend = _HealsOnRetryBackend()
+    payload = _request(tools = [LOOKUP_TOOL], nudge_tool_calls = True, stream = False)
+    monitor = _install(monkeypatch, backend)
+
+    async def _run():
+        return await openai_chat_completions(payload, request = _Request(), current_subject = "u")
+
+    body = _json_body(asyncio.run(_run()))
+    assert len(backend.calls) == 2  # first attempt + the retry that healed
+    assert body["choices"][0]["message"]["tool_calls"]
+    assert body["usage"]["prompt_tokens"] == 20
+    assert body["usage"]["completion_tokens"] == 3 + 5
+    assert body["usage"]["total_tokens"] == 28
 
 
 def test_monitor_records_healed_call_not_raw_xml(monkeypatch):
@@ -980,3 +1018,65 @@ def test_mcp_enabled_without_server_tools_uses_passthrough(monkeypatch):
     assert choice["finish_reason"] == "tool_calls"
     assert choice["message"]["tool_calls"][0]["function"]["name"] == "lookup"
     assert backend.calls[0]["tools"] == [LOOKUP_TOOL]
+
+
+def _fold(*turns):
+    """Run the tool loop's fold over turns in order, as the orchestrator does."""
+    from core.inference.orchestrator import _summed_tool_loop_stats
+
+    total = None
+    for turn in turns:
+        total = _summed_tool_loop_stats(total, turn)
+    return total
+
+
+def _turn(prompt, completion, *, timings = True, **extra):
+    usage = {
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": prompt + completion,
+        **extra,
+    }
+    stats = {"usage": usage}
+    if timings:
+        stats["timings"] = {"predicted_ms": completion * 10.0, "predicted_n": completion}
+    return stats
+
+
+def test_every_tool_loop_turn_is_billed_not_just_the_last():
+    """The turns that produced the tool call spent tokens too, so the reply sums
+    them; only the prompt is the last turn's, since it already carries the
+    earlier results."""
+    folded = _fold(_turn(100, 20), _turn(160, 30), _turn(220, 5))
+
+    assert folded["usage"] == {"prompt_tokens": 220, "completion_tokens": 55, "total_tokens": 275}
+    # Rates describe the summed counts, not the last turn that arrived.
+    assert folded["timings"]["predicted_n"] == 55
+    assert folded["timings"]["predicted_ms"] == pytest.approx(550.0)
+    assert folded["timings"]["predicted_per_token_ms"] == pytest.approx(10.0)
+
+
+def test_a_turn_that_ends_before_reporting_does_not_erase_the_loop():
+    """A cancelled or errored final turn has no counts of its own. Seeding the
+    fold from it would drop everything the loop already spent."""
+    # No report at all, in every position.
+    assert _fold(_turn(100, 20), None, _turn(160, 30))["usage"]["completion_tokens"] == 50
+    assert _fold(_turn(100, 20), _turn(160, 30), None)["usage"]["completion_tokens"] == 50
+
+    # Reported usage but no timings: the loop's totals must survive it.
+    partial = _fold(_turn(100, 20), _turn(160, 30, timings = False))
+    assert partial["timings"]["predicted_n"] == 20
+    # Reported timings but no usage: the prompt is still the loop's.
+    errored = _fold(_turn(100, 20), {"timings": {"predicted_ms": 1.0, "predicted_n": 1}})
+    assert errored["usage"] == {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}
+
+
+def test_completion_details_are_summed_with_the_completion_they_describe():
+    """Carrying the last turn's details would report them against every turn's
+    tokens."""
+    folded = _fold(
+        _turn(100, 20, completion_tokens_details = {"reasoning_tokens": 7}),
+        _turn(160, 30, completion_tokens_details = {"reasoning_tokens": 3}),
+    )
+    assert folded["usage"]["completion_tokens"] == 50
+    assert folded["usage"]["completion_tokens_details"] == {"reasoning_tokens": 10}

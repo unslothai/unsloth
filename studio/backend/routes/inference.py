@@ -63,6 +63,7 @@ from core.inference.orchestrator import (
     AUDIO_GENERATION_MAX_TOKENS,
     GenStreamError,
     GenStreamErrorRaised,
+    _summed_tool_loop_stats,
 )
 from core.inference.llama_admission import (
     LlamaAdmissionCancelled,
@@ -13791,8 +13792,10 @@ async def openai_chat_completions(
             # A JSON-schema response_format is guided-decoding structured output the
             # router forwards to the llama-server passthrough, not Unsloth's tool
             # loop, so a --enable-tools policy must not 400 it as a local-confirm
-            # request under ask/auto.
-            or bool(_extract_response_format(payload))
+            # request under ask/auto. Read with the predicate the router itself
+            # uses, so this gate cannot admit a request the router then rejects
+            # after a model switch, nor reject one the router would have served.
+            or _response_format_constrains_decoding(payload)
         )
         # permission_mode only implies the confirm gate for that local loop.
         # Client-tool passthrough forwards to the provider branch and the validator
@@ -17090,8 +17093,10 @@ async def openai_chat_completions(
                         if nudge_should_retry(_data, _sf_heal, _sf_healing_tools):
                             # A failed retry must not 500 the request; keep the first
                             # response (GGUF nudge parity). The retry's generate()
-                            # overwrites stats_holder, so save the first attempt's stats
-                            # and restore them if the retry is discarded.
+                            # overwrites stats_holder, so save the first attempt's
+                            # stats and fold whichever attempt loses back in: both
+                            # were generated, and reporting one hides tokens the
+                            # caller was charged for.
                             _first_stats = stats_holder.get("stats")
                             try:
                                 retry_messages = [
@@ -17117,20 +17122,29 @@ async def openai_chat_completions(
                                 retry_msg = {"role": "assistant", "content": _retry_visible}
                                 if _retry_reasoning:
                                     retry_msg["reasoning_content"] = _retry_reasoning
+                                # The winning attempt's prompt is the one reported;
+                                # the completions of both are summed.
                                 if heal_openai_message(retry_msg, _sf_heal, _sf_healing_tools):
                                     _visible_text, _msg, _finish = (
                                         _retry_visible,
                                         retry_msg,
                                         "tool_calls",
                                     )
+                                    stats_holder["stats"] = _summed_tool_loop_stats(
+                                        _first_stats, stats_holder.get("stats")
+                                    )
                                 else:
                                     # Retry produced no healable call -> first response wins.
-                                    stats_holder["stats"] = _first_stats
+                                    stats_holder["stats"] = _summed_tool_loop_stats(
+                                        stats_holder.get("stats"), _first_stats
+                                    )
                             except Exception as retry_exc:
                                 logger.debug(
                                     "Nudge retry failed; keeping first response: %s", retry_exc
                                 )
-                                stats_holder["stats"] = _first_stats
+                                stats_holder["stats"] = _summed_tool_loop_stats(
+                                    stats_holder.get("stats"), _first_stats
+                                )
                     # parallel_tool_calls=false: cap to one call (GGUF parity).
                     if payload.parallel_tool_calls is False:
                         _tcs = _msg.get("tool_calls")
@@ -17139,8 +17153,9 @@ async def openai_chat_completions(
                 return _msg, _finish, stats_holder.get("stats")
 
             for _idx in range(_n):
-                # Stop spawning the remaining choices once cancelled, as the
-                # llama-server drain does.
+                # Stop spawning the remaining choices once cancelled. Index 0 runs
+                # regardless, so a cancelled turn still answers with one choice
+                # rather than the empty `choices` a client indexes into.
                 if _idx and cancel_event.is_set():
                     break
                 _msg, _finish, _choice_stats = await _one_choice(_idx)

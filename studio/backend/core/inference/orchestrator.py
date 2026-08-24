@@ -160,24 +160,38 @@ def _summed_tool_loop_stats(total, turn):
 
     Every turn spends its tokens on the same request, so the reply reports their
     sum, as the llama.cpp tool loop does; reporting only the last turn hides the
-    tokens that produced the tool call. The prompt count is the last turn's, which
-    already contains the tool results the earlier turns produced.
+    tokens that produced the tool call. The prompt count is the last turn's to
+    report one, which already contains the tool results the earlier turns produced.
     """
     if not isinstance(turn, dict):
         return total
     if not isinstance(total, dict):
         return turn
+    prior_usage = total.get("usage") or {}
     usage = dict(turn.get("usage") or {})
     completion = (usage.get("completion_tokens") or 0) + (
-        (total.get("usage") or {}).get("completion_tokens") or 0
+        prior_usage.get("completion_tokens") or 0
     )
     usage["completion_tokens"] = completion
-    usage["total_tokens"] = (usage.get("prompt_tokens") or 0) + completion
+    # A turn that ended before reporting keeps the last count that arrived: the
+    # prompt is the loop's, not that turn's, so dropping it erases the whole loop's.
+    if not usage.get("prompt_tokens"):
+        usage["prompt_tokens"] = prior_usage.get("prompt_tokens") or 0
+    usage["total_tokens"] = usage["prompt_tokens"] + completion
+    # Details describe the completion, so they sum with it rather than being
+    # carried from the last turn against a count they do not cover.
+    details = dict(prior_usage.get("completion_tokens_details") or {})
+    for field, value in (usage.get("completion_tokens_details") or {}).items():
+        details[field] = (details.get(field) or 0) + (value or 0)
+    if details:
+        usage["completion_tokens_details"] = details
     summed = dict(turn)
     summed["usage"] = usage
     timings = dict(turn.get("timings") or {})
-    if timings:
-        prior = total.get("timings") or {}
+    prior = total.get("timings") or {}
+    # Seeded from the turn but folded unconditionally, as the llama.cpp loop does:
+    # a turn reporting no timings must not take the loop's totals with it.
+    if timings or prior:
         for field in ("predicted_ms", "predicted_n"):
             timings[field] = (timings.get(field) or 0) + (prior.get(field) or 0)
         # Rates describe the totals above, not the turn they arrived with: leaving
