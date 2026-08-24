@@ -18,6 +18,31 @@ const ROLLBACK_BLOCKS = 8;
 // full-document path is +73% at 32,768 and +1.6% at 8,192. 8,192 characters is
 // still around 1,300 words of slack, well beyond a marker a later line closes.
 const STALLED_TAIL_CHARACTERS = 8_192;
+// remend repairs the trailing incomplete construct, but it reaches that
+// decision with whole-string passes: one walks the text once per `[` looking
+// for an unterminated link, another escapes comparison operators line by line.
+// Inside an unterminated fence every such character is literal and every pass
+// declines, so those walks cost the length of the fence and change nothing. The
+// fence also lexes into a single block, so `candidateCount` in update() is 0,
+// nothing is ever retained, and the tail grows with the fence: appending one
+// chunk then costs O(fence) and a reply costs the square of it. Repair the head
+// plus a window of the fence body instead, and splice the untouched middle back
+// in. The window carries the last line and the line before it, which is all the
+// trailing repairs read.
+const OPEN_FENCE_REPAIR_WINDOW = 4_096;
+// A plain two-line probe. When remend leaves the head alone with ordinary text
+// after it, no marker is pending for it to close, so it cannot append anything
+// beyond the window either. Without it a marker left open before the fence gets
+// its closer at the wrong offset.
+//
+// Its verdict is a property of the HEAD, while remend decides from the whole
+// string, so on its own it is not enough: text later in the body can flip a
+// global parity the probe assumed and revive a marker it cleared. The body
+// marker refusal below is what closes that gap, and the two only work together.
+const OPEN_FENCE_PROBE = "\nq\n";
+// An index can only be resolved once the two characters after it are known, so
+// the scan keeps that many back from the live edge and re-reads them.
+const FENCE_SCAN_MARGIN = 2;
 // Balanced marker prefixes preserve the whole-document facts that remend uses
 // to decide how an incomplete tail should close, without changing parity.
 const MULTILINE_KATEX_CONTEXT = "$$\n$$\n\n";
@@ -558,15 +583,178 @@ const emphasisContext = (context: RetainedContext): string => {
 
 // Taking the context as a value lets a candidate commit be priced before it is
 // applied, which the repeated-Markdown check in update() needs.
-function repairTail(tail: string, context: RetainedContext): string {
-  const prefix =
+function repairContextPrefix(context: RetainedContext): string {
+  return (
     emphasisContext(context) +
     singleAsteriskContext(context) +
-    (context.multilineKatex ? MULTILINE_KATEX_CONTEXT : "");
+    (context.multilineKatex ? MULTILINE_KATEX_CONTEXT : "")
+  );
+}
+
+function repairTail(tail: string, context: RetainedContext): string {
+  const prefix = repairContextPrefix(context);
   if (!prefix) {
     return remend(tail);
   }
   return remend(prefix + tail).slice(prefix.length);
+}
+
+// Where remend believes a fence is open. It toggles on any ``` run, wherever on
+// the line that run sits, and a backslash escapes the backtick after it, so this
+// deliberately mirrors remend rather than CommonMark: a mid-line ``` closes the
+// fence for remend and must close it here too.
+type OpenFenceState = {
+  index: number;
+  fenceOpen: boolean;
+  bodyStart: number;
+  // The FIRST ` $ or ~ in the current fence body, or -1. Its mere presence
+  // disqualifies the splice, so only whether one exists ever matters; the index
+  // is kept because it reads better in a test than a bare boolean.
+  //
+  // remend does not have one notion of "inside a fence"; it has at least three,
+  // and they disagree. `isWithinCodeBlock` walks the text and honours a
+  // backslash before a backtick, the emphasis counters toggle on ``` without
+  // honouring it, and the inline-code repair just counts /```/g. An escaped
+  // \``` or a ```` run flips the last of those and not the first. The opener
+  // that stands in for the elided text can only reproduce all three when the
+  // elided part holds none of the characters any of them counts.
+  //
+  // The first such character, not the last: a marker sitting in the window
+  // would otherwise mask an earlier one sitting in the elided middle, which is
+  // the half that matters. First is also monotone, so it costs nothing to keep.
+  firstBodyMarker: number;
+};
+
+const initialOpenFenceState = (): OpenFenceState => ({
+  index: 0,
+  fenceOpen: false,
+  bodyStart: -1,
+  firstBodyMarker: -1,
+});
+
+function advanceOpenFence(
+  state: OpenFenceState,
+  text: string,
+  limit: number,
+): OpenFenceState {
+  let { index, fenceOpen, bodyStart, firstBodyMarker } = state;
+  while (index < limit) {
+    const character = text[index];
+    if (character === "\\" && text[index + 1] === "`") {
+      // Escaped for `isWithinCodeBlock`, not for the passes that only count
+      // ``` runs, so the backtick still counts as a marker.
+      if (fenceOpen && firstBodyMarker < 0) {
+        firstBodyMarker = index + 1;
+      }
+      index += 2;
+      continue;
+    }
+    if (
+      character === "`" &&
+      text[index + 1] === "`" &&
+      text[index + 2] === "`"
+    ) {
+      fenceOpen = !fenceOpen;
+      bodyStart = fenceOpen ? index + 3 : -1;
+      firstBodyMarker = -1;
+      index += 3;
+      continue;
+    }
+    if (
+      fenceOpen &&
+      firstBodyMarker < 0 &&
+      (character === "`" || character === "$" || character === "~")
+    ) {
+      firstBodyMarker = index;
+    }
+    index += 1;
+  }
+  return { index, fenceOpen, bodyStart, firstBodyMarker };
+}
+
+// Carries the scan across updates so a growing tail costs the characters that
+// arrived, not the characters it holds. Any text that is not an extension of the
+// last one rescans from the start, which is what a commit or a rewrite hands it.
+class OpenFenceTracker {
+  private text = "";
+  private resolved = initialOpenFenceState();
+
+  // Where the open fence's body starts and where its first marker sits, or null
+  // when the whole-tail repair applies.
+  spliceBounds(
+    text: string,
+  ): { bodyStart: number; firstBodyMarker: number } | null {
+    if (!hasPrefix(text, this.text)) {
+      this.resolved = initialOpenFenceState();
+    }
+    const limit = Math.max(0, text.length - FENCE_SCAN_MARGIN);
+    if (limit > this.resolved.index) {
+      this.resolved = advanceOpenFence(this.resolved, text, limit);
+    }
+    this.text = text;
+    const live = advanceOpenFence(this.resolved, text, text.length);
+    if (!live.fenceOpen) {
+      return null;
+    }
+    return {
+      bodyStart: live.bodyStart,
+      firstBodyMarker: live.firstBodyMarker,
+    };
+  }
+}
+
+// A head the probe found inert contributes nothing but "a fence is open", which
+// one opener reproduces. Standing in for it keeps the repair off the head as
+// well as off the elided body.
+const OPEN_FENCE_SYNTHETIC_HEAD = "```\n";
+
+// The spliced repair, or null when it cannot be shown to match repairTail. All
+// four refusals fall back to repairing the whole tail:
+//
+//   a body still shorter than the window has nothing to elide;
+//   a final line longer than the window leaves no line boundary to cut on,
+//     which is the only place the splice can start without changing what the
+//     trailing repairs read;
+//   a PRECEDING line longer than the window puts the cut on the newline that
+//     ends it, so the window holds the final line alone. remend's setext repair
+//     reads exactly one line back, and the synthetic opener standing in for it
+//     is never blank, so a whitespace-only line elided that way turns a tail
+//     ending in `-`, `--`, `=` or `==` into one carrying a zero-width space
+//     that repairing the whole tail does not add, and that the copy button
+//     would then put on the clipboard;
+//   a ` $ or ~ ANYWHERE in the body, elided or retained, is a character one of
+//     remend's fence notions counts, and the opener cannot stand in for it.
+//
+// The last one deliberately covers the retained window and not just the elided
+// middle, because the probe that licenses the opener reads the head ALONE while
+// remend decides from the whole string. An escaped \``` in the window flips the
+// global triple-run parity, so the whole-tail repair closes an unmatched inline
+// backtick that sits before the opener and the spliced output does not; a `$$`
+// there moves the math parity the other way. Neither is reachable from a
+// refusal on the cut, since the probe runs before the cut is chosen. Keeping
+// the body free of all three characters is what makes the probe's verdict a
+// property of the whole tail rather than of the head it was handed.
+function repairOpenFenceTail(
+  tail: string,
+  bodyStart: number,
+  firstBodyMarker: number,
+): string | null {
+  const cut = tail.indexOf("\n", tail.length - OPEN_FENCE_REPAIR_WINDOW);
+  if (
+    cut < 0 ||
+    cut + 1 <= bodyStart ||
+    tail.indexOf("\n", cut + 1) < 0 ||
+    firstBodyMarker >= 0
+  ) {
+    return null;
+  }
+  const repaired = remend(OPEN_FENCE_SYNTHETIC_HEAD + tail.slice(cut + 1));
+  if (!hasPrefix(repaired, OPEN_FENCE_SYNTHETIC_HEAD)) {
+    return null;
+  }
+  return (
+    tail.slice(0, cut + 1) + repaired.slice(OPEN_FENCE_SYNTHETIC_HEAD.length)
+  );
 }
 
 const advanceContext = (
@@ -727,6 +915,9 @@ export class IncrementalMarkdownCache {
   private committedLength = 0;
   private commitPoints: CommitPoint[] = [];
   private context = createRetainedContext();
+  private fenceTracker = new OpenFenceTracker();
+  private openFenceHead: string | null = null;
+  private openFenceHeadInert = false;
   private fullDocumentMode = false;
   private lastMarkdown: string | null = null;
   private droppedRetainedBlocks = false;
@@ -755,6 +946,28 @@ export class IncrementalMarkdownCache {
     this.droppedRetainedBlocks = false;
     this.lastMarkdown = markdown;
     return { markdown, parseMarkdownIntoBlocks: this.parseMarkdownIntoBlocks };
+  }
+
+  // The repair of a tail sitting inside an open fence, or null to repair the
+  // whole tail as before. The head is everything the repair would have to keep:
+  // once the probe shows remend leaves it alone, it holds nothing that could
+  // change the repair of the body, and it stays fixed until the fence closes,
+  // so the probe is paid once per fence rather than once per chunk.
+  private repairOpenFence(): string | null {
+    const bounds = this.fenceTracker.spliceBounds(this.tail);
+    if (bounds === null) {
+      return null;
+    }
+    const head =
+      repairContextPrefix(this.context) + this.tail.slice(0, bounds.bodyStart);
+    if (head !== this.openFenceHead) {
+      this.openFenceHead = head;
+      const probed = head + OPEN_FENCE_PROBE;
+      this.openFenceHeadInert = remend(probed) === probed;
+    }
+    return this.openFenceHeadInert
+      ? repairOpenFenceTail(this.tail, bounds.bodyStart, bounds.firstBodyMarker)
+      : null;
   }
 
   private resetIncrementalState(markdown: string): void {
@@ -885,7 +1098,8 @@ export class IncrementalMarkdownCache {
 
     this.updateTail(markdown);
 
-    const repaired = repairTail(this.tail, this.context);
+    const repaired =
+      this.repairOpenFence() ?? repairTail(this.tail, this.context);
 
     // Streamdown deliberately turns a repaired document containing footnotes
     // into one block so definitions can resolve references anywhere in the

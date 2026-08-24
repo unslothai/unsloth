@@ -134,7 +134,7 @@ console.log(JSON.stringify({ finishedWhenSyncResolved, returned, stale }));
 @pytest.fixture(scope = "module")
 def result() -> dict:
     require_node(SOURCES)
-    return run_harness(TEMP, _harness_source(), SCRIPT)
+    return run_harness(TEMP, _harness_source(), SCRIPT, sources = SOURCES)
 
 
 def test_the_backfill_batch_is_complete_when_the_sync_resolves(result: dict):

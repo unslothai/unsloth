@@ -823,10 +823,11 @@ with sync_playwright() as p:
 
     # ─────────────────────────────────────────────────────
     # 3b. Re-typing the value already shown must not pin an override (HARD).
-    # Entering the currently displayed native/default context commits no
-    # onChange (the value is unchanged), so the cached blur value must not be
-    # replayed into a stored override on Load. Otherwise re-typing the shown
-    # number, or doing so before a Reset, recreates a phantom context pin.
+    # Entering the currently displayed context commits no onChange (the value is
+    # unchanged), so the cached blur value must not be replayed into a stored
+    # override on Load. Otherwise re-typing the shown number, or doing so before a
+    # Reset, recreates a phantom context pin. The box shows "Auto" while nothing is
+    # pinned, so the number it edits is read from the focused input below.
     # ─────────────────────────────────────────────────────
     step("re-typing the shown context does not pin an override")
     # Own its state instead of inheriting the step above: the previous step commits a
@@ -839,6 +840,12 @@ with sync_playwright() as p:
         native_default = None
     else:
         ctx_in = context_input(popover)
+        # With no override stored the box reads "Auto", and only reveals the number it
+        # would edit (the fitted context) once it has focus. Click first, or there is
+        # nothing numeric to re-type and the step skips the regression it guards.
+        if ctx_in is not None:
+            ctx_in.click()
+            page.wait_for_timeout(200)
         native_default = _as_int(ctx_in.input_value()) if ctx_in else None
     if ctx_in is None or native_default is None:
         # A skip here is not a pass: this step is the only guard on the phantom-pin

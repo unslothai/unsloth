@@ -175,6 +175,7 @@ def _indexed_shard_paths(
         from huggingface_hub import hf_hub_download
         from huggingface_hub.utils import EntryNotFoundError
         from utils.hf_cache_settings import active_hf_hub_cache
+        from utils.hf_probe import hf_file_definitely_absent
     except Exception:
         return None
 
@@ -182,6 +183,11 @@ def _indexed_shard_paths(
     inconclusive = False
     for prefix in _index_prefixes(load_subdirs):
         for filename in _TRANSFORMERS_INDEX_FILES:
+            # Most repos are unsharded, so avoid caching expected 404s for optional indexes.
+            if hf_file_definitely_absent(
+                model_name, prefix + filename, revision = revision, token = hf_token or None
+            ):
+                continue
             try:
                 index_path = hf_hub_download(
                     model_name,

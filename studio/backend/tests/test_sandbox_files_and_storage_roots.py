@@ -2469,10 +2469,12 @@ def test_clearing_every_chat_reports_what_it_deleted(tmp_path, monkeypatch):
     from routes import chat_history
     from storage import studio_db
 
-    source = inspect.getsource(studio_db.clear_chat_history)
+    # The body lives in the _with_replay_status variant; clear_chat_history drops its
+    # third element for callers that do not need it. Same transaction either way.
+    source = inspect.getsource(studio_db.clear_chat_history_with_replay_status)
     assert "SELECT id FROM chat_threads" in source
     assert source.index("SELECT id FROM chat_threads") < source.index("DELETE FROM chat_threads")
-    assert "return removed, active_runs" in source
+    assert "return removed, active_runs, False" in source
 
     route = inspect.getsource(chat_history.clear_history)
     assert "cleared, cleared_runs = clear_chat_history()" in route
@@ -4240,7 +4242,7 @@ def test_clearing_every_chat_cancels_the_research_it_removed():
     from routes import chat_history
     from storage import studio_db
 
-    storage = inspect.getsource(studio_db.clear_chat_history)
+    storage = inspect.getsource(studio_db.clear_chat_history_with_replay_status)
     assert "SELECT id FROM research_runs" in storage
     assert storage.index("SELECT id FROM research_runs") < storage.index("DELETE FROM chat_threads")
 
