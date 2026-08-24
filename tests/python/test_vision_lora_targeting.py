@@ -313,3 +313,39 @@ def test_without_fast_inference_nothing_is_skipped():
     # A regex/None target list must not crash the lm_head membership test.
     assert _vllm_unmovable_embedding_modules(_VllmModel(), None) == ("lm_head",)
     assert _vllm_unmovable_embedding_modules(_VllmModel(), "all-linear") == ("lm_head",)
+
+
+def test_qualified_embedding_names_are_redirected_too():
+    """PEFT resolves model.embed_tokens to the same module, so it must not be left in
+    target_modules where LoRA on it never trains."""
+    from unsloth.models._utils import (
+        _drop_tied_output_module,
+        _redirect_embedding_targets,
+        _resolve_ensure_weight_tying,
+    )
+
+    targets, saved, moved = _redirect_embedding_targets(
+        CORE + ["model.embed_tokens", "language_model.lm_head"], None,
+    )
+    assert targets == CORE
+    # The caller's spelling is preserved: PEFT matches modules_to_save on the suffix.
+    assert saved == ["model.embed_tokens", "language_model.lm_head"]
+    assert moved == ("model.embed_tokens", "language_model.lm_head")
+
+    # A qualified pair is still recognised as a tied pair.
+    assert _resolve_ensure_weight_tying(_Model(tie = True), saved, None) is True
+    assert _drop_tied_output_module(_Model(tie = True), saved, True) == ["model.embed_tokens"]
+
+
+def test_only_embedding_names_are_matched_by_leaf():
+    """layers.0.q_proj is a real target and must never be treated as an embedding."""
+    from unsloth.models._utils import _embedding_leaf, _redirect_embedding_targets
+
+    assert _embedding_leaf("model.embed_tokens") == "embed_tokens"
+    assert _embedding_leaf("lm_head") == "lm_head"
+    assert _embedding_leaf("layers.0.q_proj") is None
+    assert _embedding_leaf("q_proj") is None
+    assert _embedding_leaf(None) is None
+
+    targets, saved, moved = _redirect_embedding_targets(["layers.0.q_proj"], None)
+    assert targets == ["layers.0.q_proj"] and saved is None and moved == ()

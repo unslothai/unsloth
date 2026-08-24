@@ -94,6 +94,7 @@ __all__ = [
     "warn_if_zoo_cannot_merge_moe_experts",
     "_select_moe_detection_targets",
     "EMBEDDING_MODULES",
+    "_embedding_leaf",
     "_redirect_embedding_targets",
     "_raise_if_no_lora_targets_left",
     "_resolve_ensure_weight_tying",
@@ -4480,6 +4481,23 @@ def warn_if_zoo_cannot_merge_moe_experts():
 EMBEDDING_MODULES = frozenset(("embed_tokens", "lm_head"))
 
 
+def _embedding_leaf(name):
+    """`embed_tokens`/`lm_head` for any spelling of them, else None.
+
+    PEFT matches target_modules and modules_to_save on the module suffix, so
+    `model.embed_tokens` names the same module as `embed_tokens` and must be treated
+    the same way. Anything else keeps its full name: layers.0.q_proj is a real target.
+    """
+    if type(name) is not str:
+        return None
+    leaf = name.rsplit(".", 1)[-1]
+    return leaf if leaf in EMBEDDING_MODULES else None
+
+
+def _embedding_leaves(names):
+    return {leaf for leaf in map(_embedding_leaf, names or ()) if leaf is not None}
+
+
 def _vllm_unmovable_embedding_modules(model, target_modules):
     """Names to leave in `target_modules` under fast inference.
 
@@ -4490,7 +4508,7 @@ def _vllm_unmovable_embedding_modules(model, target_modules):
     """
     if getattr(model, "vllm_engine", None) is None:
         return ()
-    if type(target_modules) in (list, tuple) and "lm_head" in target_modules:
+    if type(target_modules) in (list, tuple) and "lm_head" in _embedding_leaves(target_modules):
         logger.warning_once(
             "Unsloth: Fast inference cannot train `lm_head`, so it is left as an "
             "untrained LoRA target.\nUse `fast_inference = False` to train it."
@@ -4514,11 +4532,13 @@ def _redirect_embedding_targets(
         return target_modules, modules_to_save, ()
 
     target_modules = list(dict.fromkeys(target_modules))
-    moved = [x for x in target_modules if x in EMBEDDING_MODULES and x not in skip]
+    moved = [x for x in target_modules
+             if _embedding_leaf(x) and _embedding_leaf(x) not in skip]
     if not moved:
         return target_modules, modules_to_save, ()
 
-    remaining = [x for x in target_modules if x not in EMBEDDING_MODULES or x in skip]
+    remaining = [x for x in target_modules
+                 if not _embedding_leaf(x) or _embedding_leaf(x) in skip]
     # list() on a str would shred it into single characters.
     if modules_to_save is None:
         saved = []
@@ -4567,7 +4587,7 @@ def _resolve_ensure_weight_tying(model, modules_to_save, requested):
     """
     if requested is not None:
         return bool(requested)
-    if not EMBEDDING_MODULES <= set(modules_to_save or ()):
+    if not EMBEDDING_MODULES <= _embedding_leaves(modules_to_save):
         return False
     return _model_ties_embeddings(model)
 
@@ -4585,10 +4605,10 @@ def _drop_tied_output_module(model, modules_to_save, ensure_weight_tying):
     if (
         not ensure_weight_tying
         or not _model_ties_embeddings(model)
-        or not EMBEDDING_MODULES <= set(modules_to_save or ())
+        or not EMBEDDING_MODULES <= _embedding_leaves(modules_to_save)
     ):
         return modules_to_save
-    return [x for x in modules_to_save if x != "lm_head"]
+    return [x for x in modules_to_save if _embedding_leaf(x) != "lm_head"]
 
 
 def _raise_if_fast_inference_modules_to_save(model, modules_to_save):

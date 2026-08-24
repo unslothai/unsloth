@@ -3201,10 +3201,7 @@ class FastLlamaModel:
             # the leaf, so fold that alias away. Only that one: qualified targets are a
             # real request, and layers.0.q_proj is not layers.1.q_proj.
             def _leaf_name(module):
-                if type(module) is not str:
-                    return module
-                leaf = module.rsplit(".", 1)[-1]
-                return leaf if leaf in EMBEDDING_MODULES else module
+                return _embedding_leaf(module) or module
 
             new_target_modules = {_leaf_name(x) for x in new_target_modules}
             old_target_modules = {_leaf_name(x) for x in old_target_modules}
@@ -3354,7 +3351,7 @@ class FastLlamaModel:
             ensure_weight_tying,
         )
         for module in _moved_embedding_modules:
-            if module == "embed_tokens":
+            if _embedding_leaf(module) == "embed_tokens":
                 train_embed_tokens = True
             else:
                 train_lm_head = True
@@ -3416,9 +3413,11 @@ class FastLlamaModel:
         # Check modules_to_save
         if modules_to_save is not None:
             for module in modules_to_save:
-                if module == "lm_head":
+                # By leaf: PEFT resolves model.embed_tokens to the same module.
+                leaf = _embedding_leaf(module)
+                if leaf == "lm_head":
                     train_lm_head = True
-                elif module == "embed_tokens":
+                elif leaf == "embed_tokens":
                     train_embed_tokens = True
                 else:
                     raise TypeError(
