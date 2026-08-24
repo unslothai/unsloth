@@ -119,9 +119,13 @@ def _scope_duplicates(body, scope, out) -> None:
             name, kind = found
             if name in seen:
                 first_line, first_kind = seen[name]
-                out.append((node.lineno,
-                            f"{scope}{name} is defined twice "
-                            f"({first_kind} at line {first_line}, {kind} here)"))
+                out.append(
+                    (
+                        node.lineno,
+                        f"{scope}{name} is defined twice "
+                        f"({first_kind} at line {first_line}, {kind} here)",
+                    )
+                )
             else:
                 seen[name] = (node.lineno, kind)
         if isinstance(node, ast.ClassDef):
@@ -145,8 +149,11 @@ def _import_duplicates(tree, out) -> None:
             key = (module, alias.name, alias.asname)
             bound = alias.asname or alias.name
             if key in seen:
-                where = ("twice in this statement" if seen[key] == node.lineno
-                         else f"twice from the same module (first at line {seen[key]})")
+                where = (
+                    "twice in this statement"
+                    if seen[key] == node.lineno
+                    else f"twice from the same module (first at line {seen[key]})"
+                )
                 out.append((node.lineno, f"{bound} is imported {where}"))
             else:
                 seen[key] = node.lineno
@@ -197,8 +204,11 @@ def _iter_paths(targets):
 _SELF_TEST_CASES = [
     # (expected finding count, source)
     # 1. The real artefact: two top-level copies of one def, differing only in comments.
-    (1, "def toggle(page):\n    # click it\n    page.click('#r')\n\n\n"
-        "def toggle(page):\n    # open the panel\n    page.click('#r')\n"),
+    (
+        1,
+        "def toggle(page):\n    # click it\n    page.click('#r')\n\n\n"
+        "def toggle(page):\n    # open the panel\n    page.click('#r')\n",
+    ),
     # 2. The other real one: a name repeated inside a single ImportFrom.
     (1, "from floor_table import latest_attempt_rows, refuse_collisions, latest_attempt_rows\n"),
     # 3. A constant defined twice.
@@ -215,10 +225,16 @@ _SELF_TEST_CASES = [
     # Negative controls: each of these is correct code and must report nothing.
     (0, "if FAST:\n    def go():\n        pass\nelse:\n    def go():\n        pass\n"),
     (0, "try:\n    from fast import x\nexcept ImportError:\n    from slow import x\n"),
-    (0, "from typing import overload\n\n\n@overload\ndef go(a: int) -> int: ...\n"
-        "@overload\ndef go(a: str) -> str: ...\ndef go(a):\n    return a\n"),
-    (0, "class A:\n    @property\n    def v(self):\n        return self._v\n\n"
-        "    @v.setter\n    def v(self, x):\n        self._v = x\n"),
+    (
+        0,
+        "from typing import overload\n\n\n@overload\ndef go(a: int) -> int: ...\n"
+        "@overload\ndef go(a: str) -> str: ...\ndef go(a):\n    return a\n",
+    ),
+    (
+        0,
+        "class A:\n    @property\n    def v(self):\n        return self._v\n\n"
+        "    @v.setter\n    def v(self, x):\n        self._v = x\n",
+    ),
     (0, "import urllib.parse\nimport urllib.request\n"),
     (0, "from a import x\nfrom b import x\n"),
     (0, "NAMES = ['a']\nNAMES = frozenset(n.lower() for n in NAMES)\n"),
@@ -234,8 +250,10 @@ def _self_test() -> int:
         got = len(scan_source(source, "<self-test>"))
         if got != expected:
             failures += 1
-            print(f"self-test: expected {expected} finding(s), got {got} for:\n{source}",
-                  file = sys.stderr)
+            print(
+                f"self-test: expected {expected} finding(s), got {got} for:\n{source}",
+                file = sys.stderr,
+            )
     if failures:
         print(f"self-test FAILED ({failures} case(s))", file = sys.stderr)
         return 1
@@ -244,8 +262,9 @@ def _self_test() -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description = __doc__,
-                                     formatter_class = argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description = __doc__, formatter_class = argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("targets", nargs = "*", help = "Python files or directories to scan")
     parser.add_argument("--self-test", action = "store_true", help = "check the rule, scan nothing")
     parser.add_argument("--before", help = "base revision; findings on unchanged lines only warn")
@@ -296,9 +315,11 @@ def main() -> int:
         print(f"duplicate definitions ({len(blocking)}):")
         for finding in blocking:
             print(f"  {finding}")
-        print("A name bound twice in one scope is almost always merge damage: delete the "
-              "duplicate copy. The later one wins silently, so the first is dead code and "
-              "whatever tested it now tests nothing.")
+        print(
+            "A name bound twice in one scope is almost always merge damage: delete the "
+            "duplicate copy. The later one wins silently, so the first is dead code and "
+            "whatever tested it now tests nothing."
+        )
         return 1
     print(f"clean: {len(paths)} file(s) checked")
     return 0
