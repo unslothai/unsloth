@@ -2420,15 +2420,17 @@ def _rocm_windows_per_device_vram(
                     "total_bytes": total_bytes,
                     "dedicated_bytes": dedicated_bytes,
                     "total_is_pool": total_is_pool,
-                    # A widened total is not by itself a licence to put Shared
-                    # Usage in this device's numerator: the classifier above
-                    # fails open, so a discrete card on an unsettled runtime can
-                    # reach it, and shared bytes are host memory that its
-                    # props.total_memory never counted. Same stricter question
-                    # get_gpu_memory_info asks before summing the two counters.
-                    "positively_unified": (
-                        total_is_pool and _rocm_props_are_positively_unified(props)
-                    ),
+                    # Whether Shared Usage belongs in this device's numerator is
+                    # a question about the PART, not about whether this call
+                    # happened to widen anything. On the measured gfx1151 the two
+                    # totals already agree, so total_is_pool stays false while the
+                    # total is pool-scoped all the same, and Dedicated alone would
+                    # be paired with it. It is also the stricter question:
+                    # _rocm_props_total_is_carve_out fails open, so a discrete
+                    # card can widen, and shared bytes are host memory its
+                    # props.total_memory never counted. Same test
+                    # get_gpu_memory_info applies before summing the two counters.
+                    "positively_unified": _rocm_props_are_positively_unified(props),
                 }
             )
         except Exception as e:
@@ -2454,17 +2456,21 @@ def _rocm_windows_per_device_vram(
         # Counter unavailable: show every GPU with a correct total, used unknown.
         assigned = [None] * len(dev_meta)
 
-    # A total widened to the unified pool needs a numerator that spans the same
-    # ground. Dedicated Usage does not: it saturates at the carve-out and is
-    # wrong past it, so pairing it with the pool total would report a loaded card
-    # as mostly free, and the caller derives free as total minus used.
+    # A pool-scoped total needs a numerator that spans the same ground. Dedicated
+    # Usage does not: it saturates at the carve-out and is wrong past it, so
+    # pairing it with the pool total would report a loaded card as mostly free,
+    # and the caller derives free as total minus used.
     # _rocm_windows_unified_used_bytes sums Dedicated and Shared for exactly this
     # (#9362 measured the plateau at ~30.5 GiB on a gfx1151 and the overflow
-    # landing in Shared), so a widened device takes that instead of going
-    # unknown. It answers only for a single positively-unified compute adapter
-    # and declines otherwise, and a decline still has to null the reading rather
-    # than leave the carve-out figure standing under a pool-sized total.
-    if any(meta["total_is_pool"] for meta in dev_meta):
+    # landing in Shared). A decline still has to null the reading rather than
+    # leave the carve-out figure standing under a pool-sized total.
+    #
+    # Pool-scoped covers both ways to get there: a total this call widened, and a
+    # confirmed APU whose props.total_memory already spanned the pool, which is
+    # what the measured gfx1151 does. Keying on the widening alone would leave
+    # that host, the one this PR is about, on the plateaued counter.
+    pool_scoped = [m["total_is_pool"] or m["positively_unified"] for m in dev_meta]
+    if any(pool_scoped):
         only = dev_meta[0] if len(dev_meta) == 1 else None
         unified_used = (
             _rocm_windows_unified_used_bytes(adapters)
@@ -2477,11 +2483,11 @@ def _rocm_windows_per_device_vram(
             # used, so an unclamped sum publishes negative free.
             unified_used = min(unified_used, float(only["total_bytes"]))
         assigned = [
-            (unified_used if meta["total_is_pool"] else used)
-            for meta, used in zip(dev_meta, assigned)
+            (unified_used if scoped else used)
+            for scoped, used in zip(pool_scoped, assigned)
         ]
         # The aggregate is the visible set's exact total, so it survives only
-        # when every widened member got a figure.
+        # when every pool-scoped member got a figure.
         aggregate_gb = (
             round(unified_used / (1024**3), 2)
             if unified_used is not None and len(dev_meta) == 1

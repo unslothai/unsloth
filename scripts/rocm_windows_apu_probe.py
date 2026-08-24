@@ -93,7 +93,10 @@ def read_counters() -> dict[str, Any]:
     """Dedicated and Shared usage side by side, keyed by adapter instance."""
     dedicated = _counter("Dedicated Usage") or []
     shared = _counter("Shared Usage") or []
-    names = [n for n, _ in dedicated] or [n for n, _ in shared]
+    # Union, not the dedicated list: the two are separate samples, and an adapter
+    # the dedicated query happened to drop would otherwise vanish from the report
+    # entirely, taking the shared reading that may hold the allocation with it.
+    names = list(dict.fromkeys([n for n, _ in dedicated] + [n for n, _ in shared]))
     ded, shr = dict(dedicated), dict(shared)
     return {
         "available": bool(dedicated or shared),

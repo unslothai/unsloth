@@ -800,6 +800,23 @@ def test_shared_usage_needs_a_positively_unified_part(win_rocm, monkeypatch):
     assert aggregate is None
 
 
+def test_a_confirmed_apu_takes_the_unified_sum_even_unwidened(win_rocm, monkeypatch):
+    """The measured gfx1151 has props.total_memory already spanning the pool, so
+    nothing widens and total_is_pool stays false. The total is pool-scoped all
+    the same, and Dedicated alone plateaus at the carve-out under it, which is
+    the reading that reports a loaded APU as mostly free."""
+    _apu_host(monkeypatch, unified_used = 4.0 * GB)
+    torch = sys.modules["torch"]
+    # Both totals agree: the driver has nothing wider to offer.
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda i: (0, APU[1]))
+
+    devices, aggregate = hw._rocm_windows_per_device_vram([0])
+    assert devices[0]["total_gb"] == round(APU[1] / GB, 2)
+    # 4.0, not the 2.0 the Dedicated counter alone reports for this adapter.
+    assert devices[0]["used_gb"] == 4.0
+    assert aggregate == 4.0
+
+
 def test_the_unified_sum_is_clamped_to_the_widened_total(win_rocm, monkeypatch):
     """Dedicated plus Shared counts driver and desktop allocations too, so it can
     exceed torch's pool. Every other reading is clamped on its way through the
