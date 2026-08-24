@@ -263,7 +263,7 @@ run_readonly_profile_case() {
     printf 'old\n' > "$_case_dir/unsloth_studio/generation"
     printf '# unwritable\n' > "$_case_home/$3"
     chmod 444 "$_case_home/$3"
-    if : 2>/dev/null >> "$_case_home/$3"; then
+    if true 2>/dev/null >> "$_case_home/$3"; then
         bad "unwritable $_case profile could not be set up (this user appends to it regardless)"
         return 0
     fi
@@ -335,7 +335,7 @@ run_readonly_bin_case() {  # name, what the existing entry points at, expected s
     # The harness writes the executable; the entry already there either resolves to it or not.
     ln -sfn "$2" "$_bin_home/.local/bin/unsloth"
     chmod 555 "$_bin_home/.local/bin"
-    if : 2>/dev/null > "$_bin_home/.local/bin/probe"; then
+    if true 2>/dev/null > "$_bin_home/.local/bin/probe"; then
         rm -f "$_bin_home/.local/bin/probe"
         chmod 755 "$_bin_home/.local/bin"
         bad "unwritable bin directory holding $1 could not be set up (this user writes it anyway)"
