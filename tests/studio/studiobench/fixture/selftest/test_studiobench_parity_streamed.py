@@ -753,6 +753,36 @@ def test_the_blind_scaffold_rule_still_withholds_a_corroborated_run_state_differ
     assert not any("thread scaffolding" in m for m in got["moved"]), got["moved"]
 
 
+def test_the_composer_refusal_says_the_scaffold_reading_is_an_aggregate():
+    """A REFUSAL THAT NAMES ONE CAUSE READS AS HAVING RULED OUT THE OTHERS.
+
+    `digest_scaffold` is one digest over the viewport, the composer dock and the empty state
+    together. The suppression is justified by the composer swap alone, but the reading it acts on
+    cannot tell that swap apart from a change to another scaffold surface in the same
+    cross-run-state capture, so such a change rides along inside the refusal.
+
+    That is a real limit of this capture and separating it needs a composer-scoped digest the
+    payload does not carry. What must not happen meanwhile is the sentence claiming more than the
+    reading supports: unqualified, it reads as "only the composer differed", which is what a reader
+    would act on. So the refusal states the aggregate and states what it could not separate.
+    """
+    settled = thread([message(0, role = "user", body = "the prompt"), message(1)])
+    base = dict(capture(settled), composer_control = "Stop generating", streaming = True)
+    treat = dict(
+        capture(settled),
+        composer_control = "Send message",
+        streaming = False,
+        digest_scaffold = "scaffold-with-send-button",
+        chars_scaffold = base["chars_scaffold"] + 8,
+    )
+    got = P.compare(base, treat)
+    # The pair really does take the composer suppression, not the blind one.
+    assert got["verdict"] == P.NOT_COMPARABLE, got
+    assert "composer dock is inside the thread root" in got["reason"], got["reason"]
+    assert "ONE AGGREGATE digest" in got["reason"], got["reason"]
+    assert "cannot separate the composer swap" in got["reason"], got["reason"]
+
+
 def test_the_streamed_row_itself_is_still_withheld_when_the_probe_is_blind():
     """The narrowing is not a hole in the other direction.
 

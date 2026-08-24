@@ -770,7 +770,10 @@ def compare(base: Optional[dict], treat: Optional[dict]) -> dict:
                 "composer dock is inside the thread root and renders Stop or Queue while a reply "
                 "is running and Send when it is not, so the scaffolding differs BECAUSE the two "
                 "arms were at different points in the same turn. Every message and every overlay "
-                "agreed. Nothing here is a pass"
+                "agreed. The scaffold is read as ONE AGGREGATE digest -- viewport, composer dock "
+                "and empty state together -- so this cannot separate the composer swap from a "
+                "change elsewhere in the scaffold that happened at the same time, and it does not "
+                "claim to have: that is part of why it refuses. Nothing here is a pass"
             ),
             "moved": [],
             "in_flight": sorted(streaming),
