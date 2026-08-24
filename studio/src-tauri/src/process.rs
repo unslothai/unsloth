@@ -921,13 +921,19 @@ pub(crate) const MAX_BACKEND_LOG_LINE_BYTES: usize = 16 * 1024;
 /// elapsed total), so the earlier ones are dropped. Text with no interior `\r` is returned
 /// untouched, and a bar whose last frame is empty keeps the last non-empty one rather than
 /// logging a blank line.
+///
+/// The Python tee that writes the backend's own session log (`_TeeStream._last_frame` in
+/// studio/backend/run.py) applies exactly this rule to exactly this input, so the two sinks
+/// stay interchangeable for a reader. `tests/sim_8763/test_frame_parity.py` pins that.
 pub(crate) fn collapse_progress_frames(text: &str) -> &str {
     if !text.contains('\r') {
         return text;
     }
     text.rsplit('\r')
         .find(|frame| !frame.trim().is_empty())
-        .unwrap_or(text)
+        // Every frame was blank, so the line was blank. Return one of them rather than the
+        // whole text, which still holds the `\r` the caller asked us to collapse away.
+        .unwrap_or_else(|| text.rsplit('\r').next().unwrap_or(""))
 }
 
 /// True when the line is one of the backend's own structured access-log records **and it
@@ -943,6 +949,15 @@ pub(crate) fn collapse_progress_frames(text: &str) -> &str {
 /// reads a watchdog going red; dropping those to `debug!` would put them below the file
 /// target's INFO filter and undo that. A record with no `status_code` we cannot vouch for
 /// either, so it keeps its INFO line too.
+///
+/// Note what "debug" means for the records this *does* match. `setup_logging` in main.rs
+/// builds every logger at `LevelFilter::Info` and there is no `RUST_LOG` or any other way
+/// to raise it, so `log::max_level()` is `Info` and a matched record is dropped outright
+/// rather than merely demoted -- including when the backend is run with `--verbose`, which
+/// makes it emit *more* of them. That is deliberate: the same records are written verbatim
+/// to the diagnostics phase log (`append_phase_line` below, before this decision) and to
+/// the backend's own session log, and both of those are already offered by the support
+/// report and by Settings > Logs. Nothing is lost, it moves one source over in the picker.
 fn is_backend_access_log_line(text: &str) -> bool {
     let trimmed = text.trim_start();
     if !trimmed.starts_with('{') {
@@ -3988,9 +4003,6 @@ fn stop_backend_inner(
     result
 }
 
-// A login-started desktop on Windows inherits C:\Windows\system32 (issue #8510),
-// and so did every CLI child, where the Python CLI refuses to run. These pin the
-// replacement directory and that each command carries it.
 #[cfg(test)]
 mod backend_log_line_tests {
     use super::*;
@@ -4010,6 +4022,73 @@ mod backend_log_line_tests {
     #[test]
     fn trailing_blank_frame_falls_back_to_the_last_real_one() {
         assert_eq!(collapse_progress_frames("Map:  50%\rMap: 100%\r   "), "Map: 100%");
+    }
+
+    #[test]
+    fn an_all_blank_line_never_keeps_its_carriage_returns() {
+        // The log handle appends the platform terminator itself, so a `\r` that survives
+        // here lands as "\r\r\n" in the file on Windows.
+        for line in ["\r", "\r\r\r", "   \r   "] {
+            assert!(
+                !collapse_progress_frames(line).contains('\r'),
+                "collapse left a carriage return in {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_crlf_line_keeps_its_payload() {
+        // read_output_stream trims the terminator before collapsing, so the `\r` of a
+        // CRLF is never mistaken for a redraw that ended in an empty frame. Every line a
+        // Windows child relays through the backend arrives in this shape.
+        let raw = b"Hardware detected: NVIDIA GeForce RTX 4090\r\n";
+        let trimmed = String::from_utf8_lossy(trim_line_endings(raw)).into_owned();
+        assert_eq!(
+            collapse_progress_frames(&trimmed),
+            "Hardware detected: NVIDIA GeForce RTX 4090"
+        );
+    }
+
+    #[test]
+    fn a_crlf_terminated_bar_still_collapses() {
+        let raw = b"Map:  50%\rMap: 100%\r\n";
+        let trimmed = String::from_utf8_lossy(trim_line_endings(raw)).into_owned();
+        assert_eq!(collapse_progress_frames(&trimmed), "Map: 100%");
+    }
+
+    #[test]
+    fn a_crlf_json_record_stays_parseable() {
+        let raw = b"{\"event\": \"request_completed\", \"status_code\": 200}\r\n";
+        let trimmed = String::from_utf8_lossy(trim_line_endings(raw)).into_owned();
+        let line = collapse_progress_frames(&trimmed);
+        assert!(serde_json::from_str::<serde_json::Value>(line).is_ok(), "{line:?}");
+        assert!(is_backend_access_log_line(line));
+    }
+
+    #[test]
+    fn a_marker_line_survives_the_collapse() {
+        // read_output_stream runs the TAURI_PORT regex against the collapsed text, so a
+        // marker that shares its line with a redraw must still be the frame we keep.
+        for raw in [
+            &b"TAURI_PORT=8888\n"[..],
+            &b"TAURI_PORT=8888\r\n"[..],
+            &b"Loading weights:  47%\rTAURI_PORT=8888\r\n"[..],
+        ] {
+            let trimmed = String::from_utf8_lossy(trim_line_endings(raw)).into_owned();
+            assert_eq!(collapse_progress_frames(&trimmed), "TAURI_PORT=8888", "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn truncation_lands_on_a_character_boundary() {
+        let line = "\u{1f680}".repeat(MAX_BACKEND_LOG_LINE_BYTES);
+        let mut end = MAX_BACKEND_LOG_LINE_BYTES;
+        while end > 0 && !line.is_char_boundary(end) {
+            end -= 1;
+        }
+        // Slicing at `end` must not panic and must stay under the cap.
+        assert!(end <= MAX_BACKEND_LOG_LINE_BYTES);
+        assert_eq!(line[..end].len(), end);
     }
 
     #[test]
@@ -4053,6 +4132,9 @@ mod backend_log_line_tests {
     }
 }
 
+// A login-started desktop on Windows inherits C:\Windows\system32 (issue #8510),
+// and so did every CLI child, where the Python CLI refuses to run. These pin the
+// replacement directory and that each command carries it.
 #[cfg(test)]
 mod managed_cli_working_dir_tests {
     use super::*;

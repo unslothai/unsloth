@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import asyncio
+import os
 import re
 from pathlib import Path
 
@@ -226,18 +227,27 @@ def test_watchdog_window_outlasts_the_probe_interval():
     commands_rs = (
         Path(__file__).resolve().parents[2] / "src-tauri" / "src" / "commands.rs"
     ).read_text(encoding = "utf-8")
-    interval_s = int(
-        re.search(
-            r"HEALTH_WATCHDOG_INTERVAL: Duration = Duration::from_secs\((\d+)\)", commands_rs
-        ).group(1)
-    )
-    probe_s = int(
-        re.search(
-            r"HEALTH_PROBE_TIMEOUT: Duration = Duration::from_secs\((\d+)\)", commands_rs
-        ).group(1)
-    )
-    assert hmod._WATCHDOG_POLL_DEDUP_MS > (interval_s + probe_s) * 1000, (
-        f"the watchdog heartbeat window ({hmod._WATCHDOG_POLL_DEDUP_MS}ms) is not wider "
+
+    def _secs(name):
+        match = re.search(
+            rf"{name}: Duration = Duration::from_secs\((\d+)\)", commands_rs
+        )
+        assert match is not None, (
+            f"{name} is no longer a Duration::from_secs literal in commands.rs; this test "
+            f"reads it to pin the heartbeat window and needs updating alongside it"
+        )
+        return int(match.group(1))
+
+    interval_s = _secs("HEALTH_WATCHDOG_INTERVAL")
+    probe_s = _secs("HEALTH_PROBE_TIMEOUT")
+
+    # The default, not whatever this shell happens to export. Reading the module global
+    # would make the test fail for anyone with the override set.
+    window_ms = hmod._env_int("UNSLOTH_STUDIO_ACCESS_LOG_WATCHDOG_DEDUP_MS", 60000)
+    if os.environ.get("UNSLOTH_STUDIO_ACCESS_LOG_WATCHDOG_DEDUP_MS"):
+        window_ms = 60000
+    assert window_ms > (interval_s + probe_s) * 1000, (
+        f"the watchdog heartbeat window ({window_ms}ms) is not wider "
         f"than one probe round ({interval_s}s + {probe_s}s), so it would collapse nothing"
     )
 
