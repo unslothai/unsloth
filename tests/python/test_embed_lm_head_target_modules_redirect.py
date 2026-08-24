@@ -245,21 +245,23 @@ def test_a_classification_repeat_call_is_not_tripped_by_peft_added_modules():
 
     core = [m for m in TARGET_MODULES if m not in ("embed_tokens", "lm_head")]
     model, _ = FastLanguageModel.from_pretrained(
-        model_name = MODEL_NAME, load_in_4bit = True, max_seq_length = 512, num_labels = 2,
+        model_name = MODEL_NAME,
+        load_in_4bit = True,
+        max_seq_length = 512,
+        num_labels = 2,
     )
     try:
-        model = FastLanguageModel.get_peft_model(model, r = 8, lora_alpha = 16,
-                                                 target_modules = list(core))
-        saved = model.peft_config["default"].modules_to_save or []
-        assert "score" in saved or "classifier" in saved, (
-            f"PEFT did not add its classifier modules ({saved}); this guard checks nothing"
+        model = FastLanguageModel.get_peft_model(
+            model, r = 8, lora_alpha = 16, target_modules = list(core)
         )
-        FastLanguageModel.get_peft_model(model, r = 8, lora_alpha = 16,
-                                         target_modules = list(core))
+        saved = model.peft_config["default"].modules_to_save or []
+        assert (
+            "score" in saved or "classifier" in saved
+        ), f"PEFT did not add its classifier modules ({saved}); this guard checks nothing"
+        FastLanguageModel.get_peft_model(model, r = 8, lora_alpha = 16, target_modules = list(core))
         # A genuinely different request is still rejected.
         with pytest.raises(TypeError, match = "parameters are different"):
-            FastLanguageModel.get_peft_model(model, r = 8, lora_alpha = 16,
-                                             target_modules = ["q_proj"])
+            FastLanguageModel.get_peft_model(model, r = 8, lora_alpha = 16, target_modules = ["q_proj"])
     finally:
         del model
         torch.cuda.empty_cache()
