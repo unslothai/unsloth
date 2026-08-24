@@ -18484,9 +18484,7 @@ class LlamaCppBackend:
                         # cushion this footprint has no term for, so a long context
                         # would go missing from it entirely -- exactly the "engaged
                         # but unsized" case the predicate abstains on.
-                        mtp_unsized = bool(
-                            _flat_mtp_engages or _cpu_draft_fit_bytes is None
-                        ),
+                        mtp_unsized = bool(_flat_mtp_engages or _cpu_draft_fit_bytes is None),
                         # Host-only, not pooled: -ngld 0 puts the drafter in RAM, and
                         # free VRAM cannot pay for an allocation the child makes on
                         # the host.
