@@ -867,14 +867,11 @@ def test_sidebar_exposes_queue_activity_for_each_thread():
 
 
 def test_a_backgrounded_pane_autosaves_without_naming_itself_active():
-    """The shared provider (#9129) keeps a hidden pane's run alive, so its autosave still
-    fires after Compare has hidden it. The SAVE must keep happening; only the active-thread
-    PUBLICATION is suppressed.
-
-    Unsuppressed, a hidden base pane writes its own remote id into the store, and Compare's
-    SharedComposer builds exportThreadIds as [model1, model2, activeThreadId] -- so Export
-    downloads the unrelated base conversation alongside the two compare threads, or lights
-    up before either compare thread exists.
+    """The shared provider (#9129) keeps a hidden pane's run alive, so its autosave still fires
+    after Compare has hidden it. The SAVE must keep happening; only the active-thread PUBLICATION
+    is suppressed, or the hidden base pane writes its own remote id into the store and Compare's
+    ``exportThreadIds = [model1, model2, activeThreadId]`` downloads the unrelated base
+    conversation alongside the two compare threads.
     """
     autosave = _between(
         RUNTIME_PROVIDER,
@@ -928,14 +925,11 @@ def test_a_backgrounded_pane_autosaves_without_naming_itself_active():
 def test_the_history_adapters_publish_stands_down_with_the_autosaves():
     """``ThreadBackendAutosave`` is not the only place a pane names itself the active thread.
 
-    The history adapter's ``append()`` publishes the same id, on the same store, for every
-    persisted message -- including the assistant message of the background run the shared
-    provider (#9129) exists to keep alive. ``enterCompare`` blanks the active id on the way
-    in, so the ``!== remoteId`` test is satisfied and a hidden pane republishes itself,
-    reaching the same ``exportThreadIds = [model1, model2, activeThreadId]`` the autosave
-    guard was added for.
-
-    Both publications must stand down together, or gating one is decorative.
+    The history adapter's ``append()`` publishes the same id for every persisted message,
+    including the assistant message of the background run #9129 exists to keep alive.
+    ``enterCompare`` blanks the active id, so the ``!== remoteId`` test passes and a hidden pane
+    republishes itself into the same ``exportThreadIds`` the autosave guard was added for. Both
+    must stand down together, or gating one is decorative.
     """
     append = _between(
         RUNTIME_PROVIDER,

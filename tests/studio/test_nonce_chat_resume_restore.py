@@ -3,21 +3,17 @@
 
 """Returning from Compare to a ``/chat?new=<uuid>`` chat must re-attach its thread id.
 
-The shared provider is HIDDEN rather than unmounted when Compare opens, which is the point of
-#9129 -- but ``enterCompare`` clears ``activeThreadId`` on the way in, and on the way back
-nothing puts it back for this view:
+The provider is HIDDEN rather than unmounted when Compare opens (the point of #9129), but
+``enterCompare`` clears ``activeThreadId`` and nothing put it back for this view:
+``ThreadNewChatSwitch`` returns immediately since the nonce never changed, ``ActiveThreadSync``
+is disabled whenever a nonce is present, and only ``ProjectLanding`` restored on resume.
 
-  * ``ThreadNewChatSwitch`` returns immediately, because the nonce never changed;
-  * ``ActiveThreadSync`` is disabled outright whenever a nonce is present;
-  * ``ProjectLanding`` restores on resume, and the single-chat path had no equivalent.
+``ThreadScopedSettingsSync`` is NOT nonce-gated, so the chat came back live but detached, on
+installation defaults, with an edit moving THOSE rather than its own snapshot. Title, context
+usage and the model notice are keyed on the same id.
 
-``ThreadScopedSettingsSync`` is NOT nonce-gated, so the chat came back live but detached: on
-installation defaults, an edit in it moving THOSE rather than its own snapshot. Title,
-context usage and the model notice are keyed on the same id.
-
-``NonceThreadResumeRestore``'s effect is sliced verbatim out of the provider and replayed
-through the same React-effect emulator the sibling suites use, so wiring drift breaks this
-rather than silently un-testing it.
+``NonceThreadResumeRestore``'s effect is sliced verbatim and replayed through the same
+React-effect emulator the sibling suites use, so wiring drift breaks this.
 """
 
 from __future__ import annotations

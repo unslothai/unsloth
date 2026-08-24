@@ -824,12 +824,10 @@ function createStudioDbAdapter(
       const incognitoAtInit = runtimeStateAtInit.incognito;
       const modelIdAtInit = runtimeStateAtInit.params.checkpoint ?? "";
       const createdAtInit = Date.now();
-      // The project the SEND was made from, not the one on screen now. This adapter is
-      // rebuilt every render and handed to the core through __internal_setOptions, so
-      // `projectId` below is the provider's LATEST -- and send() awaits document
-      // extraction before handleSend, while the shared provider survives a project
-      // switch, so those are no longer the same project. A claim of null still wins:
-      // it means the send was made from outside any project.
+      // The project the SEND was made from, not the one on screen now: this adapter is rebuilt
+      // every render and handed to the core via __internal_setOptions, and send() awaits
+      // document extraction before handleSend while the provider survives a project switch.
+      // A claim of null wins too -- it means a send from outside any project.
       const claim = readThreadProjectClaim(threadId);
       const projectIdAtSend = claim ? claim.projectId : projectId;
       releaseThreadProjectClaim(threadId);
@@ -1501,22 +1499,15 @@ function useStudioRuntimeAdapters(
           // published before the reads below: a temporary chat has no row to confirm, and a read
           // that fails must not leave the runtime pointing at the previously open chat
           //
-          // ...but not while this pane is only mounted to keep its run attached. This is the
-          // sibling of ThreadBackendAutosave's publication and needs the same gate for the same
-          // reason: a hidden pane naming itself active reaches Compare's exportThreadIds
-          // ([model1, model2, activeThreadId]), so Export would pull the unrelated base chat.
-          // Reachable precisely because of this PR -- the background run whose assistant message
-          // lands here is the one the shared provider keeps alive, and enterCompare blanked the
-          // active id, so the guard below would otherwise be satisfied. Read through a ref, at
-          // publish time: the write may have been queued while the pane was still on screen.
+          // ...but not while this pane is only mounted to keep its run attached: a hidden pane
+          // naming itself active reaches Compare's exportThreadIds, so Export pulls the unrelated
+          // base chat. Through a ref, read at publish time, since the write may have been queued
+          // while the pane was still on screen.
           //
-          // Nor while a New Chat switch this provider started is still in flight.
-          // switchToNewThread() is async, so mainThreadId is still the OUTGOING thread for
-          // the whole gap, and the guard below reads that as "this pane is on screen". A
-          // write landing in the gap then republishes the thread the user just left; the
-          // project view (which openProjectLanding deliberately opened with no active
-          // thread) picks the id back up and renders the outgoing conversation inside the
-          // project the user navigated to. attempt !== landedAttempt is exactly that gap.
+          // Nor mid-switch. switchToNewThread() is async, so mainThreadId is still the OUTGOING
+          // thread for the whole gap and the guard below reads that as "this pane is on screen"; a
+          // write landing there republishes the chat the user just left into the project they
+          // navigated to. attempt !== landedAttempt is that gap.
           const switchState = newThreadSwitchStateRef?.current;
           const switchInFlight = Boolean(
             switchState &&
@@ -1711,24 +1702,22 @@ type NewThreadSwitchState = {
   // attempt: leaving for a saved chat and coming back releases it, so two switches for
   // the SAME nonce can be in flight and the older must not speak for the newer.
   attempt: number;
-  // One entry per switch STARTED, so a nonce view can recognise any of these ids landing
-  // after the route moved on. By id rather than id SHAPE, which cannot tell a stale arrival
-  // from the thread a fresh switch just opened. Duplicates matter: two switches for one
-  // thread can overlap. `settled` retires a claim with its own switch, so one that finished
-  // while another chat was visible cannot be spent by a later, legitimate open.
+  // One entry per switch STARTED, so a nonce view recognises any of these ids landing after
+  // the route moved on. By id rather than id SHAPE, which cannot tell a stale arrival from a
+  // fresh switch's thread. Duplicates matter: two switches for one thread can overlap.
+  // `settled` retires a claim with its own switch, so one that finished off-screen cannot be
+  // spent by a later, legitimate open.
   pendingSavedThreadIds: PendingSavedThreadSwitch[];
-  // The thread a nonce view is on, with the nonce it belongs to. Reopened after a stale
-  // arrival and after a detour: once the user has sent, assistant-ui's newThreadId is gone,
-  // so switchToNewThread() mints a SECOND blank thread instead of restoring theirs. A ?new=
-  // URL survives materialization, so Back returns to the same nonce; the pair is what tells
-  // a returning nonce from a new one.
+  // The thread a nonce view is on, with the nonce it belongs to. Once the user has sent,
+  // assistant-ui's newThreadId is gone and switchToNewThread() mints a SECOND blank thread
+  // instead of restoring theirs. A ?new= URL survives materialization, so Back returns to the
+  // same nonce; the pair is what tells a returning nonce from a new one.
   nonceThread: { nonce: string; threadId: string } | null;
-  // The newest attempt whose own switch has LANDED. Ownership is only recorded from a main
-  // thread this nonce's switch actually opened. Entering a nonce from a saved chat leaves
-  // that chat as `mainThreadId` until switchToNewThread() resolves, and its claim was
-  // already retired while it was on screen -- so "unclaimed and current" is not proof of
-  // ownership, and recording it there let a later return to the nonce reopen the chat the
-  // user had LEFT, appending their next prompt to the wrong conversation.
+  // The newest attempt whose own switch has LANDED. Ownership is only recorded from a thread
+  // this nonce's switch actually opened: entering a nonce from a saved chat leaves that chat
+  // as `mainThreadId` until switchToNewThread() resolves and its claim is already retired, so
+  // "unclaimed and current" is not proof of ownership -- recording it there reopened the chat
+  // the user had LEFT.
   landedAttempt: number;
 };
 
@@ -1750,11 +1739,9 @@ function ThreadAutoSwitch({
   const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
 
   useEffect(() => {
-    // Paused as well as loading: requestTemporaryPromptQueueStop() names every temporary
-    // queue on the page, not this provider's, so a backgrounded pane reaching it would
-    // stop a queue the on-screen view owns. `paused` is a dependency, so the switch and
-    // the stop are both paid on resume. Reachable while `mainThreadId` is still wrong,
-    // since `syncActiveThreadId` re-runs this effect on every compare open and close.
+    // Paused as well as loading: requestTemporaryPromptQueueStop() names every temporary queue
+    // on the page, not this provider's, so a backgrounded pane would stop a queue the on-screen
+    // view owns. `paused` is a dependency, so both are paid on resume.
     if (isLoading || paused) {
       return;
     }
@@ -1880,14 +1867,11 @@ function ThreadNewChatSwitch({
         ? switchState.nonceThread.threadId
         : null;
     const runtimeThreads = aui.threads().__internal_getAssistantRuntime?.();
-    // Guarded, unlike the reads elsewhere in this file that pass an id the runtime just
-    // handed back: this one is REMEMBERED, in a ref that now outlives every view switch.
-    // getItemById() does not return undefined for an id the store has dropped -- it throws
-    // "Entry not available in the store" from ShallowMemoizeSubject's constructor, so the
-    // optional chain below would not catch it, and an effect that throws with no error
-    // boundary above it takes the app down. Not reachable today, since Studio deletes chats
-    // through storage and tombstones rather than runtime.threads.delete(); the point is that
-    // a remembered id must not depend on that staying true.
+    // Guarded, unlike the reads elsewhere that pass an id the runtime just handed back: this
+    // one is REMEMBERED, in a ref that outlives every view switch. getItemById() THROWS
+    // "Entry not available in the store" for a dropped id rather than returning undefined, so
+    // the optional chain would not catch it and the effect would take the app down. Studio
+    // deletes through tombstones today; the point is not to depend on that.
     let recordedRemoteId: string | undefined;
     if (recorded) {
       try {
@@ -1984,11 +1968,9 @@ function ThreadNewChatSwitch({
         if (!clearAfterSwitch) return;
         const switchStateNow = newThreadSwitchStateRef.current;
         // By attempt as well as nonce, matching the rejection arm. A saved-thread detour
-        // releases the nonce, so returning to the same New Chat starts a newer attempt;
-        // without the attempt check this older completion still matches on nonce and
-        // wipes an attachment staged in the thread the newer attempt opened. The nonce
-        // check stays: the detour nulls it without bumping the attempt, and that must
-        // still cancel the clear.
+        // releases the nonce, so returning starts a newer attempt; without the attempt check
+        // this older completion still matches on nonce and wipes an attachment the newer one
+        // staged. The nonce check stays: the detour nulls it without bumping the attempt.
         if (switchStateNow.attempt !== attempt) return;
         if (switchStateNow.activeNonce !== nonce) return;
         clearAttachments();
@@ -2015,15 +1997,12 @@ function ThreadNewChatSwitch({
 
   // Reassert this view's thread when a switch started before it lands anyway.
   //
-  // Leaving a project landing for a saved chat and coming back before switchToThread
-  // resolves used to end with assistant-ui assigning that saved thread as the main one:
-  // the promise has no idea the route moved, and the provider is shared now, so there is
-  // no remount to absorb it. The composer on screen then belonged to the saved chat, and
-  // the next message went to the wrong conversation.
-  //
-  // Recognised by the exact id that switch asked for, which ThreadAutoSwitch records. The
-  // claim is cleared as soon as it is honoured, so this fires once per stale arrival and
-  // never chases the thread its own correction opens.
+  // Leaving a landing for a saved chat and coming back before switchToThread resolves used
+  // to end with assistant-ui assigning that saved thread as the main one: the promise does
+  // not know the route moved, and the shared provider has no remount to absorb it, so the
+  // next message went to the wrong conversation. Recognised by the exact id that switch
+  // asked for, which ThreadAutoSwitch records; the claim clears when honoured, so this fires
+  // once per stale arrival.
   useEffect(() => {
     if (isLoading || paused) {
       return;
@@ -2032,14 +2011,11 @@ function ThreadNewChatSwitch({
     if (switchState.activeNonce !== nonce) {
       return;
     }
-    // Already on the thread this nonce owns, so there is nothing to correct -- and the
-    // claim sitting here is the sibling effect's OWN reopen, pushed moments ago for this
-    // very thread. switchToThread() early-returns when its target is already current
-    // (assistant-ui#2577), so the reopen resolves on a microtask and its claim is still
-    // outstanding when this effect runs in the same commit. Reading that as a stale
-    // arrival sent the user to switchToNewThread(), which replaced the conversation they
-    // had just come back to with a blank chat. Reached by opening a materialized ?new=
-    // chat through its own sidebar row and pressing Back.
+    // Already on the thread this nonce owns, so there is nothing to correct -- and the claim
+    // here is the sibling effect's OWN reopen. switchToThread() early-returns when its target
+    // is already current (assistant-ui#2577), so the reopen resolves on a microtask and its
+    // claim is still outstanding in the same commit. Reading that as a stale arrival replaced
+    // the conversation with a blank chat, via Back from a materialized ?new= chat's own row.
     if (
       mainThreadId &&
       switchState.nonceThread?.nonce === nonce &&
@@ -2141,12 +2117,10 @@ function NonceThreadResumeRestore({
     if (useChatRuntimeStore.getState().activeThreadId != null) {
       return;
     }
-    // Published raw, exactly as ActiveThreadSync publishes it on the paths this stands in
-    // for. A `__LOCALID_` id is NOT a reason to skip: createStudioDbAdapter.initialize()
-    // writes the row under whatever id assistant-ui minted and hands it back, so a
-    // materialized new chat keeps it and skipping would make this restore a no-op for the
-    // ordinary case. As elsewhere, consumers needing a persisted id filter for themselves
-    // (chat-page's persistedActiveThreadId, ThreadScopedSettingsSync).
+    // Published raw, as ActiveThreadSync does on the paths this stands in for. A `__LOCALID_`
+    // id is NOT a reason to skip: initialize() writes the row under whatever id assistant-ui
+    // minted and hands it back, so skipping would make this a no-op for the ordinary case.
+    // Consumers needing a persisted id filter for themselves.
     if (!mainThreadId) {
       return;
     }
@@ -2565,13 +2539,10 @@ function ThreadBackendAutosave({
         return;
       }
 
-      // The save still runs while backgrounded; only the PUBLICATION is suppressed. A
-      // hidden pane naming itself active reaches Compare's exportThreadIds
-      // ([model1, model2, activeThreadId]), so Export would pull the unrelated base chat.
-      // Same stand-down while a New Chat switch is in flight, and for the same reason as
-      // the history adapter's publication: mainThreadId is still the OUTGOING thread until
-      // switchToNewThread() resolves, so a save landing in that gap would republish the
-      // chat the user just left into the project view they navigated to.
+      // The save still runs while backgrounded; only the PUBLICATION is suppressed, or a hidden
+      // pane reaches Compare's exportThreadIds and Export pulls the unrelated base chat. Same
+      // stand-down mid-switch, for the same reason as the history adapter's publication:
+      // mainThreadId is still the OUTGOING thread until switchToNewThread() resolves.
       const switchState = newThreadSwitchStateRef.current;
       const switchInFlight =
         switchState.activeNonce !== null &&

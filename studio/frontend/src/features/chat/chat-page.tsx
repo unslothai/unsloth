@@ -732,21 +732,18 @@ const LoraCompareContent = memo(function LoraCompareContent({
   const markInitialHistoryReady = useCompareReloadReadiness(pairId);
   const active = useChatActive();
 
-  // Deliberately global, and deliberately not scoped to this pair. A first compare run
-  // starts before either thread exists, so there is no pair id to scope BY: the run files
-  // its handles under "__default" and is re-keyed by adoptDefaultThreadRun() only once
-  // initialize() persists the row. What this gate is really for is that the ids feed
-  // ComparePane's `initialThreadId`, so learning them mid-run points ThreadAutoSwitch at a
-  // thread that is still generating. Waiting for every run to settle is the cheap way to
-  // guarantee they only ever arrive between runs.
+  // Global on purpose: a first compare run starts before either thread exists, so there is
+  // no pair id to scope BY -- it files its handles under "__default" until initialize()
+  // persists the row. And the gate has to exist at all because these ids feed ComparePane's
+  // `initialThreadId`, so learning them mid-run points ThreadAutoSwitch at a thread that is
+  // still generating.
   const anyRunning = useChatRuntimeStore(
     (s) => Object.keys(s.runningByThreadId).length > 0,
   );
   // ...but only RE-lists wait. The shared provider (#8908) keeps a base chat's run alive
-  // across the switch into compare, so `anyRunning` is now true on arrival for a reason
-  // that has nothing to do with this pair; gating the FIRST list on it left an existing
-  // compare on blank runtimes for the whole length of that base generation, with no later
-  // edge to recover on. The first list has nothing to clobber, so it never needs to wait.
+  // across the switch into compare, so `anyRunning` is true on arrival for a reason that has
+  // nothing to do with this pair, and gating the FIRST list on it left an existing compare on
+  // blank runtimes with no later edge to recover on. That list has nothing to clobber.
   const listedPairRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -1493,15 +1490,11 @@ function ProjectLanding({
     }
     if (!activeThreadId) {
       if (resumed && pendingNewThreadId) {
-        // ...unless it was deleted while another view held the screen. Retaining this id
-        // across compare is what this PR added; before it, leaving the project view
-        // unmounted the landing, so there was nothing to restore. The sidebar deletes
-        // globally and does not
-        // reach this component's state, and compare does not hold the chat as the active
-        // id, so nothing else clears it. Restoring a tombstoned thread would put a
-        // conversation storage no longer has back on screen, and the next prompt would
-        // append to it. Fall through to the rotate below: a fresh nonce is what the
-        // landing shows when it owns no chat.
+        // ...unless it was deleted while another view held the screen. Nothing else clears this
+        // id: it is component state, so the sidebar's global delete cannot reach it, and compare
+        // does not hold the chat as the active id either. Restoring a tombstoned thread would put
+        // a conversation storage no longer has back on screen with a composer pointed at it. Fall
+        // through to the rotate below, which is what a landing owning no chat looks like.
         if (!isChatThreadDeleted(pendingNewThreadId)) {
           useChatRuntimeStore.getState().setActiveThreadId(pendingNewThreadId);
           return;

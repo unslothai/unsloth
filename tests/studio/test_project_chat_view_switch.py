@@ -1,31 +1,27 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""One ChatRuntimeProvider spans the project and single views, so switching between them
-is now a prop change rather than a remount (#8908).
+"""One ChatRuntimeProvider spans the project and single views, so switching between them is
+a prop change rather than a remount (#8908).
 
-That is what keeps a project chat's run attached when the user opens an old chat and comes
-back, and it is also what breaks the two guards the old shape got for free. A remounted
-provider had a fresh ref and a fresh composer every time; a shared one carries both across
-every view switch, so ``ThreadNewChatSwitch`` has to decide for itself whether a nonce it is
-seeing is new (``newThreadSwitchStateRef.activeNonce``), whether the composer it is about to
-reuse still holds someone else's staged attachment (``hasSwitched``), and whether it is even
-on screen (``paused``). ``ThreadAutoSwitch`` takes ``paused`` for the same reason: the stop it
-requests names every temporary queue on the page rather than its own provider's.
+That keeps a project chat's run attached, and it also breaks the guards the old shape got for
+free: a remounted provider had a fresh ref and composer every time, so a shared one has to
+decide for itself whether a nonce is new (``activeNonce``), whether the composer still holds
+someone else's staged attachment (``hasSwitched``), and whether it is on screen (``paused``).
+``ThreadAutoSwitch`` takes ``paused`` too, since the stop it requests names every temporary
+queue on the page rather than its own provider's.
 
-The five effects that make those decisions -- ``ThreadAutoSwitch``'s two, ``ThreadNewChatSwitch``'s
-two and ``ChatRuntimeProvider``'s implicit-new-chat marker -- are sliced VERBATIM out of
-``runtime-provider.tsx`` and replayed through a React-effect emulator: per-effect dependency
-arrays, re-run only when a dependency changed, memo cleared when the component unmounts.
-``requestTemporaryPromptQueueStop`` is sliced verbatim too, out of ``prompt-queue-boundary.ts``,
-because whose queue it stops is one of the questions here and a counter could not answer it.
+The five effects that decide those -- ``ThreadAutoSwitch``'s two, ``ThreadNewChatSwitch``'s two
+and the implicit-new-chat marker -- are sliced VERBATIM out of ``runtime-provider.tsx`` and
+replayed through a React-effect emulator (per-effect dependency arrays, re-run only on change,
+memo cleared on unmount). ``requestTemporaryPromptQueueStop`` is sliced verbatim too, because
+whose queue it stops is one of the questions here.
 
-Stubbed, and named so a reader knows what is not being measured: the JSX that wires the props
-onto the two children (restated in ``renderProvider`` and pinned by
+Stubbed: the JSX wiring the props onto the two children (pinned by
 ``test_the_provider_wires_the_pause_and_the_shared_ref``), assistant-ui's thread runtime, and
-``refreshContextUsage`` (a counter -- the recount itself is pinned by
-``test_new_chat_context_recount.py``; here it only has to show whether the pause gate lets it
-fire). ``ActiveThreadSync`` is not modelled: it is off whenever either child is rendered.
+``refreshContextUsage`` (a counter; the recount itself is pinned by
+``test_new_chat_context_recount.py``). ``ActiveThreadSync`` is not modelled: it is off whenever
+either child is rendered.
 """
 
 from __future__ import annotations
@@ -1394,17 +1390,14 @@ def test_a_late_rejection_cannot_disturb_a_nonce_that_has_since_moved_on():
 
 
 def test_a_late_failure_cannot_release_a_nonce_a_newer_attempt_owns():
-    """Two switches for the SAME nonce can be in flight at once, so the nonce cannot
-    identify an attempt. The route: New Chat starts a switch, the user opens a saved chat
-    while it is still going (which releases the nonce without ending the switch), then
-    comes back to the same New Chat, which starts a second switch that succeeds. When the
-    first one finally fails, a rejection arm keyed on the nonce alone would read its own
-    nonce back and release it -- and the next commit would then switch away from the thread
-    the second attempt opened and the user may already be typing in.
+    """Two switches for the SAME nonce can be in flight, so the nonce cannot identify an
+    attempt. New Chat starts a switch, a saved chat opens while it runs (releasing the nonce
+    without ending the switch), then the same New Chat starts a second switch that succeeds.
+    When the first fails, a rejection arm keyed on the nonce alone reads its own nonce back and
+    releases it, switching away from the thread the second attempt opened.
 
-    The complement is asserted in the same test, on the same shared state, because it is
-    the pair that pins the guard: a lone failure with nothing overlapping must still
-    release, or a New Chat that failed once could never be served again."""
+    The complement is asserted on the same shared state: a lone failure with nothing overlapping
+    must still release, or a New Chat that failed once could never be served again."""
     out = _run(
         "renderProvider, renderSettled, switchState, world",
         """
@@ -1514,17 +1507,14 @@ def test_a_late_failure_cannot_release_a_nonce_a_newer_attempt_owns():
 
 
 def test_a_late_deferred_clear_cannot_wipe_an_attachment_a_newer_attempt_staged():
-    """The success arm has the same two-in-flight problem the rejection arm has. The deferred
-    clear is armed only when the nonce was already released, so the route is: a first switch,
-    a saved-thread detour that releases the nonce, then a New Chat whose switch is held open
-    with the deferred clear armed. A second detour and a return start a newer attempt for the
-    same nonce, which opens its thread. When the older switch finally resolves, a success arm
-    keyed on the nonce alone reads its own nonce back and clears the composer the newer
-    attempt is using, taking an attachment staged in it.
+    """The success arm has the same two-in-flight problem. The deferred clear is armed only
+    once the nonce was released, so: a switch, a detour releasing the nonce, a New Chat held open
+    with the clear armed, then a second detour and return starting a newer attempt for the same
+    nonce. When the older switch resolves, a success arm keyed on the nonce alone clears the
+    composer the newer attempt is using, taking an attachment staged in it.
 
-    The complement is asserted on the same shared state: a detour nulls the nonce, and that
-    must still cancel a pending deferred clear on its own, so the nonce check cannot simply
-    be replaced by the attempt check."""
+    The complement is asserted on the same shared state: a detour nulls the nonce and must still
+    cancel a pending clear, so the nonce check cannot simply become the attempt check."""
     out = _run(
         "renderProvider, renderSettled, switchState, world",
         """

@@ -291,11 +291,10 @@ test("every active-thread publication stands down while backgrounded", () => {
 
 test("a publication landing mid-switch does not reclaim the view", () => {
   // switchToNewThread() is async, so mainThreadId is still the OUTGOING thread until it
-  // resolves. Both publications read mainThreadId as proof that "this pane is on screen",
-  // so a write landing in that gap republishes the chat the user just left -- and the
-  // project view, which openProjectLanding deliberately opened with no active thread,
-  // picks the id back up and renders the outgoing conversation inside the new project.
-  // attempt !== landedAttempt is exactly the in-flight window.
+  // resolves, and both publications read it as proof that "this pane is on screen". A write
+  // landing in that gap republishes the chat the user just left, and the project view (opened
+  // with no active thread) renders it inside the new project. attempt !== landedAttempt is
+  // that window.
   const guards =
     provider.match(
       /const switchInFlight[\s\S]{0,240}?switchState\.landedAttempt !== switchState\.attempt/g,
@@ -312,12 +311,11 @@ test("a publication landing mid-switch does not reclaim the view", () => {
 });
 
 test("the landing does not restore a chat that was deleted while it was away", () => {
-  // Retaining the chat across the detour is what this PR added: at the merge base leaving
-  // the project view unmounted the landing, so there was nothing to restore. Nothing else
-  // clears the retained id -- it is component state, the sidebar deletes globally without
-  // reaching it, and compare does not hold the chat as the store's active id -- so without
-  // this check a chat deleted during compare comes back on screen with a composer pointed
-  // at it, and storage no longer has it.
+  // Retaining the chat across the detour is what this PR added; at the merge base the landing
+  // unmounted and there was nothing to restore. Nothing else clears the retained id: it is
+  // component state, the sidebar deletes globally without reaching it, and compare does not
+  // hold the chat as the store's active id. So a chat deleted during compare came back on
+  // screen with a composer pointed at it.
   const restore = page.slice(
     page.indexOf("const resumed = active && !wasActiveRef.current;"),
   );
@@ -335,12 +333,11 @@ test("the landing does not restore a chat that was deleted while it was away", (
 });
 
 test("no restore path puts a deleted chat back on screen", () => {
-  // Three places this PR added put a retained id back: ProjectLanding's resume effect
-  // (pinned above), NonceThreadResumeRestore, and the remembered-nonce reopen. All three
-  // ask the RUNTIME whether it still knows the thread, and Studio deletes by tombstoning
-  // storage rather than calling runtime.threads.delete(), so after a delete the item and
-  // its remoteId both survive and all three still answer yes. Guarding one fixes nothing:
-  // the other two republish the same id.
+  // Three places put a retained id back: ProjectLanding's resume effect (pinned above),
+  // NonceThreadResumeRestore, and the remembered-nonce reopen. All three ask the RUNTIME
+  // whether it still knows the thread, and Studio deletes by tombstoning storage rather than
+  // calling runtime.threads.delete(), so all three still answer yes after a delete. Guarding
+  // one fixes nothing.
   const restore = componentSource(provider, "function NonceThreadResumeRestore({");
   assert.match(restore, /if \(isChatThreadDeleted\(remoteId\)\) \{\s*return;\s*\}/);
   assert.ok(
@@ -355,12 +352,11 @@ test("no restore path puts a deleted chat back on screen", () => {
 });
 
 test("a delayed first send is filed in the project it was sent from", () => {
-  // The adapter is rebuilt every render and handed to the core through
-  // __internal_setOptions, so initialize() reads the provider's LATEST projectId.
-  // assistant-ui's send() empties the composer and then awaits every incomplete
-  // attachment through the adapter before handleSend, and Studio's PDF/DOCX/text adapters
-  // do their extraction there -- so with the provider surviving a project switch, a
-  // document send materializes in whichever project is on screen by then.
+  // The adapter is rebuilt every render and handed to the core via __internal_setOptions, so
+  // initialize() reads the provider's LATEST projectId. send() awaits every incomplete
+  // attachment before handleSend and Studio's PDF/DOCX/text adapters extract there, so with
+  // the provider surviving a project switch a document send materializes in whichever project
+  // is on screen by then.
   const thread = readFileSync(
     new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
     "utf8",
@@ -384,17 +380,13 @@ test("a delayed first send is filed in the project it was sent from", () => {
 });
 
 test("compare lists its threads once before it waits on any run", () => {
-  // Two constraints that a single boolean cannot carry.
-  //
-  // The wait has to be GLOBAL: a first compare run starts before either thread exists, so
-  // it files its handles under "__default" and there is no pair id to scope by. And it has
-  // to exist at all, because these ids feed ComparePane's `initialThreadId`, so learning
-  // them mid-run points ThreadAutoSwitch at a thread that is still generating.
-  //
-  // But the shared provider now keeps a base chat's run alive across the switch into
-  // compare, so a global wait on the FIRST list left an existing compare on blank runtimes
-  // for the whole length of that generation, with no later edge to recover on. The first
-  // list has nothing to clobber, so only re-lists wait.
+  // Two constraints one boolean cannot carry. The wait has to be GLOBAL, because a first
+  // compare run starts before either thread exists and files its handles under "__default";
+  // and it has to exist at all, because these ids feed ComparePane's `initialThreadId`, so
+  // learning them mid-run points ThreadAutoSwitch at a generating thread. But the shared
+  // provider keeps a base chat's run alive across the switch into compare, so a global wait
+  // on the FIRST list left an existing compare on blank runtimes with no later edge to
+  // recover on. That list has nothing to clobber, so only re-lists wait.
   const waits =
     page.match(
       /const anyRunning = useChatRuntimeStore\(\s*\(s\) => Object\.keys\(s\.runningByThreadId\)\.length > 0,\s*\);/g,
