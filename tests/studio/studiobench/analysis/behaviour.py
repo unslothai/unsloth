@@ -384,6 +384,48 @@ def _extent_of(row: dict) -> tuple[Optional[float], bool]:
     return float(bottom) + float(client), True
 
 
+def _client_height(row: dict) -> Optional[float]:
+    client = (row.get("census") or {}).get("viewport_client_height")
+    return float(client) if isinstance(client, (int, float)) else None
+
+
+def _bottom_of(row: dict) -> Optional[float]:
+    bottom = _expect(row, "bottom")
+    return float(bottom) if isinstance(bottom, (int, float)) else None
+
+
+def _comparable_extents(base_row: dict, treat_row: dict) -> tuple[Any, Any, str]:
+    """The two numbers `scroll_bottom_agrees` compares, and what they are.
+
+    ONE DECISION FOR BOTH ARMS. Reconstructing per arm and comparing whatever each produced puts a
+    `scrollHeight` beside a `bottom`: two arms with an identical 1,200 px `bottom` over an 800 px
+    viewport, one of whose censuses failed, came out 2,000 against 1,200 and BROKEN at 40% drift,
+    with a detail line that said `no client height on both arms` over the mixed pair.
+
+    AND ONLY WHEN THE HEIGHTS AGREE. `clientHeight` is a shared offset only if it is shared. Two
+    arms reporting the same 10,000 px `scrollHeight` at client heights of 800 and 2,000 have
+    bottoms of 9,200 and 8,000 -- 1,200 px less room for the gesture on one of them -- and
+    reconstructing both to 10,000 reports MATCH at 0.0% drift over that. `scroll_extent` already
+    compares the scroll heights; what this check is for is the range the gesture actually had.
+
+    So both arms are reconstructed together or neither is, and a fallback compares the raw bottoms
+    at the same allowance, which is the quantity a differing viewport moves.
+    """
+    b_ext, b_full = _extent_of(base_row)
+    t_ext, t_full = _extent_of(treat_row)
+    b_bottom, t_bottom = _bottom_of(base_row), _bottom_of(treat_row)
+    if not (b_full and t_full):
+        return b_bottom, t_bottom, "bottom (no client height on both arms)"
+    b_client, t_client = _client_height(base_row), _client_height(treat_row)
+    if b_client != t_client:
+        return (
+            b_bottom,
+            t_bottom,
+            f"bottom (client heights differ: {b_client} vs {t_client})",
+        )
+    return b_ext, t_ext, "scroll extent"
+
+
 def scroll_travelled(base_row: dict, treat_row: dict) -> list[dict]:
     """scroll_after: the gesture covers the ground it commanded and no more, on both arms."""
     out = []
@@ -391,7 +433,12 @@ def scroll_travelled(base_row: dict, treat_row: dict) -> list[dict]:
         fraction = _expect(row, "travel_fraction")
         commanded = _expect(row, "commanded_px")
         travelled = _expect(row, "travelled_px")
-        bottom = _expect(row, "bottom")
+        # THE ALLOWANCE IS A FRACTION OF THE EXTENT, so it is taken on the extent. `bottom` is
+        # `scrollHeight - clientHeight`, and reading `EXTENT_TOLERANCE` off it is the same defect
+        # `_extent_of` exists to fix one check below: on a 10,000 px extent behind an 800 px
+        # viewport it grants 920 px where the tolerance says 1,000, so a 941 px correction -- 9.4%
+        # of the extent, inside the declared 10% -- came out BROKEN.
+        extent, _reconstructed = _extent_of(row)
         # BOUNDED ABOVE AS WELL AS BELOW, and the ceiling is DERIVED rather than chosen.
         #
         # The lower bound is what this invariant was written for: Studio's intent-aware autoscroll
@@ -415,9 +462,9 @@ def scroll_travelled(base_row: dict, treat_row: dict) -> list[dict]:
         if (
             isinstance(commanded, (int, float))
             and commanded > 0
-            and isinstance(bottom, (int, float))
+            and isinstance(extent, (int, float))
         ):
-            ceiling = (commanded + EXTENT_TOLERANCE * abs(bottom)) / commanded
+            ceiling = (commanded + EXTENT_TOLERANCE * abs(extent)) / commanded
         if fraction is None:
             ok: Optional[bool] = None
             detail = "the row records no travel fraction"
@@ -432,7 +479,7 @@ def scroll_travelled(base_row: dict, treat_row: dict) -> list[dict]:
             detail = (
                 f"the gesture travelled {fraction} of what it commanded "
                 f"({travelled} of {commanded} px, allowed 0.9 to {ceiling:.3f}: "
-                f"{EXTENT_TOLERANCE:.0%} of the arm's own {bottom} px extent)"
+                f"{EXTENT_TOLERANCE:.0%} of the arm's own {extent} px extent)"
             )
         out.append(_check(f"scroll_travelled:{label}", ok, detail))
     # THE EXTENT, NOT `bottom`, AND AT THE EXTENT'S OWN ALLOWANCE. This compared `bottom` through
@@ -444,11 +491,8 @@ def scroll_travelled(base_row: dict, treat_row: dict) -> list[dict]:
     #
     # `_same_number` is deliberately NOT widened. Its other three keys -- `selected_chars`,
     # `visible_chars`, `clipboard_chars` -- are not extents and are correctly strict at 2%.
-    b_ext, b_full = _extent_of(base_row)
-    t_ext, t_full = _extent_of(treat_row)
+    b_ext, t_ext, what = _comparable_extents(base_row, treat_row)
     drift = _drift(b_ext, t_ext)
-    reconstructed = b_full and t_full
-    what = "scroll extent" if reconstructed else "bottom (no client height on both arms)"
     out.append(
         _check(
             "scroll_bottom_agrees",

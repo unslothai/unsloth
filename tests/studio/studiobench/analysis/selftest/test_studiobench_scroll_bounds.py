@@ -143,6 +143,50 @@ def test_a_payload_with_no_client_height_falls_back_and_says_so():
     assert checks["scroll_bottom_agrees"]["ok"] is True, checks
 
 
+def test_one_arm_missing_its_client_height_does_not_compare_an_extent_with_a_bottom():
+    """A CENSUS THAT FAILED ON ONE ARM, or two payloads of different vintages. Reconstructing per
+    arm and comparing whatever each produced put a `scrollHeight` beside a `bottom`: identical
+    viewports at `bottom` 1,200 over a client height of 800 came out 2,000 against 1,200 and
+    BROKEN at 40% drift, under a detail line that said `no client height on both arms`. The
+    decision belongs to the pair, so both arms are reconstructed or neither is."""
+    base = _scroll_row(18, bottom = 1_200, client = 800)
+    treat = _scroll_row(18, bottom = 1_200)
+    for row in (base, treat):
+        row["census"]["viewport_scroll_height"] = 2_000
+    got = B.compare_behaviour(base, treat)
+    checks = {c["invariant"]: c for c in got["checks"]}
+    assert checks["scroll_bottom_agrees"]["ok"] is True, checks
+    assert "1200.0 vs 1200.0" in checks["scroll_bottom_agrees"]["detail"], checks
+    assert got["verdict"] == P.MATCH, got
+
+
+def test_client_heights_that_disagree_are_not_treated_as_a_shared_offset():
+    """`clientHeight` is a shared offset only when it is shared. Two arms reporting the same
+    10,000px `scrollHeight` at client heights of 800 and 2,000 have 9,200px and 8,000px of room
+    for the gesture, and adding each arm's own viewport back reported MATCH at 0.0% drift over
+    that 1,200px difference. `scroll_extent` already compares the scroll heights; this check is
+    about the range the gesture actually had, so it falls back to the raw bottoms and says why."""
+    base = _scroll_row(18, bottom = 9_200, client = 800)
+    treat = _scroll_row(18, bottom = 8_000, client = 2_000)
+    got = B.compare_behaviour(base, treat)
+    checks = {c["invariant"]: c for c in got["checks"]}
+    assert checks["scroll_bottom_agrees"]["ok"] is False, checks
+    assert "client heights differ: 800.0 vs 2000.0" in checks["scroll_bottom_agrees"]["detail"]
+    assert checks["scroll_extent"]["ok"] is True, checks
+    assert got["verdict"] == B.BROKEN, got
+
+
+def test_client_heights_that_agree_are_still_treated_as_a_shared_offset():
+    """The positive control for the two above: the ordinary case, where both arms publish the same
+    viewport height, must still be compared as extents rather than pushed onto the fallback."""
+    base = _scroll_row(18, bottom = 9_200, client = 800)
+    treat = _scroll_row(6, bottom = 8_600, client = 800)
+    treat["census"]["viewport_scroll_height"] = 9_400
+    checks = {c["invariant"]: c for c in B.compare_behaviour(base, treat)["checks"]}
+    assert "scroll extent 10000.0 vs 9400.0" in checks["scroll_bottom_agrees"]["detail"], checks
+    assert checks["scroll_bottom_agrees"]["ok"] is True, checks
+
+
 def test_a_gesture_that_overshot_its_command_is_reported():
     """THE UNBOUNDED SIDE. The predicate was `fraction >= 0.9` and nothing above it, so a treatment
     arm whose viewport moved TWICE as far as the gesture asked passed exactly as 1.0 did and the
@@ -160,14 +204,35 @@ def test_an_ordinary_estimate_correction_still_passes_the_ceiling():
     """THE CONTROL, and the reason the ceiling is DERIVED rather than picked to look symmetric with
     0.9. A windowed list correcting estimated row heights moves the offset by the error in the
     estimate, and this file already declares how far the extent may be wrong. So the allowance is
-    `EXTENT_TOLERANCE` of the arm's OWN extent -- 920px of a 9,200px extent against a 5,880px
-    gesture, a ceiling of 1.156 -- and a correction inside it is ordinary rather than a finding."""
+    `EXTENT_TOLERANCE` of the arm's OWN extent -- 1,000px of a 10,000px extent against a 5,880px
+    gesture, a ceiling of 1.170 -- and a correction inside it is ordinary rather than a finding."""
     base = _scroll_row(18, fraction = 1.0, bottom = 9_200, client = 800)
     treat = _scroll_row(6, fraction = 1.1, bottom = 9_200, client = 800)
     got = B.compare_behaviour(base, treat)
     assert got["verdict"] == P.MATCH, got
     checks = {c["invariant"]: c for c in got["checks"]}
-    assert "allowed 0.9 to 1.156" in checks["scroll_travelled:treatment"]["detail"], checks
+    assert "allowed 0.9 to 1.170" in checks["scroll_travelled:treatment"]["detail"], checks
+
+
+def test_the_ceiling_grants_the_tolerance_against_the_extent_not_against_bottom():
+    """THE SAME MISTAKE THE CHECK BELOW WAS FIXED FOR, in the ceiling. `bottom` is
+    `scrollHeight - clientHeight`, so `EXTENT_TOLERANCE` taken on it grants 920px of a 10,000px
+    extent behind an 800px viewport where the tolerance says 1,000. A 941px correction is 9.4% of
+    the extent -- inside the declared 10% -- and came out BROKEN.
+
+    Pinned at both edges so the ceiling is a bound and not merely a larger number: 1.160 is inside
+    the allowance and 1.171 is outside it."""
+    base = _scroll_row(18, fraction = 1.0, bottom = 9_200, client = 800)
+    inside = _scroll_row(6, fraction = 1.16, bottom = 9_200, client = 800)
+    got = B.compare_behaviour(base, inside)
+    assert got["verdict"] == P.MATCH, got
+    checks = {c["invariant"]: c for c in got["checks"]}
+    assert "of the arm's own 10000.0 px extent" in checks["scroll_travelled:treatment"]["detail"]
+
+    outside = _scroll_row(6, fraction = 1.171, bottom = 9_200, client = 800)
+    beyond = B.compare_behaviour(base, outside)
+    assert beyond["verdict"] == B.BROKEN, beyond
+    assert "scroll_travelled:treatment" in beyond["reason"], beyond
 
 
 def test_the_lower_bound_still_catches_a_gesture_that_was_snapped_back():
