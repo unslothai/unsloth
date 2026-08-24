@@ -672,6 +672,63 @@ def test_mlx_vlm_reemits_think_prefill_inside_adapter_context(monkeypatch):
     assert order == ["adapter_enter", "adapter_exit"]
 
 
+def test_a_stop_sequence_releases_the_drafter_it_cut_a_round_short_for(monkeypatch):
+    """Cutting on a stop sequence abandons the mlx_vlm stream mid-round, so the drafter holds a
+    partial round the next request would inherit. Same exit as a cancel, same teardown."""
+    from core.inference import mlx_inference
+
+    @contextmanager
+    def _adapter_state(_model, _state):
+        yield
+
+    monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", _adapter_state)
+    prompt_utils = SimpleNamespace(
+        MODEL_CONFIG = {"deepseek_vl_v2": object()},
+        apply_chat_template = lambda *_a, **_k: "<image> model-aware",
+    )
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.prompt_utils = prompt_utils
+
+    def _vlm_stream(*_a, **_k):
+        for text in ("keep ", "STOP", " never read"):
+            yield SimpleNamespace(text = text, prompt_tokens = 3, generation_tokens = 1)
+
+    mlx_vlm.stream_generate = _vlm_stream
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda _t, _m, **_k: "<image> model-aware",
+    )
+    _install_fake_mlx(monkeypatch)
+    released = []
+    sys.modules["mlx.core"].clear_cache = lambda: released.append("cache")
+
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
+    backend._processor = SimpleNamespace(tokenizer = SimpleNamespace())
+    backend._draft_model = SimpleNamespace(reset = lambda _m: released.append("reset"))
+    backend._draft_kind = "mtp"
+
+    snapshots = list(
+        backend._generate_vlm(
+            [{"role": "user", "content": [{"type": "image"}]}],
+            object(),
+            0,
+            1,
+            0,
+            0,
+            8,
+            1,
+            None,
+            _adapter_state = False,
+            stop = ["STOP"],
+        )
+    )
+
+    assert snapshots[-1] == "keep "
+    assert released == ["reset", "cache"]
+
+
 def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
     from core.inference import mlx_inference
 

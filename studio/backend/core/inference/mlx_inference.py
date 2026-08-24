@@ -2972,7 +2972,10 @@ class MLXInferenceBackend:
                     # As in _generate_text: what was withheld is ordinary text now.
                     if sequences and not stopped and released < len(sampled):
                         yield prefill + sampled
-                    completed = cancel_event is None or not cancel_event.is_set()
+                    # A stop sequence abandons vlm_stream mid-round exactly as a cancel does,
+                    # so it takes the same teardown rather than leaving the round for the next
+                    # request to inherit.
+                    completed = not stopped and (cancel_event is None or not cancel_event.is_set())
                 finally:
                     # mlx_vlm exposes the same stats fields as mlx_lm, minus a
                     # finish reason, so that one is derived.
