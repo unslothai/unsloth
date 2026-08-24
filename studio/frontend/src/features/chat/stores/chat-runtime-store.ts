@@ -55,6 +55,7 @@ import {
 import {
   loadChatSettingsWithLegacyImport,
   savePersistedChatSettingsPatch,
+  savePersistedChatSettingsPatchIfCurrent,
 } from "../utils/chat-settings-storage";
 import {
   loadShadowOwnsMirroredSetting,
@@ -3398,6 +3399,19 @@ function loadedContextFor(checkpoint: string): number | null {
   return loadedContext?.checkpoint === checkpoint ? loadedContext.cap : null;
 }
 
+function capParamsToLoadedContext(
+  state: ChatRuntimeStore,
+  params: InferenceParams,
+): InferenceParams {
+  const residentGgufCap = isExternalModelId(params.checkpoint)
+    ? null
+    : state.ggufContextLength;
+  const cap = loadedContextFor(params.checkpoint) ?? residentGgufCap;
+  return cap !== null && params.maxTokens > cap
+    ? { ...params, maxTokens: cap }
+    : params;
+}
+
 /** A model selected while the request was in flight. Its defaults lose to its
  * own entry but outrank the global set, which belongs to whichever model was
  * used last. Not narrowed to the keys that moved. */
@@ -3662,14 +3676,9 @@ function getHydratedSettingsState(
   // Outside the replay: an install with only a global set has no entry, and the
   // budget restored from it does not fit the load either.
   const capped = nextState.params ?? params;
-  // ggufContextLength describes whatever is resident, which an external pick
-  // leaves loaded, so it is not this checkpoint's context to clamp against.
-  const residentGgufCap = isExternalModelId(checkpoint)
-    ? null
-    : state.ggufContextLength;
-  const cap = loadedContextFor(checkpoint) ?? residentGgufCap;
-  if (cap !== null && capped.maxTokens > cap) {
-    nextState.params = { ...capped, maxTokens: cap };
+  const withinLoadedContext = capParamsToLoadedContext(state, capped);
+  if (withinLoadedContext !== capped) {
+    nextState.params = withinLoadedContext;
   }
   return nextState;
 }
@@ -3696,6 +3705,7 @@ function localQwenMigrationSettings(
   return {
     activePreset: state.activePreset,
     activePresetSource: state.activePresetSource,
+    reasoningEnabled: installationReasoningEnabled(state),
     inferenceParams: pickRememberedParams(
       withoutActiveThreadParams(state, state.params),
     ),
@@ -3703,6 +3713,12 @@ function localQwenMigrationSettings(
       ? { inferenceParamsByModel: state.paramsByModel }
       : {}),
   };
+}
+
+function installationReasoningEnabled(state: ChatRuntimeStore): boolean {
+  return threadScopedOverride("reasoningEnabled") !== undefined
+    ? (globalThreadScopedDefaults?.reasoningEnabled ?? state.reasoningEnabled)
+    : state.reasoningEnabled;
 }
 
 function qwenMigrationThinkingOn(
@@ -3716,7 +3732,7 @@ function qwenMigrationThinkingOn(
   return settings.reasoningEnabled !== undefined &&
     scalarSettingMutationVersions.reasoningEnabled === reasoningMutationVersion
     ? settings.reasoningEnabled
-    : state.reasoningEnabled;
+    : installationReasoningEnabled(state);
 }
 
 function qwenMigrationRemembersPerModel(
@@ -3743,10 +3759,11 @@ function applyLegacyQwenDefaultsAfterPresetChange(
       return state;
     }
     const checkpoint = state.params.checkpoint;
+    const localSettings = localQwenMigrationSettings(state);
     const migration = migrateLegacyQwenDefaults(
-      localQwenMigrationSettings(state),
+      localSettings,
       checkpoint,
-      state.reasoningAlwaysOn || state.reasoningEnabled,
+      qwenMigrationThinkingOn(localSettings, state),
       includeOwnedGlobal,
       includeOwnedGlobal,
     );
@@ -3764,10 +3781,13 @@ function applyLegacyQwenDefaultsAfterPresetChange(
         : {}),
       ...(activePatch
         ? {
-            params: restoreThreadScopedParams({
-              ...state.params,
-              ...activePatch,
-            }),
+            params: capParamsToLoadedContext(
+              state,
+              restoreThreadScopedParams({
+                ...state.params,
+                ...activePatch,
+              }),
+            ),
           }
         : {}),
     };
@@ -3799,7 +3819,10 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
       includeOwnedGlobal,
     );
     if (migration.patch) {
-      await savePersistedChatSettingsPatch(migration.patch);
+      await savePersistedChatSettingsPatchIfCurrent(
+        confirmed,
+        migration.patch,
+      );
     }
   } catch {
     warnSettingsPersistenceFailure();
@@ -4075,7 +4098,18 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
                     migratedModelIds: [],
                   };
             if (migration.patch) {
-              await savePersistedChatSettingsPatch(migration.patch);
+              const persisted = await savePersistedChatSettingsPatchIfCurrent(
+                confirmed,
+                migration.patch,
+              );
+              migration = {
+                ...migration,
+                settings: persisted.settings,
+                patch: persisted.applied ? migration.patch : null,
+                migratedModelIds: persisted.applied
+                  ? migration.migratedModelIds
+                  : [],
+              };
             }
           } catch {
             // Migration persistence is best effort. Hydrate the already loaded

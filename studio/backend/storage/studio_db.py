@@ -4050,6 +4050,68 @@ def upsert_chat_settings_merge(updates: dict[str, Any]) -> dict[str, Any]:
         conn.close()
 
 
+def _chat_settings_match_expected(current: Any, expected: Any) -> bool:
+    """Whether every expected leaf still has the value the caller read."""
+    if isinstance(expected, dict):
+        if not isinstance(current, dict):
+            return False
+        return all(
+            key in current and _chat_settings_match_expected(current[key], value)
+            for key, value in expected.items()
+        )
+    return current == expected
+
+
+def upsert_chat_settings_merge_if_current(
+    expected: dict[str, Any], updates: dict[str, Any]
+) -> tuple[dict[str, Any], bool]:
+    """Atomically merge ``updates`` only if ``expected`` still matches.
+
+    Expected is a recursive subset so legacy keys omitted by the current client
+    do not prevent a guarded migration. Any field the client did read is fenced
+    against a newer tab write in the same BEGIN IMMEDIATE transaction.
+    """
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        current, corrupt = _load_chat_settings_for_merge(conn)
+        if not _chat_settings_match_expected(current, expected):
+            conn.commit()
+            return current, False
+        unsafe_partial_keys = [
+            key
+            for key, value in updates.items()
+            if key in corrupt and isinstance(value, dict) and key not in _ATOMIC_SETTING_KEYS
+        ]
+        if unsafe_partial_keys:
+            conn.commit()
+            keys = ", ".join(sorted(unsafe_partial_keys))
+            raise CorruptSettingsError(
+                f"Cannot apply partial settings patch to corrupt key(s): {keys}"
+            )
+        merged = _deep_merge_settings(current, updates)
+        now = datetime.now(timezone.utc).isoformat()
+        conn.executemany(
+            """
+            INSERT INTO chat_settings (key, value_json, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value_json = excluded.value_json,
+                updated_at = excluded.updated_at
+            """,
+            [(key, json.dumps(value), now) for key, value in merged.items()],
+        )
+        conn.commit()
+        return merged, True
+    except CorruptSettingsError:
+        raise
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 # --- Legacy Dexie import ledger (recovery rationale in _ensure_schema's schema comment) ---
 
 

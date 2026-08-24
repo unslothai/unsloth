@@ -11,6 +11,7 @@ export const settingsHttp = {
     Record<string, unknown> | Promise<Record<string, unknown>>
   >,
   gets: 0,
+  beforeConditionalApply: null as (() => void) | null,
   puts: [] as Record<string, unknown>[],
   /** Resolve to let a held GET complete. */
   release: null as (() => void) | null,
@@ -22,27 +23,82 @@ export const settingsHttp = {
   gate: null as Promise<void> | null,
 };
 
+function matchesExpected(current: unknown, expected: unknown): boolean {
+  if (expected && typeof expected === "object" && !Array.isArray(expected)) {
+    if (!current || typeof current !== "object" || Array.isArray(current)) {
+      return false;
+    }
+    return Object.entries(expected).every(
+      ([key, value]) =>
+        key in current &&
+        matchesExpected((current as Record<string, unknown>)[key], value),
+    );
+  }
+  return Object.is(current, expected);
+}
+
+function deepMerge(
+  current: Record<string, unknown>,
+  patch: Record<string, unknown>,
+): Record<string, unknown> {
+  const merged = { ...current };
+  for (const [key, value] of Object.entries(patch)) {
+    const existing = merged[key];
+    merged[key] =
+      existing &&
+      typeof existing === "object" &&
+      !Array.isArray(existing) &&
+      value &&
+      typeof value === "object" &&
+      !Array.isArray(value)
+        ? deepMerge(
+            existing as Record<string, unknown>,
+            value as Record<string, unknown>,
+          )
+        : value;
+  }
+  return merged;
+}
+
 export async function authFetch(
-  _url: string,
+  url: string,
   init?: { method?: string; body?: string },
 ): Promise<Response> {
   let responseSettings = settingsHttp.settings;
-  if (init?.method === "PUT") {
+  let applied: boolean | undefined;
+  if (url.endsWith("/compare-and-set") && init?.method === "POST") {
+    const request = JSON.parse(init.body ?? "{}") as {
+      expected: Record<string, unknown>;
+      patch: Record<string, unknown>;
+    };
+    settingsHttp.beforeConditionalApply?.();
+    settingsHttp.beforeConditionalApply = null;
+    responseSettings = settingsHttp.settings;
+    applied = matchesExpected(settingsHttp.settings, request.expected);
+    if (applied) {
+      settingsHttp.puts.push(request.patch);
+      settingsHttp.settings = deepMerge(settingsHttp.settings, request.patch);
+      responseSettings = settingsHttp.settings;
+    }
+  } else if (init?.method === "PUT") {
     settingsHttp.puts.push(JSON.parse(init.body ?? "{}"));
-  } else if (settingsHttp.gate) {
-    await settingsHttp.gate;
-  }
-  if (init?.method !== "PUT") {
+  } else {
+    if (settingsHttp.gate) {
+      await settingsHttp.gate;
+    }
     settingsHttp.gets += 1;
-  }
-  if (init?.method !== "PUT" && settingsHttp.getResponses.length > 0) {
-    responseSettings = await (
-      settingsHttp.getResponses.shift() ?? settingsHttp.settings
-    );
+    if (settingsHttp.getResponses.length > 0) {
+      responseSettings = await (
+        settingsHttp.getResponses.shift() ?? settingsHttp.settings
+      );
+    }
   }
   return {
     ok: true,
     status: 200,
-    json: async () => ({ settings: responseSettings }),
+    json: async () => ({
+      settings: responseSettings,
+      ...(applied !== undefined ? { applied } : {}),
+    }),
   } as Response;
 }

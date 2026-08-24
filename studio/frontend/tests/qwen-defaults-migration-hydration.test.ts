@@ -237,6 +237,42 @@ test("a confirming read preserves a newer edit from another tab", async () => {
   );
 });
 
+test("atomic migration persistence rejects an edit after confirmation", async () => {
+  const legacySettings = {
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    inferenceParamsByModel: { [QWEN38]: LEGACY_SNAPSHOT },
+  };
+  const newerSettings = {
+    ...legacySettings,
+    inferenceParamsByModel: {
+      [QWEN38]: { ...LEGACY_SNAPSHOT, presencePenalty: 0.4 },
+    },
+  };
+  settingsHttp.settings = legacySettings;
+  settingsHttp.getResponses = [legacySettings, legacySettings];
+  settingsHttp.puts.length = 0;
+  settingsHttp.beforeConditionalApply = () => {
+    settingsHttp.settings = newerSettings;
+  };
+  useChatRuntimeStore.setState((state) => ({
+    params: { ...state.params, checkpoint: QWEN38 },
+    paramsByModel: {},
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    rememberParamsPerModel: true,
+    settingsHydrated: false,
+  }));
+
+  await useChatRuntimeStore.getState().hydratePersistedSettings();
+
+  assert.equal(
+    useChatRuntimeStore.getState().paramsByModel[QWEN38]?.presencePenalty,
+    0.4,
+  );
+  assert.equal(settingsHttp.puts.length, 0);
+});
+
 test("a confirming read uses the latest reasoning mode", async () => {
   const thinkingSettings = {
     activePreset: "Default",
@@ -480,6 +516,53 @@ test("resident-model adoption migrates a deferred global-only snapshot", async (
   });
 });
 
+test("a retry cannot overwrite an edit made after its confirming read", async () => {
+  const legacySettings = {
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    inferenceParamsByModel: { [QWEN38]: LEGACY_SNAPSHOT },
+  };
+  settingsHttp.getResponses.length = 0;
+  settingsHttp.settings = legacySettings;
+  settingsHttp.puts.length = 0;
+  settingsHttp.beforeConditionalApply = () => {
+    settingsHttp.settings = {
+      ...legacySettings,
+      inferenceParamsByModel: {
+        [QWEN38]: { ...LEGACY_SNAPSHOT, presencePenalty: 0.4 },
+      },
+    };
+  };
+  useChatRuntimeStore.setState((state) => ({
+    params: { ...state.params, ...LEGACY_SNAPSHOT, checkpoint: QWEN38 },
+    paramsByModel: { [QWEN38]: LEGACY_SNAPSHOT },
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    rememberParamsPerModel: true,
+    reasoningAlwaysOn: false,
+    reasoningEnabled: true,
+    settingsHydrated: true,
+  }));
+
+  const active = useChatRuntimeStore.getState();
+  active.setParams(
+    { ...active.params, minP: 0, presencePenalty: 1.5 },
+    { fromModelDefaults: true },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  assert.equal(settingsHttp.puts.length, 0);
+  assert.equal(
+    (
+      settingsHttp.settings.inferenceParamsByModel as Record<
+        string,
+        Record<string, unknown>
+      >
+    )[QWEN38].presencePenalty,
+    0.4,
+  );
+});
+
 test("local migration preserves an active thread's sampling override", async () => {
   settingsHttp.getResponses.length = 0;
   settingsHttp.settings = {
@@ -502,6 +585,7 @@ test("local migration preserves an active thread's sampling override", async () 
   initial.setActiveThreadId("thread-with-sampling");
   initial.applyThreadScopedSettings("thread-with-sampling", {
     presencePenalty: 0,
+    reasoningEnabled: false,
   });
 
   const active = useChatRuntimeStore.getState();
@@ -514,6 +598,8 @@ test("local migration preserves an active thread's sampling override", async () 
   const migrated = useChatRuntimeStore.getState();
   assert.equal(migrated.params.presencePenalty, 0);
   assert.equal(migrated.paramsByModel[QWEN38]?.presencePenalty, 1.5);
+  assert.equal(migrated.paramsByModel[QWEN38]?.temperature, 0.6);
+  assert.equal(migrated.paramsByModel[QWEN38]?.topP, 0.95);
   migrated.applyThreadScopedSettings(null, {});
   migrated.setActiveThreadId(null);
 });
@@ -613,4 +699,42 @@ test("a first user model load during hydration does not claim prior globals", as
     settingsHttp.puts.some((put) => put.inferenceParams !== undefined),
     false,
   );
+});
+
+test("a normalized migration patch stays within the loaded context", async () => {
+  const lowerCaseKey = QWEN38.toLowerCase();
+  settingsHttp.getResponses.length = 0;
+  settingsHttp.settings = {
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    inferenceParamsByModel: { [lowerCaseKey]: LEGACY_SNAPSHOT },
+  };
+  settingsHttp.puts.length = 0;
+  useChatRuntimeStore.setState((state) => ({
+    params: {
+      ...state.params,
+      ...LEGACY_SNAPSHOT,
+      checkpoint: QWEN38,
+      maxTokens: 4096,
+    },
+    paramsByModel: { [lowerCaseKey]: LEGACY_SNAPSHOT },
+    ggufContextLength: 4096,
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    rememberParamsPerModel: true,
+    reasoningAlwaysOn: false,
+    reasoningEnabled: true,
+    settingsHydrated: true,
+  }));
+
+  const active = useChatRuntimeStore.getState();
+  active.setParams(
+    { ...active.params, minP: 0, presencePenalty: 1.5 },
+    { fromModelDefaults: true },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const migrated = useChatRuntimeStore.getState();
+  assert.equal(migrated.params.maxTokens, 4096);
+  assert.equal(migrated.paramsByModel[QWEN38]?.presencePenalty, 1.5);
 });

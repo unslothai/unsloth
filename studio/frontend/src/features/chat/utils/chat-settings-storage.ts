@@ -4,6 +4,7 @@
 import {
   getChatSettings,
   saveChatSettingsPatch,
+  saveChatSettingsPatchIfCurrent,
   type PersistedChatPreset,
   type PersistedChatSettings,
   type PersistedInferenceParams,
@@ -498,4 +499,18 @@ export async function savePersistedChatSettingsPatch(
   return sanitizeChatSettings(
     await saveChatSettingsPatch(sanitizeChatSettings(patch), options),
   );
+}
+
+export async function savePersistedChatSettingsPatchIfCurrent(
+  expected: PersistedChatSettings,
+  patch: PersistedChatSettings,
+): Promise<{ settings: PersistedChatSettings; applied: boolean }> {
+  const result = await saveChatSettingsPatchIfCurrent(
+    sanitizeChatSettings(expected),
+    sanitizeChatSettings(patch),
+  );
+  return {
+    settings: sanitizeChatSettings(result.settings),
+    applied: result.applied,
+  };
 }

@@ -471,6 +471,41 @@ def test_settings_merge_preserves_nested_keys(tmp_path, monkeypatch):
     assert params == {"temperature": 0.9, "topP": 0.8}
 
 
+def test_settings_compare_and_set_rejects_a_newer_nested_edit(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    original = {"inferenceParams": {"temperature": 0.6, "presencePenalty": 0.0}}
+    studio_db.upsert_chat_settings_merge(original)
+    studio_db.upsert_chat_settings_merge(
+        {"inferenceParams": {"presencePenalty": 0.4}}
+    )
+
+    settings, applied = studio_db.upsert_chat_settings_merge_if_current(
+        original,
+        {"inferenceParams": {"presencePenalty": 1.5}},
+    )
+
+    assert applied is False
+    assert settings["inferenceParams"]["presencePenalty"] == 0.4
+    assert studio_db.list_chat_settings() == settings
+
+
+def test_settings_compare_and_set_atomically_applies_a_matching_patch(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    original = {"inferenceParams": {"temperature": 0.6, "presencePenalty": 0.0}}
+    studio_db.upsert_chat_settings_merge(original)
+
+    settings, applied = studio_db.upsert_chat_settings_merge_if_current(
+        original,
+        {"inferenceParams": {"presencePenalty": 1.5}},
+    )
+
+    assert applied is True
+    assert settings["inferenceParams"] == {
+        "temperature": 0.6,
+        "presencePenalty": 1.5,
+    }
+
+
 def test_settings_merge_keeps_each_model_s_remembered_params(tmp_path, monkeypatch):
     """Per-model memory patches one model at a time, so the merge has to keep the
     others. Without this, tuning a second model would wipe the first one's settings

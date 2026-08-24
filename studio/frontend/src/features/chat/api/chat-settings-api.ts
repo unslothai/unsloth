@@ -79,6 +79,10 @@ interface ChatSettingsResponse {
   settings: PersistedChatSettings;
 }
 
+interface ConditionalChatSettingsResponse extends ChatSettingsResponse {
+  applied: boolean;
+}
+
 function parseErrorText(status: number, body: unknown): string {
   if (
     body &&
@@ -150,4 +154,16 @@ export async function saveChatSettingsPatch(
   });
   const data = await parseJsonOrThrow<ChatSettingsResponse>(response);
   return data.settings;
+}
+
+export async function saveChatSettingsPatchIfCurrent(
+  expected: PersistedChatSettings,
+  patch: PersistedChatSettings,
+): Promise<{ settings: PersistedChatSettings; applied: boolean }> {
+  const response = await authFetch("/api/chat/settings/compare-and-set", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ expected, patch }),
+  });
+  return parseJsonOrThrow<ConditionalChatSettingsResponse>(response);
 }
