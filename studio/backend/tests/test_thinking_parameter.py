@@ -63,6 +63,7 @@ def test_chat_completion_request_with_thinking_enabled():
     assert req.thinking is not None
     assert req.thinking.type == "enabled"
     assert req.enable_thinking is True
+    assert "enable_thinking" not in req.model_fields_set
 
 
 def test_chat_completion_request_without_thinking():
@@ -103,4 +104,5 @@ def test_thinking_overrides_enable_thinking_when_both_provided():
     )
     # enable_thinking is explicitly set, so it takes precedence
     assert req.enable_thinking is False
+    assert "enable_thinking" in req.model_fields_set
     assert req.thinking.type == "enabled"

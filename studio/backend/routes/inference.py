@@ -3425,14 +3425,9 @@ def _anthropic_reasoning_args(payload) -> dict:
     # whose _request_reasoning_kwargs looks at the boolean only. The
     # effort-dial families already honor effort downstream, so this is what
     # makes one request mean the same thing across template shapes.
-    enable_thinking = payload.enable_thinking
-    reasoning_effort = payload.reasoning_effort
-    # Mirror the /v1/responses mapping: an effort-only request still drives
-    # enable_thinking-style templates, whose only dial is the boolean --
-    # "none" means off, any named level means on. This keeps generation and
-    # the think-markup parsing gate reading the same effective controls.
-    if enable_thinking is None and reasoning_effort is not None:
-        enable_thinking = reasoning_effort != "none"
+    enable_thinking, reasoning_effort = _resolve_reasoning_controls(
+        payload.enable_thinking, payload.reasoning_effort
+    )
     if enable_thinking is None:
         # Neither x-unsloth control was sent: fall back to Anthropic's native
         # `thinking` block (and to None when that is absent too, leaving the
@@ -17825,6 +17820,72 @@ async def delete_openai_container(
         await client.close()
 
 
+_REASONING_EFFORT_VALUES = {"none", "minimal", "low", "medium", "high", "max", "xhigh"}
+
+
+def _chat_template_reasoning_kwargs(payload) -> dict:
+    """Validated reasoning controls from OpenAI ``extra_body``."""
+    extra = getattr(payload, "model_extra", None)
+    template_kwargs = extra.get("chat_template_kwargs") if isinstance(extra, dict) else None
+    if not isinstance(template_kwargs, dict):
+        return {}
+    controls = {}
+    enable_thinking = template_kwargs.get("enable_thinking")
+    if isinstance(enable_thinking, bool):
+        controls["enable_thinking"] = enable_thinking
+    effort = template_kwargs.get("reasoning_effort")
+    if isinstance(effort, str) and effort in _REASONING_EFFORT_VALUES:
+        controls["reasoning_effort"] = effort
+    preserve = template_kwargs.get("preserve_thinking")
+    if isinstance(preserve, bool):
+        controls["preserve_thinking"] = preserve
+    return controls
+
+
+def _resolve_reasoning_controls(
+    enable_thinking: Optional[bool], reasoning_effort: Optional[str]
+) -> tuple[Optional[bool], Optional[str]]:
+    """Resolve the on/off gate while keeping a compatible effort level."""
+    if reasoning_effort is None:
+        return enable_thinking, None
+    effort_enables_thinking = reasoning_effort != "none"
+    if enable_thinking is None:
+        return effort_enables_thinking, reasoning_effort
+    if enable_thinking != effort_enables_thinking:
+        return enable_thinking, None
+    return enable_thinking, reasoning_effort
+
+
+def _normalize_chat_reasoning_controls(payload) -> None:
+    """Merge typed and nested controls, then remove contradictory state."""
+    nested = _chat_template_reasoning_kwargs(payload)
+    fields_set = getattr(payload, "model_fields_set", set())
+    typed_enable = payload.enable_thinking if "enable_thinking" in fields_set else None
+    typed_effort = payload.reasoning_effort if "reasoning_effort" in fields_set else None
+
+    if typed_enable is not None or typed_effort is not None:
+        enable_thinking, reasoning_effort = _resolve_reasoning_controls(typed_enable, typed_effort)
+        nested_effort = nested.get("reasoning_effort")
+        if typed_effort is None and nested_effort is not None:
+            _, compatible_effort = _resolve_reasoning_controls(enable_thinking, nested_effort)
+            if compatible_effort is not None:
+                reasoning_effort = compatible_effort
+    elif "enable_thinking" in nested or "reasoning_effort" in nested:
+        enable_thinking, reasoning_effort = _resolve_reasoning_controls(
+            nested.get("enable_thinking"), nested.get("reasoning_effort")
+        )
+    else:
+        # ChatCompletionRequest may already have mapped Anthropic ``thinking``
+        # onto the boolean. It is the lowest-priority compatibility form.
+        enable_thinking = payload.enable_thinking
+        reasoning_effort = payload.reasoning_effort
+
+    payload.enable_thinking = enable_thinking
+    payload.reasoning_effort = reasoning_effort
+    if payload.preserve_thinking is None and "preserve_thinking" in nested:
+        payload.preserve_thinking = nested["preserve_thinking"]
+
+
 def _normalized_sampling_thinking_mode(payload) -> Optional[bool]:
     """Three-valued reasoning mode used only to select sampling recommendations.
 
@@ -17833,12 +17894,12 @@ def _normalized_sampling_thinking_mode(payload) -> Optional[bool]:
     native ``thinking`` block. ChatCompletionRequest already maps the last form
     onto ``enable_thinking``; retaining the fallback also covers /v1/messages.
     """
-    enable_thinking = getattr(payload, "enable_thinking", None)
-    if enable_thinking is not None:
-        return bool(enable_thinking)
-    reasoning_effort = getattr(payload, "reasoning_effort", None)
-    if reasoning_effort is not None:
-        return str(reasoning_effort).lower() != "none"
+    enable_thinking, reasoning_effort = _resolve_reasoning_controls(
+        getattr(payload, "enable_thinking", None),
+        getattr(payload, "reasoning_effort", None),
+    )
+    if enable_thinking is not None or reasoning_effort is not None:
+        return enable_thinking
     thinking = getattr(payload, "thinking", None)
     thinking_type = getattr(thinking, "type", None)
     if thinking_type is not None:
@@ -18144,21 +18205,9 @@ async def openai_chat_completions(
     llama_backend = get_llama_cpp_backend()
     using_gguf = llama_backend.is_loaded
 
-    # OpenAI-SDK clients send ``chat_template_kwargs`` via ``extra_body``, which
-    # the SDK spreads into the request body at the top level. Unsloth's
-    # ChatCompletionRequest has ``extra="allow"`` so pydantic stashes them in
-    # ``model_extra``, but downstream generators consume the typed
-    # ``payload.enable_thinking``. Lift ``enable_thinking`` from the extra-body
-    # chat_template_kwargs onto the typed field so clients that only know the
-    # OpenAI shape (data_designer recipe runs, etc.) can still control the
-    # reasoning preamble.
-    _extra = getattr(payload, "model_extra", None)
-    if payload.enable_thinking is None and isinstance(_extra, dict):
-        _tpl_kw = _extra.get("chat_template_kwargs")
-        if isinstance(_tpl_kw, dict) and "enable_thinking" in _tpl_kw:
-            payload.enable_thinking = bool(_tpl_kw["enable_thinking"])
-    if payload.enable_thinking is None and payload.reasoning_effort is not None:
-        payload.enable_thinking = payload.reasoning_effort != "none"
+    # OpenAI-SDK clients send template controls via ``extra_body``. Lift the
+    # recognized reasoning fields before sampling and generation resolve them.
+    _normalize_chat_reasoning_controls(payload)
 
     # ── Determine which backend is active ─────────────────────
     # Single-model server: any model name serves the loaded model (drop-in
@@ -22942,7 +22991,6 @@ def _responses_tool_output_content(output: Union[str, list]) -> Union[str, list]
 
 _RESPONSES_THINK_OPEN = "<think>"
 _RESPONSES_THINK_CLOSE = "</think>"
-_RESPONSES_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "max", "xhigh"}
 
 
 def _coerce_responses_reasoning_text(value: Any) -> str:
@@ -23292,9 +23340,9 @@ def _build_chat_request(
     explicit_enable_thinking = False
     _extra = getattr(payload, "model_extra", None)
     if isinstance(_extra, dict):
-        _tpl_kw = _extra.get("chat_template_kwargs")
-        if isinstance(_tpl_kw, dict) and "enable_thinking" in _tpl_kw:
-            chat_kwargs["enable_thinking"] = bool(_tpl_kw["enable_thinking"])
+        _nested_reasoning = _chat_template_reasoning_kwargs(payload)
+        if "enable_thinking" in _nested_reasoning:
+            chat_kwargs["enable_thinking"] = _nested_reasoning["enable_thinking"]
             explicit_enable_thinking = True
         # auto_heal_tool_calls / nudge_tool_calls are not typed on
         # ResponsesRequest; lift them from the extra-body so passthrough
@@ -23310,7 +23358,7 @@ def _build_chat_request(
 
     if isinstance(payload.reasoning, dict):
         effort = payload.reasoning.get("effort")
-        if isinstance(effort, str) and effort in _RESPONSES_REASONING_EFFORTS:
+        if isinstance(effort, str) and effort in _REASONING_EFFORT_VALUES:
             if not explicit_enable_thinking:
                 chat_kwargs["reasoning_effort"] = effort
                 chat_kwargs["enable_thinking"] = effort != "none"

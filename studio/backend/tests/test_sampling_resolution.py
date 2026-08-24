@@ -400,14 +400,107 @@ def test_chat_route_lifts_harness_template_kwargs_before_sampling(
 
 
 @pytest.mark.parametrize(
-    "request_kwargs, expected_thinking, expected_temperature, expected_top_p",
+    "request_kwargs, expected_thinking, expected_effort, expected_preserve, expected_temperature, expected_top_p",
     [
-        ({"reasoning_effort": "none"}, False, 0.7, 0.8),
-        ({"enable_thinking": True, "reasoning_effort": "none"}, True, 0.6, 0.95),
+        ({"reasoning_effort": "none"}, False, "none", None, 0.7, 0.8),
+        (
+            {"enable_thinking": True, "reasoning_effort": "none"},
+            True,
+            None,
+            None,
+            0.6,
+            0.95,
+        ),
+        (
+            {"enable_thinking": False, "reasoning_effort": "high"},
+            False,
+            None,
+            None,
+            0.7,
+            0.8,
+        ),
+        (
+            {"thinking": {"type": "enabled"}, "reasoning_effort": "none"},
+            False,
+            "none",
+            None,
+            0.7,
+            0.8,
+        ),
+        (
+            {
+                "chat_template_kwargs": {
+                    "enable_thinking": True,
+                    "reasoning_effort": "medium",
+                    "preserve_thinking": True,
+                }
+            },
+            True,
+            "medium",
+            True,
+            0.6,
+            0.95,
+        ),
+        (
+            {
+                "reasoning_effort": "high",
+                "preserve_thinking": False,
+                "chat_template_kwargs": {
+                    "enable_thinking": False,
+                    "reasoning_effort": "xhigh",
+                    "preserve_thinking": True,
+                },
+            },
+            True,
+            "high",
+            False,
+            0.6,
+            0.95,
+        ),
+        (
+            {
+                "chat_template_kwargs": {
+                    "enable_thinking": True,
+                    "reasoning_effort": "none",
+                }
+            },
+            True,
+            None,
+            None,
+            0.6,
+            0.95,
+        ),
+        (
+            {"chat_template_kwargs": {"enable_thinking": "false"}},
+            None,
+            None,
+            None,
+            0.7,
+            0.8,
+        ),
+        (
+            {
+                "chat_template_kwargs": {
+                    "enable_thinking": False,
+                    "reasoning_effort": {},
+                }
+            },
+            False,
+            None,
+            None,
+            0.7,
+            0.8,
+        ),
     ],
 )
 def test_chat_route_normalizes_reasoning_effort_before_sampling_and_generation(
-    monkeypatch, request_kwargs, expected_thinking, expected_temperature, expected_top_p
+    monkeypatch,
+    request_kwargs,
+    expected_thinking,
+    expected_effort,
+    expected_preserve,
+    expected_temperature,
+    expected_top_p,
 ):
     import asyncio
     from types import SimpleNamespace
@@ -465,6 +558,38 @@ def test_chat_route_normalizes_reasoning_effort_before_sampling_and_generation(
     assert payload.temperature == expected_temperature
     assert payload.top_p == expected_top_p
     assert captured["enable_thinking"] is expected_thinking
+    assert captured["reasoning_effort"] == expected_effort
+    assert captured["preserve_thinking"] is expected_preserve
+
+
+@pytest.mark.parametrize(
+    "reasoning_style, enable_thinking, reasoning_effort, expected",
+    [
+        ("enable_thinking", True, "none", {"enable_thinking": True}),
+        ("enable_thinking", False, "high", {"enable_thinking": False}),
+        ("reasoning_effort", True, "none", {"reasoning_effort": "high"}),
+        ("reasoning_effort", False, "high", {"reasoning_effort": "low"}),
+        ("enable_thinking_effort", True, "none", {"enable_thinking": True}),
+        ("enable_thinking_effort", False, "high", {"enable_thinking": False}),
+    ],
+)
+def test_conflicting_controls_resolve_before_model_specific_translation(
+    reasoning_style, enable_thinking, reasoning_effort, expected
+):
+    from core.inference.llama_cpp import LlamaCppBackend
+    from routes.inference import _resolve_reasoning_controls
+
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    backend._supports_reasoning = True
+    backend._reasoning_always_on = False
+    backend._reasoning_style = reasoning_style
+    backend._reasoning_effort_levels = ["high", "max"]
+    backend._supports_preserve_thinking = False
+    backend._architecture = None
+
+    resolved = _resolve_reasoning_controls(enable_thinking, reasoning_effort)
+
+    assert backend._request_reasoning_kwargs(*resolved) == expected
 
 
 def test_fill_recommended_sampling_completions_body(monkeypatch):

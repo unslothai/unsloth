@@ -2250,7 +2250,10 @@ class ChatCompletionRequest(BaseModel):
         ``thinking`` shapes are rejected at validation time (422).
         """
         if self.thinking is not None and self.enable_thinking is None:
-            self.enable_thinking = self.thinking.type == "enabled"
+            # This is a derived compatibility value, not an explicitly sent
+            # x-unsloth override. Keep model_fields_set truthful so route-level
+            # precedence can still distinguish the native block.
+            object.__setattr__(self, "enable_thinking", self.thinking.type == "enabled")
         return self
 
     @field_validator("permission_mode", mode = "before")
