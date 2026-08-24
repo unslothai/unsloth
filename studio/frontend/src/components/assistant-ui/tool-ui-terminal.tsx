@@ -34,7 +34,7 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
   result,
   status,
 }) => {
-  const command = (args as { command?: string })?.command ?? "";
+  const command = String((args as { command?: unknown })?.command ?? "");
   const isRunning = status?.type === "running";
   // Args still streaming = the model is WRITING the command, not running it yet.
   const { propStatus } = useToolArgsStatus();

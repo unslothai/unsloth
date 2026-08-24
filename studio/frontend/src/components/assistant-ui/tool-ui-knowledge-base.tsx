@@ -76,7 +76,7 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
   result,
   status,
 }) => {
-  const query = (args as { query?: string })?.query ?? "";
+  const query = String((args as { query?: unknown })?.query ?? "");
   const isRunning = status?.type === "running";
 
   const resultText = result == null ? "" : stringifyToolResult(result);
