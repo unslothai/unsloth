@@ -802,7 +802,12 @@ def main() -> int:
         for line in failures[:40]:
             print(f"  - {line}", flush = True)
         ART.mkdir(parents = True, exist_ok = True)
-        (ART / f"failures-{PLAYWRIGHT_BROWSER}.json").write_text(json.dumps(failures, indent = 2))
+        # Named, not the platform default: this report is read back on the Windows shard,
+        # where a failure message carrying a non-ASCII byte would otherwise not round-trip.
+        (ART / f"failures-{PLAYWRIGHT_BROWSER}.json").write_text(
+            json.dumps(failures, indent = 2),
+            encoding = "utf-8",
+        )
         return 1
     print("\noverlay rail: all checks passed", flush = True)
     return 0
