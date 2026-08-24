@@ -10,6 +10,7 @@ answer across restarts.
 
 from __future__ import annotations
 
+import ipaddress
 import socket
 from typing import Any, Optional
 
@@ -21,6 +22,13 @@ LAN_ACCESS_AUTO_START_KEY = "lan_access_auto_start"
 DEFAULT_LAN_ACCESS_AUTO_START = False
 LAN_ACCESS_UNAUTHENTICATED_API_KEY = "lan_access_unauthenticated_api"
 DEFAULT_LAN_ACCESS_UNAUTHENTICATED_API = False
+
+
+def _is_loopback_address(address: str) -> bool:
+    try:
+        return ipaddress.ip_address(address).is_loopback
+    except ValueError:
+        return False
 
 
 def _coerce_bool(value: Any) -> Optional[bool]:
@@ -82,13 +90,21 @@ def request_on_lan_access(request) -> bool:
     if not server or len(server) < 2:
         return False
     server_host, server_port = server[0], server[1]
-    if not isinstance(server_host, str) or is_public_address(server_host):
+    if (
+        not isinstance(server_host, str)
+        or is_public_address(server_host)
+        or _is_loopback_address(server_host)
+    ):
         return False
     client = scope.get("client")
     if not isinstance(client, (tuple, list)) or len(client) < 1:
         return False
     client_host = client[0]
-    if not isinstance(client_host, str) or is_public_address(client_host):
+    if (
+        not isinstance(client_host, str)
+        or is_public_address(client_host)
+        or _is_loopback_address(client_host)
+    ):
         return False
 
     if request_on_lan_listener(scope):
@@ -102,6 +118,8 @@ def request_on_lan_access(request) -> bool:
         return False
     if server_port != getattr(app_state, "lan_access_port", None):
         return False
+    if bool(getattr(app_state, "lan_access_wildcard_bind", False)):
+        return True
     if server_host in getattr(app_state, "lan_access_launch_addresses", ()):
         return True
 

@@ -1048,7 +1048,7 @@ def test_unauthenticated_openai_api_is_limited_to_the_live_lan_listener(
 
     allowed = _api_request("/v1/models")
     subject = asyncio.run(authentication.get_current_subject(credentials = None, request = allowed))
-    assert subject == authentication.LAN_API_GUEST_SUBJECT
+    assert subject == authentication.DEFAULT_ADMIN_USERNAME
     assert authentication.is_lan_api_guest(allowed) is True
 
     for refused in (
@@ -1116,7 +1116,7 @@ def test_unauthenticated_openai_api_accepts_a_private_launch_managed_bind(stored
 
     assert (
         asyncio.run(authentication.get_current_subject(credentials = None, request = request))
-        == authentication.LAN_API_GUEST_SUBJECT
+        == authentication.DEFAULT_ADMIN_USERNAME
     )
 
 
@@ -1142,11 +1142,21 @@ def test_unauthenticated_openai_api_accepts_a_resolved_hostname_bind(monkeypatch
 
     assert (
         asyncio.run(authentication.get_current_subject(credentials = None, request = request))
-        == authentication.LAN_API_GUEST_SUBJECT
+        == authentication.DEFAULT_ADMIN_USERNAME
     )
 
 
-def test_unauthenticated_openai_api_accepts_a_private_wildcard_bind(monkeypatch, stored_settings):
+@pytest.mark.parametrize(
+    ("server", "client"),
+    [
+        (("192.168.1.24", 8888), ("192.168.1.90", 54321)),
+        (("fd00::24", 8888), ("fd00::90", 54321)),
+        (("::ffff:192.168.1.24", 8888), ("::ffff:192.168.1.90", 54321)),
+    ],
+)
+def test_unauthenticated_openai_api_accepts_a_private_wildcard_bind(
+    monkeypatch, stored_settings, server, client
+):
     stored_settings[lan_settings.LAN_ACCESS_UNAUTHENTICATED_API_KEY] = True
     monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda: ["192.168.1.24"])
     app = _app(
@@ -1154,12 +1164,38 @@ def test_unauthenticated_openai_api_accepts_a_private_wildcard_bind(monkeypatch,
         lan_access_wildcard_bind = True,
         server_url = "http://64.227.100.5:8888",
     )
-    request = _api_request("/v1/chat/completions", method = "POST", app = app)
+    request = _api_request(
+        "/v1/chat/completions", method = "POST", server = server, client = client, app = app
+    )
 
     assert (
         asyncio.run(authentication.get_current_subject(credentials = None, request = request))
-        == authentication.LAN_API_GUEST_SUBJECT
+        == authentication.DEFAULT_ADMIN_USERNAME
     )
+
+
+@pytest.mark.parametrize(
+    ("server", "client"),
+    [
+        (("127.0.1.1", 8888), ("127.0.0.1", 54321)),
+        (("192.168.1.24", 8888), ("127.0.0.1", 54321)),
+        (("::1", 8888), ("fd00::90", 54321)),
+        (("fd00::24", 8888), ("::1", 54321)),
+    ],
+)
+def test_unauthenticated_openai_api_rejects_loopback_launch_traffic(
+    stored_settings, server, client
+):
+    stored_settings[lan_settings.LAN_ACCESS_UNAUTHENTICATED_API_KEY] = True
+    app = _app(
+        lan_access_launch_managed = True,
+        lan_access_launch_addresses = (server[0],),
+    )
+    request = _api_request("/v1/models", server = server, client = client, app = app)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(authentication.get_current_subject(credentials = None, request = request))
+    assert exc.value.status_code == 403
 
 
 def test_unauthenticated_openai_api_rejects_a_public_launch_managed_bind(stored_settings):
@@ -1189,6 +1225,28 @@ def test_lan_guest_is_treated_as_external_api_traffic(monkeypatch, stored_settin
     assert inference._request_is_saved_credential_workflow(request) is False
 
 
+def test_lan_guest_is_visible_to_the_owner_api_monitor(monkeypatch, stored_settings):
+    from core.inference.api_monitor import ApiMonitor
+    from routes import inference
+
+    stored_settings[lan_settings.LAN_ACCESS_UNAUTHENTICATED_API_KEY] = True
+    monkeypatch.setattr(lan_access, "_bound_addresses", ("192.168.1.24",))
+    request = _api_request("/v1/models")
+    subject = asyncio.run(authentication.get_current_subject(credentials = None, request = request))
+    monitor = ApiMonitor(enabled = True)
+    monitor.start(
+        endpoint = "/v1/models",
+        method = "GET",
+        model = "",
+        prompt = "",
+        subject = subject,
+        via_api_key = inference._request_used_api_key(request),
+    )
+
+    rows = monitor.snapshot(subject = authentication.DEFAULT_ADMIN_USERNAME)
+    assert len(rows) == 1 and rows[0]["via_api_key"] is True
+
+
 def test_fastapi_injects_the_lan_guest_and_keeps_dependency_overrides_working(
     monkeypatch, stored_settings
 ):
@@ -1206,7 +1264,7 @@ def test_fastapi_injects_the_lan_guest_and_keeps_dependency_overrides_working(
     with TestClient(app, client = ("192.168.1.90", 54321)) as client:
         guest = client.get("/v1/models")
         assert guest.status_code == 200
-        assert guest.json() == {"subject": authentication.LAN_API_GUEST_SUBJECT}
+        assert guest.json() == {"subject": authentication.DEFAULT_ADMIN_USERNAME}
         assert client.get("/api/probe").status_code == 403
 
         app.dependency_overrides[authentication.get_current_subject] = lambda: "override"

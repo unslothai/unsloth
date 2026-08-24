@@ -12,6 +12,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .storage import (
     API_KEY_PREFIX,
+    DEFAULT_ADMIN_USERNAME,
     credential_generation,
     get_jwt_secret,
     get_user_and_secret,
@@ -28,7 +29,6 @@ REFRESH_TOKEN_EXPIRE_DAYS = 7
 security = HTTPBearer()  # Reads Authorization: Bearer <token>
 optional_security = HTTPBearer(auto_error = False)
 
-LAN_API_GUEST_SUBJECT = "__lan_api_guest__"
 _LAN_API_GUEST_STATE_KEY = "lan_api_guest"
 _LAN_API_GUEST_ENDPOINTS = frozenset(
     {
@@ -235,7 +235,7 @@ async def get_current_subject(
         )
 
     setattr(request.state, _LAN_API_GUEST_STATE_KEY, True)
-    return LAN_API_GUEST_SUBJECT
+    return DEFAULT_ADMIN_USERNAME
 
 
 def is_lan_api_guest(request: Request) -> bool:
