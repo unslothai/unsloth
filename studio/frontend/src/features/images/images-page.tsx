@@ -2291,10 +2291,16 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
             genVisibilityListener.current = null;
           }
           if (!isMounted.current) return;
+          // Re-fetch the first page to merge images the finished run saved, and resync
+          // status. Awaited, and before going idle: a resumed run that was stopped produced
+          // nothing, and releasing its held frame depends on knowing that. Reading the cache
+          // after the load (it refreshes synchronously) is what tells the two apart.
+          const knownBefore = galleryCache.images.length;
+          await loadGallery();
+          if (!isMounted.current) return;
+          setRunProducedImage(galleryCache.images.length > knownBefore);
           setBusy(null);
           setGenStep(null);
-          // Re-fetch the first page to merge images the finished run saved, and resync status.
-          void loadGallery();
           void refreshStatus();
           return;
         }
@@ -3350,6 +3356,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     const knownIds = new Set(galleryCache.images.map((image) => image.id));
     try {
       for (let i = 0; i < runs; i++) {
+        // Per attempt, not per batch. The success latch below is inside this loop, so a
+        // reset left outside it lets attempt 1's outcome speak for attempt 2; and a step
+        // count carried over from the previous attempt makes the next run's genuine step-0
+        // warmup look like the persist window, freezing the card on the old run's ETA.
+        setRunProducedImage(false);
+        setGenStep(null);
         // Stop issuing more GPU generations once the page truly unmounted (a plain tab switch
         // keeps it mounted), or once Stop was pressed: the backend cancel only reaches the denoise
         // in flight, so the remaining runs of a count > 1 request would otherwise start anyway.

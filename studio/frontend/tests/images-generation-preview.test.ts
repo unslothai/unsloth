@@ -450,3 +450,47 @@ test("a generation whose POST response was lost still gets its handoff", () => {
     "a recovered generation must count as having produced its image",
   );
 });
+
+// --- sequential runs (Runs > 1) and resumed runs ---------------------------------------
+// Both outcome and progress belong to ONE backend run. Latching either across a batch, or
+// carrying one in from a run the page did not start, misreports the run in flight.
+
+test("each attempt in a batch resets its own outcome and progress", () => {
+  const page = readFileSync(
+    fileURLToPath(
+      new URL("../src/features/images/images-page.tsx", import.meta.url),
+    ),
+    "utf8",
+  );
+  const loop = page.indexOf("for (let i = 0; i < runs; i++)");
+  assert.ok(loop > 0, "the run loop moved");
+  const body = page.slice(loop, loop + 700);
+  assert.match(
+    body,
+    /setRunProducedImage\(false\)/,
+    "attempt 1's success would otherwise speak for a later cancelled attempt",
+  );
+  assert.match(
+    body,
+    /setGenStep\(null\)/,
+    "the previous attempt's step count would otherwise suppress the next run's step 0",
+  );
+});
+
+test("a resumed run records whether it actually produced an image", () => {
+  const page = readFileSync(
+    fileURLToPath(
+      new URL("../src/features/images/images-page.tsx", import.meta.url),
+    ),
+    "utf8",
+  );
+  const resume = page.indexOf("const knownBefore = galleryCache.images.length");
+  assert.ok(resume > 0, "the resumed-run settle moved");
+  const body = page.slice(resume, resume + 400);
+  assert.match(body, /await loadGallery\(\)/, "the outcome must be settled before going idle");
+  assert.match(
+    body,
+    /setRunProducedImage\(galleryCache\.images\.length > knownBefore\)/,
+    "a resumed run that was stopped must not read as having an image coming",
+  );
+});
