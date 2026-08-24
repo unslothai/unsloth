@@ -31,9 +31,26 @@ test("toolArgText renders whatever the model sent as text", () => {
   assert.equal(toolArgText(42), "42");
   assert.equal(toolArgText(0), "0");
   assert.equal(toolArgText(true), "true");
-  assert.equal(toolArgText(["ls", "-la"]), "ls,-la");
-  assert.equal(toolArgText({ cmd: "ls" }), "[object Object]");
+  assert.equal(toolArgText(["ls", "-la"]), '["ls","-la"]');
+  assert.equal(toolArgText({ cmd: "ls" }), '{"cmd":"ls"}');
   assert.equal(toolArgText("print(1)"), "print(1)");
+});
+
+// `{"code":{"toString":null}}` is valid JSON, and the own property shadows the
+// one on Object.prototype. Coercing such a value throws "Cannot convert object
+// to primitive value" -- the same router-level crash, reached through the very
+// helper meant to prevent it. Arrays reach it too, elementwise.
+test("toolArgText survives an object that cannot be coerced", () => {
+  const hostile = JSON.parse('{"code":{"toString":null}}').code;
+  assert.equal(toolArgText(hostile), '{"toString":null}');
+  assert.equal(
+    toolArgText(JSON.parse('[{"toString":null}]')),
+    '[{"toString":null}]',
+  );
+  assert.equal(
+    toolArgText(JSON.parse('{"valueOf":null,"toString":null}')),
+    '{"valueOf":null,"toString":null}',
+  );
 });
 
 // Absent and null both mean "the model has not written this yet", and the cards
@@ -47,6 +64,32 @@ test("a coerced argument survives the calls the cards make on it", () => {
   assert.equal(toolArgText(42).split("\n")[0], "42");
   assert.equal(toolArgText(42).slice(0, 60), "42");
   assert.equal(toolArgText(42).trim(), "42");
+});
+
+// The helper's whole contract. Anything it throws on is a card that takes the
+// application down, so the property is asserted over the shapes JSON can carry.
+test("toolArgText never throws", () => {
+  const shapes: unknown[] = [
+    undefined,
+    null,
+    0,
+    -1.5,
+    true,
+    "",
+    "text",
+    [],
+    {},
+    [1, [2, [3]]],
+    { nested: { deep: [1, 2] } },
+    JSON.parse('{"toString":null}'),
+    JSON.parse('[{"toString":null}]'),
+    JSON.parse('{"valueOf":null,"toString":null}'),
+    Object.create(null),
+  ];
+  for (const shape of shapes) {
+    assert.doesNotThrow(() => toolArgText(shape));
+    assert.equal(typeof toolArgText(shape), "string");
+  }
 });
 
 /**

@@ -96,7 +96,7 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
   const rawImageQueries = (args as { image_queries?: unknown })?.image_queries;
   const imageQueries = Array.isArray(rawImageQueries)
     ? rawImageQueries
-        .map((q) => String(q).trim())
+        .map((q) => toolArgText(q).trim())
         .filter(Boolean)
         .slice(0, 5)
     : [];
