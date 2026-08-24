@@ -121,6 +121,47 @@ be cleared as well as its scatter.
 
 If you run waves, **each wave carries its own null control.** Wave 0's floor is not wave 1's floor.
 
+#### What a null control cannot do
+
+**A null control cannot detect a bias it shares.**
+
+This is the companion to "a check that comes back clean against code you believe is broken is
+usually a hole in the check", and it is the specific hole that a null control has.
+
+A null runs one build against itself. Any skew that is **symmetric between the two sides cancels
+exactly**, so the null reads flat and appears to certify the metric. It has certified only that the
+metric is *repeatable*. It has said nothing about whether the metric is *comparable*.
+
+The case that taught this, in full, because the shape matters more than the story:
+
+`highlight_spans_while_open` counted `pre span` on the first frame where every reasoning pane's
+`data-state` read `open`. Its null control was **0.0% at 100K and 500K, exact to the span, with
+0.0% within-arm spread** -- about as clean as a null control ever comes back. It was adopted
+*because* of that null, to replace a measure whose null swung 70%.
+
+Across two real arms it was 41% wrong. `data-state` flips when the collapse state changes, not when
+the content it reveals has mounted, and the distance between those two frames depends on the
+collapse mechanism -- which was the thing being compared. Settled, both arms mount 74,250 spans.
+Read at the flip, one arm reads 74,917 and the other 44,075.
+
+The null never had a chance: it served one bundle on both sides, so the same timing skew sat on both
+sides of its ratio and divided out.
+
+So, before you trust a flat null:
+
+- Ask what the measurement's terminating condition is, and whether that condition means the same
+  thing on both arms. A moment defined by app state is not a fixed moment when the app state
+  machine is what changed.
+- Prefer a terminating condition defined by the **quantity you are measuring going quiet** over one
+  defined by a signal that merely correlates with it.
+- A null control tests repeatability. To test comparability you need an arm where you know the
+  answer: a deliberately broken build, or an independent measurement of the same quantity by
+  another route.
+
+`scoring/payload_rules.py` carries the rules that came out of this, and
+`scoring/selftest/test_studiobench_payload_rules.py` pins the four numbers that were published and
+withdrawn before they were written down.
+
 ### Gate 2: sign consistency
 
 Every paired ratio must fall on the same side of 1.0. If three repetitions say faster and one says

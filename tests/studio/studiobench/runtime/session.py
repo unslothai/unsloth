@@ -444,6 +444,34 @@ class CellRunner:
             if self._click_attribution_result is not None:
                 row["click_attribution"] = self._click_attribution_result
             rec.emit(row)
+            # A TERMINAL MARKER FOR A CELL THAT DID NOT FINISH, so a reader scanning FORWARD can
+            # discard its windows without having to join backwards to the cell row.
+            #
+            # `window` rows are written as the film runs; the `cell` row is written when the film
+            # ends. An in-flight or aborted cell therefore leaves a complete-looking set of window
+            # rows behind with no completed cell owning them, and an analysis that reads windows
+            # directly picks them up. `floor_table.cell_metrics` has always guarded this; nothing
+            # else did.
+            #
+            # This cost a headline. Reading `stream:gap` windows without the guard reported the
+            # 1M rung at 28.7 fps and 21.8% of frames over 33 ms against a 46.7 fps baseline, an
+            # apparent large regression at the rung closest to the user complaint, drawn entirely
+            # from a cell that had not finished. An incomplete cell is not a shorter film but a
+            # different one: at 1M the completed cell emitted 6 `stream:gap` windows against 17 at
+            # 100K, so an in-flight cell contributes whichever phase it had reached.
+            if not row["completed"]:
+                rec.emit(
+                    {
+                        "row_type": "cell_aborted",
+                        "cell_id": cell.cell_id,
+                        "reason": (row.get("failure") or {}).get("message", "did not complete"),
+                        "kind": (row.get("failure") or {}).get("kind"),
+                        "note": (
+                            "every window row carrying this cell_id measures an unfinished film "
+                            "and must not be pooled with completed cells"
+                        ),
+                    }
+                )
         return row
 
     # ── the cell ────────────────────────────────────────────────────
@@ -788,6 +816,42 @@ class CellRunner:
         row["census_peak"] = peak
         row["census_peak_attempted"] = bool(censuses)
 
+        # WHICH ACTION THE PEAK CAME FROM, and a standing refusal to compare it across arms.
+        #
+        # `census_peak` is whichever per-action census had the most elements. The census attached
+        # to an action is taken after the action returns, and `reasoning_toggle` opens every pane
+        # and then closes them again, so that census races the close. Which action wins the max()
+        # therefore depends on the race and DIFFERS BETWEEN ARMS.
+        #
+        # Measured on a null control -- the same bundle served on both arms -- the winner flipped
+        # between `settings` (panes collapsed, 64,648 elements) and `reasoning_toggle` (panes open,
+        # 106,067), a 70.1% swing in `highlight_spans` WITHIN one arm.
+        #
+        # This produced a published wrong number: main was reported as mounting 48% more Shiki
+        # spans than a pre-campaign baseline, and an attribution bisect was nearly commissioned to
+        # find the cause. Settled, the two trees mount the same document to within 0.3%.
+        #
+        # It stays in the payload because it is useful as a diagnostic high-water mark. It carries
+        # its provenance and an explicit refusal so that no analysis can quote it across arms
+        # without stepping over a flag that says not to.
+        peak_from = next(
+            (
+                w.get("action")
+                for w in row["actions"]
+                if isinstance(w.get("census"), dict)
+                and w["census"].get("elements") == peak.get("elements")
+            ),
+            None,
+        )
+        row["census_peak_from_action"] = peak_from
+        row["census_peak_comparable_across_arms"] = False
+        row["census_peak_note"] = (
+            "diagnostic high-water mark only. The action it comes from is chosen by a max() over "
+            "per-action censuses that race the action's own teardown, so it is not the same "
+            "moment on two arms and must not be differenced across them. For a cross-arm census "
+            "use a measure taken at a defined, settled moment."
+        )
+
         census = peak or row["census_after"]
         spans = census.get("highlight_spans") or 0
         chars = census.get("assistant_chars")
@@ -931,7 +995,19 @@ class CellRunner:
         """
         s = self.session
         page = s.ctx.page
+        # THE STREAMED SIDE IS THE PEAK, AND THE PEAK IS TAKEN AT AN UNSTABLE MOMENT. Recorded on
+        # the row rather than left implicit, because the seeded side below is read after an
+        # explicit 4 s wait -- a settled moment -- so this gate differences a racing census against
+        # a stable one. That is the same shape as the defect that made `census_peak` unquotable
+        # across arms.
+        #
+        # It is NOT the same harm and the behaviour is deliberately left alone here: both sides of
+        # this comparison come from ONE cell on ONE build, so the instability widens the gate's
+        # tolerance rather than pointing a difference in a direction. Changing which census feeds
+        # it would change what the gate asserts, and that cannot be justified without measuring it
+        # against a browser. Said out loud so the next reader does not have to rediscover it.
         streamed = row.get("census_peak") or row.get("census_after") or {}
+        streamed_from = "census_peak" if row.get("census_peak") else "census_after"
         follow_ups = self._streamed_follow_ups(plan, row)
         try:
             all_units = list(plan.seeded_units) + [plan.streamed_unit] + follow_ups
@@ -960,7 +1036,10 @@ class CellRunner:
             }
         out = compare_signatures(streamed, seeded_sig)
         out["streamed_census"] = streamed
+        out["streamed_census_from"] = streamed_from
+        out["streamed_census_settled"] = streamed_from != "census_peak"
         out["seeded_census"] = seeded_sig
+        out["seeded_census_settled"] = True
         out["readiness_mode"] = self.readiness_mode
         if self.readiness_mode == MODE_WINDOWED:
             # SAID OUT LOUD RATHER THAN SCORED QUIETLY. Both sides of this check are loaded by the
@@ -1258,9 +1337,14 @@ def make_context(
     paths: Paths,
     log: Callable[[str], None],
     browser_procs: Optional[list] = None,
+    out_lock = None,
 ) -> tuple[BenchContext, Session]:
     session_id = new_session_id()
-    recorder = Recorder(paths.payload_jsonl, session_id)
+    # THE LOCK THE CALLER IS ALREADY HOLDING. `run()` takes the output directory before it archives
+    # a payload or installs a Studio, so the `Recorder` adopts that lock rather than opening a
+    # second one against the same path. Without a caller's lock it takes its own, which is what
+    # every test and every other consumer of a payload does.
+    recorder = Recorder(paths.payload_jsonl, session_id, lock = out_lock)
     ctx = BenchContext(
         browser = browser_bundle.browser,
         context = browser_bundle.context,

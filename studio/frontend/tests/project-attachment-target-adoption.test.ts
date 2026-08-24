@@ -142,8 +142,10 @@ test("the run keeps the project it started in", () => {
   assert.match(
     source,
     // Whichever await comes first: the property is that the read is the run's
-    // last synchronous statement, not which call follows it.
-    /const composerProjectIdAtSend =\s*useChatRuntimeStore\.getState\(\)\.activeProjectId \?\? null;\s*(?:\/\/[^\n]*\n\s*)*await /,
+    // last synchronous statement, not which call follows it. The send-time stamp
+    // takes precedence over the store (#9129: a document send lands after the
+    // user may have navigated), but both reads stay on this side of the await.
+    /const composerProjectIdAtSend = creationClaim\s*\? creationClaim\.projectId\s*: \(useChatRuntimeStore\.getState\(\)\.activeProjectId \?\? null\);\s*(?:\/\/[^\n]*\n\s*)*await /,
     "captured before the first await",
   );
   assert.match(

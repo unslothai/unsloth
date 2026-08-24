@@ -25,6 +25,10 @@ on:
       - 'tests/studio/probe_dismiss_guard.py'
       - 'tests/studio/playwright_settings_tabs.py'
       - 'tests/studio/playwright_stream_pacing.py'
+      # studio-ui-smoke.yml also triggers on tests/studio/**, but its step loops over
+      # firefox and webkit only, so without this a PR touching just this driver would
+      # never run it under Chromium.
+      - 'tests/studio/playwright_overlay_rail.py'
       - 'tests/studio/playwright_code_block_flicker.py'
       - 'tests/studio/_code_block_flicker_analysis.py'
       - 'tests/studio/test_code_block_flicker_contract.py'
@@ -423,6 +427,23 @@ jobs:
       - name: Browser smoke for the settings tab panels
         working-directory: ${{ github.workspace }}
         run: python3 tests/studio/playwright_settings_tabs.py
+
+      # The overlay rail's shadow gutter is block padding compensated for by two offsets and
+      # discounted back out of the measurement. Every part of that is a browser reading, so
+      # the node suite cannot see any of it, and the suites that boot Studio assert the
+      # horizontal gutter and the cap. Firefox and WebKit run it in studio-ui-smoke.yml,
+      # where they are already installed.
+      - name: Browser smoke for the overlay rail's shadow gutter
+        working-directory: ${{ github.workspace }}
+        env:
+          SMOKE_PORT: '5197'
+          # playwright-<name>, with the hyphen: the artifact step below uploads
+          # logs/playwright-* and an underscore would leave this gate's screenshot and
+          # failure report on the runner, which is the run where they are the whole point.
+          PW_ART_DIR: logs/playwright-overlay-rail
+        run: |
+          mkdir -p logs/playwright-overlay-rail
+          python3 tests/studio/playwright_overlay_rail.py
 
       # A panel that cannot be fetched is new with lazy loading, and nothing above the
       # root-mounted dialog catches, so unguarded it unmounts Studio, not one panel.
