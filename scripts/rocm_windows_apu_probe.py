@@ -542,7 +542,12 @@ def main() -> int:
         obs["counters_before"] = read_counters()
     else:
         obs["counters_before"], obs["settle_before"] = read_counters_settled(
-            timeout_s = args.settle_timeout
+            timeout_s = args.settle_timeout,
+            # There is no baseline to leave here, so stability is the only test,
+            # and a counter still draining from whatever ran last can be flat for
+            # a few intervals before it starts falling. Hold the window shut long
+            # enough that a stale plateau cannot pass for an idle one.
+            min_wait_s = 15.0,
         )
 
     held = None
