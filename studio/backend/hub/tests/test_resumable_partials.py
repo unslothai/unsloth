@@ -294,9 +294,60 @@ def test_the_verdict_is_cached_per_directory(tmp_path):
     root = tmp_path / "cache"
     root.mkdir()
     assert rp._lock_is_honoured_at(str(root)) is True
-    before = rp._lock_is_honoured_at.cache_info()
+    before = rp._lock_is_honoured_on.cache_info()
     assert rp._lock_is_honoured_at(str(root)) is True
-    assert rp._lock_is_honoured_at.cache_info().hits == before.hits + 1
+    assert rp._lock_is_honoured_on.cache_info().hits == before.hits + 1
+
+
+def test_a_new_mount_at_the_same_path_is_re_probed(tmp_path, monkeypatch):
+    """The path is not the identity of a filesystem.
+
+    An external cache can be unmounted and something else mounted at the same name, and a verdict
+    about the old filesystem says nothing about the new one, so the device is part of the key.
+    """
+    rp.invalidate_probe_cache()
+    root = tmp_path / "cache"
+    root.mkdir()
+    devices = iter([101, 101, 202])
+    monkeypatch.setattr(rp, "_device_at", lambda _d: next(devices))
+
+    assert rp._lock_is_honoured_at(str(root)) is True
+    hits = rp._lock_is_honoured_on.cache_info().hits
+    assert rp._lock_is_honoured_at(str(root)) is True
+    assert rp._lock_is_honoured_on.cache_info().hits == hits + 1, "same device should have hit"
+    misses = rp._lock_is_honoured_on.cache_info().misses
+    assert rp._lock_is_honoured_at(str(root)) is True
+    assert rp._lock_is_honoured_on.cache_info().misses == misses + 1, "remount was not re-probed"
+
+
+def test_a_probe_that_could_not_run_is_not_remembered(tmp_path, monkeypatch):
+    """A full disk or a briefly unwritable cache is not a measurement.
+
+    Caching one would have the backend condemn partials a freshly spawned worker is happily
+    resuming, for the life of the process.
+    """
+    rp.invalidate_probe_cache()
+    attempts: list[int] = []
+
+    def fail_once():
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise OSError("mount table briefly unreadable")
+        return [(str(tmp_path), "ext4")]
+
+    monkeypatch.setattr(rp, "_mounts", fail_once, raising = False)
+
+    with pytest.raises(rp._ProbeUnavailable):
+        rp._filesystem_is_local(str(tmp_path))
+    assert rp._filesystem_is_local(str(tmp_path)) is True, "the failure was cached"
+
+
+def test_an_unrunnable_probe_reads_as_unprovable_not_as_an_error(tmp_path, monkeypatch):
+    """It still has to fail closed for the caller, just without being remembered."""
+    rp.invalidate_probe_cache()
+    monkeypatch.setattr(rp, "_probe_dir", lambda _c = None: tmp_path)
+    monkeypatch.setattr(rp, "_device_at", lambda _d: (_ for _ in ()).throw(rp._ProbeUnavailable("gone")))
+    assert rp._exclusion_is_provable() is False
 
 
 def test_changing_the_cache_home_invalidates_the_verdict(monkeypatch):
@@ -372,30 +423,35 @@ def test_a_planted_symlink_is_not_appended_to(monkeypatch, tmp_path):
     assert calls["http_get"] == [{"resume_size": 0, "mode": "ab"}]
 
 
-def test_a_symlink_planted_after_the_stat_is_still_refused(monkeypatch, tmp_path):
-    """The stat and the open are two syscalls, and the attacker writes the same directory.
+def test_a_partial_left_by_another_user_is_not_built_on(monkeypatch, tmp_path):
+    """Nothing about a plain file says who wrote it.
 
-    Winning that race is the whole reason the open carries O_NOFOLLOW rather than trusting what
-    the stat just reported. Simulated by having the stat report nothing while the link is there.
+    A partial another account left is bytes of their choosing, and appending the server's
+    remaining range to a chosen prefix publishes a blob of exactly the right length and entirely
+    the wrong contents. huggingface_hub checks the size afterwards and never the hash
+    (huggingface_hub#3643), so no later step would catch it.
     """
     module, calls = _fake_file_download(monkeypatch)
     assert rp.restore_resumable_partials() is True
 
-    victim = tmp_path / "victim"
-    victim.write_bytes(b"keep me")
     partial = tmp_path / "abc.incomplete"
-    partial.symlink_to(victim)
+    partial.write_bytes(b"poison" * 100)
 
-    real_lstat = os.lstat
-    seen: list[str] = []
+    # Only this file reads as somebody else's: owning one for real needs root, and the fresh
+    # partial that replaces it has to still be ours or the test proves nothing about the retry.
+    real_fstat = os.fstat
+    planted_inode = partial.stat().st_ino
 
-    def blind_first_look(target, *args, **kwargs):
-        if str(target) == str(partial) and not seen:
-            seen.append("looked")
-            raise FileNotFoundError(str(target))
-        return real_lstat(target, *args, **kwargs)
+    class _Foreign:
+        def __init__(self, info):
+            self.st_mode, self.st_nlink = info.st_mode, info.st_nlink
+            self.st_uid = info.st_uid + 1
 
-    monkeypatch.setattr(rp.os, "lstat", blind_first_look)
+    def fstat(descriptor, *args, **kwargs):
+        info = real_fstat(descriptor, *args, **kwargs)
+        return _Foreign(info) if info.st_ino == planted_inode else info
+
+    monkeypatch.setattr(rp.os, "fstat", fstat)
 
     _patched_writer(module)(
         incomplete_path = partial,
@@ -406,9 +462,8 @@ def test_a_symlink_planted_after_the_stat_is_still_refused(monkeypatch, tmp_path
         filename = "f",
     )
 
-    assert seen, "the stat was never called, so this proves nothing"
-    assert victim.read_bytes() == b"keep me", "the open followed the link the stat had missed"
-    assert calls["http_get"] == [{"resume_size": 0, "mode": "ab"}]
+    assert calls["http_get"] == [{"resume_size": 0, "mode": "ab"}], "it resumed on foreign bytes"
+    assert partial.read_bytes() == b"x" * 10, "the foreign prefix survived into the blob"
 
 
 def test_a_planted_hard_link_is_not_appended_to(monkeypatch, tmp_path):

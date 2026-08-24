@@ -164,9 +164,31 @@ def _mounts() -> list[tuple[str, str]]:
     return [(part.mountpoint, part.fstype or "") for part in psutil.disk_partitions(all = True)]
 
 
-@lru_cache(maxsize = 8)
+class _ProbeUnavailable(Exception):
+    """The probe could not be run. Not a measurement, so it must not be remembered as one."""
+
+
+def _device_at(directory: str) -> int:
+    """The device the path is mounted from, which changes when a different filesystem replaces it.
+
+    Part of the probe cache key: the path alone is not identity. An external cache can be unmounted
+    and something else mounted at the same name, and a verdict about the old filesystem says
+    nothing about the new one.
+    """
+    try:
+        return os.stat(directory).st_dev
+    except OSError as exc:
+        raise _ProbeUnavailable(f"cannot stat {directory}: {exc}") from exc
+
+
 def _filesystem_is_local(directory: str) -> bool:
-    """Whether *directory* sits on a filesystem whose locking this host can speak for.
+    """Whether *directory* sits on a filesystem whose locking this host can speak for."""
+    return _filesystem_is_local_on(directory, _device_at(directory))
+
+
+@lru_cache(maxsize = 8)
+def _filesystem_is_local_on(directory: str, device: int) -> bool:
+    """The cached half, keyed on the mounted device as well as the path.
 
     A probe here cannot see another client, and NFS mounted ``-o local_lock=flock`` keeps flock
     locks client-local, so two hosts would each take the lock and neither would be refused. A mount
@@ -177,9 +199,8 @@ def _filesystem_is_local(directory: str) -> bool:
         return False  # UNC share
     try:
         table = _mounts()
-    except Exception as exc:  # noqa: BLE001 - an unidentifiable mount is not a local one
-        logger.debug("resumable partials: could not read the mount table (%s)", exc)
-        return False
+    except Exception as exc:  # noqa: BLE001 - unreadable now does not mean unreadable next time
+        raise _ProbeUnavailable(f"could not read the mount table: {exc}") from exc
     best, fstype = "", None
     for mount, kind in table:
         if str(path) == mount or str(path).startswith(mount.rstrip(os.sep) + os.sep):
@@ -199,14 +220,21 @@ def _filesystem_is_local(directory: str) -> bool:
     return True
 
 
-# Keyed on the directory, so moving the cache re-probes instead of reusing the old verdict.
-@lru_cache(maxsize = 8)
 def _lock_is_honoured_at(directory: str) -> bool:
-    """Whether ``flock`` under *directory* actually excludes a second holder.
+    """Whether ``flock`` under *directory* actually excludes a second holder."""
+    return _lock_is_honoured_on(directory, _device_at(directory))
 
-    Take the lock twice and require the second to be refused, since separate ``open()`` calls make
-    separate open file descriptions and flock judges them independently. Only contention counts as
-    a refusal; anything else, a failed probe included, leaves the stock writer in place.
+
+# Keyed on the directory and the device, so moving the cache, or swapping the mount under it,
+# re-probes instead of reusing a verdict about a filesystem that is no longer there.
+@lru_cache(maxsize = 8)
+def _lock_is_honoured_on(directory: str, device: int) -> bool:
+    """Take the lock twice and require the second to be refused.
+
+    Separate ``open()`` calls make separate open file descriptions and flock judges them
+    independently. Only contention counts as a refusal; a filesystem that grants both, or answers
+    anything else, leaves the stock writer in place. A probe that could not be run at all raises
+    instead, since a full disk or a briefly unwritable cache is not a measurement to remember.
     """
     import fcntl
 
@@ -214,9 +242,8 @@ def _lock_is_honoured_at(directory: str) -> bool:
     # lets another user pre-place a symlink that an unguarded open would follow and truncate.
     try:
         handle, name = tempfile.mkstemp(dir = directory, prefix = ".unsloth-flock-probe.")
-    except Exception as exc:  # noqa: BLE001 - nowhere to probe is not a working lock
-        logger.debug("resumable partials: could not create the probe (%s)", exc)
-        return False
+    except Exception as exc:  # noqa: BLE001 - nowhere to probe now is not nowhere to probe later
+        raise _ProbeUnavailable(f"could not create the probe in {directory}: {exc}") from exc
     second = None
     try:
         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -266,8 +293,19 @@ def _exclusion_is_provable(hub_cache: Optional[Path | str] = None) -> bool:
     except ImportError:
         # No fcntl on Windows, where huggingface_hub locks via msvcrt: mandatory rather than
         # advisory. A network share still cannot be spoken for, which the locality check catches.
-        return os.name == "nt" and _filesystem_is_local(str(directory))
-    return _filesystem_is_local(str(directory)) and _lock_is_honoured_at(str(directory))
+        windows = os.name == "nt"
+        try:
+            return windows and _filesystem_is_local(str(directory))
+        except _ProbeUnavailable as exc:
+            logger.debug("resumable partials: %s", exc)
+            return False
+    try:
+        return _filesystem_is_local(str(directory)) and _lock_is_honoured_at(str(directory))
+    except _ProbeUnavailable as exc:
+        # Nothing was shown, so the stock writer stays -- but this answer is not remembered, and
+        # the next caller probes again rather than inheriting a verdict from a bad moment.
+        logger.debug("resumable partials: %s", exc)
+        return False
 
 
 def _hub_is_patchable() -> bool:
@@ -294,47 +332,70 @@ def can_restore_partials(hub_cache: Optional[Path | str] = None) -> bool:
     return _hub_is_patchable() and _exclusion_is_provable(hub_cache)
 
 
+def _objection_to(descriptor: int) -> Optional[str]:
+    """Why the partial now open on *descriptor* must not be appended to, or ``None``.
+
+    Judged on the descriptor rather than the path, so a swap between looking and opening cannot
+    slip a different file past: this is the thing that will actually be written.
+
+    Ownership is the load-bearing one. Nothing about a plain file betrays who wrote it, so a
+    partial another account left is bytes of their choosing, and appending the server's remaining
+    range to a chosen prefix publishes a blob that is the right length and the wrong file.
+    huggingface_hub checks only the size afterwards, never the hash (huggingface_hub#3643), so
+    nothing downstream would notice.
+    """
+    info = os.fstat(descriptor)
+    if not stat.S_ISREG(info.st_mode):
+        return "not a regular file"
+    if info.st_nlink > 1:
+        return "hard linked from elsewhere"
+    euid = getattr(os, "geteuid", None)
+    if euid is not None and info.st_uid != euid():
+        return "owned by another user"
+    return None
+
+
 def _open_stable_partial(path: Path) -> Optional[Any]:
     """Open the stable partial for append, or ``None`` if it cannot be trusted.
 
     The 1.18 nonce made this name unguessable; restoring the 1.17 name makes it predictable again,
-    so on a cache another account can write, the entry can be pre-created as a symlink or a hard
-    link to any file this process may write and an unguarded ``"ab"`` would append the download to
-    it (``_chmod_and_move`` would then chmod the target too). ``O_NOFOLLOW`` refuses a symlink and
-    closes the race the ``lstat`` alone would leave; the ``lstat`` catches a hard link and a
-    non-file, which ``O_NOFOLLOW`` does not see, and covers Windows, which has no ``O_NOFOLLOW``.
+    so on a cache another account can write, the entry can be pre-created and an unguarded ``"ab"``
+    would build the blob on top of whatever is there. ``O_NOFOLLOW`` refuses a symlink outright;
+    everything else is settled on the open descriptor by :func:`_objection_to`. The one look at the
+    path is for Windows, which has no ``O_NOFOLLOW`` and so cannot refuse a link at open time.
 
-    A planted entry is removed and a clean partial started. Where even that is refused, the caller
-    falls back to the stock writer, which invents its own name and cannot be steered.
+    A partial that fails any of it is removed and a clean one started. Where even that is refused,
+    the caller falls back to the stock writer, which invents its own name and cannot be steered.
     """
-    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
-    flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | nofollow | getattr(os, "O_BINARY", 0)
     for last_attempt in (False, True):
-        planted = None
-        try:
-            existing = os.lstat(path)
-        except FileNotFoundError:
-            existing = None
-        except OSError as exc:
-            logger.debug("resumable partials: cannot stat %s (%s)", path, exc)
-            return None
-        if existing is not None and not stat.S_ISREG(existing.st_mode):
-            planted = "not a regular file"
-        elif existing is not None and existing.st_nlink > 1:
-            planted = "hard linked from elsewhere"
-        if planted is None:
+        objection = None
+        if not nofollow:
             try:
-                handle = os.fdopen(os.open(path, flags, 0o600), "ab")
+                if stat.S_ISLNK(os.lstat(path).st_mode):
+                    objection = "a symlink"
+            except FileNotFoundError:
+                pass
             except OSError as exc:
-                # ELOOP, or EMLINK on some BSDs: it became a symlink after the lstat.
+                logger.debug("resumable partials: cannot stat %s (%s)", path, exc)
+                return None
+        if objection is None:
+            try:
+                descriptor = os.open(path, flags, 0o600)
+            except OSError as exc:
+                # ELOOP, or EMLINK on some BSDs: O_NOFOLLOW refused a symlink.
                 if exc.errno not in (errno.ELOOP, errno.EMLINK):
                     raise
-                planted = "a symlink"
+                objection = "a symlink"
             else:
-                return handle
+                objection = _objection_to(descriptor)
+                if objection is None:
+                    return os.fdopen(descriptor, "ab")
+                os.close(descriptor)
         if last_attempt:
             return None
-        logger.warning("Discarding the download partial at %s: it is %s.", path, planted)
+        logger.warning("Discarding the download partial at %s: it is %s.", path, objection)
         try:
             os.unlink(path)
         except OSError as exc:
@@ -431,7 +492,7 @@ def restore_resumable_partials() -> bool:
 def invalidate_probe_cache() -> None:
     """Forget every probed filesystem. Called when the cache location changes."""
     # getattr: a test that replaced either probe outright has no cache to clear.
-    for probe in (_lock_is_honoured_at, _filesystem_is_local):
+    for probe in (_lock_is_honoured_on, _filesystem_is_local_on):
         clear = getattr(probe, "cache_clear", None)
         if clear is not None:
             clear()
