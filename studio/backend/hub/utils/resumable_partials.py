@@ -76,14 +76,12 @@ def _probe_dir() -> Optional[Path]:
     root = None
     try:
         from utils.hf_cache_settings import active_hf_hub_cache
-
         root = Path(active_hf_hub_cache())
     except Exception as exc:  # noqa: BLE001 - outside Studio, fall back to the library's own view
         logger.debug("resumable partials: no Studio cache setting (%s)", exc)
     if root is None:
         try:
             from huggingface_hub import constants
-
             root = Path(constants.HF_HUB_CACHE)
         except Exception as exc:  # noqa: BLE001 - an unreadable cache is not a lock guarantee
             logger.debug("resumable partials: no hub cache to probe (%s)", exc)

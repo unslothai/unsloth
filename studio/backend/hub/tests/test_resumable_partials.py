@@ -123,7 +123,9 @@ def test_the_probe_follows_the_cache_studio_is_using_now(tmp_path, monkeypatch):
 def test_moving_the_cache_re_probes_rather_than_reusing_the_old_verdict(tmp_path, monkeypatch):
     """Two roots can sit on filesystems that disagree about flock, so the verdict is per root."""
     probed: list[str] = []
-    monkeypatch.setattr(rp, "_lock_is_honoured_at", lambda directory: probed.append(directory) or True)
+    monkeypatch.setattr(
+        rp, "_lock_is_honoured_at", lambda directory: probed.append(directory) or True
+    )
 
     first, second = tmp_path / "one", tmp_path / "two"
     monkeypatch.setattr(rp, "_probe_dir", lambda: first)
@@ -313,7 +315,9 @@ def test_the_worker_restores_it_on_import():
     """A structural check: moving the call out of the worker fails here, not in the field."""
     import ast
 
-    source = (Path(rp.__file__).parent.parent / "workers" / "hf_download.py").read_text(encoding = "utf-8")
+    source = (Path(rp.__file__).parent.parent / "workers" / "hf_download.py").read_text(
+        encoding = "utf-8"
+    )
     tree = ast.parse(source)
     calls = {
         node.func.id
