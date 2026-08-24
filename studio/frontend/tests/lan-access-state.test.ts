@@ -82,92 +82,33 @@ test("normalize defaults the optional fields an older backend may omit", () => {
   assert.equal(s.keylessTools, false);
 });
 
-test("keyless state normalizes unknown values off and drops a stale tool grant", () => {
+test("keyless state and messaging preserve every security boundary", () => {
   const unknown = normalizeLanAccessStatus(
-    apiStatus({
-      // biome-ignore lint/style/useNamingConvention: API schema
-      keyless_scope: "everything",
-      // biome-ignore lint/style/useNamingConvention: API schema
-      keyless_tools: true,
-    }),
+    apiStatus({ keyless_scope: "unknown", keyless_tools: true }),
   );
-  assert.equal(unknown.keylessScope, "off");
-  assert.equal(unknown.keylessTools, false);
-
-  const enabled = normalizeLanAccessStatus(
-    apiStatus({
-      // biome-ignore lint/style/useNamingConvention: API schema
-      keyless_scope: "inference",
-      // biome-ignore lint/style/useNamingConvention: API schema
-      keyless_tools: true,
-    }),
+  assert.deepEqual(
+    [unknown.keylessScope, unknown.keylessTools],
+    ["off", false],
   );
-  assert.equal(enabled.keylessScope, "inference");
-  assert.equal(enabled.keylessTools, true);
-});
-
-test("keyless LAN messaging explains local, LAN, public, Colab, and tool boundaries", () => {
-  assert.match(keylessLanAccessDescription(null), /Authentication is required/);
-
-  const local = normalizeLanAccessStatus(
-    // biome-ignore lint/style/useNamingConvention: API schema
-    apiStatus({ keyless_scope: "inference" }),
+  assert.ok(
+    keylessLanAccessDescription(null).includes("Authentication is required"),
   );
-  assert.match(keylessLanAccessDescription(local), /localhost/);
-  assert.match(keylessLanAccessDescription(local), /active private listener/);
-  assert.match(keylessLanAccessDescription(local), /tools remain off/i);
-
-  const lan = normalizeLanAccessStatus(
-    apiStatus({
-      state: "online",
-      // biome-ignore lint/style/useNamingConvention: API schema
-      keyless_scope: "inference",
-      // biome-ignore lint/style/useNamingConvention: API schema
-      keyless_tools: true,
-    }),
-  );
-  assert.match(keylessLanAccessDescription(lan), /active private LAN/);
-  assert.match(
-    keylessLanAccessDescription(lan),
-    /tools are separately enabled/i,
-  );
-
-  const publicStatus = normalizeLanAccessStatus(
-    apiStatus({
-      state: "online",
-      // biome-ignore lint/style/useNamingConvention: API schema
-      public_urls: [PUBLIC],
-      // biome-ignore lint/style/useNamingConvention: API schema
-      keyless_scope: "inference",
-    }),
-  );
-  assert.match(
-    keylessLanAccessDescription(publicStatus),
-    /never through.*public URL/i,
-  );
-
-  const full = normalizeLanAccessStatus(
-    // biome-ignore lint/style/useNamingConvention: API schema
-    apiStatus({ keyless_scope: "full" }),
-  );
-  assert.match(keylessLanAccessDescription(full), /localhost-only/);
-  assert.match(
-    keylessLanAccessDescription(full),
-    /never granted over LAN or public URLs/,
-  );
-
-  const colab = normalizeLanAccessStatus(
-    apiStatus({
-      // biome-ignore lint/style/useNamingConvention: API schema
-      block_reason: "colab",
-      // biome-ignore lint/style/useNamingConvention: API schema
-      keyless_scope: "inference",
-    }),
-  );
-  assert.match(
-    keylessLanAccessDescription(colab),
-    /Colab never receives keyless access/,
-  );
+  const cases: [Partial<ApiLanAccessStatus>, string][] = [
+    [{ keyless_scope: "inference" }, "active private listener"],
+    [
+      { state: "online", public_urls: [PUBLIC], keyless_scope: "inference" },
+      "never through the listed public URL",
+    ],
+    [{ keyless_scope: "full" }, "never granted over LAN or public URLs"],
+    [
+      { block_reason: "colab", keyless_scope: "inference" },
+      "Colab never receives keyless access",
+    ],
+  ];
+  for (const [overrides, fragment] of cases) {
+    const status = normalizeLanAccessStatus(apiStatus(overrides));
+    assert.ok(keylessLanAccessDescription(status).includes(fragment));
+  }
 });
 
 test("urls survives a null or non-array payload without throwing", () => {

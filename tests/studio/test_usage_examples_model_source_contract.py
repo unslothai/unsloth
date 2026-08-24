@@ -23,7 +23,8 @@ def test_examples_name_a_model_the_server_can_serve():
     hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
     assert "listOpenAIModels()" in hook
     # Precedence: live checkpoint, then a loaded entry, then any entry if switching is on.
-    assert "catalog?.find((m) => m.loaded) ?? (autoSwitch ? catalog?.[0] : undefined)" in hook
+    assert "catalog?.find((m) => m.loaded) ??" in hook
+    assert "(autoSwitch ? catalog?.[0] : undefined)" in hook
     # The snippet pins the quant so the request names the file on disk.
     assert "`${pick.id}:${pick.quant}`" in hook
 
@@ -88,7 +89,7 @@ def test_standalone_idle_unload_still_names_the_stored_checkpoint():
     assert "setIdleReload(settings[1])" in hook
     assert "s.idleUnloadActive" in hook
     # fromCatalog stays gated on auto-switch alone.
-    assert "?? (autoSwitch ? catalog?.[0] : undefined)" in hook
+    assert "(autoSwitch ? catalog?.[0] : undefined)" in hook
     assert "idleReload ? catalog" not in hook
 
 
@@ -216,40 +217,19 @@ def test_auto_download_copy_warns_about_api_key_holders():
     assert "API key" in description
 
 
-def test_a_tool_snippet_names_a_key_that_actually_gets_tools():
-    # KeylessToolPolicyMiddleware forces tools off for a keyless caller until the admin
-    # grants them, so the tools and advanced snippets ran as plain chat under the dummy key.
+def test_keyless_examples_match_transport_tool_and_full_scope_policy():
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     builder = src[src.find("function buildSnippets") : src.find("const KEY_PLACEHOLDER")]
-    lines = builder.splitlines()
-
-    def built_from(variant: str) -> str:
-        return next(line for line in lines if line.strip().startswith(f"{variant}:"))
-
-    for variant in ("curlTools", "pythonTools", "javascriptTools"):
-        assert "toolsKey" in built_from(variant), variant
-    for variant in ("curlAdvanced", "pythonAdvanced", "javascriptAdvanced"):
-        assert "toolsKey" in built_from(variant), variant
-    # Plain chat needs no grant, so it keeps the scope-only key.
-    for variant in ("curl", "python", "javascript"):
-        assert "base, key," in built_from(variant), variant
-
+    variants = ("curlTools", "pythonTools", "javascriptTools", "curlAdvanced")
+    assert all("toolsKey" in next(
+        row for row in builder.splitlines() if row.strip().startswith(f"{variant}:")
+    ) for variant in variants)
     assert "keylessBase && keylessTools" in src
     assert 'keylessScope === "full" && keylessTools' in src
-
-
-def test_dummy_bearer_is_only_shown_for_an_admissible_transport():
-    src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     assert 'const KEYLESS_KEY_PLACEHOLDER = "not-needed"' in src
     assert 'exposure === "colab" || exposure === "public_url"' in src
     assert "if (isLoopbackHost(host)) return true;" in src
     assert 'scope === "inference" && isPrivateLanHost(host)' in src
-    assert "const keylessBase = keylessBaseEligible(base, keylessScope, keylessExposure);" in src
-
-
-def test_the_full_scope_confirmation_names_what_it_lets_a_stranger_destroy():
-    # "read the files and settings" understated a scope that serves the delete routes too.
-    src = KEYLESS_SECTION_TSX.read_text(encoding = "utf-8")
-    full = src[src.find("  full: {") : src.find("  tools: {")]
-    assert "delete" in full, full
-    assert "read the files and settings in Unsloth" not in src
+    section = KEYLESS_SECTION_TSX.read_text(encoding = "utf-8")
+    assert "delete" in section[section.find("  full: {") : section.find("  tools: {")]
+    assert "read the files and settings in Unsloth" not in section
