@@ -294,9 +294,7 @@ def list_audio_page(
     archived: bool = False,
 ) -> list[tuple[dict[str, Any], GalleryCursor]]:
     """Return records with their stable pagination keys for the HTTP route."""
-    return _list_audio_entries(
-        limit, offset, before = before, valid = valid, archived = archived
-    )
+    return _list_audio_entries(limit, offset, before = before, valid = valid, archived = archived)
 
 
 def set_flags(audio_id: str, *, archived: Optional[bool] = None) -> Optional[dict[str, Any]]:

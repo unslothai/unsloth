@@ -26882,9 +26882,7 @@ async def update_gallery_audio_flags(
     from core.inference import audio_gallery
 
     try:
-        record = await asyncio.to_thread(
-            audio_gallery.set_flags, audio_id, archived = patch.archived
-        )
+        record = await asyncio.to_thread(audio_gallery.set_flags, audio_id, archived = patch.archived)
     except OSError as exc:
         logger.warning("audio_gallery.set_flags_failed: %s", exc)
         raise HTTPException(status_code = 500, detail = "Could not save the change to this clip.")
