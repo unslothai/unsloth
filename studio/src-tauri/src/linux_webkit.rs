@@ -10,14 +10,11 @@ const WAYLAND_DISPLAY: &str = "WAYLAND_DISPLAY";
 const GDK_BACKEND: &str = "GDK_BACKEND";
 const FORCE_SHARED_MEMORY: &str = "WEBKIT_DMABUF_RENDERER_FORCE_SHM";
 const DISABLE_DMABUF: &str = "WEBKIT_DISABLE_DMABUF_RENDERER";
-// disable-nvidia-dmabuf.patch reads this first inside isNVIDIA() and stands the
-// distribution workaround down for it, so on Debian and Ubuntu it is the only way
-// a user can ask for the hardware transport back. WebKit reads DISABLE_DMABUF
-// before it ever calls isNVIDIA(), so anything set here outranks it silently.
+// disable-nvidia-dmabuf.patch's own opt-out, read inside isNVIDIA(). WebKit returns on
+// DISABLE_DMABUF first, so it never gets there unless we honour it ourselves.
 const FORCE_DMABUF: &str = "WEBKIT_FORCE_DMABUF_RENDERER";
-// Written next to the workaround so a relaunch can tell state this application
-// wrote from a value the operator set. Tauri's process::restart spawns without
-// env_clear, so the replacement inherits both. WebKit never reads this.
+// Names the variable we set, so a relaunch tells our own inherited output from an
+// operator's value. Tauri's process::restart does not env_clear. WebKit never reads it.
 const APPLIED_WORKAROUND: &str = "UNSLOTH_WEBKIT_RENDERER_WORKAROUND";
 const FORCE_SHARED_MEMORY_MIN_VERSION: (u32, u32) = (2, 44);
 // both the proprietary and open nvidia modules publish this; nouveau does not and is unaffected
@@ -63,9 +60,8 @@ fn supports_force_shared_memory((major, minor, _micro): (u32, u32, u32)) -> bool
     (major, minor) >= FORCE_SHARED_MEMORY_MIN_VERSION
 }
 
-/// Match `forceDMABuf && *forceDMABuf != '0'` from disable-nvidia-dmabuf.patch:
-/// the first byte only, so an empty value asks for the hardware transport and
-/// `0` does not.
+/// `forceDMABuf && *forceDMABuf != '0'` from disable-nvidia-dmabuf.patch: first byte
+/// only, so an empty value is a request and `0` is not.
 fn force_dmabuf_requested(value: &OsStr) -> bool {
     value.as_encoded_bytes().first() != Some(&b'0')
 }
@@ -76,40 +72,29 @@ fn rendering_plan(
     gles_usable: bool,
     nvidia_driver_loaded: bool,
 ) -> RenderingPlan {
-    // Either renderer variable is an operator override when it is present, `=0` and an
-    // empty value included, unless the marker says this application wrote it for an
-    // earlier launch of the same process tree. Tauri's process::restart inherits the
-    // environment, so without the marker a launch reads its own output back as an
-    // instruction and the first decision is pinned for the life of the process tree,
-    // even after the display server or the library under it changes.
+    // Either renderer variable is an operator override when present, `=0` and an empty
+    // value included, unless the marker says we wrote it. Without that test a launch
+    // reads its own inherited output back as an instruction and the first decision is
+    // pinned for the life of the process tree, even after the display server changes.
     //
-    // DISABLE_DMABUF=0 is how a host the probe below over-triggers on asks for its
-    // accelerated path back: WebKit reads it as unset (`g_strcmp0(v, "0")`), and on a
-    // patched distribution the library's own GL_VENDOR probe then declines on an
-    // iGPU-presenting host, so the hardware transport really is restored. An empty
-    // value is not that request; WebKit reads it as set.
+    // DISABLE_DMABUF=0 is how a host this over-triggers on gets its accelerated path
+    // back: WebKit reads it as unset (`g_strcmp0(v, "0")`), and a patched library's own
+    // GL_VENDOR probe then declines on an iGPU. An empty value is not that request.
     let applied_by_this_app = env(APPLIED_WORKAROUND);
     let ours = |variable: &str| applied_by_this_app.as_deref() == Some(OsStr::new(variable));
 
     if env(DISABLE_DMABUF).is_some() && !ours(DISABLE_DMABUF) {
         return RenderingPlan::PreserveEnvironment;
     }
-
-    // The distribution patch's own opt-out. It has to be read here, because WebKit
-    // reads DISABLE_DMABUF before isNVIDIA() and so would never reach it once a
-    // workaround is applied below. It speaks only to the NVIDIA question the patch
-    // asks, so it stands the NVIDIA branch down and nothing else; the missing-GLES
-    // fallback below is a packaging failure, not a GPU policy, and an operator asking
-    // for the hardware transport back is not asking for a launch that cannot render.
-    let force_dmabuf_requested_by_operator = env(FORCE_DMABUF)
-        .as_deref()
-        .is_some_and(force_dmabuf_requested);
-
-    // Same rule for the shared-memory switch: do not combine it with legacy
-    // instructions a user may already carry in a launcher or environment.d file.
     if env(FORCE_SHARED_MEMORY).is_some() && !ours(FORCE_SHARED_MEMORY) {
         return RenderingPlan::PreserveEnvironment;
     }
+
+    // Stands the NVIDIA branch down and nothing else: it answers that patch's question,
+    // not the missing-GLES one below, and that launch cannot render without its fallback.
+    let force_dmabuf = env(FORCE_DMABUF)
+        .as_deref()
+        .is_some_and(force_dmabuf_requested);
 
     let is_appimage = env(APPIMAGE).is_some();
     let configured_backends = env(GDK_BACKEND);
@@ -126,46 +111,31 @@ fn rendering_plan(
                 .map(|display| !display.is_empty())
                 .unwrap_or(false));
 
-    // The DMA-BUF transport breaks on the proprietary NVIDIA driver on either display
-    // server, so this cannot be gated on a Wayland session. Upstream declined the fix
-    // (bug 262607 is WONTFIX, WebKit PR 18614 closed unmerged), so Debian and Ubuntu
-    // carry disable-nvidia-dmabuf.patch while Fedora, Arch and the upstream tarballs do
-    // not. Where it is present it already empties the transport set on NVIDIA by itself:
-    // isNVIDIA() sits before mode.add(SharedMemory) in 2.50.4 and 2.52.6, and 2.53.90
-    // moved it after, leaving {SharedMemory}.
+    // The DMA-BUF transport breaks on the proprietary driver on either display server, so
+    // this cannot be gated on a Wayland session. Upstream declined the fix (bug 262607
+    // WONTFIX, PR 18614 closed), so Debian and Ubuntu carry disable-nvidia-dmabuf.patch
+    // and Fedora, Arch and the tarballs do not. Both shipped artifacts get a patched
+    // library anyway (the .deb from the host, the AppImage bundles Ubuntu 22.04's), so
+    // here this covers hosts where that patch's GL_VENDOR probe disagrees with the module
+    // probe, plus the GBM open and throwaway GL context isNVIDIA() does at startup.
     //
-    // Both shipped artifacts run a patched library, though: the .deb resolves the host
-    // one and the AppImage bundles Ubuntu 22.04's. So on those the branch below matters
-    // where the library's GL_VENDOR probe and this module probe disagree, and it also
-    // skips the GBM device open and throwaway GL context isNVIDIA() performs at startup.
-    // Building against an unpatched system library is the case the branch covers outright.
+    // The two switches are not interchangeable, so pick per failure mode, not per GPU:
+    //   Wayland  DISABLE_DMABUF. The failure is the explicit-sync disconnect, and
+    //            FORCE_SHM routes every commit down the wl_shm path that trips it
+    //            (bug 315436). It is also the switch reported to fix Error 71.
+    //   X11      FORCE_SHM. No explicit-sync protocol there, the failure is hardware
+    //            DMA-BUF allocation, and shared memory fixes it without the empty set.
+    // The empty set is not just slower: DISABLE_DMABUF returns before the SharedMemory
+    // add, so checkRequirements() is false, AcceleratedBackingStore::create() returns
+    // nullptr, and webkitWebViewBaseEnterAcceleratedCompositingMode() dereferences it
+    // behind an ASSERT release builds drop. block/buzz#3654 hits that SIGSEGV on NVIDIA
+    // X11, on the same iGPU-presenting topology the probe below over-triggers on.
     //
-    // The two switches are not interchangeable. DISABLE_DMABUF is read before the
-    // SharedMemory add, so the set stays empty, checkRequirements() is false,
-    // AcceleratedBackingStore::create() returns nullptr, and
-    // webkitWebViewBaseEnterAcceleratedCompositingMode() dereferences that behind an
-    // ASSERT that release builds compile out. FORCE_SHM is read after the add, leaves
-    // {SharedMemory}, and keeps a valid backing store and accelerated compositing.
-    //
-    // So the choice is per failure mode rather than per GPU:
-    //   Wayland   DISABLE_DMABUF. The failure there is the explicit-sync protocol
-    //             disconnect, and FORCE_SHM routes every commit down the wl_shm path
-    //             that trips it (WebKit bug 315436). It is also the switch with
-    //             reports of fixing Error 71.
-    //   X11       FORCE_SHM where the runtime supports it. X11 has no explicit-sync
-    //             protocol, the failure there is hardware DMA-BUF allocation, and
-    //             dropping to shared memory fixes that without the empty set.
-    // The empty set is not merely slower on hosts where the library's own probe does
-    // not fire: block/buzz#3654 reports a SIGSEGV on NVIDIA X11 with DISABLE_DMABUF
-    // that FORCE_SHM does not reproduce, on exactly the iGPU-presenting topology the
-    // probe below over-triggers on.
-    //
-    // The probe is kernel-module presence, not the GPU that will render. A PRIME or
-    // Optimus laptop presenting on the integrated GPU reads as NVIDIA here and takes a
-    // workaround it does not need. That is deliberate: reading the rendering GPU needs a
-    // GL context, and this runs before GTK is initialized precisely so that no GL state
-    // exists yet. Those hosts opt out with WEBKIT_DISABLE_DMABUF_RENDERER=0.
-    if nvidia_driver_loaded && !force_dmabuf_requested_by_operator {
+    // That probe is module presence, not the GPU that will render, so a PRIME laptop on
+    // its iGPU takes a workaround it does not need. Deliberate: reading the rendering GPU
+    // needs a GL context and this runs before GTK init so that none exists. Those hosts
+    // opt out with WEBKIT_DISABLE_DMABUF_RENDERER=0.
+    if nvidia_driver_loaded && !force_dmabuf {
         let missing_appimage_gles = is_appimage && !gles_usable;
         let reason = if missing_appimage_gles {
             NVIDIA_APPIMAGE_GLES_REASON
@@ -174,8 +144,8 @@ fn rendering_plan(
         } else {
             NVIDIA_REASON
         };
-        // FORCE_SHM still reaches the failing libepoxy path in AppImages, and WebKitGTK
-        // before 2.44 ignores it outright, so both keep the stronger switch.
+        // FORCE_SHM still reaches the failing libepoxy path in AppImages, and 2.44 is
+        // where WebKitGTK started reading it at all, so both keep the stronger switch.
         let workaround = if wayland_session
             || missing_appimage_gles
             || !supports_force_shared_memory(webkit_version)
@@ -251,24 +221,21 @@ pub fn configure_renderer() -> Option<(&'static str, &'static str)> {
     ) {
         RenderingPlan::Apply(workaround, reason) => {
             let variable = workaround.variable();
-            // A relaunch that re-decides the other way has inherited the previous
-            // choice. WebKit reads DISABLE_DMABUF before FORCE_SHM, so leaving the old
-            // one set would silently outrank the new one. Only a variable this
-            // application claimed is cleared; an operator's value never reaches here.
+            // A relaunch deciding the other way inherited the previous choice, and WebKit
+            // reads DISABLE_DMABUF before FORCE_SHM, so a stale one would outrank it.
+            // Only a variable we claimed is cleared; an operator's never reaches here.
             if let Some(previous) = std::env::var_os(APPLIED_WORKAROUND) {
                 if previous != OsStr::new(variable) {
                     std::env::remove_var(previous);
                 }
             }
             std::env::set_var(variable, "1");
-            // Claim it, so the next launch re-decides instead of reading it back as an
-            // operator override.
+            // Claim it, so the next launch re-decides rather than reading it as an override.
             std::env::set_var(APPLIED_WORKAROUND, variable);
             Some((variable, reason))
         }
         RenderingPlan::PreserveEnvironment => {
-            // Nothing here is ours any more; a stale claim would suppress an operator
-            // override on the next relaunch.
+            // Nothing is ours now; a stale claim would suppress an override next relaunch.
             std::env::remove_var(APPLIED_WORKAROUND);
             None
         }
@@ -342,8 +309,8 @@ mod tests {
 
     #[test]
     fn nvidia_on_x11_drops_to_shared_memory_rather_than_the_empty_transport_set() {
-        // X11 has no explicit-sync protocol to violate, and DISABLE_DMABUF leaves a null
-        // backing store that release builds dereference (block/buzz#3654).
+        // No explicit-sync protocol to violate here, and DISABLE_DMABUF leaves the null
+        // backing store release builds dereference (block/buzz#3654).
         assert_eq!(
             plan_on_nvidia(&[]),
             RenderingPlan::Apply(RenderingWorkaround::ForceSharedMemory, NVIDIA_REASON)
@@ -385,8 +352,7 @@ mod tests {
 
     #[test]
     fn the_distribution_force_dmabuf_opt_out_outranks_the_nvidia_default() {
-        // disable-nvidia-dmabuf.patch checks this inside isNVIDIA(), which WebKit never
-        // reaches once DISABLE_DMABUF is set, so it has to be honoured here instead.
+        // Checked inside isNVIDIA(), which WebKit never reaches once DISABLE_DMABUF is set.
         for value in ["1", "", "yes"] {
             assert_eq!(
                 plan_on_nvidia(&[(FORCE_DMABUF, value)]),
@@ -398,8 +364,8 @@ mod tests {
 
     #[test]
     fn force_dmabuf_does_not_defeat_the_missing_gles_fallback() {
-        // That fallback answers a packaging failure, not the NVIDIA question this
-        // variable asks. Without it the AppImage cannot render at all (#8343).
+        // That fallback answers a packaging failure, not this variable's question, and the
+        // AppImage cannot render without it (#8343).
         assert_eq!(
             plan_on_host(
                 &[(FORCE_DMABUF, "1"), (APPIMAGE, "/tmp/Unsloth.AppImage")],
@@ -413,8 +379,7 @@ mod tests {
 
     #[test]
     fn force_dmabuf_still_leaves_the_wayland_workaround_in_place() {
-        // The variable speaks to the NVIDIA patch, not to the Wayland transport rule
-        // that predates it.
+        // It speaks to the NVIDIA patch, not the Wayland rule that predates it.
         assert_eq!(
             plan_on_nvidia(&[(FORCE_DMABUF, "1"), (WAYLAND_DISPLAY, "wayland-0")]),
             RenderingPlan::Apply(RenderingWorkaround::ForceSharedMemory, WAYLAND_REASON)
@@ -452,8 +417,7 @@ mod tests {
 
     #[test]
     fn nvidia_relaunch_re_decides_over_its_own_inherited_force_shm() {
-        // Marked, so it is this application's own state from an earlier launch. On
-        // Wayland the re-decision escalates it rather than inheriting it.
+        // Marked, so it is our own state from an earlier launch, and Wayland escalates it.
         assert_eq!(
             plan_on_nvidia(&[
                 (WAYLAND_DISPLAY, "wayland-0"),
@@ -466,8 +430,8 @@ mod tests {
 
     #[test]
     fn a_relaunch_re_reaches_the_same_decision_it_made_first_time() {
-        // Tauri's process::restart inherits the environment, so the plan has to be a
-        // fixed point: feed a launch's own output back in and it must not drift.
+        // process::restart inherits the environment, so the plan must be a fixed point:
+        // feed a launch's own output back in and it must not drift.
         let hosts = [
             (&[][..], true),
             (&[(WAYLAND_DISPLAY, "wayland-0")][..], true),
