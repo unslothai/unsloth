@@ -71,40 +71,55 @@ def _hub_version() -> tuple[int, ...]:
 
 
 def _probe_dir() -> Optional[Path]:
-    try:
-        from huggingface_hub import constants
+    """The cache the download worker will actually use, not the one this process booted with.
 
-        root = Path(constants.HF_HUB_CACHE)
+    ``constants.HF_HUB_CACHE`` is resolved at import, and moving the cache in Settings does not
+    rewrite the live process (see ``hub/services/download_lifecycle.py``), while a worker is
+    spawned with the new one. Probing the stale path would judge a different filesystem than the
+    one the partial lands on, so the live setting wins and the import-time constant is the
+    fallback for callers outside Studio.
+    """
+    root = None
+    try:
+        from utils.hf_cache_settings import active_hf_hub_cache
+
+        root = Path(active_hf_hub_cache())
+    except Exception as exc:  # noqa: BLE001 - outside Studio, fall back to the library's own view
+        logger.debug("resumable partials: no Studio cache setting (%s)", exc)
+    if root is None:
+        try:
+            from huggingface_hub import constants
+
+            root = Path(constants.HF_HUB_CACHE)
+        except Exception as exc:  # noqa: BLE001 - an unreadable cache is not a lock guarantee
+            logger.debug("resumable partials: no hub cache to probe (%s)", exc)
+            return None
+    try:
         root.mkdir(parents = True, exist_ok = True)
         return root
     except Exception as exc:  # noqa: BLE001 - an unwritable cache is not a lock guarantee
-        logger.debug("resumable partials: no writable hub cache to probe (%s)", exc)
+        logger.debug("resumable partials: hub cache not writable (%s)", exc)
         return None
 
 
-@lru_cache(maxsize = 1)
-def _lock_is_honoured() -> bool:
-    """Whether ``flock`` on the cache filesystem actually excludes a second holder.
+# Keyed on the directory, so moving the cache re-probes rather than reusing the old filesystem's
+# verdict. Small and bounded: an install moves its cache a handful of times, not continuously.
+@lru_cache(maxsize = 8)
+def _lock_is_honoured_at(directory: str) -> bool:
+    """Whether ``flock`` under *directory* actually excludes a second holder.
 
     This is the exact hazard 1.18 removed the shared partial for, so it is tested: take the lock
     twice and require the second to be refused. Anything else, including a probe that cannot run,
     answers False and leaves the stock writer in place.
     """
-    try:
-        import fcntl
-    except ImportError:
-        # Windows has no fcntl. huggingface_hub locks via msvcrt there, which is mandatory rather
-        # than advisory, so the silent-sharing failure this probe looks for cannot happen.
-        return os.name == "nt"
+    import fcntl
 
-    directory = _probe_dir()
-    if directory is None:
-        return False
-    probe = directory / _PROBE_NAME
+    probe = Path(directory) / _PROBE_NAME
     try:
-        with open(probe, "w") as first:
+        # Binary: this file is a lock, never text, so it has no encoding to get wrong.
+        with open(probe, "wb") as first:
             fcntl.flock(first, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            with open(probe, "w") as second:
+            with open(probe, "wb") as second:
                 try:
                     fcntl.flock(second, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except OSError:
@@ -123,6 +138,18 @@ def _lock_is_honoured() -> bool:
             probe.unlink(missing_ok = True)
         except OSError:
             pass
+
+
+def _lock_is_honoured() -> bool:
+    """The probe for the cache in force right now."""
+    try:
+        import fcntl  # noqa: F401
+    except ImportError:
+        # Windows has no fcntl. huggingface_hub locks via msvcrt there, which is mandatory rather
+        # than advisory, so the silent-sharing failure this probe looks for cannot happen.
+        return os.name == "nt"
+    directory = _probe_dir()
+    return False if directory is None else _lock_is_honoured_at(str(directory))
 
 
 def _hub_is_patchable() -> bool:
@@ -223,8 +250,13 @@ def restore_resumable_partials() -> bool:
     return True
 
 
-def reset_probe_cache_for_tests() -> None:
+def invalidate_probe_cache() -> None:
+    """Forget every probed filesystem. Called when the cache location changes."""
     # getattr: a test that replaced the probe outright has no cache to clear.
-    clear = getattr(_lock_is_honoured, "cache_clear", None)
+    clear = getattr(_lock_is_honoured_at, "cache_clear", None)
     if clear is not None:
         clear()
+
+
+def reset_probe_cache_for_tests() -> None:
+    invalidate_probe_cache()

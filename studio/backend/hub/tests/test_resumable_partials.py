@@ -104,6 +104,64 @@ def test_the_lock_probe_reports_a_working_lock(tmp_path, monkeypatch):
     assert not list(tmp_path.iterdir()), "the probe left its file behind"
 
 
+def test_the_probe_follows_the_cache_studio_is_using_now(tmp_path, monkeypatch):
+    """Not the one this process booted with.
+
+    huggingface_hub resolves HF_HUB_CACHE at import and moving the cache in Settings does not
+    rewrite the live process, so probing the constant would judge a different filesystem than the
+    one a freshly spawned worker writes its partial to.
+    """
+    live = tmp_path / "moved-cache"
+    fake = types.ModuleType("utils.hf_cache_settings")
+    fake.active_hf_hub_cache = lambda: str(live)
+    monkeypatch.setitem(sys.modules, "utils.hf_cache_settings", fake)
+
+    assert rp._probe_dir() == live
+    assert live.is_dir(), "the probe did not create the cache root"
+
+
+def test_moving_the_cache_re_probes_rather_than_reusing_the_old_verdict(tmp_path, monkeypatch):
+    """Two roots can sit on filesystems that disagree about flock, so the verdict is per root."""
+    probed: list[str] = []
+    monkeypatch.setattr(rp, "_lock_is_honoured_at", lambda directory: probed.append(directory) or True)
+
+    first, second = tmp_path / "one", tmp_path / "two"
+    monkeypatch.setattr(rp, "_probe_dir", lambda: first)
+    rp._lock_is_honoured()
+    monkeypatch.setattr(rp, "_probe_dir", lambda: second)
+    rp._lock_is_honoured()
+
+    assert probed == [str(first), str(second)]
+
+
+def test_the_verdict_is_cached_per_directory(tmp_path):
+    """The hot path asks per blob, so a repeat on the same root must not re-probe."""
+    rp.invalidate_probe_cache()
+    root = tmp_path / "cache"
+    root.mkdir()
+    assert rp._lock_is_honoured_at(str(root)) is True
+    before = rp._lock_is_honoured_at.cache_info()
+    assert rp._lock_is_honoured_at(str(root)) is True
+    assert rp._lock_is_honoured_at.cache_info().hits == before.hits + 1
+
+
+def test_changing_the_cache_home_invalidates_the_verdict(monkeypatch):
+    """The one place the root can move at runtime must drop both cached answers."""
+    from hub.utils import hf_cache_state
+
+    monkeypatch.setattr(rp, "can_restore_partials", lambda: True)
+    monkeypatch.setattr("huggingface_hub.__version__", "1.28.0", raising = False)
+    hf_cache_state.hf_partials_are_resumable.cache_clear()
+    assert hf_cache_state.hf_partials_are_resumable() is True
+
+    monkeypatch.setattr(rp, "can_restore_partials", lambda: False)
+    assert hf_cache_state.hf_partials_are_resumable() is True, "cached, as the hot path needs"
+
+    hf_cache_state.invalidate_partial_resumability()
+    assert hf_cache_state.hf_partials_are_resumable() is False
+    hf_cache_state.hf_partials_are_resumable.cache_clear()
+
+
 # ---------------------------------------------------------------------------------------------
 # What it does once it has
 # ---------------------------------------------------------------------------------------------
@@ -255,7 +313,7 @@ def test_the_worker_restores_it_on_import():
     """A structural check: moving the call out of the worker fails here, not in the field."""
     import ast
 
-    source = (Path(rp.__file__).parent.parent / "workers" / "hf_download.py").read_text()
+    source = (Path(rp.__file__).parent.parent / "workers" / "hf_download.py").read_text(encoding = "utf-8")
     tree = ast.parse(source)
     calls = {
         node.func.id

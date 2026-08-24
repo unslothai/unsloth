@@ -342,6 +342,11 @@ def set_hf_cache_home(cache_home: Optional[str]) -> HuggingFaceCachePaths:
     from hub.utils.inventory_scan import invalidate_hf_cache_scans
 
     invalidate_hf_cache_scans()
+    # Partial resumability is a property of the filesystem the cache sits on, so it is re-decided
+    # for the new root rather than carried over from the old one.
+    from hub.utils.hf_cache_state import invalidate_partial_resumability
+
+    invalidate_partial_resumability()
     return get_hf_cache_paths()
 
 

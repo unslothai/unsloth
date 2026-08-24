@@ -103,6 +103,20 @@ def hf_partials_are_resumable() -> bool:
         return False
 
 
+def invalidate_partial_resumability() -> None:
+    """Re-decide resumability, for when the cache moves to another filesystem.
+
+    The verdict depends on whether ``flock`` excludes a second writer where the partial lands, so
+    it cannot be carried over from the old root.
+    """
+    hf_partials_are_resumable.cache_clear()
+    try:
+        from hub.utils.resumable_partials import invalidate_probe_cache
+        invalidate_probe_cache()
+    except Exception:  # noqa: BLE001 - nothing to invalidate is not an error
+        pass
+
+
 def partial_is_process_unique(name: str) -> bool:
     """Whether a partial filename carries the 1.18+ per-process nonce."""
     if not name.endswith(INCOMPLETE_SUFFIX):
