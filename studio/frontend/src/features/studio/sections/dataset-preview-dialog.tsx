@@ -45,6 +45,8 @@ import {
 } from "./dataset-preview-dialog-mapping";
 import {
   deriveDefaultMapping,
+  getUnselectedInstructionColumns,
+  getViewerColumnSelections,
   getAvailableRoles,
   isMappingComplete,
   remapRolesForFormat,
@@ -426,6 +428,17 @@ export function DatasetPreviewDialog({
 
   const rows = data?.preview_samples ?? EMPTY_PREVIEW_ROWS;
   const columns = data?.columns ?? EMPTY_PREVIEW_COLUMNS;
+  const viewerSelections = useMemo(
+    () =>
+      data
+        ? getViewerColumnSelections(data, effectiveIsVlm, manualMapping)
+        : [],
+    [data, effectiveIsVlm, manualMapping],
+  );
+  const unselectedInstructionColumns = useMemo(
+    () => (data ? getUnselectedInstructionColumns(data, viewerSelections) : []),
+    [data, viewerSelections],
+  );
 
   const sourceLabel = useMemo(() => {
     if (!datasetName) return "";
@@ -693,6 +706,37 @@ export function DatasetPreviewDialog({
                   advisorNotification={datasetAdvisorNotification}
                   advisorSystemPrompt={datasetSystemPrompt || undefined}
                 />
+              )}
+
+              {(viewerSelections.length > 0 ||
+                unselectedInstructionColumns.length > 0) && (
+                <div className="mb-4 rounded-xl corner-squircle ring-1 ring-border/60 bg-muted/20 px-5 py-4">
+                  <p className="mb-2 text-xs font-medium text-muted-foreground">
+                    Auto-selected columns
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {viewerSelections.map(({ column, label, source }) => (
+                      <Badge
+                        key={column}
+                        variant="outline"
+                        className="h-6 gap-1.5 text-ui-11"
+                      >
+                        <span className="font-mono">{column}</span>
+                        <span aria-hidden="true">→</span>
+                        <span>{label}</span>
+                        {source === "manual" && (
+                          <span className="text-muted-foreground">(manual)</span>
+                        )}
+                      </Badge>
+                    ))}
+                  </div>
+                  {unselectedInstructionColumns.length > 0 && (
+                    <p className="mt-2 flex items-center gap-1.5 text-xs text-amber-700 dark:text-amber-400">
+                      <HugeiconsIcon icon={AlertCircleIcon} className="size-3.5" />
+                      {unselectedInstructionColumns.join(", ")} was not selected because its first value is empty.
+                    </p>
+                  )}
+                </div>
               )}
 
               {/* Data table */}
