@@ -78,9 +78,9 @@ import {
 import { ToolPaneScopeContext, toolPaneScope } from "./tool-output-scope";
 import { ChatProjectScopeContext } from "./chat-project-scope";
 import {
-  readThreadProjectClaim,
-  releaseThreadProjectClaim,
-} from "./utils/chat-thread-project-claim";
+  readThreadCreationClaim,
+  releaseThreadCreationClaim,
+} from "./utils/chat-thread-creation-claim";
 import type { MessageRecord, ModelType, ThreadRecord } from "./types";
 import {
   chatContentPartAttachmentIdFromSignature,
@@ -820,23 +820,26 @@ function createStudioDbAdapter(
       // assistant-ui withholds the first message until this resolves, so the row write is tracked, not awaited.
       // Captured here, not inside the creator: a retry belongs to the send that initialized it,
       // not to a later incognito or checkpoint selection.
+      // What the SEND was made under, not what is on screen now. Materialization is no
+      // longer the same tick as the send (send() awaits document extraction, and the
+      // provider survives the view switch), and every one of these moves in between: the
+      // adapter is rebuilt with the new project, and ChatPage's view effect clears
+      // `incognito`. A claim of null/false wins over the store for the same reason.
+      const claim = readThreadCreationClaim(threadId);
+      releaseThreadCreationClaim(threadId);
       const runtimeStateAtInit = useChatRuntimeStore.getState();
-      const incognitoAtInit = runtimeStateAtInit.incognito;
-      const modelIdAtInit = runtimeStateAtInit.params.checkpoint ?? "";
-      const createdAtInit = Date.now();
-      // The project the SEND was made from, not the one on screen now: this adapter is rebuilt
-      // every render and handed to the core via __internal_setOptions, and send() awaits
-      // document extraction before handleSend while the provider survives a project switch.
-      // A claim of null wins too -- it means a send from outside any project.
-      const claim = readThreadProjectClaim(threadId);
-      const projectIdAtSend = claim ? claim.projectId : projectId;
-      releaseThreadProjectClaim(threadId);
+      const incognitoAtInit = claim ? claim.incognito : runtimeStateAtInit.incognito;
+      const modelIdAtInit = claim
+        ? claim.modelId
+        : (runtimeStateAtInit.params.checkpoint ?? "");
+      const createdAtInit = claim ? claim.createdAt : Date.now();
+      const projectIdAtInit = claim ? claim.projectId : projectId;
       trackStoredChatThreadRecord(threadId, () =>
         ensureThreadRecord({
           threadId,
           modelType,
           pairId,
-          projectId: projectIdAtSend,
+          projectId: projectIdAtInit,
           incognito: incognitoAtInit,
           modelId: modelIdAtInit,
           createdAt: createdAtInit,

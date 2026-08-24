@@ -351,7 +351,7 @@ test("no restore path puts a deleted chat back on screen", () => {
   );
 });
 
-test("a delayed first send is filed in the project it was sent from", () => {
+test("a delayed first send keeps the creation inputs it was sent under", () => {
   // The adapter is rebuilt every render and handed to the core via __internal_setOptions, so
   // initialize() reads the provider's LATEST projectId. send() awaits every incomplete
   // attachment before handleSend and Studio's PDF/DOCX/text adapters extract there, so with
@@ -363,20 +363,32 @@ test("a delayed first send is filed in the project it was sent from", () => {
   );
   assert.match(
     thread,
-    /claimThreadProject\(preStreamThreadIds, projectScope\);\s*aui\.composer\(\)\.send\(\);/,
+    /claimThreadCreation\([\s\S]*?\);\s*aui\.composer\(\)\.send\(\);/,
     "the stamp has to be taken before send() starts awaiting, not after",
   );
-  // Per SEND, not per thread creation: switchToNewThread() reuses an untouched blank
-  // thread, so the same local id can be the current new thread in two projects in a row.
-  assert.doesNotMatch(provider, /claimThreadProject\(/);
+  // The prompt queue initializes its own fresh thread and never passes the composer, so it
+  // has to stamp too, from what it captured when the queue started.
   assert.match(
-    provider,
-    /const claim = readThreadProjectClaim\(threadId\);\s*const projectIdAtSend = claim \? claim\.projectId : projectId;/,
+    thread,
+    /if \(initializingFreshThread\) \{\s*claimThreadCreation\(\[state\.id, state\.remoteId\], \{\s*projectId: projectIdAtQueueStart,\s*incognito: incognitoAtQueueStart,/,
   );
-  // A claim OF null is a send from outside any project and must win over the provider's
-  // current one; `claim?.projectId ?? projectId` would read it as no claim at all.
-  assert.doesNotMatch(provider, /claim\?\.projectId \?\? projectId/);
-  assert.match(provider, /projectId: projectIdAtSend,/);
+  // Per SEND, not per thread creation: switchToNewThread() reuses an untouched blank
+  // thread, so the same local id can be the current new thread in two views in a row.
+  assert.doesNotMatch(provider, /claimThreadCreation\(/);
+  // Every field, not just the project. ChatPage's view effect clears `incognito` on the way
+  // into a project, so a document sent from a Temporary Chat was persisted as a normal one.
+  assert.match(provider, /const claim = readThreadCreationClaim\(threadId\);/);
+  for (const field of [
+    /const incognitoAtInit = claim \? claim\.incognito : runtimeStateAtInit\.incognito;/,
+    /const modelIdAtInit = claim\s*\? claim\.modelId/,
+    /const createdAtInit = claim \? claim\.createdAt : Date\.now\(\);/,
+    /const projectIdAtInit = claim \? claim\.projectId : projectId;/,
+  ]) {
+    assert.match(provider, field);
+  }
+  // A claim OF null/false must win over what the store holds now; `claim?.x ?? store` would
+  // read it as no claim at all.
+  assert.doesNotMatch(provider, /claim\?\.(projectId|incognito|modelId|createdAt) \?\?/);
 });
 
 test("compare lists its threads once before it waits on any run", () => {

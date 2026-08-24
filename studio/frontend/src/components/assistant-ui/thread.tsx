@@ -174,7 +174,7 @@ import {
   registerQueuedChatRunSettings,
   releasePreStreamRunReservation,
   reservePreStreamRun,
-  claimThreadProject,
+  claimThreadCreation,
   useChatProjectScope,
   shouldAbortPendingQueueForModelBoundary,
   shouldAbortPendingQueueForSettingsChange,
@@ -3539,6 +3539,19 @@ const Composer: FC<{
           }
           shouldCorrectPersistedModel ??= !state.remoteId;
           const initializingFreshThread = !state.remoteId;
+          // Stamp the fresh thread with what the queue was STARTED under, the same way the
+          // composer stamps a direct send. This path initializes without going through the
+          // composer, and by dispatch time the shared provider's adapter may be showing a
+          // different project, so without this the chat is filed wherever the user is now
+          // and the run picks up that project's instructions and sources.
+          if (initializingFreshThread) {
+            claimThreadCreation([state.id, state.remoteId], {
+              projectId: projectIdAtQueueStart,
+              incognito: incognitoAtQueueStart,
+              modelId: runSettingsAtQueueStart.params.checkpoint ?? "",
+              createdAt: Date.now(),
+            });
+          }
           // A fresh chat receives its remote id during initialization. Await it
           // before append so the adapter can match the queued settings using
           // unstable_threadId on its first invocation.
@@ -4059,11 +4072,17 @@ const Composer: FC<{
     preStreamRunReservationRef.current = reservationToken;
     try {
       const sentText = aui.composer().getState().text;
-      // Stamp the send with its project BEFORE send() starts awaiting: it awaits every
-      // incomplete attachment through the adapter, so a document send reaches initialize()
-      // seconds later, by which time the provider may be showing a different project.
-      // See utils/chat-thread-project-claim.ts.
-      claimThreadProject(preStreamThreadIds, projectScope);
+      // Stamp the send BEFORE send() starts awaiting: it awaits every incomplete attachment
+      // through the adapter, so a document send reaches initialize() seconds later, by which
+      // time navigation may have moved the project and cleared the temporary flag.
+      // See utils/chat-thread-creation-claim.ts.
+      const chatStateAtSend = useChatRuntimeStore.getState();
+      claimThreadCreation(preStreamThreadIds, {
+        projectId: projectScope,
+        incognito: chatStateAtSend.incognito,
+        modelId: chatStateAtSend.params.checkpoint ?? "",
+        createdAt: Date.now(),
+      });
       aui.composer().send();
       // Empty texts are dropped, so an attachment-only send still clears.
       armJustSent(sentText, ...alsoGuard);
