@@ -603,6 +603,10 @@ _SPEC_DRAFT_CACHE_V_FLAGS: frozenset[str] = frozenset(
 )
 _SPEC_DRAFT_CACHE_FLAGS: frozenset[str] = _SPEC_DRAFT_CACHE_K_FLAGS | _SPEC_DRAFT_CACHE_V_FLAGS
 _FIT_FLAGS: frozenset[str] = frozenset({"-fit", "--fit"})
+# The fitter's per-device margin. Never stripped (Unsloth emits its own ahead of
+# the extras and llama.cpp is last-wins), so a pass-through value is what the
+# child really keeps free; see fit_target_margin_in.
+_FIT_TARGET_FLAGS: frozenset[str] = frozenset({"-fitt", "--fit-target"})
 _LAYER_OFFLOAD_FLAGS: frozenset[str] = _GPU_LAYER_FLAGS | _FIT_FLAGS
 _MOE_OFFLOAD_FLAGS: frozenset[str] = frozenset({"-ncmoe", "--n-cpu-moe", "-cmoe", "--cpu-moe"})
 _OFFLOAD_SHADOWING_FLAGS: frozenset[str] = _LAYER_OFFLOAD_FLAGS | _MOE_OFFLOAD_FLAGS
@@ -859,6 +863,43 @@ def fit_is_effectively_on(
     if raw_value is None:
         return True
     return str(raw_value).strip().lower() not in _ENV_FALSE_VALUES
+
+
+def fit_target_margin_in(
+    args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> Optional[float]:
+    """The per-device margin an effective ``--fit-target`` asks the fitter to keep.
+
+    ``-fitt/--fit-target`` takes a comma-separated list of MiB values, one per
+    device, and a single value is broadcast across all of them (common/arg.cpp;
+    default 1024, ``fit_params_target`` in common/common.h). The fitter refuses
+    to allocate into that margin and spills the rest to host RAM instead
+    (``targets.push_back(dmds_full[id].free - margins[id])``, common/fit.cpp), so
+    a load-mode fit that credits VRAM has to price it.
+
+    Returns the LARGEST value in the list, because the fit charges one margin to
+    every device it credits and understating would claim a fit that is not there.
+    ``None`` when nothing readable is set, which leaves the caller on llama.cpp's
+    own default rather than on a guess. Last-wins over argv, and the env twin only
+    when argv sets nothing, the same precedence ``fit_is_effectively_on`` uses.
+    """
+    raw_value = _last_flag_value(args, _FIT_TARGET_FLAGS)
+    if raw_value is None and env:
+        raw_value = env.get("LLAMA_ARG_FIT_TARGET")
+    if raw_value is None:
+        return None
+    values: list[float] = []
+    for part in str(raw_value).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            values.append(float(part))
+        except ValueError:
+            # Upstream would reject the whole list, so no device gets a margin
+            # this launch could name. Abstain rather than price a partial read.
+            return None
+    return max(values) if values else None
 
 
 def parse_cache_override_per_axis(

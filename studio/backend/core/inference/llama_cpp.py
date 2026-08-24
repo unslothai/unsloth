@@ -74,6 +74,7 @@ from core.inference.llama_server_args import (
     fit_is_enabled_in,
     memory_state_satisfies_settings,
     fit_is_effectively_on,
+    fit_target_margin_in,
     resolve_effective_memory_state,
     scrub_denied_env,
     scrub_memory_env,
@@ -8742,6 +8743,7 @@ class LlamaCppBackend:
         is_vulkan_backend: bool = False,
         avail_mib: Optional[int] = None,
         extra_args: Optional[Iterable[str]] = None,
+        env: Optional[Mapping[str, str]] = None,
     ) -> Optional[str]:
         """``"none"`` when the fit proves the load needs no demand paging, else None.
 
@@ -8787,21 +8789,54 @@ class LlamaCppBackend:
         RAM holds WHOLE is safe wherever those flags end up putting it. The same
         predicates the Model Memory host-residency gate uses, so the two cannot drift.
 
-        ``fit_margin_mib`` is what llama.cpp's fitter keeps free per device when this
-        launch leaves ``--fit on``, i.e. VRAM this load may not spend; see
-        ``_fits_without_paging``. The caller reads it off ``_fit_target_margin_mib``,
-        the same number ``_ctx_integrity_flags`` emits.
+        ``env`` is the environment the child will really get (``os.environ`` when the
+        caller passes none). Every one of those pass-through overrides has an env twin
+        llama.cpp reads BEFORE argv, so classifying on the tokens alone would miss an
+        inherited ``LLAMA_ARG_DEVICE=none``, which no automatic launch clears (only an
+        explicit ``gpu_ids`` pin does). A ``--device`` naming FEWER devices than this
+        fit credits voids the VRAM term for the same reason a CPU-valued one does: the
+        cards it leaves out hold nothing for this launch.
+
+        ``fit_margin_mib`` is what llama.cpp's fitter keeps free per device when the
+        fitter really runs, i.e. VRAM this load may not spend; see
+        ``_fits_without_paging``. The caller answers that from the EFFECTIVE flags
+        rather than from its own plan: the extras land after this launch's ``--fit``
+        and llama.cpp is last-wins, ``-ngl -1`` is llama.cpp's own default so an
+        enabled fitter is free to lower it (common/fit.cpp aborts only on a count the
+        user really set), and a pass-through ``--fit-target`` raises the margin above
+        anything ``_ctx_integrity_flags`` emitted.
         """
         from utils.hardware import is_apple_silicon
 
         if not model_size or not kv_sized or mtp_unsized or is_apple_silicon():
             return None
         rows = list(gpus or ())
+        source_env = os.environ if env is None else env
+        # A --device naming FEWER devices than this fit is about to charge leaves
+        # the credit paying for cards the child never opens. llama.cpp REPLACES
+        # the list on every occurrence (common/arg.cpp: params.devices =
+        # parse_device_list(value)) and reads LLAMA_ARG_DEVICE before argv, so the
+        # effective selection is the last of the two, and the extras are appended
+        # after this launch's own flags. Counted, not matched by name: CUDA/ROCm
+        # ordinals are assigned AFTER the visibility mask this launch has not
+        # written yet, so there is no name->index map to be had here, and the
+        # count is enough to tell a narrowing from a restatement.
+        _dev_value = _extra_args_main_device(extra_args)
+        if _dev_value is None:
+            _dev_value = source_env.get("LLAMA_ARG_DEVICE")
+        _dev_names = [d for d in str(_dev_value or "").split(",") if d.strip()]
+        _credited = len(list(gpu_indices)) if gpu_indices is not None else len(rows)
+        _device_narrows = bool(_dev_names) and len(_dev_names) < _credited
         if (
             _extra_args_set_any_flag(extra_args, _GPU_LAYER_FLAGS)
-            or _device_selection_is_cpu(extra_args)
+            # With the env twin: on an automatic load nothing clears
+            # LLAMA_ARG_DEVICE (only an explicit gpu_ids pin does, via
+            # _clear_device_placement_env), so an inherited "none" reaches the
+            # child and puts the whole load in host RAM.
+            or _device_selection_is_cpu(extra_args, source_env)
+            or _device_narrows
             or _args_place_tensors_on_cpu(extra_args)
-            or _env_places_tensors_on_cpu()
+            or _env_places_tensors_on_cpu(source_env)
         ):
             logger.info(
                 "Load mode: pass-through arguments override the placement this fit "
@@ -18347,6 +18382,47 @@ class LlamaCppBackend:
                         n_ubatch = _effective_ubatch,
                         flash_attn = planned_flash_attn,
                     )
+                    # The extras as the child really gets them, and the same view of
+                    # the environment: a gpu_ids pin drops the device flags AND their
+                    # env twins below, so classifying on either would void the VRAM
+                    # term for a "--device none" the launch strips. Unpinned, the
+                    # child inherits LLAMA_ARG_DEVICE verbatim.
+                    _fit_extras = (
+                        self._strip_device_extra_args(extra_args)
+                        if gpu_ids is not None
+                        else extra_args
+                    )
+                    _fit_env = dict(os.environ)
+                    if gpu_memory_mode == "manual":
+                        self._clear_manual_placement_env(_fit_env)
+                    if gpu_ids is not None:
+                        self._clear_device_placement_env(_fit_env)
+                    # What Unsloth's own placement branch below will emit, so the
+                    # effective (last-wins) fitter state can be read here, where the
+                    # final argv does not exist yet. Every reachable branch is fixed
+                    # by use_fit: manual-with-a-count and the proved path emit
+                    # "--fit off", the fitting path emits "--fit on".
+                    _fitter_runs = fit_is_effectively_on(
+                        ["--fit", "on" if use_fit else "off", *(_fit_extras or [])],
+                        _fit_env,
+                    )
+                    # _ctx_integrity_flags emits --fit-target only while use_fit, so a
+                    # fitter the EXTRAS turned back on keeps llama.cpp's own 1024 MiB
+                    # default rather than this launch's budget; neutralise both terms
+                    # on that arm. A pass-through --fit-target then wins over either.
+                    _fit_margin_mib = (
+                        max(
+                            self._fit_target_margin_mib(
+                                auto_fit = (gpu_memory_mode == "manual" and gpu_layers < 0),
+                                fit_target_delta_mib = _fit_target_delta_mib if use_fit else 0.0,
+                                supports_fit_target = use_fit
+                                and bool(server_caps.get("supports_fit_target")),
+                            ),
+                            fit_target_margin_in(_fit_extras, _fit_env) or 0.0,
+                        )
+                        if _fitter_runs
+                        else 0.0
+                    )
                     _fit_load_mode = self._fit_derived_load_mode(
                         model_size = model_size,
                         mmproj_pinned_bytes = _mmproj_pinned_bytes,
@@ -18367,32 +18443,17 @@ class LlamaCppBackend:
                         gpus = gpus,
                         gpu_indices = gpu_indices,
                         shared_gpu_ids = _shared_gpu_ids,
-                        # Leaving --fit on hands the placement to llama.cpp's fitter,
-                        # which keeps --fit-target free on every device it uses and
-                        # spills the rest to host RAM rather than dip into it. That
-                        # margin is not VRAM this fit may spend. The proved path
-                        # (-ngl -1 --fit off) runs no fitter, so it spends everything.
-                        fit_margin_mib = (
-                            self._fit_target_margin_mib(
-                                auto_fit = (gpu_memory_mode == "manual" and gpu_layers < 0),
-                                fit_target_delta_mib = _fit_target_delta_mib,
-                                supports_fit_target = bool(server_caps.get("supports_fit_target")),
-                            )
-                            if use_fit
-                            else 0.0
-                        ),
+                        # A running fitter keeps --fit-target free on every device it
+                        # uses and spills the rest to host RAM rather than dip into
+                        # it. That margin is not VRAM this fit may spend. Zero only
+                        # when the fitter is provably off, which the extras and the
+                        # env get a last-wins say in; see _fitter_runs above.
+                        fit_margin_mib = _fit_margin_mib,
                         is_vulkan_backend = is_vulkan_backend,
-                        # The extras as the child really gets them: a gpu_ids pin
-                        # drops the device flags below, so classifying on them
-                        # would void the VRAM term for a "--device none" the
-                        # launch strips. The layer and tensor-placement flags are
-                        # never stripped, and being appended last they beat this
-                        # launch's own -ngl.
-                        extra_args = (
-                            self._strip_device_extra_args(extra_args)
-                            if gpu_ids is not None
-                            else extra_args
-                        ),
+                        # The layer and tensor-placement flags are never stripped,
+                        # and being appended last they beat this launch's own -ngl.
+                        extra_args = _fit_extras,
+                        env = _fit_env,
                     )
                 except Exception as e:
                     logger.warning(f"GPU selection failed ({e}), using --fit on")
@@ -19917,6 +19978,39 @@ class LlamaCppBackend:
                 # fallback). A per-call flag left those successes unrecorded.
                 _did_rocm_retry = False
 
+                def _drop_fit_load_mode_for_no_flash(fa_cmd: list) -> list:
+                    """The fit's ``--load-mode none`` off a --flash-attn off respawn.
+
+                    The FA-off rewrite changes the very footprint the fit priced. On an
+                    MLA model it takes the K cache down to f16 with V, because llama.cpp
+                    rejects a split K/V there before it rejects a quantized V without
+                    flash attention (llama-context.cpp checks type_k == type_v first),
+                    and the MLA branch of the KV estimator prices that latent cache at
+                    the K width alone. The non-flash attention path also materialises a
+                    full [n_kv, n_ubatch, n_head] F32 KQ tensor (llama-graph.cpp
+                    build_attn_mha) that the flash-attn-shaped compute-buffer estimate
+                    does not model. Under an active fitter the child answers a bigger
+                    requirement by offloading fewer layers and spilling more weights to
+                    host RAM, where "--load-mode none" makes them anonymous rather than
+                    file-backed: an OOM kill where the mapping would only have paged.
+
+                    Only Unsloth's own tokens; a user's --load-mode is theirs. The
+                    record is NOT cleared, for the same reason the --fit on retry keeps
+                    it: the CPU fallback below still respawns from an argv that carries
+                    these tokens and has to be able to name them. Stripping an
+                    already-stripped argv is a no-op.
+                    """
+                    if not self._fit_load_mode_flags:
+                        return fa_cmd
+                    stripped = _without_subsequence(fa_cmd, self._fit_load_mode_flags)
+                    if stripped != fa_cmd:
+                        logger.info(
+                            "Load mode: dropping the fit's --load-mode none for the "
+                            "--flash-attn off retry; the no-flash launch has a "
+                            "footprint the fit did not price."
+                        )
+                    return stripped
+
                 def _spawn_and_wait(run_cmd, *, label = ""):
                     """Start llama-server with run_cmd and wait for health.
 
@@ -20632,6 +20726,7 @@ class LlamaCppBackend:
                                 "Dropped inherited LLAMA_ARG_FLASH_ATTN for the "
                                 "--flash-attn off retry."
                             )
+                        _fa_cmd = _drop_fit_load_mode_for_no_flash(_fa_cmd)
                         _flash_attn_known_off = True
                         cmd = _fa_cmd
                         healthy = _spawn_and_wait(_fa_cmd, label = "-noflash")
@@ -20704,6 +20799,7 @@ class LlamaCppBackend:
                                 "Dropped inherited LLAMA_ARG_FLASH_ATTN for the "
                                 "--flash-attn off retry."
                             )
+                        _fa_cmd = _drop_fit_load_mode_for_no_flash(_fa_cmd)
                         _flash_attn_known_off = True
                         cmd = _fa_cmd
                         healthy = (

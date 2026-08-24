@@ -375,10 +375,74 @@ def test_the_launch_charges_the_fitters_margin_only_when_fit_stays_on():
     from core.inference.llama_cpp import LlamaCppBackend as B
 
     compact = "".join(inspect.getsource(B.load_model).split())
-    call = compact[compact.index("_fit_load_mode=self._fit_derived_load_mode(") :]
+    call = compact[compact.index("_fit_margin_mib=(") :]
     call = call[: call.index("exceptExceptionase:")]
-    assert "fit_margin_mib=(self._fit_target_margin_mib(" in call
-    assert "ifuse_fitelse0.0" in call
+    assert "max(self._fit_target_margin_mib(" in call
+    # Not `use_fit`: the extras land after this launch's own --fit and llama.cpp
+    # is last-wins, so only the effective state may zero the margin.
+    # The OUTER gate, i.e. what may zero the whole margin, is the effective state.
+    assert "or0.0,)if_fitter_runselse0.0" in call
+    # A fitter the extras turned back on gets llama.cpp's own default, not this
+    # launch's budget, which _ctx_integrity_flags never emitted for it.
+    assert "fit_target_delta_mib=_fit_target_delta_mibifuse_fitelse0.0" in call
+    assert "supports_fit_target=use_fitand" in call
+    # And a pass-through --fit-target raises the margin above either.
+    assert "fit_target_margin_in(_fit_extras,_fit_env)or0.0" in call
+    assert "fit_margin_mib=_fit_margin_mib" in call
+
+
+def test_the_effective_fitter_state_reads_the_launchs_own_fit_flag():
+    """`--fit on` in the extras beats the proved path's `--fit off` by last-arg.
+
+    llama.cpp assigns `params.fit_params` on every occurrence (common/arg.cpp) and
+    `-ngl -1` is its own default, which the fitter is free to lower (common/fit.cpp
+    aborts only on a count the user really set). So the margin has to be charged.
+    """
+    import inspect
+
+    from core.inference.llama_cpp import LlamaCppBackend as B
+    from core.inference.llama_server_args import fit_is_effectively_on
+
+    compact = "".join(inspect.getsource(B.load_model).split())
+    assert '_fitter_runs=fit_is_effectively_on(["--fit","on"ifuse_fitelse"off",' in compact
+
+    # The synthetic prefix the call site builds, exercised directly.
+    def _runs(use_fit, extras, env = None):
+        return fit_is_effectively_on(["--fit", "on" if use_fit else "off", *extras], env)
+
+    assert _runs(False, []) is False  # proved path: no fitter
+    assert _runs(True, []) is True
+    assert _runs(False, ["--fit", "on"]) is True  # the bug this closes
+    assert _runs(True, ["--fit", "off"]) is False
+    # The env twin cannot revive a fitter argv turned off: llama.cpp reads the
+    # env BEFORE argv, and this launch always emits a --fit.
+    assert _runs(False, [], {"LLAMA_ARG_FIT": "1"}) is False
+
+
+@pytest.mark.parametrize(
+    "extras,env,expected",
+    [
+        ([], None, None),
+        (["--fit-target", "4096"], None, 4096.0),
+        (["-fitt", "8192"], None, 8192.0),
+        # A comma list is one margin per device; the fit credits every device it
+        # counts, so the largest is the only safe price.
+        (["--fit-target", "512,4096,1024"], None, 4096.0),
+        # Last-wins over argv, like every other llama.cpp flag.
+        (["--fit-target", "4096", "--fit-target", "512"], None, 512.0),
+        # Env twin only when argv sets nothing.
+        ([], {"LLAMA_ARG_FIT_TARGET": "2048"}, 2048.0),
+        (["--fit-target", "512"], {"LLAMA_ARG_FIT_TARGET": "8192"}, 512.0),
+        # Unreadable abstains rather than pricing a partial read: upstream would
+        # reject the whole list, so no device gets a margin this can name.
+        (["--fit-target", "lots"], None, None),
+        (["--fit-target", "512,lots"], None, None),
+    ],
+)
+def test_a_pass_through_fit_target_is_the_margin_the_child_really_keeps(extras, env, expected):
+    from core.inference.llama_server_args import fit_target_margin_in
+
+    assert fit_target_margin_in(extras, env) == expected
 
 
 # ------------------------------------------------------- the policy chain
@@ -679,6 +743,54 @@ def test_the_arch_crash_retry_drops_the_fits_load_mode():
     assert src.count("self._fit_load_mode_flags = []") == 1
 
 
+def test_the_no_flash_retry_drops_the_fits_load_mode():
+    """Both --flash-attn off respawns, which rewrite the footprint the fit priced.
+
+    The mode is NOT gated on full offload: a partially offloaded "--fit on" launch
+    that fits VRAM plus RAM carries it too, and on that launch the --fit on retry
+    (gated on fully_gpu_offloaded) is not a second net. Checked at the source, like
+    the retries above, because this arm only runs behind a real signal crash.
+    """
+    import inspect
+
+    from core.inference.llama_cpp import LlamaCppBackend as B
+
+    src = inspect.getsource(B.load_model)
+    # Both sites, each bounded at its own respawn so the strip is proved to happen
+    # BEFORE it: the startup crash and the MTP first-decode crash.
+    for label in ('label = "-noflash"', 'label = "-noflash-mtp"'):
+        arm = src[: src.index(label)]
+        arm = arm[arm.rindex("self._with_flash_attn_off(") :]
+        assert "_drop_fit_load_mode_for_no_flash(_fa_cmd)" in arm
+    # One helper, so the two arms cannot drift, and it strips without clearing:
+    # the CPU fallback below still respawns from an argv carrying the tokens.
+    assert src.count("_drop_fit_load_mode_for_no_flash(_fa_cmd)") == 2
+    helper = src[src.index("def _drop_fit_load_mode_for_no_flash(") :]
+    helper = helper[: helper.index("def _spawn_and_wait(")]
+    assert "_without_subsequence(fa_cmd, self._fit_load_mode_flags)" in helper
+    assert "self._fit_load_mode_flags = []" not in helper
+
+
+def test_the_no_flash_rewrite_really_grows_the_footprint_the_fit_priced():
+    """The premise behind the strip above, on the two terms the estimator misses.
+
+    The FA-off rewrite takes a quantized V to f16, and on an MLA model K goes with
+    it, because llama.cpp rejects a split K/V there before it rejects a quantized V
+    without flash attention. The MLA branch of the KV estimate prices that latent
+    cache at the K width alone, so the upcast is unbudgeted.
+    """
+    from core.inference.llama_cpp import LlamaCppBackend as B
+
+    cmd = ["llama-server", "--flash-attn", "on", "--cache-type-k", "q8_0", "--cache-type-v", "q8_0"]
+    out = B._with_flash_attn_off(cmd, mla = True)
+    assert out is not None
+    # Flash attention really is off...
+    assert "on" not in out[out.index("--flash-attn") : out.index("--flash-attn") + 2]
+    # ...and BOTH axes were upcast, which is more KV than the fit charged.
+    assert out[out.index("--cache-type-v") + 1] == "f16"
+    assert out[out.index("--cache-type-k") + 1] == "f16"
+
+
 # ------------------------------------ pass-through args that move the weights
 
 
@@ -764,9 +876,105 @@ def test_the_launch_hands_the_fit_the_extras_the_child_will_get():
     from core.inference.llama_cpp import LlamaCppBackend as B
 
     src = inspect.getsource(B.load_model)
-    call = src[src.index("_fit_load_mode = self._fit_derived_load_mode(") :]
+    call = src[src.index("_fit_extras = (") :]
     call = call[: call.index("except Exception as e:")]
-    assert "extra_args" in call
+    assert "extra_args = _fit_extras" in call
     # A gpu_ids pin drops the device flags from the emitted extras, so the fit has
     # to classify on the stripped copy rather than the request.
     assert "_strip_device_extra_args(extra_args)" in call
+    # Every one of those overrides has an env twin llama.cpp reads BEFORE argv,
+    # so the tokens alone are half an answer. The same view the child gets: the
+    # pin that drops the device flags drops their env twins with them.
+    assert "env = _fit_env" in call
+    assert "_fit_env = dict(os.environ)" in call
+    assert "self._clear_device_placement_env(_fit_env)" in call
+    assert "self._clear_manual_placement_env(_fit_env)" in call
+
+
+def test_an_inherited_device_selection_voids_the_vram_credit(monkeypatch):
+    """Nothing clears LLAMA_ARG_DEVICE on an automatic load, so the child gets it.
+
+    Only an explicit gpu_ids pin calls _clear_device_placement_env; unpinned, an
+    inherited "none" runs the whole load out of host RAM while the argv says
+    nothing at all. llama.cpp applies the env before argv (common/arg.cpp).
+    """
+    monkeypatch.setenv("LLAMA_ARG_DEVICE", "none")
+    # 8 GiB against a 24 GiB card would fit VRAM outright, but 4 GiB of RAM
+    # (minus the 2 GiB headroom) cannot hold it once the credit is void.
+    assert _mode("linux", "nvidia_discrete", 8 * GIB, 4 * 1024, monkeypatch) is None
+    # ... and the argv still wins over the env, so a GPU pick in the extras is
+    # not condemned by a stale variable it overrides.
+    assert (
+        _mode(
+            "linux",
+            "nvidia_discrete",
+            8 * GIB,
+            4 * 1024,
+            monkeypatch,
+            extra_args = ["--device", "CUDA0"],
+        )
+        == FIT_MODE
+    )
+
+
+@pytest.mark.parametrize(
+    "hw,extras,gpu_indices,expected",
+    [
+        # One card, one name: a restatement, not a narrowing.
+        ("nvidia_discrete", ["--device", "CUDA0"], None, FIT_MODE),
+        # Two cards, one name: the child opens one of them, so crediting both
+        # pays for VRAM it never reaches.
+        ("nvidia_multi", ["--device", "CUDA0"], None, None),
+        ("nvidia_multi", ["-dev", "CUDA1"], None, None),
+        # Both named: nothing is left out.
+        ("nvidia_multi", ["--device", "CUDA0,CUDA1"], None, FIT_MODE),
+        # Last-wins, like every other llama.cpp flag.
+        ("nvidia_multi", ["--device", "CUDA0", "--device", "CUDA0,CUDA1"], None, FIT_MODE),
+        ("nvidia_multi", ["--device", "CUDA0,CUDA1", "--device", "CUDA0"], None, None),
+        # No selection at all: unchanged, the credit stands.
+        ("nvidia_multi", [], None, FIT_MODE),
+    ],
+)
+def test_a_narrowing_device_pass_through_voids_the_vram_credit(
+    hw, extras, gpu_indices, expected, monkeypatch
+):
+    """`--device` is opt-in under auto-select (stripped only when gpu_ids is set).
+
+    llama.cpp REPLACES the device list on every occurrence and offloads to nothing
+    else (common/arg.cpp parse_device_list), so a name list shorter than what this
+    fit charges leaves the credit paying for cards the child never opens.
+    """
+    # Fits the pair (2 x 12 GiB) but not one card, and host RAM cannot hold it.
+    assert (
+        _mode(
+            "linux",
+            hw,
+            20 * GIB,
+            2 * 1024,
+            monkeypatch,
+            extra_args = extras,
+            gpu_indices = gpu_indices,
+        )
+        == expected
+    )
+
+
+def test_the_device_narrowing_is_counted_against_what_the_fit_credits(monkeypatch):
+    """Not against what was DETECTED: a launch already pinned to one card is not
+    narrowed by an extras `--device` naming one, and voiding there would abstain on
+    a fit that still holds."""
+    # 10 GiB on one 12 GiB card of a two-card host, and host RAM cannot hold it,
+    # so the answer turns entirely on whether the credit was voided.
+    for extras, expected in ((["--device", "CUDA0"], FIT_MODE), ([], FIT_MODE)):
+        assert (
+            _mode(
+                "linux",
+                "nvidia_multi",
+                10 * GIB,
+                2 * 1024,
+                monkeypatch,
+                extra_args = extras,
+                gpu_indices = [0],
+            )
+            == expected
+        )
