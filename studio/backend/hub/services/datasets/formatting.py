@@ -507,6 +507,7 @@ def check_format_response(
             detected_image_column = result.get("detected_image_column"),
             detected_audio_column = result.get("detected_audio_column"),
             detected_text_column = result.get("detected_text_column"),
+            detected_instruction_column = result.get("detected_instruction_column"),
             detected_speaker_column = result.get("detected_speaker_column"),
             chat_column = result.get("chat_column"),
             preview_samples = preview_samples,

@@ -6,7 +6,7 @@ import type { CheckFormatResponse } from "@/features/training";
 const CHATML_ROLES = ["system", "user", "assistant"] as const;
 const ALPACA_ROLES = ["instruction", "input", "output"] as const;
 const SHAREGPT_ROLES = ["system", "human", "gpt"] as const;
-const VLM_ROLES = ["image", "text"] as const;
+const VLM_ROLES = ["image", "text", "user"] as const;
 const AUDIO_ROLES = ["audio", "text", "speaker_id"] as const;
 
 const TO_CANONICAL: Record<string, string> = {
@@ -113,6 +113,9 @@ export function deriveDefaultMapping(
     }
     if (data.detected_text_column) {
       result[data.detected_text_column] = "text";
+    }
+    if (data.detected_instruction_column) {
+      result[data.detected_instruction_column] = "user";
     }
     return result;
   }

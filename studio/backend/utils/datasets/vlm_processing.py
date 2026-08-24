@@ -11,6 +11,8 @@ heuristics.
 import re
 from itertools import islice
 
+VLM_INSTRUCTION_COLUMNS = ("question", "query", "prompt", "instruction", "user_prompt")
+
 
 def generate_smart_vlm_instruction(
     dataset,
@@ -40,9 +42,7 @@ def generate_smart_vlm_instruction(
 
     # ===== LEVEL 1: Explicit Instruction Columns =====
     # Columns that hold per-sample instructions
-    question_columns = ["question", "query", "prompt", "instruction", "user_prompt"]
-
-    for col in question_columns:
+    for col in VLM_INSTRUCTION_COLUMNS:
         if col in column_names:
             # Use it only if it has non-empty content
             sample_content = sample[col]

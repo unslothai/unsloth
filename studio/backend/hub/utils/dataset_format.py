@@ -6,6 +6,8 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
+from utils.datasets.vlm_processing import VLM_INSTRUCTION_COLUMNS
+
 
 def _first_row(dataset) -> Optional[dict]:
     try:
@@ -626,6 +628,17 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
 
     if is_vlm:
         vlm_structure = detect_vlm_dataset_structure(dataset)
+        instruction_column = next(
+            (
+                column
+                for column in VLM_INSTRUCTION_COLUMNS
+                if sample
+                and column in sample
+                and sample.get(column)
+                and str(sample[column]).strip()
+            ),
+            None,
+        )
         requires_mapping = vlm_structure["format"] == "unknown"
         warning = None
         if requires_mapping:
@@ -646,6 +659,7 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
             "suggested_mapping": None,
             "detected_image_column": vlm_structure.get("image_column"),
             "detected_text_column": vlm_structure.get("text_column"),
+            "detected_instruction_column": instruction_column,
             "is_image": multimodal_info["is_image"],
             "multimodal_columns": multimodal_info.get("multimodal_columns"),
             "warning": warning,

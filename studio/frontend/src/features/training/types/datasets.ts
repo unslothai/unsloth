@@ -9,6 +9,7 @@ export type CheckFormatResponse = {
   detected_image_column?: string | null;
   detected_audio_column?: string | null;
   detected_text_column?: string | null;
+  detected_instruction_column?: string | null;
   detected_speaker_column?: string | null;
   chat_column?: string | null;
   preview_samples?: Record<string, unknown>[] | null;
