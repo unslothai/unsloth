@@ -121,7 +121,13 @@ export function KeylessApiAccessSection({
   const confirm = async (confirmAs: PendingGrant) => {
     setSaving(true);
     try {
-      setSettings(await loadKeylessApiAccess());
+      const refreshed = await loadKeylessApiAccess();
+      setSettings(refreshed);
+      onSettingsChange?.({
+        scope: refreshed.scope,
+        tools: refreshed.tools,
+        exposure: refreshed.exposure,
+      });
     } catch {
       // keep the exposure already on screen; the dialog still states the scope
     } finally {
