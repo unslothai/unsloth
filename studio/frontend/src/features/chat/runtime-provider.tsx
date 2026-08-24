@@ -1885,7 +1885,13 @@ function ThreadNewChatSwitch({
         recordedRemoteId = undefined;
       }
     }
-    const returningToOwnChat = Boolean(recorded && recordedRemoteId);
+    // A tombstoned chat is not one to return to, for the same reason and by the same
+    // mechanism as the resume restore above: deletion leaves the runtime item and its
+    // remoteId intact, so "the store still knows it" is not "it still exists". Falling
+    // through clears nonceThread below, which is what a nonce owning nothing looks like.
+    const returningToOwnChat = Boolean(
+      recorded && recordedRemoteId && !isChatThreadDeleted(recordedRemoteId),
+    );
     if (!returningToOwnChat) {
       // A new nonce owns nothing yet; the old record must not survive into it.
       switchState.nonceThread = null;
@@ -2138,6 +2144,14 @@ function NonceThreadResumeRestore({
     const { remoteId } =
       runtime?.threads.getItemById(mainThreadId).getState() ?? {};
     if (!remoteId) {
+      return;
+    }
+    // ...and neither must a chat the user deleted while they were away. Studio deletes by
+    // tombstoning storage rather than calling runtime.threads.delete(), so the runtime item
+    // and its remoteId both survive and every check above still passes. On remoteId, which
+    // is the id storage and the sidebar delete agree on. Restoring here would undo
+    // ProjectLanding's own tombstone check: this publishes the id that check refused to.
+    if (isChatThreadDeleted(remoteId)) {
       return;
     }
     useChatRuntimeStore.getState().setActiveThreadId(mainThreadId);

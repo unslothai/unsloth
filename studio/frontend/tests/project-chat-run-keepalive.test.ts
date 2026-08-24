@@ -334,6 +334,26 @@ test("the landing does not restore a chat that was deleted while it was away", (
   assert.match(page, /import \{ isChatThreadDeleted \} from "\.\/utils\/chat-thread-tombstones";/);
 });
 
+test("no restore path puts a deleted chat back on screen", () => {
+  // Three places this PR added put a retained id back: ProjectLanding's resume effect
+  // (pinned above), NonceThreadResumeRestore, and the remembered-nonce reopen. All three
+  // ask the RUNTIME whether it still knows the thread, and Studio deletes by tombstoning
+  // storage rather than calling runtime.threads.delete(), so after a delete the item and
+  // its remoteId both survive and all three still answer yes. Guarding one fixes nothing:
+  // the other two republish the same id.
+  const restore = componentSource(provider, "function NonceThreadResumeRestore({");
+  assert.match(restore, /if \(isChatThreadDeleted\(remoteId\)\) \{\s*return;\s*\}/);
+  assert.ok(
+    restore.indexOf("isChatThreadDeleted(remoteId)") <
+      restore.indexOf("setActiveThreadId(mainThreadId)"),
+    "the check has to come before the publication it guards",
+  );
+  assert.match(
+    provider,
+    /const returningToOwnChat = Boolean\(\s*recorded && recordedRemoteId && !isChatThreadDeleted\(recordedRemoteId\),\s*\);/,
+  );
+});
+
 test("compare lists its threads once before it waits on any run", () => {
   // Two constraints that a single boolean cannot carry.
   //
