@@ -551,19 +551,24 @@ class FP8_fbgemm_block_linear(torch.autograd.Function):
             weight_scale = weight_scale.to(torch.float32)  # e8m0 scales break triton
 
         m, n = weight.shape
-        # A per-tensor scale has no block grid; the fallback scales by it directly.
-        per_tensor = weight_scale.ndim != 2
+        p, q = weight_scale.shape if weight_scale.ndim == 2 else (0, 0)
+        fits = triton.cdiv(m, bs_n) == p and triton.cdiv(n, bs_k) == q
+        # numel() == 1 like fp8_linear and the dequant helper, so a (1, 1) per-tensor
+        # scale reaches the fallback too, which scales by it directly. A (1, 1) that
+        # really is this weight's grid still fits, and stays on the block path.
+        per_tensor = weight_scale.numel() == 1 and not fits
         if not per_tensor:
-            p, q = weight_scale.shape
-            if triton.cdiv(m, bs_n) != p or triton.cdiv(n, bs_k) != q:
-                if triton.cdiv(m, bs_n) == q and triton.cdiv(n, bs_k) == p:
-                    # Backward transposes the weight; transpose the scale to match
-                    # (transposing the weight itself would break matmul with X).
-                    weight_scale = weight_scale.T
-                else:
-                    raise ValueError(
-                        f"Weight shape {weight.shape} and scales shape {weight_scale.shape} is not compatible with block size {bs_n, bs_k}"
-                    )
+            fits_transposed = triton.cdiv(n, bs_n) == p and triton.cdiv(m, bs_k) == q
+            # Backward passes W.t() (fast_lora's downW.t()), so its block axes are
+            # swapped too. Transpose the scale, not W, which X still has to matmul.
+            # Both grids fit at once when m == n, and only the stride separates them.
+            if fits_transposed and (not fits or (bs_n != bs_k and weight.stride(0) == 1)):
+                weight_scale = weight_scale.T
+                bs_n, bs_k = bs_k, bs_n
+            elif not fits:
+                raise ValueError(
+                    f"Weight shape {weight.shape} and scales shape {weight_scale.shape} is not compatible with block size {bs_n, bs_k}"
+                )
 
         # f8f8bf16_blockwise takes only 128x128x128 blocks, float32 scale grids and
         # (measured on H800 / fbgemm 1.4.0) in_features % 16 == 0, out_features % 8

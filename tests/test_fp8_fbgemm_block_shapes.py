@@ -160,10 +160,11 @@ def test_non_square_block_uses_dequant_fallback():
     _check_grad(X, out, Wq, scale, block)
 
 
-@pytest.mark.parametrize("kind", ["per_tensor", "bf16_scale", "strided_3d"])
+@pytest.mark.parametrize("kind", ["per_tensor", "per_tensor_2d", "bf16_scale", "strided_3d"])
 def test_inputs_the_kernel_rejects_use_dequant_fallback(kind):
-    # All three used to reach f8f8bf16_blockwise and raise: no block grid to
-    # unpack, a non-float32 scale, and a strided view that cannot be .view()ed.
+    # All four used to reach f8f8bf16_blockwise and raise: no block grid to unpack
+    # (0-dim or (1, 1)), a non-float32 scale, and a strided view that cannot be
+    # .view()ed. fp8_linear routes every numel() == 1 scale here.
     from unsloth.kernels.fp8 import FP8_fbgemm_block_linear
 
     torch.manual_seed(0)
@@ -174,8 +175,10 @@ def test_inputs_the_kernel_rejects_use_dequant_fallback(kind):
     Wq, scale = _block_quantize_weight(W, block)
     X = torch.randn(8, K, device = "cuda", dtype = torch.bfloat16)
 
-    if kind == "per_tensor":
+    if kind.startswith("per_tensor"):
         scale = scale.amax().clone()
+        if kind == "per_tensor_2d":
+            scale = scale.reshape(1, 1)
         ref = (X.float() @ (Wq.to(torch.float32) * scale).T).to(X.dtype)
     else:
         if kind == "bf16_scale":
@@ -190,6 +193,28 @@ def test_inputs_the_kernel_rejects_use_dequant_fallback(kind):
     assert _rel_err(out, ref) < 0.10
     out.sum().backward()
     assert X.grad is not None and torch.isfinite(X.grad).all()
+
+
+@pytest.mark.parametrize("block", [[128, 64], [64, 128]])  # square stays on the kernel
+@pytest.mark.parametrize("N,K", [(256, 512), (256, 256)])
+def test_transposed_weight_swaps_block_axes(block, N, K):
+    # fast_lora's backward passes downW.t(), so the transposed weight's block axes
+    # are swapped as well. At N == K both grids validate and only the stride tells
+    # them apart, which is where a rectangular block silently mis-scaled dX.
+    from unsloth.kernels.fp8 import FP8_fbgemm_block_linear
+
+    torch.manual_seed(0)
+    W = torch.randn(N, K, device = "cuda", dtype = torch.bfloat16)
+    Wq, scale = _block_quantize_weight(W, block)
+    scale.block_size = block
+    Wt = Wq.t()
+    Wt.block_size = block
+
+    dY = torch.randn(8, N, device = "cuda", dtype = torch.bfloat16)
+    out = FP8_fbgemm_block_linear.apply(dY, Wt, scale)
+    ref = (dY.float() @ _dequant(Wq, scale, block)).to(dY.dtype)
+    assert out.shape == (8, K)
+    assert _rel_err(out, ref) < 0.10
 
 
 if __name__ == "__main__":
