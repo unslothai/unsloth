@@ -138,6 +138,114 @@ STRUCTURAL = "structural"
 ARMS = ("base", "treatment")
 
 
+class Outcome(int):
+    """An exit code that carries WHICH PAIRS it was reached over.
+
+    The three reports -- structural, visible-region, behavioural -- each return a process exit code
+    and each knows exactly how many pairs it put a verdict on. Only the structural one could say so,
+    because `--min-compared` is a parameter of `report()` and is enforced at one site inside it. The
+    other two never received the threshold at all, so a run with no fully mounted pair -- every pair
+    windowed, or either of the forced `--mode visible` / `--mode behaviour` invocations -- returned
+    out of `main` before the structural loop and applied no coverage floor of any kind. The
+    workflow's own `--min-compared 16` then passed on one matched capture. That floor is what
+    replaces a slot-budget liveness gate for a job that reads no timings, and two blank pages have
+    identical digests, so it is the guard against the easiest possible false green.
+
+    AN `int` SUBCLASS, DELIBERATELY. PLEASE DO NOT SIMPLIFY THIS BACK TO A PLAIN RETURN.
+
+    The exit code is the primary value and every existing caller and test already treats it as one:
+    `main` does `worst = max(worst, ...)` at four call sites, and the selftests assert `== 0`,
+    `== 1`, `== 2` and `== 3` against `report`, `visible_report` and `behaviour_report` directly, in
+    several dozen places. This subclass exists so that every one of those comparisons keeps working
+    UNCHANGED while the coverage the floor needs travels beside the code.
+
+    Widening the return to a tuple or a dataclass is the obvious alternative and it is the worse
+    one: it would mean rewriting several dozen assertions in bulk to say exactly what they say
+    today, and an assertion rewritten in bulk is an assertion nobody re-derived. The whole point of
+    this change is a gate that could only ever say yes, so the last thing it should do on its way in
+    is churn the assertions that say when the other gates say no.
+
+    THE PAIR KEYS RATHER THAN A COUNT, because in `--mode auto` the visible and behavioural reports
+    both score the SAME windowed pairs. Summing two counts there would double every windowed pair
+    and let a floor of 16 pass on 8. A union answers the question the floor actually asks -- how
+    many pairs carried a verdict -- and it is the same question across all three modes.
+
+    The key is `(action, shard, cell)`, which is what each report has in hand. `latest_attempt_rows`
+    has already reduced a cell to one attempt by the time `collect` builds these, so the session
+    term dropped from `cell` cannot merge two live observations. If it ever did, the union would
+    UNDER-count, which can only make the floor fire when it should not have -- a loud false red
+    rather than a quiet false green.
+    """
+
+    compared: frozenset[tuple[str, str, str]]
+    seen: frozenset[tuple[str, str, str]]
+
+    def __new__(
+        cls,
+        rc: int,
+        compared: frozenset[tuple[str, str, str]] = frozenset(),
+        seen: frozenset[tuple[str, str, str]] = frozenset(),
+    ) -> "Outcome":
+        self = super().__new__(cls, rc)
+        self.compared = compared
+        self.seen = seen
+        return self
+
+    @property
+    def total(self) -> int:
+        """Pairs this report was offered, compared or not: the floor message's denominator."""
+        return len(self.seen)
+
+
+def _floored(worst: int, compared: set[tuple], seen: set[tuple], min_compared: int) -> int:
+    """`main`'s single application of the coverage floor, over every mode it ran.
+
+    THE ONE CHECK FOR ALL THREE PATHS. `--min-compared` used to be a parameter of `report()` and
+    enforced at one site inside it, and `report()` is reached only from the structural loop below
+    the early return. So a run with no fully mounted pair -- every pair windowed, or either of the
+    forced `--mode visible` / `--mode behaviour` invocations, both of which hard-set the structural
+    plan to empty for EVERY pattern -- applied no coverage floor at all, and `--min-compared 20`
+    exited 0 on one matched capture.
+
+    SUMMED ACROSS MODES, not checked per mode. A combined run scores its windowed pairs on the
+    visible region and on the invariants and its fully mounted ones structurally; those are one
+    film's coverage split three ways, and a floor applied inside each report separately fails a run
+    that compared plenty. `Outcome` says why the pairs are unioned rather than added.
+
+    RAISED, NEVER LOWERED. A shortfall can only make the verdict worse: a run that already found a
+    difference keeps that finding and gains the reason its coverage is too thin to trust either way.
+    """
+    shortfall = coverage_shortfall(len(compared), len(seen), min_compared)
+    if not shortfall:
+        return worst
+    print(f"\n  {shortfall}")
+    return max(worst, 3)
+
+
+def _keys(results: list[tuple]) -> frozenset[tuple[str, str, str]]:
+    """The `(action, shard, cell)` key of every pair a report was offered. See `Outcome`."""
+    return frozenset((action, shard, cell) for action, shard, cell, _r in results)
+
+
+def coverage_shortfall(scored: int, of_pairs: int, min_compared: int) -> str:
+    """The TOO LITTLE COMPARED message, or `""`. One rule, one wording, three call sites.
+
+    NOT a detection threshold. This is the "did the film actually run" floor, and it is the
+    thing that replaces a slot-budget liveness gate for a job that reads no timings: a
+    missed slot costs COVERAGE, and coverage is what has to be defended, not punctuality.
+    Healthy runs measured here compared 22, 25 and 26 of 32 scheduled pairs; a payload
+    mutated until 24 slots were missed compared 9 and still produced a correct verdict, so
+    the floor sits between "lost some to a slow machine" and "did not run the film".
+    """
+    if not min_compared or scored >= min_compared:
+        return ""
+    return (
+        f"TOO LITTLE COMPARED: {scored} of {of_pairs} pair(s) carry a verdict, "
+        f"below the floor of {min_compared}. A run that compared almost nothing passes"
+        f"\n  trivially, and this is that run. Nothing below is a pass."
+    )
+
+
 def rows(path: Path) -> list[dict]:
     return [
         json.loads(line) for line in path.read_text(encoding = "utf-8").splitlines() if line.strip()
@@ -546,12 +654,91 @@ def any_windowed(paths: list[Path]) -> Optional[str]:
     return None
 
 
+def build_differences(results: list[tuple], min_reps: int) -> dict[str, list[tuple]]:
+    """The two shapes that are a difference between the BUILDS and leave no capture to differ.
+
+    Shared by `visible_report` and `behaviour_report` so the windowed verdict cannot come to a
+    different opinion in its two halves, and held to exactly the bar `report` holds the structural
+    path to: `racy_execution` exempts the not-run reasons that are a lost race rather than a missing
+    control, and `corroborated` demands the same repetition count, keyed on the arm the finding
+    names so two repetitions blaming opposite arms cannot corroborate each other.
+
+    Not folded into the visible or behavioural verdict itself. A digest or an invariant that agrees
+    is a true statement about what was on screen; that it was reached on a build where the button no
+    longer works is a second, separate statement, and merging them would let the noise floor
+    measured for one silence the other.
+    """
+    one_sided: list[tuple] = []
+    racy: list[tuple] = []
+    expect_bad: list[tuple] = []
+    for action, shard, cell, r in results:
+        if r.get("one_sided"):
+            entry = (action, shard, cell, [r.get("idle_detail") or ""], r["one_sided"])
+            # ON THE RECORDED REASON, not the action name; see the same call in `report`.
+            if P.racy_execution(action, r.get("idle_reason") or ""):
+                racy.append(entry)
+            else:
+                one_sided.append(entry)
+        if r.get("expect_regressed"):
+            expect_bad.append(
+                (action, shard, cell, [r.get("expect_reason") or ""], r["expect_regressed"])
+            )
+    firm_one, weak_one = corroborated(one_sided, min_reps)
+    firm_expect, weak_expect = corroborated(expect_bad, min_reps)
+    return {
+        "one_sided": firm_one,
+        "one_sided_weak": weak_one,
+        "one_sided_racy": racy,
+        "expect": firm_expect,
+        "expect_weak": weak_expect,
+    }
+
+
+def print_build_differences(found: dict[str, list[tuple]], min_reps: int) -> bool:
+    """Print what `build_differences` found; True when something in it fails the run."""
+    if found["one_sided"]:
+        print(
+            "\n  RAN ON ONE ARM ONLY -- the action could be performed on one build and not the"
+            "\n  other, which is the two builds behaving differently and leaves no capture to"
+            "\n  differ:"
+        )
+        for action, shard, cell, why, *_dir in found["one_sided"]:
+            print(f"    {action:<26} {shard} {cell}: {why[0]}")
+    if found["expect"]:
+        print(
+            "\n  THE ACTION'S OWN ASSERTION FAILED ON ONE ARM -- it ran on both and did its job"
+            "\n  on only one, in every repetition. The captures can agree and still be a reading"
+            "\n  of a control that stopped working:"
+        )
+        for action, shard, cell, why, *_dir in found["expect"]:
+            print(f"    {action:<26} {shard} {cell}: {why[0]}")
+    for key, what in (
+        ("one_sided_weak", "one-arm execution"),
+        ("expect_weak", "assertion failure"),
+    ):
+        if found[key]:
+            print(
+                f"\n  UNCORROBORATED {what} -- in fewer than {min_reps} repetitions, or on "
+                f"opposite arms;\n  reported, not counted:"
+            )
+            for action, shard, cell, why, *_dir in found[key]:
+                print(f"    {action:<26} {shard} {cell}: {why[0]}")
+    if found["one_sided_racy"]:
+        names = sorted({a for a, _s, _c, _w, *_d in found["one_sided_racy"]})
+        print(
+            f"\n  (reported, not counted) {len(found['one_sided_racy'])} one-arm execution(s) whose "
+            f"recorded reason is a lost race rather than a missing control: {', '.join(names)}"
+        )
+    return bool(found["one_sided"] or found["expect"])
+
+
 def behaviour_report(
     paths: list[Path],
     label: str,
     windowed: bool = True,
     select: Optional[set] = None,
-) -> int:
+    min_reps: int = 1,
+) -> Outcome:
     """The windowed arm's report: behavioural invariants instead of a structural digest.
 
     Printed with the reason it is being printed, every time. The one way this could mislead is by
@@ -585,9 +772,20 @@ def behaviour_report(
                 (action, shard, cell, {"verdict": P.NOT_COMPARABLE, "reason": why, "checks": []})
             )
             continue
-        results.append(
-            (action, shard, cell, B.compare_behaviour(sides["base"], sides["treatment"]))
+        out = B.compare_behaviour(sides["base"], sides["treatment"])
+        # THE SAME TWO QUESTIONS THE STRUCTURAL PATH ASKS, off the same functions; see
+        # `compare_all_with`, which carries them for the visible report. An invariant comparison
+        # cannot see either shape: `compare_behaviour` reads the recorded quantities of an action,
+        # and an action that could not be performed on one arm records no quantities to disagree
+        # about, while one that ran and failed its own assertion records perfectly ordinary ones.
+        idle_ = P.execution_verdict(sides["base"], sides["treatment"])
+        out["one_sided"] = (idle_ or {}).get("one_sided") or ""
+        out["idle_reason"] = (idle_ or {}).get("idle_reason") or ""
+        out["idle_detail"] = (idle_ or {}).get("reason") or ""
+        out["expect_regressed"], out["expect_reason"] = P.expect_regression(
+            sides["base"], sides["treatment"]
         )
+        results.append((action, shard, cell, out))
 
     print(f"\n{label}  (BEHAVIOURAL MODE)")
     print(f"  CLAIM: {P.CLAIM_BEHAVIOURAL}.")
@@ -616,22 +814,26 @@ def behaviour_report(
     )
     if not results:
         print("  NO ACTION DATA in this payload.")
-        return 2
+        return Outcome(2)
 
     broken, unchecked, idle, blind = [], [], [], []
+    compared: set[tuple[str, str, str]] = set()
     matched = 0
     for action, shard, cell, r in results:
         verdict = r["verdict"]
         if verdict == B.BROKEN:
             broken.append((action, shard, cell, r))
+            compared.add((action, shard, cell))
         elif verdict == P.MATCH:
             matched += 1
+            compared.add((action, shard, cell))
         elif verdict == P.NOT_EXERCISED:
             idle.append((action, shard, cell, r))
         elif verdict == P.NOT_COMPARABLE:
             blind.append((action, shard, cell, r))
         else:
             unchecked.append((action, shard, cell, r))
+    found = build_differences(results, min_reps)
 
     print(f"\n  {len(results)} action pairs across {len(paths)} shard(s)")
     print(f"  invariants held:            {matched}")
@@ -646,6 +848,7 @@ def behaviour_report(
             print(f"    {action:<26} {shard} {cell}: {r['reason']}")
     else:
         print("\n  Every declared behavioural invariant held on both arms.")
+    build_failed = print_build_differences(found, min_reps)
 
     if unchecked:
         names = sorted({a for a, _s, _c, _v in unchecked})
@@ -663,8 +866,6 @@ def behaviour_report(
         names = sorted({a for a, _s, _c, _v in idle})
         print(f"\n  NOT EXERCISED: {', '.join(names)}")
 
-    if broken:
-        return 1
     if matched == 0:
         # NOTHING WAS VALIDATED, which is not the same as nothing being wrong. With every pair
         # unchecked, not comparable or never exercised, `broken` is empty and the block above has
@@ -678,8 +879,15 @@ def behaviour_report(
             "so this run carries no UI verdict -- neither a pass nor a failure. Treat it as an "
             "absent result and find out why the actions did not run."
         )
-        return 2
-    return 0
+    # AFTER the diagnosis is printed and BEFORE the "could not tell" code, which is the ordering
+    # `report` already uses and states: a run can find a real regression while deciding nothing --
+    # the two shapes `build_differences` collects survive a pair whose invariants were unreadable --
+    # and "it failed" is the more specific answer than "it could not tell".
+    if broken or build_failed:
+        return Outcome(1, frozenset(compared), _keys(results))
+    if matched == 0:
+        return Outcome(2, frozenset(compared), _keys(results))
+    return Outcome(0, frozenset(compared), _keys(results))
 
 
 def visible_unstable_set(null_paths: list[Path] | None) -> frozenset[tuple[str, str]]:
@@ -751,7 +959,8 @@ def visible_report(
     label: str,
     unstable: frozenset[tuple[str, str]] = frozenset(),
     select: Optional[set] = None,
-) -> int:
+    min_reps: int = 1,
+) -> Outcome:
     """VISIBLE-REGION PARITY. The verdict the off-screen exemption asks for.
 
     Policy: all changes preserve UI and UX idempotency, except that a difference may be accepted
@@ -775,8 +984,10 @@ def visible_report(
     )
     if not results:
         print("  NO ACTION DATA in this payload.")
-        return 2
+        return Outcome(2)
 
+    found = build_differences(results, min_reps)
+    compared: set[tuple[str, str, str]] = set()
     differing, unstable_bad, blind, idle, matched = [], [], [], [], 0
     # THE RESIDUE, PRINTED. A message that was on screen during the action and had been unmounted
     # again by the time the capture ran cannot be digested, and `compare_visible` refuses the pair
@@ -802,8 +1013,10 @@ def visible_report(
             # and the film's slots land somewhere else entirely.
             noise = (rung_of_cell(cell), action) in unstable and not r.get("severe")
             (unstable_bad if noise else differing).append((action, shard, cell, r))
+            compared.add((action, shard, cell))
         else:
             matched += 1
+            compared.add((action, shard, cell))
 
     print(f"\n  {len(results)} action pairs across {len(paths)} shard(s)")
     print(f"  visible region matched:     {matched}")
@@ -871,17 +1084,22 @@ def visible_report(
             + (f", and {len(keys) - 12} more" if len(keys) > 12 else "")
         )
 
-    if differing:
-        return 1
-    if matched == 0:
+    build_failed = print_build_differences(found, min_reps)
+
+    if matched == 0 and not differing:
         # The same false green every other mode here has already been fixed for: nothing compared
         # is not the same as nothing wrong, and it must not exit 0.
         print(
             "\n  NOTHING WAS COMPARED. Not one action pair yielded a visible-region verdict, so\n"
             "  this run carries no UI verdict at all -- neither a pass nor a failure."
         )
-        return 2
-    return 0
+    # See the same three lines in `behaviour_report` and in `report`: the diagnosis prints, then a
+    # failure outranks a refusal.
+    if differing or build_failed:
+        return Outcome(1, frozenset(compared), _keys(results))
+    if matched == 0:
+        return Outcome(2, frozenset(compared), _keys(results))
+    return Outcome(0, frozenset(compared), _keys(results))
 
 
 def compare_all_with(
@@ -895,6 +1113,23 @@ def compare_all_with(
 
     `require_complete` drops the action rows of a cell that never wrote its terminal `cell` row;
     see `collect`, which states why that is right on a null control and wrong on a result.
+
+    THE ACTION'S OUTCOME TRAVELS WITH ITS CAPTURE, and it did not use to. This path built its whole
+    result from `compare()` over a capture sub-object plus one boolean, `_ran`, the conjunction of
+    the two arms' `ran` flags -- so the two shapes that are a difference between the BUILDS rather
+    than between two DOMs were erased before any report could see them. An action that runs on one
+    arm and cannot be performed on the other collapsed into the same "did not run" bucket as a
+    missed slot, which every report here counts as lost coverage and not as a finding. And an action
+    that ran on both arms and failed its OWN assertion on one of them -- `stop_generation` on a head
+    where Stop no longer ends the stream -- left no trace at all: the captures are of two viewports
+    that look the same, so the pair matched.
+
+    That is survivable on the structural path, where `compare_rows` has always asked both questions.
+    It is not survivable here, because on a windowed arm THESE reports are the entire UI verdict:
+    the digest is `not_applicable` by construction and `stop_generation` has no behavioural
+    invariant of its own, so in `--mode auto` a passing invariant on some other action carried the
+    run to exit 0. Both questions are now asked of `analysis/parity.py`'s own functions, the same
+    ones `compare_rows` calls, rather than of a second opinion written out here.
     """
     got = collect(paths, select, require_complete = require_complete)
     results = []
@@ -929,6 +1164,15 @@ def compare_all_with(
         ran = bool(sides["base"].get("ran")) and bool(sides["treatment"].get("ran"))
         out = compare(sides["base"].get(key), sides["treatment"].get(key))
         out["_ran"] = ran
+        idle = P.execution_verdict(sides["base"], sides["treatment"])
+        # WHICH ARM, not merely that one of them was idle. `execution_verdict` returns `one_sided`
+        # empty for a missed slot and for the symmetric case, and the arm that DID run otherwise.
+        out["one_sided"] = (idle or {}).get("one_sided") or ""
+        out["idle_reason"] = (idle or {}).get("idle_reason") or ""
+        out["idle_detail"] = (idle or {}).get("reason") or ""
+        out["expect_regressed"], out["expect_reason"] = P.expect_regression(
+            sides["base"], sides["treatment"]
+        )
         results.append((action, shard, cell, out))
     return results, got
 
@@ -1445,7 +1689,7 @@ def report(
     select: Optional[set] = None,
     min_reps: int = 1,
     min_compared: int = 0,
-) -> int:
+) -> Outcome:
     """THREAD-STRUCTURE PARITY. `select` scores only those pair keys; see `decide_modes`.
 
     `unstable` holds both kinds of entry `is_unstable` reads: a bare action name, which is a
@@ -1464,12 +1708,13 @@ def report(
             f"{got['missing']} action rows carried no digest. "
             f"Was this run recorded before the parity instrument existed?"
         )
-        return 2
+        return Outcome(2)
 
     stable_bad, unstable_bad, blind, style_bad, idle = [], [], [], [], []
     inapplicable: list[tuple] = []
     one_sided, one_sided_unstable = [], []
     expect_bad = []
+    compared: set[tuple[str, str, str]] = set()
     matched = 0
     for action, shard, cell, r in results:
         # COLLECTED BEFORE THE VERDICT BRANCHES AND OUTSIDE THE EXEMPTION, because it is not a
@@ -1536,8 +1781,10 @@ def report(
             style_bad.append((action, shard, cell, [r.get("style_reason", "")]))
         if r["verdict"] == P.MATCH:
             matched += 1
+            compared.add((action, shard, cell))
             continue
         entry = (action, shard, cell, r["moved"])
+        compared.add((action, shard, cell))
         (unstable_bad if is_unstable(unstable, action, cell) else stable_bad).append(entry)
 
     # SPLIT BEFORE THE COUNTS ARE PRINTED. Printing "stable actions differing: 1" above a verdict
@@ -1599,20 +1846,17 @@ def report(
         f"pointer-events)"
     )
 
+    # THE SAME SET, COUNTED TWICE, and that is checked rather than assumed: `compared` is what the
+    # coverage floor is applied to when this report is one of several in a run, and `scored` is the
+    # count this report has always printed. `stable_bad` splits into itself plus `uncorroborated`
+    # above, so the two are the same pairs by construction; the assertion is here so a later edit
+    # to either branch cannot make the floor answer about a different set than the summary does.
     scored = matched + len(stable_bad) + len(uncorroborated) + len(unstable_bad)
-    if min_compared and scored < min_compared:
-        # NOT a detection threshold. This is the "did the film actually run" floor, and it is the
-        # thing that replaces a slot-budget liveness gate for a job that reads no timings: a
-        # missed slot costs COVERAGE, and coverage is what has to be defended, not punctuality.
-        # Healthy runs measured here compared 22, 25 and 26 of 32 scheduled pairs; a payload
-        # mutated until 24 slots were missed compared 9 and still produced a correct verdict, so
-        # the floor sits between "lost some to a slow machine" and "did not run the film".
-        print(
-            f"\n  TOO LITTLE COMPARED: {scored} of {len(results)} pair(s) carry a verdict, "
-            f"below the floor of {min_compared}. A run that compared almost nothing passes"
-            f"\n  trivially, and this is that run. Nothing below is a pass."
-        )
-        return 3
+    assert len(compared) == scored, (len(compared), scored)
+    shortfall = coverage_shortfall(scored, len(results), min_compared)
+    if shortfall:
+        print(f"\n  {shortfall}")
+        return Outcome(3, frozenset(compared), _keys(results))
 
     if expect_bad:
         print(
@@ -1737,7 +1981,7 @@ def report(
     # joins them for the reason given where it is collected: an assertion that failed on one arm
     # only is the two builds behaving differently, and it is the one shape a digest cannot show.
     if stable_bad or one_sided or expect_bad:
-        return 1
+        return Outcome(1, frozenset(compared), _keys(results))
     # 2, the same code the empty-payload path uses, and for the same reason: the tool was asked a
     # question it could not answer. Exiting 0 here would let CI go green on a run where the parity
     # check was structurally incapable of firing -- whether because every pair was a windowed mount
@@ -1747,8 +1991,8 @@ def report(
     # nothing -- `expect_bad` is collected ahead of the verdict branches and survives a pair that
     # `continue`s -- and "it failed" is the more specific answer than "it could not tell".
     if decided == 0:
-        return 2
-    return 0
+        return Outcome(2, frozenset(compared), _keys(results))
+    return Outcome(0, frozenset(compared), _keys(results))
 
 
 def tier_of(paths: list[Path]) -> set[str]:
@@ -2018,6 +2262,12 @@ def main(argv: list[str] | None = None) -> int:
 
     worst = 0
     scored_windowed = 0
+    # THE COVERAGE FLOOR'S OWN BOOKKEEPING, kept across every mode this invocation runs. Namespaced
+    # by pattern so two payloads cannot merge a pair key, and a SET rather than a running total
+    # because `--mode auto` scores each windowed pair twice, once on the visible region and once on
+    # the invariants; see `Outcome`.
+    compared_pairs: set[tuple] = set()
+    seen_pairs: set[tuple] = set()
     vis_unstable: Optional[frozenset[tuple[str, str]]] = None
     vis_null_tiers: set[str] = set()
     vis_null_corpora: set[str] = set()
@@ -2091,20 +2341,23 @@ def main(argv: list[str] | None = None) -> int:
                     f"reading them as findings."
                 )
                 floor = frozenset()
-            worst = max(
-                worst,
-                visible_report(paths, f"UI PARITY: {pattern}", floor, select = win),
+            vis = visible_report(
+                paths, f"UI PARITY: {pattern}", floor, select = win, min_reps = args.min_reps
             )
+            worst = max(worst, int(vis))
+            compared_pairs |= {(pattern, *k) for k in vis.compared}
+            seen_pairs |= {(pattern, *k) for k in vis.seen}
         if args.mode in ("auto", "behaviour"):
-            worst = max(
-                worst,
-                behaviour_report(
-                    paths,
-                    f"UI PARITY: {pattern}",
-                    windowed = args.mode == "auto" or any_windowed(paths) is not None,
-                    select = win,
-                ),
+            beh = behaviour_report(
+                paths,
+                f"UI PARITY: {pattern}",
+                windowed = args.mode == "auto" or any_windowed(paths) is not None,
+                select = win,
+                min_reps = args.min_reps,
             )
+            worst = max(worst, int(beh))
+            compared_pairs |= {(pattern, *k) for k in beh.compared}
+            seen_pairs |= {(pattern, *k) for k in beh.seen}
 
     # AHEAD OF THE STRUCTURAL EARLY RETURN, because this mode does not read the plan at all.
     #
@@ -2153,9 +2406,24 @@ def main(argv: list[str] | None = None) -> int:
             worst = max(worst, rc)
         return worst
 
+    # THE STRUCTURAL EARLY RETURN, and the reason there is now a floor check on both sides of it.
+    #
+    # Everything below this line is the structural half: the digest's own null control, its
+    # cross-side tier and corpus refusal, and the `report()` calls. A payload with no fully mounted
+    # pair has no structural half, so returning here is right for all of that. What was NOT right
+    # is that `--min-compared` lived inside `report()` and nowhere else, so it was one of those
+    # things. It is a COVERAGE floor, not a structural check: it asks whether the film ran, and a
+    # windowed run's film runs exactly as much as a mounted one's.
+    #
+    # This return is the fourth cross-cutting enforcement found sitting below it in one review of
+    # one PR -- the null control's tier axis, then its corpus axis, then `--audit-null`, then this.
+    # The first three were each hoisted or duplicated in turn; a fourth one-off would be the same
+    # move a fourth time. So the coverage floor is applied through `coverage_shortfall` on BOTH
+    # exits from here, over the pairs every mode actually compared, and the reports hand those
+    # pairs back rather than being asked to enforce a threshold each.
     remaining = [e for e in plan if e["structural"] is None or e["structural"]]
     if not remaining:
-        return worst
+        return _floored(worst, compared_pairs, seen_pairs, args.min_compared)
     if scored_windowed:
         # The rest still get the digest they were owed, in the same run.
         print(
@@ -2238,10 +2506,17 @@ def main(argv: list[str] | None = None) -> int:
         # written it would have bound `args.min_reps` to `select` and `args.min_compared` to
         # `min_reps`, leaving the coverage floor at its default of 0 -- a silently disabled guard
         # and a structural pass scoring against an integer, with nothing failing to say so.
-        worst = max(
-            worst,
-            report(paths, label, effective, select, args.min_reps, args.min_compared),
-        )
+        # `min_compared` IS NOT PASSED DOWN ANY MORE, and that is the change rather than an
+        # omission. This call is one of possibly several reports in one invocation, and a floor
+        # applied inside each of them is checked SEPARATELY per report: a combined run that
+        # compared nine windowed pairs and nine structural ones would fail a floor of sixteen
+        # twice over, having compared eighteen. `report` keeps the parameter and keeps returning 3
+        # on it, because the selftests call it directly and it is a complete report in its own
+        # right; what `main` does is collect the pairs and apply the floor once, below.
+        struct = report(paths, label, effective, select, args.min_reps)
+        worst = max(worst, int(struct))
+        compared_pairs |= {(pattern, *k) for k in struct.compared}
+        seen_pairs |= {(pattern, *k) for k in struct.seen}
     # COMBINED, and the worst outcome wins. A behavioural failure on one payload is not cancelled
     # by a structural pass on another, and a structural failure at the fully mounted rungs is not
     # cancelled by the windowed rungs passing their own two modes.
@@ -2251,7 +2526,7 @@ def main(argv: list[str] | None = None) -> int:
             f"region and behavioural invariants, {scored_structural} scored structurally. Any "
             "mode's failure fails the run."
         )
-    return worst
+    return _floored(worst, compared_pairs, seen_pairs, args.min_compared)
 
 
 if __name__ == "__main__":

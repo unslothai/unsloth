@@ -372,7 +372,8 @@ and `thread_total` on every parity capture, `mounted_before` / `mounted_after` o
 `reopen_readiness` on `thread_reopen`, `visible` on every action row, `observation_ms` on every
 action row, `stream_samples` / `attached_fraction_of_stream` / `reattachments` on the cell's
 `follow`, `reply_chars_scoreable` / `wire_parse_failures_in_window` /
-`wire_pending_chars_at_close` on every `stream_cost` window, and the gate rows
+`wire_pending_chars_at_close` on every `stream_cost` window, `ordinal_collisions` /
+`collided_ordinals` on every visible-region capture, and the gate rows
 `thread_ready:{mode}`, `thread_complete`, `follows_the_stream` and `windowed_readiness:{arm}`.
 
 **What `thread_reopen` measures.** `reopen_ms` runs from the click on the thread's sidebar row
@@ -531,6 +532,19 @@ MESSAGES on screen" for a rebuild that was identical. The lookup is kept off the
 only by a batch that mounted a message element, so a stream (text churn inside mounted rows) builds
 none. A row that can be placed by neither route is stamped with no ordinal and counted in
 `unplaced_rows` rather than given a guess.
+
+**Two mounted rows publishing ONE position make the capture unreadable, and it says so.** The
+per-message digests are keyed by that position and `ever_visible` is a set of them, so a second row
+carrying a position a row already holds replaces the first one's digest and adds nothing to the
+set: three rows on screen produce a capture indistinguishable from a capture of two. Which of the
+two survives is DOM order, so the pair reaches MATCH exactly when the survivor happens to agree with
+the other arm. It is counted as `ordinal_collisions` with the positions named in
+`collided_ordinals`, and any nonzero count makes the pair NOT COMPARABLE before `ever_visible` and
+`messages` are read, because both of them are short by a row. The count is taken directly and NOT
+derived from `unmounted_at_capture`: in the renumber case the extra row at one position and the
+vacancy at another cancel, and that reads a clean zero over a live collision. The limit, stated: a
+collision that had resolved to one row by capture time is not visible here, and seeing it would need
+the clash recorded when the position is stamped.
 
 **The visible-region noise floor is keyed by (rung, action), and needs more than one observation.**
 `visible_unstable_set` derives it from a base-vs-base null control. It returned ACTION NAMES, so a
