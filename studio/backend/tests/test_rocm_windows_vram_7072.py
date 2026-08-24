@@ -954,3 +954,80 @@ def test_the_luid_join_bounds_counters_by_the_carve_out_not_the_pool():
     assigned, aggregate = matched
     assert assigned[0] == pytest.approx(2.0 * GB)
     assert aggregate == pytest.approx(2.0 * GB)
+
+
+# ----------------------------------------------------------------------------- #
+# The join must not stop at a pass that answered nothing, or place bytes it
+# cannot account for
+# ----------------------------------------------------------------------------- #
+def test_a_name_collision_falls_through_to_the_gfx_pass(win_rocm, monkeypatch):
+    """Two cards sharing one Description but differing in arch. The name pass
+    succeeds by cardinality yet names neither device, and returning there would
+    keep both unknown when gfx separates them."""
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        _fake_torch(
+            [("AMD Radeon Graphics", 24 * GB, "gfx1100"), ("AMD Radeon Graphics", 16 * GB, "gfx1200")],
+            free_equals_total = True,
+        ),
+    )
+    monkeypatch.setattr(
+        hw,
+        "_windows_amd_adapter_records_by_luid",
+        lambda: {
+            0xAAAA: {"name": "AMD Radeon Graphics", "gfx": "gfx1100"},
+            0xBBBB: {"name": "AMD Radeon Graphics", "gfx": "gfx1200"},
+        },
+    )
+    monkeypatch.setattr(
+        hw.subprocess,
+        "run",
+        _subprocess_run(
+            adapter_output = _adapter_output(
+                [
+                    ("luid_0x00000000_0x0000aaaa_phys_0", 9.0 * GB),
+                    ("luid_0x00000000_0x0000bbbb_phys_0", 3.0 * GB),
+                ]
+            )
+        ),
+    )
+
+    devices, aggregate = hw._rocm_windows_per_device_vram([0, 1])
+    assert [d["used_gb"] for d in devices] == [9.0, 3.0]
+    assert aggregate == 12.0
+
+
+def test_the_join_declines_usage_it_cannot_place(win_rocm, monkeypatch):
+    """A hidden AMD card carrying the visible device's torch name, while the
+    visible card's own record is spelled differently. The visible device's
+    counter sits under a key no device claims, so pairing the remaining one would
+    report the hidden card's bytes as the visible card's."""
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
+    monkeypatch.setitem(
+        sys.modules, "torch", _fake_torch([("AMD Radeon RX 7900 XTX", 24 * GB)], free_equals_total = True)
+    )
+    monkeypatch.setattr(
+        hw,
+        "_windows_amd_adapter_records_by_luid",
+        lambda: {
+            0xAAAA: {"name": "AMD Radeon RX 7900 XTX 24GB"},  # the visible card, spelled differently
+            0xBBBB: {"name": "AMD Radeon RX 7900 XTX"},  # a hidden card wearing the torch name
+        },
+    )
+    monkeypatch.setattr(
+        hw.subprocess,
+        "run",
+        _subprocess_run(
+            adapter_output = _adapter_output(
+                [
+                    ("luid_0x00000000_0x0000aaaa_phys_0", 2.0 * GB),
+                    ("luid_0x00000000_0x0000bbbb_phys_0", 17.0 * GB),
+                ]
+            )
+        ),
+    )
+
+    devices, _ = hw._rocm_windows_per_device_vram([0])
+    # 17 GiB is the hidden card's. Unknown is the only honest answer here.
+    assert devices[0]["used_gb"] is None

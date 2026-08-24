@@ -2323,6 +2323,8 @@ def _match_adapter_used_by_luid(
         if luid is not None and luid in records:
             useds_by_luid.setdefault(luid, []).append(used)
 
+    vacuous: Optional[tuple[list[Optional[float]], float]] = None
+
     for field, record_key, device_key in (
         (
             "name",
@@ -2345,10 +2347,29 @@ def _match_adapter_used_by_luid(
             positions_by_key.setdefault(device_key(meta), []).append(position)
         if "" in positions_by_key:  # a visible device carrying no such key
             continue
+        # AMD usage this key cannot place. The counter belongs to a record whose
+        # key matches no visible device, so this key is not identifying reliably:
+        # a visible card whose Description differs from its props.name leaves its
+        # own counter under one key while a hidden card sits under the device's,
+        # and the pairing below would hand the hidden card's bytes to the visible
+        # one. Declining costs a masked second AMD card its join and falls back to
+        # capacity ranking, which is where that case already was.
+        if set(useds_by_key) - set(positions_by_key):
+            continue
         matched = _attribute_adapter_useds_by_key(useds_by_key, positions_by_key, dev_meta)
         if matched is not None:
-            return matched
-    return None
+            # A pass can succeed while naming no device: same-keyed cards leave
+            # per-device unknown and contribute only to the aggregate (#7452).
+            # That is a result, but not a reason to stop -- "a declined name join
+            # falls to the gfx target" has to cover a vacuous success too, or two
+            # same-named cards of different arch stay unknown where gfx separates
+            # them. Keep the first such result for its aggregate, prefer any later
+            # pass that actually attributes.
+            if any(used is not None for used in matched[0]):
+                return matched
+            if vacuous is None:
+                vacuous = matched
+    return vacuous
 
 
 def _match_adapter_used_to_devices(
