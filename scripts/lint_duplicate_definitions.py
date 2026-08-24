@@ -37,8 +37,11 @@ Deliberately narrow, so a finding is always worth acting on:
     is the FIRST binding of the name and two of them are ordinary merge damage.
   - Assignments are ALL_CAPS only, and `X = frozenset(X)` style self-transforms are exempt.
     A lowercase module-level name being rebound is common enough to be noise.
-  - `import urllib.parse` beside `import urllib.request` both bind `urllib` and are correct,
-    so plain imports are keyed on the full dotted path AND the name they bind.
+  - Imports are keyed on the name they BIND, with one carve-out: an IMPLICIT binding takes
+    whatever its source is called, so two of them from different sources are the ordinary
+    `import urllib.parse` / `import urllib.request` and `from a import x` / `from b import x`
+    shapes and stay legitimate. An explicit `as` alias is a name the author chose, so a second
+    binding of it is always a dead first binding.
 
 Exit codes: 0 = clean, 1 = findings, 2 = usage error.
 
@@ -99,7 +102,29 @@ def _decorator_name(node) -> str:
     return ".".join(reversed(parts))
 
 
-def _is_exempt_def(node) -> bool:
+def _overload_names(tree) -> set:
+    """Every spelling of `typing.overload` this module actually binds.
+
+    The exact-name set alone reads the decorator as written, so `import typing as t` with
+    `@t.overload`, or `from typing import overload as ov` with `@ov`, was not recognised and
+    the overload signatures were reported as duplicate definitions. That is the wrong way for
+    a gate to be wrong: a conventional typing pattern would block CI on correct code.
+    """
+    names = set(OVERLOAD_DECORATORS)
+    modules = {"typing", "typing_extensions"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name in modules and alias.asname:
+                    names.add(f"{alias.asname}.overload")
+        elif isinstance(node, ast.ImportFrom) and node.module in modules and not node.level:
+            for alias in node.names:
+                if alias.name == "overload" and alias.asname:
+                    names.add(alias.asname)
+    return names
+
+
+def _is_exempt_def(node, overloads) -> bool:
     """True for the decorator families that legitimately bind one name several times.
 
     `@property` itself is NOT one of them. It is the FIRST binding of the name, so
@@ -109,7 +134,7 @@ def _is_exempt_def(node) -> bool:
     """
     for decorator in getattr(node, "decorator_list", []):
         name = _decorator_name(decorator)
-        if name in OVERLOAD_DECORATORS:
+        if name in overloads:
             return True
         if name.count(".") == 1 and name.split(".")[1] in PROPERTY_ATTRS:
             return True
@@ -130,32 +155,43 @@ def _constant_targets(target):
     return []
 
 
-def _defined_names(node):
+def _defined_names(node, overloads):
     """[(name, kind)] bound by a direct child of a module/class body."""
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-        return [] if _is_exempt_def(node) else [(node.name, "def")]
+        return [] if _is_exempt_def(node, overloads) else [(node.name, "def")]
     if isinstance(node, ast.ClassDef):
         return [(node.name, "class")]
     # `X: int = 1` is an AnnAssign, not an Assign, and a typed module-level constant is
     # common in this repo (MAX_FUSED_SIZE: int = 65536). Duplicating one is the same bug.
-    if isinstance(node, ast.Assign) and len(node.targets) == 1:
-        target, value = node.targets[0], node.value
+    # EVERY target, not a lone one: a chained `N = K = 256` (which this repo writes, in
+    # tests/test_grouped_gemm_optional_gather_indices.py) parks two names in one statement,
+    # and requiring exactly one target dropped both, so duplicating the line rebound both
+    # while the scan reported clean.
+    if isinstance(node, ast.Assign):
+        targets, value = node.targets, node.value
     elif isinstance(node, ast.AnnAssign) and node.value is not None:
-        target, value = node.target, node.value
+        targets, value = [node.target], node.value
     else:
         return []
     # `X = frozenset(X)` / `X = X + (...)` transforms a constant rather than redefining
     # it. Only a value computed WITHOUT the old one replaces it, decided per name so
     # that `A, B = B, A` exempts both while `A, B = 1, 2` exempts neither.
     referenced = {sub.id for sub in ast.walk(value) if isinstance(sub, ast.Name)}
-    return [(name, "constant") for name in _constant_targets(target) if name not in referenced]
+    names = []
+    for target in targets:
+        for name in _constant_targets(target):
+            # One statement binding a name twice (`X = X = 1`) still binds it once, so it
+            # is not the two-copies damage this looks for.
+            if name not in referenced and name not in names:
+                names.append(name)
+    return [(name, "constant") for name in names]
 
 
-def _scope_duplicates(body, scope, out) -> None:
+def _scope_duplicates(body, scope, out, overloads) -> None:
     """Names bound twice as direct children of one body; recurses into class bodies."""
     seen = {}
     for node in body:
-        for name, kind in _defined_names(node):
+        for name, kind in _defined_names(node, overloads):
             if name in seen:
                 first_line, first_kind = seen[name]
                 out.append(
@@ -169,7 +205,7 @@ def _scope_duplicates(body, scope, out) -> None:
             else:
                 seen[name] = (node.lineno, kind)
         if isinstance(node, ast.ClassDef):
-            _scope_duplicates(node.body, f"{scope}{node.name}.", out)
+            _scope_duplicates(node.body, f"{scope}{node.name}.", out, overloads)
 
 
 def _import_duplicates(body, scope, out) -> None:
@@ -202,16 +238,23 @@ def _import_duplicates(body, scope, out) -> None:
             # package to the submodule.
             source = module if module is not None else alias.name
             bound = alias.asname or (alias.name if module is not None else alias.name.split(".")[0])
-            # `from m import x as v` and `from m import y as v` both bind v, so a from-import
-            # is keyed on what it binds. A plain import is keyed on the dotted path AND the
-            # bound name: `import sys as _sys` beside `import sys` binds two different names
-            # and is correct, and so is `import urllib.parse` beside `import urllib.request`.
-            key = (source, bound)
-            if key in seen:
+            # Keyed on the BOUND NAME, because that is what gets shadowed, with one carve-out
+            # for the case where the name was never chosen: an IMPLICIT binding takes whatever
+            # the source happens to be called, so two of them from different sources are the
+            # ordinary `import urllib.parse` / `import urllib.request` and `from a import x` /
+            # `from b import x` shapes and stay legitimate. An EXPLICIT `as` alias is a name the
+            # author picked, so a second binding of it is always dead -- which is how
+            # `import urllib.parse as client` beside `import urllib.request as client` slipped
+            # past a key that carried the source.
+            implicit = alias.asname is None
+            if bound in seen:
+                first_line, first_source, first_implicit = seen[bound]
+                if implicit and first_implicit and first_source != source:
+                    continue
                 where = (
                     "twice in this statement"
-                    if seen[key] == node.lineno
-                    else f"twice from the same module (first at line {seen[key]})"
+                    if first_line == node.lineno
+                    else f"twice from the same module (first at line {first_line})"
                 )
                 out.append(
                     Finding(
@@ -225,7 +268,7 @@ def _import_duplicates(body, scope, out) -> None:
                     )
                 )
             else:
-                seen[key] = node.lineno
+                seen[bound] = (node.lineno, source, implicit)
 
 
 def scan_source(source: str, filename: str = "<unknown>"):
@@ -235,7 +278,7 @@ def scan_source(source: str, filename: str = "<unknown>"):
     except SyntaxError as exc:
         return [Finding(exc.lineno or 0, "parse", f"does not parse ({exc.msg})")]
     found = []
-    _scope_duplicates(tree.body, "", found)
+    _scope_duplicates(tree.body, "", found, _overload_names(tree))
     _import_duplicates(tree.body, "", found)
     return sorted(found)
 
@@ -362,6 +405,35 @@ _SELF_TEST_CASES = [
     (0, "import urllib.parse as parse\nimport urllib.request as request\n"),
     (0, "value = 1\nvalue = 2\n"),
     (0, "import os\nfrom a import b\n\nX = 1\n\n\ndef go():\n    return os, b, X\n"),
+    # A chained assignment binds every name in the chain, so duplicating the line rebinds
+    # every one of them. `N = K = 256` is written in this repo; requiring a single target
+    # dropped the whole statement and the duplicate went unreported.
+    (2, "N = K = 256\nN = K = 512\n"),
+    (0, "N = K = 256\nM = 512\n"),
+    (0, "X = X = 1\n"),  # one statement, one live binding
+    # Overload signatures reached through an import alias are still overloads. Reporting
+    # them is a FALSE POSITIVE that blocks CI on a conventional typing pattern.
+    (
+        0,
+        "import typing as t\n@t.overload\ndef f(x: int) -> int: ...\n"
+        "@t.overload\ndef f(x: str) -> str: ...\ndef f(x):\n    return x\n",
+    ),
+    (
+        0,
+        "from typing import overload as ov\n@ov\ndef f(x: int) -> int: ...\n"
+        "@ov\ndef f(x: str) -> str: ...\ndef f(x):\n    return x\n",
+    ),
+    # ...but the alias has to be typing's. `t` bound to anything else is not an overload.
+    (1, "import types as t\n@t.overload\ndef f(x): ...\n@t.overload\ndef f(x): ...\n"),
+    # One explicit alias, two sources: the second silently replaces the first, so the first
+    # is a dead binding. Keying on the source made the two look unrelated.
+    (1, "import urllib.parse as client\nimport urllib.request as client\n"),
+    (1, "from os import path as v\nfrom sys import modules as v\n"),
+    # The shape that legitimately binds one name twice, and must stay legitimate: two plain
+    # imports of different submodules, both binding the package root.
+    (0, "import urllib.parse\nimport urllib.request\n"),
+    # Still caught: the same package root rebound from the package to a submodule.
+    (1, "import urllib.parse\nimport urllib.parse as urllib\n"),
 ]
 
 
@@ -412,7 +484,12 @@ def main() -> int:
             after = _revision_findings(args.after, str(path))
             if after is None:
                 continue  # not present at the head revision (deleted, or renamed away)
-            before = _revision_findings(args.before, renames.get(str(path), str(path)))
+            # Only follow a rename back to a path that was ITSELF Python. Renaming
+            # `mod.txt` to `mod.py` is what makes those definitions active code, so the
+            # duplicates in it are introduced by this branch, not inherited: mapping onto
+            # the non-Python original consumed them as pre-existing.
+            old = renames.get(str(path), str(path))
+            before = _revision_findings(args.before, old) if old.endswith(".py") else None
             # A file the branch ADDS has no before side, so every finding in it is new.
             was = Counter(f.key for f in (before or []))
             for finding in after:

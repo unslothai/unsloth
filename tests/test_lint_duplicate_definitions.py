@@ -112,6 +112,23 @@ def test_rename_that_also_adds_a_duplicate_still_blocks(repo):
     assert "nu is defined twice" in result.stdout
 
 
+def test_a_rename_from_a_non_python_file_is_treated_as_an_addition(repo):
+    """Renaming `mod.txt` to `mod.py` is what makes those definitions active code.
+
+    The before side is not an eligible Python file, so its duplicates were never live and
+    cannot be inherited. Following the rename onto it consumed them as pre-existing and let
+    the branch turn a duplicate-carrying text file into a duplicate-carrying module for free.
+    """
+    (repo / "mod.txt").write_text(DUPLICATE)
+    before = _commit(repo, "base with a duplicate in a text file")
+    _git(repo, "mv", "mod.txt", "mod.py")
+    after = _commit(repo, "promote the text file to a module")
+
+    result = _run(repo, before, after, "mod.py")
+    assert result.returncode == 1, result.stdout
+    assert "go is defined twice" in result.stdout
+
+
 def test_a_second_copy_of_an_already_duplicated_name_is_blocked(repo):
     """Two copies before, three after. Counting by identity has to notice the third."""
     (repo / "mod.py").write_text(DUPLICATE)
