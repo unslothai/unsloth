@@ -426,19 +426,15 @@ def compare(base: Optional[dict], treat: Optional[dict]) -> dict:
 def execution_verdict(base_row: Optional[dict], treat_row: Optional[dict]) -> Optional[dict]:
     """The verdict that the DIGEST never gets to answer, or `None` when both arms ran.
 
-    EXTRACTED SO THERE IS ONE COPY, not for tidiness. `compare_rows` is the structural path and it
-    is the only path that ever consulted this: the visible-region and behavioural paths build their
-    result from `compare(...)` on a capture sub-object and reduced execution to a single boolean
-    conjunction of `ran`, which cannot express WHICH arm went idle. An action that RUNS on one build
-    and cannot be performed on the other is the one regression class that leaves no digest to
-    differ, and on a windowed arm the visible and behavioural reports are the whole UI verdict, so
-    that class had nowhere left to be seen. A predicate copied into the other paths would drift from
-    this one the same way the gate-admission lists did before `INVALIDATING_CELL_GATES` was
-    centralised, so the callers share this function rather than a description of it.
+    EXTRACTED SO THERE IS ONE COPY, not for tidiness. Only `compare_rows` ever consulted this; the
+    visible-region and behavioural paths reduced execution to a boolean conjunction of `ran`, which
+    cannot express WHICH arm went idle. An action that RUNS on one build and cannot be performed on
+    the other leaves no digest to differ, and on a windowed arm those two reports are the whole UI
+    verdict, so that class had nowhere left to be seen. A predicate copied into them would drift the
+    way the gate-admission lists did before `INVALIDATING_CELL_GATES` was centralised.
 
-    The returned dict is the caller's to merge or return whole; `compare_rows` returns it, while the
-    visible and behavioural paths keep their own capture comparison and take `one_sided` and
-    `idle_reason` off it.
+    The returned dict is the caller's to merge or return whole: `compare_rows` returns it, the other
+    two keep their own capture comparison and take `one_sided` and `idle_reason` off it.
     """
     ran: dict[str, bool] = {}
     for label, row in (("base", base_row), ("treatment", treat_row)):
@@ -502,26 +498,23 @@ def expect_regression(base_row: Optional[dict], treat_row: Optional[dict]) -> tu
     """(the arm whose own assertion failed while the other's passed, why) or `("", "")`.
 
     AN ACTION THAT RAN AND FAILED ITS OWN ASSERTION IS NOT A COMPARISON OF WHAT IT NAMES, and
-    `ran` alone cannot see it. `stop_generation` returns `ran = True, expect_ok = stopped_ms is
-    not None`, so a head on which Stop no longer ends the stream records a row this layer reads
-    as a perfectly good observation. Every other reader already knows better --
-    `scoring.from_payload` drops such a row's timing and `report.payload` and `--assert-liveness`
-    both single it out -- and the parity layer was the one left reading only `ran`.
+    `ran` alone cannot see it. `stop_generation` returns `ran = True, expect_ok = stopped_ms is not
+    None`, so a head on which Stop no longer ends the stream records a row this layer read as a
+    perfectly good observation. `scoring.from_payload`, `report.payload` and `--assert-liveness`
+    already know better; the parity layer was the one left reading only `ran`.
 
-    CARRIED SEPARATELY FROM THE DIGEST, not folded into the verdict, and that is the whole point
-    of it. `stop_generation` is on the declared unstable list, so its DOM difference is excused;
-    applying that exemption to the assertion as well is applying a measurement of one quantity
-    (does this digest race) to a different one (did the button do its job). The two happen to
-    share an action name and nothing else. So the caller gets its own signal and decides.
+    CARRIED SEPARATELY FROM THE DIGEST, not folded into the verdict. `stop_generation` is on the
+    declared unstable list, so its DOM difference is excused -- but that exemption measures one
+    quantity (does this digest race) and the assertion is another (did the button do its job). They
+    share an action name and nothing else, so the caller gets its own signal and decides.
 
-    ONLY AN ASYMMETRY. `expect_ok is None` means the action asserts nothing, and both arms
-    failing means the fixture cannot reach the state on either build -- coverage lost, not a
-    difference between the builds. One arm asserting successfully while the other does not is
-    the two builds behaving differently, which is the question this instrument asks.
+    ONLY AN ASYMMETRY. `expect_ok is None` means the action asserts nothing, and both arms failing
+    means the fixture cannot reach the state on either build -- coverage lost, not a build
+    difference. One arm asserting successfully while the other does not is the question asked here.
 
-    SHARED WITH THE VISIBLE AND BEHAVIOURAL PATHS for the reason given on `execution_verdict`:
-    those two ARE the UI verdict on a windowed arm, and `stop_generation` has no behavioural
-    invariant of its own, so an assertion that failed on one arm alone left no trace in either.
+    SHARED WITH THE VISIBLE AND BEHAVIOURAL PATHS for the reason on `execution_verdict`: those two
+    ARE the UI verdict on a windowed arm, and `stop_generation` has no behavioural invariant, so an
+    assertion failing on one arm alone left no trace in either.
     """
     rows_ = (("base", base_row), ("treatment", treat_row))
     if not all(isinstance(row, dict) for _label, row in rows_):
@@ -773,14 +766,11 @@ def compare_visible(base: Optional[dict], treat: Optional[dict]) -> dict:
         }
 
     # BEFORE THE TWO SETS ARE COMPARED, because a collision is what makes them untrustworthy.
-    #
-    # `scene/parity.js` keys its per-message digests by ordinal, so two mounted rows carrying the
-    # same `aria-posinset` -- a virtualizer that renumbers a recycled row wrongly -- leave one
-    # digest where two rows were on screen, and `ever_visible` is a Set of numbers, so it collapses
-    # them too. Both of the quantities below are then readings of a thread with a row missing from
-    # them, and comparing them first would emit a confident verdict out of inputs that are known to
-    # be short: whether it came out MATCH or DIFFER depended only on whether the surviving row was
-    # the one that happened to agree, which is DOM order and nothing else.
+    # `scene/parity.js` keys its per-message digests by ordinal, so two mounted rows sharing an
+    # `aria-posinset` -- a virtualizer renumbering a recycled row wrongly -- leave one digest where
+    # two rows were on screen, and `ever_visible` collapses them too. Both quantities below are then
+    # short by a row, and whether the verdict came out MATCH or DIFFER would turn only on which of
+    # the two survived, which is DOM order and nothing else.
     #
     # Read defensively so a payload recorded before the counter existed compares exactly as it did.
     collisions = {

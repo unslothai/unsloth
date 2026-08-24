@@ -605,22 +605,17 @@
         const byOrdinal = {};
         let mounted_ever_visible = 0;
         // TWO MOUNTED ROWS CANNOT BE ONE MESSAGE, and until this counter existed nothing said so.
-        // The assignment below is keyed by ordinal, so a second row carrying an ordinal already
-        // written SILENTLY REPLACED the first row's digest, and `VIS.ever` is a Set of numbers, so
-        // it collapsed the pair into one element as well. A ghost row the user could see left the
-        // capture looking exactly like a capture of one row, and whether it was caught was pure
-        // DOM order: reproduced in a browser, the same ghost inserted BEFORE the real row returns
-        // MATCH and inserted AFTER it returns DIFFER. Last writer wins, so the collision passes
-        // precisely when the surviving row happens to be the one that agrees with the other arm.
+        // The assignment below is keyed by ordinal, so a second row reusing one SILENTLY REPLACED
+        // the first row's digest, and `VIS.ever` is a Set of numbers so it collapsed them too.
+        // Whether the ghost row was caught was pure DOM order: reproduced in a browser, the same
+        // ghost inserted BEFORE the real row returns MATCH and AFTER it returns DIFFER.
         //
-        // COUNTED DIRECTLY, NOT DERIVED. `unmounted_at_capture` looks like it should notice --
-        // an extra row at one ordinal and a vacancy at another -- but the two cancel in exactly
-        // the renumber case, and it reads a clean 0 with a live collision in the DOM.
+        // COUNTED DIRECTLY, NOT DERIVED. `unmounted_at_capture` looks like it should notice, but
+        // the extra row and the vacancy cancel in exactly the renumber case, so it reads a clean 0
+        // over a live collision.
         //
-        // The residual, stated rather than left implicit: a collision that existed DURING the
-        // action and had resolved to one row by the time `capture()` ran is not detectable here.
-        // Seeing that needs the collision recorded when the ordinal is stamped, which is a change
-        // to the observer's state model rather than to this loop.
+        // The residual: a collision that had resolved to one row by the time `capture()` ran is
+        // not detectable here. Seeing it needs the clash recorded where the ordinal is stamped.
         let ordinal_collisions = 0;
         const collided = [];
         for (let i = 0; i < nodes.length; i++) {

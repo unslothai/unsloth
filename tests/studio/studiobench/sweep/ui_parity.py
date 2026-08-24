@@ -141,39 +141,24 @@ ARMS = ("base", "treatment")
 class Outcome(int):
     """An exit code that carries WHICH PAIRS it was reached over.
 
-    The three reports -- structural, visible-region, behavioural -- each return a process exit code
-    and each knows exactly how many pairs it put a verdict on. Only the structural one could say so,
-    because `--min-compared` is a parameter of `report()` and is enforced at one site inside it. The
-    other two never received the threshold at all, so a run with no fully mounted pair -- every pair
-    windowed, or either of the forced `--mode visible` / `--mode behaviour` invocations -- returned
-    out of `main` before the structural loop and applied no coverage floor of any kind. The
-    workflow's own `--min-compared 16` then passed on one matched capture. That floor is what
-    replaces a slot-budget liveness gate for a job that reads no timings, and two blank pages have
-    identical digests, so it is the guard against the easiest possible false green.
+    `--min-compared` used to be a parameter of `report()` alone, and `report()` sits below `main`'s
+    structural early return. A run with no fully mounted pair -- every pair windowed, or a forced
+    `--mode visible` / `--mode behaviour` -- therefore applied no coverage floor at all, and the
+    workflow's `--min-compared 16` passed on one matched capture. Two blank pages have identical
+    digests, so that floor is the guard against the easiest possible false green.
 
-    AN `int` SUBCLASS, DELIBERATELY. PLEASE DO NOT SIMPLIFY THIS BACK TO A PLAIN RETURN.
+    AN `int` SUBCLASS, DELIBERATELY. PLEASE DO NOT SIMPLIFY THIS BACK TO A PLAIN RETURN. `main` does
+    `worst = max(worst, ...)` and the selftests assert `== 0`/`== 1`/`== 2`/`== 3` directly against
+    `report`, `visible_report` and `behaviour_report` in several dozen places. A tuple or dataclass
+    would mean rewriting all of those in bulk to say what they already say, and this change is
+    precisely about a gate nobody re-derived.
 
-    The exit code is the primary value and every existing caller and test already treats it as one:
-    `main` does `worst = max(worst, ...)` at four call sites, and the selftests assert `== 0`,
-    `== 1`, `== 2` and `== 3` against `report`, `visible_report` and `behaviour_report` directly, in
-    several dozen places. This subclass exists so that every one of those comparisons keeps working
-    UNCHANGED while the coverage the floor needs travels beside the code.
+    PAIR KEYS RATHER THAN A COUNT: `--mode auto` scores the same windowed pairs on the visible
+    region AND on the invariants, so summing would double them and let a floor of 16 pass on 8.
 
-    Widening the return to a tuple or a dataclass is the obvious alternative and it is the worse
-    one: it would mean rewriting several dozen assertions in bulk to say exactly what they say
-    today, and an assertion rewritten in bulk is an assertion nobody re-derived. The whole point of
-    this change is a gate that could only ever say yes, so the last thing it should do on its way in
-    is churn the assertions that say when the other gates say no.
-
-    THE PAIR KEYS RATHER THAN A COUNT, because in `--mode auto` the visible and behavioural reports
-    both score the SAME windowed pairs. Summing two counts there would double every windowed pair
-    and let a floor of 16 pass on 8. A union answers the question the floor actually asks -- how
-    many pairs carried a verdict -- and it is the same question across all three modes.
-
-    The key is `(action, shard, cell)`, which is what each report has in hand. `latest_attempt_rows`
-    has already reduced a cell to one attempt by the time `collect` builds these, so the session
-    term dropped from `cell` cannot merge two live observations. If it ever did, the union would
-    UNDER-count, which can only make the floor fire when it should not have -- a loud false red
+    The key is `(action, shard, cell)`. `latest_attempt_rows` has already reduced a cell to one
+    attempt by the time `collect` builds these, so the session term dropped from `cell` cannot merge
+    two live observations; if it ever did, the union would UNDER-count, which is a loud false red
     rather than a quiet false green.
     """
 
@@ -200,17 +185,9 @@ class Outcome(int):
 def _floored(worst: int, compared: set[tuple], seen: set[tuple], min_compared: int) -> int:
     """`main`'s single application of the coverage floor, over every mode it ran.
 
-    THE ONE CHECK FOR ALL THREE PATHS. `--min-compared` used to be a parameter of `report()` and
-    enforced at one site inside it, and `report()` is reached only from the structural loop below
-    the early return. So a run with no fully mounted pair -- every pair windowed, or either of the
-    forced `--mode visible` / `--mode behaviour` invocations, both of which hard-set the structural
-    plan to empty for EVERY pattern -- applied no coverage floor at all, and `--min-compared 20`
-    exited 0 on one matched capture.
-
-    SUMMED ACROSS MODES, not checked per mode. A combined run scores its windowed pairs on the
-    visible region and on the invariants and its fully mounted ones structurally; those are one
-    film's coverage split three ways, and a floor applied inside each report separately fails a run
-    that compared plenty. `Outcome` says why the pairs are unioned rather than added.
+    UNIONED ACROSS MODES, not checked per mode. One film's coverage is split three ways -- visible
+    region, invariants, structural digest -- and a floor applied inside each report separately fails
+    a run that compared plenty. `Outcome` says why the pairs are unioned rather than added.
 
     RAISED, NEVER LOWERED. A shortfall can only make the verdict worse: a run that already found a
     difference keeps that finding and gains the reason its coverage is too thin to trust either way.
@@ -774,10 +751,9 @@ def behaviour_report(
             continue
         out = B.compare_behaviour(sides["base"], sides["treatment"])
         # THE SAME TWO QUESTIONS THE STRUCTURAL PATH ASKS, off the same functions; see
-        # `compare_all_with`, which carries them for the visible report. An invariant comparison
-        # cannot see either shape: `compare_behaviour` reads the recorded quantities of an action,
-        # and an action that could not be performed on one arm records no quantities to disagree
-        # about, while one that ran and failed its own assertion records perfectly ordinary ones.
+        # `compare_all_with`. `compare_behaviour` cannot see either shape: an action not performed
+        # on one arm records no quantities to disagree about, and one that ran and failed its own
+        # assertion records perfectly ordinary ones.
         idle_ = P.execution_verdict(sides["base"], sides["treatment"])
         out["one_sided"] = (idle_ or {}).get("one_sided") or ""
         out["idle_reason"] = (idle_ or {}).get("idle_reason") or ""
@@ -879,10 +855,9 @@ def behaviour_report(
             "so this run carries no UI verdict -- neither a pass nor a failure. Treat it as an "
             "absent result and find out why the actions did not run."
         )
-    # AFTER the diagnosis is printed and BEFORE the "could not tell" code, which is the ordering
-    # `report` already uses and states: a run can find a real regression while deciding nothing --
-    # the two shapes `build_differences` collects survive a pair whose invariants were unreadable --
-    # and "it failed" is the more specific answer than "it could not tell".
+    # AFTER the diagnosis prints and BEFORE the "could not tell" code, the ordering `report` states:
+    # a run can find a real regression while deciding nothing (the two shapes `build_differences`
+    # collects survive a pair whose invariants were unreadable), and "it failed" is more specific.
     if broken or build_failed:
         return Outcome(1, frozenset(compared), _keys(results))
     if matched == 0:
@@ -1114,22 +1089,19 @@ def compare_all_with(
     `require_complete` drops the action rows of a cell that never wrote its terminal `cell` row;
     see `collect`, which states why that is right on a null control and wrong on a result.
 
-    THE ACTION'S OUTCOME TRAVELS WITH ITS CAPTURE, and it did not use to. This path built its whole
-    result from `compare()` over a capture sub-object plus one boolean, `_ran`, the conjunction of
-    the two arms' `ran` flags -- so the two shapes that are a difference between the BUILDS rather
-    than between two DOMs were erased before any report could see them. An action that runs on one
-    arm and cannot be performed on the other collapsed into the same "did not run" bucket as a
-    missed slot, which every report here counts as lost coverage and not as a finding. And an action
-    that ran on both arms and failed its OWN assertion on one of them -- `stop_generation` on a head
-    where Stop no longer ends the stream -- left no trace at all: the captures are of two viewports
-    that look the same, so the pair matched.
+    THE ACTION'S OUTCOME TRAVELS WITH ITS CAPTURE, and it did not use to: this path built its result
+    from `compare()` plus one boolean, `_ran`, so the two shapes that are a difference between the
+    BUILDS rather than between two DOMs were erased before any report saw them. An action performed
+    on one arm only collapsed into the same "did not run" bucket as a missed slot, which counts as
+    lost coverage and not as a finding; an action that ran on both and failed its OWN assertion on
+    one -- `stop_generation` on a head where Stop no longer ends the stream -- left no trace, the two
+    viewports looking the same.
 
-    That is survivable on the structural path, where `compare_rows` has always asked both questions.
-    It is not survivable here, because on a windowed arm THESE reports are the entire UI verdict:
-    the digest is `not_applicable` by construction and `stop_generation` has no behavioural
-    invariant of its own, so in `--mode auto` a passing invariant on some other action carried the
-    run to exit 0. Both questions are now asked of `analysis/parity.py`'s own functions, the same
-    ones `compare_rows` calls, rather than of a second opinion written out here.
+    Survivable on the structural path, where `compare_rows` has always asked both questions. Not
+    here: on a windowed arm THESE reports are the entire UI verdict, the digest being
+    `not_applicable` by construction and `stop_generation` having no behavioural invariant, so in
+    `--mode auto` a passing invariant on some other action carried the run to exit 0. Both questions
+    now go to `analysis/parity.py`'s own functions, the ones `compare_rows` calls.
     """
     got = collect(paths, select, require_complete = require_complete)
     results = []
@@ -1846,11 +1818,10 @@ def report(
         f"pointer-events)"
     )
 
-    # THE SAME SET, COUNTED TWICE, and that is checked rather than assumed: `compared` is what the
-    # coverage floor is applied to when this report is one of several in a run, and `scored` is the
-    # count this report has always printed. `stable_bad` splits into itself plus `uncorroborated`
-    # above, so the two are the same pairs by construction; the assertion is here so a later edit
-    # to either branch cannot make the floor answer about a different set than the summary does.
+    # THE SAME SET, COUNTED TWICE, checked rather than assumed: `compared` is what the coverage
+    # floor is applied to, `scored` is the count this report has always printed, and `stable_bad`
+    # splits into itself plus `uncorroborated` above. The assert is here so a later edit to either
+    # branch cannot make the floor answer about a different set than the summary does.
     scored = matched + len(stable_bad) + len(uncorroborated) + len(unstable_bad)
     assert len(compared) == scored, (len(compared), scored)
     shortfall = coverage_shortfall(scored, len(results), min_compared)
@@ -2407,20 +2378,14 @@ def main(argv: list[str] | None = None) -> int:
         return worst
 
     # THE STRUCTURAL EARLY RETURN, and the reason there is now a floor check on both sides of it.
+    # Everything below is the structural half, and a payload with no fully mounted pair has none, so
+    # returning here is right for all of it. `--min-compared` was not one of those things: it is a
+    # COVERAGE floor asking whether the film ran, and a windowed run's film runs exactly as much.
     #
-    # Everything below this line is the structural half: the digest's own null control, its
-    # cross-side tier and corpus refusal, and the `report()` calls. A payload with no fully mounted
-    # pair has no structural half, so returning here is right for all of that. What was NOT right
-    # is that `--min-compared` lived inside `report()` and nowhere else, so it was one of those
-    # things. It is a COVERAGE floor, not a structural check: it asks whether the film ran, and a
-    # windowed run's film runs exactly as much as a mounted one's.
-    #
-    # This return is the fourth cross-cutting enforcement found sitting below it in one review of
-    # one PR -- the null control's tier axis, then its corpus axis, then `--audit-null`, then this.
-    # The first three were each hoisted or duplicated in turn; a fourth one-off would be the same
-    # move a fourth time. So the coverage floor is applied through `coverage_shortfall` on BOTH
-    # exits from here, over the pairs every mode actually compared, and the reports hand those
-    # pairs back rather than being asked to enforce a threshold each.
+    # This return is the FOURTH cross-cutting enforcement found sitting below it -- the null
+    # control's tier axis, then its corpus axis, then `--audit-null`, then this. The first three
+    # were hoisted one at a time; so the floor goes through `coverage_shortfall` on BOTH exits, over
+    # the pairs every mode compared, with the reports handing those pairs back.
     remaining = [e for e in plan if e["structural"] is None or e["structural"]]
     if not remaining:
         return _floored(worst, compared_pairs, seen_pairs, args.min_compared)
@@ -2506,13 +2471,11 @@ def main(argv: list[str] | None = None) -> int:
         # written it would have bound `args.min_reps` to `select` and `args.min_compared` to
         # `min_reps`, leaving the coverage floor at its default of 0 -- a silently disabled guard
         # and a structural pass scoring against an integer, with nothing failing to say so.
-        # `min_compared` IS NOT PASSED DOWN ANY MORE, and that is the change rather than an
-        # omission. This call is one of possibly several reports in one invocation, and a floor
-        # applied inside each of them is checked SEPARATELY per report: a combined run that
-        # compared nine windowed pairs and nine structural ones would fail a floor of sixteen
-        # twice over, having compared eighteen. `report` keeps the parameter and keeps returning 3
-        # on it, because the selftests call it directly and it is a complete report in its own
-        # right; what `main` does is collect the pairs and apply the floor once, below.
+        # `min_compared` IS NOT PASSED DOWN ANY MORE: that is the change, not an omission. A floor
+        # applied inside each report is checked separately per report, so a run that compared nine
+        # windowed pairs and nine structural ones would fail a floor of sixteen twice over having
+        # compared eighteen. `report` keeps the parameter (the selftests call it directly and it is
+        # a complete report on its own); `main` collects the pairs and applies the floor below.
         struct = report(paths, label, effective, select, args.min_reps)
         worst = max(worst, int(struct))
         compared_pairs |= {(pattern, *k) for k in struct.compared}
