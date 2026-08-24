@@ -1693,8 +1693,8 @@ def test_resolved_launch_command_accepts_extensionless_node_target(monkeypatch, 
 
 
 def test_resolved_launch_command_prefers_cmd_sibling_of_extensionless_shim(monkeypatch, tmp_path):
-    # shutil.which can resolve npm/pnpm's extensionless POSIX shim ahead of its
-    # .cmd sibling; CreateProcess rejects the former with WinError 193 (#9167).
+    # which() can resolve the extensionless POSIX shim ahead of its .cmd sibling;
+    # CreateProcess rejects the former with WinError 193 (#9167).
     _simulate_windows(monkeypatch)
     posix_shim = tmp_path / "fake-agent"
     posix_shim.write_text("#!/bin/sh\n", encoding = "utf-8")
@@ -1713,8 +1713,7 @@ def test_resolved_launch_command_prefers_cmd_sibling_of_extensionless_shim(monke
 
 
 def test_resolved_launch_command_keeps_extensionless_shim_without_sibling(monkeypatch, tmp_path):
-    # A shebang file with no sibling exercises the probe loop itself: there is
-    # nothing to substitute, so the path passes through unchanged.
+    # Nothing to substitute, so the path passes through unchanged.
     _simulate_windows(monkeypatch)
     executable = tmp_path / "fake-agent"
     executable.write_text("#!/bin/sh\n", encoding = "utf-8")
@@ -1726,8 +1725,8 @@ def test_resolved_launch_command_keeps_extensionless_shim_without_sibling(monkey
 
 
 def test_prefer_cmd_sibling_leaves_an_unreadable_resolution_alone(monkeypatch, tmp_path):
-    # A directory (or unreadable file, or a delete between resolve and open)
-    # must fall through instead of raising out of the launch path.
+    # A directory, an unreadable file, or a delete between resolve and open must
+    # fall through instead of raising out of the launch path.
     _simulate_windows(monkeypatch)
     executable = tmp_path / "fake-agent"
     executable.mkdir()
@@ -1749,9 +1748,8 @@ def test_prefer_cmd_sibling_is_none_safe_and_posix_noop(monkeypatch, tmp_path):
 
 
 def test_resolved_launch_command_rescues_uppercase_cmd_sibling(monkeypatch, tmp_path):
-    # #9167's pnpm dir holds pi.CMD, not pi.cmd. Default NTFS matches either on the
-    # .cmd probe, but a case-sensitive volume (ReFS, or an fsutil-flagged dir) needs
-    # the .CMD probe -- as does this test, on a case-sensitive CI filesystem.
+    # #9167's pnpm dir holds pi.CMD. Case-insensitive NTFS matches that on the .cmd
+    # probe, but a case-sensitive volume needs .CMD, as does this test on CI.
     _simulate_windows(monkeypatch)
     posix_shim = tmp_path / "fake-agent"
     posix_shim.write_text("#!/bin/sh\n", encoding = "utf-8")
@@ -1762,8 +1760,8 @@ def test_resolved_launch_command_rescues_uppercase_cmd_sibling(monkeypatch, tmp_
 
 
 def test_which_with_install_dirs_applies_the_cmd_sibling_preference(monkeypatch, tmp_path):
-    # The version/capability probes spawn this result directly, without going
-    # through _resolved_launch_command, so the rescue must happen here too.
+    # The version probes spawn this result directly, bypassing
+    # _resolved_launch_command, so the rescue must happen here too.
     _simulate_windows(monkeypatch)
     posix_shim = tmp_path / "fake-agent"
     posix_shim.write_text("#!/bin/sh\n", encoding = "utf-8")
@@ -1776,8 +1774,8 @@ def test_which_with_install_dirs_applies_the_cmd_sibling_preference(monkeypatch,
 
 
 def test_resolved_launch_command_rescues_dotted_bin_name_shim(monkeypatch, tmp_path):
-    # cmd-shim appends .cmd to the whole bin name, so a dotted name pairs
-    # "foo.bar" with "foo.bar.cmd" and still needs the sibling preference.
+    # cmd-shim appends .cmd to the whole bin name, so "foo.bar" pairs with
+    # "foo.bar.cmd" and still needs the sibling preference.
     _simulate_windows(monkeypatch)
     posix_shim = tmp_path / "fake.agent"
     posix_shim.write_text("#!/bin/sh\n", encoding = "utf-8")
@@ -1798,9 +1796,8 @@ def test_resolved_launch_command_rescues_dotted_bin_name_shim(monkeypatch, tmp_p
 def test_resolved_launch_command_keeps_extensionless_pe_binary_over_stale_sibling(
     monkeypatch, tmp_path
 ):
-    # CreateProcess can run a PE binary regardless of its name, so a resolved
-    # real executable must keep priority over a stale .cmd wrapper beside it.
-    # Only files opening with a shebang are treated as unlaunchable shims.
+    # CreateProcess runs a PE regardless of its name, so a real executable keeps
+    # priority over a stale .cmd; only shebang files are treated as shims.
     _simulate_windows(monkeypatch)
     executable = tmp_path / "fake-agent"
     executable.write_bytes(b"MZ\x90\x00")
@@ -1814,8 +1811,8 @@ def test_resolved_launch_command_keeps_extensionless_pe_binary_over_stale_siblin
 
 
 def test_resolved_launch_command_falls_through_to_non_npm_cmd_sibling(monkeypatch, tmp_path):
-    # A sibling .cmd that is not an npm shim is still what cmd.exe would have
-    # picked over the extensionless file, so it is returned as-is.
+    # A non-npm .cmd sibling is still what cmd.exe would have picked, so it is
+    # returned as-is.
     _simulate_windows(monkeypatch)
     posix_shim = tmp_path / "fake-agent"
     posix_shim.write_text("#!/bin/sh\n", encoding = "utf-8")
