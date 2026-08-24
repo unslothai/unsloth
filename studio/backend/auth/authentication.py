@@ -50,6 +50,13 @@ def _lan_api_guest_endpoint_allowed(request: Request) -> bool:
     path = request.scope.get("path", "")
     if not isinstance(method, str) or not isinstance(path, str):
         return False
+    root_path = request.scope.get("root_path", "")
+    if isinstance(root_path, str) and root_path and path.startswith(root_path):
+        boundary = len(root_path)
+        if path == root_path:
+            path = ""
+        elif len(path) > boundary and path[boundary] == "/":
+            path = path[boundary:]
     method = method.upper()
     if (method, path) in _LAN_API_GUEST_ENDPOINTS:
         return True
@@ -189,8 +196,8 @@ async def get_current_subject(
 
     Valid credentials always take precedence and invalid supplied credentials never
     fall through to guest access. The exception is deliberately narrower than the
-    router: it requires the persisted opt-in, an OpenAI-compatible path, a configured
-    LAN accepting socket, and a non-public listener address.
+    router: it requires the persisted opt-in, a non-browser OpenAI-compatible request,
+    a configured LAN accepting socket, and a non-public listener address.
     """
     if credentials is not None:
         subject, _generation = await _get_current_credential(
@@ -209,6 +216,12 @@ async def get_current_subject(
         raise HTTPException(
             status_code = status.HTTP_403_FORBIDDEN,
             detail = "Invalid authentication credentials",
+        )
+
+    if request.headers.get("origin") is not None:
+        raise HTTPException(
+            status_code = status.HTTP_403_FORBIDDEN,
+            detail = "Not authenticated",
         )
 
     if not _lan_api_guest_endpoint_allowed(request):

@@ -1017,11 +1017,15 @@ def _api_request(
     server: tuple[str, int] = ("192.168.1.24", 8888),
     client: tuple[str, int] | None = ("192.168.1.90", 54321),
     authorization: str | None = None,
+    origin: str | None = None,
+    root_path: str = "",
     app = None,
 ) -> Request:
     headers = []
     if authorization is not None:
         headers.append((b"authorization", authorization.encode("latin-1")))
+    if origin is not None:
+        headers.append((b"origin", origin.encode("latin-1")))
     scope = {
         "type": "http",
         "http_version": "1.1",
@@ -1029,6 +1033,7 @@ def _api_request(
         "scheme": "http",
         "path": path,
         "raw_path": path.encode("ascii"),
+        "root_path": root_path,
         "query_string": b"",
         "headers": headers,
         "server": server,
@@ -1038,6 +1043,34 @@ def _api_request(
     if app is not None:
         scope["app"] = app
     return Request(scope)
+
+
+def test_unauthenticated_openai_api_rejects_browser_origin_requests(monkeypatch, stored_settings):
+    stored_settings[lan_settings.LAN_ACCESS_UNAUTHENTICATED_API_KEY] = True
+    monkeypatch.setattr(lan_access, "_bound_addresses", ("192.168.1.24",))
+    request = _api_request(
+        "/v1/chat/completions",
+        method = "POST",
+        origin = "https://attacker.example",
+    )
+
+    with pytest.raises(HTTPException) as refused:
+        asyncio.run(authentication.get_current_subject(credentials = None, request = request))
+    assert refused.value.status_code == 403
+
+
+def test_unauthenticated_openai_api_accepts_root_path_prefixed_routes(monkeypatch, stored_settings):
+    stored_settings[lan_settings.LAN_ACCESS_UNAUTHENTICATED_API_KEY] = True
+    monkeypatch.setattr(lan_access, "_bound_addresses", ("192.168.1.24",))
+    request = _api_request(
+        "/studio/v1/models",
+        root_path = "/studio",
+    )
+
+    assert (
+        asyncio.run(authentication.get_current_subject(credentials = None, request = request))
+        == authentication.DEFAULT_ADMIN_USERNAME
+    )
 
 
 def test_unauthenticated_openai_api_is_limited_to_the_live_lan_listener(
