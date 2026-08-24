@@ -2244,9 +2244,8 @@ def mlx_speculative_request_reason(
     ).reason
 
 
-# Comparing tokenizers reads the target's own, which a target being loaded for the first time
-# has not downloaded yet. The verifier contract is not in this set: it is read from the cached
-# drafter alone, so fetching the target cannot decide it.
+# Missing an input the target load supplies. The verifier contract is not one: it is read from
+# the cached drafter, which no download changes.
 _UNPROVEN_REASONS = frozenset({"tokenizer_contract_unavailable", "target_config_unavailable"})
 
 
@@ -2374,14 +2373,11 @@ def resolve_mlx_speculative_request(
     if requested != "auto":
         available = (options or mlx_speculative_options(target_id))["candidates"]
         pinned, reason = _pinned_drafter(requested, draft_model, available)
-        # Offering nothing because the target is unknown is not incompatibility. Candidates are
-        # matched against the target's identity, so one whose configuration has not been fetched
-        # offers none and would be refused for having none -- and the preflights run before the
-        # fetch. The load resolves again once the configuration is there, and pins that answer.
+        # Candidates match on the target's identity, so an unfetched target offers none and
+        # would be refused for having none. The load resolves again once it can.
         if reason == "checkpoint_not_compatible" and not available and target_config is None:
-            # Named, so the load still builds it -- but carrying why it is unjudged, or the
-            # settlement after the download has nothing to recognise and the drafter attaches
-            # without the comparison this deferred.
+            # Built anyway, but carrying why it is unjudged: the settlement after the
+            # download has nothing to recognise otherwise.
             return MlxSpeculativeResolution(requested, draft_model, "target_config_unavailable")
         return MlxSpeculativeResolution(requested, pinned, reason)
 

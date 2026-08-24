@@ -1978,12 +1978,8 @@ class MLXInferenceBackend:
             self._processor = None
             self._is_vlm = False
 
-        # The pin was made against a cache that did not hold this target yet, so a comparison
-        # needing the target's own files could not be made. The load above supplied them, so it
-        # is asked once more here -- before the record below reports the answer, and before the
-        # drafter is chosen from it. Every mode, not only Auto: comparing tokenizers is not
-        # something attaching the drafter does, so an explicit request left unasked would draft
-        # against token ids nothing checked.
+        # The load supplied the files the pin could not read, so the deferred comparison is
+        # settled here. Every mode: attaching a drafter never compares token ids.
         if mlx_speculative_reason_is_unproven(resolution.reason):
             resolution = resolve_mlx_speculative_request(
                 model_name,
@@ -1992,9 +1988,8 @@ class MLXInferenceBackend:
                 is_vision = is_vision,
                 is_lora = is_lora,
             )
-        # An explicitly named method is the point of the load, so a pairing the settlement above
-        # rules out fails it. Raised where the drafter would be built, so it leaves through the
-        # same teardown as a drafter that will not load rather than stranding the target.
+        # Raised where the drafter would be built, so a settled-against pairing leaves through
+        # that teardown rather than stranding the resident target.
         settled_refusal = resolution.reason if requested_speculative_mode != "auto" else None
 
         _audio_type = _classify_mlx_audio_type(
@@ -2149,9 +2144,7 @@ class MLXInferenceBackend:
                     mlx_speculative_effective_block_size = self._draft_block_size,
                     mlx_speculative_materialization_bytes = self._draft_materialization_bytes,
                 )
-                # The deferred comparison was made above, once the target's files were on disk,
-                # so what the record carries is that answer rather than the verdict the preflight
-                # could not reach.
+                # The settled answer, not the verdict the preflight could not reach.
                 model_record["mlx_speculative_reason"] = resolution.reason
 
         self.active_model_name = model_name
@@ -3011,9 +3004,7 @@ class MLXInferenceBackend:
                             _drain_generation_streams(mx)
                             mx.clear_cache()
                         except Exception as exc:
-                            # Separately, so a drafter that would not reset still frees what it
-                            # held: the import is here too, since a closing generator can run it
-                            # after the interpreter has begun tearing modules down.
+                            # Separate, so a reset that raises still frees what it held.
                             logger.warning("MLX speculative cache release failed: %s", exc)
 
         yield from normalize_reasoning_snapshots(

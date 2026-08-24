@@ -13059,7 +13059,6 @@ def _mlx_runtime_settings_match(backend, request) -> bool:
             # The resident target, so one no drafter can attach to compares equal to its Off.
             is_vision = entry.get("is_vision", False),
             is_lora = entry.get("is_lora", False),
-            # Sized as that runtime was loaded, or an identical request resolves to a different
         )
         # Against what Auto pinned, not what survived the load: a drafter that failed to load
         # resolves to the same answer, not a new one.
@@ -14944,12 +14943,8 @@ async def validate_model(
                 request.hf_token,
             ):
                 effective_load_in_4bit = False
-        # Asked once the configuration is here, never before it: asked earlier this answers from
-        # whatever revision happened to be cached, which is not the one the load goes on to use,
-        # and the caller's idle unload has already freed the resident model by the time /load
-        # would correct it. A comparison that needs files this target has not downloaded is still
-        # deferred: the load fetches them, so refusing here would reject a pair that goes on to
-        # load.
+        # After the fetch, never before: asked earlier this answers from whatever revision was
+        # cached rather than the one being loaded. An undecided comparison is still deferred.
         _mlx_spec_reason = await asyncio.to_thread(
             mlx_speculative_request_reason,
             model_identifier,
