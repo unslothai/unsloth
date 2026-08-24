@@ -41,7 +41,7 @@ const CURRENT_QWEN_NON_THINKING_DEFAULTS = {
   presencePenalty: 1.5,
 } as const satisfies PersistedInferenceParams;
 
-function isPresenceBumpQwen(modelId: string): boolean {
+export function isPresenceBumpQwen(modelId: string): boolean {
   const normalized = modelId.toLowerCase();
   return (
     normalized.includes("qwen3.5") ||

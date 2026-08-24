@@ -13,6 +13,8 @@ export const settingsHttp = {
   gets: 0,
   beforeConditionalApply: null as (() => void) | null,
   puts: [] as Record<string, unknown>[],
+  /** One-shot failures for ordinary PUT ordering/retry tests. */
+  putFailures: [] as Array<{ status: number; detail?: unknown }>,
   /** Resolve to let a held GET complete. */
   release: null as (() => void) | null,
   hold(): void {
@@ -60,6 +62,16 @@ function deepMerge(
   return merged;
 }
 
+function nextPutFailureResponse(): Response | null {
+  const failure = settingsHttp.putFailures.shift();
+  if (!failure) return null;
+  return {
+    ok: false,
+    status: failure.status,
+    json: async () => ({ detail: failure.detail ?? "temporary failure" }),
+  } as Response;
+}
+
 export async function authFetch(
   url: string,
   init?: { method?: string; body?: string },
@@ -86,15 +98,16 @@ export async function authFetch(
     }
   } else if (init?.method === "PUT") {
     settingsHttp.puts.push(JSON.parse(init.body ?? "{}"));
+    const failureResponse = nextPutFailureResponse();
+    if (failureResponse) return failureResponse;
   } else {
     if (settingsHttp.gate) {
       await settingsHttp.gate;
     }
     settingsHttp.gets += 1;
     if (settingsHttp.getResponses.length > 0) {
-      responseSettings = await (
-        settingsHttp.getResponses.shift() ?? settingsHttp.settings
-      );
+      responseSettings = await (settingsHttp.getResponses.shift() ??
+        settingsHttp.settings);
     }
   }
   return {

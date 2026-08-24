@@ -12,7 +12,7 @@ localStorageFake.set("unsloth_chat_settings_imported_to_studio_db", "true");
 register("./store-settings-resolver.mjs", import.meta.url);
 
 const { settingsHttp } = await import("./helpers/store-stubs/settings-http.ts");
-const { useChatRuntimeStore } = await import(
+const { flushPendingChatSettings, useChatRuntimeStore } = await import(
   "../src/features/chat/stores/chat-runtime-store.ts"
 );
 
@@ -880,4 +880,97 @@ test("a normalized migration patch stays within the loaded context", async () =>
   const migrated = useChatRuntimeStore.getState();
   assert.equal(migrated.params.maxTokens, 4096);
   assert.equal(migrated.paramsByModel[QWEN38]?.presencePenalty, 1.5);
+});
+
+test("routine model-default refreshes skip migration reads without a candidate", async () => {
+  settingsHttp.getResponses.length = 0;
+  settingsHttp.gets = 0;
+  settingsHttp.puts.length = 0;
+  settingsHttp.settings = {
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+  };
+  useChatRuntimeStore.setState((state) => ({
+    params: {
+      ...state.params,
+      checkpoint: QWEN38,
+      temperature: 0.6,
+      topP: 0.95,
+      topK: 20,
+      minP: 0,
+      repetitionPenalty: 1,
+      presencePenalty: 1.5,
+    },
+    paramsByModel: {},
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    settingsHydrated: true,
+  }));
+
+  const qwen = useChatRuntimeStore.getState();
+  qwen.setParams({ ...qwen.params }, { fromModelDefaults: true });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(settingsHttp.gets, 0);
+
+  const llamaCheckpoint = "unsloth/Llama-3.2-3B-Instruct-GGUF";
+  const current = useChatRuntimeStore.getState();
+  current.setParams(
+    { ...current.params, checkpoint: llamaCheckpoint },
+    { fromModelDefaults: true },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(settingsHttp.gets, 0);
+});
+
+test("a retained settings write stays ahead of the conditional migration", async () => {
+  await flushPendingChatSettings();
+  settingsHttp.getResponses.length = 0;
+  settingsHttp.gets = 0;
+  settingsHttp.puts.length = 0;
+  settingsHttp.putFailures = [{ status: 503 }];
+  settingsHttp.settings = {
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    inferenceParamsByModel: { [QWEN38]: LEGACY_SNAPSHOT },
+  };
+  useChatRuntimeStore.setState((state) => ({
+    params: { ...state.params, ...LEGACY_SNAPSHOT, checkpoint: QWEN38 },
+    paramsByModel: { [QWEN38]: LEGACY_SNAPSHOT },
+    activePreset: "Default",
+    activePresetSource: "custom",
+    reasoningAlwaysOn: false,
+    reasoningEnabled: true,
+    settingsHydrated: true,
+  }));
+
+  useChatRuntimeStore.getState().setActivePresetSource("builtin-default");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  // The failed PUT was requeued, so the confirming GET/CAS must not overtake it.
+  assert.equal(settingsHttp.gets, 0);
+  assert.equal(
+    settingsHttp.puts.some(
+      (put) =>
+        (put.inferenceParamsByModel as Record<string, unknown> | undefined)?.[
+          QWEN38
+        ] !== undefined,
+    ),
+    false,
+  );
+
+  // A later successful settings flush drains the predecessor and resumes the
+  // deferred, still-guarded migration in order.
+  useChatRuntimeStore.getState().setActivePreset("Default");
+  assert.equal(await flushPendingChatSettings(), true);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(settingsHttp.gets, 1);
+  assert.equal(
+    settingsHttp.puts.some(
+      (put) =>
+        (put.inferenceParamsByModel as Record<string, unknown> | undefined)?.[
+          QWEN38
+        ] !== undefined,
+    ),
+    true,
+  );
 });
