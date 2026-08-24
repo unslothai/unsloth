@@ -952,9 +952,29 @@ def _free_in_torch_scope(total_bytes: int, used_gb: float) -> int:
     return min(total_bytes, max(0, total_bytes - round(used_gb * (1024**3))))
 
 
-def _context_free_cuda_memory_info(idx: int, total_bytes: int) -> Optional[int]:
-    """System-wide free bytes without attaching a CUDA/HIP primary context."""
+def _context_free_cuda_memory_info(
+    idx: int,
+    total_bytes: int,
+    unified: bool = False,
+) -> Optional[int]:
+    """System-wide free bytes without attaching a CUDA/HIP primary context.
+
+    ``unified`` marks a ROCm APU, whose *total* must still come from HIP but whose
+    *used* is available here; see ``_rocm_windows_unified_used_bytes``.
+    """
     parent_visible_spec = _get_parent_visible_gpu_spec()
+
+    # A unified part goes straight to the WDDM counters. The vendor CLI and DRM
+    # sysfs both report the dedicated carve-out for it, which the total-tolerance
+    # check below would reject anyway, and Linux hipMemGetInfo is already
+    # system-wide there -- so this exists for Windows, where it is not.
+    if unified:
+        if platform.system() != "Windows" or _rocm_device_ordinal_active():
+            return None
+        used_bytes = _rocm_windows_unified_used_bytes()
+        if used_bytes is None:
+            return None
+        return _free_in_torch_scope(total_bytes, used_bytes / (1024**3))
 
     # Prefer the vendor CLI. Both nvidia-smi and amd-smi run out of process, so
     # querying an idle backend does not leave a context resident in this process.
@@ -1060,25 +1080,44 @@ def get_gpu_memory_info() -> Dict[str, Any]:
 
             # Driver-level free includes torch's cache and other processes. Try
             # context-free telemetry first: mem_get_info pins a primary context
-            # for the life of this backend. A ROCm APU is the exception, its GTT
-            # total is unavailable from the context-free probes.
+            # for the life of this backend.
+            #
+            # A ROCm APU needs its GTT *total* from HIP, which the context-free
+            # probes cannot supply, so it pays for the context regardless. That is
+            # a reason to take the total from HIP, not a reason to take the free
+            # figure from it too: hipMemGetInfo is process-local on Windows WDDM
+            # and blind to other processes there. So resolve the total first, then
+            # still prefer telemetry for used.
             driver_total_needed = _rocm_props_total_is_carve_out(props)
             free = None
-            if not driver_total_needed:
+            if driver_total_needed:
+                try:
+                    free, driver_total = trusted_mem_get_info(idx)
+                    # Only adopt a driver total that is usable: utilization_pct
+                    # divides by it, so a zero would lose the whole report.
+                    if driver_total:
+                        total = driver_total
+                except Exception as e:
+                    logger.debug("mem_get_info probe failed; free VRAM from reserved: %s", e)
+                    free = max(0, total - reserved)
+                try:
+                    telemetry_free = _context_free_cuda_memory_info(idx, total, unified = True)
+                except Exception as e:
+                    logger.debug("context-free free-VRAM probe failed: %s", e)
+                    telemetry_free = None
+                if telemetry_free is not None:
+                    free = telemetry_free
+            else:
                 try:
                     free = _context_free_cuda_memory_info(idx, total)
                 except Exception as e:
                     logger.debug("context-free free-VRAM probe failed: %s", e)
-            try:
-                if free is None:
-                    free, driver_total = trusted_mem_get_info(idx)
-                    # Only adopt a driver total that is usable: utilization_pct
-                    # divides by it, so a zero would lose the whole report.
-                    if driver_total_needed and driver_total:
-                        total = driver_total
-            except Exception as e:
-                logger.debug("mem_get_info probe failed; free VRAM from reserved: %s", e)
-                free = max(0, total - reserved)
+                try:
+                    if free is None:
+                        free, _driver_total = trusted_mem_get_info(idx)
+                except Exception as e:
+                    logger.debug("mem_get_info probe failed; free VRAM from reserved: %s", e)
+                    free = max(0, total - reserved)
 
             return {
                 "available": True,
@@ -1983,8 +2022,15 @@ def _rocm_linux_sysfs_vram_by_pci_gb() -> dict[str, tuple[float, float]]:
 _ROCM_WIN_ADAPTER_MIN_BYTES = 64 * 1024 * 1024  # 64 MiB
 
 
-def _rocm_windows_perf_counter_vram_by_adapter() -> Optional[list[tuple[str, float]]]:
-    """Per-adapter dedicated VRAM usage on Windows via Performance Counters.
+def _rocm_windows_perf_counter_vram_by_adapter(
+    counter: str = "Dedicated Usage",
+) -> Optional[list[tuple[str, float]]]:
+    """Per-adapter VRAM usage on Windows via Performance Counters.
+
+    ``counter`` selects the ``GPU Adapter Memory`` field. Dedicated Usage is the
+    default and the only one safe to select adapters on; see
+    ``_rocm_windows_unified_used_bytes`` for why Shared Usage is read separately
+    rather than folded in here.
 
     Returns ``[(instance_name, used_bytes)]`` (one per LUID-named adapter), or
     ``None`` when the counter is unavailable/localized/empty so callers fall back.
@@ -1994,7 +2040,7 @@ def _rocm_windows_perf_counter_vram_by_adapter() -> Optional[list[tuple[str, flo
     try:
         # Emit "<InstanceName>|<CookedValue>" per sample, or a __NONE__ sentinel.
         ps = (
-            "$s=(Get-Counter '\\GPU Adapter Memory(*)\\Dedicated Usage'"
+            f"$s=(Get-Counter '\\GPU Adapter Memory(*)\\{counter}'"
             " -ErrorAction SilentlyContinue).CounterSamples;"
             "if($s){$s|ForEach-Object{'{0}|{1}' -f $_.InstanceName,[int64]$_.CookedValue}}"
             "else{'__NONE__'}"
@@ -2059,6 +2105,7 @@ def _match_adapter_used_to_devices(
             return [None] * n
         # Exactly n supra-threshold counters: extras were placeholders, so a
         # capacity-ranked bijection is plausible.
+        dropped = [u for u in useds if u < _ROCM_WIN_ADAPTER_MIN_BYTES]
         useds = non_trivial
         ranked_useds = [useds[rank] for rank in range(n)]
         # A usage above its ranked capacity is a hidden larger GPU; clamping onto the
@@ -2066,6 +2113,25 @@ def _match_adapter_used_to_devices(
         for rank in range(n):
             if ranked_useds[rank] > ranked_totals[rank]:
                 return [None] * n
+        # One visible device, one supra-threshold counter, and every other counter
+        # at EXACTLY zero: attribute it. A Strix Halo host emits three instances,
+        # two of them at 0 dedicated, and the capacity test below cannot decide
+        # this shape because it needs a next-smaller device to compare against.
+        #
+        # Zero is the load-bearing part, not the cardinality. A merely sub-floor
+        # counter (10 MiB) can be the visible card sitting idle, which would make
+        # the survivor a hidden GPU's -- see the [6 GiB, 10 MiB] / [8 GiB] case,
+        # which must stay unknown. An adapter at exactly zero has nothing
+        # committed and cannot be the holder of the survivor's bytes.
+        #
+        # Residual risk, stated rather than hidden: the visible card could itself
+        # be the zero while a hidden adapter holds the survivor, and then this
+        # over-reports used. That errs toward understating free, which is the safe
+        # direction here -- the consumer is training-method selection, where an
+        # overstated free picks a method that OOMs. Clamped like every other
+        # branch, so a hidden larger adapter cannot report a fully-used card.
+        if n == 1 and all(u == 0 for u in dropped):
+            return [min(ranked_useds[0], device_totals[0])]
         # Capacity forces the mapping only when the usage exceeds the next-smaller
         # capacity; the smallest card and merely-fitting usages stay unknown.
         # Keeps 40 GiB over 48/8 GiB -> [40, None].
@@ -2138,6 +2204,48 @@ def _rocm_windows_aggregate_used_bytes(
         if useds[rank] > ranked_totals[rank]:
             return None
     return float(sum(useds))
+
+
+def _rocm_windows_unified_used_bytes() -> Optional[float]:
+    """Used VRAM for a unified-memory ROCm APU on Windows, from the WDDM counters.
+
+    Dedicated Usage alone saturates at the carve-out on an APU and is wrong past
+    it. Measured on a gfx1151 Strix Halo host (89.47 GiB torch total), holding N
+    GiB in another process, deltas over baseline:
+
+        held    dedicated    shared      sum
+         4       + 4.14      + 0.04    + 4.18
+        16       +16.60      + 0.08    +16.68
+        24       +24.58      + 0.04    +24.62
+        40       +29.07      +11.29    +40.36
+        48       +29.19      +19.02    +48.21
+
+    Dedicated plateaus around 30.5 GiB and the overflow lands in Shared, so only
+    the sum tracks the allocation. Discrete cards are unaffected: this is reached
+    only when ``_rocm_props_total_is_carve_out`` says the part is unified.
+
+    Adapter SELECTION still keys off Dedicated Usage alone, deliberately. Display
+    and placeholder adapters report 0 dedicated while carrying gigabytes of shared
+    (a Basic Render Driver instance on the same host holds 1.30 GiB shared), so
+    filtering on the sum would stop telling them apart from the compute device and
+    would silently add a foreign adapter's bytes. Returns ``None`` unless exactly
+    one adapter clears the noise floor, matching the caution in
+    ``_rocm_windows_aggregate_used_bytes``.
+    """
+    dedicated = _rocm_windows_perf_counter_vram_by_adapter()
+    if not dedicated:
+        return None
+    candidates = [
+        (instance, used) for instance, used in dedicated if used >= _ROCM_WIN_ADAPTER_MIN_BYTES
+    ]
+    # Two compute adapters means no key says which is the visible one, and zero
+    # means the card is idle below the floor: neither is a figure we can stand on.
+    if len(candidates) != 1:
+        return None
+    instance, dedicated_used = candidates[0]
+    shared = _rocm_windows_perf_counter_vram_by_adapter("Shared Usage") or []
+    shared_used = next((used for name, used in shared if name == instance), 0.0)
+    return dedicated_used + shared_used
 
 
 def _rocm_windows_per_device_vram(

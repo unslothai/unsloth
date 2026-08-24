@@ -230,10 +230,40 @@ def test_gpu_summary_pairs_rocm_apu_free_with_driver_total(monkeypatch):
         "_smi_query",
         lambda *a, **k: pytest.fail("an APU needs hipMemGetInfo's matching GTT total"),
     )
+    # No WDDM counter reading available: free falls back to hipMemGetInfo's.
+    monkeypatch.setattr(hw, "_rocm_windows_unified_used_bytes", lambda: None)
 
     summary = hw.get_gpu_summary()
 
     assert summary == {"gpu_name": "Test GPU", "vram_total_gb": 100.0, "vram_free_gb": 98.0}
+
+
+def test_gpu_summary_apu_prefers_wddm_counters_over_process_local_hip(monkeypatch):
+    # hipMemGetInfo is process-local on Windows WDDM, so an APU takes its GTT
+    # *total* from HIP but its *used* from the counters. Driver says 98 free of
+    # 100; the counters say 40 GiB is in use across all processes -> 60 free.
+    gib = 1 << 30
+    torch_stub, _props = _summary_torch(
+        properties_total = 8 * gib,
+        driver_free = 98 * gib,
+        driver_total = 100 * gib,
+    )
+    monkeypatch.setitem(sys.modules, "torch", torch_stub)
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(hw, "_rocm_props_total_is_carve_out", lambda _props: True)
+    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(
+        hw,
+        "_smi_query",
+        lambda *a, **k: pytest.fail("an APU must not take its total from the vendor CLI"),
+    )
+    monkeypatch.setattr(hw, "_rocm_windows_unified_used_bytes", lambda: 40.0 * gib)
+
+    summary = hw.get_gpu_summary()
+
+    # Total still HIP's, free now derived from the counters against that total.
+    assert summary == {"gpu_name": "Test GPU", "vram_total_gb": 100.0, "vram_free_gb": 60.0}
 
 
 def test_context_free_rocm_smi_translates_hip_ordinals(monkeypatch):
