@@ -687,6 +687,8 @@ def test_safe_extractall_rejects_a_symlink_onto_a_reserved_installer_path(tmp_pa
 def test_safe_extractall_rejects_a_reserved_path_reached_through_a_directory_alias(tmp_path):
     # A previous bundle's directory link makes alias/<record> land on the record itself, so a
     # lexical comparison misses it and _write_install_record overwrites sd-cli with JSON.
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
     target = tmp_path / "install"
     target.mkdir()
     (target / "sd-cli").write_bytes(b"\x7fELF real binary")
@@ -703,6 +705,8 @@ def test_safe_extractall_rejects_a_reserved_path_reached_through_a_directory_ali
 
 def test_safe_extractall_rejects_a_cycle_hidden_behind_a_directory_alias(tmp_path):
     # alias -> real means alias/a and real/b are one cycle, though the member names differ.
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
     target = tmp_path / "install"
     target.mkdir()
     (target / "real").mkdir()
@@ -734,6 +738,40 @@ def test_safe_extractall_rejects_a_directory_collision_before_writing_anything(t
             _safe_extractall(zf, target)
     assert (target / "build" / "bin" / "sd-cli").read_bytes() == b"\x7fELF working"
     assert (target / "libz.so").is_dir() and not (target / "libz.so").is_symlink()
+
+
+def _chain_archive(path, hops):
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("l.so.0", b"ELFpayload")
+        prev = "l.so.0"
+        for i in range(1, hops + 1):
+            _link_member(zf, f"l.so.{i}", prev)
+            prev = f"l.so.{i}"
+
+
+def test_safe_extractall_installs_a_chain_the_loader_can_still_walk(tmp_path):
+    # The kernel allows 40 traversals, so 40 is readable and must not be refused.
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
+    target = tmp_path / "install"
+    target.mkdir()
+    archive = tmp_path / "chain40.zip"
+    _chain_archive(archive, 40)
+    with zipfile.ZipFile(archive) as zf:
+        _safe_extractall(zf, target)
+    assert (target / "l.so.40").read_bytes() == b"ELFpayload"
+
+
+def test_safe_extractall_rejects_a_chain_deeper_than_the_loader_allows(tmp_path):
+    # At 41 the loader ELOOPs, so installing it leaves a library nothing can read, which is
+    # the same failure a cycle causes. Terminating does not make it usable.
+    target = tmp_path / "install"
+    target.mkdir()
+    archive = tmp_path / "chain41.zip"
+    _chain_archive(archive, 41)
+    with zipfile.ZipFile(archive) as zf:
+        with pytest.raises(RuntimeError, match = "too deep"):
+            _safe_extractall(zf, target)
 
 
 def test_safe_extractall_rejects_symlink_cycles(tmp_path):
@@ -3329,8 +3367,8 @@ def test_the_install_record_remembers_whether_the_bundle_shipped_a_server(tmp_pa
     assert sdmod.installed_accelerator(root) == "cpu"
 
 
-def test_safe_extractall_restores_symlink_members_on_reinstall(tmp_path):
-    # install() merges rather than wipes, so the same archive lands on the links it already wrote.
+def _reinstall_twice(tmp_path):
+    """The same archive extracted twice into one root, which is what install() does."""
     target = tmp_path / "install"
     target.mkdir()
     archive = tmp_path / "symlink.zip"
@@ -3340,9 +3378,30 @@ def test_safe_extractall_restores_symlink_members_on_reinstall(tmp_path):
     for _ in range(2):
         with zipfile.ZipFile(archive) as zf:
             _safe_extractall(zf, target)
+    return target
+
+
+def test_safe_extractall_restores_symlink_members_on_reinstall(tmp_path):
+    # install() merges rather than wipes, so the same archive lands on the links it already wrote.
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
+    target = _reinstall_twice(tmp_path)
     link = target / "build" / "bin" / "libfoo.so"
     assert link.is_symlink()
     assert link.readlink() == Path("libfoo.so.1")
+    assert (target / "build" / "bin" / "libfoo.so.1").read_bytes() == b"ELF"
+
+
+def test_safe_extractall_reinstall_is_idempotent_without_symlink_privilege(tmp_path):
+    # The other half of the test above, and the only one a Windows non-dev-mode host can run:
+    # the fallback flattens, but reinstalling over it must still succeed and leave the same
+    # shape rather than erroring or compounding.
+    if _can_create_symlinks(tmp_path):
+        pytest.skip("this host can create symlinks, so the flattening fallback is not in play")
+    target = _reinstall_twice(tmp_path)
+    flattened = target / "build" / "bin" / "libfoo.so"
+    assert not flattened.is_symlink()
+    assert flattened.read_bytes() == b"libfoo.so.1"
     assert (target / "build" / "bin" / "libfoo.so.1").read_bytes() == b"ELF"
 
 

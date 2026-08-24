@@ -685,7 +685,7 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
     # keyed by landing point so alias/a and real/b count as one cycle.
     by_dest = {str(keys[str(d)]): t for d, t, _ in links}
     for dest, _, member in links:
-        seen, cur = set(), str(keys[str(dest)])
+        seen, cur, hops = set(), str(keys[str(dest)]), 0
         while cur not in seen:
             seen.add(cur)
             if cur in by_dest:
@@ -694,6 +694,12 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
                 nxt = os.readlink(cur)
             else:
                 break
+            # Counted per hop FOLLOWED, not per node seen: the file a chain ends at is not a
+            # traversal. A chain the kernel cannot walk is unreadable for the same reason a
+            # cycle is, and terminating does not save it, so it is refused rather than installed.
+            hops += 1
+            if hops > _MAX_LINK_DEPTH:
+                raise RuntimeError(f"symlink chain too deep in archive: {member.filename!r}")
             nxt = Path(os.path.normpath(os.path.join(os.path.dirname(cur), nxt)))
             # a -> a/x never reaches a second node, so repetition never fires, yet resolving a
             # walks a again. Anything under the link is a loop.
@@ -761,6 +767,10 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
                 raise RuntimeError(
                     f"could not restore the symlink {member.filename!r}: {exc}"
                 ) from exc
+            # Load-bearing assumption: no published Windows asset ships a symlink member, so
+            # this writes the link text back only for an archive that never reaches a user.
+            # If that ever changes, this branch produces the #9268 install silently while the
+            # one above it raises, and it should be revisited rather than left as a fallback.
             zf.extract(member, target)
 
 
