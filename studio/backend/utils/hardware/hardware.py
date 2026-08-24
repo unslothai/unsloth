@@ -1056,7 +1056,7 @@ def _context_free_cuda_memory_info(
         adapters = _rocm_windows_perf_counter_vram_by_adapter()
         if adapters is None or len(adapters) != len(device_ids):
             return None
-        devices, _aggregate = _rocm_windows_per_device_vram(device_ids)
+        devices, _aggregate = _rocm_windows_per_device_vram(device_ids, adapters)
         for device in devices:
             if device.get("visible_ordinal") != idx:
                 continue
@@ -1110,11 +1110,19 @@ def get_gpu_memory_info() -> Dict[str, Any]:
                 except Exception as e:
                     logger.debug("mem_get_info probe failed; free VRAM from reserved: %s", e)
                     free = max(0, total - reserved)
-                try:
-                    telemetry_free = _context_free_cuda_memory_info(idx, total, unified = True)
-                except Exception as e:
-                    logger.debug("context-free free-VRAM probe failed: %s", e)
-                    telemetry_free = None
+                # The counters only apply where UMA is POSITIVELY identified.
+                # _rocm_props_total_is_carve_out also answers True for an
+                # uncertain device (old HIP, unreadable flag), on the principle
+                # that a too-small total hides models. That justifies the driver
+                # total, not summing Shared Usage: shared system memory is not
+                # part of a discrete card's props.total_memory, so on a discrete
+                # GPU misread as uncertain it would understate free.
+                telemetry_free = None
+                if _rocm_props_are_positively_unified(props):
+                    try:
+                        telemetry_free = _context_free_cuda_memory_info(idx, total, unified = True)
+                    except Exception as e:
+                        logger.debug("context-free free-VRAM probe failed: %s", e)
                 if telemetry_free is not None:
                     free = telemetry_free
             else:
@@ -1414,6 +1422,24 @@ def _hip_runtime_version() -> Optional[tuple[int, int]]:
     except Exception as e:
         logger.debug("HIP runtime version probe failed: %s", e)
         return None
+
+
+def _rocm_props_are_positively_unified(props: Any) -> bool:
+    """Whether this part is KNOWN to be unified memory, not merely unclassified.
+
+    ``_rocm_props_total_is_carve_out`` folds "uncertain" in with "unified" on
+    purpose, because a total that is too small hides models. Anything that adds
+    host-shared memory to a used figure needs the stricter question: on a
+    discrete card, shared bytes are not part of ``props.total_memory``.
+    """
+    if not IS_ROCM:
+        return False
+    try:
+        from core.training.worker import _rocm_classify_unified_memory
+        return bool(_rocm_classify_unified_memory(props)[1])
+    except Exception as e:
+        logger.debug("ROCm unified-memory classification failed: %s", e)
+        return False
 
 
 def _rocm_props_total_is_carve_out(props: Any) -> bool:
@@ -2253,13 +2279,21 @@ def _rocm_windows_unified_used_bytes() -> Optional[float]:
     if len(candidates) != 1:
         return None
     instance, dedicated_used = candidates[0]
-    shared = _rocm_windows_perf_counter_vram_by_adapter("Shared Usage") or []
+    shared = _rocm_windows_perf_counter_vram_by_adapter("Shared Usage")
+    # A failed Shared query is not zero shared usage. Past the carve-out the
+    # overflow lives entirely in Shared, so defaulting to zero there reports the
+    # measured 48 GiB case as 30.5 and overstates free by 19 GiB, which is the
+    # direction that OOMs. Nothing here knows where the carve-out sits, so decline
+    # rather than guess whether this reading was saturated. A query that SUCCEEDS
+    # but omits the LUID is a real zero, and is kept.
+    if shared is None:
+        return None
     shared_used = next((used for name, used in shared if name == instance), 0.0)
     return dedicated_used + shared_used
 
 
 def _rocm_windows_per_device_vram(
-    device_indices: list[int],
+    device_indices: list[int], adapters: Optional[list[tuple[str, float]]] = None
 ) -> tuple[list[Dict[str, Any]], Optional[float]]:
     """Per-GPU VRAM on Windows AMD/ROCm: total from torch properties (reliable),
     used from the per-adapter Dedicated Usage counter.
@@ -2294,7 +2328,11 @@ def _rocm_windows_per_device_vram(
     if not dev_meta:
         return [], None
 
-    adapters = _rocm_windows_perf_counter_vram_by_adapter()
+    # Re-sampling here would leave a caller's cardinality check applied to a
+    # DIFFERENT sample than the one attribution runs on, and costs a second
+    # ~1.3 s PowerShell call. A validated snapshot is passed in instead.
+    if adapters is None:
+        adapters = _rocm_windows_perf_counter_vram_by_adapter()
     aggregate_gb: Optional[float] = None
     if adapters:
         adapter_useds = [used for _, used in adapters]

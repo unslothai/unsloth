@@ -252,6 +252,7 @@ def test_gpu_summary_apu_prefers_wddm_counters_over_process_local_hip(monkeypatc
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
     monkeypatch.setattr(hw, "IS_ROCM", True)
     monkeypatch.setattr(hw, "_rocm_props_total_is_carve_out", lambda _props: True)
+    monkeypatch.setattr(hw, "_rocm_props_are_positively_unified", lambda _props: True)
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
     monkeypatch.setattr(
         hw,
@@ -669,7 +670,9 @@ def test_context_free_rocm_windows_declines_gpu_device_ordinal(monkeypatch):
     monkeypatch.setattr(
         hw,
         "_rocm_windows_per_device_vram",
-        lambda ids: pytest.fail("an external GPU ordinal filter must decline the adapter path"),
+        lambda ids, adapters = None: pytest.fail(
+            "an external GPU ordinal filter must decline the adapter path"
+        ),
     )
 
     assert hw._context_free_cuda_memory_info(0, 24 << 30) is None
@@ -737,7 +740,7 @@ def test_context_free_never_spawns_amd_smi_on_windows_without_a_hip_sdk(monkeypa
     monkeypatch.setattr(
         hw,
         "_rocm_windows_per_device_vram",
-        lambda ids: (
+        lambda ids, adapters = None: (
             [{"index": 0, "visible_ordinal": 0, "name": "RX", "used_gb": 8.0, "total_gb": 24.0}],
             8.0,
         ),
@@ -890,12 +893,14 @@ def test_visibility_endpoint_uses_inventory_not_occupancy(monkeypatch):
     monkeypatch.setattr(
         hw,
         "_torch_get_per_device_info",
-        lambda ids: pytest.fail("the visibility poll must not ask torch for occupancy"),
+        lambda ids, adapters = None: pytest.fail(
+            "the visibility poll must not ask torch for occupancy"
+        ),
     )
     monkeypatch.setattr(
         hw,
         "_torch_get_device_inventory",
-        lambda ids: [
+        lambda ids, adapters = None: [
             {
                 "index": 0,
                 "visible_ordinal": 0,
@@ -1174,7 +1179,7 @@ def _rocm_linux(monkeypatch, resolved):
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
     monkeypatch.setattr(hw, "_smi_query", lambda *a, **k: None)  # amd-smi unavailable
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(hw, "_rocm_windows_per_device_vram", lambda ids: ([], None))
+    monkeypatch.setattr(hw, "_rocm_windows_per_device_vram", lambda ids, adapters = None: ([], None))
     monkeypatch.setattr(
         hw,
         "_get_parent_visible_gpu_spec",
@@ -1184,7 +1189,7 @@ def _rocm_linux(monkeypatch, resolved):
     monkeypatch.setattr(
         hw,
         "_torch_get_device_inventory",
-        lambda ids: [
+        lambda ids, adapters = None: [
             {"index": i, "visible_ordinal": i, "name": "MI210", "total_gb": 64.0, "used_gb": None}
             for i in ids
         ],
@@ -1197,7 +1202,9 @@ def test_rocm_linux_reads_sysfs_without_asking_torch_for_occupancy(monkeypatch):
     monkeypatch.setattr(
         hw,
         "_torch_get_per_device_info",
-        lambda ids: pytest.fail("sysfs answered in full; torch occupancy is dead weight"),
+        lambda ids, adapters = None: pytest.fail(
+            "sysfs answered in full; torch occupancy is dead weight"
+        ),
     )
     result = hw.get_visible_gpu_utilization()
     assert result["available"] is True
@@ -1217,7 +1224,7 @@ def test_rocm_linux_sysfs_first_matches_the_old_torch_then_overlay_result(monkey
     monkeypatch.setattr(
         hw,
         "_torch_get_per_device_info",
-        lambda ids: [
+        lambda ids, adapters = None: [
             {"index": i, "visible_ordinal": i, "name": "MI210", "total_gb": 64.0, "used_gb": 0.02}
             for i in ids
         ],
@@ -1253,7 +1260,7 @@ def test_rocm_linux_falls_back_to_torch_when_sysfs_covers_only_some(monkeypatch)
     monkeypatch.setattr(
         hw,
         "_torch_get_per_device_info",
-        lambda ids: (
+        lambda ids, adapters = None: (
             used.append(ids)
             or [
                 {
@@ -1280,7 +1287,7 @@ def test_rocm_linux_falls_back_when_sysfs_knows_nothing(monkeypatch):
     monkeypatch.setattr(
         hw,
         "_torch_get_per_device_info",
-        lambda ids: (
+        lambda ids, adapters = None: (
             used.append(ids)
             or [
                 {
@@ -1314,7 +1321,7 @@ def test_nvidia_torch_fallback_keeps_using_occupancy(monkeypatch):
     monkeypatch.setattr(
         hw,
         "_torch_get_per_device_info",
-        lambda ids: [
+        lambda ids, adapters = None: [
             {"index": 0, "visible_ordinal": 0, "name": "L40S", "total_gb": 44.0, "used_gb": 4.0}
         ],
     )
@@ -1332,7 +1339,7 @@ def test_rocm_relative_index_skips_the_sysfs_shortcut(monkeypatch):
     monkeypatch.setattr(
         hw,
         "_torch_get_per_device_info",
-        lambda ids: (
+        lambda ids, adapters = None: (
             seen.append(ids)
             or [
                 {
@@ -1357,7 +1364,7 @@ def test_rocm_windows_does_not_take_the_linux_sysfs_path(monkeypatch):
     monkeypatch.setattr(
         hw,
         "_rocm_windows_per_device_vram",
-        lambda ids: (
+        lambda ids, adapters = None: (
             [
                 {"index": i, "visible_ordinal": i, "name": "RX", "used_gb": 2.0, "total_gb": 24.0}
                 for i in ids
@@ -1431,3 +1438,33 @@ def test_context_free_windows_rocm_declines_when_counters_outnumber_devices(monk
     )
 
     assert hw._context_free_cuda_memory_info(0, 48 * gib) is None
+
+
+def test_gpu_summary_apu_counters_need_positively_identified_uma(monkeypatch):
+    # _rocm_props_total_is_carve_out answers True for an UNCERTAIN device too (old
+    # HIP, unreadable integrated flag), because a too-small total hides models.
+    # That justifies the driver total, not adding Shared Usage: shared bytes are
+    # not part of a discrete card's props.total_memory, so a discrete GPU misread
+    # as uncertain would have its free understated.
+    gib = 1 << 30
+    torch_stub, _props = _summary_torch(
+        properties_total = 8 * gib,
+        driver_free = 98 * gib,
+        driver_total = 100 * gib,
+    )
+    monkeypatch.setitem(sys.modules, "torch", torch_stub)
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(hw, "_rocm_props_total_is_carve_out", lambda _props: True)
+    monkeypatch.setattr(hw, "_rocm_props_are_positively_unified", lambda _props: False)
+    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(
+        hw,
+        "_rocm_windows_unified_used_bytes",
+        lambda: (_ for _ in ()).throw(AssertionError("uncertain is not positively unified")),
+    )
+
+    summary = hw.get_gpu_summary()
+
+    # Driver total kept, free still hipMemGetInfo's.
+    assert summary == {"gpu_name": "Test GPU", "vram_total_gb": 100.0, "vram_free_gb": 98.0}
