@@ -861,6 +861,20 @@ mod tests {
         })
         .collect();
 
+        // Mode 000 does not deny root, or anyone holding CAP_DAC_OVERRIDE, so in a
+        // root container the fixture cannot express its own precondition and the
+        // assertions below would report an environment, not a defect. Probe rather
+        // than test the uid, since the capability can be held without being root.
+        // Same reason test_recommended_folders_permission.py skips itself as root.
+        if File::open(&locked[0]).is_ok() {
+            for path in &locked {
+                fs::set_permissions(path, fs::Permissions::from_mode(0o644)).unwrap();
+            }
+            fs::remove_dir_all(&dir).unwrap();
+            eprintln!("skipped: this user can read a mode-000 file");
+            return;
+        }
+
         let (names, warnings) = collect_names(&dir, 2);
         // Restore before asserting, so a failure still leaves a removable directory.
         for path in &locked {
