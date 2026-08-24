@@ -68,7 +68,41 @@ const INLINE_CODE_UNDERSCORE_CONTEXT = "`a _b_ c`\n\n";
 const INLINE_LATEX_CONTEXT = "\\(\n\n";
 const FOOTNOTE_REFERENCE_RE = /\[\^[\w-]{1,200}\](?!:)/;
 const FOOTNOTE_DEFINITION_RE = /\[\^[\w-]{1,200}\]:/;
-const LINK_DEFINITION_RE = /\[(?:\\.|[^\]\n\\]){1,200}\]:/;
+// Tracks Marked's `def` rule, whose label is `[^\]]+`: any run up to the
+// closing bracket, line endings included. Missing a definition is a false
+// NEGATIVE, the one direction that costs correctness -- it is not held in the
+// live tail, so it can be committed into an independently parsed block while a
+// twin is still live, and Marked, which emits no token for a label it has
+// already seen, lexes the two apart. A false positive only costs retention.
+//
+// Hence no `\n` in the class: Marked normalises a label's whitespace, so
+// `[foo\nbar]` registers as `foo bar`, and a label that soft-wraps has to be
+// held like any other.
+//
+// The length bound stays, even though Marked has none. Every `[` is a start
+// position and each scans until it can decide, so a bound of B costs O(n*B)
+// while no bound costs O(n^2). Measured on one long line dense with `[` that
+// never reaches `]:`, the worst case for the scan:
+//
+//   line     200      999   unbounded
+//    10k    0.73ms   2.82ms    17.07ms
+//    50k    3.01ms  14.56ms   360.44ms
+//   100k    6.51ms  27.72ms  1257.36ms
+//
+// 999 stays linear, unbounded does not, and 999 is CommonMark's label limit, so
+// the whole valid range is covered. A label past it is outside the spec and
+// stays mis-lexed, which is the trade against that quadratic scan.
+//
+// Two consumers pay for admitting `\n`, and they are bounded differently.
+// `updateLinkDefinitionParity` reads one block of a live tail capped at
+// STALLED_TAIL_CHARACTERS and returns early on a fence, so measured per chunk
+// the difference there is 0%. `hasGlobalLinkReference` reads the WHOLE reply on
+// every render, but only after LINK_REFERENCE_RE has already matched, and `\n`
+// in the class is exactly what a start position used to stop at. At 50k with a
+// reference present: 0.045ms over short lines and 0.026ms over citations, both
+// unchanged, against 2.45ms -> 11.95ms on one 50k line dense with `[`. That
+// last shape is the price, and it is the same shape the bound above exists for.
+const LINK_DEFINITION_RE = /\[(?:\\.|[^\]\\]){1,999}\]:/;
 const LINK_REFERENCE_RE =
   /!?\[(?:\\.|[^\]\n\\]){1,200}\]\[(?:\\.|[^\]\n\\]){0,200}\]/;
 const FENCED_CODE_BLOCK_RE = /^ {0,3}(?:```|~~~)/;
