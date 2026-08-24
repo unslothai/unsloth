@@ -753,6 +753,7 @@ export function AppSidebar() {
     pinned,
     togglePinned,
     isMobile,
+    openMobile,
     setOpenMobile,
     state: sidebarState,
   } = useSidebar();
@@ -1262,6 +1263,14 @@ export function AppSidebar() {
     !isStudioRoute &&
     !showTrainingRecents &&
     (isMobile || sidebarState !== "collapsed");
+  // Selecting needs more than the lists existing: it needs the rows. A closed
+  // mobile sheet unmounts them exactly as the icon rail does, so Select All
+  // there would build a selection with nothing on screen to show for it, and
+  // Archive, Pin and Mark unread would take it over the open chat. Navigation
+  // is deliberately not held to this: walking to the next chat moves the chat
+  // the user IS looking at, and the sheet is closed for most of its life on a
+  // window narrow enough to count as mobile.
+  const chatRowsOnScreen = chatListsOnScreen && (!isMobile || openMobile);
   const renderedProjectChatItems = useMemo(() => {
     if (!chatListsOnScreen || organizeBy !== "project" || !projectsOpen)
       return [];
@@ -1441,7 +1450,7 @@ export function AppSidebar() {
   // its own overflow, so the rest of the selection is still on screen and
   // still worth acting on. Drop what went and keep what stayed.
   useEffect(() => {
-    if (!chatListsOnScreen) {
+    if (!chatRowsOnScreen) {
       clearSelection();
       return;
     }
@@ -1473,10 +1482,11 @@ export function AppSidebar() {
       }
       return kept.size === prev.size ? prev : kept;
     });
-  }, [chatListsOnScreen, clearSelection, renderedChatIds, renderedProjectIds]);
+  }, [chatRowsOnScreen, clearSelection, renderedChatIds, renderedProjectIds]);
 
   /** Select every chat row on screen, pinned block included. */
   const selectAllChats = useCallback(() => {
+    if (!chatRowsOnScreen) return;
     const ids = [
       ...visiblePinnedItems,
       ...renderedProjectChatItems,
@@ -1488,6 +1498,7 @@ export function AppSidebar() {
     selectionAnchorRef.current = null;
     setSelectedChatIds(new Set(ids));
   }, [
+    chatRowsOnScreen,
     visiblePinnedItems,
     renderedProjectChatItems,
     visibleRecentItems,
@@ -2474,6 +2485,33 @@ export function AppSidebar() {
     return [...new Set(recorded)];
   }
 
+  /**
+   * The folders this chat's files are actually in: what its tool results name,
+   * or, for a chat old enough that they name nothing, what is on disk.
+   *
+   * Chats stored before results carried a session recorded nothing, so one that
+   * ran loose and has since joined a project would be answered with the project
+   * workspace. Its thread sandbox is the only other candidate, and files there
+   * are this chat's. Only in this direction: a chat moved OUT wrote under
+   * project-<id>, and nothing retains which one.
+   *
+   * Shared by "Open chat folder" and "Copy session id", which drifted apart
+   * once: the copy path skipped the legacy probe and reported success on a
+   * folder the chat had never written to.
+   */
+  async function sandboxSessionIdsHolding(
+    item: SidebarItem,
+    ids: string[],
+  ): Promise<string[]> {
+    const distinct = await recordedSandboxSessionIds(ids);
+    if (distinct.length > 0 || !item.projectId) return distinct;
+    const held: string[] = [];
+    for (const threadId of ids) {
+      if (await sandboxHasFiles(threadId)) held.push(threadId);
+    }
+    return [...new Set(held)];
+  }
+
   /** The sandbox session this chat's tool calls write into. */
   async function copyChatSessionId(item: SidebarItem) {
     const threadIds = getSidebarItemThreadIds(item);
@@ -2489,7 +2527,7 @@ export function AppSidebar() {
     const copied = await copyToClipboardFrom(async () => {
       let sessionId: string | undefined;
       try {
-        const distinct = await recordedSandboxSessionIds(ids);
+        const distinct = await sandboxSessionIdsHolding(item, ids);
         if (distinct.length > 1) {
           refusal.value = {
             title: "This chat wrote to more than one folder.",
@@ -3069,24 +3107,10 @@ export function AppSidebar() {
                             // membership, the answer the recorded id overrides.
                             const ids =
                               threadIds.length > 0 ? threadIds : [item.id];
-                            let distinct =
-                              await recordedSandboxSessionIds(ids);
-                            if (distinct.length === 0 && item.projectId) {
-                              // Chats stored before results carried a session
-                              // recorded nothing, so one that ran loose and has
-                              // since joined a project would be sent to the project
-                              // workspace. Its thread sandbox is the only other
-                              // candidate, and files there are this chat's. Only in
-                              // this direction: a chat moved OUT wrote under
-                              // project-<id>, and nothing retains which one.
-                              const held: string[] = [];
-                              for (const threadId of ids) {
-                                if (await sandboxHasFiles(threadId)) {
-                                  held.push(threadId);
-                                }
-                              }
-                              distinct = [...new Set(held)];
-                            }
+                            const distinct = await sandboxSessionIdsHolding(
+                              item,
+                              ids,
+                            );
                             if (distinct.length > 1) {
                               toast.error("This chat wrote to more than one folder.", {
                                 description:

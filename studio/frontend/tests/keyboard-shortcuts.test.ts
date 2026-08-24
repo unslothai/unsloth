@@ -918,6 +918,41 @@ test("the chords that need one target do not fire where there are two", async ()
   );
 });
 
+// Both of these open a surface whose "is it open" flag outlives the thing it
+// opens, so leaving without closing brings it back on the next visit.
+test("a chord's surface does not come back open on the next visit", async () => {
+  const read = async (path: string) =>
+    readFile(new URL(path, import.meta.url), "utf8");
+  const chatPage = await read("../src/features/chat/chat-page.tsx");
+  const mcp = await read("../src/features/chat/mcp-composer-button.tsx");
+
+  // The switcher renders on Chat, outside Compare, with a project. Reading the
+  // whole condition means Compare and a standalone chat reset it too, not just
+  // going off-route.
+  assert.match(
+    chatPage,
+    /const projectSwitcherShown = headerPickersShown && Boolean\(currentProjectId\);/,
+  );
+  assert.match(chatPage, /enabled: projectSwitcherShown,/);
+  assert.match(
+    chatPage,
+    /if \(!projectSwitcherShown && projectPickerOpen\) \{\n\s*setProjectPickerOpen\(false\);/,
+  );
+  assert.match(
+    chatPage,
+    /\{view\.mode !== "compare" && currentProjectId && \(/,
+    "the reset no longer matches what the switcher renders by",
+  );
+
+  // The MCP dialog's flag lives in a store, so an unmount with no
+  // chatActive=false render in front of it leaves the dialog armed.
+  assert.match(mcp, /if \(!chatActive && open\) setOpen\(false\);/);
+  assert.match(
+    mcp,
+    /useEffect\(\(\) => \{\n\s*return \(\) => useMcpServersDialogStore\.getState\(\)\.setOpen\(false\);\n\s*\}, \[\]\);/,
+  );
+});
+
 // The mobile drawer is a Sheet owned by SidebarProvider, which __root mounts
 // outside the Outlet, so it survives a navigation. Every sidebar row closes it
 // by hand afterwards; the chords are registered above that provider and cannot.
@@ -1564,7 +1599,24 @@ test("a selection does not outlive the rows it was made on", async () => {
   // The whole sidebar going takes the whole selection with it.
   assert.match(
     sidebar,
-    /if \(!chatListsOnScreen\) \{\n\s*clearSelection\(\);\n\s*return;\n\s*\}/,
+    /if \(!chatRowsOnScreen\) \{\n\s*clearSelection\(\);\n\s*return;\n\s*\}/,
+  );
+  // Which is the stricter of the two: the lists can exist while their rows do
+  // not, because a closed mobile sheet unmounts them the way the rail does.
+  assert.match(
+    sidebar,
+    /const chatRowsOnScreen = chatListsOnScreen && \(!isMobile \|\| openMobile\);/,
+  );
+  // Select All is the one that builds a selection out of nothing, so it takes
+  // the same gate rather than waiting for the cleanup to undo it.
+  assert.match(
+    sidebar,
+    /const selectAllChats = useCallback\(\(\) => \{\n\s*if \(!chatRowsOnScreen\) return;/,
+  );
+  // Navigation is deliberately left on the looser one.
+  assert.match(
+    sidebar,
+    /\(chatListsOnScreen && chatOpen \? sortedRecentChatItems : \[\]\)/,
   );
   // A single section closing takes only its own rows: the rest are still on
   // screen, so the selection is held to what is rendered rather than dropped.
@@ -1578,7 +1630,7 @@ test("a selection does not outlive the rows it was made on", async () => {
   );
   assert.match(
     sidebar,
-    /\}, \[chatListsOnScreen, clearSelection, renderedChatIds, renderedProjectIds\]\);/,
+    /\}, \[chatRowsOnScreen, clearSelection, renderedChatIds, renderedProjectIds\]\);/,
   );
   // Folder rows are selectable too, and selectionActive counts them, so one
   // left behind by a closed section keeps the tool card's Escape standing

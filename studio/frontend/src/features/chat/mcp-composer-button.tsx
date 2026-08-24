@@ -373,6 +373,13 @@ export function McpServersDialogMount() {
   useEffect(() => {
     if (!chatActive && open) setOpen(false);
   }, [chatActive, open, setOpen]);
+  // Going off-route is not the only way to leave. Logout, or a session that
+  // expires, moves the root to /login and takes this whole subtree with it, so
+  // no chatActive=false render ever happens and the flag above survives to
+  // reopen the dialog on the next visit. Close on the way out as well.
+  useEffect(() => {
+    return () => useMcpServersDialogStore.getState().setOpen(false);
+  }, []);
   return (
     <ChatMcpServersDialog open={chatActive && open} onOpenChange={setOpen} />
   );

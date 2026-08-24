@@ -176,15 +176,29 @@ test("a probe that could not be answered is reported, not read as an empty folde
 test("the legacy probe runs only for a chat now inside a project", () => {
   // A chat moved OUT of a project wrote under project-<id>, and nothing retains
   // which one, so there is no candidate to probe in that direction.
-  // From the reveal path's read, not the copy path's: both resolve the same
-  // ids, but only this one has a legacy folder to fall back to.
-  const start = SIDEBAR.indexOf("let distinct =");
-  const block = SIDEBAR.slice(
-    start,
-    SIDEBAR.indexOf("if (distinct.length > 1)", start),
+  const start = SIDEBAR.indexOf(
+    "async function sandboxSessionIdsHolding",
   );
-  assert.ok(block.includes("distinct.length === 0 && item.projectId"));
+  assert.notEqual(start, -1, "the legacy probe moved");
+  const block = SIDEBAR.slice(start, SIDEBAR.indexOf("\n  }", start));
+  assert.ok(block.includes("distinct.length > 0 || !item.projectId"));
   assert.ok(block.includes("sandboxHasFiles(threadId)"));
+});
+
+test("both the folder and the session id are answered from the same probe", () => {
+  // They drifted once: only the reveal path fell back to the legacy folder, so
+  // Copy session id answered a legacy chat that had since joined a project with
+  // project-<id>, a folder it had never written to, and called it a success.
+  const callers = SIDEBAR.match(/await sandboxSessionIdsHolding\(/g) ?? [];
+  assert.equal(callers.length, 2);
+  for (const action of ["copyChatSessionId", "Open chat folder"]) {
+    const at = SIDEBAR.indexOf(action);
+    assert.notEqual(at, -1, `${action} moved`);
+  }
+  // Neither may reach past it to the recorded ids alone.
+  const copyAt = SIDEBAR.indexOf("async function copyChatSessionId");
+  const copy = SIDEBAR.slice(copyAt, SIDEBAR.indexOf("\n  }\n", copyAt));
+  assert.ok(!copy.includes("await recordedSandboxSessionIds("));
 });
 
 test("a sandbox tool result is wrapped even when it carries no envelope", () => {

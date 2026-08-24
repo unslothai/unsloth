@@ -3304,13 +3304,19 @@ export function ChatPage({
   useShortcut("openModelPicker", toggleModelSelector, {
     enabled: headerPickersShown,
   });
+  // The same condition the switcher renders by, so the chord cannot open a
+  // control that is not there and the reset below cannot miss a way it goes.
+  const projectSwitcherShown = headerPickersShown && Boolean(currentProjectId);
   useShortcut("openProjectPicker", () => setProjectPickerOpen(true), {
-    enabled: headerPickersShown && Boolean(currentProjectId),
+    enabled: projectSwitcherShown,
   });
-  // This page stays mounted off-route, so a picker left open would come back
-  // on the next visit as a ghost of the last one. Adjusted during render, as
-  // React prescribes for state that has to follow a value it derives from.
-  if (!active && projectPickerOpen) {
+  // A picker left open would come back on the next visit as a ghost of the
+  // last one. Off-route is one way to leave it: this page stays mounted. So is
+  // entering Compare, and so is a standalone chat taking the project away,
+  // both of which unmount the switcher while the page is still on screen.
+  // Adjusted during render, as React prescribes for state that has to follow a
+  // value it derives from.
+  if (!projectSwitcherShown && projectPickerOpen) {
     setProjectPickerOpen(false);
   }
 
