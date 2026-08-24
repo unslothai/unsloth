@@ -349,7 +349,6 @@ def test_release_uploads_never_clobber_or_mutate_the_legacy_channel():
     assert len(versioned) == 2, uploads
     assert channel == [], uploads
 
-    # The manifest and installers are one immutable set on the versioned release.
     for line in versioned:
         assert "--clobber" not in line, line
 

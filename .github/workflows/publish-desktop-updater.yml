@@ -47,8 +47,7 @@ jobs:
         with:
           egress-policy: audit
 
-      # A release with no bundles is a normal dispatch, so decide from the assets: with
-      # repair_pointer the run restores Desktop discovery, without it nothing to validate.
+      # Only validate complete Desktop publications; bundleless releases are normal.
       - name: Check for desktop bundles
         id: gate
         env:
@@ -87,10 +86,9 @@ jobs:
             echo "proceed=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # /releases/latest is repo-wide, so publishing a v... release without Desktop
-      # bundles moves both updater discovery and stable download links to a 404. Do
-      # not duplicate binaries on that release. Restore the newest complete Desktop
-      # release as latest until this tag has a build of its own.
+      # /releases/latest is repo-wide. A bundleless release moves updater discovery
+      # and stable downloads to a 404, so restore the newest complete Desktop release
+      # as latest without duplicating its binaries.
       - name: Restore latest complete Desktop release
         if: ${{ inputs.repair_pointer && steps.gate.outputs.proceed == 'false' }}
         env:
@@ -126,16 +124,12 @@ jobs:
                   for prefix in prefixes
               )
 
-          # /releases/latest never resolves to a draft or prerelease. Read the target
-          # from this listing because /releases/tags/{tag} returns 404 for a draft,
-          # which has no git tag until publication.
+          # Read the target here because /releases/tags/{tag} returns 404 for drafts.
           target = next(
               (r for r in releases if r.get('tag_name') == os.environ['RELEASE_TAG']),
               None,
           )
-          # Fail closed: the listing is one page, so a target beyond it has a state
-          # this step cannot read; skipping the check would report a repair against
-          # a target whose state was never established.
+          # Fail closed when a target beyond this page has an unreadable state.
           if target is None:
               sys.exit(
                   f"{os.environ['RELEASE_TAG']} is not among the 100 most recent releases; "
@@ -156,8 +150,7 @@ jobs:
               and not release.get('draft') and not release.get('prerelease')
               and has_complete_downloads(release)
           ]
-          # Newest by publish time, matching the release users would have reached
-          # before the bundleless release moved the repository-wide pointer.
+          # Match the release users reached before the bundleless publication.
           candidates.sort(key=lambda release: release.get('published_at') or '', reverse=True)
           if candidates:
               source = candidates[0]
@@ -207,9 +200,7 @@ jobs:
             -f make_latest=true > "$RUNNER_TEMP/restored-latest.json"
           test "$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)" = "$source_tag"
           echo "Restored ${source_tag} as GitHub latest while ${RELEASE_TAG} has no Desktop build."
-          # GitHub moved /releases/latest when the release was published, so update
-          # checks and stable downloads 404 until the repair above. Nothing is automatic
-          # now, so record that gap: its length is a human response time.
+          # Record the gap while GitHub latest pointed at a bundleless release.
           {
             printf '### Desktop updater pointer\n\n'
             printf '%s carries no desktop bundles, so GitHub latest now points back to %s.\n\n' \
