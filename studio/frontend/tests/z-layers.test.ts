@@ -15,7 +15,6 @@ import { Z_LAYER } from "../src/lib/z-layers.ts";
 const ORDER = [
   "OVERLAY_STACK",
   "WINDOW_RESIZE_EDGE",
-  "WINDOW_CONTROLS",
   "FLOATING_PANEL",
   "FLOATING_PANEL_TOP",
   "STARTUP_SCREEN",

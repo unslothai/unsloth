@@ -216,6 +216,25 @@ const RESIZE_TARGETS = [
   ["resize-southeast", "fixed right-0 bottom-0 size-3 cursor-se-resize"],
 ] as const;
 
+// The two layers under test, overridable per load so one run can measure the shape the PR
+// inherited as well as the shape it ships. `?gripz=70&headerz=70` is the titlebar before this
+// PR touched it, which is how the driver tells a regression apart from a defect it inherited.
+const params = new URLSearchParams(window.location.search);
+function layerParam(name: string, fallback: number): number {
+  const raw = params.get(name);
+  if (raw === null) return fallback;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+const GRIP_Z = layerParam("gripz", Z_LAYER.WINDOW_RESIZE_EDGE);
+// 70 is the app's own header, on Tailwind's scale with the rest of the in-page chrome.
+const HEADER_Z = layerParam("headerz", 70);
+// No inline z-index on the toolbar by default, because one there cannot escape the header
+// above it. `?toolbarz=` puts it back so the driver can show that it changes nothing.
+const TOOLBAR_Z = params.has("toolbarz")
+  ? layerParam("toolbarz", 0)
+  : undefined;
+
 function WindowResizeTargets() {
   return (
     <>
@@ -225,7 +244,7 @@ function WindowResizeTargets() {
           aria-hidden="true"
           data-testid={id}
           className={cn("pointer-events-auto", shape)}
-          style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
+          style={{ zIndex: GRIP_Z }}
         />
       ))}
     </>
@@ -238,25 +257,39 @@ function WindowResizeTargets() {
  * and a 30px button centred in the titlebar band puts its top a couple of px down, so the
  * grip's 12x12 corner and the button's corner overlap. The driver asks whether raising the
  * grips costs the button any of its hit area.
+ *
+ * The `<header>` around it is not decoration. In the app the toolbar is a descendant of a
+ * positioned header carrying its own z-index, which by CSS makes that header a stacking
+ * context and confines every z-index inside it, the toolbar's and the buttons' alike. Drop
+ * the header and the buttons compare against the grips directly, which is a different and
+ * much more forgiving question than the one the app asks. It is the ancestor, not the
+ * toolbar, that has to out-rank a grip, so the ancestor is what the harness renders and what
+ * the driver measures.
  */
 function WindowControls() {
   return (
-    <div
-      className="pointer-events-auto absolute right-1 top-0 flex h-[34px] items-center gap-0.5 px-1"
-      role="toolbar"
-      aria-label="Window controls"
-      style={{ zIndex: Z_LAYER.WINDOW_CONTROLS }}
+    <header
+      data-testid="titlebar-header"
+      className="pointer-events-none absolute inset-x-0 top-0 h-[34px] select-none"
+      style={{ zIndex: HEADER_Z }}
     >
-      {["minimize", "maximize", "close"].map((name) => (
-        <button
-          key={name}
-          type="button"
-          data-testid={`control-${name}`}
-          aria-label={name}
-          className="relative z-[80] inline-flex size-[30px] items-center justify-center rounded-[10px]"
-        />
-      ))}
-    </div>
+      <div
+        className="pointer-events-auto absolute right-1 top-0 flex h-full items-center gap-0.5 px-1"
+        role="toolbar"
+        aria-label="Window controls"
+        style={TOOLBAR_Z === undefined ? undefined : { zIndex: TOOLBAR_Z }}
+      >
+        {["minimize", "maximize", "close"].map((name) => (
+          <button
+            key={name}
+            type="button"
+            data-testid={`control-${name}`}
+            aria-label={name}
+            className="relative z-[80] inline-flex size-[30px] items-center justify-center rounded-[10px]"
+          />
+        ))}
+      </div>
+    </header>
   );
 }
 
@@ -264,8 +297,11 @@ function Harness() {
   return (
     <>
       <Obstacles />
-      <WindowResizeTargets />
+      {/* Header before grips, as window-titlebar.tsx renders them. Not cosmetic: equal
+          z-indexes are resolved by document order, so swapping these two hands the corner
+          to whichever comes last and the pre-PR control run measures the wrong titlebar. */}
       <WindowControls />
+      <WindowResizeTargets />
       <Rail />
     </>
   );

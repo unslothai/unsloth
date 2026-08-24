@@ -635,6 +635,34 @@ CAPTURE_TARGETS = [
 # measured the same way, against the grips rather than against the rail.
 CONTROLS = ["control-minimize", "control-maximize", "control-close"]
 
+CONTROL_LOSS = """
+([ids]) => {
+  // Only pixels taken by a grip or by the rail count. A rounded button's own corners
+  // answer as its container, which is the button's shape rather than a lost hit area.
+  const stolen = (el) =>
+    Boolean(el) && (
+      el.closest('[data-testid="overlay-rail"]') !== null ||
+      (el.dataset && typeof el.dataset.testid === "string"
+        && el.dataset.testid.startsWith("resize-"))
+    );
+  const out = {};
+  for (const id of ids) {
+    const node = document.querySelector(`[data-testid="${id}"]`);
+    if (!node) continue;
+    const b = node.getBoundingClientRect();
+    let lost = 0, total = 0;
+    for (let x = Math.ceil(b.left); x < b.right; x += 1) {
+      for (let y = Math.ceil(b.top); y < b.bottom; y += 1) {
+        total += 1;
+        if (stolen(document.elementFromPoint(x, y))) lost += 1;
+      }
+    }
+    out[id] = { lost, total };
+  }
+  return out;
+}
+"""
+
 REACH = """
 ([ids]) => {
   const rail = document.querySelector('[data-testid="overlay-rail"]');
@@ -733,41 +761,78 @@ def run_reach_and_capture(page) -> None:
     )
     report_capture(page, "lifted over the composer")
 
-    # And the controls the grips now sit next to keep every pixel of their own.
-    taken = page.evaluate(
-        """([ids]) => {
-      // Only pixels taken by a grip or by the rail count. A rounded button's own corners
-      // answer as its container, which is the button's shape rather than a lost hit area.
-      const stolen = (el) =>
-        Boolean(el) && (
-          el.closest('[data-testid="overlay-rail"]') !== null ||
-          (el.dataset && typeof el.dataset.testid === "string"
-            && el.dataset.testid.startsWith("resize-"))
-        );
-      const out = {};
-      for (const id of ids) {
-        const node = document.querySelector(`[data-testid="${id}"]`);
-        if (!node) continue;
-        const b = node.getBoundingClientRect();
-        let lost = 0, total = 0;
-        for (let x = Math.ceil(b.left); x < b.right; x += 1) {
-          for (let y = Math.ceil(b.top); y < b.bottom; y += 1) {
-            total += 1;
-            if (stolen(document.elementFromPoint(x, y))) lost += 1;
-          }
-        }
-        out[id] = { lost, total };
-      }
-      return out;
-    }""",
-        [CONTROLS],
-    )
+    # And the controls the grips now sit next to lose nothing to the rail. What they lose to
+    # a grip is the titlebar's own business and is measured against the pre-PR titlebar in
+    # run_titlebar_stacking, which can tell an inherited overlap from a new one.
+    taken = page.evaluate(CONTROL_LOSS, [CONTROLS])
     for name, v in sorted(taken.items()):
         info(f"    {name}: {v['lost']} of {v['total']}px taken by a grip or the rail")
-        check(
-            v["lost"] == 0,
-            f"{name} lost {v['lost']} of its {v['total']}px to the raised grips",
-        )
+
+
+def run_titlebar_stacking(page, base: str) -> None:
+    """Whether the window controls lose anything to the grips, and to whom the answer belongs.
+
+    The controls sit inside a positioned header that carries its own z-index, and by CSS that
+    makes the header a stacking context: every z-index below it, the toolbar's included, is
+    compared inside the header and never against the grips outside it. So a number on the
+    toolbar cannot lift the controls over a grip, and one written there would read as
+    protection while doing nothing.
+
+    Three shapes, so the report can say who owns the overlap rather than guess. Whatever the
+    grips are numbered, they are later siblings of the header, so the pre-PR pair at equal
+    z-index already resolved in the grips' favour by document order. If the three agree, the
+    Close corner is the titlebar's inherited arrangement and not something this PR moved.
+    """
+    print("[matrix] titlebar stacking", flush = True)
+    # Equal z-indexes are resolved by document order, so the whole comparison below is only
+    # meaningful while the harness keeps the app's order: header first, grips after it.
+    order = page.evaluate(
+        """() => {
+      const header = document.querySelector('[data-testid="titlebar-header"]');
+      const grip = document.querySelector('[data-testid="resize-northeast"]');
+      if (!header || !grip) return null;
+      // DOCUMENT_POSITION_FOLLOWING is 4: the grip comes after the header.
+      return Boolean(header.compareDocumentPosition(grip) & 4);
+    }"""
+    )
+    check(
+        order is True,
+        "the harness renders the resize grips before the titlebar header, which is not the "
+        "order window-titlebar.tsx uses; every equal-z result below would be backwards",
+    )
+    shapes = [
+        ("before this PR (grips 70, header 70)", "gripz=70&headerz=70"),
+        ("toolbar number added (grips 9050, header 70, toolbar 9060)",
+         "gripz=9050&headerz=70&toolbarz=9060"),
+        ("at head (grips 9050, header 70, no toolbar number)", "gripz=9050&headerz=70"),
+    ]
+    losses = {}
+    for label, query in shapes:
+        page.goto(f"{base}/{ENTRY}?nostrict&{query}", wait_until = "domcontentloaded")
+        page.wait_for_function("() => Boolean(window.__railSmoke)", timeout = 30_000)
+        configure(page, cards = [INDICATOR])
+        taken = page.evaluate(CONTROL_LOSS, [CONTROLS])
+        losses[label] = {k: v["lost"] for k, v in taken.items()}
+        for name, v in sorted(taken.items()):
+            info(f"    {label}: {name} loses {v['lost']} of {v['total']}px to a grip")
+
+    before = losses[shapes[0][0]]
+    numbered = losses[shapes[1][0]]
+    head = losses[shapes[2][0]]
+    check(
+        numbered == before,
+        f"a z-index on the toolbar changed what the controls keep, so it is not trapped "
+        f"after all: {before} -> {numbered}",
+    )
+    check(
+        head == before,
+        f"raising the grips cost the window controls hit area they had before this PR: "
+        f"{before} -> {head}",
+    )
+
+    # Restore the default shape for anything that runs after this.
+    page.goto(f"{base}/{ENTRY}?nostrict", wait_until = "domcontentloaded")
+    page.wait_for_function("() => Boolean(window.__railSmoke)", timeout = 30_000)
 
 
 def run_observer_and_scroll(page) -> None:
@@ -903,6 +968,7 @@ def main() -> int:
             run_short_cap(page)
             run_stale_block_end_padding(page)
             run_hit_testing(page)
+            run_titlebar_stacking(page, base)
             run_observer_and_scroll(page)
             run_shadow_pixels(page)
             browser.close()

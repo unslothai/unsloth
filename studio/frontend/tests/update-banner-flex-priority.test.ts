@@ -301,12 +301,33 @@ test("the rail's block gutter costs the cards no room", () => {
     // how the llama.cpp toast was reported. A zero gutter is that bug again.
     assert.doesNotMatch(rules, /\bp[byt]-/, "a rem gutter is back on the rail");
   // The gutter drops the rail's box to the window's floor, and `-mx-3` already put it 4px
-  // from the right edge, so a scrolling rail's box lands on the two resize grips along the
-  // bottom. Those are under it on Tailwind's scale, so they need the named layer to win.
-  // The other six keep z-[70]: the rail cannot reach them, and the north-east one would
-  // take the corner of the window controls, which are z-[80].
+  // from the right edge, so a scrolling rail's box lands on the window's own resize grips.
+  // Those are under it on Tailwind's scale, so they need the named layer to win. All eight,
+  // because a card is the window's width less 2rem up to its max: on a narrow window the
+  // rail spans nearly the whole width and reaches the north and west targets too.
   const TITLEBAR = read("components/tauri/window-titlebar.tsx");
-  for (const grip of ["cursor-s-resize", "cursor-se-resize"]) {
+  // A z-index on the window-controls toolbar would read as protection from the grips and
+  // give none: the toolbar sits inside a positioned, numbered header, so that header is a
+  // stacking context and a number inside it is never compared with the grips outside it.
+  const toolbar = TITLEBAR.slice(
+    TITLEBAR.lastIndexOf("<div", TITLEBAR.indexOf('aria-label="Window controls"')),
+    TITLEBAR.indexOf('aria-label="Window controls"'),
+  );
+  assert.doesNotMatch(
+    toolbar,
+    /zIndex:/,
+    "the window-controls toolbar carries a z-index, which its header traps",
+  );
+  for (const grip of [
+    "cursor-n-resize",
+    "cursor-s-resize",
+    "cursor-w-resize",
+    "cursor-e-resize",
+    "cursor-nw-resize",
+    "cursor-ne-resize",
+    "cursor-sw-resize",
+    "cursor-se-resize",
+  ]) {
     const target = TITLEBAR.slice(
       TITLEBAR.lastIndexOf("<div", TITLEBAR.indexOf(grip)),
       TITLEBAR.indexOf("/>", TITLEBAR.indexOf(grip)),

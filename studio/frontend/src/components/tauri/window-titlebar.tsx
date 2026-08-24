@@ -414,9 +414,13 @@ export function WindowTitlebar({
         />
         <div
           className="pointer-events-auto absolute right-1 top-0 flex h-full items-center gap-0.5 px-1"
-          // Above the grips, which are now above the overlay stack. Close's corner and
-          // the north-east grip overlap, and the button is what a click there means.
-          style={{ zIndex: Z_LAYER.WINDOW_CONTROLS }}
+          // No z-index here. The header above is positioned and numbered, so it is a
+          // stacking context and anything written here is compared inside it, never against
+          // the grips outside it. The overlap that invites one -- the north edge strip and
+          // the north-east corner cross the buttons, costing Close 92px and the other two
+          // 60px each -- is the same before and after this PR, because the grips were equal
+          // to the header at z-[70] and came after it, and are above it now. Moving it is
+          // the titlebar's own question; see tests/studio/playwright_overlay_rail.py.
           role="toolbar"
           aria-label="Window controls"
         >
