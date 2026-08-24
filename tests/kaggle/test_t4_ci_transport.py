@@ -2449,8 +2449,13 @@ def test_the_shared_wheel_build_is_opt_in():
 
     # Off means no wheel build in the kernel at all, not merely an unused one.
     off = build_kernel.build_kernel(
-        SMOKE_DIR, ALL_FOUR, unsloth_ref = "R", zoo_ref = "R",
-        extra_args = (), per_run_timeout = 60, skip_reference = True,
+        SMOKE_DIR,
+        ALL_FOUR,
+        unsloth_ref = "R",
+        zoo_ref = "R",
+        extra_args = (),
+        per_run_timeout = 60,
+        skip_reference = True,
     )
     src = "".join("".join(c["source"]) for c in off["cells"])
     assert "SHARED_WHEEL_SPECS = ()" in src, (

@@ -1443,7 +1443,7 @@ def main() -> int:
         "--shared-wheels",
         action = "store_true",
         help = "build unsloth and unsloth_zoo once up front and install every "
-               "leg from the wheel instead of resolving the git spec per leg",
+        "leg from the wheel instead of resolving the git spec per leg",
     )
     ap.add_argument(
         "--studio-concurrent",
