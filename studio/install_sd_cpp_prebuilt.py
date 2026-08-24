@@ -537,10 +537,9 @@ _MAX_LINK_TARGET_BYTES = 4096
 _MAX_LINK_DEPTH = 40
 
 
-# Creator bytes whose ``external_attr`` high bits are a Unix ``st_mode``. 3 is Unix, which
-# Info-ZIP and CPython's own zipfile write; 19 is OS X, which Apple's ditto and Archive Utility
-# stamp with the same layout. A FAT or NTFS entry keeps DOS attribute flags there instead, so
-# reading a mode out of one would invent symlinks that the archive never described.
+# Creators whose ``external_attr`` high bits are a Unix ``st_mode``: 3 (Info-ZIP, CPython) and
+# 19 (Apple's ditto, same layout). FAT and NTFS keep DOS attribute flags there, so reading a mode
+# out of one would invent symlinks the archive never described.
 _UNIX_CREATORS = (3, 19)
 
 
@@ -554,8 +553,8 @@ def _checked_link_target(
 ) -> str:
     """A symlink member's payload, refused unless it is relative and stays inside ``base``.
 
-    Absolute (including Windows drive-relative, which Win32 resolves against that drive's cwd),
-    empty, NUL-bearing, self-referential and escaping targets are all rejected."""
+    Rejects absolute (including Windows drive-relative, which Win32 resolves against that drive's
+    cwd), empty, NUL-bearing, self-referential and escaping targets."""
     if member.file_size > _MAX_LINK_TARGET_BYTES:
         raise RuntimeError(f"oversized symlink target in archive: {member.filename!r}")
     link_target = zf.read(member).decode("utf-8", "surrogateescape")
@@ -586,10 +585,9 @@ def _plan_resolve(
 ) -> Path:
     """``path`` with every component resolved as the tree WILL have it after extraction.
 
-    Links this archive ships are followed from the archive (they do not exist on disk yet); links
-    it replaces are not followed at all (they are gone before the first write); anything else is a
-    link a previous bundle left. Two link members can point through each other's directories, so
-    the recursion is bounded and a runaway is the cycle it describes."""
+    Links this archive ships are followed from the archive (not on disk yet); links it replaces
+    are not followed (gone before the first write); anything else is a previous bundle's. Two
+    members can point through each other's directories, so a runaway recursion is that cycle."""
     if path == base or base not in path.parents:
         return path
     if depth > _MAX_LINK_DEPTH:
@@ -684,8 +682,7 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
             raise RuntimeError(f"symlink member collides with a directory: {member.filename!r}")
     # Chains are normal (libwebp.so -> .so.7 -> .so.7.2.0) but must terminate: a cycle installs a
     # library nothing can read, so every load reinstalls it. Walk the graph the tree WILL have,
-    # archive edges plus links a previous bundle left, keyed by landing point so alias/a and real/b
-    # count as one cycle.
+    # keyed by landing point so alias/a and real/b count as one cycle.
     by_dest = {str(keys[str(d)]): t for d, t, _ in links}
     for dest, _, member in links:
         seen, cur = set(), str(keys[str(dest)])
@@ -709,15 +706,13 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
     # (exFAT, SMB without unix extensions) refuse, and learning that at creation time means
     # extractall has already put the new binary over the working one.
     if links:
-        # extractall creates the tree itself, so the probe must not be the one thing that needs
-        # it to exist already: a first install into a fresh root would fail as "cannot store
-        # symlinks" when the real answer is that nothing had been created yet.
+        # extractall would create the tree itself, so the probe must not be what needs it first.
         base.mkdir(parents = True, exist_ok = True)
-        # A probe a killed install left behind must not answer for this one. symlink_to raises
-        # EEXIST on an existing path, which the handler below would read as "no symlink support",
-        # and the install directory outlives the process: a restarted container starts a fresh
-        # pid namespace, so the same low pid comes round again and every retry stays blocked.
-        # Sweep stragglers, and take a unique name so a concurrent install cannot collide either.
+        # A probe a killed install left behind must not answer for this one: symlink_to raises
+        # EEXIST on an existing path, which reads below as "no symlink support". The directory
+        # outlives the process and a restarted container restarts its pid namespace, so the same
+        # pid returns and every retry stays blocked. Sweep stragglers, and take a unique name so
+        # a concurrent install cannot collide either.
         for stale in base.glob(".unsloth-symlink-probe-*"):
             try:
                 stale.unlink()
@@ -741,10 +736,10 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
             dest.unlink()
     zf.extractall(target, members = plain)
     for dest, link_target, member in links:
-        # Re-resolved HERE, never reused from the pass above: that pass ran before a single link
-        # existed, so an earlier member (a -> .) can turn a later member's parent into a link and
-        # send this unlink/symlink_to outside base. Both ends are checked for containment, not for
-        # being link-free, so a tree that legitimately symlinks its own subdirectory still installs.
+        # Re-resolved HERE: the pass above ran before any link existed, so an earlier member
+        # (a -> .) can turn a later member's parent into a link and send this outside base. Both
+        # ends are checked for containment, not for being link-free, so a tree that legitimately
+        # symlinks its own subdirectory still installs.
         parent = Path(os.path.realpath(dest.parent))
         resolved = (dest.parent / link_target).resolve()
         if (parent != base and base not in parent.parents) or (
@@ -759,11 +754,10 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
         try:
             dest.symlink_to(link_target)
         except OSError as exc:
-            # Windows outside developer mode cannot create a link at all, and every Windows asset
-            # ships plain files, so flattening there costs nothing and keeps an install that used
-            # to finish finishing. Anywhere else a refusal means the filesystem cannot hold the
-            # layout sd-cli needs, and writing the link text back as a file is exactly the
-            # "file too short" install #9268 is about.
+            # Windows outside developer mode cannot create a link, and every Windows asset ships
+            # plain files, so flattening there costs nothing and keeps an install that used to
+            # finish finishing. Anywhere else a refusal means the filesystem cannot hold the layout
+            # sd-cli needs, and writing the link text back is the "file too short" install of #9268.
             if sys.platform != "win32":
                 raise RuntimeError(
                     f"could not restore the symlink {member.filename!r}: {exc}"
