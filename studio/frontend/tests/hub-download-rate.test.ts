@@ -227,7 +227,78 @@ test("a lone outage gap is not mistaken for the burst cadence", () => {
   for (const end = t + 5_400; t <= end; t += 1) {
     if (publishedRate(samples, t, bytes) > 0) published += 1;
   }
-  assert.equal(published, 0, `published a rate on ${published} ticks after death`);
+  assert.equal(
+    published,
+    0,
+    `published a rate on ${published} ticks after death`,
+  );
+});
+
+// The same trap one increase later: a normal gap followed by an outage leaves
+// gaps of [5, 1800], and taking the upper of two picks the outage, so the stall
+// window became 90 minutes and a dead transfer published 0.03 MB/s with a 999h
+// ETA on every tick of it. Two defences: the median is not trusted below
+// MIN_CADENCE_GAPS, and on an even count it takes the shorter of the middle
+// pair, so an outlier needs a majority behind it.
+test("a normal gap followed by an outage does not set the cadence", () => {
+  const samples: TransferSample[] = [];
+  let bytes = 0;
+  for (let t = 0; t <= 3; t += 1) publishedRate(samples, t, bytes);
+  bytes += 50 * MB;
+  publishedRate(samples, 4, bytes);
+  for (let t = 5; t <= 8; t += 1) publishedRate(samples, t, bytes);
+  bytes += 50 * MB;
+  publishedRate(samples, 9, bytes);
+  for (let t = 10; t <= 1_809; t += 1) publishedRate(samples, t, bytes);
+  bytes += 50 * MB;
+  publishedRate(samples, 1_810, bytes);
+  // Three increases, gaps of 5s and 1800s. Progress now stops for good.
+  let published = 0;
+  for (let t = 1_811; t <= 1_810 + 5_400; t += 1) {
+    if (publishedRate(samples, t, bytes) > 0) published += 1;
+  }
+  assert.equal(
+    published,
+    0,
+    `published a rate on ${published} ticks after death`,
+  );
+});
+
+// Half the gaps being outages is still a minority reading of the transfer, not
+// a rhythm. Four increases with gaps [5, 5, 1800, 1800] pass the count gate, so
+// only the choice of middle value keeps the window off the outage.
+test("outages tying with real gaps do not win the median", () => {
+  const samples: TransferSample[] = [];
+  let bytes = 0;
+  let t = 0;
+  const burst = () => {
+    bytes += 50 * MB;
+    publishedRate(samples, t, bytes);
+  };
+  for (; t <= 3; t += 1) publishedRate(samples, t, bytes);
+  burst();
+  for (t = 5; t <= 8; t += 1) publishedRate(samples, t, bytes);
+  t = 9;
+  burst();
+  for (t = 10; t <= 13; t += 1) publishedRate(samples, t, bytes);
+  t = 14;
+  burst();
+  for (t = 15; t <= 1_813; t += 1) publishedRate(samples, t, bytes);
+  t = 1_814;
+  burst();
+  for (t = 1_815; t <= 3_613; t += 1) publishedRate(samples, t, bytes);
+  t = 3_614;
+  burst();
+  // gaps: 5, 5, 1800, 1800. Progress now stops for good.
+  let published = 0;
+  for (t = 3_615; t <= 3_614 + 5_400; t += 1) {
+    if (publishedRate(samples, t, bytes) > 0) published += 1;
+  }
+  assert.equal(
+    published,
+    0,
+    `published a rate on ${published} ticks after death`,
+  );
 });
 
 test("a restart drops the samples from the previous run", () => {
