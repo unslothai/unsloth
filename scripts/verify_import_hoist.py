@@ -118,12 +118,11 @@ def _import_target(node: ast.AST, alias: ast.alias) -> tuple[str, str]:
     return bound, f"from:{mod}:{alias.name}"
 
 
-def _is_literal_subscript(node: ast.Subscript) -> bool:
-    """True for ``Literal[...]`` / ``typing.Literal[...]``, whose string members are values."""
-    base = node.value
-    if isinstance(base, ast.Attribute):
-        return base.attr == "Literal"
-    return isinstance(base, ast.Name) and base.id == "Literal"
+def _is_literal_ref(node: ast.AST) -> bool:
+    """Whether `node` names `Literal`, however it was imported (`Literal`, `t.Literal`)."""
+    if isinstance(node, ast.Name):
+        return node.id == "Literal"
+    return isinstance(node, ast.Attribute) and node.attr == "Literal"
 
 
 class _Builder(ast.NodeVisitor):
@@ -135,43 +134,44 @@ class _Builder(ast.NodeVisitor):
         # annotations: count as "used" but never as "unresolved" (forward refs)
         self.soft_uses: list[tuple[Scope, str, int]] = []
 
-    def _visit_annotation(self, node, scope: Scope) -> None:
+    # `Optional["Dict[str, 'T']"]` is two deep; nothing real goes further.
+    _FORWARD_REF_DEPTH = 3
+
+    def _visit_annotation(
+        self,
+        node,
+        scope: Scope,
+        _depth: int = 0,
+        _lineno: int = 0,
+    ) -> None:
         """Record annotation names as SOFT uses: an import used only in an annotation
-        counts as used, but a forward-ref name is never 'unresolved'."""
-        if node is None:
-            return
-        for n in ast.walk(node):
-            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load):
-                self.soft_uses.append((scope, n.id, n.lineno))
-        self._visit_forward_refs(node, scope)
+        counts as used, but a forward-ref name is never 'unresolved'.
 
-    def _visit_forward_refs(self, node, scope: Scope) -> None:
-        """Record names inside PEP 484 string annotations, e.g. ``Optional["Foo"]``.
-
-        Without this a `TYPE_CHECKING` import referenced only through a quoted annotation
-        parses as an `ast.Constant`, not an `ast.Name`, and reads as 'added but unused'.
-        Quoted forward refs are the prevailing style in this tree (a module without
-        `from __future__ import annotations` has no other option for a TYPE_CHECKING name),
-        so treating them as unused is a false BLOCKER on every new one.
-
-        `Literal[...]` members are skipped: those strings are values, not type names, and
-        counting them would silently excuse a genuinely unused import of the same name.
+        A QUOTED annotation is one too: `Optional["T"]` keeps the name in an ast.Constant,
+        invisible to a Name walk, so a TYPE_CHECKING import reached only that way read as
+        unused and blocked correct code. Parse the string and walk what it denotes.
         """
         if node is None:
             return
-        if isinstance(node, ast.Subscript) and _is_literal_subscript(node):
+        # Literal[...] holds values, not type names. Skipping its args is what keeps this
+        # from crediting an unrelated import, the one direction that loses a real finding.
+        if isinstance(node, ast.Subscript) and _is_literal_ref(node.value):
+            self._visit_annotation(node.value, scope, _depth, _lineno)
             return
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        if isinstance(node, ast.Constant):
+            if not isinstance(node.value, str) or _depth >= self._FORWARD_REF_DEPTH:
+                return
             try:
-                parsed = ast.parse(node.value.strip(), mode = "eval")
+                inner = ast.parse(node.value.strip(), mode = "eval").body
             except (SyntaxError, ValueError):
-                return  # not a type expression; nothing to credit
-            for n in ast.walk(parsed):
-                if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load):
-                    self.soft_uses.append((scope, n.id, node.lineno))
+                return  # Prose, as in Annotated[int, "docs"]. Nothing to credit.
+            # Report against the string's own line; the parsed tree numbers from 1.
+            self._visit_annotation(inner, scope, _depth + 1, _lineno or node.lineno)
             return
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            self.soft_uses.append((scope, node.id, _lineno or node.lineno))
         for child in ast.iter_child_nodes(node):
-            self._visit_forward_refs(child, scope)
+            self._visit_annotation(child, scope, _depth, _lineno)
 
     # -- binding helpers --
     def _bind_targets(self, scope: Scope, target: ast.AST) -> None:
@@ -769,6 +769,45 @@ _SELF_TESTS = {
         'from .a import A\nfrom .b import B\n__all__ = ["A"]\n',
         "BLOCKER",
         "pkg/__init__.py",
+    ),
+    # --- quoted annotations are annotations ---
+    # A TYPE_CHECKING import reached only through a forward reference IS used.
+    "forward_ref_string_annotation_counts_as_a_use": (
+        "from typing import TYPE_CHECKING, Optional\ndef f(x) -> Optional[int]:\n    return x\n",
+        "from typing import TYPE_CHECKING, Optional\n"
+        "if TYPE_CHECKING:\n"
+        "    from .m import T\n"
+        'def f(x) -> Optional["T"]:\n'
+        "    return x\n",
+        None,
+    ),
+    # Two strings deep; each layer is parsed.
+    "nested_forward_ref_counts_as_a_use": (
+        "from typing import TYPE_CHECKING, Optional\ndef f(x) -> Optional[int]:\n    return x\n",
+        "from typing import TYPE_CHECKING, Optional\n"
+        "if TYPE_CHECKING:\n"
+        "    from .m import T\n"
+        "def f(x) -> Optional[\"Optional['T']\"]:\n"
+        "    return x\n",
+        None,
+    ),
+    # The other direction: Literal['T'] is a VALUE, so it must NOT credit an import T.
+    "a_literal_value_is_not_a_use_of_that_name": (
+        "from typing import TYPE_CHECKING, Literal\ndef f(x) -> Literal['a']:\n    return x\n",
+        "from typing import TYPE_CHECKING, Literal\n"
+        "if TYPE_CHECKING:\n"
+        "    from .m import T\n"
+        "def f(x) -> Literal['T']:\n"
+        "    return x\n",
+        "BLOCKER",
+    ),
+    # Prose is not a type, and a parse error there is not a finding.
+    "unparseable_annotation_string_is_ignored": (
+        "from typing import Annotated\ndef f(x: Annotated[int, 'ok']) -> int:\n    return x\n",
+        "from typing import Annotated\n"
+        "def f(x: Annotated[int, 'not a type at all']) -> int:\n"
+        "    return x\n",
+        None,
     ),
 }
 

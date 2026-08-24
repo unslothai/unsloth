@@ -43,6 +43,53 @@ class Target:
     owns_studio: bool = False
 
 
+#: The port a scheme does not spell out. `window.location.origin` omits it, so an attach URL that
+#: writes it is the same origin under a different name.
+DEFAULT_PORTS = {"http": 80, "https": 443, "ws": 80, "wss": 443}
+
+
+def browser_origin(url: str) -> str:
+    """The ORIGIN a browser computes for `url`, spelled the way `window.location.origin` spells it.
+
+    THE ONLY THING THAT DISCRIMINATES THE TWO ARMS. Both are driven by one browser context and one
+    page, so `origin_scoped`'s `window.location.origin !== <url>` is the whole of the gate, and the
+    right-hand side of that comparison has to be what the browser will actually produce rather than
+    what the caller typed. Measured in chromium against real documents:
+    `http://studio:80` and `HTTP://STUDIO` and `http://studio/app` all report an origin of
+    `http://studio`, so every one of those spellings gates a script onto a document that does not
+    exist. The failure is silent in both directions -- the base's seed then runs on the treatment's
+    documents as well, and the treatment's injection runs on neither -- and it reaches
+    `evaluate_stream_cost_recovery_gate` as a recovery of zero blamed on the accumulator.
+
+    WHAT IS NOT FOLDED TOGETHER: `localhost` and `127.0.0.1`. A browser treats those as two
+    origins, chromium reports them as two (`http://localhost:8000` stays `http://localhost:8000`),
+    and a check that called them one would refuse a perfectly good pair of arms. Only the four
+    canonicalisations the URL standard itself performs are applied: the scheme and host are
+    lower-cased, a port the scheme implies is dropped, and the path, query, fragment and any
+    userinfo are discarded.
+
+    A string this cannot parse as an absolute URL is returned trailing-slash-stripped, which is
+    what the acquisition loop does with `--attach` anyway: an unparseable URL is the caller's
+    problem to see at `wait_for_healthz`, not a reason for this to guess.
+    """
+    from urllib.parse import urlsplit
+
+    try:
+        split = urlsplit(url.strip())
+        host, port = split.hostname, split.port
+    except ValueError:
+        return url.rstrip("/")
+    scheme = split.scheme.lower()
+    if not scheme or not host:
+        return url.rstrip("/")
+    host = host.lower()
+    if ":" in host:  # IPv6, which serialises with its brackets
+        host = f"[{host}]"
+    if port is None or port == DEFAULT_PORTS.get(scheme):
+        return f"{scheme}://{host}"
+    return f"{scheme}://{host}:{port}"
+
+
 def origin_scoped(base_url: str, script: str) -> str:
     """Run `script` only on its own Studio's origin.
 
@@ -51,11 +98,14 @@ def origin_scoped(base_url: str, script: str) -> str:
     last writes the other build's auth token into this build's storage, and the failure shows up
     much later as a logged-out SPA or a provider that renders as "No longer offered" -- neither of
     which points back here.
+
+    Gated on the CANONICAL origin rather than on the URL as typed: see `browser_origin` for the
+    spellings that otherwise gate a script onto a document no browser will ever produce.
     """
     import json as _json
     return (
         "(() => { if (window.location.origin !== "
-        + _json.dumps(base_url.rstrip("/"))
+        + _json.dumps(browser_origin(base_url))
         + ") return; "
         + script
         + " })();"
@@ -319,6 +369,8 @@ def make_target(
     cadence: str,
     image_path,
     session,
+    parity_raw: bool = False,
+    parity_shots = None,
     username: str,
     password: str,
 ) -> Target:
@@ -350,6 +402,9 @@ def make_target(
         log = log,
         cadence = cadence,
         image_path = image_path,
+        parity_raw = parity_raw,
+        parity_shots = parity_shots,
+        arm_label = label,
     )
     target = Target(label = label, ref = ref, base_url = base_url, seeder = seeder, runner = runner)
     target.auth = auth  # type: ignore[attr-defined]

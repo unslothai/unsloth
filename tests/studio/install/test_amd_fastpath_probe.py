@@ -273,7 +273,26 @@ def _run_cli(
     env = None,
     safe_path = False,
 ):
-    child = {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", **(env or {})}
+    # PINNED, and UNSLOTH_NO_TORCH is pinned for the same reason PATH and HOME already are:
+    # it is an ambient input to the answer under test that the caller does not intend to vary.
+    # Left unset, `_infer_no_torch` falls through to `install_manifest.recorded_no_torch()`,
+    # which reads `.unsloth-no-torch` and `unsloth_install_manifest.json` out of `sys.prefix` --
+    # one path, shared by every xdist worker. Three other test modules drive the real
+    # `install_python_stack()` in process and leave that marker behind with no cleanup, so
+    # whether it exists when this child starts is a race between workers. It resolves the FIRST
+    # line of `_amd_torch_needs_dependency_pass`, which returns False and exits 1 before any
+    # wheel-family logic runs, and the probe sends the child's stderr to DEVNULL, so the failure
+    # arrives as rc=1 with empty stdout and empty stderr and names nothing.
+    # Measured on origin/main with this file byte-identical: marker absent 8/8 pass, marker
+    # present 8/8 fail. A test that reports its subject broken on the strength of a file another
+    # test left lying around is not measuring its subject.
+    # The `**(env or {})` below still wins, so the cases that set it deliberately are unaffected.
+    child = {
+        "PATH": "/usr/bin:/bin",
+        "HOME": "/nonexistent",
+        "UNSLOTH_NO_TORCH": "0",
+        **(env or {}),
+    }
     if safe_path:
         child["PYTHONSAFEPATH"] = "1"
     return subprocess.run(

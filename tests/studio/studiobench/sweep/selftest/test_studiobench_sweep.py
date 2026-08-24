@@ -44,11 +44,15 @@ def payload(
     name: str,
     pairs: list[tuple[float, float]],
     tier: str = "standard",
+    corpus: str | None = "corpus0000",
 ) -> Path:
     """One shard: `pairs[i]` is (base, treatment) for repetition i."""
     out = tmp_path / name
     out.mkdir(parents = True, exist_ok = True)
-    rows: list[dict] = [{"row_type": "run_meta", "tier": tier}]
+    meta: dict = {"row_type": "run_meta", "tier": tier}
+    if corpus is not None:
+        meta["corpus_hash"] = corpus
+    rows: list[dict] = [meta]
     for i, (base, treat) in enumerate(pairs):
         rows += cell("100K", "base", f"rep{i}", {"open_close_ms": base})
         rows += cell("100K", "treatment", f"rep{i}", {"open_close_ms": treat})
@@ -298,6 +302,82 @@ def test_scoring_against_a_floor_from_another_tier_is_refused(tmp_path):
     assert "different films" in str(exc.value)
 
 
+def test_pooling_across_corpora_is_refused(tmp_path):
+    # The tier fixes how long the film runs; the corpus hash fixes what is IN it. Corpus v2 added
+    # math, so a v1 payload and a v2 payload measure two different documents under one name, and
+    # pooling them would read the corpus change as a performance change.
+    one = payload(tmp_path, "one", [(1000.0, 900.0)], corpus = "aaaa1111")
+    two = payload(tmp_path, "two", [(1000.0, 900.0)], corpus = "bbbb2222")
+    with pytest.raises(SystemExit) as exc:
+        F.load([one, two])
+    assert "different corpora" in str(exc.value)
+
+
+def test_scoring_against_a_floor_from_another_corpus_is_refused(tmp_path):
+    result = payload(tmp_path, "result", [(1000.0, 100.0)] * 4, corpus = "bbbb2222")
+    with pytest.raises(SystemExit) as exc:
+        F.render([result], "t", floors = {}, floor_corpus = "aaaa1111")
+    assert "different film" in str(exc.value)
+
+
+def test_the_same_corpus_on_both_sides_pools_normally(tmp_path):
+    a = payload(tmp_path / "a", "s0", [(1000.0, 500.0)], corpus = "aaaa1111")
+    b = payload(tmp_path / "b", "s0", [(2000.0, 1000.0)], corpus = "aaaa1111")
+    pooled, _ = F.load([a, b])
+    assert len(pooled["message_menu.open_close_ms"]) == 2
+
+
+def test_a_payload_with_no_corpus_hash_is_not_silently_pooled_with_one_that_has_it(tmp_path):
+    # An older payload predating the field reads "?", which is a different value, not a wildcard.
+    # Treating it as compatible is how a v1 run would end up scored against a v2 floor.
+    old = payload(tmp_path, "old", [(1000.0, 900.0)], corpus = None)
+    new = payload(tmp_path, "new", [(1000.0, 900.0)], corpus = "bbbb2222")
+    with pytest.raises(SystemExit) as exc:
+        F.load([old, new])
+    assert "different corpora" in str(exc.value)
+
+
+def test_a_resumed_payload_carrying_two_corpora_is_refused(tmp_path):
+    # The recorder appends, so `--resume` into the same --out leaves the first run's completed
+    # cells next to a SECOND run_meta. If the corpus changed in between, that one file holds a
+    # base recorded on the old film and a treatment recorded on the new one, and `paired` matches
+    # them on (shard, rung, rep) without noticing. Reading only the first header would pass this
+    # payload and print the corpus change as a performance change.
+    out = tmp_path / "resumed"
+    out.mkdir(parents = True, exist_ok = True)
+    rows: list[dict] = [{"row_type": "run_meta", "tier": "standard", "corpus_hash": "aaaa1111"}]
+    rows += cell("100K", "base", "rep0", {"open_close_ms": 1000.0})
+    rows += [{"row_type": "run_meta", "tier": "standard", "corpus_hash": "bbbb2222"}]
+    rows += cell("100K", "treatment", "rep0", {"open_close_ms": 100.0})
+    path = out / "payload.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+
+    assert F.corpora_of(F.read_rows(path)) == {"aaaa1111", "bbbb2222"}
+    with pytest.raises(SystemExit) as exc:
+        F.load([path])
+    assert "more than one corpus" in str(exc.value)
+    # And the floor-vs-result path refuses it too, rather than scoring it under the first hash.
+    with pytest.raises(SystemExit) as exc:
+        F.render([path], "t", floors = {}, floor_corpus = "aaaa1111")
+    assert "more than one corpus" in str(exc.value)
+
+
+def test_a_payload_with_repeated_headers_on_one_corpus_still_loads(tmp_path):
+    # A plain resume, nothing changed in between: two headers, one hash, no refusal.
+    out = tmp_path / "plain"
+    out.mkdir(parents = True, exist_ok = True)
+    meta = {"row_type": "run_meta", "tier": "standard", "corpus_hash": "aaaa1111"}
+    rows: list[dict] = [dict(meta)]
+    rows += cell("100K", "base", "rep0", {"open_close_ms": 1000.0})
+    rows += [dict(meta)]
+    rows += cell("100K", "treatment", "rep0", {"open_close_ms": 900.0})
+    path = out / "payload.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+
+    pooled, _tiers = F.load([path])
+    assert pooled["message_menu.open_close_ms"] == [(1000.0, 900.0)]
+
+
 def test_an_action_that_did_not_run_contributes_no_timing(tmp_path):
     # The rule the whole harness turns on: an absent action is not a fast one.
     rows = [
@@ -425,6 +505,130 @@ def frame_window(cid: str, kind: str, gaps: list[float], duration_ms: float, **e
     }
     row.update(extra)
     return row
+
+
+def stream_window(
+    cid: str,
+    gaps: list[float],
+    duration_ms: float = 10_000.0,
+) -> dict:
+    """One qualifying, unaided streaming window: SSE traffic plus enough reply growth."""
+    return {
+        "row_type": "window",
+        "cell_id": cid,
+        "kind": "gap",
+        "name": "stream:gap1",
+        "duration_ms": duration_ms,
+        "instruments": {
+            "stream_cost": {
+                "stream_cost_attempted": True,
+                "streaming_observed": True,
+                "streaming_ms": 9_000.0,
+                "delta_task_ms": 900.0,
+                "stream_blocked_ms": 1_800.0,
+                "reply_chars_delta": 3_000,
+            },
+            "frames": {
+                "frames_attempted": True,
+                "frame_gaps_ms": gaps,
+                "frame_gaps_truncated": False,
+                "max_frame_ms": max(gaps),
+            },
+        },
+    }
+
+
+def stream_payload(tmp_path: Path, name: str, pairs: list[tuple[list, list]]) -> Path:
+    rows: list[dict] = [{"row_type": "run_meta", "tier": "standard", "corpus_hash": "c0"}]
+    for i, (base_gaps, treat_gaps) in enumerate(pairs):
+        for arm, gaps in (("base", base_gaps), ("treatment", treat_gaps)):
+            cid = f"100K.{arm}.rep{i}"
+            rows.append({"row_type": "cell", "cell_id": cid, "completed": True})
+            rows.append(stream_window(cid, gaps))
+    return write(tmp_path, name, rows)
+
+
+SMOOTH = [16.7] * 540  # a clean stream: stream_time_in_jank_pct is exactly 0.0
+JANKY = [16.7] * 530 + [120.0] * 10
+
+
+def test_a_clean_zero_base_arm_still_pairs_so_a_jank_regression_is_not_lost(tmp_path):
+    """Zero is these metrics' CLEAN reading, and `if b` dropped every pair that had one.
+
+    Measured on this repository's recorded payloads, 349 of 668 `stream_time_in_jank_pct` pairs
+    have a zero base arm. Dropped, a treatment that introduces jank against a clean base left no
+    row in the table at all, and where only some repetitions had a zero base the metric was pooled
+    over whichever pairs the BASE arm happened to make non-zero.
+    """
+    result = stream_payload(tmp_path, "result", [(SMOOTH, JANKY)] * 4)
+    null = stream_payload(tmp_path, "null", [(SMOOTH, SMOOTH)] * 4)
+
+    pairs = F.paired(F.read_rows(result))
+    assert pairs["stream_time_in_jank_pct"] == [(0.0, 12.0)] * 4
+    assert len(pairs["stream_jank_index"]) == 4
+
+    stats, floors = F.summarise([result]), F.summarise([null])
+    s = stats["stream_time_in_jank_pct"]
+    assert s["n"] == 4
+    # Compared by DIFFERENCE, in the metric's own unit: 0.0% to 12.0% is +12.0 points.
+    assert s["difference"] is True
+    assert s["delta_pct"] == pytest.approx(12.0)
+    assert "stream_time_in_jank_pct" in floors
+    _f, v = F.verdict_for(s, floors["stream_time_in_jank_pct"])
+    assert v == "SLOWER"
+
+
+def test_an_unchanged_repetition_does_not_read_as_a_pair_disagreeing_on_sign(tmp_path):
+    """REGRESSION. A difference of exactly 0.0 is a TIE, and ties are the modal reading here.
+
+    `all(d > 0) or all(d < 0)` is the right question for ratios, where an exact 1.0 essentially
+    never occurs. On differences of a metric whose clean value IS 0.0 it voided a group the moment
+    any repetition was unchanged: `[0.0, 12.0]` failed both halves and printed
+    VOID (pairs disagree on sign) although nothing moved the other way. Measured over the recorded
+    payloads that hit 34 of 250 pooled groups, and all 34 were ties rather than disagreements.
+
+    WHAT THIS DOES AND DOES NOT BUY, measured rather than assumed. Of the 34 groups, ZERO change
+    their verdict: a tie drags the spread above the mean, so GATE 3 voids every one of them for
+    scatter instead. That is the correct gate doing its job, and it is why this fixes the REASON
+    a comparison was refused rather than surfacing a regression. A tool whose refusal states
+    something that did not happen is reporting a wrong answer in the right vocabulary, which is
+    worth three lines on its own; it is not worth relaxing gate 3 to chase.
+    """
+    # Two repetitions clean on both arms, two that regress. Nothing regresses the other way.
+    result = stream_payload(tmp_path, "result", [(SMOOTH, SMOOTH), (SMOOTH, JANKY)] * 2)
+    null = stream_payload(tmp_path, "null", [(SMOOTH, SMOOTH)] * 4)
+
+    s = F.summarise([result])["stream_time_in_jank_pct"]
+    assert sorted(t - b for b, t in F.paired(F.read_rows(result))["stream_time_in_jank_pct"]) == [
+        0.0,
+        0.0,
+        12.0,
+        12.0,
+    ]
+    assert s["consistent"] is True, "an unchanged repetition is a tie, not a disagreement"
+    _f, v = F.verdict_for(s, F.summarise([null])["stream_time_in_jank_pct"])
+    # Still refused, and that is right, but no longer refused for a reason that did not occur.
+    assert v == "VOID (effect under its own scatter)"
+    assert v != "VOID (pairs disagree on sign)"
+
+
+def test_a_group_that_did_not_move_at_all_is_still_not_a_finding(tmp_path):
+    """The other side of the tie rule: all-zero differences must not become 'consistent'.
+
+    Relaxing to `>=` alone would score a metric that never moved as a directional result.
+    """
+    result = stream_payload(tmp_path, "result", [(SMOOTH, SMOOTH)] * 4)
+    s = F.summarise([result])["stream_time_in_jank_pct"]
+    assert [t - b for b, t in F.paired(F.read_rows(result))["stream_time_in_jank_pct"]] == [0.0] * 4
+    assert s["consistent"] is False
+
+
+def test_a_ratio_metric_still_drops_a_zero_base_rather_than_dividing_by_it(tmp_path):
+    """The control: only the metrics whose zero is a clean reading changed."""
+    result = stream_payload(tmp_path, "result", [(SMOOTH, JANKY)] * 4)
+    pairs = F.paired(F.read_rows(result))
+    assert F.summarise([result])["stream_max_frame_ms"]["difference"] is False
+    assert all(b > 0.0 for b, _ in pairs["stream_max_frame_ms"])
 
 
 def test_the_enforced_idle_window_is_not_pooled_into_the_frame_metrics(tmp_path):
@@ -934,9 +1138,15 @@ def test_one_tier_on_each_side_still_scores_in_both_directions(tmp_path):
     assert U.main([str(regressed.parent), "--null", str(null.parent)]) == 1
 
 
-def test_a_tier_mismatch_between_two_single_tier_sets_still_only_warns(tmp_path, capsys):
-    # The other control. Two sets that each hold ONE tier are comparable enough to score; the
-    # existing warning says the derived set does not transfer, and that stays a warning.
+def test_a_tier_mismatch_between_two_single_tier_sets_is_refused(tmp_path, capsys):
+    # This used to warn and then score anyway, which is the worst of the two options: the warning
+    # said the derived set does not transfer, and then the run was scored against it regardless.
+    # A set that does not transfer is not a weaker excuse than a real one, it is an arbitrary one.
+    #
+    # Exit 2, not 1. The payload below does carry a regression, so the old assertion of exit 1 was
+    # passing for a reason unrelated to the tier check. Refusing to answer and reporting a parity
+    # failure have to be distinguishable, or a refusal sends somebody hunting for a UI change that
+    # was never measured.
     null = write(
         tmp_path,
         "null_fast",
@@ -947,8 +1157,41 @@ def test_a_tier_mismatch_between_two_single_tier_sets_still_only_warns(tmp_path,
         ],
     )
     mine = parity_run(tmp_path, "mine_standard", [("r100K", "rep0", "Q", "REGRESSED")])
-    assert U.main([str(mine.parent), "--null", str(null.parent)]) == 1
-    assert "WARNING: the null control was recorded at tier" in capsys.readouterr().out
+    assert U.main([str(mine.parent), "--null", str(null.parent)]) == 2
+    assert "REFUSING to score" in capsys.readouterr().out
+
+
+def test_a_corpus_mismatch_between_two_valid_sides_is_refused(tmp_path, capsys):
+    # The likelier of the two in practice, and the one that had no check at all: each side is a
+    # perfectly valid single corpus, so `one_corpus` passes on both, and the null's set was still
+    # applied to a payload that rendered a different thread. Which actions race is a property of
+    # the thread the film drove, so that set describes something the payload never displayed.
+    def at(name, corpus, cells):
+        rows: list[dict] = [{"row_type": "run_meta", "tier": "standard", "corpus_hash": corpus}]
+        for rung, rep, base_digest, treat_digest in cells:
+            rows.append(parity_action(f"{rung}.base.{rep}", "settings", base_digest))
+            rows.append(parity_action(f"{rung}.treatment.{rep}", "settings", treat_digest))
+        return write(tmp_path, name, rows)
+
+    null = at("null_v1", "v1", [("r100K", "rep0", "Q", "Q")])
+    same = at("mine_v1", "v1", [("r100K", "rep0", "Q", "Q")])
+    other = at("mine_v2", "v2", [("r100K", "rep0", "Q", "Q")])
+    # The control first, so the refusal cannot pass by rejecting everything.
+    assert U.main([str(same.parent), "--null", str(null.parent)]) == 0
+    assert U.main([str(other.parent), "--null", str(null.parent)]) == 2
+    assert "REFUSING to score" in capsys.readouterr().out
+
+
+def test_a_side_recorded_before_corpus_hashes_existed_is_still_scored(tmp_path, capsys):
+    # An absent hash is not a disagreement. Refusing it would reject every payload recorded before
+    # the field existed, which is the whole archive.
+    rows: list[dict] = [{"row_type": "run_meta", "tier": "standard", "corpus_hash": "v1"}]
+    rows.append(parity_action("r100K.base.rep0", "settings", "Q"))
+    rows.append(parity_action("r100K.treatment.rep0", "settings", "Q"))
+    hashed = write(tmp_path, "hashed", rows)
+    legacy = parity_run(tmp_path, "legacy", [("r100K", "rep0", "Q", "Q")])
+    assert U.main([str(legacy.parent), "--null", str(hashed.parent)]) == 0
+    assert U.main([str(hashed.parent), "--null", str(legacy.parent)]) == 0
 
 
 def test_main_prints_a_mixed_unstable_set_without_dying(tmp_path, capsys):
@@ -969,6 +1212,158 @@ def test_main_without_a_floor_says_so_and_still_prints(tmp_path, capsys):
 def test_main_returns_two_when_nothing_matches(tmp_path, capsys):
     assert F.main([str(tmp_path / "does-not-exist")]) == 2
     assert "no payload found" in capsys.readouterr().out
+
+
+# ── a probe payload is not a measurement ─────────────────────────────
+
+
+def probe_payload(tmp_path: Path, name: str, script: str | None) -> Path:
+    """A payload whose run_meta records the external init script that was in the page."""
+    path = payload(tmp_path, name, [(1000.0, 900.0)] * 4)
+    rows = [json.loads(line) for line in path.read_text(encoding = "utf-8").splitlines()]
+    rows[0]["probe_init_script"] = script
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+    return path
+
+
+def test_a_payload_recorded_with_a_probe_installed_is_refused(tmp_path):
+    """The instrument was in the shot. There is no flag to override it.
+
+    A probe samples the DOM on its own schedule and forces layout to do it, so the timings are a
+    measurement of the page AND the instrument. Without this the run looks entirely ordinary: it
+    records the same cells and renders the same A/B table, and only the caller's memory stops the
+    numbers being quoted.
+    """
+    path = probe_payload(tmp_path, "probed", "arms/content_visibility_probe.js")
+    with pytest.raises(SystemExit) as excinfo:
+        F.load([path])
+    assert "external init script" in str(excinfo.value)
+    assert "content_visibility_probe.js" in str(excinfo.value)
+
+
+def test_a_probe_named_in_a_later_run_meta_is_still_caught(tmp_path):
+    """`--resume` APPENDS a second run_meta and the remaining cells to the existing file.
+
+    So a payload can carry a clean header above cells that were re-recorded under a probe.
+    Reading only the first run_meta scores those cells.
+    """
+    path = probe_payload(tmp_path, "resumed", None)
+    with path.open("a", encoding = "utf-8") as fh:
+        fh.write(
+            json.dumps(
+                {
+                    "row_type": "run_meta",
+                    "tier": "standard",
+                    "corpus_hash": "corpus0000",
+                    "probe_init_script": "late_probe.js",
+                }
+            )
+            + "\n"
+        )
+    with pytest.raises(SystemExit) as excinfo:
+        F.load([path])
+    assert "late_probe.js" in str(excinfo.value)
+
+
+def test_a_failed_probe_free_gate_is_enough_on_its_own(tmp_path):
+    # Two independent records of one fact, so a payload from a version that emits only the gate
+    # is still refused.
+    path = probe_payload(tmp_path, "gated", None)
+    with path.open("a", encoding = "utf-8") as fh:
+        fh.write(
+            json.dumps(
+                {
+                    "row_type": "gate",
+                    "name": "probe_free",
+                    "passed": False,
+                    "detail": {"probe_init_script": "gate_only.js"},
+                }
+            )
+            + "\n"
+        )
+    with pytest.raises(SystemExit) as excinfo:
+        F.load([path])
+    assert "gate_only.js" in str(excinfo.value)
+
+
+def test_a_passing_probe_free_gate_scores_normally(tmp_path):
+    path = probe_payload(tmp_path, "clean_gate", None)
+    with path.open("a", encoding = "utf-8") as fh:
+        fh.write(
+            json.dumps(
+                {
+                    "row_type": "gate",
+                    "name": "probe_free",
+                    "passed": True,
+                    "detail": {"probe_init_script": None},
+                }
+            )
+            + "\n"
+        )
+    pooled, _ = F.load([path])
+    assert pooled["message_menu.open_close_ms"]
+
+
+def test_the_report_path_refuses_a_probed_payload_too(tmp_path):
+    """floor_table is not the only reader. `--report` scores the same file afterwards."""
+    from tests.studio.studiobench.report.build import score_payload
+
+    path = probe_payload(tmp_path, "probed_report", "arms/content_visibility_probe.js")
+    with pytest.raises(SystemExit) as excinfo:
+        score_payload(path)
+    assert "external init script" in str(excinfo.value)
+
+
+def test_a_null_probe_field_is_the_ordinary_scorable_case(tmp_path):
+    # Explicit null and absent must both score, or every payload written before the field
+    # existed becomes unreadable.
+    pooled, _ = F.load([probe_payload(tmp_path / "explicit", "clean", None)])
+    assert pooled["message_menu.open_close_ms"]
+    pooled, _ = F.load([payload(tmp_path / "absent", "clean", [(1000.0, 900.0)] * 4)])
+    assert pooled["message_menu.open_close_ms"]
+
+
+def test_the_composer_click_does_not_set_the_frame_floor(tmp_path):
+    """The floor table pools the cell's windows too. An 11 s `setup:composer_click` -- almost all
+    of it Playwright's actionability check running on the page's main thread -- would become this
+    table's `max_frame_ms` floor and swallow every regression smaller than itself."""
+
+    def _frames(gaps):
+        return {
+            "frames": {
+                "frames_attempted": True,
+                "frame_gaps_ms": gaps,
+                "frame_gaps_truncated": False,
+                "max_frame_ms": max(gaps),
+            }
+        }
+
+    rows = [
+        {"row_type": "run_meta", "tier": "standard"},
+        {"row_type": "cell", "cell_id": "100K.base.rep0", "completed": True},
+        {
+            "row_type": "window",
+            "cell_id": "100K.base.rep0",
+            "kind": "action",
+            "duration_ms": 2000.0,
+            "instruments": _frames([120.0] * 10),
+        },
+        {
+            "row_type": "window",
+            "cell_id": "100K.base.rep0",
+            "name": "setup:composer_click",
+            "kind": "setup",
+            "duration_ms": 11_000.0,
+            "instruments": _frames([11_000.0]),
+        },
+    ]
+    out = tmp_path / "click"
+    out.mkdir()
+    (out / "payload.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8"
+    )
+    metrics = F.cell_metrics(F.read_rows(out / "payload.jsonl"))["100K.base.rep0"]
+    assert metrics["max_frame_ms"] == 120.0
 
 
 # ── the documented loop runs liveness before it reads a timing ───────

@@ -68,6 +68,62 @@ UNSTABLE_ACTIONS: dict[str, str] = {
 }
 
 
+# WHOSE ABILITY TO RUN IS A RACE, which is a different claim from whose DIGEST varies and needs
+# its own list. Every entry in UNSTABLE_ACTIONS above describes what makes the CAPTURE move --
+# how many characters had arrived, where the scroll came to rest, whether the send button had
+# re-enabled. Not one of them says the action sometimes cannot be performed at all. Using that
+# list to excuse one-arm-only EXECUTION exempted nine of the sixteen scheduled actions from the
+# one regression shape that leaves no digest to differ, on the strength of a measurement about
+# something else.
+#
+# `slot_missed` already covers the runner arriving late, so what is left here is the narrow case
+# of an action that legitimately cannot run because the stream it needs is not there. Read out of
+# each action's own `not_run` reasons in `scene/actions.py` rather than assumed:
+# `action -> (why, the not_run reasons that qualify)`. KEYED ON THE REASON, not just the action,
+# because each of these has non-racy failure paths too: send_turn also returns not_run for "no
+# composer on the page" (scene/actions.py:1016) and stop_generation for "the stop button is not
+# present" (scene/actions.py:501). A treatment build that REMOVES either control records exactly
+# the one-arm-only regression this instrument exists to catch, and keyed by name alone the
+# exemption swallowed it. The mechanism was always written down here; it just was not what the
+# code matched on.
+RACY_EXECUTION: dict[str, tuple[str, tuple[str, ...]]] = {
+    "stop_generation": (
+        "needs a live stream to stop, and returns not_run when nothing was generating and a new "
+        "turn did not start within 8s (scene/actions.py:493). Whether a stream was in flight on "
+        "this arm at this moment is a race with the model, not a property of the build. Its "
+        "OTHER not_run, the stop button being absent, is the build and is not exempt",
+        ("nothing was generating",),
+    ),
+    "scroll_during_generation": (
+        "returns not_run with 'nothing was generating, so this is not a scroll during "
+        "generation' (scene/actions.py:334), and that is its only not_run path",
+        ("nothing was generating",),
+    ),
+    "send_turn": (
+        "returns not_run when 'a reply was still streaming, so this send would have been queued' "
+        "(scene/actions.py:993), which is the previous turn's stream overrunning rather than "
+        "this build being unable to send. Its composer-absent and queue-exhausted paths are not "
+        "exempt",
+        ("a reply was still streaming",),
+    ),
+}
+
+
+def racy_execution(action: str, reason: str) -> bool:
+    """Is THIS not-run a stream-timing race, rather than merely on a racy action?"""
+    entry = RACY_EXECUTION.get(action)
+    if entry is None:
+        return False
+    return any(marker in (reason or "") for marker in entry[1])
+
+
+# The six that are NOT here, and why, since dropping an exemption needs as much justification as
+# granting one. `composer_fill`, `keystroke`, `copy_markdown`, `message_menu` and `select_text`
+# fail to run only when the control they need is absent or unresponsive -- "no composer on the
+# page", "no Copy button on the last assistant message" -- and that IS the build. `scroll_after`
+# has no `not_run` path at all, so a `ran: false` for it cannot be a race under any reading.
+
+
 def _messages(capture: dict) -> dict[int, dict]:
     return {m["i"]: m for m in (capture.get("messages") or []) if "i" in m}
 
@@ -235,28 +291,109 @@ def compare_rows(base_row: Optional[dict], treat_row: Optional[dict]) -> dict:
     state. That is not worthless, but it is not coverage of the named action and must not be
     counted as it. So it gets its own verdict, and an action that never ran on either arm can no
     longer contribute a pass to anything.
+
+    WHY AN ARM WENT IDLE IS PART OF THE READING, and `one_sided` carries it. An arm that could not
+    PERFORM an action the other performed is a difference between the builds, which is the question
+    this whole instrument asks: a control that no longer opens is exactly that shape, and it is the
+    one regression class that produces no digest to differ. An arm that merely arrived after its
+    slot closed is a slow machine and cannot move a verdict, whether one arm missed it or both.
+    Only the first sets `one_sided`; the caller decides what to do with it.
     """
+    ran: dict[str, bool] = {}
     for label, row in (("base", base_row), ("treatment", treat_row)):
         if not isinstance(row, dict):
             return {
                 "verdict": NOT_COMPARABLE,
                 "reason": f"the {label} arm has no row for this action",
                 "moved": [],
+                "one_sided": "",
                 "style_verdict": NOT_COMPARABLE,
                 "style_reason": "",
             }
-        if not row.get("ran"):
-            reason = row.get("reason") or "no reason recorded"
-            return {
-                "verdict": NOT_EXERCISED,
-                "moved": [],
-                "reason": f"the action did not run on the {label} arm ({reason}), so any "
-                "agreement here is about a surface nothing touched",
-                "style_verdict": NOT_EXERCISED,
-                "style_reason": "",
-            }
+        ran[label] = bool(row.get("ran"))
+    if not all(ran.values()):
+        # Named after the arm that DID run, so an empty string is the symmetric case.
+        live = [label for label in ("base", "treatment") if ran[label]]
+        label = "base" if not ran["base"] else "treatment"
+        row = base_row if label == "base" else treat_row
+        assert isinstance(row, dict)
+        reason = row.get("reason") or "no reason recorded"
+        # A MISSED SLOT IS NOT A BUILD DIFFERENCE, even when only one arm missed it, and this
+        # distinction is the whole load-bearing part of `one_sided`. `ran=false` has two causes
+        # that look identical in the count and mean opposite things. The runner arriving after
+        # the slot closed says nothing about the build: the schedule is fixed, the budgets are
+        # small, and a machine slow enough to miss a slot at 45700ms is slow enough to miss it
+        # on the next repetition too, so corroboration does not separate them -- the misses are
+        # correlated through the runner, not independent draws. Treating that as asymmetric
+        # execution reds the job on machine speed and breaks the invariant the mutation study
+        # established, that a missed slot cannot move this verdict. A precondition failure is
+        # the opposite: `image_upload` records `slot_missed=false` with "no visible attachments
+        # button", and a control that stops opening records exactly that. So the signal is
+        # `slot_missed`, which the driver already writes, and not merely which arm went idle.
+        missed_slot = bool(row.get("slot_missed"))
+        detail = (
+            f"the action did not run on the {label} arm ({reason}), so any "
+            "agreement here is about a surface nothing touched"
+        )
+        if live and not missed_slot:
+            detail = (
+                f"the action RAN on the {live[0]} arm and could not be performed on the "
+                f"{label} arm ({reason}), so the two builds did not behave the same way"
+            )
+        if missed_slot:
+            live = []
+        return {
+            "verdict": NOT_EXERCISED,
+            "moved": [],
+            "one_sided": live[0] if live else "",
+            # The idle arm's OWN not_run string, unwrapped. `reason` below is prose built for a
+            # reader; the exemption has to match on what the action actually recorded.
+            "idle_reason": reason,
+            "reason": detail,
+            "style_verdict": NOT_EXERCISED,
+            "style_reason": "",
+        }
     assert base_row is not None and treat_row is not None
-    return compare(base_row.get("parity"), treat_row.get("parity"))
+    out = compare(base_row.get("parity"), treat_row.get("parity"))
+    # AN ACTION THAT RAN AND FAILED ITS OWN ASSERTION IS NOT A COMPARISON OF WHAT IT NAMES, and
+    # `ran` alone cannot see it. `stop_generation` returns `ran = True, expect_ok = stopped_ms is
+    # not None`, so a head on which Stop no longer ends the stream records a row this layer reads
+    # as a perfectly good observation. Every other reader already knows better --
+    # `scoring.from_payload` drops such a row's timing and `report.payload` and `--assert-
+    # liveness` both single it out -- and the parity layer was the one left reading only `ran`.
+    #
+    # CARRIED SEPARATELY FROM THE DIGEST, not folded into the verdict, and that is the whole point
+    # of it. `stop_generation` is on the declared unstable list, so its DOM difference is excused;
+    # applying that exemption to the assertion as well is applying a measurement of one quantity
+    # (does this digest race) to a different one (did the button do its job). The two happen to
+    # share an action name and nothing else. So the caller gets its own signal and decides.
+    #
+    # ONLY AN ASYMMETRY. `expect_ok is None` means the action asserts nothing, and both arms
+    # failing means the fixture cannot reach the state on either build -- coverage lost, not a
+    # difference between the builds. One arm asserting successfully while the other does not is
+    # the two builds behaving differently, which is the question this instrument asks.
+    failed = [
+        label
+        for label, row in (("base", base_row), ("treatment", treat_row))
+        if row.get("expect_ok") is False
+    ]
+    passed = [
+        label
+        for label, row in (("base", base_row), ("treatment", treat_row))
+        if row.get("expect_ok") is True
+    ]
+    out["expect_regressed"] = failed[0] if len(failed) == 1 and passed else ""
+    if out["expect_regressed"]:
+        _who = out["expect_regressed"]
+        _row = base_row if _who == "base" else treat_row
+        out["expect_reason"] = (
+            f"the action ran on both arms and its own assertion failed on the {_who} arm "
+            f"({_row.get('reason') or 'no reason recorded'}), so the two builds did not behave "
+            "the same way"
+        )
+    else:
+        out["expect_reason"] = ""
+    return out
 
 
 def derive_unstable(
