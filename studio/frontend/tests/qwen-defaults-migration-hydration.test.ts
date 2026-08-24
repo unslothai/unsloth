@@ -618,6 +618,61 @@ test("a retry cannot overwrite an edit made after its confirming read", async ()
   );
 });
 
+test("a retry revalidates the checkpoint after its confirming read", async () => {
+  const legacySettings = {
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    inferenceParamsByModel: { [QWEN38]: LEGACY_SNAPSHOT },
+  };
+  let releaseConfirmation!: (value: Record<string, unknown>) => void;
+  const confirmation = new Promise<Record<string, unknown>>((resolve) => {
+    releaseConfirmation = resolve;
+  });
+  settingsHttp.settings = legacySettings;
+  settingsHttp.getResponses = [confirmation];
+  settingsHttp.gets = 0;
+  settingsHttp.puts.length = 0;
+  useChatRuntimeStore.setState((state) => ({
+    params: { ...state.params, ...LEGACY_SNAPSHOT, checkpoint: QWEN38 },
+    paramsByModel: { [QWEN38]: LEGACY_SNAPSHOT },
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    rememberParamsPerModel: true,
+    reasoningAlwaysOn: false,
+    reasoningEnabled: true,
+    settingsHydrated: true,
+  }));
+
+  const active = useChatRuntimeStore.getState();
+  active.setParams(
+    { ...active.params, minP: 0, presencePenalty: 1.5 },
+    { fromModelDefaults: true },
+  );
+  while (settingsHttp.gets < 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  useChatRuntimeStore.setState((state) => ({
+    params: {
+      ...state.params,
+      checkpoint: "unsloth/Qwen3.6-9B-GGUF",
+    },
+    reasoningEnabled: false,
+  }));
+  releaseConfirmation(legacySettings);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  assert.equal(settingsHttp.puts.length, 0);
+  assert.equal(
+    (
+      settingsHttp.settings.inferenceParamsByModel as Record<
+        string,
+        Record<string, unknown>
+      >
+    )[QWEN38].presencePenalty,
+    0,
+  );
+});
+
 test("a retry fences reasoning added after a confirming read", async () => {
   const legacySettings = {
     activePreset: "Default",

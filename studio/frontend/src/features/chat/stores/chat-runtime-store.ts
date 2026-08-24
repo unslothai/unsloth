@@ -3909,14 +3909,26 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
     ) {
       return true;
     }
+    const checkpoint = state.params.checkpoint;
     const confirmed = await getChatSettings();
+    const confirmedState = useChatRuntimeStore.getState();
+    // A model switch while the confirming GET was in flight invalidates both
+    // the row and the loaded reasoning mode this retry was about to persist.
+    // The new model's defaults application schedules its own retry.
+    if (
+      !confirmedState.settingsHydrated ||
+      confirmedState.activePresetSource !== "builtin-default" ||
+      confirmedState.params.checkpoint !== checkpoint
+    ) {
+      return true;
+    }
     const includeOwnedGlobal =
       ownedGlobalCheckpoint?.toLowerCase() ===
-      state.params.checkpoint.toLowerCase();
+      checkpoint.toLowerCase();
     const migration = migrateLegacyQwenDefaults(
       confirmed,
-      state.params.checkpoint,
-      qwenMigrationThinkingOn(confirmed, state),
+      checkpoint,
+      qwenMigrationThinkingOn(confirmed, confirmedState),
       includeOwnedGlobal,
       migrateOwnedGlobalAlongsideModelMemory,
     );
