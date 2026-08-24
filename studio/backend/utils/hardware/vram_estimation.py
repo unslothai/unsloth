@@ -938,8 +938,7 @@ def compute_lora_params(arch: ModelArchConfig, lora_rank: int, target_modules: l
     # (worker.py). Count those, or the estimate picks a GPU that then OOMs.
     if not all_linear and _full_weight_embedding_elements(arch, target_modules):
         remainder = [
-            m for m in selected_modules
-            if str(m).rsplit(".", 1)[-1] not in EMBEDDING_TARGET_MODULES
+            m for m in selected_modules if str(m).rsplit(".", 1)[-1] not in EMBEDDING_TARGET_MODULES
         ]
         if not remainder or _targets_all_linear(remainder):
             selected_modules = list(selected_modules) + list(DEFAULT_TARGET_MODULES)
