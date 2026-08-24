@@ -1972,10 +1972,16 @@ def _rocm_windows_per_device_vram(
             # Ranking against a widened total puts a 2 GiB APU reading above a
             # 10 GiB discrete one and admits a counter no visible card can hold.
             dedicated_bytes = total_bytes
-            # On a unified-memory APU props.total_memory is the dedicated
-            # carve-out, not what torch can use; same correction, and the same
-            # APU-only price for a context, as _torch_get_device_inventory. The
-            # free half of this reading is the untrusted one, the total is fine.
+            # On a unified-memory APU props.total_memory CAN be the dedicated
+            # carve-out rather than what torch can use; same correction, and the
+            # same APU-only price for a context, as _torch_get_device_inventory.
+            # Measured on a Windows gfx1151, driver 32.0.21041.1000 with torch
+            # 2.11.0+rocm7.13.0, props.total_memory already spans the GTT pool
+            # (89.47 GB against a 32 GB BIOS carve-out), so the split is a
+            # property of some stacks and not of Windows. Hence the comparison
+            # below rather than an unconditional adopt: this has to be inert
+            # where the two agree. The free half of the reading is the untrusted
+            # one either way, the total is fine.
             total_is_pool = False
             try:
                 # Classifier inside the try: it is a probe, and a probe that

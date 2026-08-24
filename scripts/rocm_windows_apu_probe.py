@@ -155,6 +155,15 @@ def read_studio(repo: Path) -> dict[str, Any]:
     except Exception as e:  # noqa: BLE001
         return {"error": f"cannot import hardware module: {type(e).__name__}: {e}"}
 
+    # IS_ROCM is False at module scope until detection runs, and
+    # _rocm_props_total_is_carve_out short-circuits on it, so without this the
+    # probe reports the classifier as not firing and never exercises the changed
+    # path at all -- silently, and worst on exactly the machines that matter.
+    try:
+        obs["detected_device"] = str(hw.ensure_hardware_detected())
+    except Exception as e:  # noqa: BLE001
+        obs["detect_error"] = f"{type(e).__name__}: {e}"
+
     obs["is_rocm"] = bool(getattr(hw, "IS_ROCM", False))
     try:
         import torch
@@ -175,6 +184,23 @@ def read_studio(repo: Path) -> dict[str, Any]:
         obs["aggregate_gb"] = aggregate
     except Exception as e:  # noqa: BLE001
         obs["per_device_vram_error"] = f"{type(e).__name__}: {e}"
+
+    # Why a used_gb came back unknown. On a single-APU box the pairing declines
+    # before the widened-total rule is ever consulted, and without this you have
+    # to reconstruct that by hand to tell the two causes apart.
+    try:
+        adapters = hw._rocm_windows_perf_counter_vram_by_adapter()
+        obs["raw_adapters"] = adapters
+        if adapters:
+            import torch
+            totals = [
+                int(torch.cuda.get_device_properties(i).total_memory) for i in indices
+            ]
+            useds = [u for _, u in adapters]
+            obs["matcher_result"] = hw._match_adapter_used_to_devices(useds, totals)
+            obs["aggregate_helper"] = hw._rocm_windows_aggregate_used_bytes(useds, totals)
+    except Exception as e:  # noqa: BLE001
+        obs["pairing_error"] = f"{type(e).__name__}: {e}"
     try:
         obs["inventory"] = hw._torch_get_device_inventory(indices)
     except Exception as e:  # noqa: BLE001
@@ -284,6 +310,7 @@ def render(obs: dict[str, Any]) -> str:
     if s.get("error"):
         L.append(f"- not read: {s['error']}")
     else:
+        L.append(f"- detected device: {s.get('detected_device')}")
         L.append(f"- IS_ROCM: {s.get('is_rocm')}")
         L.append(f"- carve-out classifier fires: {s.get('classifier_says_carve_out')}")
         L.append("")
@@ -294,6 +321,9 @@ def render(obs: dict[str, Any]) -> str:
                     "per_device_vram": s.get("per_device_vram"),
                     "aggregate_gb": s.get("aggregate_gb"),
                     "inventory": s.get("inventory"),
+                    "raw_adapters": s.get("raw_adapters"),
+                    "matcher_result": s.get("matcher_result"),
+                    "aggregate_helper": s.get("aggregate_helper"),
                     "visible_devices": s.get("visible_devices"),
                 },
                 indent = 2,
