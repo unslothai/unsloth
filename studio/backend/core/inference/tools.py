@@ -11835,6 +11835,104 @@ _PROBE_ROLE = "user"
 # hundreds, or at infinity as the chunk grows, because its count does not move at all.
 _MAX_PROBE_CHARS_PER_TOKEN = 256
 
+# A measured count is a pure function of (model, chat template, window, chunk), and each
+# `count_chat_tokens` is two llama-server calls (/apply-template then /tokenize) over a
+# fresh connection. So the framing baseline -- one number for EVERY result the process
+# truncates -- is worth remembering, and so is any prefix already priced.
+#
+# Keyed on the resident llama-server process, because the count depends on the EFFECTIVE
+# chat template and the managed fields cannot reconstruct it: user pass-through args are
+# appended verbatim after Studio's own flags (`llama_cpp.py`, "User pass-through args go
+# last") and llama.cpp is last-wins, so `--chat-template` in extra args renders through a
+# template `_chat_template_override` never sees. Reload the same GGUF into the same window
+# with only those args changed and every managed field matches while the rendering does
+# not, which would price a prefix by a template no longer serving it. `is_loaded` is
+# `self._process is not None and self._healthy` and args reach llama-server only on its
+# command line, so any change to them is a new process by construction -- which settles it
+# without enumerating the flags that matter. The content fields ride along so a recycled
+# pid still has to agree on everything before a count is reused.
+_PROBE_COUNT_CACHE: dict = {}
+
+# Tool calls run in worker threads (`tool_stream_exec.stream_tool_execution` runs each
+# invocation in one), so concurrent chats reach this cache at the same time. A bare dict
+# assignment is atomic under the GIL, but the LRU touch and the eviction below are
+# read-then-mutate sequences and are not: measured with 24 threads over a 3-entry cache,
+# `cache.pop(chunk)` raised KeyError after another thread evicted the same key, `del
+# cache[victim]` raised on a victim already taken, and choosing a victim raised
+# "dictionary changed size during iteration" -- 90 exceptions in one run, none of them
+# caught on the way out of `_truncate`.
+#
+# Held only across the dict work, never across a `count_chat_tokens` call. Serialising the
+# round trips themselves would trade a shared cache for a shared queue, which is the
+# opposite of the point. Two threads may therefore measure the same chunk at once and both
+# store it; the value is the same either way, so that costs one duplicate measurement,
+# which is what the merge base did on every result anyway.
+_PROBE_COUNT_LOCK = threading.Lock()
+
+# The empty chunk: the framing baseline, and the entry eviction pins. Named so the two
+# places that treat it specially cannot drift apart from a bare "".
+_PROBE_BASELINE = ""
+
+# One model's counts at a time (a new identity clears the map). Ten times the worst case
+# for one result: `_EXACT_FIT_PASSES` prefixes plus the baseline.
+_PROBE_COUNT_CACHE_ENTRIES = 64
+
+# And a bound on what is HELD, since the entry count alone does not give one. Only a
+# fetched page is capped at `_MAX_PAGE_CHARS`; a tool result's prefix is bounded by
+# `min(UNSLOTH_TOOL_RESULT_MAX_CHARS, ctx * 4 * _PAGE_CONTEXT_SHARE)` and `_env_int`
+# accepts any positive integer, so a large configured cap on a large window makes one
+# prefix enormous. Measured: a cap of 1,000,000 on a 262k window cached 733,971 characters
+# from a SINGLE result, which 64 entries would then multiply. This also drops an oversized
+# prefix rather than storing it. The baseline is 0 characters, so the entry that earns the
+# most is never the one squeezed out.
+_PROBE_COUNT_CACHE_CHARS = 1_000_000
+
+
+def _probe_identity(llama, ctx: int):
+    """A key that changes whenever a measured count could, or None to disable the cache.
+
+    None is the safe answer: it costs round trips, it never returns a stale number.
+    """
+    try:
+        # The resident llama-server. No process is no key: a backend this module cannot
+        # tie a count to keeps paying for its round trips, which is the safe direction.
+        pid = getattr(getattr(llama, "_process", None), "pid", None)
+        if not isinstance(pid, int):
+            return None
+        key = (
+            pid,
+            ctx,
+            getattr(llama, "model_identifier", None),
+            getattr(llama, "_gguf_load_identity", None),
+            getattr(llama, "_chat_template_override", None),
+            # The gap the process id closes, spelled out: whatever the user appended to
+            # the command line, including a template that overrides the managed one.
+            tuple(getattr(llama, "_extra_args", None) or ()),
+        )
+        hash(key)  # an unhashable field is also "do not cache", not a TypeError upstream
+        return key
+    except Exception:  # noqa: BLE001 -- an unreadable identity is "do not cache"
+        return None
+
+
+def _probe_cache(llama, ctx: int) -> dict:
+    """The count cache for the model serving this request.
+
+    A fresh per-call dict when the model has no identity, so the caller's code path is the
+    same either way and an unidentifiable backend simply gets no reuse between calls.
+    """
+    identity = _probe_identity(llama, ctx)
+    if identity is None:
+        return {}
+    with _PROBE_COUNT_LOCK:
+        cache = _PROBE_COUNT_CACHE.get(identity)
+        if cache is None:
+            # A different model is serving now. Drop the previous one's numbers rather than
+            # keep them around to be matched against.
+            _PROBE_COUNT_CACHE.clear()
+            cache = _PROBE_COUNT_CACHE[identity] = {}
+    return cache
+
 
 def _loaded_token_counter(ctx: int):
     """The tokenizer of the model serving this request, or None when there is not one.
@@ -11859,27 +11957,116 @@ def _loaded_token_counter(ctx: int):
     except Exception:  # noqa: BLE001 -- no tokenizer is "unknown", never an error
         return None
 
+    cache = _probe_cache(llama, ctx)
+    # Whether anything said here will outlive this call, and whether `/apply-template` has
+    # already refused once. Both only gate the strict attempt, never a returned value.
+    retained = bool(_probe_identity(llama, ctx))
+    template_down: list[bool] = []
+
+    def _remember(chunk: str, value: int) -> None:
+        """Hold `value` for `chunk`, evicting least-recently-used entries to stay in bounds.
+
+        Refusing new entries once full was worse than not caching at all. Most tool results
+        are one-offs, so the first `_PROBE_COUNT_CACHE_ENTRIES` distinct prefixes froze the
+        cache on text that would never be asked about again -- and because the baseline is
+        only priced when a count comes in OVER budget, a process that handled 64 results
+        that FIT first locked it out for good. Measured: after 64 English results, every
+        later dense result paid 4 counter calls (8 HTTP) again, exactly the merge base's
+        cost, for the life of the process.
+
+        So evict, and pin the baseline: it is 0 characters, it is the same number for every
+        result this process truncates, and it is the one entry a bounded cache most needs.
+        """
+        if len(chunk) > _PROBE_COUNT_CACHE_CHARS:
+            return  # too large to hold at all; evicting the rest would not help
+        with _PROBE_COUNT_LOCK:
+            held = sum(map(len, cache))
+            while len(cache) >= _PROBE_COUNT_CACHE_ENTRIES or (
+                held + len(chunk) > _PROBE_COUNT_CACHE_CHARS
+            ):
+                # `list()` so the scan cannot trip over another thread's insert, and
+                # `pop(..., None)` so a victim someone else already took is not an error.
+                victim = next((key for key in list(cache) if key != _PROBE_BASELINE), None)
+                if victim is None:
+                    return  # only the pinned baseline is left, and it stays
+                held -= len(victim)
+                cache.pop(victim, None)
+            cache[chunk] = value
+
     def _rendered(chunk: str):
-        try:
-            spent = counter([{"role": _PROBE_ROLE, "content": chunk}], None, None, strict = False)
-        except Exception:  # noqa: BLE001 -- same rule: fall back to the estimate
-            logger.debug("result budget: exact count failed", exc_info = True)
-            return None
-        return int(spent) if isinstance(spent, (int, float)) and spent > 0 else None
+        with _PROBE_COUNT_LOCK:
+            hit = cache.get(chunk)
+            if hit is not None and chunk != _PROBE_BASELINE:
+                # Most recently used moves to the back. `pop(..., None)` and the re-check
+                # keep this a no-op rather than a KeyError if it lost a race to an evictor.
+                if cache.pop(chunk, None) is not None:
+                    cache[chunk] = hit
+        if hit is not None:
+            return hit
+        # Strict, so that a count is only retained when the chat template really rendered
+        # it. With `strict = False` a failed `/apply-template` still returns the plain-text
+        # fallback, which drops role markers and special tokens -- fine as a one-off answer,
+        # but it prices a prompt the model will never be sent, and caching it would let one
+        # bad moment quietly under-count that prefix for the life of the process.
+        #
+        # Asked at most once per counter, and not at all when nothing would be retained
+        # anyway. Strictness exists only to decide whether a count may be KEPT, so paying
+        # for it twice would spend round trips to answer a question already settled: a
+        # template that would not render is not going to start, and this whole change is
+        # about not making calls that cannot change an answer. So a template outage costs
+        # one extra attempt for the first probe of a result rather than one for every probe.
+        message = [{"role": _PROBE_ROLE, "content": chunk}]
+        rendered = False
+        if retained and not template_down:
+            try:
+                spent = counter(message, None, None, strict = True)
+                rendered = True
+            except Exception:  # noqa: BLE001 -- not fatal: the fallback still prices bytes
+                template_down.append(True)
+        if not rendered:
+            try:
+                spent = counter(message, None, None, strict = False)
+            except Exception:  # noqa: BLE001 -- now it is: fall back to the estimate
+                logger.debug("result budget: exact count failed", exc_info = True)
+                return None
+        value = int(spent) if isinstance(spent, (int, float)) and spent > 0 else None
+        # The fallback's count is USED, exactly as before -- it still tokenizes the real
+        # bytes, which is what catches dense ASCII, and the estimate it would otherwise fall
+        # back to undercharges base64 several fold. It is simply not retained: like a
+        # failure, it is a property of the moment rather than of the text.
+        if value is not None and rendered:
+            _remember(chunk, value)
+        return value
 
-    # What the turn costs with nothing in it, priced once. Two jobs: it is the baseline the
-    # guard measures growth against, so a template that renders no content is caught by its
-    # count not moving rather than by a guess about density; and it is the only part of the
-    # count that is not the chunk. Left IN the total rather than subtracted -- 8 tokens on
-    # Qwen3 and 11 on the Gemma-4 templates, under 1% of a 1,792-token share, and the real
-    # tool turn pays its own framing anyway, so counting it errs toward a smaller result.
-    framing = _rendered("") or 0
+    # What the turn costs with nothing in it: the baseline the guard measures growth
+    # against, so a template that renders no content is caught by its count not moving
+    # rather than by a guess about density. Left IN the total rather than subtracted -- 8
+    # tokens on Qwen3 and 11 on the Gemma-4 templates, under 1% of a 1,792-token share, and
+    # the real tool turn pays its own framing anyway, so counting it errs toward a smaller
+    # result. Priced on demand: see `_count`.
+    baseline: list[int] = []
 
-    def _count(chunk: str):
+    def _framing() -> int:
+        if not baseline:
+            baseline.append(_rendered(_PROBE_BASELINE) or 0)
+        return baseline[0]
+
+    def _count(chunk: str, token_budget: float = 0.0):
+        """Tokens for `chunk`, or None when the count did not measure it.
+
+        `token_budget` is an optimisation and nothing more. A count within budget and a
+        count the guard rejects both make the caller return its own estimate unchanged, so
+        when `spent` fits, the baseline that separates those two paths cannot change the
+        answer and is not priced -- which is why an English result costs one round trip
+        rather than two. The default of 0 means "no budget", so the guard always runs.
+        """
         spent = _rendered(chunk)
         if spent is None:
             return None
+        if spent <= token_budget:
+            return spent
         # A count that barely moves off the framing measured nothing, whatever it reports.
+        framing = _framing()
         if spent - framing < len(chunk) / _MAX_PROBE_CHARS_PER_TOKEN:
             logger.debug(
                 "result budget: template priced %d chars at %d tokens over %d of framing; "
@@ -11915,6 +12102,15 @@ def _exact_prefix_chars(text: str, chars: int, token_budget: float, ctx: int) ->
     costs and shrinks every page that was already fine. So when a tokenizer is serving the
     request, ask it; when none is, keep the estimate exactly as it was.
     """
+    # An estimate already at or below the readable floor cannot be improved on, so nothing
+    # measured here could change the caller's answer. Every value below is at most `chars`
+    # or is exactly `_MIN_PAGE_CHARS`, and `_dense_char_limit` clamps with
+    # `max(_MIN_PAGE_CHARS, ...)`, so with `chars <= _MIN_PAGE_CHARS` the caller lands on
+    # the floor whichever branch is taken. Checked before the counter is even looked up:
+    # this is the small-window case, and it used to spend a full set of round trips
+    # rediscovering a number the caller already had.
+    if chars <= _MIN_PAGE_CHARS:
+        return chars
     counter = _loaded_token_counter(ctx)
     if counter is None:
         return chars
@@ -11929,7 +12125,9 @@ def _exact_prefix_chars(text: str, chars: int, token_budget: float, ctx: int) ->
     # to prevent.
     previous = None  # the last (chars, tokens) pair, for the secant step below
     for _ in range(_EXACT_FIT_PASSES):
-        spent = counter(text[:chars])
+        # The budget goes with the chunk so a count that already fits can skip pricing the
+        # framing baseline it would only be compared against. See `_count`.
+        spent = counter(text[:chars], token_budget)
         if spent is None:
             return chars  # nothing to measure with; the estimate stands, as before
         if spent <= token_budget:

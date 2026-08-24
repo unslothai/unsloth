@@ -114,7 +114,9 @@ def follow_verdict(follow: Mapping[str, Any]) -> tuple[bool, dict[str, Any]]:
 
     NOT MEASURED, because it is set by the SCENE SCHEDULE and not by the build under test:
 
-      `attached_fraction_of_stream` below `FOLLOW_MIN_STREAM_COVERAGE`
+      `attached_fraction_of_stream` below `FOLLOW_MIN_STREAM_COVERAGE`, AND ONLY WHEN THE ARM
+                                    re-attached at least once, so the shortfall is the schedule's
+                                    and not this build's refusal to come back
 
     The film scrolls away twice inside an ~18s opening stream and the app then correctly declines
     to yank the reader back, so roughly half the streaming time is detached BY CONSTRUCTION.
@@ -143,6 +145,26 @@ def follow_verdict(follow: Mapping[str, Any]) -> tuple[bool, dict[str, Any]]:
     pinned_ok = pinned is not None and pinned >= FOLLOW_PINNED_MIN
     fell_behind = bool(follow.get("ever_fell_behind"))
     coverage_short = coverage is None or coverage < FOLLOW_MIN_STREAM_COVERAGE
+    # THE DETACHMENT HAS TO BE THE SCHEDULE'S, AND ONLY A RE-ATTACHMENT PROVES THAT IT WAS.
+    #
+    # The waiver's whole justification is that `attached_fraction_of_stream` is set by the film and
+    # is therefore identical on both arms. Half of it is: the harness scrolls away on a fixed
+    # schedule. The other half is the BUILD'S -- `scene/dom.js` clears `detached` only when a run
+    # that began after the gesture is observed at the bottom, so an arm that stops re-pinning when
+    # the user submits a new turn never re-attaches and every remaining sample lands in the
+    # detached branch. That branch `return`s before the pinned and fell-behind accounting, so the
+    # opening stream's `pinned_fraction: 1.0` and `ever_fell_behind: False` survive untouched while
+    # coverage collapses -- exactly the shape this conjunction was about to waive, on the one
+    # failure the gate exists to catch. A reply that leaves the viewport is unmounted and stops
+    # costing anything to paint, so the cell is CHEAPER for the defect, and `readings_by_arm` would
+    # have admitted it to the ratios against a healthy partner.
+    #
+    # `reattachments` is the sampler's own record of the app coming back, and it is >= 1 on every
+    # cell the carve-out was derived from: the measured 0.481 coverage is unreachable without one,
+    # since `detached` latches 1.5s into an 18s stream and only a re-attachment resumes counting
+    # attached samples. Absent (an old payload, or a sampler that never ran) is not evidence of a
+    # re-attachment, and the absent-instrument case is already waived by `follow_attempted`.
+    reattached = bool(follow.get("reattachments"))
     # THE COVERAGE AS A NUMBER, WHATEVER THE VERDICT, next to the floor it is read against. It was
     # only ever visible as a pass or a fail, and that is why it took a campaign to notice the floor
     # sat above the film's ceiling: every reader saw "FAILED its stream-follow gate", nobody saw
@@ -150,7 +172,9 @@ def follow_verdict(follow: Mapping[str, Any]) -> tuple[bool, dict[str, Any]]:
     recorded: dict[str, Any] = {
         "stream_coverage": coverage,
         "stream_coverage_floor": FOLLOW_MIN_STREAM_COVERAGE,
-        "stream_coverage_unmeasured": bool(coverage_short and pinned_ok and not fell_behind),
+        "stream_coverage_unmeasured": bool(
+            coverage_short and pinned_ok and not fell_behind and reattached
+        ),
     }
     if coverage_short:
         recorded["stream_coverage_reason"] = (

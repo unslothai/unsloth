@@ -113,6 +113,25 @@ on:
       # (`.unsloth-model-selector-menu`). So this route both shapes the measured
       # picker and can stop the scripted chat from sending at all.
       - 'studio/backend/routes/providers.py'
+      # What that route is assembled FROM, and the same gap one file down that
+      # chat_history.py had. ProviderResponse and ProviderRegistryEntry are the
+      # shapes of /api/providers/ and /api/providers/registry; get_provider_info
+      # and list_available_providers are what fill them; providers_db is what
+      # persists the row lifecycle.py creates. All three can change or empty the
+      # picker rows `model_change` clicks without the route file being touched.
+      # Listed together rather than one per round, because the route, its
+      # storage and its response models are one surface split across three
+      # files, and naming only the one the import happens to sit in is what left
+      # the last two gaps.
+      - 'studio/backend/models/providers.py'
+      - 'studio/backend/core/inference/providers.py'
+      - 'studio/backend/storage/providers_db.py'
+      # The gate in front of both of the above. routes/providers.py imports
+      # resolve_provider_api_key_or_400 and require_ui_session from here, and
+      # inference.py takes provider_config_guard around EVERY scripted chat
+      # request (12296, 14270). A change here can stop the provider being
+      # registered or reject the request that produces the transcript.
+      - 'studio/backend/routes/provider_credentials.py'
       # Where the scripted turn actually goes. chat-api.ts sends the composer's
       # message to POST /api/inference/chat/completions, which is this file, and
       # the `send` action's success condition is that the turn started streaming
@@ -121,6 +140,16 @@ on:
       # fallback: seeder.py counts through /api/inference/chat/count_tokens when
       # tiktoken is unavailable, and that ratio decides how much text a rung gets.
       - 'studio/backend/routes/inference.py'
+      # And the arm of that route studiobench actually takes. `ProviderSeed`
+      # registers provider_type "custom" rather than "openai" on purpose, and
+      # its own docstring says why: custom is relayed to
+      # {base_url}/chat/completions with the SSE lines forwarded verbatim, which
+      # is the only path that puts our own event stream in front of the app's
+      # parser. inference.py delegates it to ExternalProviderClient, which
+      # sanitises every line through sse_control_frames. Either file can alter,
+      # truncate or reject the stream that BECOMES the rendered transcript.
+      - 'studio/backend/core/inference/external_provider.py'
+      - 'studio/backend/core/inference/sse_control_frames.py'
       # The precondition for reaching any of the above. runtime/lifecycle.py logs
       # each side in over POST /api/auth/login and clears must_change_password
       # over POST /api/auth/change-password before the browser starts, so a change
@@ -164,6 +193,23 @@ jobs:
     # one browser session on purpose, and `sweep/ui_parity.py` refuses to pair
     # two arms recorded under different session ids, so a run split across two
     # machines produces NOT COMPARABLE for every action rather than a verdict.
+    #
+    # WHAT THE SPLIT COSTS, and it is not nothing. GitHub gives each matrix entry
+    # its own runner and does not start them together: across four consecutive
+    # waves the two arms drew different runner ids every time, with start-time
+    # staggers from 1s to 6m30. So the exemptions the verdict applies were
+    # measured on a machine and at a moment the result never touched, and they
+    # describe timing races -- the one class of thing that does not transfer. On
+    # run 32648192384 the null derived three and the scored runner reproduced
+    # ONE; `reasoning_toggle@r100K` is not on the declared list, so it was
+    # excused solely by the other machine's race. The null cannot see this: it is
+    # one machine agreeing with itself.
+    #
+    # Rather than pay double wall clock to co-locate, `ui_parity` confines the
+    # imported set to what the SCORED runner reproduces, using side A of the
+    # result arm -- the same build in every repetition, so comparing it across
+    # repetitions is a base-vs-base null in the same session, free. See
+    # `in_arm_repeatability` and `confine_to_runner`.
     name: ${{ matrix.label }}
     runs-on: ubuntu-latest
     # Backstop only. Every blocking step below carries its own cap, and they sum

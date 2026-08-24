@@ -84,6 +84,23 @@ def _feed(page, text: str) -> None:
     )
 
 
+def _feed_other(page, text: str) -> None:
+    """Push bytes through a DIFFERENT decoder, as any other component of the page does.
+
+    `TextDecoder.prototype.decode` is hooked page-wide, so every decoder in the document arrives
+    here: the app builds one per streaming request and has six other read loops besides the chat
+    one. A decoder that is not carrying the relay's framing is not the stream being measured.
+    """
+    page.evaluate(
+        """(text) => {
+             const bytes = new TextEncoder().encode(text);
+             if (!window.__otherDecoder) window.__otherDecoder = new TextDecoder();
+             window.__otherDecoder.decode(bytes);
+           }""",
+        text,
+    )
+
+
 def _end_response(page) -> None:
     """Abandon this response's decoder, as the app does when a stream ends or is aborted.
 
@@ -103,7 +120,11 @@ def test_a_clean_stream_is_scoreable_and_counts_every_character(page):
     _feed(page, _frame("hello") + _frame(" world"))
     assert page.evaluate("() => window.__sb.streamcost.replyChars()") == len("hello world")
     got = page.evaluate("() => window.__sb.streamcost.wireIntegrity()")
-    assert got == {"failures": 0, "pending_chars": 0}, got
+    assert got == {
+        "failures": 0,
+        "pending_chars": 0,
+        "carried_flushes": got["carried_flushes"],
+    }, got
 
 
 def test_an_unparseable_frame_is_visible_at_the_window_boundary(page):
@@ -207,7 +228,11 @@ def test_the_counter_survives_a_split_inside_the_data_prefix(page):
     _feed(page, tail)
     assert page.evaluate("() => window.__sb.streamcost.replyChars()") == len("split marker")
     got = page.evaluate("() => window.__sb.streamcost.wireIntegrity()")
-    assert got == {"failures": 0, "pending_chars": 0}, got
+    assert got == {
+        "failures": 0,
+        "pending_chars": 0,
+        "carried_flushes": got["carried_flushes"],
+    }, got
 
 
 def test_a_held_marker_fragment_is_reported_as_buffered_rather_than_lost(page):
@@ -240,7 +265,11 @@ def test_unrelated_text_ending_in_a_marker_letter_does_not_corrupt_the_next_fram
     _feed(page, _frame("counted anyway"))
     assert page.evaluate("() => window.__sb.streamcost.replyChars()") == len("counted anyway")
     got = page.evaluate("() => window.__sb.streamcost.wireIntegrity()")
-    assert got == {"failures": 0, "pending_chars": 0}, got
+    assert got == {
+        "failures": 0,
+        "pending_chars": 0,
+        "carried_flushes": got["carried_flushes"],
+    }, got
 
 
 def test_the_speculative_buffer_cannot_grow_with_unrelated_traffic(page):
@@ -358,7 +387,11 @@ def test_an_aborted_frame_does_not_follow_the_stream_that_replaces_it(page):
     _feed(page, _frame("hello"))
     assert page.evaluate("() => window.__sb.streamcost.replyChars()") == len("hello")
     got = page.evaluate("() => window.__sb.streamcost.wireIntegrity()")
-    assert got == {"failures": 0, "pending_chars": 0}, got
+    assert got == {
+        "failures": 0,
+        "pending_chars": 0,
+        "carried_flushes": got["carried_flushes"],
+    }, got
 
 
 def test_a_split_inside_one_response_still_reassembles_after_an_abort(page):
@@ -372,3 +405,100 @@ def test_a_split_inside_one_response_still_reassembles_after_an_abort(page):
     _feed(page, 'tent":"rejoined"}}]}\n\n')
     assert page.evaluate("() => window.__sb.streamcost.replyChars()") == len("rejoined")
     assert page.evaluate("() => window.__sb.streamcost.wireIntegrity()")["pending_chars"] == 0
+
+
+def test_an_unrelated_decoder_does_not_hide_a_frame_the_stream_is_holding(page):
+    """THE DEFECT. `active` moved to whichever decoder decoded last, before anything had looked at
+    the chunk, so any other TextDecoder in the page took the report away from the stream.
+
+    Its buffer is empty, so `wireIntegrity` answered "nothing outstanding" while the SSE decoder
+    held half a frame: the window closing there published a denominator short by that frame with a
+    clean bill of health, and the window the suffix landed in was handed the whole frame -- both
+    ends of the split accepted, which is the one outcome this file exists to prevent."""
+    page.evaluate("() => window.__sb.streamcost.reset()")
+    head, tail = _halves(_frame("straddles the boundary"), 30)
+    assert "\n\n" not in head, head
+
+    first = _instrument(page)
+    first.open(_Window())
+    _feed(page, head)
+    _feed_other(page, "an unrelated chunk of page traffic")
+    closed = first.close(_Window())
+    assert closed["wire_pending_chars_at_close"] > 0, closed
+    assert closed["reply_chars_scoreable"] is False, closed
+
+    second = _instrument(page)
+    second.open(_Window())
+    _feed(page, tail)
+    out = second.close(_Window())
+    assert out["wire_pending_chars_at_open"] > 0, out
+    assert out["reply_chars_delta"] == len("straddles the boundary"), out
+    assert out["reply_chars_scoreable"] is False, out
+
+
+def test_a_window_opening_after_an_abort_keeps_the_next_response_scoreable(page):
+    """THE OTHER HALF OF THE SAME SCOPING, and a reading that was being thrown away.
+
+    `open()` samples the integrity BEFORE the action has created the response it will measure, so
+    the buffer it sees is still the aborted one. That half frame is never completed and never
+    counted anywhere, so it takes nothing out of this window's delta -- but `pending_chars > 0` at
+    the open refused the window on its own, and `send_turn` follows `stop_generation` in all three
+    shipped schedules. Every socket split at the abort cost the next window its denominator."""
+    page.evaluate("() => window.__sb.streamcost.reset()")
+    _feed(page, 'data: {"choices":[{"delta":{"content":"half a re')
+    _end_response(page)
+
+    inst = _instrument(page)
+    inst.open(_Window())
+    assert inst._integrity_open["pending_chars"] > 0, inst._integrity_open  # noqa: SLF001
+    _feed(page, _frame("a clean reply"))
+    out = inst.close(_Window())
+    assert out["reply_chars_delta"] == len("a clean reply"), out
+    assert out["wire_carried_frames_counted_in_window"] == 0, out
+    assert out["reply_chars_scoreable"] is True, out
+
+
+# ── the tail of a split frame is stream traffic on the numerator too ─────────
+#
+# `noteSse` was gated on the marker while the character counter was gated on `looksSse ||
+# pending`, so the two halves of one frame were attributed to two different things: the tail's
+# characters went into the denominator and its render work went nowhere. The bias is downward on
+# `stream_delta_cost_ms_per_kchar` and it grows with fragmentation, which is the regime the
+# instrument exists to measure.
+
+
+def test_the_tail_of_a_split_frame_is_counted_as_stream_traffic(page):
+    """THE DEFECT, at the quantity the numerator is built from.
+
+    The frame is cut inside its JSON body, so the head carries `data:` and the tail carries no
+    marker at all -- it is the rest of the body and the blank line. The tail still completes the
+    frame and its characters are counted, so a chunk that the instrument scores the cost of has
+    to be a chunk the instrument charges the cost to."""
+    inst = _instrument(page)
+    page.evaluate("() => window.__sb.streamcost.reset()")
+    inst.open(_Window())
+    frame = _frame("cut inside the body")
+    head, tail = _halves(frame, frame.index("cut") + 3)
+    assert "data:" in head and "data:" not in tail, (head, tail)
+    _feed(page, head)
+    _feed(page, tail)
+    out = inst.close(_Window())
+
+    # Both chunks carried this response's bytes, so both are stream chunks.
+    assert out["sse_chunks"] == 2, out
+    assert out["reply_chars_delta"] == len("cut inside the body"), out
+    assert out["reply_chars_scoreable"] is True, out
+
+
+def test_unrelated_traffic_is_still_not_stream_traffic(page):
+    """The control the widened condition must not break. A decoder carrying no marker and holding
+    no frame of its own is not the stream, and feeding it must not add a chunk."""
+    inst = _instrument(page)
+    page.evaluate("() => window.__sb.streamcost.reset()")
+    inst.open(_Window())
+    _feed(page, _frame("real"))
+    _feed_other(page, "nothing to do with the relay")
+    out = inst.close(_Window())
+
+    assert out["sse_chunks"] == 1, out
+    assert out["reply_chars_delta"] == len("real"), out

@@ -219,7 +219,7 @@ def test_shot_index_reads_the_payload_rather_than_globbing(tmp_path):
     # A file that looks like one of ours but was never recorded must not be picked up.
     png(shots / "settings_rep0_IMPOSTOR.png", 10, 10, (0, 0, 255))
     index = S.shot_index([result / "payload.jsonl"])
-    assert ("r100K.base.rep0", "settings", "base") in index
+    assert ("result", "r100K.base.rep0", "settings", "base") in index
     assert all("IMPOSTOR" not in v["file"] for v in index.values())
 
 
@@ -399,8 +399,8 @@ def test_a_superseded_attempts_screenshot_is_not_shown_for_the_retrys_verdict(tm
         rows.append(new)
     result = write(tmp_path, "result", rows)
     index = S.shot_index(S.shards_of(str(result)))
-    assert ("r100K.treatment.rep0", "settings", "treatment") not in index, index
-    assert ("r100K.base.rep0", "settings", "base") in index
+    assert ("result", "r100K.treatment.rep0", "settings", "treatment") not in index, index
+    assert ("result", "r100K.base.rep0", "settings", "base") in index
     null = quiet_null(tmp_path, "null", ["settings"])
     out = tmp_path / "out"
     assert S.build(result, null, shots, out, min_reps = 2) == 0
@@ -417,3 +417,185 @@ def test_the_workflow_runs_the_gate_on_the_routes_the_measurement_depends_on():
     ).read_text(encoding = "utf-8")
     for route in ("inference.py", "auth.py", "chat_history.py", "providers.py"):
         assert f"studio/backend/routes/{route}" in text, route
+    # A route is not one file. Its response models, its provider lookups and its storage can each
+    # change the measured picker without the route module being touched, which is how the same
+    # item arrived three rounds running, one file further down each time.
+    for dep in (
+        "studio/backend/storage/studio_db.py",
+        "studio/backend/models/providers.py",
+        "studio/backend/core/inference/providers.py",
+        "studio/backend/storage/providers_db.py",
+        "studio/backend/core/inference/external_provider.py",
+        "studio/backend/core/inference/sse_control_frames.py",
+    ):
+        assert dep in text, dep
+
+
+def test_the_evidence_uses_the_same_confined_set_the_verdict_scored_with(tmp_path):
+    """A finding the verdict keeps must get a picture.
+
+    The verdict confines the imported exemptions to what the scored runner reproduces, so an
+    evidence step reading the raw imported set goes back out of step with the job it illustrates:
+    the run reds on an action and the artifact has no composite for it. That is the same defect
+    as publishing no evidence at all, one round after it was fixed the first time.
+    """
+    shots = tmp_path / "shots"
+    # The null raced on `settings`. This runner did not: side A is identical across both
+    # repetitions, and head differs in both.
+    null_rows = [{"row_type": "run_meta", "tier": "fast"}]
+    for rep in ("rep0", "rep1"):
+        for arm in ("base", "treatment"):
+            null_rows.append(action(f"r100K.{arm}.{rep}", "settings", f"RACE_{arm}_{rep}", None))
+            null_rows.append(
+                {"row_type": "cell", "cell_id": f"r100K.{arm}.{rep}", "completed": True}
+            )
+    null = write(tmp_path, "null", null_rows)
+
+    rows = [{"row_type": "run_meta", "tier": "fast"}]
+    for rep in ("rep0", "rep1"):
+        for arm, digest in (("base", "SAME"), ("treatment", "HEAD_IS_DIFFERENT")):
+            f = f"settings_{rep}_{arm}.png"
+            png(shots / f, 200, 120, (10, 60, 10) if arm == "base" else (60, 10, 10))
+            rows.append(action(f"r100K.{arm}.{rep}", "settings", digest, f))
+            rows.append({"row_type": "cell", "cell_id": f"r100K.{arm}.{rep}", "completed": True})
+    result = write(tmp_path, "result", rows)
+
+    diffs = S.differing_actions(S.shards_of(str(result)), S.shards_of(str(null)), min_reps = 2)
+    assert [d["action"] for d in diffs] == ["settings", "settings"], diffs
+    out = tmp_path / "out"
+    assert S.build(result, null, shots, out, min_reps = 2) == 0
+    assert any("settings" in p.name for p in out.glob("*composite*"))
+
+
+def test_a_direction_reversing_pair_is_not_illustrated_either(tmp_path):
+    # The verdict does not fail on a pair whose two repetitions blame opposite arms, so the
+    # artifact must not present one as the change that turned the job red. The two selections are
+    # keyed the same way for the same reason they are corroborated the same way.
+    shots = tmp_path / "shots"
+    rows = [{"row_type": "run_meta", "tier": "fast"}]
+    for rep in ("rep0", "rep1"):
+        for arm in ("base", "treatment"):
+            f = f"settings_{rep}_{arm}.png"
+            png(shots / f, 200, 120, (10, 60, 10) if arm == "base" else (60, 10, 10))
+            row = action(f"r100K.{arm}.{rep}", "settings", "SAME", f)
+            if (arm == "treatment" and rep == "rep0") or (arm == "base" and rep == "rep1"):
+                row["ran"] = False
+                row["reason"] = "the control never became visible"
+                row["slot_missed"] = False
+            rows.append(row)
+            rows.append({"row_type": "cell", "cell_id": f"r100K.{arm}.{rep}", "completed": True})
+    result = write(tmp_path, "result", rows)
+    null = quiet_null(tmp_path, "null", ["settings"])
+    assert S.differing_actions(S.shards_of(str(result)), S.shards_of(str(null)), min_reps = 2) == []
+    out = tmp_path / "out"
+    assert S.build(result, null, shots, out, min_reps = 2) == 0
+    assert not list(out.glob("*composite*"))
+
+
+def test_two_shards_do_not_share_one_screenshot_identity(tmp_path):
+    """A cell id is deterministic, so every shard restarts at `r100K.base.rep0`.
+
+    Keyed without the shard, the last payload read won and `build` could pair a mismatch found in
+    one film with a picture taken during another. The verdict has always carried the shard; only
+    the index and the output filename threw it away.
+    """
+    shots = tmp_path / "shots"
+    result = tmp_path / "result"
+    for shard in ("sh1", "sh2"):
+        rows = [{"row_type": "run_meta", "tier": "fast"}]
+        for rep in ("rep0", "rep1"):
+            for arm, digest in (("base", "A"), ("treatment", "B")):
+                f = f"{shard}_{arm}_{rep}.png"
+                png(shots / f, 200, 120, (10, 60, 10) if arm == "base" else (60, 10, 10))
+                rows.append(action(f"r100K.{arm}.{rep}", "settings", digest, f))
+        d = result / shard
+        d.mkdir(parents = True)
+        (d / "payload.jsonl").write_text(
+            "".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8"
+        )
+
+    # `shards_of` globs, so a directory OF shards is addressed with a trailing `*`.
+    paths = S.shards_of(str(result / "*"))
+    assert len(paths) == 2, paths
+    index = S.shot_index(paths)
+    # Both shards survive rather than one overwriting the other.
+    assert ("sh1", "r100K.base.rep0", "settings", "base") in index
+    assert ("sh2", "r100K.base.rep0", "settings", "base") in index
+    assert index[("sh1", "r100K.base.rep0", "settings", "base")]["file"] == "sh1_base_rep0.png"
+    assert index[("sh2", "r100K.base.rep0", "settings", "base")]["file"] == "sh2_base_rep0.png"
+
+    null = quiet_null(tmp_path, "null", ["settings"])
+    out = tmp_path / "out"
+    assert S.build(result / "*", null, shots, out, min_reps = 2) == 0
+    names = sorted(p.name for p in out.glob("*composite*"))
+    # One composite per shard per repetition, each naming its own shard, and none overwritten.
+    assert any(n.startswith("sh1__") for n in names), names
+    assert any(n.startswith("sh2__") for n in names), names
+    assert len(names) == 4, names
+    for shard in ("sh1", "sh2"):
+        for rep in ("rep0", "rep1"):
+            before = out / f"{shard}__settings__r100K_{rep}__BEFORE_base.png"
+            assert before.read_bytes() == (shots / f"{shard}_base_{rep}.png").read_bytes()
+
+
+# Direct first-party imports of a measured route that are deliberately NOT gated on, each with
+# the reason. This is the other half of the filter: a module is either in the workflow or it is
+# here, and adding an import to a measured route fails the test below until someone decides which.
+#
+# The drip this ends: routes/chat_history.py was listed, then its storage/studio_db.py arrived a
+# round later, then models/providers.py and core/inference/providers.py, then external_provider.py
+# and sse_control_frames.py, then provider_credentials.py. Every one was correct and every one was
+# found by reading the imports by hand. The boundary is a judgement, but it should be a RECORDED
+# judgement rather than one rediscovered each round.
+NOT_GATED: dict[str, str] = {
+    "studio/backend/auth/authentication.py": "session plumbing shared by every route in the app; "
+    "routes/auth.py already gates the endpoints studiobench actually calls",
+    "studio/backend/core/inference/key_exchange.py": "encrypts stored credentials. studiobench "
+    "posts its provider without one, so this code is not on the measured path",
+    "studio/backend/core/inference/pricing.py": "cost figures, which the scene never renders",
+    "studio/backend/utils/utils.py": "generic helpers imported by most of the backend; gating on "
+    "it would run this workflow on nearly every PR and defeat the filter",
+}
+
+
+def test_every_import_of_a_measured_route_is_gated_or_explicitly_waived():
+    """A route is not one file, and the filter should say where it stops.
+
+    Enumerates the DIRECT first-party imports of the routes studiobench drives and requires each
+    to be either in the workflow's path filter or in `NOT_GATED` with a reason. Direct only: the
+    transitive closure of `routes/inference.py` is most of the backend, and a filter that matches
+    everything is the same as no filter.
+    """
+    import re
+
+    repo = Path(__file__).resolve().parents[5]
+    backend = repo / "studio/backend"
+    workflow = (repo / ".github/workflows/studiobench-ui-parity.yml").read_text(encoding = "utf-8")
+
+    measured = ("routes/providers.py", "routes/provider_credentials.py")
+    missing = []
+    for rel in measured:
+        text = (backend / rel).read_text(encoding = "utf-8")
+        mods = set(re.findall(r"^from ([a-z_][\w.]*) import", text, re.M))
+        mods |= set(re.findall(r"^import ([a-z_][\w.]*)", text, re.M))
+        for mod in sorted(mods):
+            target = backend / (mod.replace(".", "/") + ".py")
+            if not target.exists():
+                continue
+            path = f"studio/backend/{target.relative_to(backend)}"
+            if path in workflow or path in NOT_GATED:
+                continue
+            missing.append((rel, path))
+    assert not missing, (
+        "these imports of a measured route are neither in the parity path filter nor waived in "
+        f"NOT_GATED with a reason: {missing}"
+    )
+
+
+def test_every_waiver_names_a_file_that_exists_and_gives_a_reason():
+    # A waiver for a file that has been moved or deleted is a stale exemption that reads as a
+    # decision. Same bar the RACY_EXECUTION entries are held to.
+    repo = Path(__file__).resolve().parents[5]
+    for path, why in NOT_GATED.items():
+        assert (repo / path).exists(), path
+        assert len(why) > 40, path
