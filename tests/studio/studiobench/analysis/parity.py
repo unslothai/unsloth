@@ -223,6 +223,7 @@ def overlays_moved(base: dict, treat: dict) -> list[str]:
         if b.get("digest") != t.get("digest")
     ]
 
+
 def windowed_mount(capture: Optional[dict]) -> bool:
     """Did this capture come from a thread that mounts a WINDOW rather than the whole thing?
 
