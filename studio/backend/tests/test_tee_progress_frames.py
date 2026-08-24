@@ -113,9 +113,9 @@ def test_file_failure_never_reaches_the_console():
 
 
 def test_a_crlf_line_keeps_its_payload():
-    # "\r\n" is one terminator. Reading its "\r" as a redraw takes the empty text after it
-    # and throws the line away -- and on Windows every line a child process relays arrives
-    # in this shape, so the session log would be blank where the evidence should be.
+    # "\r\n" is one terminator. Reading its "\r" as a redraw keeps the empty text after it
+    # and drops the line -- and on Windows every relayed child line arrives in this shape,
+    # so the session log goes blank exactly where the evidence should be.
     log, _console = _tee(["Hardware detected: NVIDIA GeForce RTX 4090\r\n"])
     assert log == "Hardware detected: NVIDIA GeForce RTX 4090\n"
 
@@ -144,16 +144,16 @@ def test_a_bar_signing_off_with_a_bare_cr_keeps_its_last_frame():
 
 
 def test_an_all_blank_line_never_writes_a_carriage_return():
-    # The log handle appends the platform terminator itself, so a "\r" that survives here
-    # lands as "\r\r\n" in the file on Windows.
+    # The handle appends the platform terminator itself, so a surviving "\r" lands as
+    # "\r\r\n" on Windows.
     for chunk in ("\r\n", "\r\r\r\n", "   \r   \n"):
         log, _console = _tee([chunk])
         assert "\r" not in log, repr(chunk)
 
 
 def test_a_zero_length_write_does_not_glue_a_frame_onto_the_next_record():
-    # print("", end = "") is enough. An empty write used to read as a continuation of the
-    # held frame, which then fell through and was written with no newline at all.
+    # print("", end = "") is enough: an empty write used to read as a continuation of the
+    # held frame, which then fell through and was written with no newline.
     log, _console = _tee(["\rLoading weights:  47%", "", '{"event": "model_loaded"}\n'])
     lines = log.splitlines()
     assert lines == ["Loading weights:  47%", '{"event": "model_loaded"}']
@@ -163,8 +163,7 @@ def test_a_zero_length_write_does_not_glue_a_frame_onto_the_next_record():
 def test_the_collapse_matches_the_desktop_reader():
     """Same rule as collapse_progress_frames in src-tauri/src/process.rs.
 
-    Both sinks are offered to the user side by side in Settings > Logs, so a line has to
-    look the same in either one.
+    Settings > Logs offers both sinks side by side, so a line must look the same in either.
     """
     cases = {
         "plain line": "plain line",

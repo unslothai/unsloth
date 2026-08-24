@@ -17008,10 +17008,9 @@ class LlamaCppBackend:
                                 encoding = "utf-8",
                                 buffering = 1,
                             )
-                            # After the open, so the cap counts this file and can never
-                            # delete it. This is the retry path, where the earlier
-                            # attempts' logs are the ones a reader actually wants; they
-                            # are the newest entries, so keep-newest holds on to them.
+                            # After the open, so the cap counts this file and never deletes
+                            # it. On the retry path the earlier attempts' logs are what a
+                            # reader wants, and keep-newest holds on to them.
                             prune_log_dir(log_dir, "llama-*.log", protect = self._llama_log_path)
                             logger.info(f"llama-server stdout/stderr -> {self._llama_log_path}")
                         except (OSError, UnicodeDecodeError) as e:

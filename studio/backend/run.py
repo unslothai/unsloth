@@ -1712,50 +1712,43 @@ class _TeeStream:
     what they saw before). The file copy is best-effort: a full disk or a
     closed handle must never break the console.
 
-    The file copy also drops carriage-return progress frames. A tqdm bar redraws
-    by writing "\\r<frame>" tens or hundreds of times, and a terminal overwrites
-    in place while a file keeps every one: a single "Loading weights" bar landed
-    as 5 KB of near-identical text. Only the last frame is kept, and only frames
-    are ever withheld -- a partial line with no "\\r" in it (a prompt, or a
-    traceback torn by a hang) is still written the moment it arrives, so nothing
-    diagnostic waits on a newline that may never come. A withheld frame is closed
-    off on its own line as soon as anything but its own redraw follows, so it can
-    never be prefixed onto the record after it.
+    The file copy also collapses carriage-return progress frames: a tqdm bar redraws
+    "\\r<frame>" hundreds of times and a file keeps every one (5 KB for one "Loading
+    weights" bar). Only frames are ever withheld -- a partial line with no "\\r" (a
+    prompt, a traceback torn by a hang) is written on arrival, and a held frame is
+    closed off on its own line before the next record, never prefixed onto it.
 
-    What counts as a frame is decided exactly the way the desktop reader decides it,
-    so the session log and tauri.log stay interchangeable: strip the line terminator
-    first (trim_line_endings, src-tauri/src/process.rs), then take the last non-blank
-    "\\r"-separated frame (collapse_progress_frames, same file). Reading the "\\r" of a
-    CRLF as a redraw instead would take the empty text after it and throw the whole
-    line away, which on Windows is every relayed child line there is."""
+    Frames are picked exactly as the desktop reader picks them, so the session log and
+    tauri.log stay interchangeable: strip the terminator (trim_line_endings), then take
+    the last non-blank "\\r"-separated frame (collapse_progress_frames), both in
+    src-tauri/src/process.rs. Reading the "\\r" of a CRLF as a redraw instead keeps the
+    empty text after it and drops the line, which on Windows is every relayed child
+    line there is."""
 
     def __init__(self, stream, log_fh):
         self._stream = stream
         self._log_fh = log_fh
-        # Last progress frame seen with no newline yet; superseded by the next
-        # frame, flushed ahead of the next real line.
+        # Last frame seen with no newline yet; superseded by the next frame, flushed
+        # ahead of the next real line.
         self._pending_frame = ""
 
     @staticmethod
     def _last_frame(line):
-        # A trailing "\r" is a line terminator (CRLF, or the one tqdm leaves before its
-        # own newline), not the start of an empty redraw. Drop it before looking for
-        # frames, as trim_line_endings does on the desktop side.
+        # A trailing "\r" terminates the line (CRLF, or tqdm's own sign-off); it does not
+        # open an empty redraw. Strip it first, as trim_line_endings does on the desktop side.
         line = line.rstrip("\r")
         if "\r" not in line:
             return line
         for frame in reversed(line.split("\r")):
             if frame.strip():
                 return frame
-        # Every frame was blank, so the line was blank. Return one of them rather than
-        # the whole text: a "\r" must never reach the file, because the log handle adds
-        # the platform terminator itself and would land it as "\r\r\n" on Windows.
+        # All frames blank, so the line is blank. Return a frame, not the whole text: a
+        # "\r" reaching the file lands as "\r\r\n" once the handle adds its own terminator.
         return line.rsplit("\r", 1)[-1]
 
     def _write_file(self, data):
-        # A zero-length write says nothing. Treating it as a continuation of a held frame
-        # would flush that frame unterminated and glue the next record onto it, which is
-        # reachable through print("", end = "").
+        # Not a continuation of a held frame: that would flush it unterminated and glue
+        # the next record on. print("", end = "") is enough to get here.
         if not data:
             return
         # Overwhelmingly the common case, and the one that must stay cheap.
@@ -1764,9 +1757,8 @@ class _TeeStream:
             return
 
         if self._pending_frame and data[:1] not in ("\r", "\n"):
-            # Neither a redraw of the held frame nor its terminator, so it is the next
-            # record. Close the frame off on its own line: concatenating them would
-            # produce "Loading 47%{"event": ...}" and cost a reader the JSON record.
+            # Not a redraw of the held frame nor its terminator, so it is the next record.
+            # Close the frame off on its own line; concatenating costs a reader the JSON.
             self._log_fh.write(self._pending_frame + "\n")
             self._pending_frame = ""
 
@@ -1777,8 +1769,8 @@ class _TeeStream:
             complete = head + newline
             self._log_fh.write("\n".join(self._last_frame(line) for line in complete.split("\n")))
         if tail:
-            # An unterminated remainder: hold it only if it is a redraw, otherwise
-            # write it now so a hang cannot swallow real output.
+            # Unterminated remainder: hold it only if it is a redraw, else write it now
+            # so a hang cannot swallow real output.
             if "\r" in tail:
                 self._pending_frame = self._last_frame(tail)
             else:
@@ -1949,9 +1941,9 @@ def _setup_server_disk_logging():
     sys.stdout = _TeeStream(sys.stdout, log_fh)
     sys.stderr = _TeeStream(sys.stderr, log_fh)
 
-    # Best-effort retention: keep the newest 20 session logs. This one already ran after
-    # the open; `protect` makes that explicit rather than relying on the new file sorting
-    # newest, which two starts in the same second do not guarantee.
+    # Best-effort retention: keep the newest 20 session logs. `protect` says so explicitly
+    # rather than trusting the new file to sort newest, which two starts in the same
+    # second do not guarantee.
     try:
         from utils.log_retention import prune_log_dir
         prune_log_dir(log_dir, "server-*.log", protect = log_path)
@@ -2311,11 +2303,10 @@ def run_server(
 
     boot_started = time.perf_counter()
 
-    # --secure exposes ONLY the Cloudflare link, so --secure --no-cloudflare is a
-    # contradiction. Reject it here, before anything below touches a process global: the
-    # session tee installed further down replaces sys.stdout and sys.stderr, and an
-    # embedder that catches this SystemExit would otherwise be left with that tee in
-    # place, the log handle open, and a second run_server() nesting another on top.
+    # --secure exposes ONLY the Cloudflare link, so --secure --no-cloudflare contradicts
+    # itself. Reject it before anything below touches a process global: the tee further
+    # down replaces sys.stdout/sys.stderr, and an embedder that catches this SystemExit
+    # would keep it, the log handle open, and nest another tee on its next call.
     if secure and cloudflare is False:
         raise SystemExit(
             "--secure requires the Cloudflare tunnel; do not combine it with --no-cloudflare."
@@ -2332,28 +2323,25 @@ def run_server(
     # Persist a session log + native-crash stacks BEFORE anything else, so even
     # import-time failures leave evidence on disk. Field report: Unsloth "terminates
     # without a warning" -- a native crash in the GPU runtime kills the process with no
-    # Python traceback, and a desktop-shortcut console closes before anything can be
-    # read. Console-only logging made that undiagnosable.
+    # traceback, and a desktop-shortcut console closes before anything can be read.
     _session_log = _setup_server_disk_logging()
     if _session_log is not None and not silent:
         print(f"Session log: {_session_log}")
 
-    # Only now configure structlog, and only after the tee: PrintLoggerFactory captures
-    # sys.stdout at configure() time and cache_logger_on_first_use freezes it into every
-    # logger that has already emitted a line, so configuring first would pin this module's
-    # logger to the console and keep its lines out of the file just opened above.
+    # Configure structlog only now, after the tee: PrintLoggerFactory captures sys.stdout
+    # at configure() time and cache_logger_on_first_use freezes it into any logger that
+    # has already emitted, so configuring first pins this module's logger to the console
+    # and keeps its lines out of the file just opened above.
     #
-    # main.py configures too, but on import, which happens several seconds further into
-    # this function -- after the "startup begin" line below. That line therefore used to
-    # render through structlog's defaults (ConsoleRenderer, local time) while everything
-    # after it rendered as JSON in UTC, so a reader saw the clock jump hours between line
-    # one and line two of the same stream. Repeating structlog.configure() is safe;
+    # main.py configures too, but on import, which lands seconds later -- after the
+    # "startup begin" line below. That line used to render through structlog's defaults
+    # (ConsoleRenderer, local time) and everything after it as JSON in UTC, so the clock
+    # appeared to jump hours between line one and line two. Repeating configure() is safe;
     # main.py's call still wins for its own service name.
     #
-    # Imported here rather than at module scope: `loggers` has to be a real package for
-    # `loggers.config` to resolve, and run.py is loaded by tests that stand a bare
-    # ModuleType in for it (tests/studio/install/test_selection_logic.py:84). Those only
-    # need the module body, never this call.
+    # Imported here, not at module scope: `loggers` must be a real package to resolve
+    # `loggers.config`, and run.py is loaded by tests that stand a bare ModuleType in for
+    # it (tests/studio/install/test_selection_logic.py:84), which never reach this call.
     from loggers.config import LogConfig
 
     LogConfig.setup_logging(

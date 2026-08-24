@@ -174,17 +174,17 @@ class TestSetupServerDiskLogging:
             "run_server must install the tee, then configure structlog, then log; "
             f"got tee@{tee_idx} setup@{setup_idx} first-log@{first_log_idx}"
         )
-        assert (
-            "LogConfig.setup_logging(" not in src[:body]
-        ), "configuring structlog at import time pins it to the pre-tee sys.stdout"
+        assert "LogConfig.setup_logging(" not in src[:body], (
+            "configuring structlog at import time pins it to the pre-tee sys.stdout"
+        )
 
     def test_run_py_does_not_import_a_loggers_submodule_at_module_scope(self):
-        """`loggers` has to be a real package for `loggers.config` to resolve.
+        """`loggers` must be a real package for `loggers.config` to resolve.
 
         run.py is loaded by tests that stand a bare ``types.ModuleType`` in for it
-        (tests/studio/install/test_selection_logic.py), and a bare module has no
-        ``__path__``, so a module-scope submodule import fails during collection there and
-        takes every test in the file with it. Import it where it is used instead.
+        (tests/studio/install/test_selection_logic.py). A bare module has no ``__path__``,
+        so a module-scope submodule import fails during collection and takes every test in
+        that file with it. Import it where it is used instead.
         """
         import ast
 
@@ -204,10 +204,9 @@ class TestSetupServerDiskLogging:
     def test_conflicting_flags_are_rejected_before_the_tee_is_installed(self):
         """A deterministic preflight failure must not leave the process streams swapped.
 
-        ``_setup_server_disk_logging()`` replaces ``sys.stdout`` and ``sys.stderr`` and
-        opens a log handle. An embedder that catches this ``SystemExit`` keeps all of it,
-        and its next ``run_server()`` call nests a second tee inside the first, so every
-        line is written twice.
+        ``_setup_server_disk_logging()`` replaces ``sys.stdout``/``sys.stderr`` and opens a
+        log handle. An embedder that catches this ``SystemExit`` keeps all of it, and its
+        next ``run_server()`` call nests a second tee, writing every line twice.
         """
         src = (Path(_BACKEND_DIR) / "run.py").read_text(encoding = "utf-8")
         body = src.index("def run_server")

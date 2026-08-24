@@ -54,10 +54,9 @@ def test_a_missing_directory_is_survivable(tmp_path):
 
 @pytest.mark.parametrize("population", [0, 19, 20, 21, 319])
 def test_the_protected_file_counts_toward_the_cap(tmp_path, population):
-    """Called after the open, the directory settles at `keep` and not `keep + 1`.
+    """Called after the open, the directory settles at `keep`, not `keep + 1`.
 
-    Pruning before creating the new file leaves one extra behind on every single load, so
-    the cap is never actually reached.
+    Pruning first leaves one extra behind on every load, so the cap is never reached.
     """
     _seed(tmp_path, population)
     for load in range(5):
@@ -83,8 +82,7 @@ def test_the_protected_file_survives_even_when_it_sorts_oldest(tmp_path):
 
 def test_a_dangling_symlink_does_not_disable_retention(tmp_path):
     """stat() on a broken link raises. One try/except around the whole scan turned that
-    into "this directory is never pruned again", which is the growth this helper exists
-    to stop."""
+    into "never prune this directory again", the growth this helper exists to stop."""
     _seed(tmp_path, 30)
     (tmp_path / "llama-dangling.log").symlink_to(tmp_path / "gone.log")
     prune_log_dir(tmp_path, PATTERN, keep = 5)

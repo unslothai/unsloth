@@ -916,48 +916,40 @@ pub(crate) const MAX_BACKEND_LOG_LINE_BYTES: usize = 16 * 1024;
 /// Keep only the last frame of a carriage-return progress redraw.
 ///
 /// We read to `\n`, so a tqdm or pip bar arrives as every frame it ever drew concatenated
-/// into one line: a single "Loading weights" bar measured 5086 bytes, and it is written to
-/// three sinks. Only the final frame carries information (it is the one showing 100% and the
-/// elapsed total), so the earlier ones are dropped. Text with no interior `\r` is returned
-/// untouched, and a bar whose last frame is empty keeps the last non-empty one rather than
-/// logging a blank line.
+/// into one line, across three sinks: one "Loading weights" bar measured 5086 bytes. Only
+/// the final frame carries information. Text with no interior `\r` is returned untouched,
+/// and a bar whose last frame is empty keeps the last non-empty one rather than a blank line.
 ///
-/// The Python tee that writes the backend's own session log (`_TeeStream._last_frame` in
-/// studio/backend/run.py) applies exactly this rule to exactly this input, so the two sinks
-/// stay interchangeable for a reader. `tests/sim_8763/test_frame_parity.py` pins that.
+/// `_TeeStream._last_frame` in studio/backend/run.py applies this same rule to this same
+/// input for the session log, so the two sinks stay interchangeable for a reader.
 pub(crate) fn collapse_progress_frames(text: &str) -> &str {
     if !text.contains('\r') {
         return text;
     }
     text.rsplit('\r')
         .find(|frame| !frame.trim().is_empty())
-        // Every frame was blank, so the line was blank. Return one of them rather than the
-        // whole text, which still holds the `\r` the caller asked us to collapse away.
+        // All frames blank, so the line is blank. Return a frame, not the whole text, which
+        // still holds the `\r` we were asked to collapse away.
         .unwrap_or_else(|| text.rsplit('\r').next().unwrap_or(""))
 }
 
 /// True when the line is one of the backend's own structured access-log records **and it
 /// reports success**.
 ///
-/// Those are already written verbatim to the backend phase log (with stream tags and
-/// millisecond stamps) and to the backend's own session log, so mirroring them into
-/// `tauri.log` a third time was pure duplication: on an idle 4h desktop session they were
-/// 4056 of 5308 lines, and they pushed real failures out of the 5 MiB window in under a day.
+/// These already reach the phase log (stream-tagged and stamped) and the backend's own
+/// session log, so a third copy in `tauri.log` was pure duplication: 4056 of 5308 lines on
+/// an idle 4h session, pushing real failures out of the 5 MiB window inside a day.
 ///
-/// The 2xx check is the point. The backend's heartbeat suppressor deliberately exempts
-/// non-2xx so a failing poll logs every time, and `tauri.log` is exactly where someone
-/// reads a watchdog going red; dropping those to `debug!` would put them below the file
-/// target's INFO filter and undo that. A record with no `status_code` we cannot vouch for
-/// either, so it keeps its INFO line too.
+/// The 2xx check is the point. The backend's heartbeat suppressor exempts non-2xx so a
+/// failing poll logs every time, and `tauri.log` is where a watchdog going red gets read.
+/// A record with no `status_code` we cannot vouch for, so it keeps INFO too.
 ///
-/// Note what "debug" means for the records this *does* match. `setup_logging` in main.rs
-/// builds every logger at `LevelFilter::Info` and there is no `RUST_LOG` or any other way
-/// to raise it, so `log::max_level()` is `Info` and a matched record is dropped outright
-/// rather than merely demoted -- including when the backend is run with `--verbose`, which
-/// makes it emit *more* of them. That is deliberate: the same records are written verbatim
-/// to the diagnostics phase log (`append_phase_line` below, before this decision) and to
-/// the backend's own session log, and both of those are already offered by the support
-/// report and by Settings > Logs. Nothing is lost, it moves one source over in the picker.
+/// For the records this *does* match, "debug" means dropped, not demoted: `setup_logging`
+/// in main.rs builds every logger at `LevelFilter::Info` with no `RUST_LOG` to raise it,
+/// so `log::max_level()` is `Info` -- including under backend `--verbose`, which emits
+/// *more* of them. Deliberate: `append_phase_line` below runs before this decision, and
+/// both that log and the session log are already offered by the support report and by
+/// Settings > Logs. Nothing is lost; it moves one source over in the picker.
 fn is_backend_access_log_line(text: &str) -> bool {
     let trimmed = text.trim_start();
     if !trimmed.starts_with('{') {
@@ -3539,10 +3531,8 @@ fn read_output_stream<R: std::io::Read>(
                     });
                 }
 
-                // The successful access-log records live in the phase log and the backend's
-                // own session log already; keeping them out of tauri.log leaves it for the
-                // startup banner, hardware lines, stderr, tracebacks and failed requests,
-                // which is what anyone opening it is looking for.
+                // Keeping the successful access records out leaves tauri.log for the startup
+                // banner, hardware lines, stderr, tracebacks and failed requests.
                 if is_backend_access_log_line(&text) {
                     debug!("[backend] {}", log_line);
                 } else if log_line.len() > MAX_BACKEND_LOG_LINE_BYTES {
@@ -4038,9 +4028,9 @@ mod backend_log_line_tests {
 
     #[test]
     fn a_crlf_line_keeps_its_payload() {
-        // read_output_stream trims the terminator before collapsing, so the `\r` of a
-        // CRLF is never mistaken for a redraw that ended in an empty frame. Every line a
-        // Windows child relays through the backend arrives in this shape.
+        // read_output_stream trims the terminator before collapsing, so a CRLF's `\r` is
+        // never read as a redraw ending in an empty frame. Every line a Windows child
+        // relays arrives in this shape.
         let raw = b"Hardware detected: NVIDIA GeForce RTX 4090\r\n";
         let trimmed = String::from_utf8_lossy(trim_line_endings(raw)).into_owned();
         assert_eq!(

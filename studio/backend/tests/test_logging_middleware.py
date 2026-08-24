@@ -195,7 +195,7 @@ def test_quiet_poll_paths_use_longer_heartbeat_window(logs, monkeypatch):
 
 def test_liveness_probe_heartbeats(logs, monkeypatch):
     # The desktop watchdog's own probe. Its sibling /api/health was already quiet, so a
-    # steady poll of this one alone used to be a per-request line.
+    # steady poll of this one was a line per request.
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
     monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
     monkeypatch.setattr(hmod, "_WATCHDOG_POLL_DEDUP_MS", 1000)
@@ -239,8 +239,8 @@ def test_watchdog_window_outlasts_the_probe_interval():
     interval_s = _secs("HEALTH_WATCHDOG_INTERVAL")
     probe_s = _secs("HEALTH_PROBE_TIMEOUT")
 
-    # The default, not whatever this shell happens to export. Reading the module global
-    # would make the test fail for anyone with the override set.
+    # The default, not whatever this shell exports: reading the module global would fail
+    # the test for anyone with the override set.
     window_ms = hmod._env_int("UNSLOTH_STUDIO_ACCESS_LOG_WATCHDOG_DEDUP_MS", 60000)
     if os.environ.get("UNSLOTH_STUDIO_ACCESS_LOG_WATCHDOG_DEDUP_MS"):
         window_ms = 60000

@@ -25,20 +25,19 @@ def prune_log_dir(
 ) -> None:
     """Delete all but the ``keep`` most recently modified ``pattern`` files in ``log_dir``.
 
-    ``protect`` is the log the caller is about to write to, or is already writing to. It
-    is never deleted, and it counts as one of the ``keep``, so the directory settles at
-    ``keep`` files and not ``keep + 1``. Call this *after* opening it: pruning first
-    leaves an extra file on disk every time, and trusting the new file to sort newest is
-    not safe when two loads land in the same second or a clock steps back.
+    ``protect`` is the log the caller is writing to. It is never deleted and counts as one
+    of the ``keep``, so the directory settles at ``keep``, not ``keep + 1``. Call this
+    *after* opening it: pruning first leaves an extra file every time, and the new file
+    only sorts newest until two loads share a second or a clock steps back.
 
-    Only regular files are considered. A directory that happens to match the glob is not
-    a log, and a symlink is followed by ``stat`` but unlinked by name, so counting one
-    would silently shrink how many real logs are kept.
+    Only regular files count. A directory matching the glob is not a log, and a symlink is
+    stat'd through but unlinked by name, so counting either shrinks how many real logs are
+    kept.
 
-    Best effort in every direction: retention must never take down the thing it is
-    logging for, and losing the race to a concurrent writer just leaves the file for the
-    next call. One unreadable entry skips that entry, not the whole directory -- a single
-    dangling symlink used to abort the sort and disable retention entirely.
+    Best effort throughout: retention must never take down the thing it logs for, and
+    losing a race to a concurrent writer just leaves the file for the next call. One
+    unreadable entry skips that entry, not the directory -- a single dangling symlink used
+    to abort the sort and disable retention entirely.
     """
     if keep < 0:
         return
@@ -65,8 +64,8 @@ def prune_log_dir(
                 saw_protected = True
                 continue
         except OSError:
-            # A dangling symlink, a vanished file, or a directory we cannot read. Skip
-            # this entry only: one bad name must not disable retention for the directory.
+            # Dangling symlink, vanished file, or an unreadable directory. Skip the entry
+            # only: one bad name must not disable retention for the whole directory.
             continue
         entries.append((stat.st_mtime, path))
 

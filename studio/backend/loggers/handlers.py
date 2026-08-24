@@ -44,9 +44,9 @@ _ACCESS_LOG_DEDUP_MS = _env_int("UNSLOTH_STUDIO_ACCESS_LOG_DEDUP_MS", 300)
 _QUIET_POLL_DEDUP_MS = _env_int("UNSLOTH_STUDIO_ACCESS_LOG_POLL_DEDUP_MS", 10000)
 # The desktop watchdog probe is slower than every other poll here: 15s between rounds
 # (HEALTH_WATCHDOG_INTERVAL, src-tauri/src/commands.rs) plus up to a 10s probe budget,
-# ~19s in the sample below. _QUIET_POLL_DEDUP_MS is 10s and stamps only on emit, so that
-# window can never close over two probes and heartbeating there would have changed
-# nothing. Its own window, wide enough to actually span several rounds. 0 = off.
+# ~19s in the sample below. A 10s window that stamps only on emit can never close over two
+# of those, so it would collapse nothing. Its own window, wide enough to span a round.
+# 0 = off.
 _WATCHDOG_POLL_DEDUP_MS = _env_int("UNSLOTH_STUDIO_ACCESS_LOG_WATCHDOG_DEDUP_MS", 60000)
 # Both windows off is what --verbose sets; the drop-the-2xx suppressor below has no
 # window of its own, so it must read the same signal to honour --verbose.
@@ -109,11 +109,11 @@ _LIVENESS_POLL_PATHS = frozenset(
         "/api/inference/audio/stt/status",
     }
 )
-# The desktop shell's own watchdog probe. /api/health was already a quiet poll but its
-# sibling was in no suppressor at all, so on an idle 4h session it was 760 lines, 14% of
-# tauri.log, saying only that the process is still up. Kept out of _QUIET_POLL_PATHS
-# because that window is narrower than the poll interval; see _WATCHDOG_POLL_DEDUP_MS.
-# Its start/stop transitions are recorded in the backend phase log either way.
+# The desktop shell's own watchdog probe. /api/health was already quiet but its sibling was
+# in no suppressor at all: 760 lines on an idle 4h session, 14% of tauri.log, to say the
+# process is still up. Out of _QUIET_POLL_PATHS because that window is narrower than the
+# poll interval; see _WATCHDOG_POLL_DEDUP_MS. Start/stop transitions reach the phase log
+# either way.
 _WATCHDOG_POLL_PATHS = {"/api/liveness"}
 # Bucket key for the group above. Not a real (method, path, query, status), so it can
 # never collide with one.
