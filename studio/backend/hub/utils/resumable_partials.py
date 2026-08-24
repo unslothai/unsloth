@@ -3,29 +3,24 @@
 
 """Give huggingface_hub >= 1.18 back its resumable HTTP partials.
 
-Up to 1.17 the HTTP resumer opened ``<etag>.incomplete`` in append mode and sent
-``Range: bytes={resume_size}-``. 1.18 replaced it with a process-unique ``<etag>.<nonce>.incomplete``
-opened ``"wb"`` and unlinked on the way out (huggingface/huggingface_hub#4228), so a cancelled or
-killed transfer is refetched from zero and whatever survives a hard kill is litter no later attempt
-can find. This is what :mod:`hub.workers.hf_download` is built around: its SIGKILL then restart loop
-reads ``.incomplete`` to compute a resume offset, and there is nothing left to read.
+1.18 replaced the shared ``<etag>.incomplete``, opened append and continued with a Range request,
+with a process-unique ``<etag>.<nonce>.incomplete`` opened ``"wb"`` and unlinked on the way out
+(huggingface/huggingface_hub#4228). So a cancelled or killed transfer refetches from zero, and
+:mod:`hub.workers.hf_download`, whose SIGKILL then restart loop reads ``.incomplete`` for its resume
+offset, has nothing to read.
 
-Only the caller was removed. ``http_get`` still takes ``resume_size``, still sends the Range header,
-and still does ``seek(0)`` + ``truncate()`` when a server answers 200 to a Range request, which is
-the case that would otherwise duplicate bytes. So this restores the 1.17 caller and nothing else.
+Only the caller went. ``http_get`` still takes ``resume_size``, still sends the Range header, and
+still does ``seek(0)`` + ``truncate()`` when a server answers 200 to a Range request, the case that
+would otherwise duplicate bytes. This restores the 1.17 caller and nothing else.
 
-Why upstream removed it, and what that means here
--------------------------------------------------
-The shared name corrupts the cache on filesystems where ``flock(2)`` silently succeeds for every
-caller (Lustre, GPFS, some NFS mounts): two processes append to one file. That hazard is real, so
-it is measured rather than assumed. :func:`can_restore_partials` takes the lock twice and requires
-the second attempt to be refused. Where that cannot be shown, the stock writer stays, and Studio
-keeps reporting partials as unresumable.
+Upstream removed it because the shared name corrupts the cache where ``flock(2)`` silently succeeds
+for every caller (Lustre, GPFS, some NFS): two processes append to one file. That is measured, not
+assumed -- :func:`can_restore_partials` takes the lock twice and needs the second refused. Where it
+cannot be shown, the stock writer stays and partials keep reporting as unresumable.
 
-The other corruption route, an HTTP resumer appending to a sparse XET or parallel-Range partial, is
-already handled a layer up by the transport markers in :mod:`hub.utils.download_registry`. Those
-markers are bypassed on >= 1.18 precisely because no resumer exists; restoring one brings them back
-into force, which is where that check belongs.
+The other corruption route, appending to a sparse XET or parallel-Range partial, belongs to the
+transport markers in :mod:`hub.utils.download_registry`. They are bypassed on >= 1.18 only because
+no resumer exists, so restoring one brings them back into force.
 """
 
 from __future__ import annotations
@@ -44,9 +39,9 @@ LAST_STOCK_RESUMABLE_VERSION = (1, 17)
 # The newest major whose internals this has been read against. A 2.x is not assumed to look alike.
 MAX_SUPPORTED_MAJOR = 1
 
-# Per-process, so two Studios probing at once cannot take each other's lock and read a working
-# filesystem as a broken one. Both opens below are this process's own, and flock still refuses the
-# second, since separate open() calls make separate open file descriptions.
+# Per-process: two Studios probing at once must not take each other's lock and read a working
+# filesystem as broken. Both opens below are ours, and flock still refuses the second because
+# separate open() calls make separate open file descriptions.
 _PROBE_NAME = f".unsloth-flock-probe.{os.getpid()}"
 
 
@@ -71,13 +66,12 @@ def _hub_version() -> tuple[int, ...]:
 
 
 def _probe_dir() -> Optional[Path]:
-    """The cache the download worker will actually use, not the one this process booted with.
+    """The cache the worker will use, not the one this process booted with.
 
-    ``constants.HF_HUB_CACHE`` is resolved at import, and moving the cache in Settings does not
-    rewrite the live process (see ``hub/services/download_lifecycle.py``), while a worker is
-    spawned with the new one. Probing the stale path would judge a different filesystem than the
-    one the partial lands on, so the live setting wins and the import-time constant is the
-    fallback for callers outside Studio.
+    ``constants.HF_HUB_CACHE`` is resolved at import and moving the cache in Settings does not
+    rewrite the live process (see ``hub/services/download_lifecycle.py``), so probing it would
+    judge a different filesystem than the partial lands on. The constant is the fallback for
+    callers outside Studio.
     """
     root = None
     try:
@@ -102,15 +96,13 @@ def _probe_dir() -> Optional[Path]:
         return None
 
 
-# Keyed on the directory, so moving the cache re-probes rather than reusing the old filesystem's
-# verdict. Small and bounded: an install moves its cache a handful of times, not continuously.
+# Keyed on the directory, so moving the cache re-probes instead of reusing the old verdict.
 @lru_cache(maxsize = 8)
 def _lock_is_honoured_at(directory: str) -> bool:
     """Whether ``flock`` under *directory* actually excludes a second holder.
 
-    This is the exact hazard 1.18 removed the shared partial for, so it is tested: take the lock
-    twice and require the second to be refused. Anything else, including a probe that cannot run,
-    answers False and leaves the stock writer in place.
+    The hazard 1.18 removed the shared partial for, so it is tested rather than assumed. Anything
+    but a refused second lock, a failed probe included, leaves the stock writer in place.
     """
     import fcntl
 
@@ -145,8 +137,8 @@ def _lock_is_honoured() -> bool:
     try:
         import fcntl  # noqa: F401
     except ImportError:
-        # Windows has no fcntl. huggingface_hub locks via msvcrt there, which is mandatory rather
-        # than advisory, so the silent-sharing failure this probe looks for cannot happen.
+        # No fcntl on Windows, where huggingface_hub locks via msvcrt: mandatory rather than
+        # advisory, so the silent sharing this probe looks for cannot happen.
         return os.name == "nt"
     directory = _probe_dir()
     return False if directory is None else _lock_is_honoured_at(str(directory))
@@ -163,10 +155,10 @@ def _hub_is_patchable() -> bool:
 
 
 def can_restore_partials() -> bool:
-    """Whether :func:`restore_resumable_partials` would take effect on this machine.
+    """Whether :func:`restore_resumable_partials` would take effect here.
 
-    Read from the server process to decide what to tell the UI, and from the worker before it
-    patches, so both answer the same thing.
+    Read by the server to decide what to tell the UI and by the worker before it patches, so both
+    answer the same.
     """
     version = _hub_version()
     if not version or version <= LAST_STOCK_RESUMABLE_VERSION or version[0] > MAX_SUPPORTED_MAJOR:
@@ -175,10 +167,7 @@ def can_restore_partials() -> bool:
 
 
 def restore_resumable_partials() -> bool:
-    """Patch huggingface_hub in THIS process. Returns whether it took effect.
-
-    Idempotent, and a no-op wherever :func:`can_restore_partials` says no.
-    """
+    """Patch huggingface_hub in THIS process. Idempotent, and a no-op where it is unsafe."""
     if not can_restore_partials():
         return False
 
@@ -202,9 +191,8 @@ def restore_resumable_partials() -> bool:
         if destination_path.exists() and not force_download:
             return
 
-        # A repo can be XET-backed and still come down over HTTP when hf_xet is absent or disabled,
-        # so the question is whether XET will be used, not whether its metadata exists. XET has its
-        # own writer and cannot resume from a partial either way.
+        # A XET-backed repo still comes down over HTTP when hf_xet is absent or disabled, so what
+        # matters is whether XET will run, not whether its metadata exists. XET writes its own way.
         uses_xet = xet_file_data is not None and file_download.is_xet_available()
         if force_download or uses_xet:
             return stock(
