@@ -1989,7 +1989,9 @@ def _rocm_windows_per_device_vram(
                     if pool_bytes > total_bytes:
                         logger.debug(
                             "ROCm unified memory: ordinal %d total %.2f -> %.2f GB (driver pool)",
-                            ordinal, total_bytes / (1024**3), pool_bytes / (1024**3),
+                            ordinal,
+                            total_bytes / (1024**3),
+                            pool_bytes / (1024**3),
                         )
                         total_bytes = pool_bytes
                         total_is_pool = True
