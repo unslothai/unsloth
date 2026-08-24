@@ -325,7 +325,8 @@ def test_qualified_embedding_names_are_redirected_too():
     )
 
     targets, saved, moved = _redirect_embedding_targets(
-        CORE + ["model.embed_tokens", "language_model.lm_head"], None,
+        CORE + ["model.embed_tokens", "language_model.lm_head"],
+        None,
     )
     assert targets == CORE
     # The caller's spelling is preserved: PEFT matches modules_to_save on the suffix.

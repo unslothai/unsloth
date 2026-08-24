@@ -4532,13 +4532,11 @@ def _redirect_embedding_targets(
         return target_modules, modules_to_save, ()
 
     target_modules = list(dict.fromkeys(target_modules))
-    moved = [x for x in target_modules
-             if _embedding_leaf(x) and _embedding_leaf(x) not in skip]
+    moved = [x for x in target_modules if _embedding_leaf(x) and _embedding_leaf(x) not in skip]
     if not moved:
         return target_modules, modules_to_save, ()
 
-    remaining = [x for x in target_modules
-                 if not _embedding_leaf(x) or _embedding_leaf(x) in skip]
+    remaining = [x for x in target_modules if not _embedding_leaf(x) or _embedding_leaf(x) in skip]
     # list() on a str would shred it into single characters.
     if modules_to_save is None:
         saved = []
