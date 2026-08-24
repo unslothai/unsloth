@@ -486,7 +486,10 @@ def _prequant_plan_bytes(te_files: Any) -> int:
 
 
 def _predownload_encoder_bytes(
-    fam: Any, te_files: Any, *, pipeline_declared: bool = True
+    fam: Any,
+    te_files: Any,
+    *,
+    pipeline_declared: bool = True,
 ) -> int:
     """Return encoder bytes that are absent from the selected pipeline declaration."""
     total = _prequant_plan_bytes(te_files)

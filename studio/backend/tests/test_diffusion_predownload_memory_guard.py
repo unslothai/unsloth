@@ -229,7 +229,6 @@ def test_a_bf16_repo_is_counted_as_it_downloads():
 )
 def test_a_custom_pipeline_does_not_inherit_family_storage_precision(family, base):
     from core.inference.diffusion_auto_policy import resident_bytes_from_declared
-
     files = _files(transformer = 20_000, text_encoder = 8_000)
     assert resident_bytes_from_declared(_family(name = family, base_repo = base), base, files) == sum(
         size for _name, size in files
@@ -252,7 +251,9 @@ def test_only_a_compatible_prequant_can_replace_dense_encoder_shards(monkeypatch
         "te_prequant_hub_files",
         lambda sources, *_a, **_k: {component: [("encoder.pt", 8 * MIB)] for component in sources},
     )
-    monkeypatch.setattr(diffusion_mod, "resolve_diffusion_device_target", lambda *_a, **_k: _target())
+    monkeypatch.setattr(
+        diffusion_mod, "resolve_diffusion_device_target", lambda *_a, **_k: _target()
+    )
     fam = _family(name = "qwen-image", base_repo = "Qwen/Qwen-Image")
 
     assert (
@@ -284,7 +285,9 @@ def test_hidream_te4_uses_its_standalone_base_for_prequant_compatibility(monkeyp
         "te_prequant_hub_files",
         lambda sources, *_a, **_k: {component: [("te4.pt", 8 * MIB)] for component in sources},
     )
-    monkeypatch.setattr(diffusion_mod, "resolve_diffusion_device_target", lambda *_a, **_k: _target())
+    monkeypatch.setattr(
+        diffusion_mod, "resolve_diffusion_device_target", lambda *_a, **_k: _target()
+    )
     fam = _family(name = "hidream-i1", base_repo = "HiDream-ai/HiDream-I1-Full")
 
     planned = DiffusionBackend._te_prequant_plan_files(
