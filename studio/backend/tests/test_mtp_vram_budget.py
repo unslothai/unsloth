@@ -1004,9 +1004,22 @@ class TestExtraArgsMtpDetection:
             == "f32"
         )
         # Quantized env types launch (tensor no longer drops them) and flip the
-        # compute-scratch pricing -> adopt them too.
-        assert _env_main_cache_type_for_budget(env = {"LLAMA_ARG_CACHE_TYPE_K": "q4_0"}) == "q4_0"
-        assert _env_main_cache_type_for_budget(env = {"LLAMA_ARG_CACHE_TYPE_V": "q8_0"}) == "q8_0"
+        # compute-scratch pricing -> adopt them, but only when the pair as a whole
+        # is heavier-different from f16. A single quantized axis leaves the other
+        # at the f16 default, so the heavier axis IS f16 and the f16 reserve is
+        # already the safe one; adopting q4_0 there would price the untouched f16
+        # axis as quantized and under-reserve it (worse on an arch with
+        # key_length > value_length, where the cheap type lands on the larger
+        # tensor). The scratch term reads the effective pair per axis, so nothing
+        # is lost by leaving the KV scalar at the default here.
+        assert _env_main_cache_type_for_budget(env = {"LLAMA_ARG_CACHE_TYPE_K": "q4_0"}) is None
+        assert _env_main_cache_type_for_budget(env = {"LLAMA_ARG_CACHE_TYPE_V": "q8_0"}) is None
+        assert (
+            _env_main_cache_type_for_budget(
+                env = {"LLAMA_ARG_CACHE_TYPE_K": "q4_0", "LLAMA_ARG_CACHE_TYPE_V": "q4_0"}
+            )
+            == "q4_0"
+        )
         assert (
             _env_main_cache_type_for_budget(
                 env = {"LLAMA_ARG_CACHE_TYPE_K": "q4_0", "LLAMA_ARG_CACHE_TYPE_V": "q8_0"}
@@ -1286,3 +1299,55 @@ class TestUnemittableCacheTypeFallsBackToTheEnvBudget:
         assert guard != -1, "the unemittable-type guard is gone"
         assert adopt != -1
         assert guard < adopt, (guard, adopt)
+
+
+class TestAnUnsetInheritedCacheAxisIsStillF16:
+    """_env_main_cache_type_for_budget takes the heavier axis, so an axis that is
+    not set has to take part in that max at its real default, f16. Dropping it
+    lets one quantized axis carry the whole scalar, and the caller then prices the
+    OTHER axis as quantized too."""
+
+    @staticmethod
+    def _budget(env):
+        from core.inference.llama_cpp import _env_main_cache_type_for_budget
+
+        return _env_main_cache_type_for_budget(env)
+
+    @pytest.mark.parametrize("var", ["LLAMA_ARG_CACHE_TYPE_K", "LLAMA_ARG_CACHE_TYPE_V"])
+    def test_one_quantized_axis_alone_does_not_adopt_a_lighter_scalar(self, var):
+        """The effective pair is (q4_0, f16) either way round, whose heavier axis
+        is f16 -- the f16 default reserve, which is already conservative."""
+        assert self._budget({var: "q4_0"}) is None
+        assert self._budget({var: "q8_0"}) is None
+
+    @pytest.mark.parametrize("var", ["LLAMA_ARG_CACHE_TYPE_K", "LLAMA_ARG_CACHE_TYPE_V"])
+    def test_one_heavier_axis_alone_is_still_adopted(self, var):
+        """f32 on one axis is heavier than the f16 default on the other, so it
+        must still be budgeted -- the case the helper exists for."""
+        assert self._budget({var: "f32"}) == "f32"
+
+    def test_both_axes_quantized_is_adopted(self):
+        assert self._budget({
+            "LLAMA_ARG_CACHE_TYPE_K": "q4_0",
+            "LLAMA_ARG_CACHE_TYPE_V": "q4_0",
+        }) == "q4_0"
+
+    def test_an_asymmetric_quantized_pair_takes_the_heavier_axis(self):
+        assert self._budget({
+            "LLAMA_ARG_CACHE_TYPE_K": "q4_0",
+            "LLAMA_ARG_CACHE_TYPE_V": "q8_0",
+        }) == "q8_0"
+
+    def test_nothing_set_is_still_none(self):
+        assert self._budget({}) is None
+        assert self._budget({"LLAMA_ARG_CACHE_TYPE_K": "f16"}) is None
+
+    def test_the_under_reservation_it_prevents(self):
+        """On an arch with key_length > value_length the swap lands the cheap type
+        on the LARGER tensor. Driven through the real estimator."""
+        from core.inference.llama_cpp import _effective_main_cache_types
+
+        env = {"LLAMA_ARG_CACHE_TYPE_V": "q4_0"}
+        assert _effective_main_cache_types(None, env) == ("f16", "q4_0")
+        # The scalar the loader adopts must not be the quantized one.
+        assert self._budget(env) is None

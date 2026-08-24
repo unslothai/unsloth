@@ -2956,14 +2956,19 @@ def _env_main_cache_type_for_budget(env: Optional[Mapping[str, str]] = None) -> 
     dwarfs the banded rate). The caller adopts the type for the reserve only;
     _cache_type_from_env keeps it out of the emitted flags."""
     e = os.environ if env is None else env
-    set_types = [
-        raw
+    # An UNSET axis is not absent, it is f16 (llama.cpp's default), so it takes
+    # part in the max. Dropping it lets a single quantized axis carry the whole
+    # scalar: LLAMA_ARG_CACHE_TYPE_V=q4_0 alone would return q4_0, and the caller
+    # then prices K as q4 while the child runs it at f16 -- on an arch with
+    # key_length > value_length that under-reserves the LARGER tensor, and tensor
+    # mode has no --fit valve to absorb it.
+    axis_types = [
+        (e.get(var) or "").strip().lower() or "f16"
         for var in ("LLAMA_ARG_CACHE_TYPE_K", "LLAMA_ARG_CACHE_TYPE_V")
-        if (raw := (e.get(var) or "").strip().lower())
     ]
-    if not set_types:
+    if all(t == "f16" for t in axis_types):
         return None
-    heaviest = max(set_types, key = _kv_bytes_per_elem)
+    heaviest = max(axis_types, key = _kv_bytes_per_elem)
     if _kv_bytes_per_elem(heaviest) == _kv_bytes_per_elem("f16"):
         return None
     return heaviest
@@ -4949,6 +4954,8 @@ class LlamaCppBackend:
         self._n_ubatch: int = self._DEFAULT_N_UBATCH
         self._flash_attn_enabled: bool = True
         self._effective_cache_types: tuple[str, str] = ("f16", "f16")
+        # The pair this load ASKED for, before any launch-time rewrite.
+        self._requested_cache_types: tuple[str, str] = ("f16", "f16")
         # Total KV allocation context across all slots. _effective_context_length
         # becomes the per-slot request limit after /props reconciliation.
         self._kv_cache_context_total: Optional[int] = None
@@ -5628,18 +5635,18 @@ class LlamaCppBackend:
         # Judged on the flag, not on value equality: a caller that deliberately sends the
         # stripped list is clearing the failed drafter and must not read as inheriting it.
         _invoked_extras = self.requested_extra_args if intent.extra_args_inherited else extra_args
-        # Compare the KV cache the live server is RUNNING against the one this
-        # request would launch, per axis, rather than scalar-against-scalar.
+        # Requested against requested, per axis, rather than scalar-against-
+        # scalar -- the same rule the tuning group above uses.
         # self._cache_type_kv holds only what Studio emitted as a managed flag, so
         # a cache set through extras or the environment records None on one side
         # and a type on the other: an identical repeat /load then reads as a
         # mismatch and tears down a healthy server to relaunch the same thing.
-        # _effective_cache_types is the pair the running child actually got
-        # (resolved from its own argv + env after the spawn), and
-        # _planned_main_cache_types resolves the request the same way, so the two
-        # are directly comparable. Before ggml-org/llama.cpp#23792 the tensor gate
-        # hid this by rewriting the cache away; a layer load has always had it.
-        if self._effective_cache_types != _planned_main_cache_types(
+        # _requested_cache_types is what the live server was ASKED for, resolved
+        # by the same helper, so two loads asking for the same thing match even
+        # when the launch rewrote the cache underneath them. Before
+        # ggml-org/llama.cpp#23792 the tensor gate hid this by rewriting the
+        # cache away; a layer load has always had it.
+        if self._requested_cache_types != _planned_main_cache_types(
             intent.cache_type_kv, _invoked_extras
         ):
             return False
@@ -11318,6 +11325,7 @@ class LlamaCppBackend:
         self._requested_cache_ram = None
         self._flash_attn_enabled = True
         self._effective_cache_types = ("f16", "f16")
+        self._requested_cache_types = ("f16", "f16")
         self._kv_cache_context_total = None
         # False means "confirmed to hold no VRAM" and makes the training coordinator skip
         # the unload, so it is claimed only for a zero-layer split.
@@ -16797,6 +16805,11 @@ class LlamaCppBackend:
                             "(needs b9455+); loading with a layer split."
                         )
                         tensor_parallel = False
+                        # Like the split-axis skip below: the missing capability
+                        # says nothing about capacity, so keep the multi-GPU
+                        # request rather than letting the layer planner settle on
+                        # the first card the model happens to fit.
+                        _layer_min_gpus = max(_layer_min_gpus, len(gpus))
                         extra_args = strip_split_mode_only(extra_args)
                     if tensor_parallel and self._tensor_split_aborts(
                         binary, model_identifier, _planned_cache_pair
@@ -20772,6 +20785,14 @@ class LlamaCppBackend:
                     _last_spawn_cmd,
                     env,
                 )
+                # The pair the REQUEST resolved to, kept beside the pair that
+                # launched. A launch-time rewrite makes them differ (a build with
+                # no --flash-attn resets a quantized V cache to f16, and so does
+                # the flash-attn crash recovery), and the reload matcher wants the
+                # request: comparing the running pair against an unrewritten
+                # request rejects every identical repeat load and redoes that
+                # normalization instead of reusing it.
+                self._requested_cache_types = _planned_cache_pair
                 self._kv_cache_context_total = effective_ctx if effective_ctx > 0 else None
 
                 # Server is up: adopt the real per-request context it allocated
@@ -21721,6 +21742,7 @@ class LlamaCppBackend:
             self._n_ubatch = self._DEFAULT_N_UBATCH
             self._flash_attn_enabled = True
             self._effective_cache_types = ("f16", "f16")
+            self._requested_cache_types = ("f16", "f16")
             self._kv_cache_context_total = None
             self._chat_template = None
             self._markup_tokens = []

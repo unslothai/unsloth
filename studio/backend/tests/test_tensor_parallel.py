@@ -1923,6 +1923,20 @@ class TestLegacyBuildLatchIsBinaryWide:
         )
         assert not LlamaCppBackend._tensor_quant_kv_unsupported_binary(None, ("q8_0", "q8_0"))
 
+    def test_the_skip_keeps_the_multi_gpu_request(self):
+        """A missing capability says nothing about capacity, so the layer load it
+        falls back to must still spread. Without the _layer_min_gpus bump the auto
+        layer planner starts at one GPU and stops there as soon as the model fits,
+        silently collapsing a multi-GPU request onto one card -- the same reason
+        the adjacent split-axis skip raises it."""
+        load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        gate = load.find("self._tensor_quant_kv_unsupported_binary(")
+        assert gate != -1
+        # The bump sits inside this skip's own body, before the next gate.
+        nxt = load.find("self._tensor_split_aborts(", gate)
+        assert nxt != -1
+        assert "_layer_min_gpus=max(_layer_min_gpus,len(gpus))" in load[gate:nxt]
+
     def test_the_loader_consults_it_before_spawning(self):
         """Source-pinned: the whole point is to skip the doomed load, so the check
         has to sit at the up-front gate, not after a spawn."""
