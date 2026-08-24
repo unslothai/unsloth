@@ -883,8 +883,17 @@ def _cuda_order_matches_smi() -> bool:
     """
     if IS_ROCM or os.environ.get("CUDA_DEVICE_ORDER") == "PCI_BUS_ID":
         return True
-    if (get_physical_gpu_count() or 0) <= 1:
+    # The count must be the SMI's. The torch fallback counts VISIBLE devices, so
+    # a mask of one on a multi-GPU host reads as single-GPU and would grant the
+    # exemption the mask is exactly the reason to withhold. It is cached, so one
+    # transient `nvidia-smi -L` timeout would otherwise disable this for the
+    # life of the process.
+    count = get_physical_gpu_count()
+    if _physical_gpu_count_from_smi and count <= 1:
         return True
+    if not _physical_gpu_count_from_smi:
+        logger.debug("Skipping SMI VRAM query: physical GPU count is not SMI-confirmed")
+        return False
     logger.debug("Skipping SMI VRAM query: CUDA_DEVICE_ORDER is not PCI_BUS_ID")
     return False
 
@@ -935,8 +944,12 @@ def _free_in_torch_scope(total_bytes: int, used_gb: float) -> int:
     Subtract from torch's total, never the driver's: NVIDIA's total also spans a
     reserved framebuffer that ``used`` excludes and torch can never hand out
     (726 MiB on a B200), so ``driver_total - used`` reports a full card as free.
+
+    Clamped both ends: the parsers accept signed values, and a negative used
+    would otherwise advertise more free than the card has, which utilization_pct
+    and the training-method policy both read.
     """
-    return max(0, total_bytes - round(used_gb * (1024**3)))
+    return min(total_bytes, max(0, total_bytes - round(used_gb * (1024**3))))
 
 
 def _context_free_cuda_memory_info(idx: int, total_bytes: int) -> Optional[int]:
@@ -2806,6 +2819,9 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
 # ========== Multi-GPU Detection & Safe num_proc ==========
 
 _physical_gpu_count: Optional[int] = None
+# Whether the cached count came from the SMI (physical) or the torch fallback
+# (visibility-filtered). Only the former can answer "is this host single-GPU".
+_physical_gpu_count_from_smi: bool = False
 _visible_gpu_count: Optional[int] = None
 
 
@@ -3625,7 +3641,7 @@ def get_physical_gpu_count() -> int:
     Uses ``nvidia-smi -L`` on NVIDIA (unaffected by CUDA_VISIBLE_DEVICES),
     with a torch fallback for AMD ROCm and Intel XPU. Cached after first call.
     """
-    global _physical_gpu_count
+    global _physical_gpu_count, _physical_gpu_count_from_smi
     if _physical_gpu_count is not None:
         return _physical_gpu_count
 
@@ -3640,6 +3656,7 @@ def get_physical_gpu_count() -> int:
             count = _smi_mod.get_physical_gpu_count()
             if count is not None:
                 _physical_gpu_count = count
+                _physical_gpu_count_from_smi = True
                 return _physical_gpu_count
         except Exception:
             pass

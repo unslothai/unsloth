@@ -519,8 +519,56 @@ def test_context_free_keeps_smi_on_a_single_gpu_under_fastest_first(monkeypatch)
     monkeypatch.setenv("CUDA_DEVICE_ORDER", "FASTEST_FIRST")
     _nvidia_smi_reading(monkeypatch, used_gb = 2.0, driver_total_gb = 24.0)
     monkeypatch.setattr(hw, "get_physical_gpu_count", lambda: 1)
+    monkeypatch.setattr(hw, "_physical_gpu_count_from_smi", True)
 
     assert hw._context_free_cuda_memory_info(0, 24 * gib) == 22 * gib
+
+
+def test_context_free_declines_when_the_gpu_count_is_not_smi_confirmed(monkeypatch):
+    # `nvidia-smi -L` failing falls back to torch, which counts VISIBLE devices,
+    # so a one-device mask on a multi-GPU host reads as single-GPU. Granting the
+    # exemption there reads the mask in nvidia-smi's index space, which under
+    # FASTEST_FIRST can be a different card. The count is cached, so one
+    # transient timeout would disable the gate for the life of the process.
+    gib = 1 << 30
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "FASTEST_FIRST")
+    _nvidia_smi_reading(monkeypatch, used_gb = 2.0, driver_total_gb = 24.0)
+    monkeypatch.setattr(hw, "get_physical_gpu_count", lambda: 1)
+    monkeypatch.setattr(hw, "_physical_gpu_count_from_smi", False)
+
+    assert hw._context_free_cuda_memory_info(0, 24 * gib) is None
+
+
+def test_physical_gpu_count_records_whether_the_smi_answered(monkeypatch):
+    from utils.hardware import nvidia
+
+    # The flag is what the order gate reads, so it must track the SOURCE of the
+    # count, not merely that one was produced.
+    monkeypatch.setattr(hw, "_physical_gpu_count", None)
+    monkeypatch.setattr(hw, "_physical_gpu_count_from_smi", False)
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
+    monkeypatch.setattr(hw, "IS_ROCM", False)
+    monkeypatch.setattr(nvidia, "get_physical_gpu_count", lambda: 4)
+    assert hw.get_physical_gpu_count() == 4
+    assert hw._physical_gpu_count_from_smi is True
+
+    monkeypatch.setattr(hw, "_physical_gpu_count", None)
+    monkeypatch.setattr(hw, "_physical_gpu_count_from_smi", False)
+    monkeypatch.setattr(nvidia, "get_physical_gpu_count", lambda: None)
+    monkeypatch.setattr(hw, "_torch_get_physical_gpu_count", lambda: 1)
+    assert hw.get_physical_gpu_count() == 1
+    assert hw._physical_gpu_count_from_smi is False
+
+
+def test_free_in_torch_scope_never_exceeds_the_total(monkeypatch):
+    # Both SMI parsers accept signed values, so a transient negative used counter
+    # would otherwise advertise more free than the card holds. utilization_pct
+    # and the training-method policy both read this.
+    gib = 1 << 30
+    assert hw._free_in_torch_scope(24 * gib, -1.0) == 24 * gib
+    assert hw._free_in_torch_scope(24 * gib, 0.0) == 24 * gib
+    assert hw._free_in_torch_scope(24 * gib, 2.0) == 22 * gib
+    assert hw._free_in_torch_scope(24 * gib, 99.0) == 0
 
 
 def test_context_free_uuid_mask_skips_the_cuda_order_gate(monkeypatch):
@@ -1169,11 +1217,19 @@ def test_rocm_linux_falls_back_to_torch_when_sysfs_covers_only_some(monkeypatch)
     monkeypatch.setattr(
         hw,
         "_torch_get_per_device_info",
-        lambda ids: used.append(ids)
-        or [
-            {"index": i, "visible_ordinal": i, "name": "MI210", "total_gb": 64.0, "used_gb": 1.0}
-            for i in ids
-        ],
+        lambda ids: (
+            used.append(ids)
+            or [
+                {
+                    "index": i,
+                    "visible_ordinal": i,
+                    "name": "MI210",
+                    "total_gb": 64.0,
+                    "used_gb": 1.0,
+                }
+                for i in ids
+            ]
+        ),
     )
     result = hw.get_visible_gpu_utilization()
     assert used == [[0, 1]]
@@ -1188,11 +1244,19 @@ def test_rocm_linux_falls_back_when_sysfs_knows_nothing(monkeypatch):
     monkeypatch.setattr(
         hw,
         "_torch_get_per_device_info",
-        lambda ids: used.append(ids)
-        or [
-            {"index": i, "visible_ordinal": i, "name": "MI210", "total_gb": 64.0, "used_gb": 1.0}
-            for i in ids
-        ],
+        lambda ids: (
+            used.append(ids)
+            or [
+                {
+                    "index": i,
+                    "visible_ordinal": i,
+                    "name": "MI210",
+                    "total_gb": 64.0,
+                    "used_gb": 1.0,
+                }
+                for i in ids
+            ]
+        ),
     )
     result = hw.get_visible_gpu_utilization()
     assert used == [[0, 1]]
@@ -1232,11 +1296,19 @@ def test_rocm_relative_index_skips_the_sysfs_shortcut(monkeypatch):
     monkeypatch.setattr(
         hw,
         "_torch_get_per_device_info",
-        lambda ids: seen.append(ids)
-        or [
-            {"index": i, "visible_ordinal": i, "name": "MI210", "total_gb": 64.0, "used_gb": 1.0}
-            for i in ids
-        ],
+        lambda ids: (
+            seen.append(ids)
+            or [
+                {
+                    "index": i,
+                    "visible_ordinal": i,
+                    "name": "MI210",
+                    "total_gb": 64.0,
+                    "used_gb": 1.0,
+                }
+                for i in ids
+            ]
+        ),
     )
     result = hw.get_visible_gpu_utilization()
     assert result["index_kind"] == "relative"
