@@ -65,3 +65,20 @@ test("training order excludes abandoned response branches", () => {
     ["user", "new-reply", "follow-up"],
   );
 });
+
+test("training order follows the displayed branch ancestor chain", () => {
+  const branched = [
+    { id: "user-1", parentId: null, createdAt: 1, role: "user" },
+    { id: "selected", parentId: "user-1", createdAt: 2, role: "assistant" },
+    { id: "abandoned", parentId: "user-1", createdAt: 5, role: "assistant" },
+    { id: "user-2", parentId: "selected", createdAt: 6, role: "user" },
+    { id: "answer", parentId: "user-2", createdAt: 7, role: "assistant" },
+  ];
+
+  assert.deepEqual(
+    orderByParentChain(branched, { includeSiblings: false }).map(
+      ({ id }) => id,
+    ),
+    ["user-1", "selected", "user-2", "answer"],
+  );
+});
