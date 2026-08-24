@@ -569,7 +569,9 @@ def main() -> int:
     )
     ap.add_argument("--json", type = Path, default = None, help = "also write raw JSON here")
     ap.add_argument(
-        "--device", type = int, default = None,
+        "--device",
+        type = int,
+        default = None,
         help = "torch ordinal to allocate on; default is the one reporting is_integrated",
     )
     ap.add_argument(
