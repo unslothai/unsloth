@@ -383,6 +383,7 @@ def render(obs: dict[str, Any]) -> str:
         if before and after:
             L.append("| adapter instance | Dedicated delta | Shared delta |")
             L.append("|---|---|---|")
+
             # A missing side is not zero. The report tells the reader to pick the
             # numerator by whichever delta matches the amount held, so an absent
             # baseline coerced to 0.0 would promote an absolute reading to a
@@ -398,8 +399,10 @@ def render(obs: dict[str, Any]) -> str:
                 if b is None:
                     L.append(f"| `{name}` | unknown (absent before) | unknown (absent before) |")
                     continue
-                L.append(f"| `{name}` | {_delta('dedicated_gb', b, aft)} "
-                         f"| {_delta('shared_gb', b, aft)} |")
+                L.append(
+                    f"| `{name}` | {_delta('dedicated_gb', b, aft)} "
+                    f"| {_delta('shared_gb', b, aft)} |"
+                )
             L.append("")
         L.append(
             "Whichever counter moved by roughly the amount held is the one that tracks a "

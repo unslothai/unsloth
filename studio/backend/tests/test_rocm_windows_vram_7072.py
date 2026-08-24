@@ -818,7 +818,8 @@ def test_the_dedicated_snapshot_is_not_sampled_twice(win_rocm, monkeypatch):
     _apu_host(monkeypatch)
     seen = []
     monkeypatch.setattr(
-        hw, "_rocm_windows_unified_used_bytes",
+        hw,
+        "_rocm_windows_unified_used_bytes",
         lambda dedicated = None: (seen.append(dedicated), 12.0 * GB)[1],
     )
 
