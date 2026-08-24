@@ -778,3 +778,42 @@ def test_unified_memory_no_op_when_torch_total_not_larger():
     assert metrics["vram_total_gb"] == 48.0
     assert metrics["vram_used_gb"] == 10.0
     assert metrics["vram_utilization_pct"] == 20.8
+
+
+# ----------------------------------------------------------------------------- #
+# The capacity a counter is bounded by
+#
+# Dedicated Usage measures the dedicated segment, so the carve-out is its
+# ceiling. #9314 widens total_bytes to the whole driver pool on a unified APU
+# for DISPLAY, and every capacity comparison here has to keep using the
+# carve-out: against a pool-sized ceiling a counter no visible card could hold
+# still fits, and the join stops declining where it should.
+# ----------------------------------------------------------------------------- #
+def test_counter_capacity_prefers_the_dedicated_total():
+    """dedicated_bytes wins when present, total_bytes when it is not, so this is
+    right both before and after the widening lands."""
+    assert hw._adapter_counter_capacity({"total_bytes": 8 * GB}) == float(8 * GB)
+    assert hw._adapter_counter_capacity(
+        {"total_bytes": 128 * GB, "dedicated_bytes": 8 * GB}
+    ) == float(8 * GB)
+
+
+def test_the_luid_join_bounds_counters_by_the_carve_out_not_the_pool():
+    """An impossible counter must still be impossible after the total widens.
+    9 GiB fits no 8 GiB carve-out, so the join has to decline; ranked against a
+    128 GiB pool it fits and would be published on a card that never held it."""
+    dev_meta = [{"name": "AMD Radeon(TM) 8060S Graphics", "total_bytes": 128 * GB,
+                 "dedicated_bytes": 8 * GB}]
+    matched = hw._attribute_adapter_useds_by_key(
+        {"k": [9.0 * GB]}, {"k": [0]}, dev_meta
+    )
+    assert matched is None
+
+    # Same device, a usage that does fit the carve-out: attributed normally.
+    matched = hw._attribute_adapter_useds_by_key(
+        {"k": [2.0 * GB]}, {"k": [0]}, dev_meta
+    )
+    assert matched is not None
+    assigned, aggregate = matched
+    assert assigned[0] == pytest.approx(2.0 * GB)
+    assert aggregate == pytest.approx(2.0 * GB)

@@ -1915,6 +1915,22 @@ def _windows_amd_adapter_records_by_luid() -> dict[int, Dict[str, str]]:
     return by_luid
 
 
+def _adapter_counter_capacity(meta: Dict[str, Any]) -> float:
+    """The capacity a ``Dedicated Usage`` counter for this device can actually fill.
+
+    That counter measures the dedicated segment, so the carve-out is its ceiling.
+    ``total_bytes`` is the figure DISPLAYED to the user, and on a unified-memory
+    APU that may be widened to the whole driver pool, which would tell every
+    capacity comparison in this file that a counter no visible card could hold
+    still fits. Anything ranking or bounding a counter wants this, never
+    ``total_bytes``.
+
+    ``dedicated_bytes`` is carried alongside for exactly this purpose; the
+    fallback keeps this correct against a ``dev_meta`` built before it existed.
+    """
+    return float(meta.get("dedicated_bytes", meta["total_bytes"]))
+
+
 def _attribute_adapter_useds_by_key(
     useds_by_key: dict[str, list[float]],
     positions_by_key: dict[str, list[int]],
@@ -1940,11 +1956,11 @@ def _attribute_adapter_useds_by_key(
             return None
         # Largest usage against the largest capacity: any other pairing of the
         # same multiset only makes the check below stricter, never truer.
-        by_capacity = sorted(positions, key = lambda p: -dev_meta[p]["total_bytes"])
+        by_capacity = sorted(positions, key = lambda p: -_adapter_counter_capacity(dev_meta[p]))
         for used, position in zip(sorted(useds, reverse = True), by_capacity):
             # A usage above its own card's capacity: a record outliving its
             # hardware, so the key is not identifying what it appears to.
-            if used > dev_meta[position]["total_bytes"]:
+            if used > _adapter_counter_capacity(dev_meta[position]):
                 return None
             total_used += used
         if len(positions) == 1:
@@ -2175,7 +2191,8 @@ def _rocm_windows_per_device_vram(
             assigned, aggregate_bytes = by_luid
         else:
             adapter_useds = [used for _, used in adapters]
-            totals = [d["total_bytes"] for d in dev_meta]
+            # Capacities the counters can fill, not the displayed totals.
+            totals = [_adapter_counter_capacity(d) for d in dev_meta]
             assigned = _match_adapter_used_to_devices(adapter_useds, totals)
             aggregate_bytes = _rocm_windows_aggregate_used_bytes(adapter_useds, totals)
         if aggregate_bytes is not None:
