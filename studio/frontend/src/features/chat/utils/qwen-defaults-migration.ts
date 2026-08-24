@@ -14,7 +14,26 @@ const LEGACY_QWEN_DEFAULTS = {
   maxTokens: 8192,
 } as const;
 
-const CURRENT_QWEN_DEFAULT_PATCH = {
+const LEGACY_GLOBAL_QWEN_DEFAULTS = {
+  temperature: 0.6,
+  topP: 0.95,
+  minP: 0.01,
+  presencePenalty: 0.0,
+  maxTokens: 8192,
+} as const;
+
+const CURRENT_QWEN_THINKING_DEFAULTS = {
+  temperature: 0.6,
+  topP: 0.95,
+  topK: 20,
+  minP: 0.0,
+  presencePenalty: 1.5,
+} as const satisfies PersistedInferenceParams;
+
+const CURRENT_QWEN_NON_THINKING_DEFAULTS = {
+  temperature: 0.7,
+  topP: 0.8,
+  topK: 20,
   minP: 0.0,
   presencePenalty: 1.5,
 } as const satisfies PersistedInferenceParams;
@@ -36,6 +55,31 @@ function isLegacyQwenDefaultSnapshot(
   );
 }
 
+function isLegacyGlobalQwenDefaultSnapshot(
+  params: PersistedInferenceParams | undefined,
+): boolean {
+  return (
+    params !== undefined &&
+    Object.entries(LEGACY_GLOBAL_QWEN_DEFAULTS).every(
+      ([key, value]) => params[key as keyof PersistedInferenceParams] === value,
+    )
+  );
+}
+
+function changedDefaults(
+  legacy: PersistedInferenceParams,
+  current: PersistedInferenceParams,
+): PersistedInferenceParams {
+  const changed: PersistedInferenceParams = {};
+  for (const [key, value] of Object.entries(current)) {
+    const field = key as keyof PersistedInferenceParams;
+    if (legacy[field] !== value) {
+      (changed as Record<string, unknown>)[key] = value;
+    }
+  }
+  return changed;
+}
+
 function isBuiltInDefault(settings: PersistedChatSettings): boolean {
   return (
     (settings.activePreset === undefined ||
@@ -51,66 +95,92 @@ export type QwenDefaultsMigration = {
   migratedModelIds: string[];
 };
 
-/**
- * Upgrade the complete generic-Qwen snapshot that Studio used to remember for
- * Qwen3.5/3.6/3.8. Matching every sampling field keeps an explicit partial
- * override (including a deliberate presencePenalty=0) untouched.
- */
-export function migrateLegacyQwenDefaults(
-  settings: PersistedChatSettings,
-  activeCheckpoint: string,
-): QwenDefaultsMigration {
-  const stored = settings.inferenceParamsByModel;
-  if (!stored) {
-    return { settings, patch: null, migratedModelIds: [] };
-  }
-  if (!isBuiltInDefault(settings)) {
-    return { settings, patch: null, migratedModelIds: [] };
-  }
-
+function migrateStoredModelDefaults(
+  stored: Record<string, PersistedInferenceParams> | undefined,
+  currentDefaults: PersistedInferenceParams,
+): {
+  migratedModelIds: string[];
+  migratedByModel: Record<string, PersistedInferenceParams>;
+  patchByModel: Record<string, PersistedInferenceParams>;
+} {
   const migratedModelIds: string[] = [];
   const migratedByModel: Record<string, PersistedInferenceParams> = {};
   const patchByModel: Record<string, PersistedInferenceParams> = {};
-
-  for (const [modelId, entry] of Object.entries(stored)) {
+  for (const [modelId, entry] of Object.entries(stored ?? {})) {
     if (isPresenceBumpQwen(modelId) && isLegacyQwenDefaultSnapshot(entry)) {
       migratedModelIds.push(modelId);
-      migratedByModel[modelId] = { ...entry, ...CURRENT_QWEN_DEFAULT_PATCH };
-      patchByModel[modelId] = CURRENT_QWEN_DEFAULT_PATCH;
+      migratedByModel[modelId] = { ...entry, ...currentDefaults };
+      patchByModel[modelId] = changedDefaults(entry, currentDefaults);
     } else {
       migratedByModel[modelId] = entry;
     }
   }
+  return { migratedModelIds, migratedByModel, patchByModel };
+}
 
-  if (migratedModelIds.length === 0) {
-    return { settings, patch: null, migratedModelIds };
+/**
+ * Upgrade the complete generic-Qwen snapshot that Studio used to remember for
+ * Qwen3.5/3.6/3.8. Matching every sampling field keeps an explicit partial
+ * override (including a deliberate presencePenalty=0) untouched. Globals are
+ * eligible only when the caller can establish that they describe the active
+ * checkpoint; a per-model map alone is not proof of that ownership.
+ */
+export function migrateLegacyQwenDefaults(
+  settings: PersistedChatSettings,
+  activeCheckpoint: string,
+  thinkingOn: boolean,
+  globalBelongsToActiveCheckpoint = false,
+  migrateOwnedGlobalAlongsideModelMemory = false,
+): QwenDefaultsMigration {
+  const stored = settings.inferenceParamsByModel;
+  if (!isBuiltInDefault(settings)) {
+    return { settings, patch: null, migratedModelIds: [] };
   }
 
-  const activeWasMigrated = migratedModelIds.some(
-    (modelId) => modelId.toLowerCase() === activeCheckpoint.toLowerCase(),
-  );
+  const currentDefaults = thinkingOn
+    ? CURRENT_QWEN_THINKING_DEFAULTS
+    : CURRENT_QWEN_NON_THINKING_DEFAULTS;
+  const currentGlobalDefaults: PersistedInferenceParams = {
+    temperature: currentDefaults.temperature,
+    topP: currentDefaults.topP,
+    minP: currentDefaults.minP,
+    presencePenalty: currentDefaults.presencePenalty,
+  };
+
+  const { migratedModelIds, migratedByModel, patchByModel } =
+    migrateStoredModelDefaults(stored, currentDefaults);
+
   const migrateGlobal =
-    activeWasMigrated &&
-    settings.inferenceParams?.minP === LEGACY_QWEN_DEFAULTS.minP &&
-    settings.inferenceParams?.presencePenalty ===
-      LEGACY_QWEN_DEFAULTS.presencePenalty;
+    (stored === undefined || migrateOwnedGlobalAlongsideModelMemory) &&
+    globalBelongsToActiveCheckpoint &&
+    isPresenceBumpQwen(activeCheckpoint) &&
+    isLegacyGlobalQwenDefaultSnapshot(settings.inferenceParams);
+  const globalPatch = migrateGlobal
+    ? changedDefaults(settings.inferenceParams ?? {}, currentGlobalDefaults)
+    : null;
+
+  if (migratedModelIds.length === 0 && !globalPatch) {
+    return { settings, patch: null, migratedModelIds };
+  }
 
   return {
     settings: {
       ...settings,
-      inferenceParamsByModel: migratedByModel,
+      ...(stored ? { inferenceParamsByModel: migratedByModel } : {}),
       ...(migrateGlobal
         ? {
             inferenceParams: {
               ...settings.inferenceParams,
-              ...CURRENT_QWEN_DEFAULT_PATCH,
+              ...currentGlobalDefaults,
             },
           }
         : {}),
     },
     patch: {
-      inferenceParamsByModel: patchByModel,
-      ...(migrateGlobal ? { inferenceParams: CURRENT_QWEN_DEFAULT_PATCH } : {}),
+      ...(migratedModelIds.length > 0
+        ? { inferenceParamsByModel: patchByModel }
+        : {}),
+      ...(globalPatch ? { inferenceParams: globalPatch } : {}),
     },
     migratedModelIds,
   };

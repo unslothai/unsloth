@@ -12,6 +12,7 @@ import {
 import { toast } from "@/lib/toast";
 import { DRAFT_N_MAX_SPEC_TYPES } from "@/lib/speculative-modes";
 import { create } from "zustand";
+import { getChatSettings } from "../api/chat-settings-api";
 import {
   GPU_LAYERS_AUTO,
   recoverDroppedDiffusionSplit,
@@ -3683,6 +3684,86 @@ function setScalarSettingVersion<K extends ScalarSettingKey>(
   writeGlobal();
 }
 
+function localQwenMigrationSettings(
+  state: ChatRuntimeStore,
+): PersistedChatSettings {
+  return {
+    activePreset: state.activePreset,
+    activePresetSource: state.activePresetSource,
+    inferenceParams: pickRememberedParams(
+      withoutActiveThreadParams(state, state.params),
+    ),
+    ...(Object.keys(state.paramsByModel).length > 0
+      ? { inferenceParamsByModel: state.paramsByModel }
+      : {}),
+  };
+}
+
+function applyLegacyQwenDefaultsAfterPresetChange(): void {
+  useChatRuntimeStore.setState((state) => {
+    if (
+      !state.settingsHydrated ||
+      state.activePresetSource !== "builtin-default"
+    ) {
+      return state;
+    }
+    const checkpoint = state.params.checkpoint;
+    const migration = migrateLegacyQwenDefaults(
+      localQwenMigrationSettings(state),
+      checkpoint,
+      state.reasoningAlwaysOn || state.reasoningEnabled,
+      true,
+      true,
+    );
+    if (!migration.patch) return state;
+
+    const activeModelId = migration.migratedModelIds.find(
+      (modelId) => modelId.toLowerCase() === checkpoint.toLowerCase(),
+    );
+    const activePatch = activeModelId
+      ? migration.patch.inferenceParamsByModel?.[activeModelId]
+      : migration.patch.inferenceParams;
+    return {
+      ...(migration.settings.inferenceParamsByModel
+        ? { paramsByModel: migration.settings.inferenceParamsByModel }
+        : {}),
+      ...(activePatch
+        ? { params: { ...state.params, ...activePatch } }
+        : {}),
+    };
+  });
+}
+
+async function retryLegacyQwenDefaultsAfterPresetChange(): Promise<void> {
+  applyLegacyQwenDefaultsAfterPresetChange();
+  try {
+    // First land the preset selection and its generic Default values. The
+    // confirming GET can then recognize that exact legacy snapshot, while a
+    // newer edit in another tab makes the fingerprint fail safely.
+    await flushPendingChatSettings();
+    const state = useChatRuntimeStore.getState();
+    if (
+      !state.settingsHydrated ||
+      state.activePresetSource !== "builtin-default"
+    ) {
+      return;
+    }
+    const confirmed = await getChatSettings();
+    const migration = migrateLegacyQwenDefaults(
+      confirmed,
+      state.params.checkpoint,
+      state.reasoningAlwaysOn || state.reasoningEnabled,
+      true,
+      true,
+    );
+    if (migration.patch) {
+      await savePersistedChatSettingsPatch(migration.patch);
+    }
+  } catch {
+    warnSettingsPersistenceFailure();
+  }
+}
+
 export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   settingsHydrated: false,
   threadScopedSettingsPending: false,
@@ -3873,13 +3954,49 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     settingsHydrationPromise = (async () => {
       const hydrationVersions = getSettingsHydrationVersions();
       try {
-        const loaded = await loadChatSettingsWithLegacyImport();
-        const migration = migrateLegacyQwenDefaults(
-          loaded.settings,
-          get().params.checkpoint,
+        const { settings, fromServer } = await loadChatSettingsWithLegacyImport();
+        const checkpoint = get().params.checkpoint;
+        const storedReasoning = settings.reasoningEnabled;
+        const thinkingOn =
+          get().reasoningAlwaysOn ||
+          (storedReasoning !== undefined &&
+          scalarSettingMutationVersions.reasoningEnabled ===
+            hydrationVersions.scalarSettings.reasoningEnabled
+            ? storedReasoning
+            : get().reasoningEnabled);
+        // A model loaded while the settings GET was in flight replaced the model
+        // whose global fallback was saved. Only the model already resident at
+        // startup can establish ownership of a global-only legacy snapshot.
+        const globalBelongsToActiveCheckpoint =
+          modelLoadedBeforeHydration !== checkpoint &&
+          modelLeftBeforeHydration === null;
+        let migration = migrateLegacyQwenDefaults(
+          settings,
+          checkpoint,
+          thinkingOn,
+          globalBelongsToActiveCheckpoint,
         );
-        const { settings } = migration;
-        const { fromServer } = loaded;
+        if (fromServer && migration.patch) {
+          try {
+            // Re-read immediately before the write. The migration patch is
+            // derived from this confirmation, not from the earlier hydration
+            // response, so a newer edit from another tab is left untouched.
+            const confirmed = await getChatSettings();
+            migration = migrateLegacyQwenDefaults(
+              confirmed,
+              checkpoint,
+              thinkingOn,
+              globalBelongsToActiveCheckpoint,
+            );
+            if (migration.patch) {
+              await savePersistedChatSettingsPatch(migration.patch);
+            }
+          } catch {
+            // Migration persistence is best effort. Hydrate the already loaded
+            // settings so a transient second request cannot strand the UI.
+          }
+        }
+        const hydratedSettings = migration.settings;
         let applied = false;
         set((state) => {
           if (state.settingsHydrated) {
@@ -3889,23 +4006,26 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           const nextState: Partial<ChatRuntimeStore> = {
             settingsHydrated: true,
             ...getHydratedPresetState(
-              settings,
+              hydratedSettings,
               state,
               hydrationVersions.presets,
             ),
-            ...getHydratedSettingsState(settings, state, hydrationVersions),
+            ...getHydratedSettingsState(
+              hydratedSettings,
+              state,
+              hydrationVersions,
+            ),
           };
           return nextState;
         });
         if (applied) {
-          if (migration.patch) saveSettingsPatch(migration.patch);
-          cacheHydratedSettings(settings, hydrationVersions);
+          cacheHydratedSettings(hydratedSettings, hydrationVersions);
           mirroredSettingsHydrated = true;
           // Only an authoritative read says a mirrored field is unset on the
           // server. A GET that fell back to legacy storage knows nothing about
           // it, and backfilling then pushes this browser's stale values over
           // whatever another browser wrote.
-          if (fromServer) backfillMirroredSettings(settings);
+          if (fromServer) backfillMirroredSettings(hydratedSettings);
           // After the backfill, so a startup edit wins over the stored value.
           flushPreHydrationSettings();
           // The previous session's tab-close writes, for the rows that did not exist
@@ -4068,12 +4188,20 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       saveSettingsPatch({ activePreset });
       return { activePreset };
     }),
-  setActivePresetSource: (activePresetSource) =>
-    set(() => {
+  setActivePresetSource: (activePresetSource) => {
+    let returnedToBuiltInDefault = false;
+    set((state) => {
+      returnedToBuiltInDefault =
+        activePresetSource === "builtin-default" &&
+        state.activePresetSource !== "builtin-default";
       activePresetSourceMutationVersion += 1;
       saveSettingsPatch({ activePresetSource });
       return { activePresetSource };
-    }),
+    });
+    if (returnedToBuiltInDefault) {
+      void retryLegacyQwenDefaultsAfterPresetChange();
+    }
+  },
   setModels: (models) => set({ models }),
   setLoras: (loras) => set({ loras }),
   setThreadRunning: (threadId, running, options) =>

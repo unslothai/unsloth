@@ -6,6 +6,8 @@
 
 export const settingsHttp = {
   settings: {} as Record<string, unknown>,
+  /** Optional one-response-per-GET sequence for stale-read race tests. */
+  getResponses: [] as Record<string, unknown>[],
   puts: [] as Record<string, unknown>[],
   /** Resolve to let a held GET complete. */
   release: null as (() => void) | null,
@@ -21,14 +23,19 @@ export async function authFetch(
   _url: string,
   init?: { method?: string; body?: string },
 ): Promise<Response> {
+  let responseSettings = settingsHttp.settings;
   if (init?.method === "PUT") {
     settingsHttp.puts.push(JSON.parse(init.body ?? "{}"));
   } else if (settingsHttp.gate) {
     await settingsHttp.gate;
   }
+  if (init?.method !== "PUT" && settingsHttp.getResponses.length > 0) {
+    responseSettings =
+      settingsHttp.getResponses.shift() ?? settingsHttp.settings;
+  }
   return {
     ok: true,
     status: 200,
-    json: async () => ({ settings: settingsHttp.settings }),
+    json: async () => ({ settings: responseSettings }),
   } as Response;
 }

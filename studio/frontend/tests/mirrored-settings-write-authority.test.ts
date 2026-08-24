@@ -93,7 +93,7 @@ test("hydration backfills only from an authoritative read", () => {
   );
   assert.match(
     hydrate,
-    /if \(fromServer\) backfillMirroredSettings\(settings\);/,
+    /if \(fromServer\) backfillMirroredSettings\(hydratedSettings\);/,
   );
   // An ungated call is the bug: a failed GET would push this browser's stale values.
   assert.doesNotMatch(hydrate, /\n\s*backfillMirroredSettings\(settings\);/);
