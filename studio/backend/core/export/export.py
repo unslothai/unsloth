@@ -37,6 +37,7 @@ from utils.paths import (
     resolve_output_dir,
 )
 from core.inference import get_inference_backend
+from utils.paths.path_utils import drop_appledouble_metadata
 
 # GPU/PyTorch-only imports, skipped on MLX and --no-torch installs so the module stays importable.
 torch = None
@@ -1061,6 +1062,7 @@ class ExportBackend:
         repo_id: Optional[str] = None,
         hf_token: Optional[str] = None,
         imatrix_file = None,
+        private: bool = False,
     ) -> Tuple[bool, str, Optional[str]]:
         """
         Export model in GGUF format.
@@ -1073,6 +1075,8 @@ class ExportBackend:
             push_to_hub: Whether to push to Hugging Face Hub
             repo_id: Hub repository ID
             hf_token: Hugging Face token
+            imatrix_file: Optional importance matrix file path or boolean
+            private: Whether to make the Hub repository private
 
         Returns:
             Tuple of (success: bool, message: str, output_path: Optional[str])
@@ -1221,10 +1225,11 @@ class ExportBackend:
                         shutil.rmtree(model_tmp_root, ignore_errors = True)
 
                 # iterdir, not glob.glob: glob hides dot-leading names, so an empty
-                # model stem's ".Q4_K_M.gguf" got reported as "(none)".
+                # model stem's ".Q4_K_M.gguf" got reported as "(none)". This list is the
+                # success gate, so a leftover companion would report a run that wrote nothing.
                 final_ggufs = sorted(
                     str(p)
-                    for p in Path(abs_save_dir).iterdir()
+                    for p in drop_appledouble_metadata(list(Path(abs_save_dir).iterdir()))
                     if p.is_file() and p.name.lower().endswith(".gguf")
                 )
                 logger.info(
@@ -1263,6 +1268,7 @@ class ExportBackend:
                     self.current_tokenizer,
                     quantization_method = quant_method,
                     token = hf_token,
+                    private = private,
                     **imatrix_kw,
                 )
                 logger.info(f"GGUF model pushed successfully to {repo_id}")
@@ -1373,7 +1379,7 @@ class ExportBackend:
                     # iterdir, not glob.glob: glob hides dot-leading names.
                     final_ggufs = sorted(
                         str(p)
-                        for p in Path(save_directory).iterdir()
+                        for p in drop_appledouble_metadata(list(Path(save_directory).iterdir()))
                         if p.is_file() and p.name.lower().endswith(".gguf")
                     )
                     logger.info(

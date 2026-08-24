@@ -56,6 +56,7 @@ from hub.utils.state_dir import (
     variant_filename_prefix,
     variant_key_fragments,
 )
+from utils.paths.path_utils import drop_appledouble_metadata
 
 logger = get_logger(__name__)
 
@@ -870,7 +871,9 @@ def expected_files_from_snapshot_dir(snapshot_dir: Path) -> list[ExpectedFile]:
     """
     out: list[ExpectedFile] = []
     try:
-        entries = sorted(snapshot_dir.rglob("*"))
+        # Baking a companion into the completion contract makes the download read as partial
+        # forever once macOS cleans it up.
+        entries = drop_appledouble_metadata(sorted(snapshot_dir.rglob("*")))
     except OSError:
         return out
     for path in entries:

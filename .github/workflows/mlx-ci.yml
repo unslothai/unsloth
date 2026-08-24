@@ -92,6 +92,7 @@ on:
       # change would burn a slot from the 5-job account-wide macOS cap to run
       # nothing related. studio-backend-ci.yml covers both on ubuntu-latest and
       # already triggers on them.
+      - 'studio/backend/tests/test_mlx_inference_backend.py'
       - 'tests/studio/test_mlx_training_worker_behaviors.py'
       - 'tests/studio/run_real_mlx_smoke.py'
       - 'tests/studio/mac_capability_verdict_smoke.py'
@@ -111,6 +112,7 @@ on:
       - 'studio/backend/core/inference/mlx_inference.py'
       - 'studio/backend/main.py'
       - 'studio/backend/utils/mlx_repair.py'
+      - 'studio/backend/tests/test_mlx_inference_backend.py'
       - 'tests/studio/test_mlx_training_worker_behaviors.py'
       - 'tests/studio/run_real_mlx_smoke.py'
       - 'tests/studio/mac_capability_verdict_smoke.py'
@@ -174,7 +176,7 @@ jobs:
       # runners. Keep this job in audit while its egress destinations are
       # observed, then graduate it to a reviewed block-mode allowlist.
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
         with:
           egress-policy: audit
 
@@ -321,6 +323,16 @@ jobs:
         run: |
           python -m pytest -v --tb=short \
             tests/studio/test_mlx_training_worker_behaviors.py
+
+      # The inference backend's numerical tests importorskip mlx, so they skip on
+      # studio-backend-ci.yml's ubuntu runner and only ever execute here. Run from
+      # studio/backend: its conftest puts that directory on sys.path.
+      - name: MLX inference backend tests
+        working-directory: studio/backend
+        env:
+          UNSLOTH_COMPILE_DISABLE: '1'
+        run: |
+          python -m pytest -v --tb=short tests/test_mlx_inference_backend.py
 
       # Real MLX training + inference smoke test. Trains
       # unsloth/gemma-3-270m-it for 7 deterministic LoRA steps
