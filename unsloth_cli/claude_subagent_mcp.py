@@ -24,6 +24,7 @@ from unsloth_cli.commands.start import (
     _claude_flags,
     _claude_local_env,
     _prefer_windows_cmd_sibling,
+    _resolved_launch_command,
     _wsl_shim_env,
 )
 
@@ -209,8 +210,10 @@ def run_local_agent(
         popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     else:
         popen_kwargs["start_new_session"] = True
+    # --append-system-prompt and the task both span lines, and cmd.exe splits
+    # CR/LF inside `%*`, so a rescued .cmd goes through the npm parser.
     process = subprocess.Popen(
-        [executable, *command[1:]],
+        _resolved_launch_command(executable, command[1:], child_env),
         **popen_kwargs,
     )
     deadline = _timeout_seconds()

@@ -453,3 +453,43 @@ def test_timeout_can_be_disabled(monkeypatch):
         assert bridge._timeout_seconds() == bridge._DEFAULT_TIMEOUT_SECONDS
     monkeypatch.delenv("UNSLOTH_CLAUDE_SUBAGENT_TIMEOUT")
     assert bridge._timeout_seconds() == bridge._DEFAULT_TIMEOUT_SECONDS
+
+
+def test_local_child_is_spawned_through_the_shim_resolver(monkeypatch, tmp_path):
+    # --append-system-prompt and the task both span lines, and cmd.exe splits
+    # CR/LF inside `%*`, so a Windows .cmd must reach the npm parser rather than
+    # Popen directly (#9167). The parser itself is covered in test_start.py.
+    _stub_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(bridge.shutil, "which", lambda _: r"C:\\nodejs\\claude.cmd")
+    captured = {}
+
+    def resolver(executable, arguments, environment = None):
+        captured["resolver"] = (executable, arguments, environment)
+        return ["C:\\nodejs\\node.exe", "cli.js", *arguments]
+
+    class Process:
+        pid = 1234
+        returncode = 0
+
+        def communicate(self, timeout):
+            return json.dumps({"is_error": False, "result": "LOCAL_OK"}), ""
+
+        def poll(self):
+            return self.returncode
+
+    def popen(command, **kwargs):
+        captured["command"] = command
+        return Process()
+
+    monkeypatch.setattr(bridge, "_resolved_launch_command", resolver)
+    monkeypatch.setattr(bridge.subprocess, "Popen", popen)
+    assert bridge.run_local_agent("multi\nline\ntask") == "LOCAL_OK"
+
+    executable, arguments, environment = captured["resolver"]
+    assert executable == r"C:\\nodejs\\claude.cmd"
+    assert arguments[0] == "--model"
+    assert any("multi\nline\ntask" in argument for argument in arguments)
+    assert environment is not None
+    # Popen spawns the resolver's argv, not the .cmd.
+    assert captured["command"][0] == "C:\\nodejs\\node.exe"
+    assert any("multi\nline\ntask" in part for part in captured["command"])

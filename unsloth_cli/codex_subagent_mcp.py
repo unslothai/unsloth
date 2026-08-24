@@ -26,6 +26,7 @@ from unsloth_cli.commands.start import (
     _SUBAGENT_INSTRUCTIONS,
     _merge_wslenv,
     _prefer_windows_cmd_sibling,
+    _resolved_launch_command,
     _wsl_shim_env,
 )
 
@@ -135,7 +136,10 @@ def run_local_agent(task: str, cancel_event: threading.Event | None = None) -> s
         popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     else:
         popen_kwargs["start_new_session"] = True
-    process = subprocess.Popen([executable, *command[1:]], **popen_kwargs)
+    # The prompt always spans lines, and cmd.exe splits CR/LF inside `%*`, so a
+    # rescued .cmd has to go through the npm parser instead of being spawned raw.
+    launch_command = _resolved_launch_command(executable, command[1:], child_env)
+    process = subprocess.Popen(launch_command, **popen_kwargs)
     try:
         while True:
             try:
