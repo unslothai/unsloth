@@ -33,3 +33,22 @@ export function nextProgress<T extends { step: number }>(
     ? previous
     : incoming;
 }
+
+/** Whether the held frame has finished its handoff and must be dropped.
+ *
+ * The frame belongs to the run that produced it. Holding it past that run leaves it able to
+ * cover an unrelated gallery image whose blob has not loaded -- an eviction from the blob
+ * budget, or a page of results still streaming -- which shows the previous run's preview
+ * where a different image belongs. */
+export function releaseHeldPreview(input: {
+  held: string | null;
+  generating: boolean;
+  finishedLoaded: boolean;
+  selectionMatchesRun: boolean;
+}): boolean {
+  const { held, generating, finishedLoaded, selectionMatchesRun } = input;
+  if (held === null || generating) {
+    return false;
+  }
+  return finishedLoaded || !selectionMatchesRun;
+}

@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import {
   nextProgress,
   previewFrame,
+  releaseHeldPreview,
 } from "../src/features/images/lib/generation-preview.ts";
 
 const FRAME_A = "data:image/jpeg;base64,AAAA";
@@ -193,4 +194,118 @@ test("every progress poll that drives the bar also drives the preview", () => {
       "a poll drives the progress bar but hands the viewer no preview",
     );
   }
+});
+
+// The frame is held past the denoise so the handoff to the finished image never blanks. Holding
+// it any longer is its own bug: the gallery blob cache has a byte budget and evicts, and a newly
+// loaded page of results streams its blobs in, so "selected but not loaded yet" is an ordinary
+// state long after a run. Reaching it with a frame still held painted the previous run's preview
+// over whichever image the user had just clicked.
+
+test("the frame is released once the run's own image is up", () => {
+  assert.equal(
+    releaseHeldPreview({
+      held: FRAME_B,
+      generating: false,
+      finishedLoaded: true,
+      selectionMatchesRun: true,
+    }),
+    true,
+  );
+});
+
+test("the frame is released when the user picks a different image", () => {
+  assert.equal(
+    releaseHeldPreview({
+      held: FRAME_B,
+      generating: false,
+      finishedLoaded: false,
+      selectionMatchesRun: false,
+    }),
+    true,
+  );
+});
+
+test("the handoff itself never releases the frame", () => {
+  // Denoise done, record persisting, blob not in yet: exactly what the hold exists for.
+  assert.equal(
+    releaseHeldPreview({
+      held: FRAME_B,
+      generating: false,
+      finishedLoaded: false,
+      selectionMatchesRun: true,
+    }),
+    false,
+  );
+  // And nothing is released mid-denoise.
+  assert.equal(
+    releaseHeldPreview({
+      held: FRAME_B,
+      generating: true,
+      finishedLoaded: false,
+      selectionMatchesRun: true,
+    }),
+    false,
+  );
+});
+
+test("there is nothing to release when no frame is held", () => {
+  assert.equal(
+    releaseHeldPreview({
+      held: null,
+      generating: false,
+      finishedLoaded: false,
+      selectionMatchesRun: false,
+    }),
+    false,
+  );
+});
+
+test("a released frame cannot cover an unrelated image", () => {
+  // Replays the reported sequence: a run finishes and hands off, then the user clicks a gallery
+  // image whose blob was evicted. Without the release the viewer showed FRAME_B for that image.
+  let held: string | null = FRAME_B;
+  const step = (state: {
+    generating: boolean;
+    finishedLoaded: boolean;
+    selectionMatchesRun: boolean;
+  }) => {
+    if (releaseHeldPreview({ held, ...state })) held = null;
+    return previewFrame({
+      held,
+      generating: state.generating,
+      hasSelection: true,
+      finishedLoaded: state.finishedLoaded,
+    });
+  };
+  // The run's image lands and takes over.
+  assert.equal(
+    step({ generating: false, finishedLoaded: true, selectionMatchesRun: true }),
+    null,
+  );
+  // A different image is selected before its blob arrives: no stale frame, just the spinner.
+  assert.equal(
+    step({ generating: false, finishedLoaded: false, selectionMatchesRun: false }),
+    null,
+  );
+  assert.equal(held, null);
+});
+
+test("the page releases the held frame rather than leaving it set", () => {
+  const page = readFileSync(
+    fileURLToPath(
+      new URL("../src/features/images/images-page.tsx", import.meta.url),
+    ),
+    "utf8",
+  );
+  assert.match(
+    page,
+    /releaseHeldPreview\(/,
+    "the page holds a preview but never releases it",
+  );
+  assert.match(
+    page,
+    /previewOwner\.current/,
+    "the release needs the run's image to tell a later pick apart",
+  );
 });

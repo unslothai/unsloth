@@ -164,7 +164,7 @@ import {
   shouldContinueGenerating,
   shouldReportGenerateError,
 } from "./lib/generation-stop";
-import { nextProgress, previewFrame } from "./lib/generation-preview";
+import { nextProgress, previewFrame, releaseHeldPreview } from "./lib/generation-preview";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useStagedDownload } from "@/features/hub/download-manager";
 import { DiffusionTrainPanel } from "./train/diffusion-train-panel";
@@ -1309,6 +1309,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // Held past the denoise: progress reports no preview while the record persists, and the final
   // blob is still loading after that, so clearing on either would blank the viewer mid-handoff.
   const [heldPreview, setHeldPreview] = useState<string | null>(null);
+  // The image the held frame hands off to: tracked while the run owns the selection, so it
+  // settles on the record the run produced and any later pick reads as a different image.
+  const previewOwner = useRef<string | null>(null);
   const genPollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   // visibilitychange handler active while a generation poll runs: background tabs clamp setInterval, so returning fires one immediate poll.
   const genVisibilityListener = useRef<(() => void) | null>(null);
@@ -1637,6 +1640,24 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     hasSelection: selected !== null,
     finishedLoaded: Boolean(selectedSrc),
   });
+
+  // Drop the frame once its run has handed off, so a later cache miss cannot flash it back.
+  useEffect(() => {
+    const generating = busy === "generating";
+    if (generating) {
+      previewOwner.current = selected?.id ?? null;
+      return;
+    }
+    if (
+      releaseHeldPreview({
+        held: heldPreview,
+        generating,
+        finishedLoaded: Boolean(selectedSrc),
+        selectionMatchesRun: (selected?.id ?? null) === previewOwner.current,
+      })
+    )
+      setHeldPreview(null);
+  }, [busy, heldPreview, selected, selectedSrc]);
 
   // Fetch (once) the object URL for a record's PNG; cached across remounts.
   const ensureSrc = useCallback(async (image: GalleryImage) => {
