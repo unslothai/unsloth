@@ -459,7 +459,12 @@ class OutDirLock:
             pass
 
     def release(self) -> None:
-        """Drop the lock. IDEMPOTENT, because both `run()` and `Recorder.close` release it.
+        """Drop the lock. IDEMPOTENT, so a second call is a no-op rather than a double free.
+
+        RELEASED BY WHOEVER TOOK IT. `run()` takes the directory and releases it in its outer
+        `finally`, after the report has been rendered; a `Recorder` that ADOPTED that lock does
+        not release it in `close`, because `close` happens while `run()` still has the payload to
+        read back. See `Recorder.close`.
 
         RELEASED, NOT DELETED. Dropping the lock is what frees the directory; unlinking the file
         as well would let a launcher that has already opened the path end up holding a lock on an
@@ -546,6 +551,13 @@ class OutDirLock:
         headroom on a path that is about to exit anyway. Two-core CI is where this was observed --
         the same test passes on an unloaded machine, which is what made it look flaky rather than
         like a hole in the message.
+
+        DO NOT SIMPLIFY THE LOOP BELOW TO `if got is not None`. That is the version this was
+        written as twice, independently, by two people who each then had to fix it the same way --
+        which is the evidence that the wrong shape is the intuitive one and is not visible from the
+        call site. Waiting only for the marker to become NON-EMPTY stops on the retained record
+        described below and names a run that finished hours ago, so the liveness test is the point
+        of the wait rather than a refinement of it.
         """
         deadline = time.monotonic() + budget_s
         while True:
@@ -653,6 +665,13 @@ class Recorder:
         # run it is about to be refused in favour of. See `OutDirLock`. A `Recorder` built without
         # one -- the tests, and any caller that only wants a payload -- still takes its own, so the
         # guard cannot be switched off by forgetting to pass it.
+        #
+        # WHO OWNS THE LOCK IS RECORDED HERE, because it decides who may let go of it. A lock this
+        # `Recorder` took is this `Recorder`'s to release when it closes. A lock ADOPTED from the
+        # caller outlives the recording -- `run()` closes the recorder and then reads the payload
+        # back to render `ab.md` -- so releasing it in `close` would free the directory for the
+        # length of the report. See `close`.
+        self._owns_lock = lock is None
         if lock is None:
             lock = OutDirLock.take(self.path.parent, session_id)
         else:
@@ -732,10 +751,23 @@ class Recorder:
             self._fh.close()
         except OSError:
             pass
-        # RELEASED, NOT DELETED, and the release lives on the lock itself. `run()` releases the
-        # same object in its own `finally`, so both paths are covered and neither double-frees.
+        # RELEASED, NOT DELETED, and ONLY IF THIS RECORDER TOOK THE LOCK ITSELF.
+        #
+        # AN ADOPTED LOCK IS NOT THIS OBJECT'S TO DROP. `run()` takes the output directory in its
+        # first millisecond and hands it here, then closes the recorder in the `finally` under the
+        # cells and goes on to READ THE PAYLOAD BACK -- `_render_ab` and `_summarise` both open
+        # `payload.jsonl` after that `finally` and before `run()`'s own outer one. Releasing the
+        # adopted lock here freed the directory for exactly that window, and a second invocation
+        # arriving in it was admitted: its `prepare_payload` renames the finished run's
+        # `payload.jsonl` to `payload-<stamp>.jsonl` before it clones anything, so the reporting
+        # step either fails with `FileNotFoundError` on a run whose cells all completed, or -- if
+        # the contender has got as far as opening a payload of its own -- reads THAT file and
+        # writes an `ab.md` describing another run's rows while still exiting 0.
+        #
+        # A `Recorder` that took its own lock -- the tests, and any caller that only wants a
+        # payload -- has nobody else to release it, so it still does so here.
         lock = getattr(self, "_lock", None)
-        if lock is not None:
+        if lock is not None and getattr(self, "_owns_lock", True):
             lock.release()
 
 

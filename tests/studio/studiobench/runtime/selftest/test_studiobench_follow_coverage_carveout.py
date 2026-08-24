@@ -270,12 +270,21 @@ def _sampled(
     pinned,
     coverage,
     fell_behind = False,
+    reattachments = 2,
 ) -> dict:
+    """What `scene/dom.js::read()` returns. `reattachments` defaults to the film's own two.
+
+    It is not decoration: the waiver's premise is that the detachment was the SCHEDULE's, and the
+    sampler's proof of that is the arm coming back. A cell with 0 of them was detached for the rest
+    of the film because the BUILD would not re-pin.
+    """
+
     return {
         "follow_attempted": True,
         "pinned_fraction": pinned,
         "attached_fraction_of_stream": coverage,
         "ever_fell_behind": fell_behind,
+        "reattachments": reattachments,
     }
 
 
@@ -301,6 +310,35 @@ def test_writer_waives_only_a_lone_coverage_shortfall() -> None:
     # nor an absent pinned reading while the sampler was present
     _, rec = follow_verdict(_sampled(None, 0.20))
     assert rec["stream_coverage_unmeasured"] is False
+
+
+def test_an_arm_that_never_reattached_is_not_waived(tmp_path) -> None:
+    """The half of the shortfall that IS the build, and the shape it wears.
+
+    `scene/dom.js` clears `detached` only when a run that began after the harness's gesture is
+    observed at the bottom, so an arm that stops re-pinning on a new turn stays detached for the
+    rest of the film. The detached branch returns before the pinned and fell-behind accounting, so
+    the opening stream's perfect `pinned_fraction` and `ever_fell_behind: False` survive while
+    coverage collapses -- the exact shape of a lone coverage shortfall, produced by the one failure
+    the gate exists to catch. Waived, the cell keeps its artificially cheap timings (an unmounted
+    reply costs nothing to paint) and is compared against a healthy partner.
+    """
+
+    _, rec = follow_verdict(_sampled(1.0, 0.10, reattachments = 0))
+    assert rec["stream_coverage_unmeasured"] is False
+
+    detail = _sampled(1.0, 0.10, reattachments = 0)
+    detail.update(rec)
+    dropped, refused = _refuses(tmp_path, detail)
+    assert dropped, "a build that never came back must still void its cell"
+    assert refused, "a build that never came back must still refuse its pair"
+
+
+def test_the_schedules_own_shortfall_is_still_waived(tmp_path) -> None:
+    """The control: same coverage story, but the arm DID come back, so 0.481 is the film."""
+
+    _, rec = follow_verdict(_sampled(1.0, OBSERVED_COVERAGE, reattachments = 2))
+    assert rec["stream_coverage_unmeasured"] is True
 
 
 def test_writer_records_the_coverage_as_a_number_either_way() -> None:

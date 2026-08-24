@@ -265,6 +265,85 @@ def test_the_probe_source_is_the_first_thing_in_its_script():
     )
 
 
+def _seed(tmp_path: Path, text: str = "old report") -> Path:
+    for name in ("summary.md", "ab.md"):
+        (tmp_path / name).write_text(text, encoding = "utf-8")
+    return tmp_path
+
+
+def test_a_probe_run_invalidates_the_reports_it_inherited(tmp_path: Path):
+    """The clean-then-probed direction: the payload beside these is no longer scorable."""
+    from studiobench.__main__ import invalidate_stale_reports
+
+    out = _seed(tmp_path)
+    rewritten = invalidate_stale_reports(
+        out, archived = None, extra_init = "/probes/x.js", log = lambda *_: None
+    )
+
+    assert {p.name for p in rewritten} == {"summary.md", "ab.md"}
+    for name in ("summary.md", "ab.md"):
+        body = (out / name).read_text(encoding = "utf-8")
+        assert "not scorable" in body
+        assert "/probes/x.js" in body
+
+
+def test_a_clean_run_invalidates_the_probe_refusal_it_inherited(tmp_path: Path):
+    """The probed-then-clean direction, which keying only on the init script left open.
+
+    A probe run replaces both reports with text saying the payload beside them is not scorable.
+    The next clean run into the same directory archives that payload and records a scorable one,
+    and writes neither report of its own -- `summary.md` only under `--report`, `ab.md` only under
+    `--ab` -- so the refusal survives and is read as a finding about a run it never saw.
+    """
+    from studiobench.__main__ import invalidate_stale_reports
+
+    out = _seed(tmp_path, "NO SUMMARY: ... is not scorable ...")
+    archived = out / "payload-20260101-000000.jsonl"
+    rewritten = invalidate_stale_reports(
+        out, archived = archived, extra_init = None, log = lambda *_: None
+    )
+
+    assert {p.name for p in rewritten} == {"summary.md", "ab.md"}
+    for name in ("summary.md", "ab.md"):
+        body = (out / name).read_text(encoding = "utf-8")
+        assert "payload-20260101-000000.jsonl" in body
+        # The stale claim is GONE, not merely accompanied by a correction.
+        assert "is not scorable" not in body
+
+
+def test_a_resume_that_changed_nothing_leaves_the_reports_alone(tmp_path: Path):
+    """The control. Nothing was archived and nothing is probed, so nothing is stale."""
+    from studiobench.__main__ import invalidate_stale_reports
+
+    out = _seed(tmp_path)
+    assert invalidate_stale_reports(out, archived = None, extra_init = None) == []
+    assert (out / "summary.md").read_text(encoding = "utf-8") == "old report"
+    assert (out / "ab.md").read_text(encoding = "utf-8") == "old report"
+
+
+def test_only_the_reports_that_exist_are_written(tmp_path: Path):
+    """A missing report stays missing: this replaces stale files, it does not manufacture them."""
+    from studiobench.__main__ import invalidate_stale_reports
+
+    (tmp_path / "summary.md").write_text("old report", encoding = "utf-8")
+    rewritten = invalidate_stale_reports(
+        tmp_path, archived = tmp_path / "p.jsonl", extra_init = None, log = lambda *_: None
+    )
+
+    assert [p.name for p in rewritten] == ["summary.md"]
+    assert not (tmp_path / "ab.md").exists()
+
+
+def test_the_run_passes_the_archive_result_to_the_invalidation(main_src: str):
+    """The wiring the behavioural tests above cannot see: `run` must capture what it archived."""
+
+    assert "archived = prepare_payload(" in main_src
+    assert (
+        "invalidate_stale_reports(paths.out, archived = archived, extra_init = extra_init)"
+        in main_src
+    )
+
+
 def test_a_refused_run_does_not_leave_a_stale_ab_table(main_src: str):
     """`--resume` reuses the output directory, so `ab.md` may already exist from a clean run."""
 

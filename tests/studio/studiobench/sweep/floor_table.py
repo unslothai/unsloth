@@ -50,6 +50,7 @@ from tests.studio.studiobench.scoring.from_payload import (  # noqa: E402
     _actions_for,
     _frame_measures,
     _stream_measures,
+    latest_attempt_rows,
     refuse_if_probed,
 )
 from tests.studio.studiobench.scoring import payload_rules  # noqa: E402
@@ -364,6 +365,34 @@ def cell_metrics(records: list[dict], session: str | None = None) -> dict[str, d
     # and a `gate` row carries no attempt of its own to supersede.
     gate_failures = failed_invalidating_gates(records)
 
+    # A SUPERSEDED ATTEMPT'S COMPLETION IS NOT THIS CELL'S READING, and the session scoping below
+    # cannot say so: it answers "which rows belong to this completed cell row", not "is this
+    # completed cell row still the cell". `ab.skippable_cells` re-runs an A/B pair WHOLE, so a
+    # resume with any work left re-attempts cells that had already completed, and a retry that
+    # dies leaves the older completed row as the only one carrying a full set of timings.
+    #
+    # Left raw, that row is admitted -- and the guard above it disagrees about which attempt is
+    # being scored. `failed_invalidating_gates` names the winner from the LAST cell row, so a
+    # retry that crashed and wrote its `completed=False` row supersedes the dead attempt's FAILED
+    # gate while this loop keeps that same attempt's numbers. A cell refused for losing its
+    # thread's middle before the resume was published after it, pairing its cheaper timings
+    # against a clean base arm and printing as `faster`: the 28.2% failure described above,
+    # arriving through the resume. Same rows, same rule, one lens -- as `runtime/ab.readings_by_arm`
+    # and `sweep/ui_parity.collect` already read them.
+    #
+    # THE REDUCTION THAT DOES THIS NOW SITS AT THE TOP OF THE FUNCTION, and it is CONDITIONAL --
+    # skipped when the caller named a `session`. A second unconditional call here would have been
+    # a no-op on the default path and a silent regression on that one: it would supersede inside
+    # the escape hatch, empty the older of two concurrent sessions, and take away the very thing
+    # this module's collision refusal tells the reader to reach for. So the guard above and this
+    # loop still read one lens, and which lens that is now depends on the argument, deliberately.
+    #
+    # Left open on purpose: with `session=` named, `failed_invalidating_gates` still resolves its
+    # winner across every session in the file, so a caller who names the OLDER of two sessions can
+    # have its gate discarded by the newer one while this loop admits its cells. Scoping the gate
+    # search to the named session is the fix, and it is a change to the escape hatch's semantics
+    # rather than to this merge.
+
     out: dict[str, dict[str, float]] = {}
     if session is not None:
         records = [r for r in records if r.get("session_id") in (session, None)]
@@ -419,9 +448,13 @@ def cell_sessions(records: list[dict]) -> dict[str, str]:
     Same last-writer-wins rule as `cell_metrics`, so the session reported here is the session whose
     numbers that function returned. Anything else would pair a reading against a session it did not
     come from, which is the thing the caller is trying to stop.
+
+    THROUGH `latest_attempt_rows`, because `cell_metrics` is. A superseded attempt it no longer
+    returns must not still be able to name a session here, or this answers about one attempt while
+    the numbers came from another -- the same lens split this pair of functions exists to close.
     """
     out: dict[str, str] = {}
-    for row in records:
+    for row in latest_attempt_rows(records):
         if row.get("row_type") == "cell" and row.get("completed"):
             out[row["cell_id"]] = str(row.get("session_id") or "")
     return out
@@ -647,12 +680,33 @@ def summarise(paths: list[Path]) -> dict[str, dict[str, float]]:
             # ratio from a clean zero base does not exist. `delta_pct` and `spread_pct` are then
             # percentage POINTS (or ms), which is why `render` marks the row.
             diffs = [t - b for b, t in rows]
+            # A TIE IS NOT A DISAGREEMENT, AND HERE THE TIE IS THE MODAL READING.
+            #
+            # The ratio branch below asks `all(r > 1) or all(r < 1)`, and that is sound there
+            # because a paired ratio of exactly 1.0 is vanishingly rare for a continuous timing.
+            # Reused verbatim on differences it stops being sound, because the tie value is 0.0
+            # and 0.0 is what a CLEAN reading of these metrics is: `stream_time_in_jank_pct` is
+            # exactly 0.0 on 765 of 1,438 scored cells, so a repetition where neither arm dropped
+            # a frame contributes a difference of exactly 0.0.
+            #
+            # A group of `[0.0, 12.0]` then failed both halves of the strict test and was reported
+            # as VOID (pairs disagree on sign), which is not what happened: nothing moved the other
+            # way, some repetitions were unchanged and the rest regressed together. Measured over
+            # the recorded payloads, that voided 34 of 250 pooled groups, 13.6%, and every one of
+            # the 34 came from a tie rather than from a real disagreement. Intermittent and
+            # load-dependent jank is exactly the shape that produces ties, so the predicate was
+            # discarding the regressions it was most needed for.
+            #
+            # Direction is therefore "no pair went the other way", with at least one that moved,
+            # so an all-zero group stays inconsistent rather than being scored as a finding.
+            nonzero = [d for d in diffs if d != 0.0]
             out[metric] = {
                 "n": len(rows),
                 "base": statistics.fmean(b for b, _ in rows),
                 "treat": statistics.fmean(t for _, t in rows),
                 "delta_pct": statistics.fmean(diffs),
-                "consistent": all(d > 0.0 for d in diffs) or all(d < 0.0 for d in diffs),
+                "consistent": bool(nonzero)
+                and (all(d >= 0.0 for d in diffs) or all(d <= 0.0 for d in diffs)),
                 "spread_pct": max(diffs) - min(diffs),
                 "difference": True,
             }

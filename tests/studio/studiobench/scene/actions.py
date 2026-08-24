@@ -897,7 +897,7 @@ def _own_turn_was_accepted(ctx: ActionContext, messages_before: Any) -> bool:
     """
     if _ev(ctx, "() => window.__sb.dom.composerText()") != OWN_TURN_TEXT:
         return True
-    after = _ev(ctx, "() => window.__sb.dom.messageCount()")
+    after = _ev(ctx, "() => window.__sb.dom.threadTotal()")
     return not (
         isinstance(messages_before, int) and isinstance(after, int) and after <= messages_before
     )
@@ -925,7 +925,7 @@ def _reclaim_pending_turn(
     DELETES ONLY WHAT IT ADDED. `STOP_CLEANUP_JS` removes the LAST assistant message, so running it
     when the send was refused or when the app never rendered the turn would take a seeded reply out
     of the thread and every count after this point would be wrong in the other direction. The
-    message count is read before Enter and again here, and the delete runs only if the thread grew.
+    thread total is read before Enter and again here, and the delete runs only if the thread grew.
     """
     if not _own_turn_was_accepted(ctx, messages_before):
         return not_run(f"{reason}, and the composer still held it, so nothing was sent")
@@ -949,7 +949,7 @@ def _reclaim_pending_turn(
             # The chunks already in flight, as on the measured path.
             ctx.page.wait_for_timeout(400)
 
-    messages_after = _ev(ctx, "() => window.__sb.dom.messageCount()")
+    messages_after = _ev(ctx, "() => window.__sb.dom.threadTotal()")
     grew = (
         isinstance(messages_before, int)
         and isinstance(messages_after, int)
@@ -1071,7 +1071,14 @@ def stop_generation(ctx: ActionContext) -> ActionResult:
 
     # READ BEFORE ENTER, because it is the only way to tell the turn this action added from the
     # thread it was handed. `_reclaim_pending_turn` deletes only if this number grew.
-    messages_before = _ev(ctx, "() => window.__sb.dom.messageCount()")
+    #
+    # threadTotal, not messageCount, for the reason STOP_CLEANUP_JS gives above and in the same
+    # direction: under a windowed mount the window refills as the thread grows, so a send that
+    # WORKED reports after == before and the reclaim path then decides there is nothing to remove.
+    # The turn it already sent is left in the thread with its stream still running, which is the
+    # one outcome this whole path exists to prevent, and it contaminates every later action window
+    # and the final census. Identical on the shipped build, where the two are the same number.
+    messages_before = _ev(ctx, "() => window.__sb.dom.threadTotal()")
     ctx.page.fill('textarea[aria-label="Message input"]', OWN_TURN_TEXT)
     ctx.page.wait_for_timeout(80)
     ctx.page.keyboard.press("Enter")

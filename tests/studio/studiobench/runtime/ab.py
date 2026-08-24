@@ -339,11 +339,22 @@ def unmeasured_planned_cells(
     """
     from ..scoring.from_payload import latest_attempt_rows
 
+    # THE SAME TWO FILTERS `readings_by_arm` APPLIES, because this function exists to notice the
+    # holes that one punches. It drops a cell for `completed is not True` AND for a failed
+    # invalidating gate; reading only the first left the second kind of hole invisible. A cell that
+    # completed but lost its thread's middle, or whose reply stopped being rendered, is removed
+    # from the ratios here and takes its healthy partner with it through the arm intersection in
+    # `compare_arms`, while this said the plan was whole -- so `ab.md` published a verdict over
+    # the rungs that survived instead of the VOID that is the point of the guard. That is the
+    # partial-plan selection bias, arriving by the gate road instead of the crash road.
+    failed = failed_invalidating_gates(records)
     complete: set = set()
     for row in latest_attempt_rows(records):
         if row.get("row_type") != "cell" or row.get("completed") is not True:
             continue
         if session_id is not None and row.get("session_id") not in (None, session_id):
+            continue
+        if str(row.get("cell_id")) in failed:
             continue
         complete.add(str(row.get("cell_id")))
     return [str(cell_id) for cell_id in planned if str(cell_id) not in complete]
