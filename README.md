@@ -91,8 +91,6 @@ Unsloth works on CPU, Apple, NVIDIA, AMD, Intel, multi GPU setups and supports 1
 
 [Unsloth Start](https://unsloth.ai/docs/integrations/unsloth-start) connects [Claude Code](https://unsloth.ai/docs/basics/claude-code), [Codex](https://unsloth.ai/docs/basics/codex) and other agents to local models with one command.
 
-Start Unsloth, load a model, open your project folder, then run:
-
 ```bash
 unsloth start claude --model unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_XL
 ```
