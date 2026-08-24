@@ -197,6 +197,14 @@ def main() -> int:
 
     from utils.hardware import hardware as hw
 
+    # IS_ROCM is False at import and is only set by detect_hardware(). Reading
+    # the gates without this reports every ROCm branch as inactive on a ROCm
+    # box, and the run then describes a path the machine never took.
+    try:
+        detected = str(hw.detect_hardware())
+    except Exception as e:  # noqa: BLE001
+        detected = f"error: {type(e).__name__}: {e}"
+
     report: dict = {
         "platform": platform.platform(),
         "python": sys.version.split()[0],
@@ -204,6 +212,7 @@ def main() -> int:
         "hip": getattr(torch.version, "hip", None),
         "cuda": getattr(torch.version, "cuda", None),
         "hardware_module": hw.__file__,
+        "detect_hardware": detected,
     }
 
     if not torch.cuda.is_available():
@@ -355,6 +364,13 @@ def main() -> int:
     print(f"amd-smi spawns, when refused  {len(spawns_refused)}   (want 0)")
 
     problems = []
+    # A ROCm build whose ROCm gates read False means detection did not take, and
+    # every gate below describes a branch this machine never executed.
+    if getattr(torch.version, "hip", None) and not gates.get("IS_ROCM"):
+        problems.append(
+            "torch is a ROCm build but hw.IS_ROCM is False, so the gate dump "
+            "describes the non-ROCm path: do not trust it"
+        )
     if during["observer_allocated_gb"] >= 0.5:
         problems.append("observer allocated memory itself, so this measures the wrong thing")
     if abs(old_drop) > 0.5:
