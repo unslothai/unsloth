@@ -267,9 +267,11 @@ jobs:
         # duplicate that was already in the file is printed and ignored while one
         # this PR introduced fails. Comparing added LINES instead would miss the
         # case where the new copy is inserted ABOVE the old one, since the finding
-        # is reported at the second, unchanged definition. There are 33 pre-existing
+        # is reported at the second, unchanged definition. There are 37 pre-existing
         # findings on main today; they are a separate cleanup, not a reason to leave
-        # the gate off.
+        # the gate off. Four of those are only visible once each control-flow branch is
+        # scanned on its own: a repeated `from unsloth import is_bfloat16_supported`
+        # inside one `if __name__ == "__main__":` block in four of the saving tests.
         if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}

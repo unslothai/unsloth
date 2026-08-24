@@ -30,11 +30,13 @@ these landed.
 
 Deliberately narrow, so a finding is always worth acting on:
 
-  - Only DIRECT children of a module or class body count. One definition per branch of an
-    if/else, or a fallback import in try/except, is the normal conditional idiom.
-  - @typing.overload and the accessor family @x.setter / @x.deleter / @x.getter are exempt:
-    those are several defs legitimately sharing one name. A bare @property is NOT, since it
-    is the FIRST binding of the name and two of them are ordinary merge damage.
+  - Branches are scanned INDEPENDENTLY of each other. One definition per branch of an
+    if/else, or a fallback import in try/except, is the normal conditional idiom and stays
+    clean; two copies inside ONE branch is the same merge damage as anywhere else.
+  - @typing.overload is exempt: any number of copies is legitimate. The accessor family is
+    exempt PER KIND -- one @x.setter, one @x.deleter, one @x.getter -- so a second accessor
+    of the same kind is still a finding. A bare @property is NOT exempt at all, since it is
+    the FIRST binding of the name and two of them are ordinary merge damage.
   - Assignments are ALL_CAPS only, and `X = frozenset(X)` style self-transforms are exempt.
     A lowercase module-level name being rebound is common enough to be noise.
   - Imports are keyed on the name they BIND, with one carve-out: an IMPLICIT binding takes
@@ -121,13 +123,24 @@ def _overload_names(tree) -> set:
     `try: from typing import overload / except ImportError: from typing_extensions import ...`
     is an ast.Try at module level. Function and class bodies are what get skipped.
     """
-    names: set = set(OVERLOAD_DECORATORS)
+    return _overload_names_in(tree.body, OVERLOAD_DECORATORS)
+
+
+def _overload_names_in(body, base) -> set:
+    """`base` plus every overload spelling bound directly by THIS body.
+
+    Called once for the module and again for each class body, because a class that does its own
+    `import typing as t` binds `t` in the class namespace, where its `@t.overload` methods resolve
+    it. Collecting only module-level aliases reported those valid overloads as duplicates, which
+    blocks CI on correct code.
+    """
+    names: set = set(base)
     modules = {"typing", "typing_extensions"}
 
-    def visit(body) -> None:
-        for node in body:
+    def visit(nested) -> None:
+        for node in nested:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                continue  # a binding in here is not the one a module-level decorator resolves
+                continue  # a binding in here belongs to a scope of its own, not to this one
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     if alias.name in modules and alias.asname:
@@ -141,25 +154,52 @@ def _overload_names(tree) -> set:
             for handler in getattr(node, "handlers", []) or []:
                 visit(handler.body)
 
-    visit(tree.body)
+    visit(body)
     return names
 
 
-def _is_exempt_def(node, overloads) -> bool:
-    """True for the decorator families that legitimately bind one name several times.
+def _branch_bodies(node):
+    """Each nested statement body of a control-flow node, to be scanned INDEPENDENTLY.
 
-    `@property` itself is NOT one of them. It is the FIRST binding of the name, so
-    exempting it hid two complete copies of a property in one class, which is the same
-    merge damage as any other duplicated def. What legitimately rebinds is the accessor
-    form, `@v.setter` / `@v.deleter` / `@v.getter`, and that stays exempt.
+    One definition per branch of an if/else, or a fallback import in try/except, is the normal
+    conditional idiom, so the branches are never compared with each other or with the body around
+    them. But two copies of one def inside ONE branch is the same merge damage as anywhere else,
+    and skipping the branch entirely meant never looking.
+
+    Functions and classes are excluded: a function body is a scope this gate does not scan, and a
+    class body is recursed into separately so it gets its own name prefix and its own aliases.
+    """
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return
+    for field in ("body", "orelse", "finalbody"):
+        nested = getattr(node, field, None)
+        if isinstance(nested, list) and nested:
+            yield nested
+    for handler in getattr(node, "handlers", []) or []:
+        if handler.body:
+            yield handler.body
+
+
+def _is_overload_def(node, overloads) -> bool:
+    """True for `@overload`, the one family where any number of copies is legitimate."""
+    return any(
+        _decorator_name(decorator) in overloads
+        for decorator in getattr(node, "decorator_list", [])
+    )
+
+
+def _accessor_kind(node) -> str:
+    """`setter` / `deleter` / `getter` for the accessor form, else "".
+
+    `@property` itself is NOT one of them. It is the FIRST binding of the name, so exempting it
+    hid two complete copies of a property in one class, which is the same merge damage as any
+    other duplicated def. What legitimately rebinds is `@v.setter` / `@v.deleter` / `@v.getter`.
     """
     for decorator in getattr(node, "decorator_list", []):
         name = _decorator_name(decorator)
-        if name in overloads:
-            return True
         if name.count(".") == 1 and name.split(".")[1] in PROPERTY_ATTRS:
-            return True
-    return False
+            return name.split(".")[1]
+    return ""
 
 
 def _constant_targets(target):
@@ -179,7 +219,17 @@ def _constant_targets(target):
 def _defined_names(node, overloads):
     """[(name, kind)] bound by a direct child of a module/class body."""
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-        return [] if _is_exempt_def(node, overloads) else [(node.name, "def")]
+        if _is_overload_def(node, overloads):
+            return []
+        # ONE ACCESSOR OF EACH KIND IS LEGITIMATE; A SECOND OF THE SAME KIND IS NOT. Discarding
+        # every accessor meant a getter followed by two copies of the same `@value.setter`
+        # scanned clean, with the later setter silently replacing the earlier one -- which is
+        # exactly the merge damage this gate is for. Keying on the KIND keeps the getter and the
+        # setter apart while making two setters collide.
+        kind = _accessor_kind(node)
+        if kind:
+            return [(f"{node.name}.{kind}", f"{kind} accessor")]
+        return [(node.name, "def")]
     if isinstance(node, ast.ClassDef):
         return [(node.name, "class")]
     # `X: int = 1` is an AnnAssign, not an Assign, and a typed module-level constant is
@@ -226,7 +276,15 @@ def _scope_duplicates(body, scope, out, overloads) -> None:
             else:
                 seen[name] = (node.lineno, kind)
         if isinstance(node, ast.ClassDef):
-            _scope_duplicates(node.body, f"{scope}{node.name}.", out, overloads)
+            # The class gets the module's aliases PLUS any it binds itself.
+            _scope_duplicates(
+                node.body,
+                f"{scope}{node.name}.",
+                out,
+                _overload_names_in(node.body, overloads),
+            )
+        for nested in _branch_bodies(node):
+            _scope_duplicates(nested, scope, out, overloads)
 
 
 def _import_duplicates(body, scope, out) -> None:
@@ -250,6 +308,11 @@ def _import_duplicates(body, scope, out) -> None:
             # twice in that scope exactly as they would at module level.
             if isinstance(node, ast.ClassDef):
                 _import_duplicates(node.body, f"{scope}{node.name}.", out)
+            # Each control-flow branch on its own: `try: import x / except: import x` is the
+            # fallback idiom and stays clean, while two of the same import INSIDE one branch is
+            # the ordinary duplicate this looks for and used to be skipped with the branch.
+            for nested in _branch_bodies(node):
+                _import_duplicates(nested, scope, out)
             continue
         for alias in node.names:
             if alias.name == "*":
@@ -517,6 +580,36 @@ _SELF_TEST_CASES = [
         "    from typing_extensions import overload as ov\n"
         "@ov\ndef f(x: int) -> int: ...\n@ov\ndef f(x: str) -> str: ...\ndef f(x):\n    return x\n",
     ),
+    # ONE accessor of each kind is legitimate; a SECOND of the same kind replaces the first.
+    (
+        1,
+        "class C:\n    @property\n    def v(self):\n        return 1\n"
+        "    @v.setter\n    def v(self, x):\n        pass\n"
+        "    @v.setter\n    def v(self, x):\n        pass\n",
+    ),
+    (
+        0,
+        "class C:\n    @property\n    def v(self):\n        return 1\n"
+        "    @v.setter\n    def v(self, x):\n        pass\n"
+        "    @v.deleter\n    def v(self):\n        pass\n",
+    ),
+    # A class binds its own names, so a class-local typing alias resolves its own decorators.
+    (
+        0,
+        "class C:\n    import typing as t\n"
+        "    @t.overload\n    def f(self, x: int): ...\n"
+        "    @t.overload\n    def f(self, x: str): ...\n    def f(self, x):\n        return x\n",
+    ),
+    # Each control-flow branch scanned on its own: duplicated INSIDE one branch is merge damage,
+    # one per branch is the conditional idiom.
+    (1, "import os\nif os.name:\n    def go():\n        return 1\n    def go():\n        return 2\n"),
+    (
+        0,
+        "import os\nif os.name:\n    def go():\n        return 1\nelse:\n"
+        "    def go():\n        return 2\n",
+    ),
+    (0, "try:\n    import json\nexcept ImportError:\n    import json\n"),
+    (1, "try:\n    import json\n    import json\nexcept ImportError:\n    pass\n"),
 ]
 
 
