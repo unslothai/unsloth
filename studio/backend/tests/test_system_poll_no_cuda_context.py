@@ -668,7 +668,6 @@ def test_amd_smi_is_refused_on_a_real_windows_host_without_a_hip_sdk():
     # The test above fakes the platform. This one runs the same predicate against
     # the real OS, PATH and environment, so the guard is pinned where it applies.
     from utils.hardware import amd
-
     if amd._hip_sdk_present() or os.environ.get("UNSLOTH_ENABLE_AMD_SMI"):
         pytest.skip("this host may legitimately run amd-smi un-elevated")
     assert amd._amd_smi_allowed() is False
