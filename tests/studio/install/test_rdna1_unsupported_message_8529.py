@@ -524,6 +524,93 @@ def _normalised(path: Path) -> str:
     return path.read_text(encoding = "utf-8").replace("\r\n", "\n")
 
 
+# ── Reading the README through the installer, not through a word list ────────
+#
+# The three README assertions below used to grep for the strings "Polaris", "RDNA 1"
+# and "gfx906". That pins one wording of prose that was never a contract: a rewrite
+# keeping every card but relabelling the generations failed, and adding a fifth
+# uncovered generation to the code passed. The helpers here let the assertions run the
+# README's own card names back through the classifier the installers use, so what is
+# asserted is coverage of the code's table, by identity.
+
+
+def _readme_sections(src: str) -> "list[tuple[str, str]]":
+    """(heading, body) per markdown heading, each body running to the next heading.
+
+    Section scope, not whole file: a caveat has to sit with the instruction it
+    qualifies, and a whole-file search lets one anywhere in the README answer for a
+    code block hundreds of lines away.
+    """
+    parts = re.split(r"(?m)^(#{1,6} .*)$", src)
+    return [(parts[i].strip(), parts[i + 1]) for i in range(1, len(parts) - 1, 2)]
+
+
+# The README writes card families as slash-joined runs ("RX 470/480/570/580/590").
+# Expand them back into the marketing names the probes report, so each one can be
+# classified rather than matched as a word.
+_README_RX_RUN = re.compile(r"RX\s*(\d{3,4}(?:\s*/\s*\d{3,4})*)")
+
+
+def _readme_gpu_names(text: str) -> "list[str]":
+    return [
+        f"AMD Radeon RX {_num}"
+        for _m in _README_RX_RUN.finditer(text)
+        for _num in re.split(r"\s*/\s*", _m.group(1))
+    ]
+
+
+def _readme_archs(text: str) -> "set[str]":
+    """The uncovered arches the cards named in `text` actually resolve to."""
+    return {
+        _arch
+        for _name in _readme_gpu_names(text)
+        if (_arch := stack_mod._unsupported_gfx_arch_from_gpu_name(_name))
+    }
+
+
+def _table_archs() -> "set[str]":
+    """Every arch the installer itself classifies as having no ROCm PyTorch wheels."""
+    return {_arch for _pat, _arch in stack_mod._UNSUPPORTED_GPU_NAME_ARCH_TABLE}
+
+
+def _fixture_archs() -> "set[str]":
+    return {_arch for _name, _arch in _RDNA1_NAMES + _POLARIS_NAMES}
+
+
+_CONSUMER_RX = re.compile(r"AMD Radeon RX \d", re.IGNORECASE)
+
+
+def _consumer_archs() -> "set[str]":
+    """The uncovered arches reachable from a consumer RX name.
+
+    The README names retail cards, so the professional-only rows (gfx1011 is Radeon
+    Pro V520 / Pro 5600M and nothing else) drop out on their own rather than by being
+    listed as exceptions here. Nothing is hand-maintained: add an RX board to the
+    fixtures for a new row and the README requirement grows with it.
+    """
+    return {_arch for _name, _arch in _RDNA1_NAMES + _POLARIS_NAMES if _CONSUMER_RX.match(_name)}
+
+
+def _carve_out_arch() -> str:
+    """The pre-RDNA 2 arch that KEEPS a ROCm PyTorch path, read off the module.
+
+    install_python_stack defines one legacy-index predicate and names it for the single
+    arch it exists for, so the needle changes when the code does. A rename raises here
+    instead of silently turning the README assertion into a no-op.
+    """
+    found = {
+        _m.group(1)
+        for _name in dir(stack_mod)
+        if (_m := re.fullmatch(r"_(gfx[0-9a-z]+)_needs_legacy_index", _name))
+    }
+    assert len(found) == 1, f"expected exactly one legacy-index arch helper, found {found}"
+    arch = found.pop()
+    assert (
+        arch not in _table_archs()
+    ), f"{arch} is in the uncovered table, so it is no longer a carve-out from it"
+    return arch
+
+
 class TestAdviceIsNotEmittedForRdna1:
     """Each installer's unsupported arm must come BEFORE its "arch unknown" arm,
     and must not repeat the advice that arm gives."""
@@ -668,9 +755,17 @@ class TestAdviceIsNotEmittedForRdna1:
 
     def test_readme_does_not_sweep_in_every_pre_rdna2_amd_gpu(self):
         """Vega 20 (Radeon VII / MI50, gfx906) is older than RDNA 2 and DOES have a
-        ROCm PyTorch path -- install.sh routes it to the rocm6.3 index. A blanket
+        ROCm PyTorch path -- install.sh routes it to the legacy index. A blanket
         "AMD GPUs older than RDNA 2" would send those users to Vulkan and CPU torch
-        for nothing."""
+        for nothing, and the README has to name the group precisely enough for the
+        carve-out to have something to cut.
+
+        Coverage is asserted by IDENTITY: the README's card names go back through
+        _unsupported_gfx_arch_from_gpu_name, the same lookup that words the installer
+        report, and the arches they reach are compared with the arches that lookup's
+        table defines. Renaming a generation in prose is therefore free; dropping one
+        is not, and adding a fifth row to the code raises the bar here on its own.
+        """
         src = _normalised(PACKAGE_ROOT / "README.md")
         # Any spelling of the cutoff, not one literal: "every AMD GPU older than RDNA 2"
         # slipped past an exact-string ban while contradicting the gfx906 carve-out.
@@ -679,12 +774,32 @@ class TestAdviceIsNotEmittedForRdna1:
             f"README: {blanket.group(0)!r} claims ROCm PyTorch covers nothing older "
             "than RDNA 2, which is wrong for gfx906"
         )
-        # The group must be named by its members, or the carve-out has nothing to cut.
-        for _member in ("Polaris", "RDNA 1"):
-            assert _member in src, f"README: never names {_member} as part of the unsupported group"
-        assert "gfx906" in src, "README: never carves Vega 20 out of the unsupported group"
-        # The carve-out has to be true of the installer, not just of the README.
-        assert "rocm6.3" in _normalised(_INSTALL_SH), "install.sh: no gfx906 ROCm index left"
+        # The fixtures stand in for the code table below, so they have to span it: a new
+        # row with no fixture would drop out of the requirement without anything failing.
+        assert _fixture_archs() == _table_archs(), (
+            f"the name fixtures in this file reach {sorted(_fixture_archs())} but the "
+            f"installer table defines {sorted(_table_archs())}; extend the fixtures "
+            f"before trusting the README coverage assertion below"
+        )
+        required = _consumer_archs()
+        assert required, "no uncovered arch is reachable from a consumer RX name"
+        covered = _readme_archs(src)
+        assert not required - covered, (
+            f"README: the installer classifies {sorted(required - covered)} as having no "
+            f"ROCm PyTorch wheels, and the README names no card from those generations "
+            f"(the cards it names reach {sorted(covered)}). Those users land on CPU "
+            f"torch with nowhere to read why, which is #8458 and #8529."
+        )
+        # The one member of the group's neighbourhood that IS covered has to be cut back
+        # out by name. The needle comes from the module, not from this file.
+        carve_out = _carve_out_arch()
+        assert (
+            carve_out in src
+        ), f"README: never carves {carve_out} (Vega 20) out of the unsupported group"
+        # And the carve-out has to be true of the installer, not just of the README.
+        assert stack_mod._GFX906_LEGACY_TAG in _normalised(
+            _INSTALL_SH
+        ), f"install.sh: no {carve_out} ROCm index left"
 
     def test_setup_sh_names_the_arch_instead_of_claiming_rocm(self):
         src = _normalised(_SETUP_SH)
@@ -1318,37 +1433,60 @@ class TestVulkanAdvice:
             ), f"README teaches the legacy spelling in a copy-paste block: {line!r}"
 
     def test_readme_does_not_promise_vulkan_to_macos(self):
-        """The block sits under a combined "macOS, Linux, WSL" heading, but macOS has no
-        Vulkan llama.cpp bundle: install_llama_prebuilt.py logs that the variable is
-        ignored and installs Metal. An Intel Mac carrying one of these very cards (the
-        16-inch MacBook Pro shipped Radeon Pro 5300M/5500M/5600M, all rows above) would
-        follow the documented command and get nothing."""
+        """Every copy-paste block that selects Vulkan is reached through the combined
+        macOS / Linux / WSL install command, but macOS has no Vulkan llama.cpp bundle:
+        install_llama_prebuilt.py logs that the variable is ignored and installs Metal.
+        An Intel Mac carrying one of these very cards (the 16-inch MacBook Pro shipped
+        Radeon Pro 5300M/5500M/5600M, all rows above) would follow the documented
+        command and get nothing.
+
+        Anchored on the SECTION that teaches the variable, not on one paragraph's
+        wording: the hazard is handing a reader the setter without the caveat, so the
+        caveat is required wherever the setter is taught. The uncovered-AMD paragraph is
+        located by running the cards it names through the installer's classifier, so it
+        can be reworded freely and still be found.
+        """
         prebuilt = (PACKAGE_ROOT / "studio" / "install_llama_prebuilt.py").read_text(
             encoding = "utf-8"
         )
         assert "ignored on macOS" in prebuilt, (
             "the macOS branch this test documents was renamed; re-read it before "
-            "trusting the README assertion below"
+            "trusting the README assertions below"
         )
         src = _normalised(PACKAGE_ROOT / "README.md")
-        paragraph = next(
-            (
-                para
-                for para in src.split("\n\n")
-                if "no ROCm PyTorch wheels for" in para and "Polaris" in para
-            ),
-            None,
+
+        teaching = [
+            (heading, body)
+            for heading, body in _readme_sections(src)
+            if any(
+                "LLAMA_CPP_BACKEND" in line or "FORCE_VULKAN" in line
+                for block in re.findall(r"```(?:bash|powershell)\n(.*?)```", body, re.DOTALL)
+                for line in block.splitlines()
+            )
+        ]
+        assert teaching, "README: no Vulkan setup command found at all"
+        for heading, body in teaching:
+            assert re.search(r"macOS[^\n]*(Metal|ignored)", body), (
+                f"README {heading!r}: hands a reader the Vulkan backend under the "
+                f"macOS / Linux / WSL install command without saying macOS ignores it "
+                f"and installs Metal"
+            )
+
+        # The paragraph that puts a name to the group, found by what it CLAIMS rather
+        # than by how it is phrased: the only README paragraph naming cards the
+        # installer classifies as uncovered.
+        claiming = [para for para in src.split("\n\n") if _readme_archs(para)]
+        assert len(claiming) == 1, (
+            f"README: expected one paragraph naming the uncovered AMD cards, found "
+            f"{len(claiming)}"
         )
-        assert paragraph, "README: the uncovered-AMD Vulkan paragraph was not found"
-        assert re.search(r"\bLinux\b.{0,12}\bWSL\b", paragraph), (
-            "README: the Vulkan-for-uncovered-AMD paragraph sits under a heading that "
-            "also covers macOS, so it has to name the platforms it is true for: "
-            f"{paragraph!r}"
+        paragraph = claiming[0]
+        # It is true of Linux, WSL and Windows and false of macOS, so it must not claim
+        # macOS; the section-wide caveat above says what happens there instead.
+        assert "macOS" not in paragraph, (
+            f"README: the Vulkan-for-uncovered-AMD paragraph claims macOS, where the "
+            f"variable is ignored and the Metal build is installed: {paragraph!r}"
         )
-        after = src.split(paragraph, 1)[1]
-        assert re.search(
-            r"macOS[^\n]*Metal", after
-        ), "README: nothing tells a macOS reader what happens there instead"
 
 
 # ── Polaris, the second card in the cluster (#8458) ──────────────────────────
