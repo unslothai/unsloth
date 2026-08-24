@@ -2143,6 +2143,11 @@ class MLXInferenceBackend:
                     mlx_speculative_effective_block_size = self._draft_block_size,
                     mlx_speculative_materialization_bytes = self._draft_materialization_bytes,
                 )
+                # Attaching the drafter is the comparison the preflight could not make. Keeping
+                # the verdict it could not reach would report a failure against a runtime that
+                # is drafting.
+                if mlx_speculative_reason_is_unproven(model_record["mlx_speculative_reason"]):
+                    model_record["mlx_speculative_reason"] = None
 
         self.active_model_name = model_name
         self.models[model_name] = model_record

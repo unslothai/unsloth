@@ -5543,6 +5543,37 @@ def test_auto_is_asked_again_when_its_answer_needed_the_target_that_just_loaded(
     )
 
 
+@pytest.mark.parametrize(
+    "pinned_reason, reported",
+    [
+        ("tokenizer_contract_unavailable", None),
+        (None, None),
+    ],
+)
+def test_a_drafter_that_attached_reports_no_unmet_comparison(monkeypatch, pinned_reason, reported):
+    """The preflight defers the tokenizer comparison to this load, and attaching the drafter is
+    that comparison. Reporting the deferred verdict afterwards names a failure against a runtime
+    that is drafting."""
+    _install_fake_mlx(monkeypatch)
+    _install_fake_fast_mlx(monkeypatch, [])
+    from types import SimpleNamespace
+
+    from core.inference import mlx_speculative as spec
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    monkeypatch.setattr(
+        spec,
+        "mlx_speculative_load_resolution",
+        lambda *_a, **_k: spec.MlxSpeculativeResolution("mtp", "org/A", pinned_reason),
+    )
+    backend = MLXInferenceBackend()
+    monkeypatch.setattr(backend, "_load_speculative_drafter", lambda *_a, **_k: None)
+    config = SimpleNamespace(identifier = "fake/vlm", is_vision = True, is_lora = False)
+
+    assert backend.load_model(config, mlx_speculative_mode = "mtp") is True
+    assert backend.models["fake/vlm"]["mlx_speculative_reason"] == reported
+
+
 def _drafter_snapshot(tmp_path, name, config):
     snapshot = tmp_path / name / "snapshots" / "abc"
     snapshot.mkdir(parents = True)
