@@ -351,6 +351,7 @@ from core.inference.tool_call_parser import (
     is_short_intent_without_action as _is_short_intent_without_action,
     reprompt_to_act_message as _reprompt_to_act_message,
 )
+from core.inference.passthrough_healing import nudge_enabled as _nudge_enabled
 from core.inference.tool_loop_controller import (
     ToolLoopController,
     append_deferred_nudges,
@@ -5823,8 +5824,24 @@ class LlamaCppBackend:
         `/v1/embeddings` returns. NONE (0) pools nothing, and RANK (4) is a reranker
         head: llama_context sizes its pooled buffer to n_cls_out while llama-server's
         send_embedding reads n_embd_out floats out of it.
+
+        When the header omits pooling_type (common on dedicated encoder arches such as
+        nomic-bert), fall back to architecture and model-name hints so llama-server still
+        launches with --embedding (#9128).
         """
-        return getattr(self, "_pooling_type", None) in self._EMBEDDING_POOLING_TYPES
+        pooling = getattr(self, "_pooling_type", None)
+        if pooling is not None:
+            return pooling in self._EMBEDDING_POOLING_TYPES
+        path = getattr(self, "_gguf_path", None)
+        if not path:
+            return False
+        from utils.models.gguf_metadata import is_gguf_embedding_model
+
+        return is_gguf_embedding_model(
+            path,
+            model_identifier = self._model_identifier,
+            architecture = self._architecture,
+        )
 
     @staticmethod
     def _resolve_cpu_moe_flag(
@@ -10639,6 +10656,7 @@ class LlamaCppBackend:
         self._n_heads = None
         self._embedding_length = None
         self._pooling_type = None
+        self._gguf_path = gguf_path
         self._feed_forward_length = None
         self._vocab_size = None
         self._kv_key_length = None
@@ -25078,10 +25096,10 @@ class LlamaCppBackend:
                             _reprompt_used, _reprompt_cap = _post_tool_reprompts, 1
                         else:
                             _reprompt_used, _reprompt_cap = _reprompt_count, _MAX_REPROMPTS
-                        # None keeps the default-on re-prompt; False disables it.
+                        # None follows the shared process default; explicit values win.
                         if (
                             auto_heal_tool_calls
-                            and (nudge_tool_calls is None or nudge_tool_calls)
+                            and _nudge_enabled(nudge_tool_calls)
                             and active_tools
                             and not _render_html_already_done_intent
                             and _reprompt_used < _reprompt_cap
