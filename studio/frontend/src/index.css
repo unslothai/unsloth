@@ -1605,22 +1605,12 @@ html[data-chat-font] .aui-root {
 		cursor: pointer;
 	}
 
-	/* While a panel edge is dragged, keep the resize cursor even as the pointer
-	   travels over buttons and text that would claim their own. */
-	html[data-panel-resizing],
-	html[data-panel-resizing] * {
-		cursor: col-resize !important;
-		user-select: none !important;
-	}
-
-	html[data-panel-resizing]
-		:is(
-			[data-slot="sidebar-inner"],
-			[data-slot="sidebar-inset"],
-			[data-slot="chat-settings-panel"] > div
-		) {
-		pointer-events: none;
-	}
+	/* The resize cursor during a drag is owned by the fixed overlay that
+	   PanelResizeHandle mounts for the life of the drag, not by a rule here.
+	   A universal descendant selector on <html> restyles every element in the
+	   document on each of the two attribute flips, which costs in proportion to
+	   the standing DOM; the overlay costs one element. See
+	   components/ui/panel-resize-handle.tsx. */
 
 	/* Model selector: pointer cursor on every clickable element. */
 	.unsloth-model-selector-trigger,

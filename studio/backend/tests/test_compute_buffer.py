@@ -1184,16 +1184,38 @@ class TestSplitRateRecheckAfterSelection:
         # 4096 ctx: the 18 MiB of extra masks changes no decision.
         assert self._pin(40_000, 2, ctx = 4096) == self._pin(40_000, 2, recheck = False, ctx = 4096)
 
-    def test_wired_into_both_call_sites(self):
+    def test_wired_into_every_call_site(self):
+        import ast
         import inspect
+        import re
+        import textwrap
 
-        load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        # Explicit-context pin and the reduced-slot retry both pass the step.
-        assert load.count("split_extra_bytes=_cc_split_extra(effective_ctx)") == 2
-        # The re-fit is a third call site, spelled `ctx` because it re-prices per
-        # candidate. Not exempt from the step; a rename that collapsed the two
-        # spellings would have to bump the count above.
-        assert load.count("split_extra_bytes=_cc_split_extra(ctx),") == 1
+        source = inspect.getsource(LlamaCppBackend.load_model)
+        load = "".join(source.split())
+        # Read the call sites out of the parse tree. Counting spellings said the same
+        # thing while it lasted, but it also reddened on a rename that changed nothing
+        # about the rule: the three sites price at three different contexts and the
+        # names they use for them are not the contract.
+        wired = [
+            ast.unparse(keyword.value)
+            for node in ast.walk(ast.parse(textwrap.dedent(source)))
+            if isinstance(node, ast.Call)
+            for keyword in node.keywords
+            if keyword.arg == "split_extra_bytes"
+        ]
+        # Projector floor pin, explicit-context pin, reduced-slot retry, per-candidate
+        # re-fit. A fifth has to come here and say which context it prices at.
+        #
+        # Four, not the three the counting version asserted. It counted two spellings,
+        # `_cc_split_extra(effective_ctx)` and `_cc_split_extra(ctx),`, and the
+        # projector-floor site spells its context `_mm_floor_ctx`, so it was invisible
+        # to the check that claimed to cover every call site. It has been wired
+        # correctly the whole time; nothing was holding it there.
+        assert len(wired) == 4, wired
+        # Each passes the step at a context of its own, so none is exempt and none
+        # hardcodes one: `_cc_split_extra(4096)` would not match.
+        for expression in wired:
+            assert re.fullmatch(r"_cc_split_extra\(\w+\)", expression), expression
         assert "gpu_indices,use_fit=self._select_gpus_split_aware(" in load
         # The step rides _cc_bytes' pipelining gate, so it is 0 when llama.cpp declines.
         assert "returnmax(0,_cc_bytes(ctx,2)//2-_cc_bytes(ctx))" in load

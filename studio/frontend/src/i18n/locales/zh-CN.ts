@@ -830,6 +830,8 @@ export const zhCN = {
         title: "GPU 设备",
         ggufInference: "GGUF 推理",
         unavailable: "不可用",
+        detecting: "正在检查 GPU...",
+        unreadable: "无法读取此服务器的硬件信息。",
         noGpu: "未检测到可见 GPU。上方仅显示 CPU 资源。",
         unknownDevice: "未知 GPU",
         deviceWithIndex: "GPU {index}",

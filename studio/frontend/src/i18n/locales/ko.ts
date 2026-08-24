@@ -848,6 +848,8 @@ export const ko = {
         title: "GPU 장치",
         ggufInference: "GGUF 추론",
         unavailable: "사용할 수 없음",
+        detecting: "GPU를 확인하는 중...",
+        unreadable: "이 서버의 하드웨어를 읽을 수 없습니다.",
         noGpu: "인식되는 GPU가 없습니다. 위에는 CPU 관련 리소스만 표시됩니다.",
         unknownDevice: "알 수 없는 GPU",
         deviceWithIndex: "GPU {index}",
