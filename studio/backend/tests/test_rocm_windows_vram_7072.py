@@ -968,7 +968,10 @@ def test_a_name_collision_falls_through_to_the_gfx_pass(win_rocm, monkeypatch):
         sys.modules,
         "torch",
         _fake_torch(
-            [("AMD Radeon Graphics", 24 * GB, "gfx1100"), ("AMD Radeon Graphics", 16 * GB, "gfx1200")],
+            [
+                ("AMD Radeon Graphics", 24 * GB, "gfx1100"),
+                ("AMD Radeon Graphics", 16 * GB, "gfx1200"),
+            ],
             free_equals_total = True,
         ),
     )
@@ -1005,13 +1008,17 @@ def test_the_join_declines_usage_it_cannot_place(win_rocm, monkeypatch):
     report the hidden card's bytes as the visible card's."""
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
     monkeypatch.setitem(
-        sys.modules, "torch", _fake_torch([("AMD Radeon RX 7900 XTX", 24 * GB)], free_equals_total = True)
+        sys.modules,
+        "torch",
+        _fake_torch([("AMD Radeon RX 7900 XTX", 24 * GB)], free_equals_total = True),
     )
     monkeypatch.setattr(
         hw,
         "_windows_amd_adapter_records_by_luid",
         lambda: {
-            0xAAAA: {"name": "AMD Radeon RX 7900 XTX 24GB"},  # the visible card, spelled differently
+            0xAAAA: {
+                "name": "AMD Radeon RX 7900 XTX 24GB"
+            },  # the visible card, spelled differently
             0xBBBB: {"name": "AMD Radeon RX 7900 XTX"},  # a hidden card wearing the torch name
         },
     )
