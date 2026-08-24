@@ -534,6 +534,25 @@ def settled_messages_moved(base: dict, treat: dict) -> list[str]:
             continue
         if b.get("role") == "user" and b.get("digest") != t.get("digest"):
             out.append(f"msg{i}(user):{b.get('chars')}->{t.get('chars')}c")
+    # WHY THERE IS NO ASSISTANT-ROW RULE HERE, since it looks like the obvious next one to add.
+    #
+    # An earlier assistant row on a fully mounted thread really is settled while the tail is being
+    # written, and a counting argument even makes it provable without knowing WHICH row is in
+    # flight: a thread writes one reply at a time, so two differing assistant rows cannot both be
+    # it. Both readings are sound and both are still unusable, because of what BLINDS the probe in
+    # the first place.
+    #
+    # The reachable blind pair is a build that renamed the `data-status` hook. That attribute is on
+    # the assistant text part and the digest walks attributes, so the rename that blinds the probe
+    # ALSO moves the digest of every assistant row, by itself. Reporting those rows therefore turns
+    # every genuinely blind pair into a difference, which is the wall-clock false alarm this file
+    # exists to remove, wearing the other hat. Measured: implementing the counting rule flipped
+    # `test_a_settled_queued_idle_pair_is_scored_rather_than_refused`'s blind control from NOT
+    # COMPARABLE to DIFFER.
+    #
+    # A user row is not exposed to that, which is exactly why it is the one shape that qualifies:
+    # the hook is not on it. Separating "the hook attribute moved" from "the content moved" would
+    # need a digest that excludes the attribute, which is not something this capture carries.
     return out
 
 
