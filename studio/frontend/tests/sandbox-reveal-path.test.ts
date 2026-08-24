@@ -181,8 +181,25 @@ test("the legacy probe runs only for a chat now inside a project", () => {
   );
   assert.notEqual(start, -1, "the legacy probe moved");
   const block = SIDEBAR.slice(start, SIDEBAR.indexOf("\n  }", start));
-  assert.ok(block.includes("distinct.length > 0 || !item.projectId"));
+  assert.ok(block.includes("if (!item.projectId) return recorded;"));
   assert.ok(block.includes("sandboxHasFiles(threadId)"));
+});
+
+test("a recorded session does not hide a legacy folder beside it", () => {
+  // The mixed history: a tool ran before results carried a session, the chat
+  // moved into a project, another tool ran and recorded one. Treating the
+  // recorded id as proof that nothing else holds files answers for one folder
+  // while the older keeps the rest.
+  const start = SIDEBAR.indexOf("async function sandboxSessionIdsHolding");
+  const block = SIDEBAR.slice(start, SIDEBAR.indexOf("\n  }", start));
+  // A union, so a recorded id cannot short-circuit the probe.
+  assert.match(block, /return \[\.\.\.new Set\(\[\.\.\.recorded, \.\.\.held\]\)\];/);
+  assert.ok(
+    !block.includes("recorded.length > 0"),
+    "an early return on any recorded id is what hid the legacy folder",
+  );
+  // Probing an id that is already named would only cost a request.
+  assert.match(block, /if \(recorded\.includes\(threadId\)\) continue;/);
 });
 
 test("both the folder and the session id are answered from the same probe", () => {

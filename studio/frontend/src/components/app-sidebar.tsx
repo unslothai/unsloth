@@ -2495,21 +2495,28 @@ export function AppSidebar() {
    * are this chat's. Only in this direction: a chat moved OUT wrote under
    * project-<id>, and nothing retains which one.
    *
+   * A union rather than a fallback. One recorded id is not evidence that the
+   * others are recorded too: a chat can have run a tool before recording
+   * existed, moved into a project, and run another one since, and taking the
+   * recorded id alone would answer for both folders while hiding the older.
+   *
    * Shared by "Open chat folder" and "Copy session id", which drifted apart
-   * once: the copy path skipped the legacy probe and reported success on a
-   * folder the chat had never written to.
+   * once: the copy path skipped the probe and reported success on a folder the
+   * chat had never written to.
    */
   async function sandboxSessionIdsHolding(
     item: SidebarItem,
     ids: string[],
   ): Promise<string[]> {
-    const distinct = await recordedSandboxSessionIds(ids);
-    if (distinct.length > 0 || !item.projectId) return distinct;
+    const recorded = await recordedSandboxSessionIds(ids);
+    if (!item.projectId) return recorded;
     const held: string[] = [];
     for (const threadId of ids) {
+      // Already named, so there is nothing a probe could add.
+      if (recorded.includes(threadId)) continue;
       if (await sandboxHasFiles(threadId)) held.push(threadId);
     }
-    return [...new Set(held)];
+    return [...new Set([...recorded, ...held])];
   }
 
   /** The sandbox session this chat's tool calls write into. */

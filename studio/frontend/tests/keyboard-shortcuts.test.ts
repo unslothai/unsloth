@@ -333,8 +333,9 @@ test("the private-window chord is reserved and carries no default", () => {
   }
 });
 
-// Train is the only workspace the chat-only guard turns away, so it is the
-// only workspace chord that can navigate a user off the page they were on.
+// Train and Video are the two rows the sidebar grays out on a measured
+// verdict, so they are the two workspace chords that can put a gate where the
+// user's workspace was.
 test("the workspace chords land where the guard lets them", async () => {
   const root = await readFile(
     new URL("../src/app/routes/__root.tsx", import.meta.url),
@@ -348,6 +349,27 @@ test("the workspace chords land where the guard lets them", async () => {
     root,
     /useShortcut\("switchToTrain", goTo\("\/studio"\), \{\n\s*enabled: !isAuthFlowRoute && !chatOnlyMeasured,/,
   );
+  // Video has its own predicate rather than the chat-only one: /video checks
+  // auth and nothing else, so the chord would land on the unsupported-hardware
+  // gate. Read through the same helper the disabled row reads.
+  assert.match(
+    root,
+    /const videoDisabled =\n\s*videoNavHint\(chatOnlyMeasured, chatOnlyReason\) !== undefined;/,
+  );
+  assert.match(
+    root,
+    /useShortcut\("switchToVideo", goTo\("\/video"\), \{\n\s*enabled: !isAuthFlowRoute && !videoDisabled,/,
+  );
+  const sidebar = await readFile(
+    new URL("../src/components/app-sidebar.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    sidebar,
+    /const videoDisabledHint = videoNavHint\(chatOnlyMeasured, chatOnlyReason\);/,
+  );
+  assert.match(sidebar, /disabled: videoDisabled,/);
+
   // The rest are on the allowlist, so they stay reachable and ungated: gating
   // them would take away a page the guard is happy to serve.
   for (const [id, path] of [

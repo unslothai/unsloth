@@ -5,6 +5,7 @@ import { AppSidebar } from "@/components/app-sidebar";
 import { Navbar } from "@/components/navbar";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
+import { videoNavHint } from "@/config/hardware-verdict";
 import { ApiMonitorOverlay } from "@/features/api-monitor/api-monitor-overlay";
 import {
   AUTH_SESSION_CLEARED_EVENT,
@@ -283,6 +284,12 @@ function RootLayout() {
   const chatOnlyMeasured = usePlatformStore(
     (s) => s.isChatOnly() && !s.capabilitiesUnknown(),
   );
+  const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
+  // Video is the other row the sidebar grays out, on the two verdicts its
+  // pipelines cannot run on at all. Same hint the row reads, so the two cannot
+  // disagree about which hosts they are.
+  const videoDisabled =
+    videoNavHint(chatOnlyMeasured, chatOnlyReason) !== undefined;
   // Exact match: a prefix would treat /chatty as chat, hiding its not-found UI.
   const isChatRoute = pathname === "/chat";
   const { pinned, setPinned, togglePinned } = useSidebarPin();
@@ -473,7 +480,12 @@ function RootLayout() {
     enabled: !isAuthFlowRoute,
   });
   useShortcut("switchToImages", goTo("/images"), { enabled: !isAuthFlowRoute });
-  useShortcut("switchToVideo", goTo("/video"), { enabled: !isAuthFlowRoute });
+  // /video checks auth and nothing else, so an ungated chord would put the
+  // unsupported-hardware gate where the user's workspace was. Train's chord
+  // waits on the same measurement; this one has its own predicate to wait on.
+  useShortcut("switchToVideo", goTo("/video"), {
+    enabled: !isAuthFlowRoute && !videoDisabled,
+  });
   useShortcut("switchToAudio", goTo("/audio"), { enabled: !isAuthFlowRoute });
   useShortcut("switchToExport", goTo("/export"), { enabled: !isAuthFlowRoute });
 
