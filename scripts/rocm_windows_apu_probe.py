@@ -37,7 +37,7 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
-GB = 1024 ** 3
+GB = 1024**3
 
 
 # --------------------------------------------------------------------------- #
@@ -60,8 +60,11 @@ def _counter(name: str) -> Optional[list[tuple[str, float]]]:
     try:
         r = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-            capture_output = True, text = True, encoding = "utf-8",
-            errors = "replace", timeout = 15,
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 15,
         )
     except Exception:  # noqa: BLE001
         return None
@@ -155,6 +158,7 @@ def read_studio(repo: Path) -> dict[str, Any]:
     obs["is_rocm"] = bool(getattr(hw, "IS_ROCM", False))
     try:
         import torch
+
         n = torch.cuda.device_count()
         obs["classifier_says_carve_out"] = [
             bool(hw._rocm_props_total_is_carve_out(torch.cuda.get_device_properties(i)))
@@ -190,6 +194,7 @@ def allocate(gib: float) -> dict[str, Any]:
     instead, and only a real APU can say which counter actually moves.
     """
     import torch
+
     n = int(gib * GB)
     buf = torch.empty(n, dtype = torch.uint8, device = "cuda")
     buf.fill_(1)
@@ -227,11 +232,14 @@ def render(obs: dict[str, Any]) -> str:
         L.append(
             f"| {d['ordinal']} | {d.get('name')} | {d.get('gcn_arch')} "
             f"| {d.get('is_integrated')} | {d.get('props_total_gb')} GB "
-            f"| {d.get('driver_total_gb')} GB | {d.get('gap_gb')} GB |")
+            f"| {d.get('driver_total_gb')} GB | {d.get('gap_gb')} GB |"
+        )
     L.append("")
     any_gap = any(d.get("driver_exceeds_props") for d in t.get("devices", []))
-    L.append(f"**driver total exceeds props.total_memory: {any_gap}**"
-             + ("" if any_gap else "  <- if this is False on an APU, the premise does not hold here"))
+    L.append(
+        f"**driver total exceeds props.total_memory: {any_gap}**"
+        + ("" if any_gap else "  <- if this is False on an APU, the premise does not hold here")
+    )
     L.append("")
 
     L.append("### 2. Which counter holds the working set?")
@@ -242,8 +250,11 @@ def render(obs: dict[str, Any]) -> str:
             continue
         when = "before allocation" if label == "counters_before" else "after allocation"
         if not c.get("available"):
-            why = ("these counters are Windows-only" if host["platform"] != "Windows"
-                   else "counter unavailable, which is how a localized Windows reads from here")
+            why = (
+                "these counters are Windows-only"
+                if host["platform"] != "Windows"
+                else "counter unavailable, which is how a localized Windows reads from here"
+            )
             L.append(f"- {when}: no reading ({why})")
             continue
         L.append(f"**{when}**")
@@ -255,12 +266,16 @@ def render(obs: dict[str, Any]) -> str:
         L.append("")
     if obs.get("allocation"):
         a = obs["allocation"]
-        L.append(f"Held {a['held_gb']} GB on the GPU "
-                 f"(torch allocated {a['torch_allocated_gb']} GB, "
-                 f"reserved {a['torch_reserved_gb']} GB).")
+        L.append(
+            f"Held {a['held_gb']} GB on the GPU "
+            f"(torch allocated {a['torch_allocated_gb']} GB, "
+            f"reserved {a['torch_reserved_gb']} GB)."
+        )
         L.append("")
-        L.append("Whichever counter moved by roughly that much is the one that tracks a "
-                 "resident model, and therefore the numerator Studio should be reading.")
+        L.append(
+            "Whichever counter moved by roughly that much is the one that tracks a "
+            "resident model, and therefore the numerator Studio should be reading."
+        )
         L.append("")
 
     L.append("### 3. What Studio reports")
@@ -273,12 +288,18 @@ def render(obs: dict[str, Any]) -> str:
         L.append(f"- carve-out classifier fires: {s.get('classifier_says_carve_out')}")
         L.append("")
         L.append("```json")
-        L.append(json.dumps({
-            "per_device_vram": s.get("per_device_vram"),
-            "aggregate_gb": s.get("aggregate_gb"),
-            "inventory": s.get("inventory"),
-            "visible_devices": s.get("visible_devices"),
-        }, indent = 2, default = str))
+        L.append(
+            json.dumps(
+                {
+                    "per_device_vram": s.get("per_device_vram"),
+                    "aggregate_gb": s.get("aggregate_gb"),
+                    "inventory": s.get("inventory"),
+                    "visible_devices": s.get("visible_devices"),
+                },
+                indent = 2,
+                default = str,
+            )
+        )
         L.append("```")
     L.append("")
     L.append("### Before this PR, the same machine would have reported")
@@ -286,29 +307,45 @@ def render(obs: dict[str, Any]) -> str:
     for d in t.get("devices", []):
         if d.get("error"):
             continue
-        L.append(f"- ordinal {d['ordinal']}: total **{d.get('props_total_gb')} GB** "
-                 f"(props.total_memory verbatim), against **{d.get('driver_total_gb')} GB** now")
+        L.append(
+            f"- ordinal {d['ordinal']}: total **{d.get('props_total_gb')} GB** "
+            f"(props.total_memory verbatim), against **{d.get('driver_total_gb')} GB** now"
+        )
     return "\n".join(L)
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description = __doc__)
-    ap.add_argument("--allocate", type = float, default = 0.0,
-                    help = "GiB to hold on the GPU, to see which counter moves")
-    ap.add_argument("--repo", type = Path, default = Path(__file__).resolve().parents[1],
-                    help = "checkout to read the Studio hardware module from")
+    ap.add_argument(
+        "--allocate",
+        type = float,
+        default = 0.0,
+        help = "GiB to hold on the GPU, to see which counter moves",
+    )
+    ap.add_argument(
+        "--repo",
+        type = Path,
+        default = Path(__file__).resolve().parents[1],
+        help = "checkout to read the Studio hardware module from",
+    )
     ap.add_argument("--json", type = Path, default = None, help = "also write raw JSON here")
     args = ap.parse_args()
 
     obs: dict[str, Any] = {
-        "host": {"platform": platform.system(), "release": platform.release(),
-                 "machine": platform.machine(), "python": platform.python_version()},
+        "host": {
+            "platform": platform.system(),
+            "release": platform.release(),
+            "machine": platform.machine(),
+            "python": platform.python_version(),
+        },
         "torch": read_torch(),
     }
     if obs["host"]["platform"] != "Windows":
-        print("NOTE: this is a Windows diagnostic. On any other platform the "
-              "counters are unavailable and the Windows code path is inert, "
-              "which is exactly why it cannot be validated off Windows.\n")
+        print(
+            "NOTE: this is a Windows diagnostic. On any other platform the "
+            "counters are unavailable and the Windows code path is inert, "
+            "which is exactly why it cannot be validated off Windows.\n"
+        )
 
     obs["counters_before"] = read_counters()
 
