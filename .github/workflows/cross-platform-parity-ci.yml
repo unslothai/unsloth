@@ -192,7 +192,6 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
-          cache: 'pip'
       # test_installer_profile_hardening.py imports unsloth_cli.commands.studio, which pulls
       # the CLI's import chain; without these the job dies on ModuleNotFoundError before a
       # single test runs. rich arrives through typer today, but unsloth_cli imports it

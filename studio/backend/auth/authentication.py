@@ -9,6 +9,7 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.security.utils import get_authorization_scheme_param
 import jwt
+from starlette.concurrency import run_in_threadpool
 
 from .storage import (
     API_KEY_PREFIX,
@@ -378,7 +379,7 @@ async def authenticated_via_desktop_jwt(
     Lets routes treat the desktop as an authority of its own: it authenticates
     with a local secret rather than the account password.
     """
-    return is_desktop_access_token(credentials.credentials)
+    return await run_in_threadpool(is_desktop_access_token, credentials.credentials)
 
 
 async def get_current_subject_allow_password_change(
@@ -432,6 +433,8 @@ async def _get_current_credential(
     The generation is the credential version this request actually authenticated
     against. Routes that persist new credentials must bind their write to it, or
     a reset landing mid-request would bless what it just revoked.
+
+    Credential reads run in the threadpool so stalled SQLite cannot block the event loop.
     """
     if credentials.scheme == KEYLESS_SCHEME:
         return _admin_credential(allow_password_change = allow_password_change)
@@ -455,7 +458,7 @@ async def _get_current_credential(
 
     # --- API key path (sk-unsloth-...) ---
     if token.startswith(API_KEY_PREFIX):
-        verified = validate_api_key_with_credential(token)
+        verified = await run_in_threadpool(validate_api_key_with_credential, token)
         if verified is None:
             raise HTTPException(
                 status_code = status.HTTP_401_UNAUTHORIZED,
@@ -472,7 +475,7 @@ async def _get_current_credential(
             detail = "Invalid token payload",
         )
 
-    record = get_user_and_secret(subject)
+    record = await run_in_threadpool(get_user_and_secret, subject)
     if record is None:
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,

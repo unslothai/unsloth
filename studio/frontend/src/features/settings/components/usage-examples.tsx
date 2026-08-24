@@ -490,16 +490,21 @@ const codePlugin = createCodePlugin({ themes: SHIKI_THEMES });
 function HighlightedCode({
   code,
   language,
+  redactFromReload,
 }: {
   code: string;
   language: string;
+  redactFromReload: boolean;
 }) {
   const markdown = useMemo(
     () => `\`\`\`${language}\n${code}\n\`\`\``,
     [code, language],
   );
   return (
-    <div className="max-w-full overflow-x-auto p-3 pr-16 text-ui-11 leading-relaxed [&_pre]:!m-0 [&_pre]:!whitespace-pre-wrap [&_pre]:!break-words [&_pre]:!border-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:!text-ui-11 [&_pre]:!leading-relaxed [&_code]:!text-ui-11 [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block]]:!text-ui-11">
+    <div
+      className="max-w-full overflow-x-auto p-3 pr-16 text-ui-11 leading-relaxed [&_pre]:!m-0 [&_pre]:!whitespace-pre-wrap [&_pre]:!break-words [&_pre]:!border-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:!text-ui-11 [&_pre]:!leading-relaxed [&_code]:!text-ui-11 [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block]]:!text-ui-11"
+      data-reload-snapshot-sensitive={redactFromReload ? "" : undefined}
+    >
       <Streamdown
         mode="static"
         plugins={{ code: codePlugin }}
@@ -861,6 +866,7 @@ export function UsageExamples({
               key={snippets[lang]}
               code={snippets[lang]}
               language={shikiLang}
+              redactFromReload={Boolean(apiKey)}
             />
           </div>
         ) : (
@@ -913,7 +919,10 @@ export function UsageExamples({
             })}
           </div>
           <div className="relative mt-0.5 min-w-0">
-            <code className="block min-w-0 overflow-x-auto rounded border border-border bg-muted/30 px-2 py-1.5 pr-14 font-mono text-ui-11 text-foreground">
+            <code
+              className="block min-w-0 overflow-x-auto rounded border border-border bg-muted/30 px-2 py-1.5 pr-14 font-mono text-ui-11 text-foreground"
+              data-reload-snapshot-sensitive={apiKey ? "" : undefined}
+            >
               {agentCommand}
             </code>
             <button

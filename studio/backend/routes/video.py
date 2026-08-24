@@ -282,6 +282,20 @@ async def load_video_model_gated(
             memory_mode = request.memory_mode,
             gpu_ordinal = gpu_ordinal,
         )
+        # Same bar again, for a speech GGUF picked out of a mixed video repo. The backend's own
+        # assertion runs on the load worker, INSIDE acquire_for, so a refusal there arrives
+        # having already evicted the chat model this gate exists to preserve. Off-thread because
+        # the probe reads a header, and cache-only when the load is not user-initiated, matching
+        # the locality promise begin_load makes below.
+        from core.inference.diffusion_compat import assert_pick_is_not_speech
+
+        await asyncio.to_thread(
+            assert_pick_is_not_speech,
+            request.model_path,
+            request.gguf_filename,
+            request.hf_token,
+            user_initiated,
+        )
         # Take the GPU from chat only for a non-CPU load. Release stale VIDEO ownership on a CPU load (owner-guarded no-op).
         device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
 

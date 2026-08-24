@@ -5,10 +5,13 @@
 
 The repo-cpu-tests job runs tests/ under `-n 4`. Two groups cannot go through it:
 
-- tests/studio/load_freeze asserts UPPER bounds on real elapsed time (a /health
-  burst under 250 ms while a 600 ms blocking probe runs, a 100-request burst
-  under 350 ms). Those bounds are the contract, so they cannot be loosened, and a
-  pytest worker descheduled by the other three inflates them.
+- tests/studio/load_freeze asserts UPPER bounds on real elapsed time (50 concurrent
+  probes under 15s, a fast-shim probe under 2s, five sequential probes under 10s, a
+  not-loaded short circuit under 50 ms), and a pytest worker descheduled by the other
+  three inflates them. The two tightest bounds it used to carry, 250 ms for a /health
+  burst and 350 ms for a 100-request burst, are gone: those two tests now hold the
+  blocking call open on an event and assert that /health answers while it is held,
+  which is the property the bounds were standing in for and does not move with load.
 - the hardware-spoof files mutate hardware.py module globals, so they leak into
   whatever shares their worker.
 
@@ -151,8 +154,10 @@ BENIGN_TIMING = {
     # A 600-second expiry checked against the wall clock. Reading both sides of that gap
     # late by whole seconds still leaves it true, and it only reaches this scan at all
     # because the widened operand walk now reads `x > time.time()` as a bound.
-    ("test_openai_codex_subscription.py",
-     "test_account_claim_and_token_response_are_validated_without_returning_raw_body"),
+    (
+        "test_openai_codex_subscription.py",
+        "test_account_claim_and_token_response_are_validated_without_returning_raw_body",
+    ),
 }
 
 
@@ -569,14 +574,32 @@ def _assigned_into_sys_modules(tree: ast.AST) -> set:
     return names
 
 
-def _is_installed(name: str) -> bool:
-    """Whether a stub for this name would shadow something real.
+def _is_repo_module(name: str) -> bool:
+    """Whether studio/backend itself provides this name.
 
-    Anything the machinery cannot resolve counts as absent, including the errors it
-    raises rather than returning None for: an in-repo name such as `utils` or `loggers`
-    is importable only with studio/backend on sys.path, which this test does not have and
-    should not add.
+    `loggers`, `utils`, `routes` and friends are the backend's OWN modules. A test that
+    stands one of them up as a stub is not shadowing a third-party library, which is what
+    the check below is about; it is substituting for repo code on purpose.
     """
+    return (BACKEND_TESTS.parent / name).is_dir() or (BACKEND_TESTS.parent / f"{name}.py").is_file()
+
+
+def _is_installed(name: str) -> bool:
+    """Whether a stub for this name would shadow a real third-party library.
+
+    Asked of the REPO first, and that ordering is the whole fix. The previous version
+    asked importlib alone and reasoned that an in-repo name resolves only with
+    studio/backend on sys.path, "which this test does not have and should not add". That
+    was simply untrue in the job that runs it: under `pytest tests/ -n 4` from the repo
+    root, studio/backend does end up on sys.path, `loggers` resolved, and the guard
+    failed on main for a stub that shadows nothing. It passed locally, where the path
+    happens to differ, which is the worst shape a CI-only assertion can have.
+
+    So the question is answered from the tree, which is the same everywhere, and
+    importlib is consulted only for names the repo does not define.
+    """
+    if _is_repo_module(name):
+        return False
     try:
         return importlib.util.find_spec(name) is not None
     except (ImportError, ValueError):

@@ -461,7 +461,8 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
         except Exception as exc:
             logger.debug("media idle_unload_step failed: %s", exc)
         try:
-            ttl = get_auto_unload_idle_seconds()
+            # Keep SQLite-backed setting reads off the event loop.
+            ttl = await asyncio.to_thread(get_auto_unload_idle_seconds)
             if ttl <= 0:
                 continue
             from routes.inference import get_llama_cpp_backend
@@ -478,14 +479,14 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                     if current is not None:
                         _note_activity()
                         _set_last_unloaded(None)  # a model is loaded; drop stale stash
-                if backend.is_loaded and _user_pinned(backend):
+                if backend.is_loaded and await asyncio.to_thread(_user_pinned, backend):
                     # Loaded from the UI, so the user wants it resident; only
                     # models the API loaded are freed.
                     continue
                 if backend.is_loaded and _is_idle(ttl):
                     freed = _loaded_identity(backend)
                     manifest = None
-                    if get_auto_unload_keep_kv():
+                    if await asyncio.to_thread(get_auto_unload_keep_kv):
                         try:
                             manifest = await asyncio.to_thread(
                                 backend.save_slots_for_resume,
@@ -494,14 +495,24 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                         except Exception as exc:
                             logger.debug("slot save before idle unload failed: %s", exc)
                     # Re-read settings: the save can outlive a settings change.
-                    ttl = get_auto_unload_idle_seconds()
-                    if ttl <= 0 or not _is_idle(ttl) or _user_pinned(backend):
+                    ttl = await asyncio.to_thread(get_auto_unload_idle_seconds)
+                    if (
+                        ttl <= 0
+                        or not _is_idle(ttl)
+                        or await asyncio.to_thread(_user_pinned, backend)
+                    ):
                         if manifest:
                             _delete_resume_files(manifest)
                         continue
-                    if manifest and not get_auto_unload_keep_kv():
+                    if manifest and not await asyncio.to_thread(get_auto_unload_keep_kv):
                         _delete_resume_files(manifest)
                         manifest = None
+                    # A request may register _pending while an off-loop setting read runs.
+                    # Recheck idleness before unloading.
+                    if not _is_idle(ttl):
+                        if manifest:
+                            _delete_resume_files(manifest)
+                        continue
                     try:
                         await asyncio.to_thread(backend.unload_model)
                     except Exception:

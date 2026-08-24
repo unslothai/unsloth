@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from fnmatch import fnmatchcase
 from typing import Iterable
+from utils.paths.path_utils import drop_shadowed_appledouble_names
 
 
 SNAPSHOT_IGNORE_PATTERNS: tuple[str, ...] = (
@@ -43,7 +44,9 @@ def _size(sibling) -> int:
 
 
 def repo_ships_transformers_weights(filenames: Iterable[str]) -> bool:
-    for name in filenames:
+    # A "._consolidated.safetensors" does not start with "consolidated", so it would answer yes
+    # here and then have every consolidated* file stripped from the download.
+    for name in drop_shadowed_appledouble_names(list(filenames)):
         base = name.rsplit("/", 1)[-1].lower()
         if base.startswith("consolidated"):
             continue
