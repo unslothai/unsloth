@@ -952,9 +952,8 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// The section sits above the phase logs and enforce_report_limit chops the END
-    /// of the body, which is the whole reason for its smaller cap. A report that
-    /// overflows the clipboard budget must still carry the crash stack.
+    /// The section sits above the phase logs and enforce_report_limit chops the END,
+    /// so a report that overflows the clipboard budget must still carry the stack.
     #[test]
     fn a_truncated_report_still_carries_the_crash_stack() {
         let stack = "Current thread 0x1 (most recent call first):";
