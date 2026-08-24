@@ -1877,7 +1877,7 @@ class FastBaseModel:
         temporary_location = "_unsloth_temporary_saved_buffers",
         qat_scheme = None,
         target_parameters = None,  # For MoE expert layers (nn.Parameter)
-        ensure_weight_tying = False,  # [TODO] Add `ensure_weight_tying` for `modules_to_save` for vision models
+        ensure_weight_tying = None,  # None = auto (tie when we redirect a tied pair)
         finetune_audio_layers = False,  # placed last to preserve existing positional argument order
         **kwargs,
     ):
@@ -1931,6 +1931,34 @@ class FastBaseModel:
         # only the auto (None / "all-linear") path relies on the regex, whose mlp
         # block is the sole remaining MLP-intent signal on fused-expert models.
         _moe_detect_target = target_modules if type(target_modules) in (list, tuple) else None
+
+        # get_peft_regex drops these (no attention/MLP ancestor) and LoRA on them never
+        # trains, so redirect before scoping, matching FastLanguageModel.
+        target_modules, modules_to_save, _moved = _redirect_embedding_targets(
+            target_modules,
+            modules_to_save,
+            allow_redirect = finetune_language_layers,
+            skip = _vllm_unmovable_embedding_modules(model, target_modules),
+        )
+        _raise_if_no_lora_targets_left(target_modules, _moved, target_parameters)
+        ensure_weight_tying = _effective_weight_tying(
+            model,
+            modules_to_save,
+            ensure_weight_tying,
+        )
+        modules_to_save = _drop_tied_output_module(
+            model,
+            modules_to_save,
+            ensure_weight_tying,
+        )
+        if _moved:
+            logger.warning_once(
+                f"Unsloth: Moved {', '.join(_moved)} from `target_modules` to "
+                f"`modules_to_save`, so they are trained as full weight matrices.\n"
+                f"This uses more VRAM than LoRA. Please list them in `modules_to_save` directly."
+            )
+        _raise_if_fast_inference_modules_to_save(model, modules_to_save)
+
         if target_modules is None or target_modules == "all-linear":
             target_modules = get_peft_regex(
                 model,

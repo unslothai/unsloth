@@ -4637,12 +4637,16 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         # ── 4d. Prepare model (LoRA, full finetuning, or CPT) ──
         if is_cpt:
             _send_status(event_queue, "Configuring LoRA for continued pretraining...")
-            # embed_tokens (if included) goes to modules_to_save -- trained full-precision at
-            # embedding_learning_rate. lm_head stays a LoRA target for merges (unsloth PR #4106).
+            # Both go to modules_to_save: trained full-precision at
+            # embedding_learning_rate, since LoRA on either never trains.
+            # By leaf: PEFT resolves model.embed_tokens to the same module.
+            _embedding_modules = ("embed_tokens", "lm_head")
             _user_modules = config.get("target_modules") or []
-            wants_embed = "embed_tokens" in _user_modules
-            cpt_trains_embeddings = wants_embed
-            cpt_target_modules = [m for m in _user_modules if m != "embed_tokens"]
+            _leaf = lambda m: str(m).rsplit(".", 1)[-1]  # noqa: E731
+            _wants = [m for m in _user_modules if _leaf(m) in _embedding_modules]
+            # Either module in modules_to_save fills the embedding_learning_rate group.
+            cpt_trains_embeddings = bool(_wants)
+            cpt_target_modules = [m for m in _user_modules if _leaf(m) not in _embedding_modules]
             if not cpt_target_modules:
                 cpt_target_modules = [
                     "q_proj",
@@ -4652,12 +4656,11 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     "gate_proj",
                     "up_proj",
                     "down_proj",
-                    "lm_head",
                 ]
             success = trainer.prepare_model_for_training(
                 use_lora = True,
                 target_modules = cpt_target_modules,
-                modules_to_save = ["embed_tokens"] if wants_embed else None,
+                modules_to_save = _wants or None,
                 lora_r = config.get("lora_r", 128),
                 lora_alpha = config.get("lora_alpha", 32),
                 lora_dropout = config.get("lora_dropout", 0.0),
@@ -4728,8 +4731,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     )
             elif embedding_lr_value is not None:
                 logger.warning(
-                    "CPT: embedding_learning_rate was provided but embed_tokens is "
-                    "not being trained; ignoring the override.\n"
+                    "CPT: embedding_learning_rate was provided but neither embed_tokens "
+                    "nor lm_head is being trained; ignoring the override.\n"
                 )
                 embedding_lr_value = None
 
