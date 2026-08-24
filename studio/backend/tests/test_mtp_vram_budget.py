@@ -1232,3 +1232,57 @@ def test_mtp_draft_budget_prefers_user_extras_drafter():
     assert "_cli_draft_for_budgetor_studio_draft_for_budgetor_env_draft_for_budget" in compact
     # The env must not be consulted before Unsloth's resolved drafter.
     assert "_extra_args_mtp_draft_path(extra_args)ormtp_draft_path" not in compact
+
+
+class TestUnemittableCacheTypeFallsBackToTheEnvBudget:
+    """A type llama.cpp's kv_cache_type_from_str does not know is never emitted
+    (_VALID_CACHE_TYPES), so the child inherits LLAMA_ARG_CACHE_TYPE_K/_V instead.
+
+    Before ggml-org/llama.cpp#23792 Studio's tensor gate happened to cover this:
+    it dropped any type outside {f16,bf16,f32} -- including an unknown one -- and
+    then re-adopted the heavier env type for the reserve, with the comment "Else
+    the child allocates f32 KV against an f16 budget." Removing the gate removed
+    that re-adoption too, so the budget has to notice on its own.
+    """
+
+    @staticmethod
+    def _budget_type(cache_type_kv, env):
+        """The cache type load_model resolves for the reserve, via the same
+        precedence chain: extras, then the field, then a heavier inherited env."""
+        from core.inference.llama_cpp import (
+            _VALID_CACHE_TYPES,
+            _env_main_cache_type_for_budget,
+        )
+
+        resolved = cache_type_kv
+        if resolved is not None and resolved.strip().lower() not in _VALID_CACHE_TYPES:
+            resolved = None
+        if resolved is None:
+            resolved = _env_main_cache_type_for_budget(env)
+        return resolved
+
+    def test_an_unknown_type_does_not_shadow_a_heavier_inherited_env(self):
+        """q3_K is not emittable, so the child really runs the inherited f32.
+        Budgeting "q3_K" prices it at _kv_bytes_per_elem's 2.0 unknown default --
+        a clean 2x under-reservation, in the one mode with no --fit valve."""
+        env = {"LLAMA_ARG_CACHE_TYPE_K": "f32", "LLAMA_ARG_CACHE_TYPE_V": "f32"}
+        assert self._budget_type("q3_K", env) == "f32"
+
+    def test_an_emittable_type_still_wins_over_the_env(self):
+        """q8_0 IS emitted, so it overrides the env on both axes and must be what
+        the budget prices -- the whole point of #8939."""
+        env = {"LLAMA_ARG_CACHE_TYPE_K": "f32", "LLAMA_ARG_CACHE_TYPE_V": "f32"}
+        assert self._budget_type("q8_0", env) == "q8_0"
+
+    def test_an_unknown_type_with_no_env_is_left_at_the_f16_default(self):
+        assert self._budget_type("q3_K", {}) is None
+
+    def test_the_loader_applies_the_guard_before_the_env_adoption(self):
+        """Source-pinned: the order is what makes it work. Adopting the env first
+        would leave the unemittable string in place."""
+        load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        guard = load.find("notin_VALID_CACHE_TYPES")
+        adopt = load.find("cache_type_kv=_env_main_cache_type_for_budget()")
+        assert guard != -1, "the unemittable-type guard is gone"
+        assert adopt != -1
+        assert guard < adopt, (guard, adopt)

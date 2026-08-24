@@ -1703,3 +1703,150 @@ def test_load_model_does_not_gate_the_kv_cache_on_tensor_mode():
     # llama.cpp runs a quantized KV cache under --split-mode tensor (ggml-org/
     # llama.cpp#23792), so Unsloth must not carry its own whitelist.
     assert not hasattr(LlamaCppBackend, "_TENSOR_PARALLEL_KV_TYPES")
+
+
+# ── Pre-b9455 llama.cpp: one doomed attempt, latched, then never again ───────
+
+
+class TestLegacyBuildQuantizedKvInTensorMode:
+    """Studio stopped pre-emptively rewriting a quantized KV cache for the tensor
+    attempt (ggml-org/llama.cpp#23792, b9455), so an older binary now refuses the
+    load itself. That refusal is a clean LLAMA_LOG_ERROR + return nullptr, not a
+    GGML_ASSERT, so nothing in the #6415 path can see it -- these pin the marker's
+    own handling: skip the --fit retry, latch it, and hand the route a message that
+    names the remedy.
+
+    The child is a captured Popen; no llama-server runs.
+    """
+
+    _REJECTION = (
+        "llama_init_from_model: simultaneous use of SPLIT_MODE_TENSOR and "
+        "KV cache quantization not implemented"
+    )
+    _QUANTIZED = ("q8_0", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl")
+
+    @classmethod
+    def _doomed(cls, cmd) -> bool:
+        """What a pre-#23792 llama-server rejects: tensor split + a quantized axis."""
+        if "--split-mode" not in cmd or cmd[cmd.index("--split-mode") + 1] != "tensor":
+            return False
+        return any(
+            flag in ("--cache-type-k", "--cache-type-v") and cmd[i + 1] in cls._QUANTIZED
+            for i, flag in enumerate(cmd[:-1])
+        )
+
+    def _run(self, tmp_path, monkeypatch):
+        """One load_model call against a legacy child; returns the spawned commands."""
+        import subprocess
+        from unittest.mock import patch
+
+        import importlib.util
+        from pathlib import Path as _Path
+
+        spec = importlib.util.spec_from_file_location(
+            "_placement_harness_legacy_build",
+            _Path(__file__).resolve().parent / "test_llama_cpp_placement.py",
+        )
+        placement = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(placement)
+
+        backend, gguf = placement._backend(
+            tmp_path, vulkan = False, memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)]
+        )
+        real_popen = subprocess.Popen
+        spawns: list[list[str]] = []
+
+        def fake_popen(cmd, **kwargs):
+            if not cmd or str(cmd[0]) != "/fake/llama-server":
+                return real_popen(cmd, **kwargs)
+            cmd = list(cmd)
+            spawns.append(cmd)
+            doomed = self._doomed(cmd)
+            if doomed:
+                backend._stdout_lines = [self._REJECTION, "srv load_model: failed to load model"]
+            return type("Process", (), {
+                "pid": 123,
+                "stdout": (),
+                "returncode": 1 if doomed else None,
+                "poll": lambda _self, _d = doomed: 1 if _d else None,
+                "terminate": lambda _self: None,
+                "wait": lambda _self, timeout = None: 1 if doomed else 0,
+                "kill": lambda _self: None,
+            })()
+
+        backend._wait_for_health = lambda timeout: not self._doomed(spawns[-1])
+        error: list[BaseException] = []
+        with patch.object(subprocess, "Popen", side_effect = fake_popen):
+            try:
+                backend.load_model(GgufLoadIntent(
+                    gguf_path = str(gguf),
+                    model_identifier = "test",
+                    tensor_parallel = True,
+                    cache_type_kv = "q8_0",
+                ))
+            except BaseException as exc:  # noqa: BLE001
+                error.append(exc)
+        return backend, gguf, spawns, (error[0] if error else None)
+
+    @pytest.fixture(autouse = True)
+    def _clear_latch(self):
+        """The latch is class-level and process-wide; a leak would make the second
+        cell pass for the first cell's reason."""
+        LlamaCppBackend._tensor_split_abort_keys.clear()
+        yield
+        LlamaCppBackend._tensor_split_abort_keys.clear()
+
+    def test_the_refusal_costs_exactly_one_spawn(self, tmp_path, monkeypatch):
+        """Not two. The --fit off -> --fit on retry cannot fix a missing capability,
+        and on a 27B each doomed attempt is a full model-load cycle."""
+        _backend, _gguf, spawns, error = self._run(tmp_path, monkeypatch)
+
+        assert len(spawns) == 1, [c[c.index("--split-mode") + 1] for c in spawns]
+        assert isinstance(error, RuntimeError), error
+
+    def test_it_raises_to_the_route_fallback_naming_the_build(self, tmp_path, monkeypatch):
+        """load_with_tensor_fallback catches the raise and relaunches layer-split;
+        the message is what reaches the user if anything reports it."""
+        _backend, _gguf, _spawns, error = self._run(tmp_path, monkeypatch)
+
+        assert "b9455" in str(error)
+        assert "layer split" in str(error)
+
+    def test_the_binary_is_latched_so_the_next_load_skips_tensor(self, tmp_path, monkeypatch):
+        """Without this the doomed attempt repeats on every load, forever."""
+        backend, gguf, _spawns, _error = self._run(tmp_path, monkeypatch)
+
+        assert LlamaCppBackend._tensor_split_aborts(
+            "/fake/llama-server", "test", ("q8_0", "q8_0")
+        )
+        # And ONLY for that pair: f16 runs fine under a tensor split on a
+        # pre-b9455 binary, so latching the model wholesale would take tensor
+        # mode away from a config that works.
+        assert not LlamaCppBackend._tensor_split_aborts(
+            "/fake/llama-server", "test", ("f16", "f16")
+        )
+
+    def test_a_current_build_is_untouched(self, tmp_path, monkeypatch):
+        """The guard must not cost anything on a binary that supports the pair:
+        one spawn, tensor mode kept, quantized cache emitted."""
+        import importlib.util
+        from pathlib import Path as _Path
+
+        spec = importlib.util.spec_from_file_location(
+            "_placement_harness_current_build",
+            _Path(__file__).resolve().parent / "test_llama_cpp_placement.py",
+        )
+        placement = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(placement)
+
+        backend, gguf = placement._backend(
+            tmp_path, vulkan = False, memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)]
+        )
+        backend._tensor_split_aborts = lambda *a, **k: False
+        cmd = placement._launch(
+            backend, gguf, tensor_parallel = True, cache_type_kv = "q8_0"
+        )["cmd"]
+
+        assert cmd[cmd.index("--split-mode") + 1] == "tensor"
+        assert cmd[cmd.index("--cache-type-k") + 1] == "q8_0"
+        assert not LlamaCppBackend._tensor_split_abort_keys
