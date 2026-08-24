@@ -20,6 +20,8 @@ from core.inference.external_provider import (
     ExternalProviderClient,
     _build_usage_chunk,
 )
+from models.inference import ChatMessage
+from routes.inference import _build_external_messages
 
 
 # ── _build_usage_chunk unit tests ───────────────────────────────────
@@ -611,14 +613,11 @@ def test_streamed_usage_is_requested_only_where_documented(monkeypatch, provider
 
 
 def test_kimi_no_search_fallback_requests_usage(monkeypatch):
-    # The web-search path returns before the common body injection, and Kimi reports no
-    # engine timings, so this fallback would leave tokens and speed blank.
     bodies: list = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content.decode("utf-8"))
         bodies.append(body)
-        # First call: the model declines to invoke $web_search.
         return httpx.Response(
             200,
             content = b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n',
@@ -644,11 +643,198 @@ def test_kimi_no_search_fallback_requests_usage(monkeypatch):
         await client.close()
 
     _drive(run())
-    assert len(bodies) >= 2, "the search call then the plain fallback"
-    search_body, fallback_body = bodies[0], bodies[-1]
-    assert "tools" in search_body
-    assert "tools" not in fallback_body
-    assert fallback_body["stream_options"] == {"include_usage": True}
+    assert len(bodies) == 2
+    assert "tools" in bodies[0]
+    assert "tools" not in bodies[1]
+    assert bodies[1]["stream_options"] == {"include_usage": True}
+
+
+def test_kimi_k3_serializes_reasoning_effort_and_fixed_sampling(monkeypatch):
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content = b"data: [DONE]\n\n",
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "kimi",
+            base_url = "http://kimi.example/v1",
+            api_key = "sk-test",
+        )
+        await _collect(
+            client.stream_chat_completion(
+                messages = [{"role": "user", "content": "ping"}],
+                model = "kimi-k3",
+                temperature = 0.2,
+                top_p = 0.4,
+                presence_penalty = 0.7,
+                max_tokens = 1048576,
+                reasoning_effort = "high",
+            )
+        )
+        await client.close()
+
+    _drive(run())
+    body = captured["body"]
+    assert body["reasoning_effort"] == "high"
+    assert body["max_completion_tokens"] == 1048576
+    assert "max_tokens" not in body
+    assert "thinking" not in body
+    assert "temperature" not in body
+    assert "top_p" not in body
+    assert "presence_penalty" not in body
+
+
+def test_kimi_k3_replays_reasoning_content_between_turns():
+    messages = [
+        ChatMessage(role = "assistant", content = "answer", reasoning_content = "trace"),
+        ChatMessage(role = "assistant", content = "", reasoning_content = "trace only"),
+    ]
+    kimi_k3 = _build_external_messages(
+        messages,
+        supports_vision = True,
+        provider_type = "kimi",
+        model = "kimi-k3",
+    )
+    assert [message["reasoning_content"] for message in kimi_k3] == ["trace", "trace only"]
+
+    kimi_k2 = _build_external_messages(
+        messages,
+        supports_vision = True,
+        provider_type = "kimi",
+        model = "kimi-k2.6",
+    )
+    assert all("reasoning_content" not in message for message in kimi_k2)
+
+
+def test_kimi_k3_web_search_loops_until_the_model_stops(monkeypatch):
+    bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content.decode("utf-8")))
+        round_number = len(bodies)
+        if round_number <= 2:
+            call_id = f"call_search_{round_number}"
+            payload = {
+                "choices": [
+                    {
+                        "delta": {
+                            "reasoning_content": f"reason {round_number}",
+                            "content": f"draft {round_number}",
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": call_id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": "$web_search",
+                                        "arguments": json.dumps(
+                                            {"search_result": f"result {round_number}"}
+                                        ),
+                                    },
+                                }
+                            ],
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ]
+            }
+            content = f"data: {json.dumps(payload)}\n\ndata: [DONE]\n\n".encode()
+        else:
+            content = (
+                b'data: {"choices":[{"delta":{"reasoning_content":"final reason"}}]}\n\n'
+                b'data: {"choices":[{"delta":{"content":"final answer"},'
+                b'"finish_reason":"stop"}],"usage":{"prompt_tokens":20,'
+                b'"completion_tokens":4}}\n\ndata: [DONE]\n\n'
+            )
+        return httpx.Response(
+            200,
+            content = content,
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "kimi",
+            base_url = "http://kimi.example/v1",
+            api_key = "sk-test",
+        )
+        lines = await _collect(
+            client.stream_chat_completion(
+                messages = [{"role": "user", "content": "search twice"}],
+                model = "kimi-k3",
+                max_tokens = 32768,
+                reasoning_effort = "max",
+                enabled_tools = ["web_search"],
+            )
+        )
+        await client.close()
+        return lines
+
+    lines = _drive(run())
+    assert len(bodies) == 3
+    assert all('"tool_calls"' not in line for line in lines)
+    assert sum('"type": "tool_start"' in line for line in lines) == 2
+    assert any('"content": "final answer"' in line for line in lines)
+    assert lines.count("data: [DONE]") == 1
+
+    third_turn_assistants = [
+        message for message in bodies[2]["messages"] if message["role"] == "assistant"
+    ]
+    assert [message["reasoning_content"] for message in third_turn_assistants] == [
+        "reason 1",
+        "reason 2",
+    ]
+    assert [message["content"] for message in third_turn_assistants] == ["draft 1", "draft 2"]
+    assert [
+        message["tool_call_id"] for message in bodies[2]["messages"] if message["role"] == "tool"
+    ] == ["call_search_1", "call_search_2"]
+
+
+def test_openrouter_kimi_k3_serializes_max_reasoning_effort(monkeypatch):
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content = b"data: [DONE]\n\n",
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "openrouter",
+            base_url = "https://openrouter.ai/api/v1",
+            api_key = "sk-test",
+        )
+        await _collect(
+            client.stream_chat_completion(
+                messages = [{"role": "user", "content": "ping"}],
+                model = "moonshotai/kimi-k3",
+                max_tokens = 32768,
+                reasoning_effort = "max",
+            )
+        )
+        await client.close()
+
+    _drive(run())
+    body = captured["body"]
+    assert body["reasoning"] == {"effort": "max"}
+    assert "reasoning_effort" not in body
+    assert "thinking" not in body
+    assert "max_completion_tokens" not in body
 
 
 def test_a_type_carried_only_by_the_sse_event_field_is_honoured(monkeypatch):

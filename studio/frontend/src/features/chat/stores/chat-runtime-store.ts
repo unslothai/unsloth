@@ -906,7 +906,7 @@ const explicitlyEditedThreadFields = new Set<string>();
  */
 const constraintSuppressedThreadFields = new Set<string>();
 
-/** Both pills of Kimi's search/thinking exclusion; the only non-persisting setters. */
+/** both pills of the legacy kimi search/thinking exclusion. */
 const CONSTRAINT_SUPPRESSIBLE_KEYS = ["reasoningEnabled", "toolsEnabled"] as const;
 
 function noteConstraintSuppressedThreadField(
@@ -3435,15 +3435,11 @@ function externalCheckpointRefusesDeepResearch(
   return provider != null && provider.providerType !== "openai_codex";
 }
 
-/**
- * Kimi's $web_search builtin requires thinking disabled, so the composer keeps the two
- * pills mutually exclusive. A restore has to do the same, or a chat stored under another
- * provider sends a combination Kimi rejects.
- */
 function isKimiCheckpoint(checkpoint: string | null | undefined): boolean {
   const parsed = parseExternalModelId(checkpoint);
   if (!parsed) return false;
   return (
+    parsed.modelId.trim().toLowerCase() !== "kimi-k3" &&
     useExternalProvidersStore
       .getState()
       .providers.find((candidate) => candidate.id === parsed.providerId)

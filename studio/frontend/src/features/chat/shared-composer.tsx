@@ -739,11 +739,9 @@ export function SharedComposer({
   const reasoningLockedOn =
     effectiveSupportsReasoning &&
     (effectiveReasoningAlwaysOn || !effectiveSupportsReasoningOff);
-  // Kimi's $web_search builtin mandates thinking=disabled
-  // (https://platform.kimi.ai/docs/guide/use-web-search). Both pills stay
-  // clickable, but turning one on flips the other off; the click handlers
-  // below enforce this so the visible state matches what the backend sends.
-  const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
+  const isKimiExternal =
+    selectedExternalProvider?.providerType === "kimi" &&
+    externalSelection?.modelId.trim().toLowerCase() !== "kimi-k3";
   const effectiveReasoningEnabled = reasoningLockedOn ? true : reasoningEnabled;
   const effectiveReasoningVisualEnabled =
     effectiveReasoningEnabled && reasoningEffort !== "none";
@@ -2263,7 +2261,7 @@ export function SharedComposer({
                 onSelect={() => {
                   const next = !toolsEnabled;
                   setToolsEnabled(next);
-                  // Mirror the Search pill: Kimi forbids search + thinking together.
+                  // older kimi models require search and thinking to stay exclusive.
                   if (isKimiExternal) {
                     setReasoningEnabled(!next, { persist: false });
                     applyQwenThinkingParams(!next);
@@ -2369,9 +2367,7 @@ export function SharedComposer({
             onClick={() => {
               const next = !toolsEnabled;
               setToolsEnabled(next);
-              // Kimi's $web_search builtin requires thinking=disabled
-              // (https://platform.kimi.ai/docs/guide/use-web-search): toggle
-              // the Think pill off when Search is on, mirroring the backend.
+              // older kimi models require thinking off for $web_search.
               if (isKimiExternal) {
                 setReasoningEnabled(!next, { persist: false });
                 applyQwenThinkingParams(!next);
@@ -2555,8 +2551,7 @@ export function SharedComposer({
                               setReasoningEffort(level);
                               setReasoningEnabled(true);
                               applyQwenThinkingParams(true);
-                              // Mutual exclusion: turning thinking on for a
-                              // Kimi model forces the web_search builtin off.
+                              // older kimi models require search and thinking to stay exclusive.
                               if (isKimiExternal && toolsEnabled) {
                                 setToolsEnabled(false, { persist: false });
                               }
@@ -2649,8 +2644,7 @@ export function SharedComposer({
                   const next = !reasoningEnabled;
                   setReasoningEnabled(next);
                   applyQwenThinkingParams(next);
-                  // Mutual exclusion: Kimi's $web_search builtin requires
-                  // thinking off, so turning thinking on flips Search off.
+                  // older kimi models require search and thinking to stay exclusive.
                   if (isKimiExternal && next && toolsEnabled) {
                     setToolsEnabled(false, { persist: false });
                   }

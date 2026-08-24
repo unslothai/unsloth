@@ -331,6 +331,7 @@ class ToolLoopRun:
     messages: list[dict[str, Any]]
     session_id: str | None = None
     thread_id: str | None = None
+    provider_type: str | None = None
     model: str | None = None
     tool_choice: Any = None
     continue_final_message: bool = False
@@ -362,6 +363,7 @@ class _Turn:
     round: int = 0
     healed: list[dict[str, Any]] = field(default_factory = list)
     text: list[str] = field(default_factory = list)
+    reasoning_content: list[str] = field(default_factory = list)
     reasoning_extra: dict[str, Any] | None = None
     finish_reason: str | None = None
     # Results from tools the PROVIDER ran this turn, keyed by call id so a
@@ -798,6 +800,9 @@ async def stream_with_studio_tools(
     round_id = 0
     executed_any = False
     model_name = run.model or "external"
+    preserve_reasoning_content = (
+        run.provider_type == "kimi" and (run.model or "").strip().lower() == "kimi-k3"
+    )
     usage_totals: dict[str, Any] = {}
     # Dedup, one-shot tracking and the force-final-answer transition are the same
     # ledger the local loops keep, so an external model cannot spend the budget
@@ -907,6 +912,9 @@ async def stream_with_studio_tools(
                 delta = choice.get("delta")
                 delta = delta if isinstance(delta, dict) else {}
                 content = delta.get("content")
+                reasoning_content = delta.get("reasoning_content")
+                if preserve_reasoning_content and isinstance(reasoning_content, str):
+                    turn.reasoning_content.append(reasoning_content)
                 raw_calls = delta.get("tool_calls")
                 extra = delta.get("extra_content")
                 if isinstance(extra, dict):
@@ -1371,6 +1379,8 @@ async def stream_with_studio_tools(
             )
         if turn.reasoning_extra:
             assistant_message["extra_content"] = turn.reasoning_extra
+        if preserve_reasoning_content and turn.reasoning_content:
+            assistant_message["reasoning_content"] = "".join(turn.reasoning_content)
         if assistant_tool_calls:
             assistant_message["tool_calls"] = assistant_tool_calls
         if assistant_message["content"] or assistant_tool_calls:

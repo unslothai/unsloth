@@ -111,6 +111,7 @@ const VISION_CAPABLE_PROVIDER_TYPES = new Set<string>([
   "openai",
   "anthropic",
   "gemini",
+  "kimi",
   "openrouter",
 ]);
 

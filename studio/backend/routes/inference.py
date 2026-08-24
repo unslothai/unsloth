@@ -13500,6 +13500,7 @@ def _build_external_messages(
     supports_vision: bool,
     provider_type: Optional[str] = None,
     base_url: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> list[dict]:
     """
     Convert ChatMessage list to OpenAI-compatible dicts for external providers.
@@ -13525,6 +13526,9 @@ def _build_external_messages(
     document_provider = provider_type in _INPUT_DOCUMENT_PROVIDERS
     anthropic = provider_type == "anthropic"
     openai = provider_type == "openai"
+    replay_reasoning_content = (
+        provider_type == "kimi" and (model or "").strip().lower() == "kimi-k3"
+    )
     # `extra_content` carries the assistant's text-part `thoughtSignature`
     # round-trip on Gemini's native streamGenerateContent endpoint. Custom
     # Gemini OpenAI-compat gateways (LiteLLM etc.) route through
@@ -13656,7 +13660,12 @@ def _build_external_messages(
             # (some providers reject empty assistant turns). Preserve assistant
             # turns whose only payload is tool_calls so multi-turn
             # function-call loops round-trip.
-            if msg.role == "assistant" and not msg.content.strip() and not msg.tool_calls:
+            if (
+                msg.role == "assistant"
+                and not msg.content.strip()
+                and not msg.tool_calls
+                and not (replay_reasoning_content and msg.reasoning_content)
+            ):
                 continue
             out: dict[str, Any] = {"role": msg.role, "content": msg.content}
             if msg.role == "assistant" and msg.tool_calls:
@@ -13669,6 +13678,8 @@ def _build_external_messages(
                     # `{"role":"assistant","content":""}` that some providers
                     # reject. Skip it entirely.
                     continue
+            if replay_reasoning_content and msg.role == "assistant" and msg.reasoning_content:
+                out["reasoning_content"] = msg.reasoning_content
             if msg.role == "tool":
                 if msg.tool_call_id:
                     out["tool_call_id"] = msg.tool_call_id
@@ -13681,17 +13692,24 @@ def _build_external_messages(
         # Assistant messages with content=None but populated tool_calls are
         # valid (post-tool-call turn). Forward them so the provider helper can
         # rebuild the functionCall part.
-        if msg.content is None and msg.role == "assistant" and msg.tool_calls:
+        if (
+            msg.content is None
+            and msg.role == "assistant"
+            and (msg.tool_calls or (replay_reasoning_content and msg.reasoning_content))
+        ):
             _filtered_tcs = _filter_tool_calls(msg.tool_calls)
-            if not _filtered_tcs:
+            if msg.tool_calls and not _filtered_tcs:
                 # Every tool_call was provider-side synthetic and dropped;
                 # skip the whole message to avoid an empty assistant turn.
                 continue
             _assistant_only: dict[str, Any] = {
                 "role": "assistant",
                 "content": "",
-                "tool_calls": _filtered_tcs,
             }
+            if _filtered_tcs:
+                _assistant_only["tool_calls"] = _filtered_tcs
+            if replay_reasoning_content and msg.reasoning_content:
+                _assistant_only["reasoning_content"] = msg.reasoning_content
             if emit_extra_content and msg.extra_content:
                 _assistant_only["extra_content"] = msg.extra_content
             result.append(_assistant_only)
@@ -14389,6 +14407,7 @@ async def _proxy_to_external_provider(
         _supports_vision,
         provider_type = provider_type,
         base_url = base_url,
+        model = model,
     )
     monitor_id = None
     if not getattr(request.state, "skip_api_monitor", False):
@@ -14494,6 +14513,7 @@ async def _proxy_to_external_provider(
                     messages = chat_messages,
                     session_id = payload.session_id,
                     thread_id = payload.thread_id,
+                    provider_type = provider_type,
                     # The loop withholds the provider's own usage-only chunks and
                     # sends one summed chunk instead, so this is the only model id
                     # the client sees for the whole answer. Omitted, it falls back

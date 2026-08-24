@@ -4603,9 +4603,13 @@ export function createOpenAIStreamAdapter(
       // toOpenAIMessages emits assistant tool_calls + role="tool"
       // follow-ups; the backend Gemini translator rebuilds the
       // functionCall / functionResponse parts (with thoughtSignature).
+      const replayAssistantReasoning =
+        !isExternalRequest ||
+        (externalProvider?.providerType === "kimi" &&
+          externalSelection?.modelId.trim().toLowerCase() === "kimi-k3");
       const outboundMessages = survivingMessages
         .flatMap((message) =>
-          toOpenAIMessages(message, !isExternalRequest),
+          toOpenAIMessages(message, replayAssistantReasoning),
         )
         .filter((message): message is NonNullable<typeof message> =>
           Boolean(message),
