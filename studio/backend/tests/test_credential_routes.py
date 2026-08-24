@@ -541,6 +541,21 @@ def test_shared_provider_resolver_uses_saved_and_explicit_precedence(monkeypatch
         providers_route.resolve_provider_api_key_or_400("provider-1", "ciphertext")
         == "explicit:ciphertext"
     )
+    assert (
+        providers_route.resolve_provider_api_key_or_400(
+            "provider-1", "ciphertext", prefer_saved_key = True
+        )
+        == "saved"
+    )
+    assert (
+        providers_route.resolve_provider_api_key_or_400(
+            "provider-1",
+            "ciphertext",
+            allow_saved_key = False,
+            prefer_saved_key = True,
+        )
+        == "explicit:ciphertext"
+    )
 
     monkeypatch.setattr(
         key_exchange,

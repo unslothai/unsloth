@@ -301,14 +301,24 @@ export async function generateCustomTtsAudio(
       "Connections are disabled. Turn on Enable connections in Settings → Connections to use a custom TTS endpoint.",
     );
   }
-  if (
-    !currentProvidersState.providers.some(
-      (candidate) => candidate.id === ttsProviderId,
-    )
-  ) {
+  const currentProvider = currentProvidersState.providers.find(
+    (candidate) => candidate.id === ttsProviderId,
+  );
+  if (!currentProvider) {
     useVoiceSettingsStore.getState().setTtsProviderId("");
     throw new Error(
       "The custom TTS connection no longer exists. Pick another connection in Settings → Voice.",
+    );
+  }
+  if (
+    currentProvider.baseUrl !== provider.baseUrl ||
+    currentProvider.providerType !== provider.providerType ||
+    currentProvider.backendProviderType !== provider.backendProviderType ||
+    currentProvider.hasApiKey !== provider.hasApiKey ||
+    currentProvider.updatedAt !== provider.updatedAt
+  ) {
+    throw new Error(
+      "The custom TTS connection changed while the request was starting. Try again.",
     );
   }
   const response = await authFetch("/api/inference/audio/speech", {
@@ -317,6 +327,7 @@ export async function generateCustomTtsAudio(
     body: JSON.stringify({
       input: text,
       provider_id: ttsProviderId,
+      provider_base_url: provider.baseUrl,
       model,
       voice,
       ...(encryptedApiKey ? { encrypted_api_key: encryptedApiKey } : {}),

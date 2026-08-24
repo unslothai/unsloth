@@ -12354,11 +12354,20 @@ async def _external_tts_speech(body: AudioSpeechRequest, request: Request) -> Re
                 status_code = 409,
                 detail = "Provider changed while the request was starting; retry.",
             )
+        if body.encrypted_api_key and body.provider_base_url != current.get("base_url"):
+            # The browser encrypted a legacy key for the connection it rendered. A
+            # same-id edit may have replaced both its destination and saved key while
+            # encryption yielded; never attach that captured key to the new endpoint.
+            raise HTTPException(
+                status_code = 409,
+                detail = "Provider changed while the request was starting; retry.",
+            )
         api_key = await asyncio.to_thread(
             resolve_provider_api_key_or_400,
             provider_id,
             body.encrypted_api_key,
             allow_saved_key = not _request_has_api_key(request),
+            prefer_saved_key = True,
         )
         # The guard coordinates this process, while Studio can also be edited by
         # another backend process. Provider updates write routing metadata before
@@ -12397,8 +12406,7 @@ async def _external_tts_speech(body: AudioSpeechRequest, request: Request) -> Re
         raise HTTPException(
             status_code = 502,
             detail = (
-                f"TTS endpoint returned HTTP {exc.response.status_code}: "
-                f"{exc.response.text[:300]}"
+                f"TTS endpoint returned HTTP {exc.response.status_code}: {exc.response.text[:300]}"
             ),
         )
     except httpx.HTTPError as exc:
@@ -12422,6 +12430,11 @@ async def openai_audio_speech(
     ``voice``/``speed`` ignored, and only WAV exists, so another ``response_format`` is
     a 400 rather than a silent container mismatch."""
     if body.provider_id:
+        # This branch never touches the local GGUF. Drop it before any monitor or
+        # upstream await so slow external speech cannot block a local swap/training
+        # start or reset the local model's idle timer.
+        from core.inference.llama_keepwarm import untrack_current_request
+        untrack_current_request(request.scope)
         # A saved TTS connection is still media traffic through this server,
         # just like the proxied STT path below. Keep it visible in the monitor
         # and close the row consistently on upstream failure or cancellation.

@@ -3849,6 +3849,11 @@ class AudioSpeechRequest(BaseModel):
         description = "[x-unsloth] Saved connection ID. When set, synthesis is proxied to that "
         "provider's /audio/speech and model/voice/speed are forwarded as sent.",
     )
+    provider_base_url: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Browser-snapshotted connection base URL. Required with a "
+        "legacy encrypted_api_key so an edit cannot route that key to another endpoint.",
+    )
     encrypted_api_key: Optional[str] = Field(
         None,
         description = "[x-unsloth] Per-request key for a browser still holding a legacy "

@@ -14,7 +14,7 @@ import mimetypes
 import re
 import time
 from typing import Any, AsyncGenerator, Literal, NamedTuple, Optional, Union
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit, urlunsplit
 
 import httpx
 import structlog
@@ -52,6 +52,13 @@ _USAGE_STREAM_OPTION_PROVIDERS = frozenset({"vllm", "openrouter", "kimi"})
 # stdlib root logger defaults to WARNING with no handlers). It accepts the
 # existing printf-style positional args.
 logger = structlog.get_logger(__name__)
+
+
+def _append_provider_path(base_url: str, endpoint: str) -> str:
+    """Append an API path without moving it behind a base URL's query string."""
+    parts = urlsplit(base_url)
+    path = f"{parts.path.rstrip('/')}/{endpoint.lstrip('/')}"
+    return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
 
 
 def _is_openai_family_cloud(base_url: Optional[str]) -> bool:
@@ -6297,7 +6304,7 @@ class ExternalProviderClient:
         if speed is not None:
             body["speed"] = speed
         response = await _http_client.post(
-            f"{self.base_url}/audio/speech",
+            _append_provider_path(self.base_url, "/audio/speech"),
             headers = self._auth_headers(),
             json = body,
             timeout = self._timeout,

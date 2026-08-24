@@ -11,7 +11,19 @@ import test from "node:test";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 type Adapter = {
-  generateCustomTtsAudio: (text: string, signal?: AbortSignal) => Promise<string>;
+  generateCustomTtsAudio: (
+    text: string,
+    signal?: AbortSignal,
+  ) => Promise<string>;
+};
+
+type StubProvider = {
+  id: string;
+  hasApiKey: boolean;
+  baseUrl?: string;
+  providerType?: string;
+  backendProviderType?: string;
+  updatedAt?: number;
 };
 
 /** The adapter with both stores faked and a fetch that only logs. */
@@ -23,7 +35,7 @@ function load(
     voice = "af_sky",
     encrypt = async (key: string) => `enc(${key})`,
   }: {
-    providers?: { id: string; hasApiKey: boolean }[];
+    providers?: StubProvider[];
     legacyKey?: string;
     voice?: string;
     encrypt?: (key: string) => Promise<string>;
@@ -33,10 +45,12 @@ function load(
   posted: string[];
   clearedProviderIds: string[];
   setConnectionsEnabled: (enabled: boolean) => void;
+  setProviders: (providers: StubProvider[]) => void;
 } {
   const posted: string[] = [];
   const clearedProviderIds: string[] = [];
   let currentConnectionsEnabled = connectionsEnabled;
+  let currentProviders = providers;
   const adapter = loadWithStubs<Adapter>(
     new URL(
       "../src/features/chat/adapters/studio-speech-synthesis-adapter.ts",
@@ -59,7 +73,7 @@ function load(
         useExternalProvidersStore: {
           getState: () => ({
             connectionsEnabled: currentConnectionsEnabled,
-            providers,
+            providers: currentProviders,
           }),
         },
       },
@@ -88,6 +102,9 @@ function load(
     clearedProviderIds,
     setConnectionsEnabled: (enabled) => {
       currentConnectionsEnabled = enabled;
+    },
+    setProviders: (nextProviders) => {
+      currentProviders = nextProviders;
     },
   };
 }
@@ -153,14 +170,65 @@ test("custom TTS rechecks the global switch after legacy-key encryption", async 
   assert.deepEqual(posted, []);
 });
 
+test("custom TTS does not send a captured legacy key after the connection changes", async () => {
+  let releaseEncryption: ((value: string) => void) | undefined;
+  const encryption = new Promise<string>((resolve) => {
+    releaseEncryption = resolve;
+  });
+  const { adapter, posted, setProviders } = load(true, {
+    providers: [
+      {
+        id: "conn-1",
+        hasApiKey: false,
+        baseUrl: "https://old-tts.example/v1",
+        providerType: "custom",
+        backendProviderType: "custom",
+        updatedAt: 1,
+      },
+    ],
+    legacyKey: "sk-legacy",
+    encrypt: async () => encryption,
+  });
+
+  const pending = adapter.generateCustomTtsAudio("secret assistant reply");
+  await Promise.resolve();
+  setProviders([
+    {
+      id: "conn-1",
+      hasApiKey: true,
+      baseUrl: "https://new-tts.example/v1",
+      providerType: "custom",
+      backendProviderType: "custom",
+      updatedAt: 2,
+    },
+  ]);
+  releaseEncryption?.("enc(sk-legacy)");
+
+  await assert.rejects(pending, /connection changed/i);
+  assert.deepEqual(posted, []);
+});
+
 // #9214: a failed key migration leaves the connection selectable on the retained key.
 test("custom TTS forwards a retained legacy key when the connection has none saved", async () => {
   const { adapter, posted } = load(true, {
-    providers: [{ id: "conn-1", hasApiKey: false }],
+    providers: [
+      {
+        id: "conn-1",
+        hasApiKey: false,
+        baseUrl: "https://tts.example/v1",
+      },
+    ],
     legacyKey: "sk-legacy",
   });
   await adapter.generateCustomTtsAudio("hello");
-  assert.equal(JSON.parse(posted[0]).encrypted_api_key, "enc(sk-legacy)");
+  assert.deepEqual(JSON.parse(posted[0]), {
+    input: "hello",
+    provider_id: "conn-1",
+    provider_base_url: "https://tts.example/v1",
+    model: "kokoro",
+    voice: "af_sky",
+    encrypted_api_key: "enc(sk-legacy)",
+  });
 });
 
 test("custom TTS sends no key when the connection already has one saved", async () => {

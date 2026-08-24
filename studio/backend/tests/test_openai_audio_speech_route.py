@@ -9,9 +9,10 @@ gallery persistence and the raw-WAV response without torch, weights or a GPU."""
 from __future__ import annotations
 
 import json
+from contextlib import asynccontextmanager
 
 import pytest
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 
 import core.inference.audio_gallery as gallery_module
@@ -542,12 +543,115 @@ def test_external_forwards_a_legacy_browser_key(monkeypatch):
             "provider_id": "conn-1",
             "model": "kokoro",
             "voice": "alloy",
+            "provider_base_url": "http://tts.local:8880/v1",
             "encrypted_api_key": "enc-legacy",
         },
     )
     assert resp.status_code == 200
     assert seen["encrypted_api_key"] == "enc-legacy"
     assert created[0]["api_key"] == "sk-from-legacy"
+
+
+def test_external_rejects_a_legacy_key_snapshotted_for_another_base_url(monkeypatch):
+    cli, _calls, _saved = _make_client(monkeypatch)
+    _install_external(monkeypatch)
+
+    def _must_not_resolve(*_args, **_kwargs):
+        pytest.fail("the stale legacy key was decrypted")
+
+    monkeypatch.setattr(routes_module, "resolve_provider_api_key_or_400", _must_not_resolve)
+    resp = cli.post(
+        "/v1/audio/speech",
+        json = {
+            "input": "hi",
+            "provider_id": "conn-1",
+            "provider_base_url": "http://old-tts.local:8880/v1",
+            "model": "kokoro",
+            "voice": "alloy",
+            "encrypted_api_key": "enc-old-key",
+        },
+    )
+    assert resp.status_code == 409
+    assert "changed" in resp.json()["error"]["message"].lower()
+
+
+def test_external_tts_drops_the_local_keepwarm_count_before_proxy(monkeypatch):
+    from core.inference import llama_keepwarm
+    from models.inference import AudioSpeechRequest
+
+    monkeypatch.setattr(llama_keepwarm, "_inflight", 1)
+    monkeypatch.setattr(llama_keepwarm, "_pending", 0)
+    observed_counts = []
+
+    @asynccontextmanager
+    async def _monitor(*_args, **_kwargs):
+        yield "monitor-1"
+
+    async def _proxy(_body, _request):
+        observed_counts.append(
+            llama_keepwarm.other_inference_request_count(current_request_counted = False)
+        )
+        return routes_module.Response(content = b"external-audio", media_type = "audio/wav")
+
+    monkeypatch.setattr(routes_module, "_monitored_media_request", _monitor)
+    monkeypatch.setattr(routes_module, "_external_tts_speech", _proxy)
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/v1/audio/speech",
+            "headers": [],
+            "query_string": b"",
+            "scheme": "http",
+            "server": ("testserver", 80),
+            "client": ("testclient", 123),
+        }
+    )
+
+    import asyncio
+
+    asyncio.run(
+        routes_module.openai_audio_speech(
+            AudioSpeechRequest(
+                input = "hi",
+                provider_id = "conn-1",
+                model = "kokoro",
+                voice = "alloy",
+            ),
+            request,
+            "test-user",
+        )
+    )
+    assert observed_counts == [0]
+
+
+def test_provider_client_appends_speech_path_before_the_base_query(monkeypatch):
+    import asyncio
+
+    from core.inference.external_provider import ExternalProviderClient
+    import core.inference.external_provider as provider_module
+
+    sent = {}
+
+    class _Response:
+        content = b"audio"
+        headers = {"content-type": "audio/wav"}
+
+        def raise_for_status(self):
+            return None
+
+    async def _post(url, **_kwargs):
+        sent["url"] = url
+        return _Response()
+
+    monkeypatch.setattr(provider_module._http_client, "post", _post)
+    client = ExternalProviderClient(
+        "custom",
+        "http://127.0.0.1:8880/v1?api-version=2026-08-24",
+        "sk-test",
+    )
+    asyncio.run(client.create_speech(text = "hi", model = "kokoro"))
+    assert sent["url"] == ("http://127.0.0.1:8880/v1/audio/speech?api-version=2026-08-24")
 
 
 def test_external_provider_reads_do_not_block_the_event_loop(monkeypatch):
