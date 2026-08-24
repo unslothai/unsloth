@@ -3,6 +3,10 @@
 
 export type ConversationJsonlLayout = "training" | "messages";
 
+export function canMergeConversationExport(format: string): boolean {
+  return format !== "jsonl-messages";
+}
+
 const OPENAI_MESSAGE_ROLES = new Set(["system", "user", "assistant", "tool"]);
 
 export function isOpenAIMessageRecord(

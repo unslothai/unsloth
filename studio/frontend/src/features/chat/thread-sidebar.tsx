@@ -61,6 +61,7 @@ import {
   exportConversationMarkdown,
   exportBulkConversationsMerged,
   exportBulkConversationsSeparate,
+  COMBINED_EXPORT_FORMATS_LIST,
   EXPORT_FORMATS_LIST,
   type ConvExportFormat,
 } from "./prompt-storage/prompt-storage-dialog";
@@ -226,7 +227,7 @@ export function ThreadSidebar({
                     Export Recents
                   </DropdownMenuSubTrigger>
                   <DropdownMenuSubContent avoidCollisions={false} className="w-52">
-                    {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                    {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
                       <DropdownMenuItem key={`r-m-${fmt}`} onSelect={() => void handleBulkExport("recents", fmt, true)}>
                         {label} — combined
                       </DropdownMenuItem>
@@ -245,7 +246,7 @@ export function ThreadSidebar({
                     Export Recents + Projects
                   </DropdownMenuSubTrigger>
                   <DropdownMenuSubContent avoidCollisions={false} className="w-52">
-                    {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                    {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
                       <DropdownMenuItem key={`a-m-${fmt}`} onSelect={() => void handleBulkExport("all", fmt, true)}>
                         {label} — combined
                       </DropdownMenuItem>

@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { orderByParentChain } from "../src/features/chat/utils/message-order.ts";
 import {
+  canMergeConversationExport,
   conversationJsonlBody,
   isOpenAIMessageRecord,
   messageJsonlConversationRecord,
@@ -43,6 +44,11 @@ test("message JSONL records form one importable conversation", () => {
   assert.equal(isOpenAIMessageRecord(messages[0]), true);
   assert.equal(isOpenAIMessageRecord({ messages }), false);
   assert.deepEqual(messageJsonlConversationRecord(messages), { messages });
+});
+
+test("message JSONL cannot merge conversations without losing boundaries", () => {
+  assert.equal(canMergeConversationExport("jsonl-messages"), false);
+  assert.equal(canMergeConversationExport("jsonl-raw"), true);
 });
 
 test("training order excludes abandoned response branches", () => {

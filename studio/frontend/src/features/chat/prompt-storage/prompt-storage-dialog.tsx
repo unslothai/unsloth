@@ -62,6 +62,7 @@ import type { ThreadRecord, MessageRecord } from "../types";
 import { createConversationMarkdownExporter } from "../utils/conversation-markdown-export";
 import { parseCsv } from "../utils/csv-parse";
 import {
+  canMergeConversationExport,
   conversationJsonlBody,
   type ConversationJsonlLayout,
 } from "../utils/ndjson";
@@ -511,6 +512,10 @@ export const EXPORT_FORMATS_LIST = (
   Object.keys(EXPORT_FORMAT_LABELS) as ConvExportFormat[]
 ).map((fmt) => ({ fmt, label: EXPORT_FORMAT_LABELS[fmt] }));
 
+export const COMBINED_EXPORT_FORMATS_LIST = EXPORT_FORMATS_LIST.filter(
+  ({ fmt }) => canMergeConversationExport(fmt),
+);
+
 async function buildThreadContent(
   threadId: string,
   format: ConvExportFormat,
@@ -567,6 +572,10 @@ export async function exportBulkConversationsMerged(
   basename: string,
 ): Promise<void> {
   if (threadIds.length === 0) { toast.info("No conversations to export."); return; }
+  if (!canMergeConversationExport(format) && threadIds.length > 1) {
+    toast.info("Message JSONL is available per chat.");
+    return;
+  }
 
   const parts: string[] = [];
   const header = csvHeader(format);
