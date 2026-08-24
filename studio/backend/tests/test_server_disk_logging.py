@@ -177,3 +177,57 @@ class TestSetupServerDiskLogging:
         assert (
             "LogConfig.setup_logging(" not in src[:body]
         ), "configuring structlog at import time pins it to the pre-tee sys.stdout"
+
+    def test_run_py_does_not_import_a_loggers_submodule_at_module_scope(self):
+        """`loggers` has to be a real package for `loggers.config` to resolve.
+
+        run.py is loaded by tests that stand a bare ``types.ModuleType`` in for it
+        (tests/studio/install/test_selection_logic.py), and a bare module has no
+        ``__path__``, so a module-scope submodule import fails during collection there and
+        takes every test in the file with it. Import it where it is used instead.
+        """
+        import ast
+
+        tree = ast.parse((Path(_BACKEND_DIR) / "run.py").read_text(encoding = "utf-8"))
+        offenders = []
+        for node in tree.body:                      # module scope only
+            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("loggers."):
+                offenders.append(f"line {node.lineno}: from {node.module} import ...")
+            elif isinstance(node, ast.Import):
+                offenders += [
+                    f"line {node.lineno}: import {a.name}"
+                    for a in node.names
+                    if a.name.startswith("loggers.")
+                ]
+        assert not offenders, "; ".join(offenders)
+
+    def test_conflicting_flags_are_rejected_before_the_tee_is_installed(self):
+        """A deterministic preflight failure must not leave the process streams swapped.
+
+        ``_setup_server_disk_logging()`` replaces ``sys.stdout`` and ``sys.stderr`` and
+        opens a log handle. An embedder that catches this ``SystemExit`` keeps all of it,
+        and its next ``run_server()`` call nests a second tee inside the first, so every
+        line is written twice.
+        """
+        src = (Path(_BACKEND_DIR) / "run.py").read_text(encoding = "utf-8")
+        body = src.index("def run_server")
+        reject_idx = src.index("--secure requires the Cloudflare tunnel", body)
+        # Anchor on the assignment, not the bare name: a comment mentioning the call
+        # would otherwise satisfy this.
+        tee_idx = src.index("_session_log = _setup_server_disk_logging()", body)
+        assert reject_idx < tee_idx, (
+            "the --secure/--no-cloudflare rejection must run before the tee is installed; "
+            f"got reject@{reject_idx} tee@{tee_idx}"
+        )
+
+    def test_a_rejected_flag_combination_leaves_the_streams_alone(self):
+        import run as run_mod
+
+        orig_out, orig_err = sys.stdout, sys.stderr
+        try:
+            with pytest.raises(SystemExit):
+                run_mod.run_server(secure = True, cloudflare = False, silent = True)
+            assert sys.stdout is orig_out
+            assert sys.stderr is orig_err
+        finally:
+            sys.stdout, sys.stderr = orig_out, orig_err

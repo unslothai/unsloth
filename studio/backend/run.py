@@ -151,7 +151,6 @@ install_torchao_windows_rocm_stub()
 import _platform_compat  # noqa: F401
 
 from loggers import get_logger, install_uvicorn_duplicate_exception_filter
-from loggers.config import LogConfig
 from startup_banner import print_studio_access_banner, print_studio_stop_hint
 
 logger = get_logger(__name__)
@@ -1721,7 +1720,14 @@ class _TeeStream:
     traceback torn by a hang) is still written the moment it arrives, so nothing
     diagnostic waits on a newline that may never come. A withheld frame is closed
     off on its own line as soon as anything but its own redraw follows, so it can
-    never be prefixed onto the record after it."""
+    never be prefixed onto the record after it.
+
+    What counts as a frame is decided exactly the way the desktop reader decides it,
+    so the session log and tauri.log stay interchangeable: strip the line terminator
+    first (trim_line_endings, src-tauri/src/process.rs), then take the last non-blank
+    "\\r"-separated frame (collapse_progress_frames, same file). Reading the "\\r" of a
+    CRLF as a redraw instead would take the empty text after it and throw the whole
+    line away, which on Windows is every relayed child line there is."""
 
     def __init__(self, stream, log_fh):
         self._stream = stream
@@ -1732,15 +1738,32 @@ class _TeeStream:
 
     @staticmethod
     def _last_frame(line):
-        return line.rpartition("\r")[2] if "\r" in line else line
+        # A trailing "\r" is a line terminator (CRLF, or the one tqdm leaves before its
+        # own newline), not the start of an empty redraw. Drop it before looking for
+        # frames, as trim_line_endings does on the desktop side.
+        line = line.rstrip("\r")
+        if "\r" not in line:
+            return line
+        for frame in reversed(line.split("\r")):
+            if frame.strip():
+                return frame
+        # Every frame was blank, so the line was blank. Return one of them rather than
+        # the whole text: a "\r" must never reach the file, because the log handle adds
+        # the platform terminator itself and would land it as "\r\r\n" on Windows.
+        return line.rsplit("\r", 1)[-1]
 
     def _write_file(self, data):
+        # A zero-length write says nothing. Treating it as a continuation of a held frame
+        # would flush that frame unterminated and glue the next record onto it, which is
+        # reachable through print("", end = "").
+        if not data:
+            return
         # Overwhelmingly the common case, and the one that must stay cheap.
         if "\r" not in data and not self._pending_frame:
             self._log_fh.write(data)
             return
 
-        if self._pending_frame and data[:1] not in ("", "\r", "\n"):
+        if self._pending_frame and data[:1] not in ("\r", "\n"):
             # Neither a redraw of the held frame nor its terminator, so it is the next
             # record. Close the frame off on its own line: concatenating them would
             # produce "Loading 47%{"event": ...}" and cost a reader the JSON record.
@@ -1926,10 +1949,12 @@ def _setup_server_disk_logging():
     sys.stdout = _TeeStream(sys.stdout, log_fh)
     sys.stderr = _TeeStream(sys.stderr, log_fh)
 
-    # Best-effort retention: keep the newest 20 session logs.
+    # Best-effort retention: keep the newest 20 session logs. This one already ran after
+    # the open; `protect` makes that explicit rather than relying on the new file sorting
+    # newest, which two starts in the same second do not guarantee.
     try:
         from utils.log_retention import prune_log_dir
-        prune_log_dir(log_dir, "server-*.log")
+        prune_log_dir(log_dir, "server-*.log", protect = log_path)
     except Exception:
         pass
     return log_path
@@ -2286,6 +2311,16 @@ def run_server(
 
     boot_started = time.perf_counter()
 
+    # --secure exposes ONLY the Cloudflare link, so --secure --no-cloudflare is a
+    # contradiction. Reject it here, before anything below touches a process global: the
+    # session tee installed further down replaces sys.stdout and sys.stderr, and an
+    # embedder that catches this SystemExit would otherwise be left with that tee in
+    # place, the log handle open, and a second run_server() nesting another on top.
+    if secure and cloudflare is False:
+        raise SystemExit(
+            "--secure requires the Cloudflare tunnel; do not combine it with --no-cloudflare."
+        )
+
     # Windows cp1252 can't encode emoji; reconfigure stdout to UTF-8. Before the tee, so
     # it reaches the console stream rather than the wrapper.
     if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
@@ -2314,6 +2349,13 @@ def run_server(
     # after it rendered as JSON in UTC, so a reader saw the clock jump hours between line
     # one and line two of the same stream. Repeating structlog.configure() is safe;
     # main.py's call still wins for its own service name.
+    #
+    # Imported here rather than at module scope: `loggers` has to be a real package for
+    # `loggers.config` to resolve, and run.py is loaded by tests that stand a bare
+    # ModuleType in for it (tests/studio/install/test_selection_logic.py:84). Those only
+    # need the module body, never this call.
+    from loggers.config import LogConfig
+
     LogConfig.setup_logging(
         service_name = "unsloth-studio-backend",
         env = os.getenv("ENVIRONMENT_TYPE", "production"),
@@ -2337,15 +2379,12 @@ def run_server(
     except Exception as e:
         logger.warning("Could not sweep orphans from a previous run: %s", e)
 
-    # --secure exposes ONLY the Cloudflare link: reject --secure --no-cloudflare,
-    # then force a loopback bind so the raw port is never public (even -H 0.0.0.0).
-    # Otherwise keep the tri-state so the banner distinguishes "off by default"
-    # from an explicit --no-cloudflare.
+    # --secure exposes ONLY the Cloudflare link, so force a loopback bind and the raw
+    # port is never public (even -H 0.0.0.0). The --no-cloudflare contradiction was
+    # already rejected at the top of this function, before the tee went in. Otherwise
+    # keep the tri-state so the banner distinguishes "off by default" from an explicit
+    # --no-cloudflare.
     if secure:
-        if cloudflare is False:
-            raise SystemExit(
-                "--secure requires the Cloudflare tunnel; do not combine it with --no-cloudflare."
-            )
         cloudflare = True
         host = "127.0.0.1"
 

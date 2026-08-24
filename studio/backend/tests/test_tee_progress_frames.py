@@ -105,3 +105,75 @@ def test_file_failure_never_reaches_the_console():
     stream = _TeeStream(console, Exploding())
     stream.write("still printed\n")
     assert console.text == "still printed\n"
+
+
+# ---------------------------------------------------------------------------------------
+# A "\r" is only a redraw when something follows it on the same line.
+# ---------------------------------------------------------------------------------------
+
+
+def test_a_crlf_line_keeps_its_payload():
+    # "\r\n" is one terminator. Reading its "\r" as a redraw takes the empty text after it
+    # and throws the line away -- and on Windows every line a child process relays arrives
+    # in this shape, so the session log would be blank where the evidence should be.
+    log, _console = _tee(["Hardware detected: NVIDIA GeForce RTX 4090\r\n"])
+    assert log == "Hardware detected: NVIDIA GeForce RTX 4090\n"
+
+
+def test_a_crlf_traceback_is_not_reduced_to_blank_lines():
+    log, _console = _tee(
+        ['Traceback (most recent call last):\r\n  File "run.py", line 3\r\nRuntimeError: boom\r\n']
+    )
+    assert log.splitlines() == [
+        "Traceback (most recent call last):",
+        '  File "run.py", line 3',
+        "RuntimeError: boom",
+    ]
+
+
+def test_a_crlf_record_stays_one_json_object():
+    log, _console = _tee(['{"event": "model_loaded"}\r\n'])
+    assert log == '{"event": "model_loaded"}\n'
+    json.loads(log.strip())
+
+
+def test_a_bar_signing_off_with_a_bare_cr_keeps_its_last_frame():
+    # tqdm's close() can leave the terminator on the same write as the final frame.
+    log, _console = _tee(["Map:  50%\rMap: 100%\r\n"])
+    assert log == "Map: 100%\n"
+
+
+def test_an_all_blank_line_never_writes_a_carriage_return():
+    # The log handle appends the platform terminator itself, so a "\r" that survives here
+    # lands as "\r\r\n" in the file on Windows.
+    for chunk in ("\r\n", "\r\r\r\n", "   \r   \n"):
+        log, _console = _tee([chunk])
+        assert "\r" not in log, repr(chunk)
+
+
+def test_a_zero_length_write_does_not_glue_a_frame_onto_the_next_record():
+    # print("", end = "") is enough. An empty write used to read as a continuation of the
+    # held frame, which then fell through and was written with no newline at all.
+    log, _console = _tee(["\rLoading weights:  47%", "", '{"event": "model_loaded"}\n'])
+    lines = log.splitlines()
+    assert lines == ["Loading weights:  47%", '{"event": "model_loaded"}']
+    json.loads(lines[-1])
+
+
+def test_the_collapse_matches_the_desktop_reader():
+    """Same rule as collapse_progress_frames in src-tauri/src/process.rs.
+
+    Both sinks are offered to the user side by side in Settings > Logs, so a line has to
+    look the same in either one.
+    """
+    cases = {
+        "plain line": "plain line",
+        "a\rb\rc": "c",
+        "bar 100%\r": "bar 100%",
+        "Map:  50%\rMap: 100%\r   ": "Map: 100%",
+        "Hardware detected: ROCm": "Hardware detected: ROCm",
+        "TAURI_PORT=8888\r": "TAURI_PORT=8888",
+    }
+    for line, expected in cases.items():
+        log, _console = _tee([line + "\n"])
+        assert log == expected + "\n", f"{line!r} -> {log!r}, expected {expected!r}"
