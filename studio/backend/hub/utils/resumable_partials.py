@@ -73,6 +73,7 @@ def _hub_version() -> tuple[int, ...]:
 def _probe_dir() -> Optional[Path]:
     try:
         from huggingface_hub import constants
+
         root = Path(constants.HF_HUB_CACHE)
         root.mkdir(parents = True, exist_ok = True)
         return root
@@ -110,7 +111,8 @@ def _lock_is_honoured() -> bool:
                     return True
                 logger.info(
                     "Download partials stay unresumable: %s grants the same lock twice, so a "
-                    "shared partial could be written by two processes at once.", directory,
+                    "shared partial could be written by two processes at once.",
+                    directory,
                 )
                 return False
     except Exception as exc:  # noqa: BLE001 - same, an unprovable lock is not a working one
@@ -198,7 +200,10 @@ def restore_resumable_partials() -> bool:
                 file_download._check_disk_space(expected_size, destination_path.parent)
             if resume_size:
                 logger.info(
-                    "Resuming '%s' from %s of %s bytes", filename, resume_size, expected_size,
+                    "Resuming '%s' from %s of %s bytes",
+                    filename,
+                    resume_size,
+                    expected_size,
                 )
             file_download.http_get(
                 url_to_download,

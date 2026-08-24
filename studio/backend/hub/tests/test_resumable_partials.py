@@ -30,8 +30,15 @@ def _fake_file_download(monkeypatch, *, xet_available = False):
     """A stand-in for huggingface_hub.file_download that records what the writer did."""
     calls = {"http_get": [], "stock": [], "moved": []}
 
-    def http_get(url, handle, *, resume_size = 0, headers = None, expected_size = None,
-                 tqdm_class = None):
+    def http_get(
+        url,
+        handle,
+        *,
+        resume_size = 0,
+        headers = None,
+        expected_size = None,
+        tqdm_class = None,
+    ):
         calls["http_get"].append({"resume_size": resume_size, "mode": handle.mode})
         handle.write(b"x" * 10)
 
@@ -111,8 +118,12 @@ def test_it_appends_to_the_stable_name_and_says_how_far_it_got(monkeypatch, tmp_
     destination = tmp_path / "abc"
 
     _patched_writer(module)(
-        incomplete_path = partial, destination_path = destination,
-        url_to_download = "https://example/f", headers = {}, expected_size = 50, filename = "f",
+        incomplete_path = partial,
+        destination_path = destination,
+        url_to_download = "https://example/f",
+        headers = {},
+        expected_size = 50,
+        filename = "f",
     )
 
     assert calls["http_get"] == [{"resume_size": 40, "mode": "ab"}]
@@ -133,8 +144,12 @@ def test_a_failed_download_leaves_the_partial_for_the_next_attempt(monkeypatch, 
 
     with pytest.raises(OSError):
         _patched_writer(module)(
-            incomplete_path = partial, destination_path = tmp_path / "abc",
-            url_to_download = "https://example/f", headers = {}, expected_size = 50, filename = "f",
+            incomplete_path = partial,
+            destination_path = tmp_path / "abc",
+            url_to_download = "https://example/f",
+            headers = {},
+            expected_size = 50,
+            filename = "f",
         )
     assert partial.exists() and partial.stat().st_size == 40
 
@@ -144,8 +159,12 @@ def test_xet_keeps_its_own_writer(monkeypatch, tmp_path):
     rp.restore_resumable_partials()
 
     _patched_writer(module)(
-        incomplete_path = tmp_path / "abc.incomplete", destination_path = tmp_path / "abc",
-        url_to_download = "https://example/f", headers = {}, expected_size = 50, filename = "f",
+        incomplete_path = tmp_path / "abc.incomplete",
+        destination_path = tmp_path / "abc",
+        url_to_download = "https://example/f",
+        headers = {},
+        expected_size = 50,
+        filename = "f",
         xet_file_data = object(),
     )
     assert calls["http_get"] == [] and len(calls["stock"]) == 1
@@ -161,8 +180,12 @@ def test_a_xet_backed_repo_downloading_over_http_still_resumes(monkeypatch, tmp_
     rp.restore_resumable_partials()
 
     _patched_writer(module)(
-        incomplete_path = tmp_path / "abc.incomplete", destination_path = tmp_path / "abc",
-        url_to_download = "https://example/f", headers = {}, expected_size = 50, filename = "f",
+        incomplete_path = tmp_path / "abc.incomplete",
+        destination_path = tmp_path / "abc",
+        url_to_download = "https://example/f",
+        headers = {},
+        expected_size = 50,
+        filename = "f",
         xet_file_data = object(),
     )
     assert len(calls["http_get"]) == 1 and calls["stock"] == []
@@ -173,8 +196,12 @@ def test_force_download_defers_to_stock(monkeypatch, tmp_path):
     rp.restore_resumable_partials()
 
     _patched_writer(module)(
-        incomplete_path = tmp_path / "abc.incomplete", destination_path = tmp_path / "abc",
-        url_to_download = "https://example/f", headers = {}, expected_size = 50, filename = "f",
+        incomplete_path = tmp_path / "abc.incomplete",
+        destination_path = tmp_path / "abc",
+        url_to_download = "https://example/f",
+        headers = {},
+        expected_size = 50,
+        filename = "f",
         force_download = True,
     )
     assert calls["http_get"] == [] and len(calls["stock"]) == 1
@@ -187,8 +214,12 @@ def test_an_already_downloaded_blob_is_not_fetched_again(monkeypatch, tmp_path):
     destination = tmp_path / "abc"
     destination.write_bytes(b"done")
     _patched_writer(module)(
-        incomplete_path = tmp_path / "abc.incomplete", destination_path = destination,
-        url_to_download = "https://example/f", headers = {}, expected_size = 50, filename = "f",
+        incomplete_path = tmp_path / "abc.incomplete",
+        destination_path = destination,
+        url_to_download = "https://example/f",
+        headers = {},
+        expected_size = 50,
+        filename = "f",
     )
     assert calls["http_get"] == [] and calls["stock"] == []
 
