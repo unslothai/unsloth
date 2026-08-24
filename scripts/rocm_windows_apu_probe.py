@@ -108,8 +108,18 @@ def read_counters() -> dict[str, Any]:
     }
 
 
-def _dedicated_total_gb(counters: dict[str, Any]) -> float:
-    return sum(a["dedicated_gb"] or 0.0 for a in counters.get("per_adapter", []))
+def _usage_totals_gb(counters: dict[str, Any]) -> tuple[float, float]:
+    """Summed Dedicated and Shared usage across adapters, as a stability key.
+
+    Both, not just Dedicated: past the carve-out Dedicated plateaus while Shared
+    is still climbing, so a dedicated-only test calls that sample settled in the
+    middle of the very overflow this script exists to measure.
+    """
+    per = counters.get("per_adapter", [])
+    return (
+        sum(a["dedicated_gb"] or 0.0 for a in per),
+        sum(a["shared_gb"] or 0.0 for a in per),
+    )
 
 
 def read_counters_settled(
@@ -118,7 +128,7 @@ def read_counters_settled(
     need_stable: int = 3,
     interval_s: float = 3.0,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Poll until `Dedicated Usage` stops moving, then take the reading.
+    """Poll until Dedicated and Shared Usage both stop moving, then take the reading.
 
     These counters lag badly: a `GPU Process Memory` instance has been observed
     still reporting 47 GB for a pid that had already exited, and an adapter
@@ -131,14 +141,17 @@ def read_counters_settled(
     """
     import time
 
-    samples: list[float] = []
+    samples: list[tuple[float, float]] = []
     counters = read_counters()
     deadline = time.monotonic() + timeout_s
     settled = False
     while True:
-        samples.append(round(_dedicated_total_gb(counters), 3))
+        d, s = _usage_totals_gb(counters)
+        samples.append((round(d, 3), round(s, 3)))
         window = samples[-need_stable:]
-        if len(window) >= need_stable and (max(window) - min(window)) <= tol_gb:
+        if len(window) >= need_stable and all(
+            max(col) - min(col) <= tol_gb for col in zip(*window)
+        ):
             settled = True
             break
         if time.monotonic() >= deadline:
@@ -339,7 +352,7 @@ def render(obs: dict[str, Any]) -> str:
             if s["settled"]:
                 L.append(
                     f"  (baseline settled after {s['waited_s']}s; "
-                    f"dedicated total samples {s['samples_gb']} GB)"
+                    f"(dedicated, shared) totals {s['samples_gb']} GB)"
                 )
             else:
                 L.append(
@@ -370,11 +383,23 @@ def render(obs: dict[str, Any]) -> str:
         if before and after:
             L.append("| adapter instance | Dedicated delta | Shared delta |")
             L.append("|---|---|---|")
+            # A missing side is not zero. The report tells the reader to pick the
+            # numerator by whichever delta matches the amount held, so an absent
+            # baseline coerced to 0.0 would promote an absolute reading to a
+            # delta and hand back a confident wrong answer.
+            def _delta(key: str, b: dict, aft: dict) -> str:
+                x, y = b.get(key), aft.get(key)
+                if x is None or y is None:
+                    return "unknown (counter missing on one side)"
+                return f"{round(y - x, 3):+} GB"
+
             for name in after:
-                b, aft = before.get(name, {}), after[name]
-                dd = round((aft.get("dedicated_gb") or 0.0) - (b.get("dedicated_gb") or 0.0), 3)
-                ds = round((aft.get("shared_gb") or 0.0) - (b.get("shared_gb") or 0.0), 3)
-                L.append(f"| `{name}` | {dd:+} GB | {ds:+} GB |")
+                b, aft = before.get(name), after[name]
+                if b is None:
+                    L.append(f"| `{name}` | unknown (absent before) | unknown (absent before) |")
+                    continue
+                L.append(f"| `{name}` | {_delta('dedicated_gb', b, aft)} "
+                         f"| {_delta('shared_gb', b, aft)} |")
             L.append("")
         L.append(
             "Whichever counter moved by roughly the amount held is the one that tracks a "

@@ -2288,7 +2288,9 @@ def _rocm_windows_aggregate_used_bytes(
     return float(sum(useds))
 
 
-def _rocm_windows_unified_used_bytes() -> Optional[float]:
+def _rocm_windows_unified_used_bytes(
+    dedicated: Optional[list[tuple[str, float]]] = None,
+) -> Optional[float]:
     """Used VRAM for a unified-memory ROCm APU on Windows, from the WDDM counters.
 
     Dedicated Usage alone saturates at the carve-out on an APU and is wrong past
@@ -2313,8 +2315,13 @@ def _rocm_windows_unified_used_bytes() -> Optional[float]:
     would silently add a foreign adapter's bytes. Returns ``None`` unless exactly
     one adapter clears the noise floor, matching the caution in
     ``_rocm_windows_aggregate_used_bytes``.
+
+    ``dedicated`` lets a caller that already holds a Dedicated Usage snapshot
+    hand it over: each query is an out-of-process PowerShell call, and re-sampling
+    would also answer from a different instant than the caller's own attribution.
     """
-    dedicated = _rocm_windows_perf_counter_vram_by_adapter()
+    if dedicated is None:
+        dedicated = _rocm_windows_perf_counter_vram_by_adapter()
     if not dedicated:
         return None
     candidates = [
@@ -2413,6 +2420,15 @@ def _rocm_windows_per_device_vram(
                     "total_bytes": total_bytes,
                     "dedicated_bytes": dedicated_bytes,
                     "total_is_pool": total_is_pool,
+                    # A widened total is not by itself a licence to put Shared
+                    # Usage in this device's numerator: the classifier above
+                    # fails open, so a discrete card on an unsettled runtime can
+                    # reach it, and shared bytes are host memory that its
+                    # props.total_memory never counted. Same stricter question
+                    # get_gpu_memory_info asks before summing the two counters.
+                    "positively_unified": (
+                        total_is_pool and _rocm_props_are_positively_unified(props)
+                    ),
                 }
             )
         except Exception as e:
@@ -2449,7 +2465,17 @@ def _rocm_windows_per_device_vram(
     # and declines otherwise, and a decline still has to null the reading rather
     # than leave the carve-out figure standing under a pool-sized total.
     if any(meta["total_is_pool"] for meta in dev_meta):
-        unified_used = _rocm_windows_unified_used_bytes() if len(dev_meta) == 1 else None
+        only = dev_meta[0] if len(dev_meta) == 1 else None
+        unified_used = (
+            _rocm_windows_unified_used_bytes(adapters)
+            if only is not None and only["positively_unified"]
+            else None
+        )
+        if unified_used is not None:
+            # Every other reading is clamped on its way through the matcher.
+            # This one bypasses it, and the payload derives free as total minus
+            # used, so an unclamped sum publishes negative free.
+            unified_used = min(unified_used, float(only["total_bytes"]))
         assigned = [
             (unified_used if meta["total_is_pool"] else used)
             for meta, used in zip(dev_meta, assigned)

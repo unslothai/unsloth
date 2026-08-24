@@ -520,7 +520,8 @@ def test_windows_apu_total_is_the_driver_pool_not_the_carve_out(win_rocm, monkey
         hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(APU_ADAPTERS))
     )
 
-    monkeypatch.setattr(hw, "_rocm_windows_unified_used_bytes", lambda: 12.0 * GB)
+    monkeypatch.setattr(hw, "_rocm_props_are_positively_unified", lambda props: True)
+    monkeypatch.setattr(hw, "_rocm_windows_unified_used_bytes", lambda d = None: 12.0 * GB)
     devices, aggregate = hw._rocm_windows_per_device_vram([0])
     assert devices[0]["total_gb"] == 128.0
     # Dedicated Usage alone saturates at the carve-out, so a widened total takes
@@ -740,7 +741,8 @@ def _apu_host(monkeypatch, unified_used = 12.0 * GB):
     monkeypatch.setitem(sys.modules, "torch", torch)
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda i: (96 * GB, 128 * GB))
     monkeypatch.setattr(hw, "_rocm_props_total_is_carve_out", lambda props: True)
-    monkeypatch.setattr(hw, "_rocm_windows_unified_used_bytes", lambda: unified_used)
+    monkeypatch.setattr(hw, "_rocm_props_are_positively_unified", lambda props: True)
+    monkeypatch.setattr(hw, "_rocm_windows_unified_used_bytes", lambda d = None: unified_used)
     monkeypatch.setattr(
         hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(APU_ADAPTERS))
     )
@@ -782,6 +784,46 @@ def test_a_declining_unified_read_leaves_the_apu_unknown(win_rocm, monkeypatch):
     assert devices[0]["total_gb"] == 128.0
     assert devices[0]["used_gb"] is None
     assert aggregate is None
+
+
+def test_shared_usage_needs_a_positively_unified_part(win_rocm, monkeypatch):
+    """_rocm_props_total_is_carve_out fails open, so a discrete card on an
+    unsettled runtime can widen. Shared Usage is host memory that its
+    props.total_memory never counted, so the sum must not become its numerator:
+    the stricter classifier has to gate it, exactly as get_gpu_memory_info does."""
+    _apu_host(monkeypatch, unified_used = 90.0 * GB)
+    monkeypatch.setattr(hw, "_rocm_props_are_positively_unified", lambda props: False)
+
+    devices, aggregate = hw._rocm_windows_per_device_vram([0])
+    assert devices[0]["total_gb"] == 128.0  # the widened total still stands
+    assert devices[0]["used_gb"] is None  # but not a shared-inflated occupancy
+    assert aggregate is None
+
+
+def test_the_unified_sum_is_clamped_to_the_widened_total(win_rocm, monkeypatch):
+    """Dedicated plus Shared counts driver and desktop allocations too, so it can
+    exceed torch's pool. Every other reading is clamped on its way through the
+    matcher; this one bypasses it and the payload derives free as total minus
+    used, so an unclamped sum publishes negative free."""
+    _apu_host(monkeypatch, unified_used = 140.0 * GB)
+
+    devices, aggregate = hw._rocm_windows_per_device_vram([0])
+    assert devices[0]["used_gb"] == 128.0
+    assert aggregate == 128.0
+
+
+def test_the_dedicated_snapshot_is_not_sampled_twice(win_rocm, monkeypatch):
+    """Each counter query is an out-of-process PowerShell call, and re-sampling
+    would also answer from a different instant than the attribution above it."""
+    _apu_host(monkeypatch)
+    seen = []
+    monkeypatch.setattr(
+        hw, "_rocm_windows_unified_used_bytes",
+        lambda dedicated = None: (seen.append(dedicated), 12.0 * GB)[1],
+    )
+
+    hw._rocm_windows_per_device_vram([0])
+    assert seen and seen[0], "the caller's snapshot was not handed over"
 
 
 @pytest.mark.parametrize("system", ["Linux", "Darwin"])
