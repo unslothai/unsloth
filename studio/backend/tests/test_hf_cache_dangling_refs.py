@@ -1782,6 +1782,7 @@ def test_active_cache_native_fork_loads_by_detected_snapshot(tmp_path, monkeypat
     assert rows[0]["repo_id"] == "acme/native-audio-fork"
     assert rows[0]["audio_type"] == "moss_tts_local"
     assert rows[0]["load_id"] == str(snapshot)
+    assert rows[0]["capabilities"]["can_chat"] is False
     assert is_native_audio_model(rows[0]["load_id"])
 
 

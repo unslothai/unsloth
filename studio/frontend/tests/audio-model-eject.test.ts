@@ -124,7 +124,7 @@ test("a load confirmed after Audio is hidden is deferred, not sent", () => {
   // nothing to abort. Sending anyway let a hidden page replace the visible page's model.
   assert.match(
     source,
-    /if \(!activeRef\.current\) \{\s*releaseLifecycle\(\);\s*ttsLoadInFlight\.current = false;\s*pendingRoutedTtsPick\.current = \{ repoId, ggufFilename, loadId \};\s*return;\s*\}/,
+    /if \(!activeRef\.current\) \{\s*releaseLifecycle\(\);\s*ttsLoadInFlight\.current = false;\s*pendingRoutedTtsPick\.current = \{\s*repoId,\s*ggufFilename,\s*loadId,\s*audioType,?\s*\};\s*return;\s*\}/,
   );
   // The activation effect replays exactly that queue, so the pick is not lost.
   assert.match(

@@ -832,7 +832,12 @@ export function AudioPage({
       if (!activeRef.current) {
         releaseLifecycle();
         ttsLoadInFlight.current = false;
-        pendingRoutedTtsPick.current = { repoId, ggufFilename, loadId };
+        pendingRoutedTtsPick.current = {
+          repoId,
+          ggufFilename,
+          loadId,
+          audioType,
+        };
         return;
       }
       const generation = ++ttsLoadGeneration.current;

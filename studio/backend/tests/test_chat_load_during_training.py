@@ -929,6 +929,30 @@ class TestNativeAudioPlacementContracts(unittest.TestCase):
         self.assertEqual(placement.native_required_gb, 20.0)
         self.assertEqual(placement.native_post_handoff_free_gb, {0: 24.0})
 
+    def test_minimax_uses_a_threshold_a_24_gb_card_can_report(self):
+        config = SimpleNamespace(
+            identifier = "MiniMaxAI/MiniMax-Music3",
+            audio_type = "minimax_music3",
+        )
+        request = SimpleNamespace(gpu_ids = None, hf_token = None, max_seq_length = 2048)
+        placement = self.route._LoadPlacement(None, None, False, False)
+        with (
+            patch("utils.hardware.get_device", return_value = DeviceType.CUDA),
+            patch.object(_hw_module, "IS_ROCM", False),
+            patch(
+                "core.inference.native_audio.native_audio_security_targets",
+                return_value = [config.identifier],
+            ),
+            patch("utils.hardware.prepare_gpu_selection", return_value = ([1], {})) as prepare,
+        ):
+            result = asyncio.run(
+                self.route._preflight_native_audio_placement(config, request, placement)
+            )
+
+        self.assertEqual(result.resolved_gpu_ids, [1])
+        self.assertEqual(result.native_required_gb, 23.0)
+        self.assertEqual(prepare.call_args.kwargs["required_override_gb"], 23.0)
+
     def test_explicit_multi_gpu_is_rejected_before_load(self):
         with self.assertRaisesRegex(HTTPException, "require one GPU"):
             self._preflight(

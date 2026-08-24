@@ -1896,6 +1896,7 @@ def test_cached_models_scan_exposes_minimax_music3_modular_pipeline(monkeypatch,
 
     assert row["task"] == "text-to-speech"
     assert row["audio_type"] == "minimax_music3"
+    assert row["capabilities"]["can_chat"] is False
     assert row["partial"] is False
     assert row["single_file"] is False
 

@@ -32,10 +32,12 @@ export function shouldRecommendCommunityModels(
 export function audioPipelineTagFor(
   audioType?: string | null,
   isLocalCheckpoint = false,
+  isLora = false,
 ): string | undefined {
   if (!audioType) return undefined;
   if (audioType === "whisper")
     return isLocalCheckpoint ? undefined : "automatic-speech-recognition";
+  if (isLora && NATIVE_AUDIO_TYPES.has(audioType)) return undefined;
   return TTS_CODECS.has(audioType) || NATIVE_AUDIO_TYPES.has(audioType)
     ? "text-to-speech"
     : undefined;

@@ -378,6 +378,7 @@ def _cache_inventory_fields(
     hidden_infra: bool = False,
     companion: bool = False,
     stt_only: bool = False,
+    native_audio_only: bool = False,
 ) -> dict:
     """Load identity plus the capability block for one cache row.
 
@@ -424,6 +425,8 @@ def _cache_inventory_fields(
     # is what auto-load and the chat picker filter on, neither of which looks at the task.
     if stt_only or is_curated_stt_repo_id(repo_id):
         capabilities["supports_vision"] = False
+        capabilities["can_chat"] = False
+    if native_audio_only:
         capabilities["can_chat"] = False
     if hidden_infra:
         capabilities["can_chat"] = False
@@ -1165,6 +1168,7 @@ def _scan_cached_models(
                         hidden_infra = is_hidden_infra,
                         companion = bool(row["companion"]),
                         stt_only = bool(is_whisper_stt),
+                        native_audio_only = bool(native_audio_type),
                     )
                 )
                 # Native backend selection reads the load identity itself. A custom native

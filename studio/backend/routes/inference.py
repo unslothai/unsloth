@@ -416,7 +416,9 @@ _MIN_SPEECH_OUTPUT_TOKENS = 64
 # than this and 32 tokens off a 2048 context is not worth threading it up here.
 _TTS_PROMPT_FORMAT_RESERVE = 32
 _MINIMAX_MUSIC3_DEFAULT_FRAMES = 750
-_MINIMAX_MUSIC3_RESIDENT_GB = 24.0
+# A 24 GB-class card reports slightly less than 24.0 GiB through free-VRAM
+# telemetry even when idle. Keep the admission floor below that value.
+_MINIMAX_MUSIC3_RESIDENT_GB = 23.0
 
 
 def _tts_max_new_tokens(

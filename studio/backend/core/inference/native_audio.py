@@ -28,6 +28,7 @@ import gc
 import io
 import json
 import logging
+import re
 import sys
 import tempfile
 import threading
@@ -71,6 +72,22 @@ _MINIMAX_MODULAR_CLASSES = (
     "MiniMaxMusic3ModularPipeline",
     "MiniMaxMusic3Blocks",
 )
+_MINIMAX_LEADING_LYRIC_TAGS = re.compile(r"^\s*((?:\[[^\]\r\n]+\]\s*)+)(\S.*)$")
+
+
+def _minimax_lyrics_for_pipeline(lyrics: str) -> str:
+    """Keep words that follow a MiniMax section tag on the same input line."""
+    normalized = []
+    for line in str(lyrics or "").splitlines():
+        match = _MINIMAX_LEADING_LYRIC_TAGS.match(line)
+        if match is None:
+            normalized.append(line)
+            continue
+        normalized.extend(re.findall(r"\[[^\]\r\n]+\]", match.group(1)))
+        normalized.append(match.group(2))
+    return "\n".join(normalized)
+
+
 _MINIMAX_DOWNLOAD_COMPONENTS = frozenset(
     (
         "condition_encoder",
@@ -1049,16 +1066,17 @@ class NativeAudioBackend:
         generator = None
         if seed is not None:
             generator = torch.Generator(self.device).manual_seed(int(seed))
-        audio_duration = min(300.0, max(1.0, float(max_new_tokens) / 25.0))
+        pipeline = entry["pipeline"]
+        frame_rate = float(getattr(pipeline, "frame_rate", 25.0) or 25.0)
+        audio_duration = float(max(1, int(max_new_tokens))) / frame_rate
         pipeline_kwargs = dict(
             prompt = prompt,
-            lyrics = lyrics,
+            lyrics = _minimax_lyrics_for_pipeline(lyrics),
             audio_duration = audio_duration,
             output = "audios",
         )
         if generator is not None:
             pipeline_kwargs["generator"] = generator
-        pipeline = entry["pipeline"]
         cancel_hooks = []
         if cancel_event is not None:
             language_model = getattr(pipeline, "language_model", None)

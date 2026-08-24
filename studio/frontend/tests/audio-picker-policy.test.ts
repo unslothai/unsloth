@@ -586,7 +586,13 @@ test("fine-tuned audio rows receive only runnable pipeline tags", () => {
   // filesystem path 422s. Routing one from the picker advertised a row that cannot load.
   assert.equal(audioPipelineTagFor("whisper", true), undefined);
   assert.equal(audioPipelineTagFor("moss_tts_local", true), "text-to-speech");
-  assert.match(pickerSource, /pipelineTag: audioPipelineTagFor\(adapter\.audioType, true\)/);
+  // Native runtimes reject adapter-only checkpoints; merged exports remain runnable.
+  assert.equal(audioPipelineTagFor("moss_tts_local", true, true), undefined);
+  assert.equal(audioPipelineTagFor("moss_tts_local", true, false), "text-to-speech");
+  assert.match(
+    pickerSource,
+    /pipelineTag: audioPipelineTagFor\(adapter\.audioType, true, isLora\)/,
+  );
 });
 
 test("an arch-tasked speech GGUF is rejected however its path or repo id is named", () => {

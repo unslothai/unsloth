@@ -276,6 +276,7 @@ def test_minimax_generation_and_cancellation_contract():
 
     class Pipeline:
         language_model = SimpleNamespace(model = Core())
+        frame_rate = 25.0
 
         def __call__(self, **kwargs):
             seen.update(kwargs)
@@ -293,6 +294,12 @@ def test_minimax_generation_and_cancellation_contract():
     )
     assert wav[:4] == b"RIFF" and rate == 44100
     assert seen["audio_duration"] == 60.0 and seen["generator"].initial_seed() == 7
+    assert seen["lyrics"] == "[verse]\nMorning"
+
+    backend.generate_audio_response("lyrics", instructions = "description", max_new_tokens = 1)
+    assert seen["audio_duration"] == pytest.approx(1 / 25)
+    backend.generate_audio_response("lyrics", instructions = "description", max_new_tokens = 8192)
+    assert seen["audio_duration"] == pytest.approx(8192 / 25)
 
     seen["cancel_mode"] = True
     with pytest.raises(RuntimeError, match = "cancelled"):
