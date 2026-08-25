@@ -1036,6 +1036,11 @@ class VideoBackend:
         self._gen: dict[str, Any] = {"active": False}
         # True from begin_generate() until its worker records a terminal state, so a second call is refused while it runs.
         self._generate_job_active = False
+        # Identity of the job the flag belongs to. The flag alone answers "is some job running", which a late
+        # finaliser cannot tell apart from "my job is running": between one job publishing its terminal state and
+        # its worker returning, the next begin_generate() can reserve the slot and set the flag again. Finalising
+        # on the flag would then let the finished job overwrite the running one. Compared by identity.
+        self._generate_job_token: Optional[object] = None
 
     def _device_target(self, ordinal: Optional[int] = None) -> DiffusionDeviceTarget:
         """The device target for ``ordinal``, pinned onto the calling thread.
@@ -4955,6 +4960,9 @@ class VideoBackend:
         sentinels the route maps to 409.
         """
         cancel = threading.Event()
+        # Identifies this reservation for the whole of its life, so only this job's own worker can
+        # finalise it. See _generate_job_token in __init__.
+        job_token = object()
         # Snapshot load state before decoding outside the backend lock.
         with self._lock:
             if self._state is None:
@@ -4994,6 +5002,7 @@ class VideoBackend:
             if fam is not None:
                 validate_video_request_shape(fam, width = width, height = height, num_frames = num_frames)
             self._generate_job_active = True
+            self._generate_job_token = job_token
             # Register BEFORE the worker starts so a cancel/unload in the spawn window still stops the run.
             self._active_generate_cancel = cancel
             self._gen = {
@@ -5003,7 +5012,7 @@ class VideoBackend:
                 "total": 0,
                 "eta_seconds": None,
             }
-        threading.Thread(
+        worker = threading.Thread(
             target = self._run_generate,
             kwargs = dict(
                 prompt = prompt,
@@ -5025,11 +5034,62 @@ class VideoBackend:
                 flow_shift = flow_shift,
                 audio_flow_shift = audio_flow_shift,
                 cancel_event = cancel,
+                job_token = job_token,
             ),
             daemon = True,
-        ).start()
+        )
+        try:
+            worker.start()
+        except BaseException:
+            # The slot was reserved above and only a worker ever releases it. Without this the
+            # reservation outlives the request that made it: generate stays refused for the rest
+            # of the session, and liveness reports this backend as rendering to a watchdog that
+            # answers a busy backend by waiting longer rather than restarting it.
+            # Thread.start() raises RuntimeError only before the OS thread exists, but it also
+            # waits on the child, so a signal delivered there can unwind with the worker already
+            # running. Releasing on the token rather than the flag keeps both cases safe: that
+            # worker's own finalise finds the token retired and leaves the next job alone.
+            self._finish_generate_job(
+                job_token = job_token,
+                cancel_event = cancel,
+                error = "Video generation could not start.",
+            )
+            raise
 
-    def _run_generate(self, *, cancel_event: threading.Event, **gen_kwargs: Any) -> None:
+    def _run_generate(
+        self,
+        *,
+        cancel_event: threading.Event,
+        job_token: Optional[object] = None,
+        **gen_kwargs: Any,
+    ) -> None:
+        """Backstop around the worker body, so a reservation cannot outlive its thread.
+
+        Every ordinary outcome is named in _run_generate_body and records its own terminal
+        state; finalising is keyed on job_token, so this finally is a no-op once the body has
+        published one. It exists for the outcomes the body cannot name: an exit through
+        BaseException, or a failure before the body's first try. Without it the marker leaks,
+        and a leaked marker tells the desktop watchdog that a wedged backend is still
+        rendering, which is the inverse of the bug the marker was added to fix.
+
+        Stays the thread target and the public-ish entry point: begin_generate resolves it by
+        name and test doubles subclass it."""
+        try:
+            self._run_generate_body(cancel_event = cancel_event, job_token = job_token, **gen_kwargs)
+        finally:
+            self._finish_generate_job(
+                job_token = job_token,
+                cancel_event = cancel_event,
+                error = "Video generation failed.",
+            )
+
+    def _run_generate_body(
+        self,
+        *,
+        cancel_event: threading.Event,
+        job_token: Optional[object] = None,
+        **gen_kwargs: Any,
+    ) -> None:
         """begin_generate's worker: generate, persist to the gallery, record the
         terminal state where generate_progress() reports it. The error mapping is
         the exact one the route applied when the call was synchronous: ValueError
@@ -5041,18 +5101,24 @@ class VideoBackend:
         try:
             result = self.generate(cancel_event = cancel_event, **gen_kwargs)
         except ValueError as exc:
-            self._finish_generate_job(cancel_event = cancel_event, error = str(exc))
+            self._finish_generate_job(
+                job_token = job_token, cancel_event = cancel_event, error = str(exc)
+            )
             return
         except RuntimeError as exc:
             msg = str(exc)
             if msg not in (VIDEO_NOT_LOADED_MSG, VIDEO_CANCELLED_MSG):
                 logger.error("video.generate_failed: %s", exc, exc_info = True)
                 msg = "Video generation failed."
-            self._finish_generate_job(cancel_event = cancel_event, error = msg)
+            self._finish_generate_job(job_token = job_token, cancel_event = cancel_event, error = msg)
             return
         except Exception as exc:  # noqa: BLE001 -- worker thread: never propagate
             logger.error("video.generate_failed: %s", exc, exc_info = True)
-            self._finish_generate_job(cancel_event = cancel_event, error = "Video generation failed.")
+            self._finish_generate_job(
+                job_token = job_token,
+                cancel_event = cancel_event,
+                error = "Video generation failed.",
+            )
             return
 
         # Persist the clip with its full recipe as the JSON sidecar the gallery reads back.
@@ -5096,14 +5162,22 @@ class VideoBackend:
         except Exception as exc:  # noqa: BLE001 -- disk failure must reach the poller
             logger.error("video.persist_failed: %s", exc)
             self._finish_generate_job(
-                cancel_event = cancel_event, error = "Failed to save the generated video."
+                job_token = job_token,
+                cancel_event = cancel_event,
+                error = "Failed to save the generated video.",
             )
             return
-        self._finish_generate_job(cancel_event = cancel_event, video = record, total = result["steps"])
+        self._finish_generate_job(
+            job_token = job_token,
+            cancel_event = cancel_event,
+            video = record,
+            total = result["steps"],
+        )
 
     def _finish_generate_job(
         self,
         *,
+        job_token: Optional[object] = None,
         cancel_event: Optional[threading.Event] = None,
         video: Optional[dict] = None,
         error: Optional[str] = None,
@@ -5112,8 +5186,20 @@ class VideoBackend:
         """Record a job's terminal state as one atomic swap. The terminal dict
         replaces the live-progress one so a poll can never mix fields from both,
         and the busy flag drops in the same critical section so the earliest
-        moment a new begin_generate() can start is after the outcome is visible."""
+        moment a new begin_generate() can start is after the outcome is visible.
+
+        At most once per reservation, and only by that reservation: the first call carrying
+        the live token publishes and retires it, every later one returns. Keyed on the token
+        rather than on _generate_job_active because the flag goes true again as soon as the
+        next job reserves, and _run_generate's backstop runs after the body has already
+        published - on the flag alone a finished job would finalise its successor, clearing
+        a marker that is still rendering and admitting a third job past the busy guard.
+        job_token defaults to None to match a caller that never reserved, which is how a
+        direct _run_generate() still records its outcome."""
         with self._lock:
+            if self._generate_job_token is not job_token:
+                return
+            self._generate_job_token = None
             self._generate_job_active = False
             if cancel_event is not None and self._active_generate_cancel is cancel_event:
                 # Covers a worker that failed before reaching generate()'s finally; identity-guarded so a direct generate() keeps its handle.

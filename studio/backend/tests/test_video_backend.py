@@ -7579,3 +7579,215 @@ def test_generation_in_flight_never_builds_a_backend(fake_runtime, monkeypatch):
         lambda *a, **k: pytest.fail("liveness constructed a video backend"),
     )
     assert video_mod.generation_in_flight() is False
+
+
+def _video_result(tag: str) -> dict:
+    """The result shape _run_generate_body persists; tag identifies which job produced it."""
+    return {
+        "mp4_bytes": tag.encode(),
+        "negative_prompt": None,
+        "width": 64,
+        "height": 64,
+        "num_frames": 9,
+        "fps": 8,
+        "duration_s": 1.0,
+        "steps": 2,
+        "guidance": 1.0,
+        "seed": 1,
+        "has_audio": False,
+        "conditioning": "t2v",
+        "flow_shift": None,
+        "audio_flow_shift": None,
+        "repo_id": "test/model",
+    }
+
+
+def _until(predicate, timeout = 10.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.005)
+    return False
+
+
+def test_a_worker_that_never_started_does_not_hold_the_job_open(
+    fake_runtime, tmp_path, monkeypatch
+):
+    """begin_generate reserves the slot before it spawns, so a spawn that raises leaves a
+    reservation no worker will ever release: generate stays refused for the rest of the
+    session, and liveness reports this backend as rendering to a watchdog that answers a
+    busy backend by waiting longer, not by restarting it."""
+    import core.inference.video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    monkeypatch.setattr(video_mod, "_backend", backend)
+
+    real_start = threading.Thread.start
+    monkeypatch.setattr(
+        threading.Thread,
+        "start",
+        lambda self: (_ for _ in ()).throw(RuntimeError("can't start new thread")),
+    )
+
+    with pytest.raises(RuntimeError, match = "can't start new thread"):
+        backend.begin_generate(prompt = "a clip")
+
+    assert video_mod.generation_in_flight() is False
+    assert backend._active_generate_cancel is None
+    progress = backend.generate_progress()
+    assert progress["active"] is False, "progress stayed queued for a job that never ran"
+
+    # ... and the rejected spawn did not poison the next request.
+    monkeypatch.setattr(threading.Thread, "start", real_start)
+    monkeypatch.setattr(backend, "generate", lambda **kw: _video_result("second"))
+    from core.inference import video_gallery
+
+    monkeypatch.setattr(video_gallery, "save", lambda data, meta: {"id": "second"})
+
+    backend.begin_generate(prompt = "second")
+    assert _until(lambda: not video_mod.generation_in_flight())
+    assert backend.generate_progress()["phase"] == "completed"
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+def test_a_worker_killed_outright_does_not_hold_the_job_open(fake_runtime, tmp_path, monkeypatch):
+    """The worker names ValueError, RuntimeError and Exception. SystemExit and
+    KeyboardInterrupt are none of those, so before the finally they unwound past every
+    terminal path and left the marker lit for good; unload() does not clear it either."""
+    import core.inference.video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    monkeypatch.setattr(video_mod, "_backend", backend)
+
+    entered = threading.Event()
+
+    def _die(
+        self,
+        *,
+        cancel_event = None,
+        **gen_kwargs,
+    ):
+        entered.set()
+        raise SystemExit("worker killed")
+
+    monkeypatch.setattr(VideoBackend, "generate", _die)
+
+    backend.begin_generate(prompt = "a clip")
+    assert entered.wait(10), "the generate worker never started"
+
+    assert _until(lambda: not video_mod.generation_in_flight()), (
+        "the marker outlived the worker, so liveness reports this backend as rendering "
+        "for the rest of the process"
+    )
+    assert backend.generate_progress()["active"] is False
+
+
+def test_a_finished_job_cannot_finalise_the_one_that_replaced_it(
+    fake_runtime, tmp_path, monkeypatch
+):
+    """The backstop runs after the body has already published, and by then the next job may
+    own the slot. Keyed on the busy flag it would finalise that successor instead: clear a
+    marker that is still rendering, overwrite its progress with a generic failure, and let a
+    third job past the busy guard. Keyed on the job's own token it is a no-op."""
+    import core.inference.video as video_mod
+    from core.inference import video_gallery
+    from core.inference.video_families import VIDEO_GENERATION_BUSY_MSG
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    monkeypatch.setattr(video_mod, "_backend", backend)
+    monkeypatch.setattr(video_gallery, "save", lambda data, meta: {"id": data.decode()})
+
+    second_running = threading.Event()
+    release_second = threading.Event()
+    calls = []
+
+    def _generate(*, cancel_event, **gen_kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            return _video_result("one")
+        second_running.set()
+        assert release_second.wait(10)
+        return _video_result("two")
+
+    monkeypatch.setattr(backend, "generate", _generate)
+
+    first_published = threading.Event()
+    release_first = threading.Event()
+    backstop_ran = threading.Event()
+    real_finish = backend._finish_generate_job
+
+    def _gated_finish(**kwargs):
+        # Hold the first job between publishing its outcome and reaching its backstop,
+        # which is exactly the window the second job reserves in.
+        if (kwargs.get("video") or {}).get("id") == "one":
+            real_finish(**kwargs)
+            first_published.set()
+            assert release_first.wait(10)
+            return
+        real_finish(**kwargs)
+        if kwargs.get("error") == "Video generation failed." and first_published.is_set():
+            backstop_ran.set()
+
+    monkeypatch.setattr(backend, "_finish_generate_job", _gated_finish)
+
+    backend.begin_generate(prompt = "one")
+    assert first_published.wait(10)
+
+    backend.begin_generate(prompt = "two")
+    assert second_running.wait(10)
+    assert video_mod.generation_in_flight() is True
+
+    release_first.set()
+    assert backstop_ran.wait(10), "the first job's backstop never ran"
+
+    assert video_mod.generation_in_flight() is True, (
+        "the finished job cleared the running job's marker; liveness now calls a rendering "
+        "backend idle, which is the failure this marker exists to prevent"
+    )
+    assert backend.generate_progress()["active"] is True
+    with pytest.raises(RuntimeError, match = VIDEO_GENERATION_BUSY_MSG):
+        backend.begin_generate(prompt = "three")
+
+    release_second.set()
+    assert _until(lambda: not video_mod.generation_in_flight())
+    progress = backend.generate_progress()
+    assert progress["phase"] == "completed"
+    assert progress["video"]["id"] == "two", "the running job lost its own outcome"
+
+
+def test_the_backstop_leaves_a_cancelled_job_reported_as_cancelled(
+    fake_runtime, tmp_path, monkeypatch
+):
+    """Cancellation is a RuntimeError carrying a sentinel the route maps to its own status.
+    A backstop that overwrote it would turn every cancel into a generic failure."""
+    import core.inference.video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    monkeypatch.setattr(video_mod, "_backend", backend)
+
+    entered = threading.Event()
+
+    def _wait_for_cancel(*, cancel_event, **gen_kwargs):
+        entered.set()
+        assert cancel_event.wait(10)
+        raise RuntimeError(VIDEO_CANCELLED_MSG)
+
+    monkeypatch.setattr(backend, "generate", _wait_for_cancel)
+
+    backend.begin_generate(prompt = "cancel me")
+    assert entered.wait(10)
+    backend.cancel_generate()
+
+    assert _until(lambda: not video_mod.generation_in_flight())
+    progress = backend.generate_progress()
+    assert progress["phase"] == "failed"
+    assert progress["error"] == VIDEO_CANCELLED_MSG
+
+    # The backstop runs after the body returns; give it room to prove it changed nothing.
+    time.sleep(0.1)
+    assert backend.generate_progress()["error"] == VIDEO_CANCELLED_MSG
