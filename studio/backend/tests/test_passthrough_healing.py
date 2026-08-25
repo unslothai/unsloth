@@ -500,8 +500,7 @@ def _upstream_message(
         "created": 1,
         "model": "gguf",
         "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}],
-        "usage": usage
-        or {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
+        "usage": usage or {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
     }
 
 
