@@ -444,6 +444,49 @@ def train_once(args, run_index: int) -> dict:
     )
     _log(f"batched generation: {json.dumps({k: v for k, v in batched.items() if k != 'batched'})}")
 
+    # GGUF export, opt-in. Placed AFTER generation deliberately: the export
+    # merges the adapter into the base weights, and doing that before the
+    # canary and batched-generation checks would have them measure a different
+    # model from the one training produced.
+    gguf_export_record = None
+    gguf_run_record = None
+    if getattr(args, "export_gguf", False):
+        from gguf_export import export_gguf, llama_cpp_facts, run_gguf
+
+        # unsloth must be imported before unsloth_zoo.llama_cpp, which raises
+        # "Please install Unsloth via pip install unsloth!" otherwise. It is,
+        # by the time train_once runs, but the import stays local so a payload
+        # that never exports does not pay for it.
+        install_log = ""
+        llama_dir = None
+        try:
+            import contextlib
+            import io
+
+            from unsloth_zoo.llama_cpp import install_llama_cpp
+
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                returned = install_llama_cpp()
+            install_log = buffer.getvalue()
+            facts = llama_cpp_facts(install_log, returned)
+            llama_dir = facts.get("dir")
+        except BaseException as exc:  # noqa: BLE001
+            facts = {"error": f"{type(exc).__name__}: {exc}"[:2000]}
+        _log(f"llama.cpp: {json.dumps(facts)}")
+
+        gguf_export_record = export_gguf(
+            model, tokenizer,
+            os.path.join(args.outdir, f"gguf_run{run_index}"),
+            quantization = args.gguf_quantization,
+        )
+        gguf_export_record["llama_cpp"] = facts
+        _log(f"gguf export: {json.dumps({k: v for k, v in gguf_export_record.items() if k != 'llama_cpp'})}")
+
+        ggufs = gguf_export_record.get("ggufs") or []
+        if ggufs and llama_dir:
+            gguf_run_record = run_gguf(ggufs[0]["path"], llama_dir)
+
     peak_gb = torch.cuda.max_memory_reserved() / 1024**3 if torch.cuda.is_available() else 0.0
 
     result = {
@@ -455,6 +498,8 @@ def train_once(args, run_index: int) -> dict:
         # is the assertion, and the gap between them is the signature of a
         # stopping/EOS regression rather than a training one.
         "batched_generation": batched,
+        "gguf_export": gguf_export_record,
+        "gguf_run": gguf_run_record,
         "canary_found": CANARY in generated,
         "canary_exact": generated.strip() == CANARY,
         "prompt": prompt,
@@ -1445,6 +1490,22 @@ def main() -> int:
         dest = "check_batched_generation",
         action = "store_false",
     )
+    # OFF by default, unlike the batched-generation check above. That one is
+    # pure compute on a model already in memory; this one installs llama.cpp
+    # and merges the adapter, about 40s for a 0.6B on top of a ~10-46s install,
+    # so a leg opts in rather than every payload paying for it.
+    ap.add_argument(
+        "--export-gguf",
+        dest = "export_gguf",
+        action = "store_true",
+        default = False,
+    )
+    # What the exported filename is allowed to say. More than one because a
+    # model may legitimately override the request: gpt-oss answers q8_0 with
+    # "Overriding to MXFP4 format" by design, and failing on documented
+    # behaviour would be a failure invented rather than found.
+    ap.add_argument("--gguf-quantization", default = "q8_0")
+    ap.add_argument("--gguf-accept", default = "", help = "comma separated; defaults to the requested one")
     ap.add_argument("--dataset", default = str(_HERE / "canary_dataset.jsonl"))
     ap.add_argument("--outdir", required = True)
     # 3 steps, and the whole reason --init-loss-scale exists.
@@ -1735,6 +1796,32 @@ def main() -> int:
                 f"run {run['run_index']}: {f}"
                 for f in batched_generation_failures(run.get("batched_generation"))
             ]
+
+    # 4c. the GGUF export, and whether the exported file runs. Both rules live
+    # in gguf_export.py so the gptoss and vision payloads can reuse them
+    # without copying the two traps (the sibling directory, and the tuple that
+    # install_llama_cpp returns) into three files.
+    if args.export_gguf:
+        from gguf_export import export_failures, run_failures
+
+        accept = tuple(
+            q.strip() for q in (args.gguf_accept or args.gguf_quantization).split(",")
+            if q.strip()
+        )
+        for run in runs:
+            failures += [
+                f"run {run['run_index']}: {f}"
+                for f in export_failures(run.get("gguf_export"),
+                                         accept_quantizations = accept)
+            ]
+            # Only ask whether it RUNS once the export produced something; a
+            # missing file already failed above and would otherwise be reported
+            # twice under two different descriptions.
+            if (run.get("gguf_export") or {}).get("ggufs"):
+                failures += [
+                    f"run {run['run_index']}: {f}"
+                    for f in run_failures(run.get("gguf_run"))
+                ]
 
     # 5. band check against the committed reference
     if args.reference:

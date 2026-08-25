@@ -2141,6 +2141,7 @@ def test_the_files_the_payload_carries_are_byte_identical_to_the_repo(tmp_path):
         "training_evidence.py",
         "run_t4_smoke.py",
         "determinism.py",
+        "gguf_export.py",
         "pins/control.txt",
         "references/t4_qwen2.5-0.5b.json",
     }, sorted(files)

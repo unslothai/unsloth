@@ -200,7 +200,7 @@ BASE_INSTALL = ((ZOO,), (UNSLOTH,), ("bitsandbytes",))
 # installed would check nothing and say so quietly.
 PACKAGE_UNDER_TEST = UNSLOTH.split("@", 1)[0].strip()
 
-SMOKE_FILES = COMMON_FILES + ("run_t4_smoke.py", "determinism.py")
+SMOKE_FILES = COMMON_FILES + ("run_t4_smoke.py", "determinism.py", "gguf_export.py")
 
 
 LEGS: dict[str, Leg] = {
@@ -341,6 +341,14 @@ LEGS: dict[str, Leg] = {
             # Qwen2.5-0.5B and this leg trains a different model.
             "--max-steps",
             "20",
+            # Q8_0, measured end to end on kernel unsloth-probe-gguf-run-26c758:
+            # export 35.7s, a 609.8MB qwen3-0.6b.Q8_0.gguf in the SIBLING
+            # directory, and llama-bench then reporting 604.15 MiB / 596.05M
+            # params at pp8 68.85 t/s and tg8 23.22 t/s. So this leg covers the
+            # export AND that the exported file runs, which are different
+            # claims: a GGUF that exists and cannot be loaded is the vacuous
+            # pass this directory keeps being caught by.
+            "--export-gguf",
         ),
         # No reference yet. The committed band
         # (references/t4_qwen2.5-0.5b.json) is a Qwen2.5-0.5B trajectory and
