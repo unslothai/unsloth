@@ -154,6 +154,39 @@ def test_the_fetched_ranking_is_mapped_on_a_mac_too(monkeypatch):
     ]
 
 
+def test_a_diffusion_bnb_repo_in_the_ranking_keeps_its_name(monkeypatch):
+    """The suggestion list must make the same diffusion exception the host rule makes.
+
+    unsloth publishes diffusion bnb repos and the ranking is ordered by downloads, so one
+    can surface there at any time. They load on the diffusers/MPS path exactly as named,
+    so mapping one would advertise the BIGGER full-precision repo in place of the one the
+    loader uses -- the opposite of what this change is for.
+    """
+    import core.inference.orchestrator as orch_mod
+
+    monkeypatch.setattr(orch_mod.InferenceOrchestrator, "_fetch_top_models", lambda self: None)
+    monkeypatch.setattr(defaults_mod, "get_default_models", lambda: ["unsloth/curated"])
+    monkeypatch.setattr(hw, "DETECTION_GENERATION", 1)
+    monkeypatch.setattr(hw, "CHAT_ONLY", False)
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.MLX)
+
+    orch = orch_mod.InferenceOrchestrator()
+    orch._top_hub_cache = [
+        "unsloth/Qwen-Image-2512-unsloth-bnb-4bit",
+        "unsloth/Z-Image-Turbo-unsloth-bnb-4bit",
+        "unsloth/Qwen3-8B-unsloth-bnb-4bit",
+    ]
+
+    assert orch.default_models == [
+        "unsloth/curated",
+        # diffusion: read as named by diffusers/MPS
+        "unsloth/Qwen-Image-2512-unsloth-bnb-4bit",
+        "unsloth/Z-Image-Turbo-unsloth-bnb-4bit",
+        # text: mlx-lm cannot read it, so name the repo it really loads
+        "unsloth/Qwen3-8B",
+    ]
+
+
 def test_the_fetched_ranking_is_untouched_off_mlx(monkeypatch):
     import core.inference.orchestrator as orch_mod
 
