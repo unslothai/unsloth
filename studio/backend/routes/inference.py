@@ -4192,7 +4192,9 @@ async def _select_request_tools(
         tools = apply_full_access_tool_descriptions(tools)
     if mcp_allowed:
         tools = tools + await get_enabled_mcp_tools()
-    if payload.deep_research_armed:
+    # getattr: callers hand in lighter payload objects than the request models, not all of
+    # which know this field.
+    if getattr(payload, "deep_research_armed", None):
         # Appended past every filter above, including the tools_on gate: arming research in the
         # composer is what offers this tool, and it is the only way the model can start a run.
         from core.inference.tools import DEEP_RESEARCH_TOOL
