@@ -431,7 +431,7 @@ def active_research_runs(
 ):
     return {
         "runs": db.list_active(thread_id),
-        "hasRun": db.has_thread_claim(thread_id),
+        "hasRun": db.research_spent(thread_id),
     }
 
 

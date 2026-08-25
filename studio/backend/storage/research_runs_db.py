@@ -291,6 +291,34 @@ def _unbind_assistant_locked(
     )
 
 
+def _stopped_run_locked(conn: sqlite3.Connection, thread_id: str) -> sqlite3.Row | None:
+    """The thread's one run, when it was stopped and can be re-pointed at a new question."""
+    runs = conn.execute(
+        "SELECT id, status, owner_subject, plan_revision, assistant_message_id "
+        "FROM research_runs WHERE thread_id=?",
+        (thread_id,),
+    ).fetchall()
+    if len(runs) != 1 or runs[0]["status"] != "cancelled":
+        return None
+    return runs[0]
+
+
+def research_spent(thread_id: str) -> bool:
+    """Whether the thread's research is used up, which is what the composer greys out on.
+
+    The claim itself outlives a stopped run so the same run can be re-pointed, so a held
+    claim alone must not read as spent: after a Stop, research is still on offer.
+    """
+    conn = get_connection()
+    try:
+        claim = conn.execute(
+            "SELECT 1 FROM research_thread_claims WHERE thread_id=?", (thread_id,)
+        ).fetchone()
+        return claim is not None and _stopped_run_locked(conn, thread_id) is None
+    finally:
+        conn.close()
+
+
 def rebind_cancelled(
     *,
     thread_id: str,
@@ -308,16 +336,8 @@ def rebind_cancelled(
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
-        runs = conn.execute(
-            "SELECT id, status, owner_subject, plan_revision, assistant_message_id "
-            "FROM research_runs WHERE thread_id=?",
-            (thread_id,),
-        ).fetchall()
-        if len(runs) != 1:
-            conn.commit()
-            return None
-        run = runs[0]
-        if run["status"] != "cancelled" or run["owner_subject"] != owner_subject:
+        run = _stopped_run_locked(conn, thread_id)
+        if run is None or run["owner_subject"] != owner_subject:
             conn.commit()
             return None
         message = conn.execute(

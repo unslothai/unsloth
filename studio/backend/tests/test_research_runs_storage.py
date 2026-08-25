@@ -3944,3 +3944,27 @@ def test_repointing_unbinds_the_reply_it_leaves_behind(research_home):
     assert "researchRunId" not in (stale.get("metadata") or {})
     fresh = studio_db.get_chat_message("thread-1", "assistant-2")
     assert fresh["metadata"]["researchRunId"] == "run-1"
+
+
+def test_research_is_spent_by_a_finished_run_but_not_by_a_stopped_one(research_home):
+    _create()
+    assert research_db.research_spent("thread-1") is True
+
+    _cancel_run()
+    # The claim is still held (it is what lets the run be re-pointed), but the composer must
+    # offer research again after a stop, so this is what /active reports as hasRun.
+    assert research_db.has_thread_claim("thread-1") is True
+    assert research_db.research_spent("thread-1") is False
+
+    reused = _rebind(_new_user_message())
+    assert reused is not None
+    assert research_db.research_spent("thread-1") is True
+
+
+def test_research_stays_spent_after_a_completed_run(research_home):
+    _create()
+    plan = research_db.set_plan("run-1", _plan())
+    research_db.approve("run-1", plan["planRevision"], plan["planHash"])
+    research_db.claim_next("worker-1")
+    research_db.finish("run-1", "worker-1", "completed")
+    assert research_db.research_spent("thread-1") is True

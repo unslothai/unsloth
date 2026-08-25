@@ -3251,6 +3251,19 @@ def _full_access_tip(code_tools: list[str]) -> str:
     )
 
 
+# Armed Deep Research. Stated outright because the schema alone does not move a small model
+# off its prior: asked about 2026 it answers from 2024 training data with no sign it is
+# stale, and the base nudge's "otherwise answer normally" reads as permission to do so.
+_TOOL_RESEARCH_TIP = (
+    "Deep Research is turned on for this conversation. For any question about the world "
+    "-- facts, events, laws, products, papers, prices, comparisons, anything that may have "
+    "changed since your training -- call deep_research instead of answering from memory, "
+    "even when you think you know the answer: the user asked for a researched, cited "
+    "report and your knowledge has a cutoff. Reply directly only to greetings, small talk, "
+    "questions about yourself, and requests to write or transform text the user supplied. "
+    "If a topic is too vague to research well, ask one short clarifying question first."
+)
+
 _TOOL_ARTIFACT_TIP = (
     "For HTML, CSS, or JavaScript canvas requests, call render_html once when "
     "it is available with one complete self-contained HTML document in the code "
@@ -3279,10 +3292,15 @@ def _build_tool_action_nudge(
     code_tools = [name for name in _LOCAL_CODE_TOOLS if name in tool_names]
     has_code = bool(code_tools)
     has_artifact = "render_html" in tool_names
-    if not (has_web or has_code or has_artifact):
+    has_research = "deep_research" in tool_names
+    if not (has_web or has_code or has_artifact or has_research):
         return ""
     if full_access_only:
         return _full_access_tip(code_tools) if (full_access and has_code) else ""
+    date_line = f"The current date is {_date.today().isoformat()}. "
+    if not (has_web or has_code or has_artifact):
+        # Research alone: the base nudge's "otherwise answer normally" would undo the tip.
+        return date_line + _TOOL_RESEARCH_TIP
 
     model_size_b = _extract_model_size_b(model_name)
     compact_web_tip = model_size_b is not None and model_size_b < 9
@@ -3295,12 +3313,9 @@ def _build_tool_action_nudge(
             tool_tip_parts.append(_full_access_tip(code_tools))
     if has_artifact:
         tool_tip_parts.append(_TOOL_ARTIFACT_TIP)
-    return (
-        f"The current date is {_date.today().isoformat()}. "
-        + _TOOL_BASE_NUDGE
-        + " "
-        + " ".join(tool_tip_parts)
-    )
+    if has_research:
+        tool_tip_parts.append(_TOOL_RESEARCH_TIP)
+    return date_line + _TOOL_BASE_NUDGE + " " + " ".join(tool_tip_parts)
 
 
 # Nudge appended when the RAG knowledge-base tool is active: ground answers in
