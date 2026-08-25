@@ -359,9 +359,21 @@ def _repo_has_pipeline_index(repo_info, selected: Optional[Path] = None) -> bool
 def _repo_is_diffusers(repo_info, selected: Optional[Path] = None) -> bool:
     if _repo_has_pipeline_index(repo_info, selected):
         return True
+    repo_id = getattr(repo_info, "repo_id", "") or ""
     try:
         from core.inference.diffusion_families import detect_family
-        return detect_family(getattr(repo_info, "repo_id", "") or "") is not None
+        if detect_family(repo_id) is not None:
+            return True
+    except Exception:
+        pass
+    # Video too, as _local_is_diffusers already asks. Asked here even though the video TASK may
+    # be unavailable: _cached_repo_task returns None for an untrusted or unbuildable video repo,
+    # so a single-file video checkpoint with no pipeline index would otherwise carry no task AND
+    # no diffusers flag, and an inconclusive config leaves can_chat set -- which is every gate
+    # the chat picker has, so the video weights get offered to the text loader.
+    try:
+        from core.inference.video_families import detect_video_family
+        return detect_video_family(repo_id) is not None
     except Exception:
         return False
 

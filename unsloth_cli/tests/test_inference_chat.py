@@ -2293,3 +2293,64 @@ def test_catalog_keeps_the_org_prefix_when_a_plain_name_collides(monkeypatch):
     names = [e.name for e in cat.list_chat_models()]
     assert names == ["Qwen3-0.6B", "unsloth/Qwen3-0.6B", "Llama-3.2-1B"]
     assert len(names) == len(set(names))
+
+
+def test_catalog_drops_an_export_with_no_loadable_payload(monkeypatch, tmp_path):
+    """scan_exported_models types a checkpoint "lora" on adapter_config.json ALONE.
+
+    The merged branch checks has_weights; the LoRA one does not. So an interrupted export
+    leaves a config with no adapter_model.safetensors or .bin, and nothing is "torn" there
+    because there is no payload at all -- which a negative-only check reads as fine. PEFT's
+    load_peft_weights finds neither weight name locally and raises, so the row was a path
+    the picker could offer and nothing could load.
+    """
+    from unsloth_cli._inference import ensure_studio_backend_path
+    from unsloth_cli import _model_catalog as cat
+
+    ensure_studio_backend_path()
+
+    broken = tmp_path / "broken"
+    broken.mkdir()
+    (broken / "adapter_config.json").write_text('{"peft_type": "LORA"}')
+    whole = tmp_path / "whole"
+    whole.mkdir()
+    (whole / "adapter_config.json").write_text('{"peft_type": "LORA"}')
+    (whole / "adapter_model.safetensors").write_bytes(b"\0" * 2048)
+
+    monkeypatch.setattr(cat, "_path_can_chat", lambda *a, **k: None)
+    # Warm the real hub.* chain BEFORE shadowing utils.models: _local_dir_holds_a_payload
+    # imports through it, and a stub package would break that import rather than the test.
+    assert cat._local_dir_holds_a_payload(whole) is True
+    assert cat._local_dir_holds_a_payload(broken) is False
+
+    fake_models = types.ModuleType("utils.models")
+    fake_models.scan_exported_models = lambda: [
+        ("broken / ckpt", str(broken), "lora", None),
+        ("whole / ckpt", str(whole), "lora", None),
+    ]
+    monkeypatch.setitem(sys.modules, "utils.models", fake_models)
+
+    assert [e.name for e in cat.exported_entries()] == ["whole / ckpt"]
+
+
+def test_catalog_hands_a_cached_gguf_pick_a_local_file(monkeypatch, tmp_path):
+    """An ACTIVE-cache row carries the bare repo id, which is right for the inventory and
+    wrong for a pick: from_identifier sends a non-path through detect_gguf_model_remote,
+    whose GatedRepoError branch returns None WITHOUT the local-cache fallback it uses when
+    offline. A cached gated GGUF then reads as non-GGUF and falls to the Transformers loader.
+    """
+    from unsloth_cli import _model_catalog as cat
+
+    repo = tmp_path / "models--Org--Gated-GGUF"
+    snapshot = repo / "snapshots" / ("a" * 40)
+    snapshot.mkdir(parents = True)
+    (snapshot / "gated-Q4_K_M.gguf").write_bytes(b"\0" * 4096)
+    (repo / "refs").mkdir()
+    (repo / "refs" / "main").write_text("a" * 40)
+
+    monkeypatch.setattr(cat, "_preferred_complete_gguf",
+                        lambda p: str(snapshot / "gated-Q4_K_M.gguf") if str(snapshot) in str(p) else None)
+    resolved = cat._cached_gguf_load_id(
+        {"repo_id": "Org/Gated-GGUF", "load_id": "Org/Gated-GGUF", "cache_path": str(repo)}
+    )
+    assert resolved.endswith("gated-Q4_K_M.gguf"), resolved

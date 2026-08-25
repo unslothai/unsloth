@@ -359,8 +359,26 @@ def _local_transformers_can_chat(path: Path) -> Optional[bool]:
     return None
 
 
-def _base_transformers_can_chat(base_model: str, revision: Optional[str]) -> Optional[bool]:
-    """Classify an exact local or active-cache base without a network lookup."""
+def _hub_cache_root_of(path: Optional[Path]) -> Optional[Path]:
+    """The hub cache root *path* sits in, i.e. the parent of its ``models--*`` repo dir."""
+    if path is None:
+        return None
+    try:
+        candidate = Path(path)
+        for part in (candidate, *candidate.parents):
+            if part.name.startswith("models--"):
+                return part.parent
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return None
+
+
+def _base_transformers_can_chat(
+    base_model: str,
+    revision: Optional[str],
+    adapter_path: Optional[Path] = None,
+) -> Optional[bool]:
+    """Classify an exact local or cached base without a network lookup."""
     try:
         local_path = Path(base_model).expanduser()
         if local_path.is_dir():
@@ -368,17 +386,59 @@ def _base_transformers_can_chat(base_model: str, revision: Optional[str]) -> Opt
     except (OSError, RuntimeError, ValueError):
         return None
 
+    # The root the ADAPTER was found in comes first, then the active root, then the configured
+    # ones. The scan covers legacy, default and previously configured roots, so an adapter can
+    # be listed from a root that is not active -- and its base is then cached in that same root,
+    # which is why the adapter's own root is the reliable probe and `known_hf_hub_caches()`
+    # alone is not (it lists only registered roots). Probing just the active root returned None
+    # there, and None is inconclusive, which leaves the adapter chat-capable: a Whisper or
+    # encoder LoRA reached the chat picker.
     try:
         from huggingface_hub import try_to_load_from_cache
-        from utils.hf_cache_settings import get_hf_cache_paths
-        config_path = try_to_load_from_cache(
-            base_model,
-            "config.json",
-            cache_dir = get_hf_cache_paths().hub_cache,
-            revision = revision,
-        )
     except Exception:
         return None
+
+    # Each source is collected independently. Gathering them under one try meant a failure
+    # while enumerating the OPTIONAL extra roots discarded the adapter's own root too, and the
+    # answer came back None -- inconclusive, which re-admits the adapter to the chat picker.
+    # That is the same fail-open shape this function exists to close.
+    roots: list[Path] = []
+
+    def _add(root: Optional[Path]) -> None:
+        if root is not None and root not in roots:
+            roots.append(root)
+
+    _add(_hub_cache_root_of(adapter_path))
+    try:
+        from utils.hf_cache_settings import get_hf_cache_paths
+        _add(get_hf_cache_paths().hub_cache)
+    except Exception:
+        pass
+    try:
+        from utils.hf_cache_settings import known_hf_hub_caches
+        for configured in known_hf_hub_caches():
+            _add(configured)
+    except Exception:
+        pass
+    if not roots:
+        return None
+
+    config_path = None
+    for root in roots:
+        try:
+            found = try_to_load_from_cache(
+                base_model,
+                "config.json",
+                cache_dir = root,
+                revision = revision,
+            )
+        except Exception:
+            continue
+        # A non-str is _CACHED_NO_EXIST ("we know it is absent here") or None ("unknown"),
+        # and neither rules the base out of a different root.
+        if isinstance(found, str):
+            config_path = found
+            break
     if not isinstance(config_path, str):
         return None
     return _local_transformers_can_chat(Path(config_path).parent)
@@ -394,7 +454,8 @@ def _local_path_can_chat(path: str | Path, base_model: Optional[str] = None) -> 
     adapter_base = _clean_optional_string(adapter_config.get("base_model_name_or_path"))
     revision = _clean_optional_string(adapter_config.get("revision"))
     base = adapter_base or _clean_optional_string(base_model)
-    return _base_transformers_can_chat(base, revision) if base else None
+    # model_path is the adapter's snapshot, which names the cache root its base shares.
+    return _base_transformers_can_chat(base, revision, model_path) if base else None
 
 
 def _capabilities_for_format(

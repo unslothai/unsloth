@@ -148,7 +148,14 @@ def exported_entries() -> List[ModelEntry]:
                 continue
         else:
             load_id = None
-            if _local_payload_is_torn(Path(path)):
+            # Positively loadable, not merely "not torn", which is what the local-folder branch
+            # already asks. scan_exported_models types a checkpoint as "lora" on
+            # adapter_config.json alone (the merged branch checks has_weights, the LoRA one does
+            # not), so an interrupted export leaves a config with no adapter_model.safetensors
+            # or .bin. Nothing is torn there because there is no payload at all, so the negative
+            # check passed it through and the picker offered a directory PEFT cannot load:
+            # load_peft_weights finds neither weight name locally and raises ValueError.
+            if not _local_dir_holds_a_payload(Path(path)):
                 continue
         entries.append(ModelEntry("Fine-tunes", name, export_type, load_id or path))
     return entries
@@ -251,10 +258,36 @@ def _preferred_complete_gguf(path: str) -> Optional[str]:
 
 
 def _cached_gguf_load_id(row: dict) -> str:
+    """A concrete local GGUF for a cached row, falling back to the identifier it came with.
+
+    An inactive-cache row already carries a snapshot path, so this resolves the quant inside it.
+    An ACTIVE-cache row carries the bare repo id -- correct for the inventory, which does not
+    want to pin a live repo, and wrong for a picker: from_identifier() sends a non-path through
+    detect_gguf_model_remote(), whose GatedRepoError branch is treated as permanent and returns
+    None WITHOUT the local-cache fallback it uses when offline. A gated or private repo whose
+    GGUF is fully downloaded then reads as non-GGUF and falls through to the Transformers
+    loader. Resolving the on-disk file keeps the pick on the weights the row was listed for.
+    """
     load_id = row.get("load_id") or row["repo_id"]
-    if not row.get("load_id"):
-        return load_id
-    return _preferred_complete_gguf(load_id) or load_id
+    resolved = _preferred_complete_gguf(load_id)
+    if resolved:
+        return resolved
+    # The bare repo id is not a path, so resolve through the snapshot the row was built from.
+    cache_path = row.get("cache_path")
+    if cache_path:
+        try:
+            from hub.utils.inventory_scan import default_ref_snapshot
+            snapshot = default_ref_snapshot(Path(cache_path))
+        except Exception:
+            snapshot = None
+        if snapshot is None:
+            snapshots = sorted(Path(cache_path).glob("snapshots/*"))
+            snapshot = snapshots[-1] if snapshots else None
+        if snapshot is not None:
+            resolved = _preferred_complete_gguf(str(snapshot))
+            if resolved:
+                return resolved
+    return load_id
 
 
 def _cached_catalog_rows() -> tuple[list[dict], list[dict]]:
