@@ -769,3 +769,43 @@ def test_shipped_video_and_image_families_resolve_the_scale(monkeypatch):
         fam = detect_video_family(repo)
         assert _budget_scale(fam, base = repo) == expected, repo
     assert _budget_scale(detect_family("Qwen/Qwen-Image"), base = "Qwen/Qwen-Image") == scale
+
+
+def test_a_sibling_release_keeps_the_pre_cast_encoder(monkeypatch):
+    """The base gate must not refuse a release that republishes the SAME encoder.
+
+    Qwen-Image-2512 and Krea-2-Raw ship their sibling's text encoder byte for byte (shard
+    LFS sha256 compared 2026-08-25), so dropping the hosted pre-cast artifact for them
+    would stage 16.6 GB / 8.9 GB of dense encoder the load never opens -- and would widen
+    the memory budget that the pre-download unified-memory guard is sized against."""
+    import core.inference.diffusion_precision as precision
+    from core.inference.diffusion_families import detect_family_for_pick
+
+    monkeypatch.setattr(precision, "te_quant_supported", lambda target, mode: True)
+    for base in (
+        "Qwen/Qwen-Image",
+        "Qwen/Qwen-Image-2512",
+        "unsloth/Qwen-Image-2512",
+        "krea/Krea-2-Turbo",
+        "krea/Krea-2-Raw",
+    ):
+        fam = detect_family_for_pick(base, None, None)
+        assert fam is not None, base
+        sources = tpq.te_prequant_sources_for_base(fam, base, te_quant_mode = "fp8", target = _target())
+        assert "text_encoder" in sources, base
+        assert _budget_scale(fam, base = base) == tpq.TE_PREQUANT_BUDGET_SCALE, base
+
+
+def test_an_unrelated_custom_base_still_loses_it(monkeypatch):
+    """The other half of the same gate: a base nobody has compared keeps the strict
+    refusal, because the hosted artifact would otherwise download before its metadata
+    could reject it."""
+    import core.inference.diffusion_precision as precision
+    from core.inference.diffusion_families import detect_family_for_pick
+
+    monkeypatch.setattr(precision, "te_quant_supported", lambda target, mode: True)
+    fam = detect_family_for_pick("Qwen/Qwen-Image", None, None)
+    for base in ("someone/my-qwen-image-finetune", "randomuser/qwen-image-merged"):
+        assert (
+            tpq.te_prequant_sources_for_base(fam, base, te_quant_mode = "fp8", target = _target()) == {}
+        ), base
