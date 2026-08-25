@@ -8,6 +8,7 @@ import atexit
 import concurrent.futures
 import hashlib
 import json
+import mimetypes
 import os
 import shlex
 import shutil
@@ -1027,6 +1028,7 @@ def _block_link(block: Any) -> Optional[str]:
 
 # fastmcp File(data=..., format=...) labels payloads as application/<format>
 _IMAGE_SUBTYPES = {
+    "apng": "image/apng",
     "png": "image/png",
     "jpeg": "image/jpeg",
     "jpg": "image/jpeg",
@@ -1036,6 +1038,7 @@ _IMAGE_SUBTYPES = {
     "avif": "image/avif",
     "tif": "image/tiff",
     "tiff": "image/tiff",
+    "ico": "image/vnd.microsoft.icon",
     "svg": "image/svg+xml",
     "svg+xml": "image/svg+xml",
 }
@@ -1049,7 +1052,11 @@ def _image_mime(mime: Any) -> Optional[str]:
     if essence.startswith("image/"):
         return essence
     subtype = essence[len("application/") :] if essence.startswith("application/") else ""
-    return _IMAGE_SUBTYPES.get(subtype)
+    mapped = _IMAGE_SUBTYPES.get(subtype)
+    if mapped:
+        return mapped
+    inferred, _ = mimetypes.guess_type(f"file:///image.{subtype}", strict = False)
+    return inferred if inferred and inferred.startswith("image/") else None
 
 
 def _block_image(block: Any) -> Optional[tuple[str, str]]:
@@ -1062,6 +1069,9 @@ def _block_image(block: Any) -> Optional[tuple[str, str]]:
             return None
         data = getattr(resource, "blob", None)
         mime = getattr(resource, "mimeType", None)
+        if not mime:
+            uri = getattr(resource, "uri", None)
+            mime = mimetypes.guess_type(str(uri), strict = False)[0] if uri else None
     mime = _image_mime(mime)
     if data and mime:
         return str(data), mime

@@ -33,10 +33,14 @@ def _image(data: str = PNG_B64, mime: str = "image/png") -> SimpleNamespace:
     return SimpleNamespace(type = "image", data = data, mimeType = mime)
 
 
-def _blob_resource(data: str = PNG_B64, mime: str = "image/png") -> SimpleNamespace:
+def _blob_resource(
+    data: str = PNG_B64,
+    mime: str | None = "image/png",
+    uri: str = "file:///out/gen.png",
+) -> SimpleNamespace:
     return SimpleNamespace(
         type = "resource",
-        resource = SimpleNamespace(uri = "file:///out/gen.png", mimeType = mime, blob = data),
+        resource = SimpleNamespace(uri = uri, mimeType = mime, blob = data),
     )
 
 
@@ -294,6 +298,7 @@ def test_fastmcp_file_format_png_is_rendered():
 
 def test_application_image_subtypes_are_normalised():
     for mime, expected in (
+        ("application/apng", "image/apng"),
         ("application/jpeg", "image/jpeg"),
         ("application/jpg", "image/jpeg"),
         ("application/webp", "image/webp"),
@@ -302,12 +307,21 @@ def test_application_image_subtypes_are_normalised():
         ("application/avif", "image/avif"),
         ("application/tif", "image/tiff"),
         ("application/tiff", "image/tiff"),
+        ("application/ico", "image/vnd.microsoft.icon"),
+        ("application/heic", "image/heic"),
         ("application/svg", "image/svg+xml"),
         ("application/svg+xml", "image/svg+xml"),
     ):
         flat = _flatten_result(_result(_blob_resource(mime = mime)))
         payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)[1]
         assert json.loads(payload) == [{"data": PNG_B64, "mimeType": expected}], mime
+
+
+def test_blob_resource_without_mime_uses_uri_extension():
+    flat = _flatten_result(_result(_blob_resource(mime = None)))
+    payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)[1]
+    assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/png"}]
+    assert _flatten_result(_result(_blob_resource(mime = None, uri = "file:///out/report.pdf"))) == ""
 
 
 def test_non_image_application_types_stay_ignored():
