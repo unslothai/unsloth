@@ -8,8 +8,12 @@ import {
   type RefObject,
   useEffect,
   useLayoutEffect,
+  useRef,
   useState,
 } from "react";
+import { flushSync } from "react-dom";
+
+import { type FenceMode, resolveFenceMode } from "./code-fence-mode";
 
 /*
  * MONOTONIC fence highlighting: a fence is rendered as a plain shell until the
@@ -43,45 +47,37 @@ import {
  * renders rather than what a settled thread costs.
  */
 
-// How far outside the viewport a fence counts as "reached". One viewport of
-// slack in each direction, so the upgrade has a frame or two to land before the
-// block is actually on screen and the reader never sees the swap.
+/*
+ * How far outside the viewport a fence counts as "reached": one viewport of slack each way, so the
+ * upgrade lands a frame or two before the block is on screen and the reader never sees the swap.
+ *
+ * THE PERCENTAGE RESOLVES AGAINST THE ROOT'S HEIGHT, and the spec says otherwise. Intersection
+ * Observer 2.2 says percentages "are resolved relative to the width of the undilated rectangle"
+ * for all four sides; no engine does that for top and bottom, and w3c/IntersectionObserver#391 is
+ * open on exactly that. Measured on a synthetic scroller, with `0px 0px` and `300px 0px` alongside
+ * as controls that must come back 0 and 300:
+ *
+ *   root 300x800 -> 800 px    root 1600x600 -> 600 px    root 600x1400 -> 1400 px
+ *
+ * on Chromium, Firefox and WebKit alike, nine rows, every control reproduced. So it is the HEIGHT,
+ * which `inBand` and the jump test below both assume. That is today's engines against a spec that
+ * reads otherwise, so it is guarded rather than trusted: `pf9462_parity.py` re-measures two
+ * geometries every run and fails if the observer's lookahead and the pre-paint band stop agreeing,
+ * which is what an engine moving to the spec's reading would look like.
+ */
 const REACH_MARGIN = "100% 0px";
 
 /*
- * Three states, not two.
- *
- *   "off"        ship default. Every fence is highlighted at mount, as today.
- *   "defer"      the change: an unreached fence is a plain shell and is never tokenized.
- *   "tokenize"   MEASUREMENT ONLY. An unreached fence is the same plain shell, but the
- *                highlighter is still driven over its source and the result thrown away.
- *
- * `tokenize` exists to answer one question and is not a shipping mode. `defer` removes two
- * things at once: the spans from the document, and the tokenizer work that produces them. An
- * improvement seen under `defer` alone cannot say which of the two paid for it. `tokenize`
- * holds the DOM at `defer`'s size and puts only the tokenizer work back, so the gap between
- * `tokenize` and `defer` is the tokenizer's contribution and the gap between `off` and
- * `tokenize` is the document's.
+ * The mode decision lives in `code-fence-mode.ts`, a JSX-free `.ts` so a test can RUN the table
+ * rather than regex this file. Re-exported here because consumers already import this module.
  */
-export type FenceMode = "off" | "defer" | "tokenize";
+export { type FenceMode, resolveFenceMode, SHIP_DEFAULT } from "./code-fence-mode";
 
-export const fenceMode = (): FenceMode => {
-  const runtime = (globalThis as Record<string, unknown>)
-    .__UNSLOTH_DEFER_FENCE_HIGHLIGHT__;
-  const raw =
-    typeof runtime === "string"
-      ? runtime
-      : runtime === true
-        ? "defer"
-        : runtime === false
-          ? "off"
-          : readBuildFlag();
-  return raw === "1" || raw === "defer"
-    ? "defer"
-    : raw === "tokenize"
-      ? "tokenize"
-      : "off";
-};
+export const fenceMode = (): FenceMode =>
+  resolveFenceMode(
+    (globalThis as Record<string, unknown>).__UNSLOTH_DEFER_FENCE_HIGHLIGHT__,
+    readBuildFlag(),
+  );
 
 const readBuildFlag = (): string => {
   try {
@@ -169,31 +165,209 @@ const CAN_OBSERVE =
   typeof globalThis !== "undefined";
 
 /*
- * PRINT: NOT HANDLED, and measured rather than assumed.
+ * THE REGISTER OF FENCES THAT HAVE NOT BEEN REACHED YET, for the two things that must reach across
+ * all of them at once without waiting for a React render: a discontinuous scroll, and a print,
+ * which puts the WHOLE document on the page. Both go through `latchNow` below.
  *
- * A print renders the whole document, so every deferred fence is on the page whether or not the
- * reader reached it. Colour is the only thing deferral costs there: the text is a live text node,
- * so it prints complete, in order, correctly laid out and in the right font.
- *
- * There WAS a `beforeprint` path here that latched every mounted fence, warmed each language's
- * grammar at idle and flushed twice. It has been removed because it did not work, and the
- * measurement is the reason. Synchronous dispatch and read in one task, 100K rung, cold open:
- *
- *   delay after open   flag off: blocks on the raw fallback   flag on
- *   1.5 s              56 of 56                               56 of 56
- *   3 s and beyond     0                                      53 of 56
- *
- * The shipped build has a real window of about three seconds and is fully highlighted after it.
- * With the flag on, 53 of 56 blocks stayed on streamdown's raw fallback at every delay out to
- * twenty seconds. Neither a warm grammar nor a second `flushSync` makes a lazily imported,
- * effect-driven highlighter produce tokens inside the synchronous print task, because
- * `beforeprint` returns and the browser snapshots before any of that can land.
- *
- * So the honest position is that this is a stated limitation, not a solved problem: with the flag
- * on, printing a long thread prints unreached fences without syntax colour. Keeping the machinery
- * would have meant maintaining a module-global claim, two bookkeeping sets and an idle scheduler
- * for a benefit that was measured at zero.
+ * A gate carries the two elements its observers were built against, resolved at the same moment
+ * and rebuilt with them, so nothing here re-walks the ancestor chain or re-reads a computed style.
+ * `warm` comes from the caller because the highlighter instance lives with the block's component.
  */
+type FenceGate = {
+  node: HTMLElement;
+  near: HTMLElement | null;
+  outer: HTMLElement | null;
+  language: string | null;
+  /** `true` tokenizes this fence's source now; `false` only loads its grammar. */
+  warm: (tokens: boolean) => void;
+  latch: () => void;
+  /** A state write that changes nothing, whose only job is to give React sync work to do. */
+  poke: () => void;
+};
+
+const unreached = new Set<FenceGate>();
+
+/** Is this gate's fence where the observers would call it reached? */
+const gateOpen = (gate: FenceGate): boolean =>
+  inBand(gate.node, gate.near)
+  && (gate.near === gate.outer || inBand(gate.near as HTMLElement, gate.outer));
+
+/*
+ * UPGRADE THESE FENCES INSIDE THIS TASK, so the browser paints them highlighted instead of
+ * painting the plain shell and correcting it a few frames later. Dropping any of the three steps
+ * was measured to put a painted plain frame back:
+ *
+ *   1. `warm(true)`. Streamdown's highlighted body renders its own plain fallback whenever the
+ *      plugin answers `null`, which it does only while a grammar is loading; with the grammar in
+ *      hand it tokenizes in the same call. Warming makes the render below a cache hit.
+ *   2. The inner `flushSync(latch)`. A normally scheduled update lands after the next paint, which
+ *      is the whole defect. This commits the shell-to-block swap in this task.
+ *   3. The inner `flushSync(poke)`, INSIDE an outer `flushSync`. Step 2 does not produce the
+ *      COLOURED commit: `HighlightedCodeBlockBody` starts at `useState(raw)` and asks for tokens
+ *      from a PASSIVE effect, so every newly mounted block renders unhighlighted once. Off screen
+ *      at thread mount that is invisible; deferred, it is a plain frame on the reader's screen.
+ *
+ * WHY THE POKE AND THE NESTING, since an empty `flushSync(() => {})` does neither:
+ *
+ *   - React runs pending passive effects from `performSyncWorkOnRoot`, reached only when sync work
+ *     is waiting, so a flush with nothing to do never runs the effect that colours the block.
+ *     `poke` is that work: a state write on an already-latched fence whose own effects all
+ *     early-return.
+ *   - `flushSync` restores React's update priority BEFORE performing the flush, so the passive
+ *     effect's update resolves against the ambient priority, and a scroll is continuous rather
+ *     than discrete, so it is not flushed and lands next frame after all. The outer call holds the
+ *     priority discrete across its whole body, so the inner flushes carry the effect's update too.
+ *
+ * One way only. Nothing here can clear a latch.
+ */
+const latchNow = (arrived: readonly FenceGate[]): void => {
+  if (arrived.length === 0) return;
+  for (const gate of arrived) {
+    unreached.delete(gate);
+    gate.warm(true);
+  }
+  flushSync(() => {
+    flushSync(() => {
+      for (const gate of arrived) gate.latch();
+    });
+    flushSync(() => {
+      for (const gate of arrived) gate.poke();
+    });
+  });
+};
+
+/*
+ * A DISCONTINUOUS SCROLL: a scrollbar drag, Ctrl+End, an anchor jump, a restored position.
+ *
+ * Neither the observers' one root height of lookahead (`REACH_MARGIN`) nor the render-time
+ * pre-paint gate covers a jump: the viewport can move further than the lookahead in one step with
+ * no React render in between, and an IntersectionObserver record is delivered one or more frames
+ * AFTER the paint. Chromium at the 100K rung, 16 seeded jumps: 8 painted 3 to 4 frames of plain
+ * code, 50 to 190 ms.
+ *
+ * A SCROLL LISTENER IS ENOUGH AND IS IN TIME: scroll events are dispatched in the "run the scroll
+ * steps" of the same update-the-rendering pass that will paint the new position, before
+ * animation-frame callbacks and before style, layout and paint, so a `flushSync` from here is part
+ * of the frame the reader is about to see. `scrollTo`, wheel, drag and keyboard all arrive here.
+ *
+ * THE THRESHOLD IS DERIVED, NOT TUNED. The band is one root height `h` bigger each way, so after a
+ * scroll of `d` the newly visible strip `[d, d + h]` is inside the old band exactly when `d <= h`.
+ * The pass therefore runs only when the lookahead provably did not cover the movement, and a
+ * continuous scroll pays one subtraction per event.
+ *
+ * ONE LISTENER, NOT ONE PER FENCE. Scroll does not bubble but does capture, so one capturing
+ * document listener sees every element including nested reasoning panes. Attached when the first
+ * fence registers and removed when the last latches, so nothing left to defer costs nothing.
+ */
+const lastScrollTop = new WeakMap<EventTarget, number>();
+let scrollWatched = false;
+
+const onScroll = (event: Event): void => {
+  if (unreached.size === 0) return;
+  const target = event.target;
+  if (target === null) return;
+  const element = target === document ? null : (target as HTMLElement);
+  const top = element ? element.scrollTop : window.scrollY;
+  const height = element ? element.clientHeight : window.innerHeight;
+  const before = lastScrollTop.get(target);
+  lastScrollTop.set(target, top);
+  // An unseen scroller has no previous position, so its first event counts as a jump: one pass per
+  // scroller, and never an assumption that the movement was small.
+  if (before !== undefined && Math.abs(top - before) <= height) return;
+  const arrived: FenceGate[] = [];
+  for (const gate of unreached) {
+    if (gateOpen(gate)) arrived.push(gate);
+  }
+  latchNow(arrived);
+};
+
+const watchScrolling = (): void => {
+  if (scrollWatched || typeof document === "undefined") return;
+  scrollWatched = true;
+  document.addEventListener("scroll", onScroll, { capture: true, passive: true });
+};
+
+const unwatchScrolling = (): void => {
+  if (!scrollWatched || unreached.size > 0 || typeof document === "undefined") return;
+  scrollWatched = false;
+  document.removeEventListener("scroll", onScroll, { capture: true });
+};
+
+/*
+ * PRINT, the one gesture that puts every deferred fence on the page at once.
+ *
+ * Colour is all deferral costs a printed page -- the shell holds a live text node, so it prints
+ * complete, in order and in the right font -- but a page that lost the colour on fences the reader
+ * never scrolled past is a defect they can see and keep. Nor does the printed window match the
+ * reader's: a print lays out at PAPER width while the scroll offset carries across as raw pixels,
+ * so the page lands several fences away. Letter against a 1280 px window: 1 to 2 deferred fences
+ * on every sampled page, 6.6% pixel difference against the same page with the flag off; matching
+ * paper to window removes it, which identifies the cause and is why chasing the window is the
+ * wrong fix. The whole document is on the page, so the whole document has to be highlighted.
+ *
+ * WHY AN EARLIER ATTEMPT FAILED and was reported as impossible: it latched every fence from
+ * `beforeprint` with `flushSync`, the blocks swapped, and 53 of 56 still printed on streamdown's
+ * raw fallback, because the swap alone renders UNHIGHLIGHTED while the passive effect waits on a
+ * grammar. `latchNow` closes both halves (warm, then flush the colouring render as well as the
+ * swap) and `warmGrammars` below keeps a loading grammar from being what is missing at snapshot.
+ *
+ * BOTH DOORS: `beforeprint` covers Ctrl+P and the print menu; headless `page.pdf()` and DevTools
+ * print emulation change the media query without firing it, and a PDF export is how a reader keeps
+ * a copy.
+ *
+ * A PRINT UPGRADES THE DOCUMENT THAT WAS PRINTED, AND NOTHING ELSE. This was a module-global
+ * `printed` folded into every future fence's `reached`, a session-wide latch rather than a
+ * monotonic one: at the 100K rung a thread with 53 of 56 fences deferred, 2,458 spans and 22,794
+ * elements printed once, then after navigating away inside the app and back remounted with 0
+ * deferred, 41,410 spans and 61,747 elements. One Ctrl+P turned the default off for the tab's
+ * life, including threads never on the printed page. So a print latches what is on the page WHEN
+ * IT HAPPENS and a fence mounted afterwards defers again; every print does it again, so print,
+ * scroll, print gives a second page as complete as the first. Still one way only: `latchNow` can
+ * only latch, and reverting on `afterprint` would be the bidirectional edge this design avoids.
+ */
+const upgradeEverythingForPrint = (): void => {
+  latchNow([...unreached]);
+};
+
+/*
+ * GRAMMARS, WARMED AT IDLE. NOT TOKENS.
+ *
+ * `warm(false)` highlights an EMPTY string in the fence's language: the grammar loads, nothing is
+ * tokenized, no span is mounted, the document stays the size deferral made it. It buys that
+ * `latchNow`'s synchronous path cannot be defeated by a still-loading grammar -- on a jump into a
+ * language the reader has not met, and on a print, where there is no later frame to correct in.
+ * Deduplicated by language and scheduled at idle: one load per language, nothing when nothing is
+ * deferred.
+ */
+const grammarsWarmed = new Set<string>();
+let warmScheduled = false;
+
+const warmGrammars = (): void => {
+  warmScheduled = false;
+  for (const gate of unreached) {
+    const language = gate.language ?? "text";
+    if (grammarsWarmed.has(language)) continue;
+    grammarsWarmed.add(language);
+    gate.warm(false);
+  }
+};
+
+const scheduleGrammarWarm = (): void => {
+  if (warmScheduled || typeof globalThis === "undefined") return;
+  warmScheduled = true;
+  const idle = (globalThis as Record<string, unknown>).requestIdleCallback as
+    | ((cb: () => void, options?: { timeout: number }) => number)
+    | undefined;
+  if (typeof idle === "function") idle(warmGrammars, { timeout: 2000 });
+  else setTimeout(warmGrammars, 500);
+};
+
+if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+  window.addEventListener("beforeprint", upgradeEverythingForPrint);
+  window.matchMedia?.("print")?.addEventListener?.("change", (event) => {
+    if (event.matches) upgradeEverythingForPrint();
+  });
+}
 
 /*
  * THE NEAREST SCROLLING ANCESTOR, found rather than named.
@@ -300,17 +474,28 @@ const inBand = (node: HTMLElement, scroller: HTMLElement | null): boolean => {
  *                 state is ever written, no observer is built and no layout is read.
  * @param streaming  the fence is still being written. It is highlighted while it streams AND it
  *                 latches, so that finishing cannot take the highlighting back.
+ * @param language  used only to load one grammar per language rather than one per fence; `null`
+ *                 warms plain text.
+ * @param warm  drive the highlighter over this fence: `true` for tokens, `false` for the grammar
+ *                 alone. See `latchNow`. Held in a ref, not an effect dependency, so an
+ *                 unmemoized caller cannot rebuild every observer in the thread on every render.
  */
 export function useFenceReached(
   host: RefObject<HTMLElement | null>,
   enabled: boolean,
   streaming: boolean,
+  language: string | null,
+  warm: (tokens: boolean) => void,
 ): boolean {
   const [latched, setLatched] = useState(false);
   // Bumped when the resolved scrolling ancestor stops being one, which rebuilds the gates below
   // against the element that clips this fence now. Never read for anything else.
   const [generation, setGeneration] = useState(0);
   const reached = !enabled || !CAN_OBSERVE || streaming || latched;
+  const warmRef = useRef(warm);
+  useEffect(() => {
+    warmRef.current = warm;
+  }, [warm]);
 
   /*
    * A COMPLETING STREAM MUST NOT DOWNGRADE.
@@ -413,6 +598,23 @@ export function useFenceReached(
     ));
     gates.forEach(([target], i) => observers[i].observe(target));
 
+    // The same two elements, so a jump and a print can ask the same questions without a render or
+    // another ancestor walk. Rebuilt with the observers, so a rebind cannot leave a stale root.
+    const registered: FenceGate = {
+      node,
+      near,
+      outer,
+      language,
+      warm: (tokens) => warmRef.current(tokens),
+      latch: () => setLatched(true),
+      // Reuses `generation`: this fence has just latched, so every effect keyed on it
+      // early-returns and the bump costs one render. See `latchNow` for why React needs the work.
+      poke: () => setGeneration((n) => n + 1),
+    };
+    unreached.add(registered);
+    watchScrolling();
+    scheduleGrammarWarm();
+
     // `reasoning.tsx` drops `max-h-64` when a stream ends and keeps `overflow-y-auto`, so the pane
     // stops being a scroller and its box becomes the whole trace. Watch for that and rebuild.
     let resize: ResizeObserver | undefined;
@@ -426,6 +628,8 @@ export function useFenceReached(
     return () => {
       for (const observer of observers) observer.disconnect();
       resize?.disconnect();
+      unreached.delete(registered);
+      unwatchScrolling();
     };
   }, [reached, host, generation]);
 

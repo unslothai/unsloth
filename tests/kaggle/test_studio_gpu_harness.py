@@ -791,20 +791,61 @@ def test_the_workflow_never_cancels_a_run_that_may_hold_a_kernel():
     assert wf["jobs"]["studio-gpu"]["concurrency"]["cancel-in-progress"] is False
 
 
-def test_the_two_kaggle_legs_queue_behind_each_other():
-    """Kaggle's 2-kernel cap is per ACCOUNT and is not workflow-aware, so
-    sharing a concurrency group is what stops one leg's push being rejected
-    by the other's kernel."""
+def test_the_two_kaggle_legs_fit_the_account_side_by_side():
+    """One kernel each, against a 2-kernel per-ACCOUNT cap, so they can overlap.
+
+    They used to SHARE a concurrency group, because the notebook leg pushed two
+    kernels and took both of Kaggle's slots: this leg would have raced the cap
+    and lost its push, so it had to queue behind instead. The cost was that it
+    queued behind the whole notebook JOB even though the account was free again
+    the moment that job's kernels finished -- measured, run 32607617804 waited
+    about 40 minutes on run 32607621452.
+
+    The notebook leg now packs its four legs into one kernel. So the invariant
+    worth holding is no longer "same group" but the arithmetic that made the
+    same group necessary: what each leg PUSHES has to sum to within the cap.
+    Separate groups plus one kernel each is exactly 2 of 2, with no headroom,
+    which is why this asserts the sum rather than the group names.
+    """
     yaml = pytest.importorskip("yaml")
-    notebook = yaml.safe_load(
-        (REPO_ROOT / ".github" / "workflows" / "kaggle-t4-notebook-ci.yml").read_text(
-            encoding = "utf-8"
-        )
+    # Read the cap out of gate.py's SOURCE rather than importing it. Both
+    # .github/scripts/kaggle_studio_ci and .github/scripts/kaggle_t4_ci ship a
+    # module called `report`, so putting either on sys.path here decides which
+    # one `import report` resolves to for every test that runs afterwards in
+    # the same process. An earlier draft of this test did exactly that and took
+    # nine unrelated summary tests down with it.
+    gate_src = (REPO_ROOT / ".github" / "scripts" / "kaggle_t4_ci" / "gate.py").read_text(
+        encoding = "utf-8"
     )
-    assert (
-        _workflow()["jobs"]["studio-gpu"]["concurrency"]["group"]
-        == notebook["jobs"]["t4-smoke"]["concurrency"]["group"]
+    caps = re.findall(r"^MAX_CONCURRENT_GPU_KERNELS = (\d+)$", gate_src, re.MULTILINE)
+    assert len(caps) == 1, caps
+    MAX_CONCURRENT_GPU_KERNELS = int(caps[0])
+
+    notebook_text = (REPO_ROOT / ".github" / "workflows" / "kaggle-t4-notebook-ci.yml").read_text(
+        encoding = "utf-8"
     )
+    notebook = yaml.safe_load(notebook_text)
+    studio_group = _workflow()["jobs"]["studio-gpu"]["concurrency"]["group"]
+    notebook_group = notebook["jobs"]["t4-smoke"]["concurrency"]["group"]
+
+    assert studio_group != notebook_group, (
+        "the two legs share a concurrency group again, so Studio waits out the "
+        "whole notebook job for a Kaggle session that is free"
+    )
+    # Neither may be keyed on the ref: one account, so two branches of the SAME
+    # workflow still must not overlap even though the two workflows may.
+    for group in (studio_group, notebook_group):
+        assert "github.ref" not in group, group
+
+    pushes = {}
+    for label, text in (
+        ("studio", WORKFLOW.read_text(encoding = "utf-8")),
+        ("notebook", notebook_text),
+    ):
+        found = {int(k) for k in re.findall(r"--kernels (\d+)", text)}
+        assert len(found) == 1, (label, found)
+        pushes[label] = found.pop()
+    assert sum(pushes.values()) <= MAX_CONCURRENT_GPU_KERNELS, pushes
 
 
 def test_the_workflow_is_never_preempted_by_the_capacity_sweeper():

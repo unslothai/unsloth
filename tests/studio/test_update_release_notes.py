@@ -1281,12 +1281,16 @@ def _corner_rails(provider: str) -> list[str]:
     Matched on the corner they are pinned to, which is the thing under test.
     The rail is anchored in CSS, so that corner is spelled in its classes.
     """
-    return re.findall(r'"pointer-events-none fixed bottom-4 right-4 ([^"]*)"', provider)
+    return re.findall(r'"pointer-events-none fixed bottom-0 right-4 ([^"]*)"', provider)
 
 
 def _capped_rails(provider: str) -> int:
-    """How many of those rails cap themselves to the viewport, in CSS."""
-    return sum(1 for rail in _corner_rails(provider) if "max-h-[calc(100dvh_-_2rem)]" in rail)
+    """How many of those rails cap themselves to the viewport, in CSS.
+
+    2rem for the cards' band, less the 24px shadow gutter the rail adds around
+    them, so the gutter is not spent on the cards. See overlay-shadow-gutter.
+    """
+    return sum(1 for rail in _corner_rails(provider) if "max-h-[calc(100dvh_-_8px)]" in rail)
 
 
 def test_the_overlay_stack_fits_the_viewport():

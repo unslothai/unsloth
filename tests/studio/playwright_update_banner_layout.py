@@ -40,8 +40,15 @@ from playwright.sync_api import sync_playwright
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
+    install_wall_clock_watchdog,
     wait_for_health,
 )
+
+# The wall this suite did not have, matching playwright_chat_ui.py and
+# playwright_extra_ui.py. It has six raw `page.evaluate` calls, which take no
+# `timeout=` at all, and it runs mid-lane on Windows sharing a server with the
+# suite before it -- so a wedge here stalled the lane with nothing printed.
+WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "720"))
 
 BASE = os.environ["BASE_URL"]
 OLD = os.environ["STUDIO_OLD_PW"]
@@ -250,16 +257,18 @@ RAIL_CORNER = """
     rail: {top: Math.round(a.top), bottom: Math.round(a.bottom),
            right: Math.round(a.right)},
     viewport: {width: window.innerWidth, height: window.innerHeight},
-    // Distance from the two edges the rail is pinned to, both 16px.
+    // Where the CARDS sit, 16px off both edges. Neither reading comes off the
+    // rail's border box: it carries the shadow gutter on all four sides, so it
+    // sits 4px from the right and flush with the floor while the cards it pads
+    // sit at 16. Measuring the border box reported 4 and 0.
     //
-    // The bottom off the rail itself: it has no vertical margin or padding, and
-    // its border box stays put however far the cards are scrolled.
-    //
-    // The right off a CARD, not the rail. The rail carries the shadow gutter,
-    // `-mx-3 px-3`, so its border box sits 4px from the edge while the cards it
-    // pads sit at 16. Measuring the rail here reported 4 and failed at every
-    // viewport. Horizontal, so scrolling cannot move it either.
-    fromBottom: Math.round(window.innerHeight - a.bottom),
+    // The bottom off the padding box, which is the cards' own floor and stays
+    // put however far they are scrolled. The right off a card directly, since
+    // the horizontal gutter is a negative margin the padding cancels.
+    fromBottom: Math.round(
+      window.innerHeight - a.bottom
+        + parseFloat(getComputedStyle(rail).paddingBottom || '0'),
+    ),
     fromRight: flowed.length
       ? Math.max(...flowed.map(
           (kid) => Math.round(
@@ -757,6 +766,11 @@ def main() -> int:
         return 1
 
     with sync_playwright() as p:
+        install_wall_clock_watchdog(
+            WALL_TIMEOUT_S,
+            label = "ui-update-banner",
+            info = info,
+        )
         launch_kwargs: dict = {"headless": True}
         if PLAYWRIGHT_BROWSER == "chromium":
             launch_kwargs["args"] = chromium_launch_args()

@@ -44,6 +44,9 @@ from .diffusion_families import (
     IDEOGRAM4_FAMILY_NAME,
     LUMINA2_FAMILY_NAME,
     DiffusionFamily,
+    DiffusionModelReplacedError,  # re-exported: callers import it from either module
+    LoadIdentity,
+    load_identity,
     assert_flux2_gguf_matches_base,
     assert_pipeline_class_available,
     _is_local_path,
@@ -57,7 +60,12 @@ from .diffusion_families import (
     resolve_local_gguf_child,
     supported_family_names,
 )
-from .diffusion_compat import assert_flux2_pick_compatible, flux2_pick_mismatch
+from .diffusion_compat import (
+    assert_flux2_pick_compatible,
+    assert_pick_is_not_speech,
+    flux2_pick_mismatch,
+    speech_pick_refusal,
+)
 from .diffusion_device import (
     DiffusionDeviceTarget,
     apply_diffusion_device_ordinal,
@@ -1916,6 +1924,7 @@ class DiffusionBackend:
         model_kind: Optional[str] = None,
         base_repo: Optional[str] = None,
         hf_token: Optional[str] = None,
+        allow_network: bool = True,
     ) -> None:
         """The gated/unreadable-base and FLUX.2 size-pairing refusals, run by the route BEFORE it
         takes the GPU.
@@ -1942,6 +1951,11 @@ class DiffusionBackend:
         # range request for the GGUF's tensor table), and fails open on anything it cannot read.
         # The UPSTREAM base, not the mirror: the size tables key on vendor ids.
         assert_flux2_pick_compatible(fam, repo_id, gguf_filename, base, hf_token)
+        # No media backend decodes a speech GGUF, and detect_family_for_pick answers from the
+        # folder name, so a csm file beside a denoiser reaches this loader as one of its own.
+        # Cache-only for a load nobody asked for: this probe would otherwise spend a revision HEAD,
+        # or a range request and its bound, on the one path that promised to stay off the Hub.
+        assert_pick_is_not_speech(repo_id, gguf_filename, hf_token, allow_network)
 
     # ── Background load + progress ─────────────────────────────────────────
 
@@ -2132,6 +2146,13 @@ class DiffusionBackend:
             # resident pipeline -- the two costs the loader's backstop cannot avoid.
             assert_flux2_pick_compatible(
                 fam, kwargs["repo_id"], kwargs.get("gguf_filename"), base, kwargs.get("hf_token")
+            )
+            # Same verdict here, so a direct begin_load is covered too.
+            assert_pick_is_not_speech(
+                kwargs["repo_id"],
+                kwargs.get("gguf_filename"),
+                kwargs.get("hf_token"),
+                allow_network = not local_files_only,
             )
             with self._lock:
                 # Stamp progress only if this load is still current (a superseder has its own token).
@@ -2585,7 +2606,11 @@ class DiffusionBackend:
         # a 400 here would start the very download this is meant to prevent; carried in the
         # envelope instead, the picker can refuse at SELECTION time. Metadata only (one range
         # request for the GGUF's tensor table), and None whenever nothing is known to be wrong.
-        incompatible = flux2_pick_mismatch(fam, repo_id, gguf_filename, base, hf_token)
+        # The speech verdict belongs here too, not only on the load preflight: the Images page
+        # stages and downloads before it calls load, so a later refusal arrives after the bytes.
+        incompatible = flux2_pick_mismatch(
+            fam, repo_id, gguf_filename, base, hf_token
+        ) or speech_pick_refusal(repo_id, gguf_filename, hf_token)
         # Only a checkpoint that really resolves on the Hub earns the right to drop dense shards.
         te_files = self._te_prequant_plan_files(
             fam, text_encoder_quant, hf_token, load_kwargs.get("gpu_ordinal")
@@ -5564,6 +5589,8 @@ class DiffusionBackend:
         loras: Optional[list[tuple[str, float]]] = None,
         # ControlNet (id, control_image_b64, control_type, strength, guidance_start, guidance_end). None = off.
         controlnet: Optional[tuple[str, str, str, float, float, float]] = None,
+        # load_identity() of the caller's status() read; refuse rather than run a different load (#9448).
+        expected_load: Optional[LoadIdentity] = None,
     ) -> dict[str, Any]:
         import torch
         from PIL import Image
@@ -5577,6 +5604,10 @@ class DiffusionBackend:
                     raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
                 if cancel.is_set():
                     raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+                # The slot admits on a zero fence, which a COMMITTED replacement also satisfies (#9448).
+                loaded_id = load_identity(state.repo_id, state.base_repo, state.family.name)
+                if expected_load is not None and expected_load != loaded_id:
+                    raise DiffusionModelReplacedError(expected_load, loaded_id)
                 # Publish an active (step 0) state before the slow pre-denoise setup so a reload mount probe does not read idle.
                 self._gen = _GenState(total_steps = steps)
             try:

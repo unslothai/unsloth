@@ -424,6 +424,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: python3 tests/studio/playwright_settings_tabs.py
 
+
       # A panel that cannot be fetched is new with lazy loading, and nothing above the
       # root-mounted dialog catches, so unguarded it unmounts Studio, not one panel.
       - name: Browser smoke for a settings panel that cannot load

@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The overlay rail is capped at the viewport, and a full download list plus an
-// update card is easily taller than a short window. Nothing in the rail was
-// shrink-0, so the cap came out of the update card and its release notes were
-// painted over its own row of buttons.
+// The overlay rail is height-capped by stackGeometry, and on the chat routes
+// the composer publishes a box that makes the cap small. Nothing in the rail
+// was shrink-0, so the cap came out of the update card and its release notes
+// were painted over its own row of buttons.
 //
 // The rule pinned here: the notes are the only part of a card allowed to give
-// up height, and they clip while doing it; the card floors at its buttons.
+// up height, and they clip while doing it; the card floors at its buttons; the
+// rail scrolls if that still does not fit.
 //
 // Read from the source: the node suite has no DOM to compute styles in.
 
@@ -143,6 +144,7 @@ test("the two update cards do not drift apart", () => {
   }
 });
 
+
 test("the llama.cpp card keeps its full height in the rail", () => {
   // Nothing inside it can give up height, so squeezing it only mangles it.
   assert.match(
@@ -177,32 +179,117 @@ test("the collapsed notes summary scrolls, like the expanded notes", () => {
   assert.match(expanded, /\boverscroll-contain\b/);
 });
 
+/** The two rails' class strings, anchored on the corner they are pinned to. */
+const RAIL_ANCHOR = '"pointer-events-none fixed bottom-0 right-4 ';
+
+function rails(): string[] {
+  const parts = PROVIDER.split(RAIL_ANCHOR);
+  assert.equal(parts.length - 1, 2, "a rail left its bottom-right corner");
+  return parts.slice(1);
+}
+
+test("the rail scrolls rather than spilling its cards", () => {
+  for (const rail of rails()) {
+    const rules = rail.slice(0, rail.indexOf('"'));
+    // A cap without a scroller drops the overflow below the bottom of the
+    // screen: at a large type size the two banner floors exceed the cap on
+    // their own, and the cards under it cannot be reached.
+    assert.match(rules, /\boverflow-y-auto\b/, "a capped rail spills its cards");
+    // The scroller clips at the padding box, so without room reserved there the
+    // cards lose their shadows; the negative margin puts the rail back where it
+    // was.
+    assert.match(rules, /\bpx-3\b/);
+    assert.match(rules, /-mx-3/);
+  }
+});
+
+// Reserved, not taken: the cards keep their band and the padding hangs below
+// it. The rail sits on the floor and the bottom gutter carries the cards back
+// up to 16px, so the cap grows by both gutters to pay for them.
+test("the rail's block gutter costs the cards no room", () => {
+  for (const rail of rails()) {
+    const rules = rail.slice(0, rail.indexOf('"'));
+    const style = rail.slice(rail.indexOf("style={{"), rail.indexOf("}}"));
+    // 2rem for the cards' own band, less the 24px of gutter the rail adds
+    // around them, so the cards keep exactly the band they had.
+    assert.match(
+      rules,
+      /max-h-\[calc\(100dvh_-_8px\)\]/,
+      "the gutter is being taken out of the cards' band",
+    );
+    // From the constants, not pb-4/pt-2: those are rem, so at any root size but
+    // 16px the cards would drift off the corner.
+    assert.match(
+      style,
+      /paddingTop: STACK_SHADOW_GUTTER_TOP/,
+      "the top gutter can drift from the cap that pays for it",
+    );
+    assert.match(
+      style,
+      /paddingBottom: STACK_SHADOW_GUTTER_BOTTOM/,
+      "the bottom gutter can drift from the cap that pays for it",
+    );
+    // Every surface offsets its shadow downwards, so flush against the clip
+    // edge the bottom card loses all of it. A zero gutter is that bug again.
+    assert.doesNotMatch(rules, /\bp[byt]-/, "a rem gutter is back on the rail");
+  }
+  // The gutter drops the rail's box to the floor and `-mx-3` put it 4px from the right
+  // edge, so it spans the window's resize grips, which are under it on Tailwind's scale.
+  // All eight: a narrow window spans the rail across the north and west targets too.
+  const TITLEBAR = read("components/tauri/window-titlebar.tsx");
+  // A z-index on the toolbar would read as protection and give none: it sits inside a
+  // positioned, numbered header, which is a stacking context.
+  const toolbar = TITLEBAR.slice(
+    TITLEBAR.lastIndexOf("<div", TITLEBAR.indexOf('aria-label="Window controls"')),
+    TITLEBAR.indexOf('aria-label="Window controls"'),
+  );
+  assert.doesNotMatch(
+    toolbar,
+    /zIndex:/,
+    "the window-controls toolbar carries a z-index, which its header traps",
+  );
+  for (const grip of [
+    "cursor-n-resize",
+    "cursor-s-resize",
+    "cursor-w-resize",
+    "cursor-e-resize",
+    "cursor-nw-resize",
+    "cursor-ne-resize",
+    "cursor-sw-resize",
+    "cursor-se-resize",
+  ]) {
+    const target = TITLEBAR.slice(
+      TITLEBAR.lastIndexOf("<div", TITLEBAR.indexOf(grip)),
+      TITLEBAR.indexOf("/>", TITLEBAR.indexOf(grip)),
+    );
+    assert.doesNotMatch(
+      target,
+      /z-\[70\]/,
+      `the ${grip} target is back under the overlay stack`,
+    );
+    assert.match(
+      target,
+      /zIndex: Z_LAYER\.WINDOW_RESIZE_EDGE/,
+      `the ${grip} target does not take the named layer, so the rail covers it`,
+    );
+  }
+});
+
 // The rail was placed from JS for a while, lifting clear of the boxes the
 // composer and the floating panels publish. Every input to that placement
 // changes on its own, so the rail drifted to the middle and the top of the
 // window. Anchored in CSS again; the floors above absorb a short window.
 test("the rail is anchored to its corner, not placed from JS", () => {
-  const rails = PROVIDER.split('"pointer-events-none fixed bottom-4 right-4 ');
-  // The desktop rail and the browser rail.
-  assert.equal(rails.length - 1, 2, "a rail left its bottom-right corner");
-  for (const rail of rails.slice(1)) {
-    const rules = rail.slice(0, rail.indexOf('"'));
-    assert.match(
-      rules,
-      /max-h-\[calc\(100dvh_-_2rem\)\]/,
-      "the rail no longer caps itself at the viewport",
-    );
-    // A cap without a scroller drops the overflow off the bottom of the screen:
-    // at a large type size the two banner floors exceed the cap on their own,
-    // and the cards under it cannot be reached.
-    assert.match(rules, /\boverflow-y-auto\b/, "a capped rail spills its cards");
-    // The scroller clips at the padding box, so the gutter keeps the shadows.
-    // Horizontal only: vertical padding lifts the bottom card off the corner.
-    assert.match(rules, /\bpx-3\b/);
-    assert.match(rules, /-mx-3/);
-    assert.ok(
-      !/\bp-3\b/.test(rules) && !/\bpy-3\b/.test(rules),
-      "vertical padding moves the bottom card off bottom-4",
+  for (const rail of rails()) {
+    const branch = rail.slice(0, rail.indexOf("style={{"));
+    // Click-through in every state. It used to take pointer input while it
+    // scrolled, which needed the JS that also placed it. The fold is reached by
+    // wheeling over a card, whose nearest scrollable ancestor is the rail, or
+    // by focus, which scrolls it into view.
+    assert.doesNotMatch(
+      branch,
+      /pointer-events-auto/,
+      "the rail takes pointer input again, which the placement paid for",
     );
   }
   // The offset and the cap are the two things the placement used to own, so
@@ -212,6 +299,8 @@ test("the rail is anchored to its corner, not placed from JS", () => {
     "stackGeometry",
     "stack.bottom",
     "stack.maxHeight",
+    "railBottomOffset",
+    "railMaxHeight",
   ]) {
     assert.ok(
       !PROVIDER.includes(banned),
@@ -220,7 +309,12 @@ test("the rail is anchored to its corner, not placed from JS", () => {
   }
   // And the arithmetic it was placed by does not come back to the store, which
   // is now only a register of where the draggable panels are.
-  for (const banned of ["stackBottomInset", "stackMaxHeight", "dodgeInset"]) {
+  for (const banned of [
+    "stackBottomInset",
+    "stackMaxHeight",
+    "dodgeInset",
+    "railCardsHeight",
+  ]) {
     assert.ok(
       !STORE.includes(banned),
       `the dodge arithmetic is back in the frame store (${banned})`,

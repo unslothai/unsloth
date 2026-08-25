@@ -386,6 +386,16 @@ export const it = {
         engineStudioDescription: "Usa il modello audio caricato (es. Orpheus)",
         engineSystem: "Voci di sistema",
         engineStudio: "Carica un modello TTS",
+        engineCustom: "Endpoint personalizzato",
+        engineCustomDescription:
+          "Un server TTS compatibile con OpenAI dalle tue connessioni (ad es. Kokoro)",
+        connectionLabel: "Connessione",
+        connectionDescription:
+          "Aggiungi un server compatibile con OpenAI nella scheda Connessioni",
+        connectionPlaceholder: "Seleziona una connessione",
+        customModelLabel: "Modello",
+        customVoiceDescription:
+          "Nome della voce atteso dall'endpoint; il valore predefinito è alloy",
         modelLabel: "Modello TTS",
         modelDescription:
           "Carica un modello audio dal selettore dei modelli (es. Orpheus TTS)",
@@ -842,6 +852,8 @@ export const it = {
         title: "Dispositivi GPU",
         ggufInference: "Inferenza GGUF",
         unavailable: "non disponibile",
+        detecting: "Ricerca di GPU...",
+        unreadable: "Impossibile leggere l'hardware di questo server.",
         noGpu:
           "Nessuna GPU visibile rilevata. Sopra sono mostrate le risorse della sola CPU.",
         unknownDevice: "GPU sconosciuta",
@@ -1091,7 +1103,7 @@ export const it = {
         exportChat: "Esporta chat",
       },
       pastedTextThreshold: "Condensa incolla lunghi",
-      pastedTextThresholdDescription: "Il testo incollato più lungo di questo valore diventa un allegato .txt invece di riempire il campo del messaggio.",
+      pastedTextThresholdDescription: "Il testo incollato più lungo di questo valore diventa un allegato .txt invece di riempire il campo del messaggio. Premi {shortcut} per incollare comunque nel campo del messaggio.",
       pastedTextThresholdOff: "Disattivato",
       showResponseModel: "Mostra il modello della risposta",
       showResponseModelDescription:
@@ -1109,6 +1121,12 @@ export const it = {
         collapseByDefault: "Comprimi il ragionamento per impostazione predefinita",
         collapseByDefaultDescription:
           "Mantieni il ragionamento compresso mentre il modello pensa, invece di aprirlo automaticamente. Espandi un blocco per leggerlo.",
+      },
+      webSearch: {
+        title: "Ricerca web",
+        images: "Mostra immagini dalla ricerca web",
+        imagesDescription:
+          "Consente alla ricerca web di restituire immagini e ne recupera una per ogni elemento elencato in una risposta. Le miniature vengono scaricate e ridimensionate da Studio, quindi il browser non contatta mai gli host delle immagini.",
       },
       artifacts: {
         title: "Canvas",

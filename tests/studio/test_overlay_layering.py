@@ -102,7 +102,7 @@ def test_both_floating_panels_stack_on_the_shared_layer(path: Path):
 def test_the_notification_stack_uses_the_named_layer():
     """Both copies, browser and desktop. They drifted apart once already."""
     src = PROVIDER.read_text(encoding = "utf-8")
-    stacks = re.findall(r'"pointer-events-none fixed bottom-4 right-4 ([^"]*)"', src)
+    stacks = re.findall(r'"pointer-events-none fixed bottom-0 right-4 ([^"]*)"', src)
     assert len(stacks) == 2, f"expected the two bottom-right stacks, found {len(stacks)}"
     for stack in stacks:
         assert not _Z.search(stack), f"the stack still carries a hard-coded z-index: {stack!r}"

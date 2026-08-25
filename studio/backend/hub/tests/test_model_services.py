@@ -4846,7 +4846,7 @@ def test_prepare_cache_for_transport_preserves_same_transport_companion(monkeypa
     """Only a hub that can still append to the partial earns the same-transport reprieve."""
     # The purge asks partial_is_resumable, so patching the hub-version helper it wraps would
     # be a no-op here.
-    monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name: True)
+    monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name, _root = None: True)
     blobs = _vision_cache_root(monkeypatch, tmp_path)
     companion = frozenset({"shared-mmproj"})
 

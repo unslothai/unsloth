@@ -422,6 +422,16 @@ export const fr = {
           "Utilise le modèle audio chargé (par exemple Orpheus)",
         engineSystem: "Voix du système",
         engineStudio: "Charger un modèle TTS",
+        engineCustom: "Endpoint personnalisé",
+        engineCustomDescription:
+          "Un serveur TTS compatible OpenAI parmi vos connexions (p. ex. Kokoro)",
+        connectionLabel: "Connexion",
+        connectionDescription:
+          "Ajoutez un serveur compatible OpenAI dans l'onglet Connexions",
+        connectionPlaceholder: "Sélectionner une connexion",
+        customModelLabel: "Modèle",
+        customVoiceDescription:
+          "Nom de la voix attendu par l'endpoint ; alloy par défaut",
         modelLabel: "Modèle TTS",
         modelDescription:
           "Chargez un modèle audio depuis le sélecteur de modèles (par exemple Orpheus TTS)",
@@ -875,6 +885,8 @@ export const fr = {
         title: "Périphériques GPU",
         ggufInference: "Inférence GGUF",
         unavailable: "indisponible",
+        detecting: "Recherche de GPU...",
+        unreadable: "Impossible de lire le matériel de ce serveur.",
         noGpu:
           "Aucun GPU visible n'a été détecté. Seules les ressources du CPU sont affichées ci-dessus.",
         unknownDevice: "GPU inconnu",
@@ -1123,7 +1135,7 @@ export const fr = {
         exportChat: "Exporter le chat",
       },
       pastedTextThreshold: "Condenser les collages longs",
-      pastedTextThresholdDescription: "Le texte collé plus long que cette valeur devient une pièce jointe .txt au lieu de remplir le champ de message.",
+      pastedTextThresholdDescription: "Le texte collé plus long que cette valeur devient une pièce jointe .txt au lieu de remplir le champ de message. Appuyez sur {shortcut} pour coller quand même dans le champ de message.",
       pastedTextThresholdOff: "Désactivé",
       showResponseModel: "Afficher le modèle de réponse",
       showResponseModelDescription:
@@ -1141,6 +1153,12 @@ export const fr = {
         collapseByDefault: "Replier la réflexion par défaut",
         collapseByDefaultDescription:
           "Garde la réflexion repliée pendant que le modèle réfléchit, au lieu de l’ouvrir automatiquement. Dépliez un bloc pour le lire.",
+      },
+      webSearch: {
+        title: "Recherche web",
+        images: "Afficher les images de la recherche web",
+        imagesDescription:
+          "Permet à la recherche web de renvoyer des images et en récupère une pour chaque élément listé dans une réponse. Studio télécharge et redimensionne les vignettes : le navigateur ne contacte jamais les hébergeurs d'images.",
       },
       artifacts: {
         title: "Canvas",

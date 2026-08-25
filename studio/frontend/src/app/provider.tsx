@@ -74,6 +74,15 @@ type TauriMonitor = NonNullable<
 // Keep in step with MOBILE_BREAKPOINT in hooks/use-mobile.ts.
 const MIN_DESKTOP_LAYOUT_WIDTH = 768;
 
+// Room the corner rail keeps around its cards so its overflow clip does not cut
+// their shadows off (#9246). Sized off the rendered blur, not the radius:
+// below, dark's 0 8px 28px -6px is one level of #181818 by 16px and light's is
+// one level of white by 8px; above, light ends by 6px and dark is under a level
+// by 8px. The rail sits on `bottom-0` and its bottom padding carries the cards
+// back up, so they still land 16px off the corner.
+const STACK_SHADOW_GUTTER_BOTTOM = 16;
+const STACK_SHADOW_GUTTER_TOP = 8;
+
 // Logical px per CSS px: webview zoom above the display scale (Windows text
 // scaling); 1 if none.
 function logicalPerCssPx(monitorScale: number): number {
@@ -399,13 +408,22 @@ function TauriUpdateLayer({
     // Capped like the browser stack: the download panel shares it, so both must fit.
     <div
       // Scrolls at the cap rather than spilling cards off screen: at a large
-      // type size the banner floors alone exceed it. The gutter, cancelled by
-      // the margin, keeps card shadows out of the clip; horizontal only, so the
-      // bottom card stays on `bottom-4`. Wheel over a card scrolls this box and
-      // focus scrolls into it, so the fold is reachable while the rail itself
-      // stays click-through.
-      className="pointer-events-none fixed bottom-4 right-4 -mx-3 flex max-h-[calc(100dvh_-_2rem)] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-3"
-      style={{ zIndex: Z_LAYER.OVERLAY_STACK }}
+      // type size the banner floors alone exceed it. Wheel over a card scrolls
+      // this box and focus scrolls into it, so the fold is reachable while the
+      // rail stays click-through.
+      // The gutter keeps the card shadows out of that clip: across, cancelled
+      // by the negative margin; below and above, by the block padding. The
+      // cards still land on 16px, since the box sits on the floor and the
+      // bottom gutter carries them back up.
+      className="pointer-events-none fixed bottom-0 right-4 -mx-3 flex max-h-[calc(100dvh_-_8px)] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-3"
+      // Block gutter in px, never a spacing utility: those are rem, and at any
+      // root but 16px the cards would drift off the corner. Across stays a
+      // utility, since px-3 and -mx-3 cancel whatever a rem is worth.
+      style={{
+        paddingTop: STACK_SHADOW_GUTTER_TOP,
+        paddingBottom: STACK_SHADOW_GUTTER_BOTTOM,
+        zIndex: Z_LAYER.OVERLAY_STACK,
+      }}
     >
       <UpdateBanner
         status={update.status}
@@ -685,13 +703,21 @@ function TauriWrapper({ children }: { children: ReactNode }) {
             pushes the top of the stack off screen. */}
         <div
           // Scrolls at the cap rather than spilling cards off screen: at a
-          // large type size the banner floors alone exceed it. The gutter,
-          // cancelled by the margin, keeps card shadows out of the clip;
-          // horizontal only, so the bottom card stays on `bottom-4`. Wheel over
-          // a card scrolls this box and focus scrolls into it, so the fold is
-          // reachable while the rail itself stays click-through.
-          className="pointer-events-none fixed bottom-4 right-4 -mx-3 flex max-h-[calc(100dvh_-_2rem)] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-3"
-          style={{ zIndex: Z_LAYER.OVERLAY_STACK }}
+          // large type size the banner floors alone exceed it. Wheel over a
+          // card scrolls this box and focus scrolls into it, so the fold is
+          // reachable while the rail stays click-through.
+          // The gutter keeps the card shadows out of that clip: across,
+          // cancelled by the negative margin; below and above, by the block
+          // padding. The cards still land on 16px, since the box sits on the
+          // floor and the bottom gutter carries them back up.
+          className="pointer-events-none fixed bottom-0 right-4 -mx-3 flex max-h-[calc(100dvh_-_8px)] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-3"
+          // Block gutter in px, never a spacing utility: those are rem, and at
+          // any root but 16px the cards would drift off the corner.
+          style={{
+            paddingTop: STACK_SHADOW_GUTTER_TOP,
+            paddingBottom: STACK_SHADOW_GUTTER_BOTTOM,
+            zIndex: Z_LAYER.OVERLAY_STACK,
+          }}
         >
           <WebUpdateBanner
             positioned={false}

@@ -405,6 +405,14 @@ export const zhCN = {
         engineStudioDescription: "使用已加载的音频模型（例如 Orpheus）",
         engineSystem: "系统语音",
         engineStudio: "加载 TTS 模型",
+        engineCustom: "自定义端点",
+        engineCustomDescription:
+          "来自连接的 OpenAI 兼容 TTS 服务器（例如 Kokoro）",
+        connectionLabel: "连接",
+        connectionDescription: "在“连接”标签页中添加 OpenAI 兼容服务器",
+        connectionPlaceholder: "选择连接",
+        customModelLabel: "模型",
+        customVoiceDescription: "端点所需的语音名称（默认为 alloy）",
         modelLabel: "TTS 模型",
         modelDescription: "从模型选择器加载音频模型（例如 Orpheus TTS）",
         openAudioAction: "打开音频",
@@ -830,6 +838,8 @@ export const zhCN = {
         title: "GPU 设备",
         ggufInference: "GGUF 推理",
         unavailable: "不可用",
+        detecting: "正在检查 GPU...",
+        unreadable: "无法读取此服务器的硬件信息。",
         noGpu: "未检测到可见 GPU。上方仅显示 CPU 资源。",
         unknownDevice: "未知 GPU",
         deviceWithIndex: "GPU {index}",
@@ -1067,7 +1077,7 @@ export const zhCN = {
         exportChat: "导出聊天",
       },
       pastedTextThreshold: "压缩长粘贴内容",
-      pastedTextThresholdDescription: "超过此长度的粘贴文本将变为 .txt 附件，而不会填满消息输入框。",
+      pastedTextThresholdDescription: "超过此长度的粘贴文本将变为 .txt 附件，而不会填满消息输入框。 按 {shortcut} 仍可粘贴到消息输入框。",
       pastedTextThresholdOff: "关闭",
       showResponseModel: "显示回复模型",
       showResponseModelDescription: "在助手回复中显示模型元数据。",
@@ -1084,6 +1094,12 @@ export const zhCN = {
         collapseByDefault: "默认折叠思考过程",
         collapseByDefaultDescription:
           "模型思考时保持折叠，而不是自动展开。需要阅读时展开对应区块。",
+      },
+      webSearch: {
+        title: "网页搜索",
+        images: "显示网页搜索图片",
+        imagesDescription:
+          "让网页搜索返回图片，并为回答中列出的每一项各获取一张。缩略图由 Studio 获取并缩放，浏览器不会直接访问图片来源。",
       },
       artifacts: {
         title: "Canvas",
