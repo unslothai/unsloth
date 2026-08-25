@@ -249,7 +249,7 @@ def test_fetch_release_propagates_non_404(monkeypatch):
 def _zip_with_sd_cli() -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr("build/bin/sd-cli", b"#!/bin/sh\necho sd-cli\n")
+        zf.writestr(f"build/bin/{_CLI}", b"#!/bin/sh\necho sd-cli\n")
     return buf.getvalue()
 
 
@@ -278,7 +278,7 @@ def test_install_downloads_verifies_extracts(tmp_path, monkeypatch):
         monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest()
     )
     sd_cli = install(install_dir = tmp_path)
-    assert sd_cli.name == "sd-cli" and sd_cli.is_file()
+    assert sd_cli.name == _CLI and sd_cli.is_file()
     assert not (tmp_path / name).exists()  # archive cleaned up after extract
     # The ownership marker lets the uninstaller delete a Studio-installed sd.cpp while keeping a user's own checkout.
     assert (tmp_path / ".unsloth-studio-owned").is_file()
@@ -357,7 +357,7 @@ def test_partial_install_failure_is_reclaimed_on_retry(tmp_path, monkeypatch):
 
     # The retry (cudart now succeeds) must NOT be refused; it re-extracts over the partial debris.
     sd_cli = install(install_dir = target)
-    assert sd_cli.name == "sd-cli" and sd_cli.is_file()
+    assert sd_cli.name == _CLI and sd_cli.is_file()
     assert (target / ".unsloth-studio-owned").is_file()
 
 
@@ -369,7 +369,7 @@ def test_safe_extractall_rejects_path_traversal(tmp_path):
     target.mkdir()
     archive = tmp_path / "evil.zip"
     with zipfile.ZipFile(archive, "w") as zf:
-        zf.writestr("sd-cli", b"ok")
+        zf.writestr(_CLI, b"ok")
         zf.writestr("../escape.txt", b"pwned")  # escapes the install dir
     with zipfile.ZipFile(archive) as zf:
         with pytest.raises(RuntimeError, match = "unsafe path"):
@@ -409,6 +409,7 @@ def test_safe_extractall_restores_symlink_members(tmp_path):
 
 # The binary the sweep looks for, spelled the way this host spells it.
 _CLI = sdmod._binary_names()[0]
+_SERVER = sdmod._binary_names()[1]
 
 
 def _can_create_symlinks(tmp_path) -> bool:
@@ -438,17 +439,17 @@ def test_safe_extractall_rejects_escaping_symlink(tmp_path):
     # Validation precedes every write, so this holds even where symlinks need privilege.
     target = tmp_path / "install"
     target.mkdir()
-    (target / "sd-cli").write_bytes(b"working binary from the previous install")
+    (target / _CLI).write_bytes(b"working binary from the previous install")
     archive = tmp_path / "evil.zip"
     with zipfile.ZipFile(archive, "w") as zf:
-        zf.writestr("sd-cli", b"replacement from the rejected archive")
+        zf.writestr(_CLI, b"replacement from the rejected archive")
         _link_member(zf, "libescape.so", "../../outside.so")
     with zipfile.ZipFile(archive) as zf:
         with pytest.raises(RuntimeError, match = "unsafe symlink"):
             _safe_extractall(zf, target)
     assert not (tmp_path / "outside.so").exists()
     # A rejected archive must not have replaced the install it was rejected over.
-    assert (target / "sd-cli").read_bytes() == b"working binary from the previous install"
+    assert (target / _CLI).read_bytes() == b"working binary from the previous install"
     assert not (target / "libescape.so").exists()
 
 
@@ -482,14 +483,14 @@ def test_safe_extractall_rejects_a_symlink_redirected_parent(tmp_path):
     # working binary an install would have overwritten is still the one that was there.
     target = tmp_path / "install"
     target.mkdir()
-    (target / "sd-cli").write_bytes(b"working binary from the previous install")
+    (target / _CLI).write_bytes(b"working binary from the previous install")
     outside = tmp_path / "outside_dir"
     outside.mkdir()
     victim = outside / "victim"
     victim.write_bytes(b"outside the install dir")
     archive = tmp_path / "evil.zip"
     with zipfile.ZipFile(archive, "w") as zf:
-        zf.writestr("sd-cli", b"replacement from the rejected archive")
+        zf.writestr(_CLI, b"replacement from the rejected archive")
         _link_member(zf, "a", ".")
         _link_member(zf, "a/out", "../outside_dir")
         _link_member(zf, "a/out/victim", "replacement")
@@ -498,8 +499,8 @@ def test_safe_extractall_rejects_a_symlink_redirected_parent(tmp_path):
             _safe_extractall(zf, target)
     assert not victim.is_symlink()
     assert victim.read_bytes() == b"outside the install dir"
-    assert (target / "sd-cli").read_bytes() == b"working binary from the previous install"
-    assert sorted(p.name for p in target.iterdir()) == ["sd-cli"]
+    assert (target / _CLI).read_bytes() == b"working binary from the previous install"
+    assert sorted(p.name for p in target.iterdir()) == [_CLI]
 
 
 def test_the_sweep_keeps_a_binary_supplied_under_a_symlinked_directory(tmp_path):
@@ -556,15 +557,15 @@ def test_safe_extractall_rejects_an_existing_cycle_before_writing_anything(tmp_p
     target = tmp_path / "install"
     target.mkdir()
     (target / "b").symlink_to("a")
-    (target / "sd-cli").write_bytes(b"\x7fELF working binary")
+    (target / _CLI).write_bytes(b"\x7fELF working binary")
     archive = tmp_path / "evil.zip"
     with zipfile.ZipFile(archive, "w") as zf:
-        zf.writestr("sd-cli", b"replacement from the rejected archive")
+        zf.writestr(_CLI, b"replacement from the rejected archive")
         _link_member(zf, "a", "b")
     with zipfile.ZipFile(archive) as zf:
         with pytest.raises(RuntimeError, match = "symlink cycle"):
             _safe_extractall(zf, target)
-    assert (target / "sd-cli").read_bytes() == b"\x7fELF working binary"
+    assert (target / _CLI).read_bytes() == b"\x7fELF working binary"
     assert not (target / "a").exists() and not (target / "a").is_symlink()
 
 
@@ -661,8 +662,8 @@ def test_safe_extractall_rejects_a_symlink_at_a_reserved_installer_path(tmp_path
     target.mkdir()
     archive = tmp_path / "evil.zip"
     with zipfile.ZipFile(archive, "w") as zf:
-        zf.writestr("sd-cli", b"\x7fELF real binary")
-        _link_member(zf, sdmod.INSTALL_RECORD, "sd-cli")
+        zf.writestr(_CLI, b"\x7fELF real binary")
+        _link_member(zf, sdmod.INSTALL_RECORD, _CLI)
     with zipfile.ZipFile(archive) as zf:
         with pytest.raises(RuntimeError, match = "reserved installer path"):
             _safe_extractall(zf, target)
@@ -691,16 +692,16 @@ def test_safe_extractall_rejects_a_reserved_path_reached_through_a_directory_ali
         pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
     target = tmp_path / "install"
     target.mkdir()
-    (target / "sd-cli").write_bytes(b"\x7fELF real binary")
+    (target / _CLI).write_bytes(b"\x7fELF real binary")
     (target / "alias").symlink_to(".")
     archive = tmp_path / "evil.zip"
     with zipfile.ZipFile(archive, "w") as zf:
-        _link_member(zf, "alias/" + sdmod.INSTALL_RECORD, "sd-cli")
+        _link_member(zf, "alias/" + sdmod.INSTALL_RECORD, _CLI)
     with zipfile.ZipFile(archive) as zf:
         with pytest.raises(RuntimeError, match = "reserved installer path"):
             _safe_extractall(zf, target)
     assert not (target / sdmod.INSTALL_RECORD).exists()
-    assert (target / "sd-cli").read_bytes() == b"\x7fELF real binary"
+    assert (target / _CLI).read_bytes() == b"\x7fELF real binary"
 
 
 def test_safe_extractall_rejects_a_cycle_hidden_behind_a_directory_alias(tmp_path):
@@ -727,16 +728,16 @@ def test_safe_extractall_rejects_a_directory_collision_before_writing_anything(t
     # replaced the working binary.
     target = tmp_path / "install"
     (target / "build" / "bin").mkdir(parents = True)
-    (target / "build" / "bin" / "sd-cli").write_bytes(b"\x7fELF working")
+    (target / "build" / "bin" / _CLI).write_bytes(b"\x7fELF working")
     (target / "libz.so").mkdir()
     archive = tmp_path / "collide.zip"
     with zipfile.ZipFile(archive, "w") as zf:
-        zf.writestr("build/bin/sd-cli", b"\x7fELF replacement")
+        zf.writestr(f"build/bin/{_CLI}", b"\x7fELF replacement")
         _link_member(zf, "libz.so", "libz.so.1")
     with zipfile.ZipFile(archive) as zf:
         with pytest.raises(RuntimeError, match = "collides with a directory"):
             _safe_extractall(zf, target)
-    assert (target / "build" / "bin" / "sd-cli").read_bytes() == b"\x7fELF working"
+    assert (target / "build" / "bin" / _CLI).read_bytes() == b"\x7fELF working"
     assert (target / "libz.so").is_dir() and not (target / "libz.so").is_symlink()
 
 
@@ -989,10 +990,10 @@ def test_safe_extractall_refuses_to_flatten_when_a_unix_host_rejects_symlinks(
     # extractall, so an upgrade that cannot finish still leaves the previous install runnable.
     target = tmp_path / "install"
     target.mkdir()
-    (target / "sd-cli").write_bytes(b"\x7fELF old working")
+    (target / _CLI).write_bytes(b"\x7fELF old working")
     archive = tmp_path / "libs.zip"
     with zipfile.ZipFile(archive, "w") as zf:
-        zf.writestr("sd-cli", b"\x7fELF replacement")
+        zf.writestr(_CLI, b"\x7fELF replacement")
         zf.writestr("libwebp.so.7.2.0", b"ELFpayload")
         _link_member(zf, "libwebp.so.7", "libwebp.so.7.2.0")
 
@@ -1006,7 +1007,7 @@ def test_safe_extractall_refuses_to_flatten_when_a_unix_host_rejects_symlinks(
             _safe_extractall(zf, target)
     assert not (target / "libwebp.so.7").exists()
     assert not (target / "libwebp.so.7.2.0").exists()
-    assert (target / "sd-cli").read_bytes() == b"\x7fELF old working"
+    assert (target / _CLI).read_bytes() == b"\x7fELF old working"
 
 
 def test_safe_extractall_rejects_a_member_with_a_parent_component(tmp_path):
@@ -1063,10 +1064,10 @@ def test_safe_extractall_extracts_normal_members(tmp_path):
     target.mkdir()
     archive = tmp_path / "ok.zip"
     with zipfile.ZipFile(archive, "w") as zf:
-        zf.writestr("build/bin/sd-cli", b"ok")
+        zf.writestr(f"build/bin/{_CLI}", b"ok")
     with zipfile.ZipFile(archive) as zf:
         _safe_extractall(zf, target)
-    assert (target / "build" / "bin" / "sd-cli").read_bytes() == b"ok"
+    assert (target / "build" / "bin" / _CLI).read_bytes() == b"ok"
 
 
 def test_find_sd_cpp_binary_honors_studio_home(tmp_path, monkeypatch):
@@ -1077,7 +1078,7 @@ def test_find_sd_cpp_binary_honors_studio_home(tmp_path, monkeypatch):
     monkeypatch.delenv("UNSLOTH_SD_CPP_PATH", raising = False)
     studio_home = tmp_path / "studio_root"
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(studio_home))
-    binary = studio_home / "stable-diffusion.cpp" / "build" / "bin" / "sd-cli"
+    binary = studio_home / "stable-diffusion.cpp" / "build" / "bin" / _CLI
     binary.parent.mkdir(parents = True)
     binary.write_bytes(b"x")
     assert eng.find_sd_cpp_binary() == str(binary)
@@ -1134,7 +1135,7 @@ def test_the_legacy_sibling_tree_is_adopted_only_when_it_carries_the_marker(tmp_
     monkeypatch.delenv("UNSLOTH_SD_CPP_PATH", raising = False)
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
     sibling = tmp_path / "stable-diffusion.cpp"
-    binary = sibling / "build" / "bin" / "sd-cli"
+    binary = sibling / "build" / "bin" / _CLI
     binary.parent.mkdir(parents = True)
     binary.write_bytes(b"x")
 
@@ -1361,7 +1362,7 @@ def test_install_uses_mirror_when_available(tmp_path, monkeypatch, capsys):
         digest = "sha256:" + hashlib.sha256(zb).hexdigest(),
     )
     sd_cli = install(install_dir = tmp_path)
-    assert sd_cli.name == "sd-cli" and sd_cli.is_file()
+    assert sd_cli.name == _CLI and sd_cli.is_file()
     assert "unslothai/stable-diffusion.cpp" in capsys.readouterr().out
 
 
@@ -1375,7 +1376,7 @@ def test_install_falls_back_to_upstream_when_mirror_missing(tmp_path, monkeypatc
         digest = "sha256:" + hashlib.sha256(zb).hexdigest(),
     )
     sd_cli = install(install_dir = tmp_path)
-    assert sd_cli.name == "sd-cli" and sd_cli.is_file()
+    assert sd_cli.name == _CLI and sd_cli.is_file()
     captured = capsys.readouterr()
     # The repo-fallback diagnostic goes to stderr so --print-asset's stdout stays one asset line; the install note stays on stdout.
     assert "falling back to leejet/stable-diffusion.cpp" in captured.err
@@ -1597,7 +1598,7 @@ def test_unrunnable_managed_binary_is_removed_so_it_reinstalls(monkeypatch, tmp_
     root.mkdir(parents = True)
     # install() writes the ownership marker BEFORE extracting, so a real interrupted extraction always leaves one.
     (root / ".unsloth-studio-owned").touch()
-    managed = root / "sd-cli"
+    managed = root / _CLI
     managed.write_bytes(b"truncated")
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "sd-home" / "studio"))
     assert eng.is_managed_binary(str(managed)) is True
@@ -1629,7 +1630,7 @@ def test_an_unrunnable_user_supplied_binary_is_never_deleted(monkeypatch, tmp_pa
     # SD_CLI_PATH / PATH / an in-tree build belong to the user: report them and let the router's probe refuse, never remove them.
     import core.inference.sd_cpp_backend as bk
 
-    outside = tmp_path / "mine" / "sd-cli"
+    outside = tmp_path / "mine" / _CLI
     outside.parent.mkdir(parents = True)
     outside.write_bytes(b"truncated")
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "elsewhere" / "studio"))
@@ -1652,9 +1653,9 @@ def test_unrunnable_binary_in_an_unmarked_root_is_kept_because_install_would_ref
 
     root = tmp_path / "sd-home" / "stable-diffusion.cpp" / "sd-bin"
     root.mkdir(parents = True)
-    server = root / "sd-server"
+    server = root / _SERVER
     server.write_bytes(b"truncated")
-    (root / "sd-cli").write_bytes(b"truncated")
+    (root / _CLI).write_bytes(b"truncated")
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "sd-home" / "studio"))
     assert eng.is_managed_binary(str(server)) is False  # under our root, but unmarked
 
@@ -1683,7 +1684,7 @@ def test_the_repair_only_deletes_what_the_installer_may_reinstall(monkeypatch, t
     root = tmp_path / "sd-home" / "stable-diffusion.cpp"
     (root / "sd-bin").mkdir(parents = True)
     (root / ".unsloth-studio-owned").touch()
-    server = root / "sd-bin" / "sd-server"
+    server = root / "sd-bin" / _SERVER
     server.write_bytes(b"truncated")
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "sd-home" / "studio"))
 
@@ -1762,7 +1763,7 @@ def test_a_cpu_install_is_reinstalled_when_cuda_is_requested(tmp_path, monkeypat
     import core.inference.sd_cpp_backend as bk
 
     root = _managed_tree(tmp_path, monkeypatch, accelerator = "cpu")
-    server = root / "sd-bin" / "sd-server"
+    server = root / "sd-bin" / _SERVER
     server.write_bytes(b"cpu-build")
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(server))
     monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
@@ -1773,7 +1774,7 @@ def test_a_cpu_install_is_reinstalled_when_cuda_is_requested(tmp_path, monkeypat
         installs.append(kwargs)
         server.write_bytes(b"cuda-build")
         sdmod._write_install_record(root, accelerator = kwargs["accelerator"], repo = "r", tag = "t")
-        return root / "sd-bin" / "sd-cli"
+        return root / "sd-bin" / _CLI
 
     monkeypatch.setattr(sdmod, "install", _install)
 
@@ -1803,7 +1804,7 @@ def test_a_legacy_sibling_install_is_read_from_its_own_root(tmp_path, monkeypatc
     sdmod._write_install_record(legacy, accelerator = "cuda", repo = "r", tag = "t")
     sdmod._INSTALLED_ACCELERATOR_MEMO.clear()  # the record must be read off disk, not memoised
 
-    server = legacy / "sd-bin" / "sd-server"
+    server = legacy / "sd-bin" / _SERVER
     server.write_bytes(b"cuda-build")
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(server))
     monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
@@ -1823,9 +1824,9 @@ def test_asking_for_the_cpu_build_never_reinstalls(tmp_path, monkeypatch):
     import core.inference.sd_cpp_backend as bk
 
     root = _managed_tree(tmp_path, monkeypatch, accelerator = None)  # no record: an older install
-    server = root / "sd-bin" / "sd-server"
+    server = root / "sd-bin" / _SERVER
     server.write_bytes(b"cpu-build")
-    cli = root / "sd-bin" / "sd-cli"
+    cli = root / "sd-bin" / _CLI
     cli.write_bytes(b"cpu-build")
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(server))
     monkeypatch.setattr(bk, "find_sd_cpp_binary", lambda: str(cli))
@@ -1850,7 +1851,7 @@ def test_a_user_supplied_binary_is_never_reinstalled_over_on_an_accelerator_chan
     root = tmp_path / "sd-home" / "stable-diffusion.cpp"  # deliberately NOT marked
     (root / "sd-bin").mkdir(parents = True)
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "sd-home" / "studio"))
-    server = root / "sd-bin" / "sd-server"
+    server = root / "sd-bin" / _SERVER
     server.write_bytes(b"users-own-build")
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(server))
     monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
@@ -1869,7 +1870,7 @@ def test_a_failed_upgrade_keeps_the_working_binary_and_stops_retrying(tmp_path, 
     import core.inference.sd_cpp_backend as bk
 
     root = _managed_tree(tmp_path, monkeypatch, accelerator = "cpu")
-    server = root / "sd-bin" / "sd-server"
+    server = root / "sd-bin" / _SERVER
     server.write_bytes(b"cpu-build")
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(server))
     monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
@@ -1896,7 +1897,7 @@ def test_the_upgrade_waits_for_the_resident_server_to_stop(tmp_path, monkeypatch
     import core.inference.sd_cpp_backend as bk
 
     root = _managed_tree(tmp_path, monkeypatch, accelerator = "cpu")
-    server = root / "sd-bin" / "sd-server"
+    server = root / "sd-bin" / _SERVER
     server.write_bytes(b"cpu-build")
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(server))
     monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
@@ -1911,7 +1912,7 @@ def test_the_upgrade_waits_for_the_resident_server_to_stop(tmp_path, monkeypatch
         installs.append(kwargs)
         server.write_bytes(b"cuda-build")
         sdmod._write_install_record(root, accelerator = kwargs["accelerator"], repo = "r", tag = "t")
-        return root / "sd-bin" / "sd-cli"
+        return root / "sd-bin" / _CLI
 
     monkeypatch.setattr(sdmod, "install", _install)
 
@@ -1938,7 +1939,7 @@ def test_a_failed_post_teardown_upgrade_keeps_the_existing_server(tmp_path, monk
     import core.inference.sd_cpp_backend as bk
 
     root = _managed_tree(tmp_path, monkeypatch, accelerator = "cpu")
-    server = root / "sd-bin" / "sd-server"
+    server = root / "sd-bin" / _SERVER
     server.write_bytes(b"cpu-build")
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(server))
     monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
@@ -1967,7 +1968,7 @@ def test_a_recorded_gpu_install_is_replaced_when_the_cpu_build_is_wanted(tmp_pat
     import core.inference.sd_cpp_backend as bk
 
     root = _managed_tree(tmp_path, monkeypatch, accelerator = "cuda")
-    server = root / "sd-bin" / "sd-server"
+    server = root / "sd-bin" / _SERVER
     server.write_bytes(b"cuda-build")
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(server))
     monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
@@ -1978,7 +1979,7 @@ def test_a_recorded_gpu_install_is_replaced_when_the_cpu_build_is_wanted(tmp_pat
         installs.append(kwargs)
         server.write_bytes(b"cpu-build")
         sdmod._write_install_record(root, accelerator = kwargs["accelerator"], repo = "r", tag = "t")
-        return root / "sd-bin" / "sd-cli"
+        return root / "sd-bin" / _CLI
 
     monkeypatch.setattr(sdmod, "install", _install)
 
@@ -1998,7 +1999,7 @@ def test_the_upgrade_waits_for_an_active_one_shot_generation(tmp_path, monkeypat
     import core.inference.sd_cpp_backend as bk
 
     root = _managed_tree(tmp_path, monkeypatch, accelerator = "cpu")
-    server = root / "sd-bin" / "sd-server"
+    server = root / "sd-bin" / _SERVER
     server.write_bytes(b"cpu-build")
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(server))
     monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
@@ -2013,7 +2014,7 @@ def test_the_upgrade_waits_for_an_active_one_shot_generation(tmp_path, monkeypat
         installs.append(kwargs)
         server.write_bytes(b"cuda-build")
         sdmod._write_install_record(root, accelerator = kwargs["accelerator"], repo = "r", tag = "t")
-        return root / "sd-bin" / "sd-cli"
+        return root / "sd-bin" / _CLI
 
     monkeypatch.setattr(sdmod, "install", _install)
 
@@ -2040,7 +2041,7 @@ def test_an_idle_backend_installs_the_matching_build_immediately(tmp_path, monke
     import core.inference.sd_cpp_backend as bk
 
     root = _managed_tree(tmp_path, monkeypatch, accelerator = "cpu")
-    server = root / "sd-bin" / "sd-server"
+    server = root / "sd-bin" / _SERVER
     server.write_bytes(b"cpu-build")
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(server))
     monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
@@ -2055,7 +2056,7 @@ def test_an_idle_backend_installs_the_matching_build_immediately(tmp_path, monke
         installs.append(kwargs)
         server.write_bytes(b"cuda-build")
         sdmod._write_install_record(root, accelerator = kwargs["accelerator"], repo = "r", tag = "t")
-        return root / "sd-bin" / "sd-cli"
+        return root / "sd-bin" / _CLI
 
     monkeypatch.setattr(sdmod, "install", _install)
 
@@ -2074,7 +2075,7 @@ def test_the_router_entry_point_cannot_replace_a_running_server(tmp_path, monkey
     import core.inference.sd_cpp_backend as bk
 
     root = _managed_tree(tmp_path, monkeypatch, accelerator = "cpu")
-    server = root / "sd-bin" / "sd-server"
+    server = root / "sd-bin" / _SERVER
     server.write_bytes(b"cpu-build")
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(server))
     monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
@@ -2085,7 +2086,7 @@ def test_the_router_entry_point_cannot_replace_a_running_server(tmp_path, monkey
         installs.append(kwargs)
         server.write_bytes(b"cuda-build")
         sdmod._write_install_record(root, accelerator = kwargs["accelerator"], repo = "r", tag = "t")
-        return root / "sd-bin" / "sd-cli"
+        return root / "sd-bin" / _CLI
 
     monkeypatch.setattr(sdmod, "install", _install)
 
@@ -2112,7 +2113,7 @@ def test_the_one_shot_fallback_keeps_the_requested_accelerator(tmp_path, monkeyp
     import core.inference.sd_cpp_backend as bk
 
     root = _managed_tree(tmp_path, monkeypatch, accelerator = "cuda")
-    cli = root / "sd-bin" / "sd-cli"
+    cli = root / "sd-bin" / _CLI
     cli.write_bytes(b"cuda-build")
     monkeypatch.setattr(bk, "find_sd_cpp_binary", lambda: str(cli))
     monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
@@ -2146,7 +2147,7 @@ def test_a_serverless_deferred_install_still_lands_after_teardown(tmp_path, monk
     import core.inference.sd_cpp_backend as bk
 
     root = _managed_tree(tmp_path, monkeypatch, accelerator = "cpu")
-    cli = root / "sd-bin" / "sd-cli"
+    cli = root / "sd-bin" / _CLI
     cli.write_bytes(b"cpu-build")
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: None)  # serverless install
     monkeypatch.setattr(bk, "find_sd_cpp_binary", lambda: str(cli))
@@ -2194,7 +2195,7 @@ def test_a_server_still_starting_also_holds_the_tree(tmp_path, monkeypatch):
     import core.inference.sd_cpp_backend as bk
 
     root = _managed_tree(tmp_path, monkeypatch, accelerator = "cpu")
-    server = root / "sd-bin" / "sd-server"
+    server = root / "sd-bin" / _SERVER
     server.write_bytes(b"cpu-build")
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(server))
     monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
@@ -2205,7 +2206,7 @@ def test_a_server_still_starting_also_holds_the_tree(tmp_path, monkeypatch):
         installs.append(kwargs)
         server.write_bytes(b"cuda-build")
         sdmod._write_install_record(root, accelerator = kwargs["accelerator"], repo = "r", tag = "t")
-        return root / "sd-bin" / "sd-cli"
+        return root / "sd-bin" / _CLI
 
     monkeypatch.setattr(sdmod, "install", _install)
 
@@ -2232,7 +2233,7 @@ def test_a_serverless_install_is_not_replaced_under_a_running_cli(tmp_path, monk
     import core.inference.sd_cpp_backend as bk
 
     root = _managed_tree(tmp_path, monkeypatch, accelerator = "cpu")
-    cli = root / "sd-bin" / "sd-cli"
+    cli = root / "sd-bin" / _CLI
     cli.write_bytes(b"cpu-build")
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: None)  # serverless install
     monkeypatch.setattr(bk, "find_sd_cpp_binary", lambda: str(cli))
@@ -2299,7 +2300,7 @@ def test_a_failed_server_upgrade_is_not_retried_by_the_cli_probe(tmp_path, monke
     import core.inference.sd_cpp_backend as bk
 
     root = _managed_tree(tmp_path, monkeypatch, accelerator = "cpu")
-    cli = root / "sd-bin" / "sd-cli"
+    cli = root / "sd-bin" / _CLI
     cli.write_bytes(b"cpu-build")
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: None)
     monkeypatch.setattr(bk, "find_sd_cpp_binary", lambda: str(cli))
@@ -2395,13 +2396,13 @@ def test_a_bundle_with_no_cli_is_refused_before_anything_is_swept(tmp_path, monk
     to generate with, so the refusal has to come first."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr("build/bin/sd-server", b"#!/bin/sh\necho sd-server\n")
+        zf.writestr(f"build/bin/{_SERVER}", b"#!/bin/sh\necho sd-server\n")
     zb = buf.getvalue()
     _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest())
 
     target = tmp_path / "sd"
     (target / "build" / "bin").mkdir(parents = True)
-    working = target / "build" / "bin" / "sd-cli"
+    working = target / "build" / "bin" / _CLI
     working.write_bytes(b"old-but-working")
     (target / ".unsloth-studio-owned").touch()
 
@@ -2602,7 +2603,7 @@ def test_a_generation_cannot_start_inside_the_install_window(tmp_path, monkeypat
     import core.inference.sd_cpp_backend as bk
 
     root = _managed_tree(tmp_path, monkeypatch, accelerator = "cpu")
-    server = root / "sd-bin" / "sd-server"
+    server = root / "sd-bin" / _SERVER
     server.write_bytes(b"cpu-build")
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(server))
     monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
@@ -2618,7 +2619,7 @@ def test_a_generation_cannot_start_inside_the_install_window(tmp_path, monkeypat
         release.wait(5)
         server.write_bytes(b"cuda-build")
         sdmod._write_install_record(root, accelerator = kwargs["accelerator"], repo = "r", tag = "t")
-        return root / "sd-bin" / "sd-cli"
+        return root / "sd-bin" / _CLI
 
     monkeypatch.setattr(sdmod, "install", _slow_install)
 
@@ -2653,7 +2654,7 @@ def test_an_install_stands_down_while_a_generation_is_running(tmp_path, monkeypa
     import core.inference.sd_cpp_backend as bk
 
     root = _managed_tree(tmp_path, monkeypatch, accelerator = "cpu")
-    server = root / "sd-bin" / "sd-server"
+    server = root / "sd-bin" / _SERVER
     server.write_bytes(b"cpu-build")
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(server))
     monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
@@ -2675,7 +2676,7 @@ def test_an_unmanaged_binary_never_waits_for_a_managed_install(tmp_path, monkeyp
     import core.inference.sd_cpp_backend as bk
 
     _managed_tree(tmp_path, monkeypatch)
-    outside = tmp_path / "mine" / "sd-cli"
+    outside = tmp_path / "mine" / _CLI
     outside.parent.mkdir(parents = True)
     outside.write_bytes(b"my own build")
 
@@ -2692,7 +2693,7 @@ def test_a_reader_is_never_admitted_when_the_install_wait_times_out(tmp_path, mo
     import core.inference.sd_cpp_backend as bk
 
     root = _managed_tree(tmp_path, monkeypatch)
-    managed = root / "sd-bin" / "sd-cli"
+    managed = root / "sd-bin" / _CLI
     managed.write_bytes(b"managed")
 
     monkeypatch.setattr(bk, "_tree_installing", True)
@@ -2711,7 +2712,7 @@ def test_an_incomplete_tree_replacement_is_retried_not_memoised(tmp_path, monkey
     import core.inference.sd_cpp_backend as bk
 
     root = _managed_tree(tmp_path, monkeypatch, accelerator = "cpu")
-    cli = root / "sd-bin" / "sd-cli"
+    cli = root / "sd-bin" / _CLI
     cli.write_bytes(b"old-cpu-cli")
     monkeypatch.setattr(bk, "find_sd_cpp_binary", lambda: str(cli))
     monkeypatch.setattr(bk, "_usable_or_discard_managed", lambda *_a, **_k: True)
@@ -2741,10 +2742,10 @@ def test_a_generation_re_resolves_the_cli_the_install_moved(tmp_path, monkeypatc
     from core.inference.sd_cpp_engine import SdCppEngine
 
     root = _managed_tree(tmp_path, monkeypatch)
-    old = root / "build" / "bin" / "sd-cli"
+    old = root / "build" / "bin" / _CLI
     old.parent.mkdir(parents = True)
     old.write_bytes(b"old-cpu-cli")
-    new = root / "sd-bundle-cuda12" / "bin" / "sd-cli"
+    new = root / "sd-bundle-cuda12" / "bin" / _CLI
     new.parent.mkdir(parents = True)
     new.write_bytes(b"new-cuda-cli")
 
@@ -2769,10 +2770,10 @@ def test_a_partial_sweep_never_returns_the_file_it_deleted(tmp_path, monkeypatch
     import core.inference.sd_cpp_backend as bk
 
     root = _managed_tree(tmp_path, monkeypatch, accelerator = "cpu")
-    old = root / "build" / "bin" / "sd-cli"
+    old = root / "build" / "bin" / _CLI
     old.parent.mkdir(parents = True)
     old.write_bytes(b"old-cpu-cli")
-    new = root / "sd-bundle-cuda12" / "bin" / "sd-cli"
+    new = root / "sd-bundle-cuda12" / "bin" / _CLI
     new.parent.mkdir(parents = True)
 
     resolved = {"path": str(old)}
@@ -2802,10 +2803,10 @@ def test_a_re_found_cli_goes_through_the_usability_gate(tmp_path, monkeypatch):
     import core.inference.sd_cpp_backend as bk
 
     root = _managed_tree(tmp_path, monkeypatch, accelerator = "cpu")
-    old = root / "build" / "bin" / "sd-cli"
+    old = root / "build" / "bin" / _CLI
     old.parent.mkdir(parents = True)
     old.write_bytes(b"old-cpu-cli")
-    new = root / "sd-bundle-cuda12" / "bin" / "sd-cli"
+    new = root / "sd-bundle-cuda12" / "bin" / _CLI
     new.parent.mkdir(parents = True)
 
     resolved = {"path": str(old)}
@@ -2835,7 +2836,7 @@ def test_a_cancelled_request_leaves_the_install_wait(tmp_path, monkeypatch):
     import core.inference.sd_cpp_backend as bk
 
     root = _managed_tree(tmp_path, monkeypatch)
-    managed = root / "sd-bin" / "sd-cli"
+    managed = root / "sd-bin" / _CLI
     managed.write_bytes(b"managed")
 
     monkeypatch.setattr(bk, "_tree_installing", True)  # a long install is extracting
@@ -2940,7 +2941,7 @@ def test_an_upgrade_is_a_replacement_from_the_extract_on(tmp_path, monkeypatch):
     accelerator and hands the caller back that very path."""
     zb = _zip_with_sd_cli()
     _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest())
-    _owned_tree_holding(tmp_path, "build/bin/sd-cli")  # the path _zip_with_sd_cli writes to
+    _owned_tree_holding(tmp_path, f"build/bin/{_CLI}")  # the path _zip_with_sd_cli writes to
     monkeypatch.setattr(
         sdmod,
         "_maybe_fetch_windows_cudart",
@@ -2961,7 +2962,7 @@ def test_a_different_layout_upgrade_is_a_replacement_too(tmp_path, monkeypatch):
     it."""
     zb = _zip_with_sd_cli()
     _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest())
-    old = _owned_tree_holding(tmp_path, "sd-master-old/bin/sd-cli")
+    old = _owned_tree_holding(tmp_path, f"sd-master-old/bin/{_CLI}")
     monkeypatch.setattr(
         sdmod,
         "_maybe_fetch_windows_cudart",
@@ -2972,7 +2973,7 @@ def test_a_different_layout_upgrade_is_a_replacement_too(tmp_path, monkeypatch):
     assert "part way through a replacement" in str(exc.value)
     # Both copies are on disk now, which is exactly why this is not an ordinary failure.
     assert old.read_bytes() == b"the previous build"
-    assert (tmp_path / "build" / "bin" / "sd-cli").is_file()
+    assert (tmp_path / "build" / "bin" / _CLI).is_file()
 
 
 def test_a_first_install_failing_before_the_sweep_is_an_ordinary_failure(tmp_path, monkeypatch):
@@ -3059,7 +3060,7 @@ def test_a_same_path_accelerator_swap_is_refused_before_the_server_starts(tmp_pa
     whatever it found, mismatch included -- so the CPU server was published and started while this
     load had already committed the CUDA device and its offload policy. Existence is not identity."""
     root = _managed_tree(tmp_path, monkeypatch, accelerator = "cuda")
-    server = root / "sd-bin" / "sd-server"
+    server = root / "sd-bin" / _SERVER
     server.write_bytes(b"cuda-build")
 
     def _an_h3_load_installs_the_cpu_fallback():
@@ -3082,7 +3083,7 @@ def test_an_untouched_tree_still_starts_the_server_after_the_download(tmp_path, 
     """The other side of it: nothing replaced the binary, so the re-validation must be invisible.
     A load refused because the tree merely stayed the same would take the server away entirely."""
     root = _managed_tree(tmp_path, monkeypatch, accelerator = "cuda")
-    server = root / "sd-bin" / "sd-server"
+    server = root / "sd-bin" / _SERVER
     server.write_bytes(b"cuda-build")
 
     backend, started, run = _server_load_backend(tmp_path, monkeypatch, root, server, lambda: None)
@@ -3103,7 +3104,7 @@ def test_a_started_server_holds_the_tree_until_state_is_published(tmp_path, monk
     import core.inference.sd_cpp_backend as bk
 
     root = _managed_tree(tmp_path, monkeypatch, accelerator = "cuda")
-    server = root / "sd-bin" / "sd-server"
+    server = root / "sd-bin" / _SERVER
     server.write_bytes(b"cuda-build")
 
     backend, started, run = _server_load_backend(tmp_path, monkeypatch, root, server, lambda: None)
@@ -3131,7 +3132,7 @@ def test_a_superseded_load_unpublishes_the_server_it_stops(tmp_path, monkeypatch
     import core.inference.sd_cpp_backend as bk
 
     root = _managed_tree(tmp_path, monkeypatch, accelerator = "cuda")
-    server = root / "sd-bin" / "sd-server"
+    server = root / "sd-bin" / _SERVER
     server.write_bytes(b"cuda-build")
 
     backend, started, run = _server_load_backend(tmp_path, monkeypatch, root, server, lambda: None)
@@ -3188,7 +3189,7 @@ def test_a_serverless_install_does_not_fall_back_to_the_legacy_server(tmp_path, 
     sdmod._write_install_record(legacy, accelerator = "cpu", repo = "r", tag = "t")
     sdmod._INSTALLED_ACCELERATOR_MEMO.clear()
     sdmod._INSTALLED_SHIPS_SERVER_MEMO.clear()
-    old_server = legacy / "sd-bin" / "sd-server"
+    old_server = legacy / "sd-bin" / _SERVER
     old_server.write_bytes(b"cpu-build")
 
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(old_server))
@@ -3214,7 +3215,7 @@ def test_a_serverless_install_is_not_downloaded_again_on_every_later_load(tmp_pa
     (legacy / "sd-bin").mkdir(parents = True)
     (legacy / ".unsloth-studio-owned").touch()
     sdmod._write_install_record(legacy, accelerator = "cpu", repo = "r", tag = "t")
-    old_server = legacy / "sd-bin" / "sd-server"
+    old_server = legacy / "sd-bin" / _SERVER
     old_server.write_bytes(b"cpu-build")
     # The current root already holds the cuda bundle, and that bundle shipped no sd-server.
     current = home / "stable-diffusion.cpp"
@@ -3254,7 +3255,7 @@ def test_a_matching_legacy_server_is_still_preferred_over_the_one_shot_cli(tmp_p
     (legacy / "sd-bin").mkdir(parents = True)
     (legacy / ".unsloth-studio-owned").touch()
     sdmod._write_install_record(legacy, accelerator = "cpu", repo = "r", tag = "t")
-    server = legacy / "sd-bin" / "sd-server"
+    server = legacy / "sd-bin" / _SERVER
     server.write_bytes(b"cpu-build")
     current = home / "stable-diffusion.cpp"
     current.mkdir()
@@ -3284,7 +3285,7 @@ def test_a_deleted_server_still_reinstalls_rather_than_reading_as_serverless(tmp
     (legacy / "sd-bin").mkdir(parents = True)
     (legacy / ".unsloth-studio-owned").touch()
     sdmod._write_install_record(legacy, accelerator = "cpu", repo = "r", tag = "t")
-    old_server = legacy / "sd-bin" / "sd-server"
+    old_server = legacy / "sd-bin" / _SERVER
     old_server.write_bytes(b"cpu-build")
     current = home / "stable-diffusion.cpp"
     current.mkdir()
@@ -3318,8 +3319,8 @@ def test_install_records_that_the_bundle_shipped_no_server(tmp_path, monkeypatch
 def test_install_records_that_the_bundle_shipped_a_server(tmp_path, monkeypatch):
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr("build/bin/sd-cli", b"#!/bin/sh\necho sd-cli\n")
-        zf.writestr("build/bin/sd-server", b"#!/bin/sh\necho sd-server\n")
+        zf.writestr(f"build/bin/{_CLI}", b"#!/bin/sh\necho sd-cli\n")
+        zf.writestr(f"build/bin/{_SERVER}", b"#!/bin/sh\necho sd-server\n")
     zb = buf.getvalue()
     _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest())
     install(install_dir = tmp_path)
