@@ -185,7 +185,7 @@ def _health(mod, bodies):
 
     def fake(path, timeout = 10.0):
         body = queue.pop(0) if len(queue) > 1 else queue[0]
-        return 200, dict(body)
+        return 200, dict(body), "ok"
 
     mod._get_json = fake
 
@@ -274,7 +274,7 @@ def test_forced_body_is_a_real_reply_with_the_measurement_removed(tmp_path, monk
 def test_unreadable_health_fails_rather_than_returning_early(tmp_path, monkeypatch):
     """No body to build the provisional reply from means the check did not run. Say so."""
     mod = _load(tmp_path, monkeypatch)
-    mod._get_json = lambda path, timeout = 10.0: (0, None)
+    mod._get_json = lambda path, timeout = 10.0: (0, None, "refused")
     page = FakePage({TRAIN: SPINNING})
 
     mod.assert_row_never_greyed_while_unmeasured(page)
@@ -413,3 +413,104 @@ def test_the_forced_verdict_check_is_wired_into_the_public_entry_point():
         "assert_row_never_greyed_while_unmeasured", set()
     )
     assert "assert_row_never_greyed_while_unmeasured" in called.get("main", set())
+
+
+# --------------------------------------------------------------------------------
+# The survival verdict has to match the watchdog that decides a backend's fate.
+# --------------------------------------------------------------------------------
+
+
+def _samples(rounds, kind_at = None, kind = "timeout"):
+    """One sample per route per round, the shape BackendSurvivalPoller records."""
+    out = []
+    for i in range(rounds):
+        k = kind if (kind_at and i in kind_at) else "ok"
+        for path in ("/api/liveness", "/api/health"):
+            out.append({
+                "t": float(i * 5), "path": path, "kind": k,
+                "status": 0 if k in ("timeout", "refused") else (503 if k == "http" else 200),
+                "ms": 10005.0 if k == "timeout" else 4.0,
+                "hardware_detecting": None, "torch_warm_in_progress": None,
+            })
+    return out
+
+
+def _verdict(mod, samples):
+    poller = mod.BackendSurvivalPoller()
+    poller.samples = samples
+    poller.report()
+    return list(mod._failed)
+
+
+def test_a_lone_stalled_probe_is_not_a_dead_backend(tmp_path, monkeypatch):
+    """The watchdog kills on three CONSECUTIVE misses, so one timeout is a backend it
+    keeps. Failing the step on it turned a real but survivable stall into a red run on
+    a commit that changed one frontend unit test (run 32862298967)."""
+    mod = _load(tmp_path, monkeypatch)
+    assert _verdict(mod, _samples(18, {5})) == []
+
+
+def test_two_consecutive_stalls_stay_under_the_budget(tmp_path, monkeypatch):
+    """Two strikes is the most the observed 33s stall could produce. Still not a kill."""
+    mod = _load(tmp_path, monkeypatch)
+    assert _verdict(mod, _samples(18, {5, 6})) == []
+
+
+def test_three_consecutive_stalls_fail_because_the_launcher_would_kill(tmp_path, monkeypatch):
+    """At the budget the desktop launcher reports 'Server stopped unexpectedly', which is
+    the field failure this script exists for. It must still come out red."""
+    mod = _load(tmp_path, monkeypatch)
+    failed = _verdict(mod, _samples(18, {5, 6, 7}))
+    assert len(failed) == 2, failed
+    assert all("consecutive" in m for m in failed), failed
+
+
+def test_a_refused_connection_fails_on_the_first_one(tmp_path, monkeypatch):
+    """A refused port is death, not a stall, and nothing transient produces it against a
+    backend that is meant to be up. It does not get the timeout's patience."""
+    mod = _load(tmp_path, monkeypatch)
+    failed = _verdict(mod, _samples(18, {9}, kind = "refused"))
+    assert len(failed) == 2, failed
+    assert all("refused" in m for m in failed), failed
+
+
+def test_a_non_200_answer_fails_on_the_first_one(tmp_path, monkeypatch):
+    """An answered non-200 is the backend itself saying it is unhealthy. Also not a stall."""
+    mod = _load(tmp_path, monkeypatch)
+    failed = _verdict(mod, _samples(18, {9}, kind = "http"))
+    assert len(failed) == 2, failed
+    assert all("unhealthy" in m for m in failed), failed
+
+
+def test_a_backend_that_dies_midway_still_fails(tmp_path, monkeypatch):
+    """The whole point of the poller. Relaxing the isolated-timeout case must not cost it."""
+    mod = _load(tmp_path, monkeypatch)
+    failed = _verdict(mod, _samples(18, set(range(9, 18)), kind = "refused"))
+    assert len(failed) == 2, failed
+
+
+def test_scattered_stalls_never_accumulate_into_a_kill(tmp_path, monkeypatch):
+    """The count that matters resets on every answer. Five isolated misses are not five
+    strikes, and totalling them is exactly the bug this replaces."""
+    mod = _load(tmp_path, monkeypatch)
+    assert _verdict(mod, _samples(18, {2, 5, 8, 11, 14})) == []
+
+
+def test_the_budget_is_the_launchers_own_number():
+    """Mirrored from studio/src-tauri/src/commands.rs. If the launcher's budget moves and
+    this does not, the script starts reporting a verdict the product does not act on."""
+    rust = (REPO / "studio/src-tauri/src/commands.rs").read_text(encoding = "utf-8")
+    match = re.search(r"const HEALTH_WATCHDOG_MAX_FAILURES: u32 = (\d+);", rust)
+    assert match, "HEALTH_WATCHDOG_MAX_FAILURES is not in commands.rs any more"
+    assert _module_constant("WATCHDOG_MAX_FAILURES") == int(match.group(1))
+
+
+def test_only_a_refused_connection_counts_as_a_dead_port(tmp_path, monkeypatch):
+    """ECONNREFUSED is the kernel saying nothing is bound. A reset or a truncated read is
+    a listener that accepted and then failed to finish, which is the stall being measured.
+    Classing those as death is what turned a survivable stall into a crash report."""
+    mod = _load(tmp_path, monkeypatch)
+    assert mod._transport_kind(ConnectionRefusedError()) == "refused"
+    assert mod._transport_kind(ConnectionResetError()) == "timeout"
+    assert mod._transport_kind(TimeoutError()) == "timeout"
+    assert mod._transport_kind(OSError("something else entirely")) == "timeout"

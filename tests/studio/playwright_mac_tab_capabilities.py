@@ -21,6 +21,18 @@ Covers the two field failures from Unsloth Desktop 0.1.524-beta on Apple Silicon
    C-extension imports, so probes time out while the process is perfectly alive.
    This polls the backend across the whole warm window and asserts it survives.
 
+   "Survives" is the watchdog's definition of it, not "answered every probe". The
+   watchdog probes every 15s with a 10s budget and kills on three CONSECUTIVE misses,
+   widening to twelve when a probe times out against a backend that is generating, so
+   a lone timeout is a backend the launcher keeps. Asserting zero misses instead
+   fails runs the product would have survived, and it did: run 32862298967 went red
+   on one timed-out probe per route out of eighteen, on a commit that changed one
+   frontend unit test. The stall behind it was real -- the server served no request
+   at all for 10.0s and then 33.2s, both windows ending on an /api/inference/status
+   that had been in flight throughout -- but 33s of stall is two watchdog strikes,
+   not three. That is reported here as a warning, and only a run that reaches the
+   budget, an outright refused connection, or a non-200 answer fails the step.
+
 Runs against a live Studio; drives the real UI. Env contract matches the other
 scripts here: BASE_URL, STUDIO_OLD_PW, PW_ART_DIR.
 """
@@ -66,6 +78,14 @@ POLL_INTERVAL_S = float(os.environ.get("STUDIO_MAC_POLL_INTERVAL_S", "5"))
 WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "900"))
 # How long the forced-verdict check gives the row to settle into its pending state.
 FORCED_PENDING_S = float(os.environ.get("STUDIO_MAC_FORCED_PENDING_S", "15"))
+# The watchdog's own numbers, from studio/src-tauri/src/commands.rs:
+# HEALTH_WATCHDOG_INTERVAL = 15s, HEALTH_WATCHDOG_MAX_FAILURES = 3, and each probe gets a
+# 10s budget. What kills a backend is three CONSECUTIVE misses, not a miss, and
+# watchdog_failure_budget() widens that to 12 when a probe times out while the backend is
+# generating. A survival assertion here has to be written against those numbers, or it
+# reports a backend the launcher would have kept as one it would have killed.
+PROBE_TIMEOUT_S = 10.0
+WATCHDOG_MAX_FAILURES = 3
 # Every tab the user reported interacting with, plus the ones that share the
 # chat-only gate. (route, nav row id, human name).
 TABS = [
@@ -125,18 +145,58 @@ def fail(m: str) -> None:
     _failed.append(m)
 
 
-def _get_json(path: str, timeout: float = 10.0) -> tuple[int, dict | None]:
+def _transport_kind(err: object) -> str:
+    """Classify a failed probe as a dead port or a stalled one.
+
+    ECONNREFUSED is the only error that proves nothing is bound: the kernel answers it
+    itself, immediately, without a server involved. Everything else here -- a budget that
+    ran out, a reset, a truncated response -- is a listener that accepted the connection
+    and then failed to finish, which is the stall this poller is measuring. Treating those
+    as death is what made a backend the launcher would have kept come out as a crash.
+    """
+    if isinstance(err, ConnectionRefusedError):
+        return "refused"
+    return "timeout"
+
+
+def _get_json(path: str, timeout: float = PROBE_TIMEOUT_S) -> tuple[int, dict | None, str]:
+    """GET *path*, returning (status, body, kind).
+
+    ``kind`` keeps apart the outcomes the desktop watchdog keeps apart, because they
+    are different failures and only one of them means the process is gone:
+
+      "ok"      -- answered 200.
+      "http"    -- answered, with a status that is not 200. The server is up and saying
+                   something is wrong.
+      "timeout" -- no answer inside the budget. The port is still there; the server is
+                   stalled. This is the case the watchdog spends extra patience on.
+      "refused" -- the connection was rejected. Nothing is listening, which is the only
+                   one of these that means the backend died.
+
+    Collapsing all three into "status != 200", which this used to do, reports a 10s
+    stall in the same words as a crash.
+
+    Only ECONNREFUSED earns "refused". A reset or a half-read response means there WAS
+    a listener that failed to see the request through, which is a stall wearing a
+    different errno, so it is counted as one rather than as a death.
+    """
     try:
         with urllib.request.urlopen(f"{BASE}{path}", timeout = timeout) as resp:
+            kind = "ok" if resp.status == 200 else "http"
             body = resp.read().decode("utf-8", "replace")
             try:
-                return resp.status, json.loads(body)
+                return resp.status, json.loads(body), kind
             except ValueError:
-                return resp.status, None
+                return resp.status, None, kind
     except urllib.error.HTTPError as exc:
-        return exc.code, None
-    except Exception:
-        return 0, None
+        return exc.code, None, "http"
+    except urllib.error.URLError as exc:
+        # A connect-time failure arrives wrapped, so the reason decides, not the class.
+        return 0, None, _transport_kind(exc.reason)
+    except Exception as exc:
+        # A read-time failure raises directly: TimeoutError, or an http.client error
+        # when the peer went away mid-response.
+        return 0, None, _transport_kind(exc)
 
 
 class BackendSurvivalPoller:
@@ -159,12 +219,13 @@ class BackendSurvivalPoller:
         while not self.stop.is_set():
             for path in ("/api/liveness", "/api/health"):
                 began = time.monotonic()
-                status, body = _get_json(path)
+                status, body, kind = _get_json(path)
                 self.samples.append(
                     {
                         "t": round(time.monotonic(), 1),
                         "path": path,
                         "status": status,
+                        "kind": kind,
                         "ms": round((time.monotonic() - began) * 1000, 1),
                         "hardware_detecting": (body or {}).get("hardware_detecting"),
                         # Stage 0 of the warm only sets hardware_detecting; this one stays
@@ -190,19 +251,58 @@ class BackendSurvivalPoller:
             if not got:
                 fail(f"no samples collected for {path}")
                 continue
-            bad = [s for s in got if s["status"] != 200]
+            bad = [s for s in got if s["kind"] != "ok"]
             worst = max(s["ms"] for s in got)
             unmeasured = sum(1 for s in got if s["hardware_detecting"] is True)
             warming = sum(1 for s in got if s["torch_warm_in_progress"] is True)
+            # The watchdog counts consecutive misses and resets on any answer, so that
+            # is what decides the verdict. A total is only ever context for a reader.
+            run, worst_run, worst_run_at = 0, 0, None
+            for s in got:
+                if s["kind"] == "ok":
+                    run = 0
+                    continue
+                run += 1
+                if run > worst_run:
+                    worst_run, worst_run_at = run, s["t"]
             info(
-                f"{path}: {len(got)} samples, {len(bad)} non-200, worst {worst}ms, "
+                f"{path}: {len(got)} samples, {len(bad)} miss(es), worst {worst}ms, "
+                f"longest miss run {worst_run} of the watchdog's {WATCHDOG_MAX_FAILURES}, "
                 f"{unmeasured} with an unmeasured verdict, {warming} with the warm still running"
             )
-            if bad:
+            refused = [s for s in got if s["kind"] == "refused"]
+            answered_badly = [s for s in got if s["kind"] == "http"]
+            if refused:
+                # The port stopped accepting. Nothing transient does this to a backend
+                # that is meant to be up, so it is fatal on the first occurrence.
                 fail(
-                    f"{path} returned non-200 {len(bad)} time(s) "
-                    f"(first at t={bad[0]['t']}s status={bad[0]['status']}); "
-                    "the backend did not stay up through the warm window"
+                    f"{path}: connection refused at t={refused[0]['t']}s; the port was gone, "
+                    "so the backend did not stay up through the warm window"
+                )
+            elif answered_badly:
+                fail(
+                    f"{path}: answered {answered_badly[0]['status']} at "
+                    f"t={answered_badly[0]['t']}s; the backend stayed up but reported itself "
+                    "unhealthy through the warm window"
+                )
+            elif worst_run >= WATCHDOG_MAX_FAILURES:
+                fail(
+                    f"{path}: {worst_run} consecutive probes timed out, ending at "
+                    f"t={worst_run_at}s, which reaches the watchdog's "
+                    f"{WATCHDOG_MAX_FAILURES}-strike budget; the desktop launcher would have "
+                    "killed this backend and reported 'Server stopped unexpectedly'"
+                )
+            elif bad:
+                # Under the budget, so the launcher would have kept this backend and the
+                # run is green. Still say so: a stall this long is a real backend defect
+                # even when it is not a fatal one, and it must not vanish into a pass.
+                print(
+                    f"::warning::{path} stalled: {len(bad)} probe(s) timed out (longest run "
+                    f"{worst_run}, under the watchdog's {WATCHDOG_MAX_FAILURES}), worst "
+                    f"{worst}ms against a {PROBE_TIMEOUT_S}s budget. The backend served "
+                    "nothing for that window. Not fatal, but see logs/studio_tabs.log for "
+                    "which request was in flight.",
+                    flush = True,
                 )
 
 
@@ -419,7 +519,7 @@ def assert_pending_state_on_forced_verdict(page) -> None:
     having read the row.
     """
     step("forcing an unmeasured verdict and re-checking the pinned Train row")
-    status, live = _get_json("/api/health")
+    status, live, _kind = _get_json("/api/health")
     if status != 200 or not isinstance(live, dict):
         fail(
             "/api/health gave no body to base the provisional reply on "
@@ -619,9 +719,9 @@ def main() -> int:
     poller.finish()
     poller.report()
 
-    status, _ = _get_json("/api/liveness")
-    if status != 200:
-        fail(f"backend was not alive at the end of the run (/api/liveness -> {status})")
+    status, _, kind = _get_json("/api/liveness")
+    if kind != "ok":
+        fail(f"backend was not alive at the end of the run (/api/liveness -> {kind}, {status})")
 
     if _failed:
         print(f"[mac-tabs] {len(_failed)} FAILURE(S)", flush = True)
