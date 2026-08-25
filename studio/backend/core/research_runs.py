@@ -466,6 +466,57 @@ def _retry_after_seconds(response: httpx.Response) -> float | None:
     return delay if delay > 0 else None
 
 
+async def _peek_stream_head(lines: AsyncIterator[str]) -> list[str]:
+    """The stream's first line, or nothing when it ends without one.
+
+    One line only: a queue notice belongs to the loop that refreshes the admission bound, and
+    the proxied provider refusal below is always the first line a stream carries."""
+    async for line in lines:
+        return [line]
+    return []
+
+
+def _stream_is_rate_limited(head: list[str]) -> bool:
+    """Whether the stream opens with a proxied provider rate-limit refusal.
+
+    core.inference.external_provider turns an upstream non-200 into a 200 stream carrying one
+    OpenAI-shaped error line, so a provider 429 never reaches the status line -- it survives
+    only as that line's ``error.code``."""
+    for line in head:
+        if not line.startswith("data:"):
+            continue
+        try:
+            chunk = json.loads(line[5:].strip())
+        except (TypeError, ValueError):
+            return False
+        error = chunk.get("error") if isinstance(chunk, dict) else None
+        if isinstance(error, dict) and str(error.get("code")) == "429":
+            return True
+    return False
+
+
+async def _with_head(head: list[str], rest: AsyncIterator[str]) -> AsyncIterator[str]:
+    """``rest`` with the lines already read off it put back in front."""
+    for line in head:
+        yield line
+    async for line in rest:
+        yield line
+
+
+def _rate_limit_wait(
+    run: dict, requested: float, remaining: float | None, headroom: float
+) -> float:
+    """How much of a provider's requested retry delay this call can afford.
+
+    The delay is the provider's, not a share of the model-load budget, so it is bounded by what
+    is left of the call's wall clock minus the room the re-sent request still needs. Coming back
+    sooner than the provider allows only spends an attempt on the same refusal. An unlimited run
+    has no wall clock to divide, so it keeps the model-wait share as its ceiling."""
+    if remaining is None:
+        return min(requested, _model_wait_budget(run))
+    return max(0.0, min(requested, remaining - headroom))
+
+
 def _local_model_ready() -> bool:
     """Whether the local chat-completions path has a model to serve, using the same two checks
     routes.inference.openai_chat_completions makes before it 400s. Fails open when neither
@@ -1346,6 +1397,7 @@ class ResearchSupervisor:
                     ModelOutputIdleTimeout,
                 )
 
+            call_started = loop.time()
             async with (
                 _wall_clock_timeout(model_timeout or None),
                 httpx.AsyncClient(timeout = timeout, trust_env = False) as client,
@@ -1382,7 +1434,6 @@ class ResearchSupervisor:
                             response = await send_task
                             response.raise_for_status()
                             first_output_deadline = loop.time() + first_output_budget
-                            break
                         except (httpx.TransportError, httpx.HTTPStatusError) as exc:
                             # Only reachable before a body byte is touched (the stream is consumed
                             # after this loop), so a re-send cannot duplicate report text.
@@ -1428,9 +1479,15 @@ class ResearchSupervisor:
                                     # not outlast one poll.
                                     await self._wait_out_retry_after(
                                         run["id"],
-                                        min(
+                                        _rate_limit_wait(
+                                            run,
                                             _retry_after_seconds(exc.response) or delay,
-                                            _model_wait_budget(run),
+                                            (
+                                                model_timeout - (loop.time() - call_started)
+                                                if model_timeout
+                                                else None
+                                            ),
+                                            first_output_budget,
                                         ),
                                     )
                                 else:
@@ -1438,9 +1495,24 @@ class ResearchSupervisor:
                                 attempt += 1
                                 # re-check the lease and cancellation before re-sending.
                                 await self._check_active(run["id"])
-                    async for line in self._iter_stream_lines(
-                        run["id"], response, semantic_deadline
-                    ):
+                            continue
+                        # A proxied provider 429 arrives as a 200 whose first line is the
+                        # refusal, so the status above cannot see it. Still before a body byte
+                        # is used, so re-sending cannot duplicate report text.
+                        stream = self._iter_stream_lines(run["id"], response, semantic_deadline)
+                        head = await _peek_stream_head(stream)
+                        if not _stream_is_rate_limited(head) or attempt == 2:
+                            # Out of attempts: let the stream raise the provider's own error.
+                            break
+                        await stream.aclose()
+                        await response.aclose()
+                        response = None
+                        # No Retry-After survives the proxy, so this is the plain backoff.
+                        await asyncio.sleep(2**attempt)
+                        attempt += 1
+                        # re-check the lease and cancellation before re-sending.
+                        await self._check_active(run["id"])
+                    async for line in _with_head(head, stream):
                         if self._cancel_event(run["id"]).is_set():
                             await self._check_active(run["id"])
                         if not line.startswith("data:"):

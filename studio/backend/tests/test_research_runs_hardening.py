@@ -2295,6 +2295,8 @@ def _send_attempts(
     model_timeout = 900.0,
     on_wait = None,
     on_check = None,
+    body = b"{}",
+    errors = None,
 ):
     """Drive the real send/retry loop against a canned response; return (attempts, waits).
 
@@ -2335,7 +2337,7 @@ def _send_attempts(
             waits.append(round(waited["t"], 2))
             waited["t"] = 0.0
         attempts.append(request.url)
-        return httpx.Response(status, headers = headers or {}, content = b"{}", request = request)
+        return httpx.Response(status, headers = headers or {}, content = body, request = request)
 
     async def _check_active(run_id):
         if on_check is not None:
@@ -2351,8 +2353,10 @@ def _send_attempts(
     supervisor._endpoint = lambda: "http://127.0.0.1:9/v1/chat/completions"
     supervisor._discard_task = lambda *a, **k: real_sleep(0)
 
-    with pytest.raises(Exception):
+    with pytest.raises(Exception) as raised:
         asyncio.run(supervisor._stream_completion(run, [{"role": "user", "content": "x"}]))
+    if errors is not None:
+        errors.append(raised.value)
     return len(attempts), waits
 
 
@@ -2365,13 +2369,47 @@ def test_rate_limit_honours_retry_after(monkeypatch):
     assert _send_attempts(monkeypatch, 429, {"Retry-After": "30"})[1] == [30.0, 30.0]
 
 
-def test_rate_limit_wait_is_clamped_to_the_run_budget(monkeypatch):
+def test_rate_limit_wait_is_capped_by_what_is_left_of_the_call(monkeypatch):
+    # The delay is the provider's, so the cap is the call's own wall clock less the room the
+    # re-sent request needs (20 - 5, shrinking as the call runs), not the model-load share a
+    # 20s budget would allow (5).
     _, waits = _send_attempts(monkeypatch, 429, {"Retry-After": "300"}, model_timeout = 20.0)
-    assert waits == [5.0, 5.0]
+    assert len(waits) == 2
+    assert all(13.0 < wait <= 15.0 for wait in waits), waits
 
 
 def test_server_error_backoff_is_unchanged(monkeypatch):
     assert _send_attempts(monkeypatch, 500) == (3, [1, 2])
+
+
+def _provider_error_sse(error):
+    return f"data: {json.dumps({'error': error})}\n\n".encode()
+
+
+_PROVIDER_429 = {
+    "message": "Rate limit reached for gpt-4o",
+    "type": "provider_error",
+    "code": "429",
+    "provider": "openai",
+}
+
+
+def test_a_rate_limit_delivered_inside_the_stream_is_retried(monkeypatch):
+    # An external provider's 429 is proxied as a 200 whose first line carries the refusal, so
+    # the status line never shows it and the run used to end on the first send.
+    errors = []
+    body = _provider_error_sse(_PROVIDER_429)
+    assert _send_attempts(monkeypatch, 200, body = body, errors = errors) == (3, [1, 2])
+    assert "Rate limit reached for gpt-4o" in str(errors[0])
+
+
+def test_another_in_band_provider_error_is_not_retried(monkeypatch):
+    # Only a rate limit is transient; anything else must surface on the first send.
+    errors = []
+    other = dict(_PROVIDER_429, code = "400", message = "Unsupported parameter")
+    body = _provider_error_sse(other)
+    assert _send_attempts(monkeypatch, 200, body = body, errors = errors) == (1, [])
+    assert "Unsupported parameter" in str(errors[0])
 
 
 def test_a_cancel_during_the_rate_limit_wait_is_not_held_for_the_retry_after(monkeypatch):
