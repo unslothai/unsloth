@@ -52,6 +52,16 @@ export interface ProviderConfig {
   updated_at: string;
 }
 
+export interface ProviderModelReasoning {
+  supports_reasoning: boolean;
+  reasoning_style:
+    | "enable_thinking"
+    | "reasoning_effort"
+    | "enable_thinking_effort";
+  reasoning_effort_levels: string[];
+  reasoning_always_on: boolean;
+}
+
 export interface ProviderModelInfo {
   id: string;
   display_name: string;
@@ -59,6 +69,11 @@ export interface ProviderModelInfo {
   owned_by?: string | null;
   /** Only the ChatGPT plan catalog reports this; the registry describes the rest. */
   vision?: boolean | null;
+  /**
+   * Reasoning controls probed from the server's chat template. Present only for
+   * self-hosted providers that expose a Jinja template (llama.cpp).
+   */
+  reasoning?: ProviderModelReasoning | null;
 }
 
 export interface ProviderTestResult {
