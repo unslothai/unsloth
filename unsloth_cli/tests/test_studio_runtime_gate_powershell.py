@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from unsloth_cli._studio_runtime_gate import _resolve_windows_powershell  # noqa: E402
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="requires Windows PowerShell")
+@pytest.mark.skipif(sys.platform != "win32", reason = "requires Windows PowerShell")
 def test_resolves_through_path_when_available(monkeypatch):
     monkeypatch.setenv("SystemRoot", os.environ.get("SystemRoot", r"C:\Windows"))
     resolved = _resolve_windows_powershell()

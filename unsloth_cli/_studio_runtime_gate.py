@@ -95,7 +95,7 @@ def _canonical_windows_path(path: Path) -> str:
 
 
 def _windows_paths_equal(left: str, right: str) -> bool:
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
     compare = kernel32.CompareStringOrdinal
     compare.argtypes = [
         wintypes.LPCWSTR,
@@ -131,7 +131,7 @@ def runtime_mutex_name_for_studio_home(studio_home: Path) -> str:
 
 def _current_windows_user_sid() -> str:
     kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
-    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error = True)
 
     kernel32.GetCurrentProcess.restype = wintypes.HANDLE
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
@@ -199,7 +199,7 @@ def studio_runtime_launch_guard(studio_home: Path, *, inherited: bool = False) -
         yield False
         return
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
     kernel32.CreateMutexW.argtypes = [
         ctypes.c_void_p,
         wintypes.BOOL,
@@ -272,12 +272,12 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
     )
     result = subprocess.run(
         [_resolve_windows_powershell(), "-NoProfile", "-NonInteractive", "-Command", script],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        check=False,
+        capture_output = True,
+        text = True,
+        encoding = "utf-8",
+        errors = "replace",
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        check = False,
     )
     if result.returncode != 0:
         detail = result.stderr.strip() or f"exit code {result.returncode}"
