@@ -88,6 +88,13 @@ test("a superseding refresh inherits the mount poll", () => {
   );
 });
 
+test("the mount poll waits for a replacement beside a resident model", () => {
+  assert.match(
+    SYNC,
+    /\(!statusRes\?\.active_model \|\|\s*inferenceStatusShowsLoadInFlight\(statusRes\)\)/,
+  );
+});
+
 test("known server load evidence survives an unavailable status probe", () => {
   const evidence = ADAPTER.slice(
     ADAPTER.indexOf("async function serverLoadEvidence("),

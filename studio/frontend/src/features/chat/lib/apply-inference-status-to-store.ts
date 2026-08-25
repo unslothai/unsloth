@@ -713,7 +713,7 @@ export async function tryAdoptServerActiveModel(options?: {
     // Status endpoint unavailable: fall back to the normal auto-load path.
     return false;
   }
-  if (!status.active_model) {
+  if (!status.active_model || (status.loading?.length ?? 0) > 0) {
     return false;
   }
 

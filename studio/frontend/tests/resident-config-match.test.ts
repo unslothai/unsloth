@@ -1640,7 +1640,7 @@ test("the shortcut re-reads and re-judges the status before adopting", () => {
   // The verdict is a named predicate, so it can be applied to more than one status.
   assert.match(
     source,
-    /const adoptable = \(status: InferenceStatusResponse\) =>/,
+    /const adoptable = \(status: InferenceStatusResponse\) =>\s*\(status\.loading\?\.length \?\? 0\) === 0 &&/,
     "the residency verdict is no longer callable against a second status",
   );
   const decision = source.search(

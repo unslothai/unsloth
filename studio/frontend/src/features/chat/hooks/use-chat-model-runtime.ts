@@ -444,7 +444,8 @@ async function syncInferenceStatusToStore(options?: {
       while (
         !aborted() &&
         !superseded() &&
-        !statusRes?.active_model &&
+        (!statusRes?.active_model ||
+          inferenceStatusShowsLoadInFlight(statusRes)) &&
         !useChatRuntimeStore.getState().params.checkpoint &&
         !useChatRuntimeStore.getState().modelLoading &&
         Date.now() - started < CLI_LOAD_POLL_MAX_MS
@@ -887,6 +888,7 @@ export function useChatModelRuntime() {
         // another tab can swap the resident model, which this one is never told about
         // (the lifecycle events are dispatched on its own window).
         const adoptable = (status: InferenceStatusResponse) =>
+          (status.loading?.length ?? 0) === 0 &&
           residentModelMatchesPick(status, {
             id: modelId,
             loadPath,

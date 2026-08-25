@@ -47,6 +47,10 @@ test("the CLI adoption path hydrates settings while it owns the load lease", () 
     APPLIER,
     /seedLoadParams: options\?\.allowWhileModelLoading/,
   );
+  assert.match(
+    APPLIER,
+    /!status\.active_model \|\| \(status\.loading\?\.length \?\? 0\) > 0/,
+  );
 });
 
 test("an older backend that omits the field changes nothing", () => {
