@@ -3808,33 +3808,72 @@ def test_count_tokens_forwards_vision_guard_to_switch(monkeypatch):
 
 
 def test_count_tokens_switch_marks_new_model_preview_owned(monkeypatch):
-    # Codex P2: a count_tokens auto-switch can load a new GGUF via _load_model_impl, which
-    # clears the preview marker. Counting never generates, so the switched-in model must be
-    # marked preview-owned, else it blocks later previews for other checkpoints.
-    from types import SimpleNamespace
-    from fastapi import HTTPException
-
-    inference_route._set_preview_resident(None)
-    # _loaded_slot_ident() returns A before the switch, B after.
-    slots = iter(["/outputs/run/A"])
-    monkeypatch.setattr(
-        inference_route, "_loaded_slot_ident", lambda: next(slots, "/outputs/run/B")
+    # Deferred ownership belongs to the switch operation that performed the load, not to a
+    # route-level before/after slot comparison (which cannot distinguish a concurrent /load).
+    backend = _FakeBackend("org/A-GGUF")
+    recorder = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("org/B-GGUF", None, "org/B-GGUF"),
+        backend = backend,
+        recorder = recorder,
     )
-
-    async def _noop_switch(*a, **k):
-        return None
-
-    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop_switch)
-    # Backend not loaded, so the route 503s right AFTER the compensation.
-    monkeypatch.setattr(
-        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    inference_route._set_preview_resident("org/A-GGUF")
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            "org/B-GGUF", object(), "tester", claim_resident = False
+        )
     )
-    payload = _anthropic_payload_with_tools(None)
-    with pytest.raises(HTTPException):
-        asyncio.run(inference_route.anthropic_count_tokens(payload, object(), "tester"))
-    # B (switched-in) is marked preview-owned, not left Studio-owned.
-    assert inference_route._is_preview_resident("/outputs/run/B")
+    assert len(recorder.calls) == 1
+    assert inference_route._is_preview_resident("org/B-GGUF")
     inference_route._set_preview_resident(None)  # cleanup
+
+
+def test_count_tokens_does_not_own_an_independent_load(monkeypatch):
+    state = {"slot": "/outputs/preview-a"}
+    identity_checked = threading.Event()
+    independent_load_done = threading.Event()
+
+    def loaded_identity_satisfies(_requested):
+        identity_checked.set()
+        assert independent_load_done.wait(timeout = 2)
+        return True
+
+    async def no_model_error(*_args, **_kwargs):
+        return 503, "No GGUF model loaded"
+
+    monkeypatch.setattr(inference_route, "_loaded_slot_ident", lambda: state["slot"])
+    monkeypatch.setattr(
+        inference_route, "_loaded_identity_satisfies", loaded_identity_satisfies
+    )
+    monkeypatch.setattr(inference_route, "_no_model_loaded_error", no_model_error)
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: None)
+    monkeypatch.setattr(
+        inference_route,
+        "get_llama_cpp_backend",
+        lambda: types.SimpleNamespace(is_loaded = False),
+    )
+
+    inference_route._set_preview_resident(state["slot"])
+    payload = _anthropic_payload_with_tools(None)
+    request = types.SimpleNamespace(scope = {"path": "/v1/messages/count_tokens"})
+
+    async def drive():
+        task = asyncio.create_task(
+            inference_route.anthropic_count_tokens(payload, request, "tester")
+        )
+        assert await asyncio.to_thread(identity_checked.wait, 2)
+        state["slot"] = "/outputs/studio-b"
+        inference_route._set_preview_resident(None)
+        independent_load_done.set()
+        with pytest.raises(HTTPException) as exc:
+            await task
+        assert exc.value.status_code == 503
+
+    asyncio.run(drive())
+    assert not inference_route._is_preview_resident("/outputs/studio-b")
 
 
 # ── /chat/count_tokens: what the recount prices ───────────────────

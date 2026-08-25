@@ -297,6 +297,15 @@ def _claim_non_preview_slot() -> None:
 # skips its end-decrement.
 _UNTRACKED_SCOPE_KEY = "_unsloth_keepwarm_untracked"
 
+# Set after middleware admission so the preview route can distinguish a real tracked
+# request from direct unit/helper calls that have no counters to move.
+_TRACKED_SCOPE_KEY = "_unsloth_keepwarm_tracked"
+
+# A preview route waits on its own serializer after middleware admission. While queued it
+# must be pending, not active: a Studio swap holds the lifecycle gate while draining active
+# requests, and the queued preview needs that same gate after it gets the serializer.
+_PREVIEW_SERIALIZER_WAIT_SCOPE_KEY = "_unsloth_keepwarm_preview_serializer_wait"
+
 # Set by the middleware on a non-preview scope when a preview swap advanced the counter
 # while it waited on the gate; _maybe_auto_switch_model then rejects it rather than serve
 # the swapped-in checkpoint. Deferred to the route (not a middleware 503) so an external-
@@ -376,6 +385,52 @@ def _note_admitted_end() -> None:
     global _admitted_inference
     with _lock:
         _admitted_inference = max(0, _admitted_inference - 1)
+
+
+def begin_preview_serializer_wait(scope) -> bool:
+    """Move a tracked preview from active to pending while it waits on the route lock."""
+    global _inflight, _pending, _preview_inflight, _preview_pending
+    if (
+        not isinstance(scope, dict)
+        or not _is_preview_path(scope.get("path") or "")
+        or not scope.get(_TRACKED_SCOPE_KEY)
+        or scope.get(_UNTRACKED_SCOPE_KEY)
+        or scope.get(_PREVIEW_SERIALIZER_WAIT_SCOPE_KEY)
+    ):
+        return False
+    with _lock:
+        scope[_PREVIEW_SERIALIZER_WAIT_SCOPE_KEY] = True
+        _inflight = max(0, _inflight - 1)
+        _preview_inflight = max(0, _preview_inflight - 1)
+        _pending += 1
+        _preview_pending += 1
+    return True
+
+
+async def resume_preview_after_serializer(scope) -> None:
+    """Re-admit a serialized preview under the lifecycle gate before it touches the model."""
+    if not isinstance(scope, dict) or not scope.get(_PREVIEW_SERIALIZER_WAIT_SCOPE_KEY):
+        return
+    try:
+        async with _unload_gate():
+            if not scope.get(_PREVIEW_SERIALIZER_WAIT_SCOPE_KEY):
+                return
+            _note_start(is_preview = True)
+            scope.pop(_PREVIEW_SERIALIZER_WAIT_SCOPE_KEY, None)
+    except BaseException:
+        cancel_preview_serializer_wait(scope)
+        raise
+
+
+def cancel_preview_serializer_wait(scope) -> None:
+    """Balance a preview cancelled before it can be re-admitted after serialization."""
+    if not isinstance(scope, dict) or not scope.get(_PREVIEW_SERIALIZER_WAIT_SCOPE_KEY):
+        return
+    scope.pop(_PREVIEW_SERIALIZER_WAIT_SCOPE_KEY, None)
+    _note_unpending(is_preview = True)
+    # Middleware must not run the normal active-request decrement after this pending
+    # request was removed, or it would stamp activity for a preview that never ran.
+    scope[_UNTRACKED_SCOPE_KEY] = True
 
 
 def inference_lifecycle_gate():
@@ -563,6 +618,8 @@ class LlamaKeepWarmMiddleware:
                 async with _unload_gate():
                     _note_start(is_preview)
                     started = True
+                    if isinstance(scope, dict):
+                        scope[_TRACKED_SCOPE_KEY] = True
                     if (
                         not is_preview
                         and (_preview_swap_gen() != swap_gen_at_entry or swap_active_at_entry)

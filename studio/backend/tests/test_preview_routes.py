@@ -1630,6 +1630,135 @@ def test_preview_not_blocked_by_pending_non_preview_waiter(fake_slot):
         kw._note_unpending(is_preview = False)
 
 
+def test_queued_preview_does_not_deadlock_studio_switch():
+    from core.inference import llama_keepwarm as kw
+
+    async def _run():
+        _reset_keepwarm_counters()
+        kw._admitted_inference = 0
+        preview._preview_lock = asyncio.Lock()
+        assert not inference._auto_switch_process_lock.locked()
+
+        studio_holds_gate = asyncio.Event()
+        queued_has_serializer = asyncio.Event()
+        await preview._preview_lock.acquire()
+        # Preview A is actively streaming while it owns the serializer.
+        kw._note_start(is_preview = True)
+
+        async def _receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def _send(_message):
+            return None
+
+        async def queued_preview_app(scope, receive, send):
+            serializer_waiting = kw.begin_preview_serializer_wait(scope)
+            locked = False
+            try:
+                await preview._preview_lock.acquire()
+                locked = True
+                queued_has_serializer.set()
+                await kw.resume_preview_after_serializer(scope)
+                serializer_waiting = False
+                await inference._acquire_swap_gate()
+                try:
+                    await send({"type": "http.response.start", "status": 200})
+                    await send({"type": "http.response.body", "body": b""})
+                finally:
+                    inference._auto_switch_process_lock.release()
+            finally:
+                if serializer_waiting:
+                    kw.cancel_preview_serializer_wait(scope)
+                if locked:
+                    preview._preview_lock.release()
+
+        async def studio_switch_app(scope, receive, send):
+            kw.note_admitted_inference(scope)
+            await inference._acquire_swap_gate()
+            try:
+                async with kw.inference_lifecycle_gate():
+                    studio_holds_gate.set()
+                    await inference._wait_for_model_switch_idle(
+                        current_request_counted = True
+                    )
+            finally:
+                inference._auto_switch_process_lock.release()
+            await send({"type": "http.response.start", "status": 200})
+            await send({"type": "http.response.body", "body": b""})
+
+        preview_scope = {
+            "type": "http",
+            "method": "POST",
+            "path": "/p/run/ckpt/v1/chat/completions",
+            "headers": [],
+        }
+        studio_scope = {
+            "type": "http",
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "headers": [(b"authorization", b"Bearer valid")],
+        }
+        queued_preview = asyncio.create_task(
+            kw.LlamaKeepWarmMiddleware(queued_preview_app)(
+                preview_scope, _receive, _send
+            )
+        )
+        while kw._preview_pending != 1:
+            await asyncio.sleep(0)
+        assert kw._preview_inflight == 1  # only active preview A, not queued B
+
+        studio_switch = asyncio.create_task(
+            kw.LlamaKeepWarmMiddleware(studio_switch_app)(
+                studio_scope, _receive, _send
+            )
+        )
+        await asyncio.wait_for(studio_holds_gate.wait(), 1)
+
+        # A releases the serializer before its terminal middleware decrement. B acquires
+        # the serializer and waits on the lifecycle gate, while Studio is draining A.
+        preview._preview_lock.release()
+        await asyncio.wait_for(queued_has_serializer.wait(), 1)
+        kw._note_end(is_preview = True)
+
+        await asyncio.wait_for(asyncio.gather(queued_preview, studio_switch), 2)
+        assert kw._inflight == 0
+        assert kw._pending == 0
+        assert kw._preview_inflight == 0
+        assert kw._preview_pending == 0
+        assert kw._admitted_inference == 0
+
+    asyncio.run(_run())
+
+
+def test_preview_serializer_wait_cancellation_balances_counters():
+    from core.inference import llama_keepwarm as kw
+
+    _reset_keepwarm_counters()
+    scope = {
+        "path": "/p/run/ckpt/v1/chat/completions",
+        kw._TRACKED_SCOPE_KEY: True,
+    }
+    kw._note_start(is_preview = True)
+    assert kw.begin_preview_serializer_wait(scope)
+    kw.cancel_preview_serializer_wait(scope)
+    assert scope.get(kw._UNTRACKED_SCOPE_KEY) is True
+    assert kw._inflight == kw._pending == 0
+    assert kw._preview_inflight == kw._preview_pending == 0
+
+
+def test_serve_chat_moves_serializer_wait_out_of_active_count():
+    import inspect
+
+    source = inspect.getsource(preview._serve_chat)
+    assert source.index("begin_preview_serializer_wait") < source.index(
+        "await _preview_lock.acquire()"
+    )
+    assert source.index("await _preview_lock.acquire()") < source.index(
+        "await resume_preview_after_serializer"
+    )
+    assert "cancel_preview_serializer_wait" in source
+
+
 def test_admitted_inference_counter_excludes_previews():
     # Codex P2 (round 21): the middleware tracks a POST in _inflight before auth, so the busy
     # guard counts only ADMITTED (post-auth) non-preview inference, not raw _inflight. An

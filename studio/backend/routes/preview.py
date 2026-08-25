@@ -136,12 +136,23 @@ async def _serve_chat(
     path = _resolve_or_4xx(run, checkpoint)
     is_lora = (path / "adapter_config.json").exists()
     payload = _sanitize_preview_payload(payload, is_lora)
-    disable_openai_auto_switch_for_request(getattr(request, "scope", None))
+    scope = getattr(request, "scope", None)
+    disable_openai_auto_switch_for_request(scope)
+    from core.inference.llama_keepwarm import (
+        begin_preview_serializer_wait,
+        cancel_preview_serializer_wait,
+        resume_preview_after_serializer,
+    )
+
+    serializer_waiting = begin_preview_serializer_wait(scope)
     keep_locked = False
     locked = False
     try:
         await _preview_lock.acquire()
         locked = True
+        if serializer_waiting:
+            await resume_preview_after_serializer(scope)
+            serializer_waiting = False
         # The in-process coroutine, not the /load route: the route's padding returns a
         # StreamingResponse while the checkpoint is still loading, so the chat below
         # would run against the previous model (or none).
@@ -155,6 +166,8 @@ async def _serve_chat(
             keep_locked = True
         return response
     finally:
+        if serializer_waiting:
+            cancel_preview_serializer_wait(scope)
         if not keep_locked and locked:
             _preview_lock.release()
 

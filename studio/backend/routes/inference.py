@@ -22668,7 +22668,6 @@ async def anthropic_count_tokens(
     # Count with the requested model's tokenizer, like the sibling /messages.
     # Carry the vision guard too: an image count naming a text-only GGUF must not
     # evict a loaded vision model for a swap that can't serve the request.
-    _slot_before_count = _loaded_slot_ident()
     await _maybe_auto_switch_model(
         _switch_model_for_payload(payload),
         request,
@@ -22678,12 +22677,6 @@ async def anthropic_count_tokens(
         # model; the middleware likewise excludes count_tokens from its claim.
         claim_resident = False,
     )
-    # The auto-switch may still have loaded a new GGUF (clearing the preview marker). Counting
-    # never generates, so a tokenize-only switch must re-mark a newly switched-in model
-    # preview-owned (only if the slot changed) so it doesn't block later previews.
-    _slot_after_count = _loaded_slot_ident()
-    if _slot_after_count is not None and _slot_after_count != _slot_before_count:
-        _set_preview_resident(_slot_after_count)
 
     llama_backend = get_llama_cpp_backend()
     if not llama_backend.is_loaded:
