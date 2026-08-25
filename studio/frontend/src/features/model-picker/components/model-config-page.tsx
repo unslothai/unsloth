@@ -68,7 +68,8 @@ import {
   subscribeLlamaFlagCatalog,
 } from "../api/llama-flags";
 import {
-  fetchLoadExtraArgs,
+  fetchLoadModelOverride,
+  fromApiOverride,
   modelOverrideKey,
   syncModelOverride,
 } from "../api/model-overrides";
@@ -143,6 +144,8 @@ const CONTROL_SURFACE =
 const SELECT_TRIGGER_CLASS = `grid h-8 min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 ${CONTROL_SURFACE} pl-3 pr-2 py-0 text-ui-13! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0`;
 const NUMBER_INPUT_CLASS = `h-8 w-[92px] ${CONTROL_SURFACE} pl-3 pr-2 py-0 text-right text-ui-13 font-medium text-nav-fg outline-none focus-visible:ring-0`;
 
+// Mirrors the backend's Auto default once GPU-only placement is impossible.
+const AUTO_OFFLOAD_CONTEXT_LENGTH = 8192;
 const KV_CACHE_DTYPE_DEFAULT = "f16";
 const SPECULATIVE_TYPE_LABELS: Record<
   (typeof SPECULATIVE_TYPES)[number],
@@ -839,7 +842,7 @@ function GpuMemorySettings({
                 <span className="min-w-0 truncate text-ui-12 text-nav-fg/80">
                   GPU {d.index}: {d.name}
                   {d.memoryTotalGb
-                    ? ` · ${Math.round(d.memoryTotalGb)} GB`
+                    ? ` · ${Math.round(d.memoryTotalGb)} GiB`
                     : ""}
                 </span>
                 <Switch
@@ -1805,6 +1808,8 @@ export function ModelConfigPage({
   configRef.current = configState;
   const [remember, setRemember] = useState(() => initial.remembered);
   const [savedRemember, setSavedRemember] = useState(() => initial.remembered);
+  const rememberRef = useRef(remember);
+  rememberRef.current = remember;
   const [speculativeFallback] = useState(readPersistedSpeculativeType);
   const [templateOpen, setTemplateOpen] = useState(false);
   // Raised by the extra-arguments row when what is typed is something
@@ -2043,10 +2048,10 @@ export function ModelConfigPage({
     hiddenCatalogEpoch,
   ]);
 
-  // Here rather than in the row that displays it: that row is inside Advanced
-  // settings, which is not rendered while the section is collapsed, so a panel
-  // opened closed would never fetch and a cold load would launch without the stored
-  // arguments. The row seeds its textarea from the config either way.
+  // The server copy is shared by Desktop, LAN, and tunnel origins. Hydrate the
+  // whole remembered GGUF config here; localStorage is only the immediate seed.
+  // This also has to run while Advanced is closed because extra arguments live in
+  // that section but affect every load.
   const extraArgsHydrated = useRef<string | null>(null);
   // biome-ignore lint/correctness/useExhaustiveDependencies: the model is the identity
   useEffect(() => {
@@ -2087,7 +2092,18 @@ export function ModelConfigPage({
     // it was typed by the user while it was in flight, and sanitizing that would
     // rewrite live input: typing --agent during the window cleared the box instead
     // of showing the error, and a long paste could be trimmed behind the cursor.
-    const localAtStart = configRef.current.llamaExtraArgs;
+    const configAtStart = configRef.current;
+    // What STORAGE holds for this model, which is not always what the panel shows:
+    // an active model seeds the panel from loadedConfig, the config the resident
+    // model is running with. The hydrated record is written against this instead,
+    // or opening the panel replaces settings the user never touched here -- a legacy
+    // config just migrated in, one saved from another origin -- with the runtime.
+    const storedAtStart = resolveInitialConfig(
+      configId,
+      target.ggufVariant,
+    ).config;
+    const rememberAtStart = rememberRef.current;
+    const localAtStart = configAtStart.llamaExtraArgs;
     // The denylist, not the catalogue: sanitizing a stored list needs only the flags
     // Unsloth refuses, and that route answers without running `llama-server --help`.
     // Waiting on the probe instead would hold Load shut for as long as a cold --help
@@ -2099,10 +2115,10 @@ export function ModelConfigPage({
     Promise.all([
       // Resolved by the backend, which owns the rules: the local resolver stays as
       // the fallback for a backend that predates the parameter.
-      fetchLoadExtraArgs(loadId, configId, target.ggufVariant, keys),
+      fetchLoadModelOverride(loadId, configId, target.ggufVariant, keys),
       loadManagedLlamaFlags(),
     ])
-      .then(([resolvedArgs, managed]) => {
+      .then(([resolvedOverride, managed]) => {
         // Marked here rather than before the request: StrictMode replays the effect
         // (setup, cleanup, setup), so a key marked up front would leave the first
         // fetch cancelled and the second setup returning early, and the box would
@@ -2111,6 +2127,10 @@ export function ModelConfigPage({
           return;
         }
         extraArgsHydrated.current = identity;
+        const resolvedArgs = {
+          tokens: resolvedOverride?.llama_extra_args ?? [],
+          explicit: Array.isArray(resolvedOverride?.llama_extra_args),
+        };
         // Through the resolver, not a literal lookup: the backend folds identities
         // and reads whole entries in its own order before it reads a field.
         //
@@ -2135,6 +2155,10 @@ export function ModelConfigPage({
         // is the same treatment for the one already in hand, which nothing else
         // would catch while Advanced stays collapsed.
         const local = configRef.current.llamaExtraArgs;
+        // Kept for the merge below as well as for the box: a row that carries no
+        // arguments leaves the local list standing, and handing back the list this
+        // build refuses would re-enable Load for a request /load answers 400 on.
+        let sanitizedLocal = localAtStart;
         if (local != null && local.length > 0 && local === localAtStart) {
           const cleaned = sanitizeStoredExtraArgs(
             local,
@@ -2145,12 +2169,120 @@ export function ModelConfigPage({
             },
           );
           if (cleaned.length !== local.length) {
+            sanitizedLocal = cleaned.length > 0 ? cleaned : null;
             setConfig((current) =>
               current.llamaExtraArgs === local
-                ? { ...current, llamaExtraArgs: cleaned.length > 0 ? cleaned : null }
+                ? { ...current, llamaExtraArgs: sanitizedLocal }
                 : current,
             );
           }
+        }
+        // The row as it should be read: its own fields, with the arguments it carries
+        // sanitized against what this build refuses.
+        const resolvedRow = resolvedOverride
+          ? {
+              ...resolvedOverride,
+              ...(resolvedArgs.explicit ? { llama_extra_args: stored } : {}),
+            }
+          : null;
+        const serverConfig = resolvedRow
+          ? fromApiOverride(resolvedRow, {
+              ...configAtStart,
+              llamaExtraArgs: sanitizedLocal,
+            })
+          : null;
+        // What hydration would leave in the config: the row's list when it carries
+        // one, this browser's when it does not, since a row that says nothing about
+        // arguments cannot overrule the list already here. Judged as a whole, or a
+        // local flag the expanded row has ALREADY refused is declared loadable by a
+        // verdict read off the empty server list, and the row republishes its own
+        // only when its verdict changes, so the objection never comes back.
+        const hydratedArgs = serverConfig?.llamaExtraArgs ?? stored;
+        const hydratedIsLoadable =
+          hydratedArgs.length === 0
+            ? true
+            : extraArgsAreLoadable(
+                diagnoseExtraArgs(
+                  formatExtraArgs(hydratedArgs),
+                  {
+                    flags: {},
+                    managed: managed?.managed ?? new Set<string>(),
+                    switches: new Set<string>(),
+                    maxBytes: managed?.maxBytes ?? 0,
+                    windowsCommandBudget: managed?.windowsCommandBudget ?? 0,
+                    defaultParallelSlots: managed?.defaultParallelSlots ?? 0,
+                    parallelSlotsClamped:
+                      managed?.parallelSlotsClamped ?? false,
+                    probeOk: false,
+                  },
+                  {
+                    batchFloor: effectiveBatchFloor(
+                      serverConfig?.nParallel ?? configRef.current.nParallel,
+                      managed,
+                    ),
+                  },
+                ),
+              );
+
+        // The shared row outranks the local seed for every field it carries, so LAN
+        // and Desktop cannot show different remembered values; fromApiOverride keeps
+        // the rest of this browser's config rather than resetting it, since an
+        // absent field is as much a gap in the mirror as a chosen default. Never
+        // over an edit made while the request was in flight.
+        if (
+          resolvedRow &&
+          serverConfig &&
+          configRef.current === configAtStart &&
+          rememberRef.current === rememberAtStart
+        ) {
+          setExtraArgsLoadable(hydratedIsLoadable);
+          setConfig(serverConfig);
+          setRemember(true);
+          setSavedRemember(true);
+          if (hasNonDefaultAdvanced(serverConfig)) {
+            setAutoOpenAdvanced(true);
+          }
+          // Onto the stored record, not the shown one: see storedAtStart. The row
+          // outranks both, so the shared settings still land in local storage for
+          // the load paths that never open this panel.
+          //
+          // Unconditionally, because savePerModelConfig says "no settings" by
+          // DELETING the entry: a merge that comes out default is a clear that has
+          // to travel, not a write to skip. Clearing a model's only remembered
+          // flag leaves the row as an explicit empty list, which is exactly that
+          // case, and skipping it stranded the old flag here for model-selector's
+          // quick select to reload without ever opening this panel. Writing when
+          // no record exists is already a no-op.
+          const rememberedConfig = fromApiOverride(resolvedRow, storedAtStart);
+          // Same budget as any other write, so the same clean-up: eviction is silent
+          // and still reports success, and a dropped model would keep applying its
+          // server row to API loads while the picker showed defaults, with nothing
+          // able to forget it. Not a Forget, only the mirrored fields go.
+          const hydrationEvicted: {
+            modelId: string;
+            ggufVariant: string | null;
+          }[] = [];
+          // Checked for the same reason the Save path checks it: the write can fail
+          // outright (storage full or unavailable, or a record from a newer build that
+          // must not be replaced) and say so in the return rather than throwing. Marked
+          // saved regardless, the panel would claim the server settings are remembered
+          // here while quick select and background loads, which read resolveInitialConfig
+          // and never open this panel, still saw the stale record or none. Leaving it
+          // unsaved makes it a pending change instead, so Save is reachable and reports
+          // the failure the way every other write does.
+          const hydrationSaved = savePerModelConfig(
+            configId,
+            target.ggufVariant,
+            rememberedConfig,
+            hydrationEvicted,
+          );
+          setSavedRemember(hydrationSaved);
+          for (const dropped of hydrationEvicted) {
+            syncModelOverride(dropped.modelId, dropped.ggufVariant, null, {
+              keepLaunchFlags: true,
+            });
+          }
+          return;
         }
         if (stored.length === 0) {
           // An EXPLICIT empty row is a decision, not an absence: the settings page
@@ -2170,35 +2302,6 @@ export function ModelConfigPage({
           }
           return;
         }
-        // Judged here as well as in the row: with Advanced collapsed the row never
-        // mounts, so nothing would object to a stored list this build refuses (an
-        // override written through the API is only structurally validated), and
-        // Load would be live for a request that comes back 400. The managed set is
-        // enough for that: the value checks do not need the binary's catalogue.
-        const hydratedIsLoadable = extraArgsAreLoadable(
-          diagnoseExtraArgs(formatExtraArgs(stored), {
-            flags: {},
-            managed: managed?.managed ?? new Set<string>(),
-            // Read without the probe, so nothing here knows which flags are
-            // switches, and nothing may be called a typo either.
-            switches: new Set<string>(),
-            maxBytes: managed?.maxBytes ?? 0,
-            windowsCommandBudget: managed?.windowsCommandBudget ?? 0,
-            defaultParallelSlots: managed?.defaultParallelSlots ?? 0,
-            // Carried from the managed-only read, which knows it: a build that
-            // serves one slot however many are asked for floors the batch at 2,
-            // and hydration must judge a stored list the same way the row does.
-            parallelSlotsClamped: managed?.parallelSlotsClamped ?? false,
-            probeOk: false,
-          },
-          {
-            // The slot floor is already known here, and the backend refuses a batch
-            // below it deterministically. Left out, this released Load on a stored
-            // "--batch-size 2" against a four-slot server, and a click in the window
-            // before the full catalogue check lands reaches that 400.
-            batchFloor: effectiveBatchFloor(configRef.current.nParallel, managed),
-          }),
-        );
         // Read from a ref rather than inside the updater below: an updater must stay
         // free of side effects (StrictMode calls it twice), and this decides one.
         if (configRef.current.llamaExtraArgs !== undefined) {
@@ -2235,7 +2338,13 @@ export function ModelConfigPage({
       cancelled = true;
       clearTimeout(release);
     };
-  }, [configId, target.id, target.ggufVariant, target.isGguf, resolvedIsDiffusion]);
+  }, [
+    configId,
+    target.id,
+    target.ggufVariant,
+    target.isGguf,
+    resolvedIsDiffusion,
+  ]);
   const config = reconcileConfigGpuSelection(
     configState,
     resolvedIsDiffusion,
@@ -2305,18 +2414,28 @@ export function ModelConfigPage({
     ),
     maxContext,
   );
+  const contextIsAuto = config.customContextLength == null;
+  const contextInputValue = contextIsAuto
+    ? Math.min(
+        Math.max(
+          activeLoadedContext ?? AUTO_OFFLOAD_CONTEXT_LENGTH,
+          minContext,
+        ),
+        maxContext,
+      )
+    : contextValue;
+  const contextSliderValue = contextIsAuto ? 0 : contextValue;
   const setContextLength = (v: number) => update({ customContextLength: v });
+  const setContextSliderValue = (v: number) =>
+    update({ customContextLength: v === 0 ? null : v });
   const rawBaseline = loadedConfig ?? DEFAULT_PER_MODEL_CONFIG;
   const baseline = resolvedIsDiffusion
     ? withoutUnsupportedDiffusionSettings(rawBaseline, gpuIndexKind)
     : rawBaseline;
   const atBaseline = perModelConfigsEqual(config, baseline);
-  // An explicit customContextLength equal to the native ceiling is still an override (Reset stays
-  // enabled). "At default" means no override at all AND the shown context matches native.
-  const contextAtDefault =
-    !target.isGguf ||
-    (config.customContextLength == null &&
-      (nativeContextLength == null || contextValue === nativeContextLength));
+  // The fitted value is an outcome, not an override. Auto stays at the default even
+  // when a loaded model reports less than its native context.
+  const contextAtDefault = !target.isGguf || config.customContextLength == null;
   const atDefault =
     contextAtDefault &&
     perModelConfigsEqual(
@@ -2584,7 +2703,13 @@ export function ModelConfigPage({
                 <div className="flex min-w-0 items-center gap-1.5">
                   <span className={LABEL_CLASS}>Context Length</span>
                   <InfoHint>
-                    Tokens of context to allocate. Higher uses more VRAM.
+                    Drag all the way left for Auto, which chooses a context that
+                    fits while prioritizing GPU speed. Custom values request an
+                    exact context; higher values use more memory and may move
+                    model layers to system RAM.
+                    {contextIsAuto && activeLoadedContext != null
+                      ? ` Auto currently selected ${activeLoadedContext.toLocaleString()} tokens.`
+                      : ""}
                     {nativeContextLength != null
                       ? ` This model's native context is ${nativeContextLength.toLocaleString()} tokens.`
                       : ""}
@@ -2592,39 +2717,48 @@ export function ModelConfigPage({
                 </div>
                 <NumericValueInput
                   ref={contextInputRef}
-                  value={contextValue}
+                  value={contextInputValue}
                   min={minContext}
                   max={maxContext}
                   step={1}
                   onChange={setContextLength}
-                  displayValue={
-                    config.customContextLength == null &&
-                    nativeContextLength == null &&
-                    activeLoadedContext == null
-                      ? "Auto"
-                      : undefined
-                  }
+                  displayValue={contextIsAuto ? "Auto" : undefined}
                   ariaLabel="Context Length"
                   className={NUMBER_INPUT_CLASS}
                   size={8}
                 />
               </div>
               {nativeContextLength != null ? (
-                <Slider
-                  min={minContext}
-                  max={maxContext}
-                  step={128}
-                  value={[contextValue]}
-                  onValueChange={([v]) => setContextLength(v)}
-                  className="panel-slider"
-                  aria-label="Context Length"
-                />
+                <div className="space-y-1.5">
+                  <Slider
+                    min={0}
+                    max={maxContext}
+                    step={128}
+                    value={[contextSliderValue]}
+                    onValueChange={([v]) => setContextSliderValue(v)}
+                    className="panel-slider"
+                    aria-label="Context Length"
+                    // Position 0 is Auto, not a zero-token context, so
+                    // aria-valuenow alone reads as a length no model has. The
+                    // number is only spoken once one exists: before a load
+                    // contextInputValue is the offload fallback used to seed the
+                    // input, not a selection, and Auto may still fit native.
+                    thumbValueText={(v) =>
+                      v !== 0
+                        ? `${v.toLocaleString()} tokens`
+                        : activeLoadedContext != null
+                          ? `Auto, currently ${contextInputValue.toLocaleString()} tokens`
+                          : "Auto"
+                    }
+                  />
+                  <div className="flex justify-between text-ui-10 text-muted-foreground">
+                    <span>Auto</span>
+                    <span>{maxContext.toLocaleString()}</span>
+                  </div>
+                </div>
               ) : null}
-              <p className="text-ui-11 leading-relaxed text-muted-foreground">
-                Unsloth automatically fits the context to your device, using the
-                full context when memory allows.
-              </p>
-              {isActiveModel &&
+              {!contextIsAuto &&
+                isActiveModel &&
                 loadedMaxContextLength != null &&
                 contextValue > loadedMaxContextLength && (
                   <p className="text-ui-11 text-amber-500">

@@ -907,9 +907,41 @@ def _lora_mlp_elements(
     return total
 
 
+EMBEDDING_TARGET_MODULES = frozenset(("embed_tokens", "lm_head"))
+
+
+def _embedding_leaves(target_modules) -> set:
+    """PEFT matches on the module suffix, so model.embed_tokens is the same module."""
+    if isinstance(target_modules, str):
+        return set()
+    leaves = {str(m).rsplit(".", 1)[-1] for m in target_modules or ()}
+    return leaves & EMBEDDING_TARGET_MODULES
+
+
+def _full_weight_embedding_elements(arch: ModelArchConfig, target_modules) -> int:
+    """embed_tokens/lm_head cost a full matrix each, not a low-rank pair.
+
+    Unsloth redirects them into modules_to_save. A tied pair also gets
+    ensure_weight_tying, which collapses them to one trainable matrix.
+    """
+    selected = len(_embedding_leaves(target_modules))
+    if arch.tie_word_embeddings:
+        selected = min(selected, 1)
+    return arch.vocab_size * arch.hidden_size * selected
+
+
 def compute_lora_params(arch: ModelArchConfig, lora_rank: int, target_modules: list) -> int:
     all_linear = _targets_all_linear(target_modules)
     selected_modules = list(DEFAULT_TARGET_MODULES) if all_linear else target_modules
+    # Studio's CPT path hands the trainer everything but the embedding names, where an
+    # empty remainder becomes the default projections and "all-linear" expands to them
+    # (worker.py). Count those, or the estimate picks a GPU that then OOMs.
+    if not all_linear and _full_weight_embedding_elements(arch, target_modules):
+        remainder = [
+            m for m in selected_modules if str(m).rsplit(".", 1)[-1] not in EMBEDDING_TARGET_MODULES
+        ]
+        if not remainder or _targets_all_linear(remainder):
+            selected_modules = list(selected_modules) + list(DEFAULT_TARGET_MODULES)
     hd = arch.hidden_size
     r = lora_rank
     n_layers = arch.num_hidden_layers
@@ -972,7 +1004,12 @@ def compute_lora_params(arch: ModelArchConfig, lora_rank: int, target_modules: l
                 mlp_total = moe_mlp * n_moe + dense_only
         else:
             mlp_total = structured_dense_mlp
-        return attn_total + mlp_total + _per_layer_input_lora_params(arch, r, target_modules)
+        return (
+            attn_total
+            + mlp_total
+            + _per_layer_input_lora_params(arch, r, target_modules)
+            + _full_weight_embedding_elements(arch, selected_modules)
+        )
     elif n_experts > 1:
         attn_total = _lora_attn_elements(arch, r, selected_modules) * n_layers
         n_dense = arch.num_dense_layers
@@ -1024,7 +1061,12 @@ def compute_lora_params(arch: ModelArchConfig, lora_rank: int, target_modules: l
             * n_layers
         )
 
-    return attn_total + mlp_total + _per_layer_input_lora_params(arch, r, target_modules)
+    return (
+        attn_total
+        + mlp_total
+        + _per_layer_input_lora_params(arch, r, target_modules)
+        + _full_weight_embedding_elements(arch, selected_modules)
+    )
 
 
 def compute_lora_adapter_bytes(lora_params: int) -> int:

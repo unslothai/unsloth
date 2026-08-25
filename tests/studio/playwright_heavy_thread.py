@@ -60,9 +60,12 @@ Playwright's WebKit is a PROXY, not the webview Desktop embeds. It is Apple's We
 Playwright, driven headless, with no Tauri IPC layer and no WebKitGTK compositor. Read it as
 "JavaScriptCore plus WebKit layout", not as "Unsloth Desktop on macOS".
 
-Desktop Linux under Wayland is WORSE than any number this file can produce, and not by a little:
-studio/src-tauri/src/linux_webkit.rs sets WEBKIT_DMABUF_RENDERER_FORCE_SHM=1, which forces the
-software rendering transport. Everything below runs on a normal compositor path.
+Desktop Linux is WORSE than any number this file can produce, and not by a little:
+studio/src-tauri/src/linux_webkit.rs drops the webview off the hardware DMA-BUF transport on
+Wayland and on NVIDIA under either display server. It forces the shared-memory transport with
+WEBKIT_DMABUF_RENDERER_FORCE_SHM=1, or, on Wayland and on old WebKitGTK, disables the renderer
+outright with WEBKIT_DISABLE_DMABUF_RENDERER=1, which turns accelerated compositing off for the
+whole process. Everything below runs on a normal compositor path.
 
 THIS HARNESS MEASURES, IT DOES NOT GATE. It prints the table and exits 0 on any timing. It exits
 non-zero only when the harness itself is broken: the seed did not land, an element it drives went
@@ -1199,7 +1202,17 @@ TABLE_ROWS = (
     ("messages rendered", lambda r: r["counts"]["messages"]),
     ("dom nodes", lambda r: r["counts"]["domNodes"]),
     ("code blocks", lambda r: r["counts"]["codeBlocks"]),
+    # Side by side deliberately: `code chars` is what the fixture built and does not move when a
+    # fence defers, while `highlighted tokens` and `deferred fences` are how much of it the
+    # viewport reached. Only the first is a statement about the fixture.
+    ("code chars", lambda r: r["counts"].get("codeChars", 0)),
     ("highlighted tokens", lambda r: r["counts"]["highlightedTokens"]),
+    ("fence blocks", lambda r: r["counts"].get("fenceBlocks", 0)),
+    ("deferred fences", lambda r: r["counts"].get("deferredFences", 0)),
+    (
+        "mounted but unhighlighted fences",
+        lambda r: r["counts"].get("unhighlightedMountedFences", 0),
+    ),
     ("tool parts", lambda r: r["counts"]["toolParts"]),
     ("collapsible tool outputs", lambda r: r["counts"]["collapsibleOutputs"]),
     ("code execution panes", lambda r: r["counts"]["codeExecutionPanes"]),
@@ -1757,6 +1770,21 @@ def harness_failures(results: dict, report: dict) -> list[str]:
                     )
             if counts.get("highlightedTokens", 0) <= 0:
                 failures.append(f"{where} highlighted nothing; Shiki never ran")
+            # DEFERRAL IS EXPECTED. AN UNHIGHLIGHTED MOUNTED FENCE IS NOT.
+            #
+            # A floor on total tokens no longer separates "settled" from "the reader is not looking
+            # at most of the code", so ask per block: a fence is either a deferred shell, which is
+            # a named state with an attribute, or highlighted. The third state -- mounted, not
+            # deferred, still on streamdown's fallback -- lasts a frame while the highlighter's
+            # passive effect runs, and a settled thread must hold none. Stricter than the total it
+            # replaces, which one stuck block passed as long as the others made the count up.
+            stuck = counts.get("unhighlightedMountedFences", 0)
+            if stuck:
+                failures.append(
+                    f"{where} left {stuck} of {counts.get('fenceBlocks', 0)} code fences mounted "
+                    f"but unhighlighted after settling, neither deferred nor coloured; the "
+                    "thread had not finished building itself when it was measured"
+                )
             viewport = row["viewport"]
             if viewport["scrollHeight"] <= viewport["clientHeight"]:
                 failures.append(

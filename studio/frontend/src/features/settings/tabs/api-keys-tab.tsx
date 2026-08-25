@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -9,17 +10,21 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
 import { translate, useT } from "@/i18n";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useCallback, useEffect, useState } from "react";
-import { fetchApiKeys, revokeApiKey, type ApiKey } from "../api/api-keys";
-import { MonitorLink } from "../components/monitor-link";
+import { type ApiKey, fetchApiKeys, revokeApiKey } from "../api/api-keys";
+import type {
+  KeylessApiAccessExposure,
+  KeylessApiAccessScope,
+} from "../api/keyless-api-access";
 import { ApiKeyRow } from "../components/api-key-row";
 import { CreateKeyForm } from "../components/create-key-form";
-import { ModelAutoSwitchSection } from "../components/model-auto-switch-section";
 import { KeyRevealCard } from "../components/key-reveal-card";
+import { KeylessApiAccessSection } from "../components/keyless-api-access-section";
 import { LanAccessSection } from "../components/lan-access-section";
+import { ModelAutoSwitchSection } from "../components/model-auto-switch-section";
+import { MonitorLink } from "../components/monitor-link";
 import { RemoteAccessSection } from "../components/remote-access-section";
 import { UsageExamples } from "../components/usage-examples";
 
@@ -31,6 +36,11 @@ export function ApiKeysTab() {
   const [revokeTarget, setRevokeTarget] = useState<ApiKey | null>(null);
   const [revoking, setRevoking] = useState(false);
   const [revealed, setRevealed] = useState<string | null>(null);
+  const [keyless, setKeyless] = useState<{
+    scope: KeylessApiAccessScope;
+    tools: boolean;
+    exposure: KeylessApiAccessExposure | null;
+  }>({ scope: "off", tools: false, exposure: null });
   const reduced = useReducedMotion();
   const transition = reduced
     ? { duration: 0 }
@@ -116,10 +126,7 @@ export function ApiKeysTab() {
             exit={{ opacity: 0, y: -4 }}
             transition={transition}
           >
-            <KeyRevealCard
-              rawKey={revealed}
-              onDone={() => setRevealed(null)}
-            />
+            <KeyRevealCard rawKey={revealed} onDone={() => setRevealed(null)} />
           </motion.div>
         ) : (
           <motion.div
@@ -174,6 +181,8 @@ export function ApiKeysTab() {
 
       <MonitorLink />
 
+      <KeylessApiAccessSection onSettingsChange={setKeyless} />
+
       {/* Also on the Remote & LAN tab. One panel mounts at a time, so only one polls. */}
       <RemoteAccessSection />
 
@@ -181,9 +190,17 @@ export function ApiKeysTab() {
 
       <ModelAutoSwitchSection />
 
-      <UsageExamples apiKey={revealed} />
+      <UsageExamples
+        apiKey={revealed}
+        keylessScope={keyless.scope}
+        keylessTools={keyless.tools}
+        keylessExposure={keyless.exposure}
+      />
 
-      <Dialog open={revokeTarget !== null} onOpenChange={(o) => !o && setRevokeTarget(null)}>
+      <Dialog
+        open={revokeTarget !== null}
+        onOpenChange={(o) => !o && setRevokeTarget(null)}
+      >
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>

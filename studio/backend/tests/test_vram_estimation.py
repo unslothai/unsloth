@@ -2319,3 +2319,69 @@ class TestErnieVlSharedExpertWidth(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_embedding_targets_cost_full_matrices_not_lora_pairs():
+    """embed_tokens/lm_head are redirected to modules_to_save, so they cost vocab*hidden."""
+    from utils.hardware.vram_estimation import _full_weight_embedding_elements
+
+    untied = replace(LLAMA_8B, tie_word_embeddings = False)
+    one = untied.vocab_size * untied.hidden_size
+
+    assert _full_weight_embedding_elements(untied, DEFAULT_TARGET_MODULES) == 0
+    assert _full_weight_embedding_elements(untied, DEFAULT_TARGET_MODULES + ["embed_tokens"]) == one
+    assert (
+        _full_weight_embedding_elements(
+            untied, DEFAULT_TARGET_MODULES + ["embed_tokens", "lm_head"]
+        )
+        == 2 * one
+    )
+
+    # A tied pair gets ensure_weight_tying, which leaves ONE trainable matrix.
+    tied = replace(LLAMA_8B, tie_word_embeddings = True)
+    assert (
+        _full_weight_embedding_elements(tied, DEFAULT_TARGET_MODULES + ["embed_tokens", "lm_head"])
+        == tied.vocab_size * tied.hidden_size
+    )
+
+    # Regex / all-linear / None never carry these names.
+    assert _full_weight_embedding_elements(untied, "all-linear") == 0
+    assert _full_weight_embedding_elements(untied, None) == 0
+
+
+def test_embedding_targets_feed_optimizer_and_gradient_bytes():
+    """The count drives trainable_params, so it must reach compute_lora_params."""
+    untied = replace(LLAMA_8B, tie_word_embeddings = False)
+    base = compute_lora_params(untied, 16, DEFAULT_TARGET_MODULES)
+    with_embed = compute_lora_params(untied, 16, DEFAULT_TARGET_MODULES + ["embed_tokens"])
+    assert with_embed - base == untied.vocab_size * untied.hidden_size
+
+
+def test_an_embedding_only_request_still_counts_the_default_projections():
+    """Counting only the embeddings under-reports by every projection adapter the CPT
+    fallback adds."""
+    tied = replace(LLAMA_8B, tie_word_embeddings = True)
+    projections = compute_lora_params(tied, 128, list(DEFAULT_TARGET_MODULES))
+    one_matrix = tied.vocab_size * tied.hidden_size
+    for targets in (["embed_tokens"], ["embed_tokens", "lm_head"], ["lm_head"]):
+        assert compute_lora_params(tied, 128, targets) == projections + one_matrix, targets
+    # "all-linear" expands in the trainer too, but matches no counter here unnormalized.
+    for targets in (["all-linear", "lm_head"], ["all-linear", "embed_tokens"]):
+        assert compute_lora_params(tied, 128, targets) == projections + one_matrix, targets
+
+
+def test_qualified_embedding_names_are_counted_too():
+    """PEFT matches on the module suffix, so model.embed_tokens is the same matrix and
+    must not be estimated as if no embedding were trained."""
+    tied = replace(LLAMA_8B, tie_word_embeddings = True)
+    projections = compute_lora_params(tied, 128, list(DEFAULT_TARGET_MODULES))
+    one_matrix = tied.vocab_size * tied.hidden_size
+    for targets in (
+        ["model.embed_tokens"],
+        list(DEFAULT_TARGET_MODULES) + ["model.embed_tokens"],
+        list(DEFAULT_TARGET_MODULES) + ["language_model.lm_head"],
+        ["all-linear", "model.embed_tokens"],
+    ):
+        assert compute_lora_params(tied, 128, targets) == projections + one_matrix, targets
+    # A qualified projection is NOT an embedding and keeps its low-rank cost.
+    assert compute_lora_params(tied, 128, ["layers.0.q_proj"]) < one_matrix

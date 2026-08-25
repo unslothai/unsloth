@@ -1583,10 +1583,49 @@ class ChatCompletionRequest(BaseModel):
     max_tokens: Optional[int] = Field(
         None, ge = 1, description = "Maximum tokens to generate (None = until EOS)"
     )
-    presence_penalty: float = Field(0.0, ge = 0.0, le = 2.0, description = "Presence penalty")
+    # OpenAI's documented range is [-2, 2] on both penalties. Widening only
+    # admits requests that used to be rejected, so nothing that works today
+    # changes. A negative value boosts repetition wherever the backend applies
+    # the penalty at all.
+    presence_penalty: float = Field(
+        0.0,
+        ge = -2.0,
+        le = 2.0,
+        description = (
+            "Presence penalty: charges a token once if it appears. MLX scores the completion"
+            " only; llama-server also counts the prompt, within its own window."
+        ),
+    )
+    frequency_penalty: float = Field(
+        0.0,
+        ge = -2.0,
+        le = 2.0,
+        description = (
+            "Frequency penalty: charges a token per occurrence. MLX scores the completion"
+            " only; llama-server also counts the prompt, within its own window."
+        ),
+    )
+    # Ids are not range-checked here: MLX bounds-checks nothing either, so a
+    # stray is dropped at the processors rather than failing the request.
+    logit_bias: Optional[Dict[int, Annotated[float, Field(ge = -100.0, le = 100.0)]]] = Field(
+        None,
+        description = "Additive per-token logit bias keyed by token id, each in [-100, 100]. Ids past the model's logit width are ignored.",
+    )
     stop: Optional[Union[str, list[str]]] = Field(
         None,
         description = "OpenAI stop sequences: a single string or list of strings at which generation halts.",
+    )
+    # Declared rather than left to model_extra so the schema documents it and a
+    # backend that cannot constrain decoding can refuse it by name.
+    response_format: Optional[Dict[str, Any]] = Field(
+        None,
+        description = (
+            'Guided decoding contract, typically `{"type": "json_object"}` or'
+            ' a `json_schema`. `{"type": "text"}` names the default and'
+            " constrains nothing. Anything else needs a grammar engine, and a"
+            " backend without one rejects the request rather than answering text"
+            " that ignores the contract."
+        ),
     )
     tools: Optional[list[dict]] = Field(
         None,
@@ -1738,11 +1777,10 @@ class ChatCompletionRequest(BaseModel):
     nudge_tool_calls: Optional[bool] = Field(
         None,
         description = (
-            "[x-unsloth] Opt-in, non-streaming client-tool passthrough only: when the "
-            "model emitted a tool signal that healing could not repair, retry ONCE with "
-            "a short nudge appended (the retry shares the full prompt prefix, so the "
-            "server's KV cache is reused). Default off; UNSLOTH_TOOL_CALL_NUDGE=1 flips "
-            "the process default."
+            "[x-unsloth] Opt-in tool-call recovery: when a model stalls with a short "
+            "plan instead of calling an available tool, or passthrough healing cannot "
+            "repair a malformed call, retry with a short nudge. Default off; "
+            "UNSLOTH_TOOL_CALL_NUDGE=1 flips the process default."
         ),
     )
     context_overflow: Optional[Literal["error", "truncate_middle", "truncate_oldest"]] = Field(
@@ -2906,7 +2944,7 @@ class AnthropicMessagesRequest(BaseModel):
     )
     nudge_tool_calls: Optional[bool] = Field(
         None,
-        description = "[x-unsloth] Opt-in, non-streaming only: retry once with a nudge when the model emitted a tool signal healing could not repair (mirrors the Chat Completions field).",
+        description = "[x-unsloth] Opt-in tool-call recovery; mirrors the Chat Completions nudge_tool_calls field and defaults off.",
     )
     model_config = {"extra": "allow"}
 
@@ -3805,6 +3843,21 @@ class AudioSpeechRequest(BaseModel):
         "wav", description = "Output container. Only 'wav' is supported."
     )
     speed: Optional[float] = Field(None, description = "Speech rate (accepted, unused).")
+    provider_id: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Saved connection ID. When set, synthesis is proxied to that "
+        "provider's /audio/speech and model/voice/speed are forwarded as sent.",
+    )
+    provider_base_url: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Browser-snapshotted connection base URL. Required with a "
+        "legacy encrypted_api_key so an edit cannot route that key to another endpoint.",
+    )
+    encrypted_api_key: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Per-request key for a browser still holding a legacy "
+        "provider key, used when the connection has none saved server side.",
+    )
 
     @field_validator("response_format", mode = "before")
     @classmethod
@@ -3981,6 +4034,18 @@ class VideoReferenceVideo(BaseModel):
         description = "Base64/data-URL soundtrack for THIS video. Omitted takes the track "
         "embedded in the file, if it has one; sent explicitly it replaces it.",
     )
+    trim_start_seconds: Optional[float] = Field(
+        None, ge = 0.0, description = "Inclusive start of an explicit video trim, in seconds."
+    )
+    trim_end_seconds: Optional[float] = Field(
+        None, gt = 0.0, description = "Exclusive end of an explicit video trim, in seconds."
+    )
+
+    @model_validator(mode = "after")
+    def _trim_is_a_complete_h3_interval(self) -> "VideoReferenceVideo":
+        from core.inference.video_minimax_h3 import validate_h3_reference_trim
+        validate_h3_reference_trim(self.trim_start_seconds, self.trim_end_seconds)
+        return self
 
 
 class VideoGenerateRequest(BaseModel):
