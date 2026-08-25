@@ -36,7 +36,11 @@ import {
   notifyStudioDictationUnavailable,
 } from "@/features/chat/adapters/studio-dictation-adapter";
 import type { StudioDictationSession } from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
-import { useShortcut } from "@/features/settings";
+import {
+  COMPOSER_INPUT_SELECTOR,
+  isSurfaceInForeground,
+  useShortcut,
+} from "@/features/settings";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import {
   AUDIO_ACCEPT,
@@ -1902,6 +1906,10 @@ export function SharedComposer({
   useShortcut(
     "startDictation",
     () => {
+      // As in the single-chat composer: a dialog over Chat leaves this
+      // registered, and a microphone opened behind one is neither visible nor
+      // stoppable from where the user is.
+      if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
       if (isDictating) stopDictation();
       else startDictation();
     },

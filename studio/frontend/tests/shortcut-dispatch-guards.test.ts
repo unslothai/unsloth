@@ -142,3 +142,55 @@ test("the sandbox probe does not skip a chat that is out of a project", async ()
   assert.doesNotMatch(body, /if \(!item\.projectId\) return recorded;/);
   assert.match(body, /if \(await sandboxHasFiles\(threadId\)\) held\.push\(threadId\);/);
 });
+
+// Both composers register the dictation chord, and only one is on screen at a
+// time, so the foreground check has to be on both or Compare keeps the hole.
+test("both composers gate dictation on the foreground", async () => {
+  for (const path of [
+    "../src/components/assistant-ui/thread.tsx",
+    "../src/features/chat/shared-composer.tsx",
+  ]) {
+    const source = await readFile(new URL(path, import.meta.url), "utf8");
+    const at = source.indexOf('useShortcut(\n    "startDictation"');
+    assert.notEqual(at, -1, `${path} lost its dictation chord`);
+    const body = source.slice(at, source.indexOf("\n  );", at));
+    assert.match(
+      body,
+      /if \(!isSurfaceInForeground\(COMPOSER_INPUT_SELECTOR\)\) return;/,
+      `${path} starts the microphone behind a modal`,
+    );
+  }
+});
+
+// The sidebar used to hold the unread set in component state, which died with
+// it. A module store does not, so the next account inherits it.
+test("signing out drops the previous account's navigation state", async () => {
+  const store = await readFile(
+    new URL("../src/features/chat/stores/chat-navigation-store.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(store, /resetAccountState: \(\) =>/);
+  // A fresh Set, or every account after the first shares one.
+  assert.match(store, /set\(\{ \.\.\.ACCOUNT_STATE, unreadThreadIds: new Set\(\) \}\)/);
+  const sidebar = await readFile(
+    new URL("../src/components/app-sidebar.tsx", import.meta.url),
+    "utf8",
+  );
+  // On unmount, which is what the auth routes do to the sidebar.
+  assert.match(
+    sidebar,
+    /useEffect\(\n\s*\(\) => \(\) => useChatNavigationStore\.getState\(\)\.resetAccountState\(\),\n\s*\[\],\n\s*\);/,
+  );
+});
+
+// The latch holds back a repeat of the action that took the selection, not a
+// different command issued straight after it.
+test("the selection latch is keyed by action", async () => {
+  const sidebar = await readFile(
+    new URL("../src/components/app-sidebar.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(sidebar, /selectionActedRef = useRef<\{ id: ShortcutId; at: number \} \| null>/);
+  assert.match(sidebar, /last\?\.id === id &&/);
+  assert.doesNotMatch(sidebar, /followsSelectionAction\(\)/);
+});

@@ -46,6 +46,8 @@ export interface ChatNavigationState {
     activeItemId: string | null;
   }) => void;
   setOpenChatItem: (fn: ((item: SidebarItem) => void) | null) => void;
+  /** Drop one account's rows, unread set and walk. Called as the sidebar goes. */
+  resetAccountState: () => void;
   setSelectionActive: (active: boolean) => void;
   markThreadsUnread: (threadIds: string[]) => void;
   clearThreadsUnread: (threadIds: string[]) => void;
@@ -90,18 +92,29 @@ function sameStrings(a: string[], b: string[]): boolean {
   return true;
 }
 
+/**
+ * Everything here describes one account's chats. The sidebar used to hold the
+ * unread set in component state, which died with it; a module store does not,
+ * so signing out has to say so or the next account inherits the last one's
+ * unread rows and its recently-viewed stack.
+ */
+const ACCOUNT_STATE = {
+  pinnedItems: [] as SidebarItem[],
+  projectItems: [] as SidebarItem[],
+  recentItems: [] as SidebarItem[],
+  attentionItemIds: [] as string[],
+  activeItemId: null as string | null,
+  unreadThreadIds: new Set<string>(),
+  recentlyViewedIds: [] as string[],
+  traversal: null as { order: string[]; index: number } | null,
+  selectionActive: false,
+};
+
 export const useChatNavigationStore = create<ChatNavigationState>(
   (set, get) => ({
-    pinnedItems: [],
-    projectItems: [],
-    recentItems: [],
-    attentionItemIds: [],
-    activeItemId: null,
+    ...ACCOUNT_STATE,
     unreadThreadIds: new Set(),
-    recentlyViewedIds: [],
-    traversal: null,
     openChatItem: null,
-    selectionActive: false,
 
     // Published from an effect on every render, so bail out when nothing moved.
     publishLists: (next) =>
@@ -119,6 +132,10 @@ export const useChatNavigationStore = create<ChatNavigationState>(
       }),
 
     setOpenChatItem: (fn) => set({ openChatItem: fn }),
+
+    // A fresh Set each time, or every account after the first shares one.
+    resetAccountState: () =>
+      set({ ...ACCOUNT_STATE, unreadThreadIds: new Set() }),
 
     setSelectionActive: (active) =>
       set((state) =>

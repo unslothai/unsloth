@@ -1782,11 +1782,20 @@ test("a selection chord does not fall through to the open chat", async () => {
       sidebar.indexOf(`useShortcut("${id}"`),
       sidebar.indexOf("\n  });", sidebar.indexOf(`useShortcut("${id}"`)),
     );
-    assert.match(body, /actOnSelection\(/, `${id} does not stamp the latch`);
+    // Both halves name the action. A shared latch would hold back Archive
+    // after Pin took the selection, and that is a different command the user
+    // chose, not the repeat this guard exists for.
     assert.match(
       body,
-      /if \(followsSelectionAction\(\)\) return;[\s\S]*withActiveChat\(/,
-      `${id} reaches the open chat without checking the latch`,
+      new RegExp(`actOnSelection\\("${id}",`),
+      `${id} does not stamp the latch under its own name`,
+    );
+    assert.match(
+      body,
+      new RegExp(
+        `if \\(followsSelectionAction\\("${id}"\\)\\) return;[\\s\\S]*withActiveChat\\(`,
+      ),
+      `${id} reaches the open chat without checking its own latch`,
     );
   }
   // deleteSelectedChats needs none of this: it has no open-chat branch.

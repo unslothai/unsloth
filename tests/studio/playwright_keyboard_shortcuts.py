@@ -491,7 +491,8 @@ def check_selection_latch(page, engine: str, platform: str) -> None:
         str(actions(page)),
     )
 
-    # A sibling chord inside the window is held back for the same reason.
+    # A different command straight after is not the repeat this guards against,
+    # and swallowing it would trade one silent wrong action for another.
     with_selection()
     page.keyboard.press(archive)
     page.wait_for_function("document.getElementById('smoke-selection').textContent === '0'")
@@ -499,8 +500,8 @@ def check_selection_latch(page, engine: str, platform: str) -> None:
     check(
         engine,
         platform,
-        "a sibling chord inside the window is held back too",
-        actions(page) == ["archiveSelected", "pinSuppressed"],
+        "a sibling chord inside the window still acts on the open chat",
+        actions(page) == ["archiveSelected", "pinActive"],
         str(actions(page)),
     )
 

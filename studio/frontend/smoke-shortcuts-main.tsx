@@ -44,17 +44,20 @@ declare global {
 const fired: Fired[] = [];
 const record = (action: string, detail?: string) => fired.push({ action, detail });
 
-const latchRef = { current: 0 };
+const latchRef = { current: null as { id: string; at: number } | null };
 const activeChat = { current: "chat-A" as string | null };
 
 // The shape app-sidebar registers these three with: a selection chord clears the
-// selection as it runs, so the latch is what keeps the next press off the open chat.
-const stampLatch = (run: () => void) => {
-  latchRef.current = Date.now();
+// selection as it runs, so the latch is what keeps the next press off the open
+// chat. Keyed by action, so a different command straight after is not swallowed.
+const stampLatch = (id: string, run: () => void) => {
+  latchRef.current = { id, at: Date.now() };
   run();
 };
-const followsSelectionAction = () =>
-  Date.now() - latchRef.current < SELECTION_ACTION_GRACE_MS;
+const followsSelectionAction = (id: string) => {
+  const last = latchRef.current;
+  return last?.id === id && Date.now() - last.at < SELECTION_ACTION_GRACE_MS;
+};
 
 const withActiveChat = (run: (item: string) => void) => {
   if (!activeChat.current) {
@@ -69,15 +72,16 @@ function Harness() {
   const [toolPending, setToolPending] = useState(true);
 
   const selectionChord =
-    (onSelection: string, onSuppressed: string, onActive: string) => () => {
+    (id: string, onSelection: string, onSuppressed: string, onActive: string) =>
+    () => {
       if (selectionCount > 0) {
-        stampLatch(() => {
+        stampLatch(id, () => {
           record(onSelection, String(selectionCount));
           setSelectionCount(0);
         });
         return;
       }
-      if (followsSelectionAction()) {
+      if (followsSelectionAction(id)) {
         record(onSuppressed);
         return;
       }
@@ -86,11 +90,11 @@ function Harness() {
 
   useShortcut(
     "archiveChat",
-    selectionChord("archiveSelected", "archiveSuppressed", "archiveActive"),
+    selectionChord("archiveChat", "archiveSelected", "archiveSuppressed", "archiveActive"),
   );
   useShortcut(
     "togglePinChat",
-    selectionChord("pinSelected", "pinSuppressed", "pinActive"),
+    selectionChord("togglePinChat", "pinSelected", "pinSuppressed", "pinActive"),
   );
   useShortcut("deleteSelectedChats", () => {
     if (selectionCount > 0) {
@@ -170,7 +174,7 @@ window.__shortcutsSmoke = {
   fired: () => fired.slice(),
   reset: () => {
     fired.length = 0;
-    latchRef.current = 0;
+    latchRef.current = null;
     activeChat.current = "chat-A";
   },
   setActiveChat: (value: string | null) => {

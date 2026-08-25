@@ -2617,6 +2617,13 @@ export function AppSidebar() {
   useEffect(() => {
     openChatItemRef.current = openChatItem;
   });
+  // The sidebar is unmounted on the auth routes, so this is where a sign-out
+  // reaches: the store outlives the component that filled it, and the unread
+  // set and the walk belong to the account that just left.
+  useEffect(
+    () => () => useChatNavigationStore.getState().resetAccountState(),
+    [],
+  );
   useEffect(() => {
     const setOpenChatItem = useChatNavigationStore.getState().setOpenChatItem;
     setOpenChatItem((item) => openChatItemRef.current(item));
@@ -2645,35 +2652,41 @@ export function AppSidebar() {
   // otherwise on the open chat. Acting on a selection clears it, so without
   // this latch a second press would land on the open chat, which the user
   // never selected.
-  const selectionActedAtRef = useRef(0);
-  const actOnSelection = (fn: () => void) => {
-    selectionActedAtRef.current = Date.now();
+  // Keyed by action: the press to hold back is a repeat of the one that just
+  // took the selection, not a different command the user chose deliberately.
+  const selectionActedRef = useRef<{ id: ShortcutId; at: number } | null>(null);
+  const actOnSelection = (id: ShortcutId, fn: () => void) => {
+    selectionActedRef.current = { id, at: Date.now() };
     fn();
   };
-  const followsSelectionAction = () =>
-    Date.now() - selectionActedAtRef.current < SELECTION_ACTION_GRACE_MS;
+  const followsSelectionAction = (id: ShortcutId) => {
+    const last = selectionActedRef.current;
+    return (
+      last?.id === id && Date.now() - last.at < SELECTION_ACTION_GRACE_MS
+    );
+  };
   useShortcut("archiveChat", () => {
     if (selectionCount > 0) {
-      actOnSelection(() => void archiveSelected());
+      actOnSelection("archiveChat", () => void archiveSelected());
       return;
     }
-    if (followsSelectionAction()) return;
+    if (followsSelectionAction("archiveChat")) return;
     withActiveChat((item) => void handleArchiveThread(item));
   });
   useShortcut("markChatUnread", () => {
     if (selectionCount > 0) {
-      actOnSelection(markSelectedUnread);
+      actOnSelection("markChatUnread", markSelectedUnread);
       return;
     }
-    if (followsSelectionAction()) return;
+    if (followsSelectionAction("markChatUnread")) return;
     withActiveChat((item) => markThreadsUnread(getSidebarItemThreadIds(item)));
   });
   useShortcut("togglePinChat", () => {
     if (selectionCount > 0) {
-      actOnSelection(() => pinSelected(!allSelectedPinned));
+      actOnSelection("togglePinChat", () => pinSelected(!allSelectedPinned));
       return;
     }
-    if (followsSelectionAction()) return;
+    if (followsSelectionAction("togglePinChat")) return;
     withActiveChat((item) => togglePinnedChat(item.id));
   });
   useShortcut("selectAllChats", selectAllChats);
