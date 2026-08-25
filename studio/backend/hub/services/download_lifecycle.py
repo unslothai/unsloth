@@ -75,11 +75,51 @@ def resolve_auto_use_xet() -> tuple[bool, str]:
         health = xet_health()
     except Exception as exc:  # noqa: BLE001 - never let a health probe block a download
         logger.debug("Xet health probe failed, defaulting to Xet: %s", exc)
-        return (True, "Xet (health check unavailable)")
-    if health is None:
+        health, reason = None, "Xet (health check unavailable)"
+    else:
         # Older unsloth_zoo without the health module: no opinion, keep the existing default.
-        return (True, "Xet")
-    return (bool(health.use_xet), str(health.reason))
+        reason = "Xet" if health is None else str(health.reason)
+    if health is not None and not health.use_xet:
+        return (False, reason)
+    if _health_is_forced(health):
+        # ``UNSLOTH_FORCE_XET=1``. The zoo's off switches (``UNSLOTH_DISABLE_XET``,
+        # ``UNSLOTH_STABLE_DOWNLOADS``, ``HF_HUB_DISABLE_XET``) already win above, so the on switch
+        # has to win here or the pair is asymmetric and the only escape from the RAM rule is
+        # editing the request. Buffers are still clamped to free RAM; only the transport choice is
+        # left to the operator, the same stand-down the zoo makes for a user-set
+        # HF_XET_HIGH_PERFORMANCE.
+        return (True, reason)
+    # Health said Xet, or had no opinion at all. Free RAM is separate evidence, read from a
+    # different zoo module, so it still gets a say: a missing health module says nothing about
+    # whether this machine can afford Xet right now.
+    pressure = _memory_pressure_reason()
+    if pressure is not None:
+        return (False, pressure)
+    return (True, reason)
+
+
+def _health_is_forced(health) -> bool:
+    """``UNSLOTH_FORCE_XET``-style verdict? Delegates so this and the capabilities probe stand down
+    on exactly the same evidence; a degraded shim answers False, which keeps the RAM gate on."""
+    try:
+        from utils.hf_xet_fallback import xet_health_is_forced
+        return xet_health_is_forced(health)
+    except Exception as exc:  # noqa: BLE001 - an unreadable verdict is not an override
+        logger.debug("Could not read the Xet health source: %s", exc)
+        return False
+
+
+def _memory_pressure_reason() -> Optional[str]:
+    """Free-RAM verdict for an API caller that sends "auto".
+
+    The Studio UI never reaches here: it resolves Auto through the capabilities probe and submits
+    the concrete xet/http, so that probe applies the same rule. Shared helper, so the two agree."""
+    try:
+        from utils.hf_xet_fallback import free_ram_pressure_reason
+        return free_ram_pressure_reason()
+    except Exception as exc:  # noqa: BLE001 - a probe must not decide the transport by crashing
+        logger.debug("Free-RAM probe failed, leaving the Xet verdict alone: %s", exc)
+        return None
 
 
 def _allow_high_performance() -> bool:
@@ -186,23 +226,33 @@ def spawn_worker(
         env["HF_TOKEN"] = hf_token
     existing_path = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = f"{cwd}{os.pathsep}{existing_path}" if existing_path else str(cwd)
-    return subprocess.Popen(
-        [
-            sys.executable,
-            "-m",
-            "hub.workers.hf_download",
-            *args,
-            "--parent-pid",
-            str(os.getpid()),
-            "--transport",
-            mode,
-        ],
-        env = env,
-        cwd = str(cwd),
-        stdout = subprocess.DEVNULL,
-        stderr = subprocess.PIPE,
-        start_new_session = sys.platform != "win32",
-    )
+    proc = None
+    try:
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "hub.workers.hf_download",
+                *args,
+                "--parent-pid",
+                str(os.getpid()),
+                "--transport",
+                mode,
+            ],
+            env = env,
+            cwd = str(cwd),
+            stdout = subprocess.DEVNULL,
+            stderr = subprocess.PIPE,
+            start_new_session = sys.platform != "win32",
+        )
+        return proc
+    finally:
+        if use_xet:
+            # Tie the sizing's RAM reservation to the worker, so it frees when the worker exits and
+            # a sibling starting in this window sizes against the remainder. A spawn that raised
+            # passes None, which drops the reservation instead of leaking it.
+            from utils import hf_xet_fallback
+            hf_xet_fallback.bind_worker_budget(proc.pid if proc is not None else None)
 
 
 def drain_stderr_excerpt(stream, edge_bytes: int = 500) -> bytes:
@@ -337,7 +387,7 @@ def finalize_worker_exit(
                 )
 
                 note_downloaded(repo_id)
-                invalidate_index()
+                invalidate_index(additions_only = True)
                 # Rebuild here, not on the first request, to keep the scan off the
                 # request path.
                 warm_index_soon()
@@ -460,6 +510,7 @@ def _try_transport_retry(
     xet_attempt: int = 1,
     pending_xet_failure: Optional[str] = None,
     bytes_before: "Optional[int]" = _UNSAMPLED,
+    allow_ambient_token: bool = True,
 ) -> bool:
     """Reclaim *key* under *retry_transport* and spawn a recovery worker.
 
@@ -473,6 +524,9 @@ def _try_transport_retry(
     purges the XET partial an HTTP resume would corrupt. ``TRANSPORT_XET`` is
     the stall retry: same transport, same marker, one more child, bounded by
     *xet_attempt* rather than by the transport check that stops the HTTP one.
+
+    *allow_ambient_token* rides along unchanged, so a job that started anonymous cannot pick
+    the backend's own HF_TOKEN up on a lower rung.
 
     *pending_xet_failure* is a stall verdict held back from the health tracker
     and carried into the next worker, so a download that recovers on its second
@@ -649,6 +703,7 @@ def _try_transport_retry(
         spawn_kwargs = {
             "use_xet": retry_over_xet,
             "protected_blob_hashes": peer_hashes or None,
+            "allow_ambient_token": allow_ambient_token,
         }
         if cache_env is not None:
             spawn_kwargs["cache_env"] = cache_env
@@ -691,6 +746,7 @@ def _try_transport_retry(
                 xet_attempt = xet_attempt,
                 pending_xet_failure = pending_xet_failure,
                 bytes_before = bytes_before,
+                allow_ambient_token = allow_ambient_token,
             )
         _give_up()
         _set_retry_failure_state(
@@ -721,6 +777,7 @@ def _try_transport_retry(
         xet_attempt = xet_attempt,
         pending_xet_failure = pending_xet_failure,
         bytes_before = bytes_before,
+        allow_ambient_token = allow_ambient_token,
     )
 
 
@@ -930,13 +987,15 @@ def register_worker(
     bytes_before: "Optional[int]" = _UNSAMPLED,
     xet_attempt: int = 1,
     pending_xet_failure: Optional[str] = None,
+    allow_ambient_token: bool = True,
 ) -> bool:
     """Watch *proc* to completion and drive the recovery ladder off its exit.
 
     *xet_attempt* (1-based) bounds the XET->XET stall retry, the way ``transport == TRANSPORT_XET``
     bounds the terminal XET->HTTP one. *pending_xet_failure* is an earlier attempt's stall verdict,
     held back from the health tracker until the XET phase ends so one download can never spend the
-    two consecutive failures that demote a machine.
+    two consecutive failures that demote a machine. *allow_ambient_token* is the token policy this
+    job was started under, carried onto every rung of the ladder.
     """
     if not registry.register_process(key, proc):
         kill_and_reap_process(proc, label = label, logger = logger)
@@ -1102,6 +1161,7 @@ def register_worker(
                     # The ORIGINAL pre-Xet baseline: resampling would fold the killed worker's
                     # partial writes in, so a recovered attempt would read as a cached no-op.
                     bytes_before = _bytes_before,
+                    allow_ambient_token = allow_ambient_token,
                 )
         except Exception:
             if watchdog_stop is not None:
@@ -1191,6 +1251,7 @@ def launch_worker(
     repo_id: str,
     transport: str,
     watch_name: str,
+    allow_ambient_token: bool = True,
 ) -> str:
     # Only the Xet success-recording consumes this, and sampling lazy-loads unsloth_zoo (so torch
     # and transformers) on the request path. An HTTP start skips it entirely.
@@ -1237,6 +1298,7 @@ def launch_worker(
         transport = transport,
         watch_name = watch_name,
         bytes_before = _baseline,
+        allow_ambient_token = allow_ambient_token,
     )
     return registry.get_job(key).state
 

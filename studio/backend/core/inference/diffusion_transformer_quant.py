@@ -24,6 +24,7 @@ probe is best-effort: an unsupported scheme yields None and the caller loads GGU
 from __future__ import annotations
 
 import re as _re
+import threading as _threading
 from typing import Any, Optional
 
 # stdlib-only module (no torch), so this stays inside the "imported lazily" promise above.
@@ -352,6 +353,18 @@ def _strip_paths(text: str) -> str:
 # Cache of (scheme, device) -> bool so the quantise+matmul smoke test runs once.
 _SMOKE_CACHE: dict[tuple[str, str], bool] = {}
 
+
+def _smoke_cache_device_key(device: str) -> str:
+    """``device`` qualified with the current CUDA index, so each card is validated on its own."""
+    if device != "cuda":
+        return device
+    try:
+        import torch
+        return f"cuda:{torch.cuda.current_device()}"
+    except Exception:  # noqa: BLE001 -- an unreadable index falls back to the un-indexed key
+        return device
+
+
 # Data-center GPU tokens (un-nerfed FP32 accumulate). Matched as whole tokens of get_device_name() so "A4000" is not mistaken for "A40"; anything else is consumer-class.
 _DATACENTER_GPU_TOKENS = frozenset(
     {
@@ -543,7 +556,235 @@ def _scheme_supported(
             return False
     except Exception:
         return False
+    # Resolve the whole table in one throwaway child, falling back in-process. Nothing above
+    # allocates: the context arrives on the first ALLOCATION, not on is_available() or
+    # get_device_capability() (0 MiB after both, 614 MiB after the first tensor). Worth a child
+    # because /images/download-plan calls assert_precision_available while the user is only
+    # STAGING, so a plan alone cost the backend ~700 MiB it can never give back.
+    if (scheme, device) not in _SMOKE_CACHE:
+        with _CHILD_PROBE_LOCK:
+            # Re-checked under the lock: the route answers plans concurrently, and a burst of
+            # them must not each spawn a child that imports torch.
+            if (scheme, device) not in _SMOKE_CACHE:
+                table = _child_probe_table(device)
+                if table is not None:
+                    for name, child_verdict in table.items():
+                        # None is the child's out-of-memory: not a verdict, so not cached.
+                        if child_verdict is not None:
+                            _SMOKE_CACHE[(name, device)] = child_verdict
+                    if table.get(scheme, False) is None:
+                        # Same answer the in-process probe gives an OOM, without re-running it
+                        # here: it would meet the same full GPU and pay the context on the way.
+                        return unproven_ok
     return _smoke_probe(scheme, device, unproven_ok = unproven_ok)
+
+
+# Long enough for a cold interpreter to import torch and torchao and run every probe (measured
+# 3.9 s on a B200 host, so this is ~45x headroom for a cold page cache); short enough that a
+# child wedged in the driver does not hold the route thread forever. Overrunning it is not a
+# verdict either -- the caller falls back in-process.
+_CHILD_PROBE_TIMEOUT = 180.0
+
+# Set once the spawn machinery has been shown not to work here (frozen build without
+# multiprocessing support, a sandbox that refuses to fork/exec), so the fallback is paid once
+# rather than on every miss.
+_CHILD_PROBE_UNAVAILABLE = False
+
+# Consecutive OSErrors out of the spawn before that latch is set anyway. An OSError is resource
+# pressure and clears, so it is retried; a host that raises one every time still stops paying
+# for the attempt after a few misses. Reset by the first spawn that works.
+_CHILD_PROBE_SPAWN_ERROR_LIMIT = 3
+_CHILD_PROBE_SPAWN_ERRORS = 0
+
+_CHILD_PROBE_LOCK = _threading.Lock()
+
+
+def _child_probe_table(device: str) -> Optional[dict[str, Optional[bool]]]:
+    """Every scheme's verdict from a SHORT-LIVED child process, or None when it could not run.
+
+    The child dies with its CUDA context, which is the whole point: the context is process-wide
+    and the driver never returns it, so probing in the backend permanently costs what the probe
+    touched. Spawning is not free (3.9 s measured on a B200 host, nearly all of it importing
+    torch), so one child answers for every scheme in ``TQ_SCHEMES`` at once rather than one child
+    per ladder step: an auto ladder walking three schemes would otherwise pay it three times.
+
+    Verdicts are the child's ``_run_smoke_probe``, the same function the in-process path calls,
+    so the two cannot drift. ``None`` for a scheme is an allocator failure, which the caller
+    must not cache. ``None`` for the whole table means no child ran -- a frozen build without
+    multiprocessing, a sandbox that refuses to spawn, a timeout -- and the caller then probes
+    in-process exactly as before, since refusing a load over a missing subprocess would be worse
+    than the VRAM it saves."""
+    global _CHILD_PROBE_UNAVAILABLE, _CHILD_PROBE_SPAWN_ERRORS
+    if _CHILD_PROBE_UNAVAILABLE:
+        return None
+    import time
+
+    proc = None
+    queue = None
+    try:
+        import multiprocessing as mp
+
+        from utils.native_path_leases import (
+            native_path_secret_removed_for_child_start,
+            run_without_native_path_secret,
+        )
+
+        # spawn, never fork: the backend is threaded (uvicorn, the arbiter, download workers) and
+        # a forked child inherits those locks, and fork does not exist on Windows at all. A build
+        # with no spawn support at all raises here, which is what the fallback is for.
+        ctx = mp.get_context("spawn")
+        with native_path_secret_removed_for_child_start():
+            # Inside the scrub, as every other orchestrator here builds theirs. The first
+            # spawn-context queue starts multiprocessing's resource tracker, which is exec'd
+            # with this environment and outlives every child, so building it above the scrub
+            # would strand the lease secret somewhere the child-side scrub cannot reach.
+            queue = ctx.Queue()
+            # The same entrypoint the inference worker is spawned through: it scrubs the lease
+            # secret from the child and binds the child to this process's lifetime, so a wedged
+            # probe cannot outlive the backend.
+            proc = ctx.Process(
+                target = run_without_native_path_secret,
+                args = (__name__, "_child_probe_entry", {}, device, TQ_SCHEMES, queue),
+                daemon = True,
+            )
+            proc.start()
+        # Adopted like every other spawn site: the bind above is the CHILD arming PDEATHSIG,
+        # which is Linux only, and the Windows job object can fail to take when Studio already
+        # runs inside an incompatible host job. This record is what is left in that case.
+        _adopt_probe_pid(proc.pid)
+        _CHILD_PROBE_SPAWN_ERRORS = 0
+    except Exception as exc:  # noqa: BLE001 — no child here: probe in-process instead
+        import logging
+
+        # An OSError is momentary pressure on descriptors, process slots or /dev/shm, not a
+        # host that cannot spawn; latching it would hold the backend on the in-process probe,
+        # and its ~800 MiB, until restart. Only a deterministic failure latches on sight, plus
+        # a run of OSErrors so a host that always refuses is paid for only briefly.
+        transient = isinstance(exc, OSError)
+        if transient:
+            _CHILD_PROBE_SPAWN_ERRORS += 1
+        if not transient or _CHILD_PROBE_SPAWN_ERRORS >= _CHILD_PROBE_SPAWN_ERROR_LIMIT:
+            _CHILD_PROBE_UNAVAILABLE = True
+        logging.getLogger(__name__).info(
+            "diffusion.transformer_quant: out-of-process probe unavailable (%s: %s); "
+            "probing in-process%s",
+            type(exc).__name__,
+            exc,
+            "" if _CHILD_PROBE_UNAVAILABLE else " and retrying the child on the next miss",
+        )
+        _close_probe_child(proc, queue)
+        return None
+
+    table: Optional[dict[str, Optional[bool]]] = None
+    deadline = time.monotonic() + _CHILD_PROBE_TIMEOUT
+    try:
+        while True:
+            try:
+                table = queue.get(timeout = 0.5)
+                break
+            except Exception:  # noqa: BLE001 — Empty, or a queue torn down under us
+                pass
+            if not proc.is_alive():
+                # A put lands through a feeder thread, so it can still be in flight when the
+                # child has already exited; one blocking look before calling it a loss.
+                try:
+                    table = queue.get(timeout = 1.0)
+                except Exception:  # noqa: BLE001 — the child really did die empty
+                    table = None
+                break
+            if time.monotonic() >= deadline:
+                break
+    finally:
+        _close_probe_child(proc, queue)
+    return table if isinstance(table, dict) else None
+
+
+def _adopt_probe_pid(pid: Optional[int]) -> None:
+    """Record the probe child against this process's lifetime, so the shutdown sweep and the
+    next startup can both reach it. Best-effort: a probe must not fail over its bookkeeping."""
+    try:
+        from utils.process_lifetime import adopt_pid
+        adopt_pid(pid)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _forget_probe_pid(pid: Optional[int]) -> None:
+    try:
+        from utils.process_lifetime import forget_pid
+        forget_pid(pid)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _probe_child_alive(proc: Any) -> bool:
+    """Whether the child is KNOWN to be running: a missing or never-started handle raises here,
+    and that is not a survivor."""
+    try:
+        return bool(proc is not None and proc.is_alive())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _close_probe_child(proc: Any, queue: Any) -> bool:
+    """Tear the probe child and its queue down; True once the child is confirmed dead.
+
+    Terminate then kill, as the chat worker's ``_shutdown_subprocess`` does: this child exists
+    to hand a CUDA context back, so a wedged one left alive defeats the whole probe. The
+    lifetime record is dropped only on confirmed death -- a child that outlives SIGKILL in an
+    uninterruptible driver call keeps its breadcrumb, since that record is the only remaining
+    handle on the VRAM it is holding. Best-effort at every step: this runs on the failure path
+    too, and a probe that could not answer must not also raise."""
+    try:
+        pid = proc.pid if proc is not None else None
+    except Exception:  # noqa: BLE001
+        pid = None
+
+    for stop, wait in ((lambda: proc.terminate(), 5.0), (lambda: proc.kill(), 3.0)):
+        if not _probe_child_alive(proc):
+            break
+        for step in (stop, lambda: proc.join(timeout = wait)):
+            try:
+                step()
+            except Exception:  # noqa: BLE001
+                pass
+    for step in (
+        lambda: queue.close() if queue is not None else None,
+        lambda: queue.join_thread() if queue is not None else None,
+    ):
+        try:
+            step()
+        except Exception:  # noqa: BLE001
+            pass
+
+    if _probe_child_alive(proc):
+        import logging
+        logging.getLogger(__name__).error(
+            "diffusion.transformer_quant: probe child pid=%s survived terminate and kill; "
+            "keeping its lifetime record so the shutdown sweep can still reach it",
+            pid,
+        )
+        return False
+    _forget_probe_pid(pid)
+    return True
+
+
+def _child_probe_entry(device: str, schemes: tuple[str, ...], out: Any) -> None:
+    """Child side of ``_child_probe_table``: probe every scheme and post one table back.
+
+    Module-level and stdlib-signature so ``spawn`` can reach it by name. Every scheme is
+    attempted even after one fails, because the verdicts are independent and the whole point is
+    to pay the CUDA context once."""
+    table: dict[str, Optional[bool]] = {}
+    for scheme in schemes:
+        try:
+            table[scheme] = _run_smoke_probe(scheme, device)
+        except Exception:  # noqa: BLE001 — _run_smoke_probe already swallows; keep the table whole
+            table[scheme] = False
+    try:
+        out.put(table)
+    except Exception:  # noqa: BLE001 — parent gave up; nothing left to say
+        pass
 
 
 def _smoke_probe(
@@ -568,10 +809,30 @@ def _smoke_probe(
     ``new_zeros`` out to 226 or 512, so the tail rows reaching the DiT are exactly zero.
     Measured on B200, 4096-wide Linear: 412 of 512 rows non-finite without the floor, 0 of 512
     with it. Failing here costs one ladder step down to int8 instead."""
-    key = (scheme, device)
+    # Keyed by the CARD, not just "cuda": the probe runs on whichever device is current, so on a
+    # heterogeneous host a pass on one selected GPU would otherwise stand in for an untested one,
+    # and a failure on an older card would reject the scheme on a capable one.
+    key = (scheme, _smoke_cache_device_key(device))
     if key in _SMOKE_CACHE:
         return _SMOKE_CACHE[key]
-    ok = False
+    ok = _run_smoke_probe(scheme, device)
+    if ok is None:
+        # NOT cached, and NOT a verdict. An out-of-memory says nothing about the scheme, and
+        # the probe now runs on the ROUTE thread -- BEFORE the arbiter evicts the resident chat
+        # model, which is the whole point of raising the refusal early -- so it meets a full
+        # GPU by design. Caching it would refuse every later EXPLICIT request for this scheme
+        # for the life of the process, on a host that runs it fine once the eviction has
+        # happened; and answering "unsupported" to the pre-eviction gate (``unproven_ok``)
+        # refuses THIS load for the same reason the eviction was about to remove.
+        return unproven_ok
+    _SMOKE_CACHE[key] = ok
+    return ok
+
+
+def _run_smoke_probe(scheme: str, device: str) -> Optional[bool]:
+    """The probe body, uncached: True, False, or None for an allocator failure, which is not a
+    verdict on the scheme (see ``_smoke_probe``). Split out so the out-of-process child runs the
+    exact same code the in-process fallback does and the two verdicts cannot drift."""
     try:
         import torch
         from torchao.quantization import quantize_
@@ -584,20 +845,9 @@ def _smoke_probe(
         with torch.no_grad():
             out = lin(x)
         torch.cuda.synchronize()
-        ok = bool(torch.isfinite(out).all().item())
+        return bool(torch.isfinite(out).all().item())
     except Exception as exc:  # noqa: BLE001
-        if _is_out_of_memory(exc):
-            # NOT cached, and NOT a verdict. An out-of-memory says nothing about the scheme, and
-            # the probe now runs on the ROUTE thread -- BEFORE the arbiter evicts the resident chat
-            # model, which is the whole point of raising the refusal early -- so it meets a full
-            # GPU by design. Caching it would refuse every later EXPLICIT request for this scheme
-            # for the life of the process, on a host that runs it fine once the eviction has
-            # happened; and answering "unsupported" to the pre-eviction gate (``unproven_ok``)
-            # refuses THIS load for the same reason the eviction was about to remove.
-            return unproven_ok
-        ok = False
-    _SMOKE_CACHE[key] = ok
-    return ok
+        return None if _is_out_of_memory(exc) else False
 
 
 def _is_out_of_memory(exc: BaseException) -> bool:

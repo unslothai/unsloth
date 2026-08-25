@@ -584,7 +584,11 @@ def _resolve_base_precision(cfg, spec, device) -> str:
         try:
             import torch
 
-            free_gb = torch.cuda.mem_get_info()[0] / 1e9
+            # Windows ROCm over-reports free VRAM (#8403), which would pick a
+            # dense precision the card cannot actually hold.
+            from utils.hardware import trusted_mem_get_info
+
+            free_gb = trusted_mem_get_info()[0] / 1e9
             capability = torch.cuda.get_device_capability()
             has_fp8 = hasattr(torch, "float8_e4m3fn")
         except Exception:  # noqa: BLE001 -- probe failure -> the safe mode

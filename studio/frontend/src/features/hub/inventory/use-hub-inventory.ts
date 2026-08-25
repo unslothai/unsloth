@@ -7,7 +7,7 @@ import {
   useDownloadManagerStore,
 } from "@/features/hub/download-manager";
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import type { LocalDatasetInfo } from "./api";
 import {
   dedupeSameSourceHubCacheRows,
@@ -29,7 +29,6 @@ import { resolveInventorySettlement } from "./inventory-settlement";
 import type { CachedInventoryRow, LocalInventoryRow } from "./types";
 import {
   type DeviceInventorySource,
-  inventoryEmptyRevalidationSignature,
   useDeviceInventorySources,
 } from "./use-device-inventory";
 import {
@@ -38,6 +37,10 @@ import {
   defaultCapabilities,
   normalizeTimestamp,
 } from "./view-models";
+import {
+  INVENTORY_FRESHNESS_WINDOW_MS,
+  isInventoryStampFresh,
+} from "./inventory-freshness";
 
 export interface HubInventory {
   cachedRows: CachedInventoryRow[];
@@ -49,6 +52,7 @@ export interface HubInventory {
   inventoryError: boolean;
   inventoryWarning: boolean;
   refreshInventory: () => Promise<void>;
+  refreshInventoryIfOlderThan: (maxAgeMs: number) => Promise<void>;
 }
 
 export type HubInventoryKind = "models" | "datasets";
@@ -263,6 +267,13 @@ export function useHubInventory(
   const refreshDatasetInventory = datasetInventory.refresh;
   const refreshLocalModelInventory = localModelInventory.refresh;
   const refreshLocalDatasetInventory = localDatasetInventory.refresh;
+  const refreshModelInventoryIfOlderThan = modelInventory.refreshIfOlderThan;
+  const refreshDatasetInventoryIfOlderThan =
+    datasetInventory.refreshIfOlderThan;
+  const refreshLocalModelInventoryIfOlderThan =
+    localModelInventory.refreshIfOlderThan;
+  const refreshLocalDatasetInventoryIfOlderThan =
+    localDatasetInventory.refreshIfOlderThan;
   const pendingHints = useInventoryHintStore((state) => state.pending);
   const observedInventoryKeys = useInventoryHintStore(
     (state) => state.observedKeys,
@@ -281,8 +292,6 @@ export function useHubInventory(
     [isDatasetMode],
   );
   const liveInventoryJobs = useDownloadManagerStore(selectLiveInventoryJobs);
-  const [lastEmptyRevalidationSignature, setLastEmptyRevalidationSignature] =
-    useState<string | null>(null);
   const pendingForRenderRef = useRef<PendingInventoryHints | null>(null);
 
   const pendingForRenderNext = useMemo(
@@ -557,6 +566,33 @@ export function useHubInventory(
   const refreshInventory = useCallback(async () => {
     await refreshDeviceInventory();
   }, [refreshDeviceInventory]);
+  const refreshInventoryIfOlderThan = useCallback(
+    async (maxAgeMs: number) => {
+      if (isDatasetMode) {
+        await Promise.all([
+          refreshDatasetInventoryIfOlderThan(maxAgeMs),
+          ...(includeLocal
+            ? [refreshLocalDatasetInventoryIfOlderThan(maxAgeMs)]
+            : []),
+        ]);
+        return;
+      }
+      await Promise.all([
+        refreshModelInventoryIfOlderThan(maxAgeMs),
+        ...(includeLocal
+          ? [refreshLocalModelInventoryIfOlderThan(maxAgeMs)]
+          : []),
+      ]);
+    },
+    [
+      includeLocal,
+      isDatasetMode,
+      refreshDatasetInventoryIfOlderThan,
+      refreshLocalDatasetInventoryIfOlderThan,
+      refreshLocalModelInventoryIfOlderThan,
+      refreshModelInventoryIfOlderThan,
+    ],
+  );
   const downloadedReady = isDatasetMode ? datasetReady : modelReady;
   const hasInventoryRows =
     cachedRows.length > 0 || effectiveLocalRows.length > 0;
@@ -566,37 +602,31 @@ export function useHubInventory(
     : cachedGgufSource.loading ||
       cachedModelsSource.loading ||
       (includeLocal && localModelsSource.loading);
-  const emptyRevalidationSignature = useMemo(
-    () =>
-      isDatasetMode
-        ? inventoryEmptyRevalidationSignature([
-            cachedDatasetsSource,
-            ...(includeLocal ? [localDatasetsSource] : []),
-          ])
-        : inventoryEmptyRevalidationSignature([
-            cachedGgufSource,
-            cachedModelsSource,
-            ...(includeLocal ? [localModelsSource] : []),
-          ]),
-    [
-      cachedDatasetsSource,
-      cachedGgufSource,
-      cachedModelsSource,
-      includeLocal,
-      isDatasetMode,
-      localDatasetsSource,
-      localModelsSource,
-    ],
+  const relevantInventorySources = isDatasetMode
+    ? [cachedDatasetsSource, ...(includeLocal ? [localDatasetsSource] : [])]
+    : [
+        cachedGgufSource,
+        cachedModelsSource,
+        ...(includeLocal ? [localModelsSource] : []),
+      ];
+  const now = Date.now();
+  const emptyRevalidationFresh = relevantInventorySources.every(
+    (source) =>
+      source.error === null &&
+      isInventoryStampFresh(
+        source.revalidatedAt,
+        now,
+        INVENTORY_FRESHNESS_WINDOW_MS,
+      ),
   );
   const { emptyRevalidationRequired, inventorySettled } =
     resolveInventorySettlement({
       downloadedReady,
-      emptyRevalidationSignature,
+      emptyRevalidationFresh,
       hasActiveEmptyRefresh,
       hasInventoryRows,
       hasUnreadyInventoryFailure,
       inventoryFailed,
-      lastEmptyRevalidationSignature,
     });
 
   useEffect(() => {
@@ -604,13 +634,11 @@ export function useHubInventory(
       return;
     }
     const timer = window.setTimeout(() => {
-      setLastEmptyRevalidationSignature(emptyRevalidationSignature);
       void refreshDeviceInventory();
     }, 500);
     return () => window.clearTimeout(timer);
   }, [
     emptyRevalidationRequired,
-    emptyRevalidationSignature,
     enabled,
     refreshDeviceInventory,
   ]);
@@ -625,5 +653,6 @@ export function useHubInventory(
     inventoryError: inventoryFailed,
     inventoryWarning,
     refreshInventory,
+    refreshInventoryIfOlderThan,
   };
 }

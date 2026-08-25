@@ -222,8 +222,14 @@ except (OSError, ValueError):
 if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
     if not os.environ.get("UNSLOTH_STUDIO_HOME"):
         os.environ["UNSLOTH_STUDIO_HOME"] = str(_STUDIO_ROOT_RESOLVED)
+    _MANAGED_LLAMA_CPP_PATH = _STUDIO_ROOT_RESOLVED / "llama.cpp"
     if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
-        os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_STUDIO_ROOT_RESOLVED / "llama.cpp")
+        os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_MANAGED_LLAMA_CPP_PATH)
+    # A CLI/desktop launcher may already have exported Studio's own install path.
+    # Classify by the canonical value so that inherited default remains editable.
+    from utils.llama_cpp_path_settings import mark_managed_llama_cpp_path
+
+    mark_managed_llama_cpp_path(_MANAGED_LLAMA_CPP_PATH)
 
 # The studio bundles unsloth_zoo; declare unsloth present (as `import unsloth` does) so its
 # lazy submodule imports and the DiffusionGemma runner don't trip the install guard.
@@ -300,11 +306,13 @@ from routes import (
     mcp_servers_router,
     models_router,
     providers_router,
+    openai_codex_auth_router,
     rag_router,
     research_runs_router,
     training_history_router,
     training_router,
     video_router,
+    youtube_router,
 )
 from routes.llama import router as llama_router
 from routes.whisper import router as whisper_router
@@ -341,14 +349,16 @@ from utils.torch_warmup import (
     start_background_warm,
     warm_status,
 )
-from utils.cache_cleanup import clear_unsloth_compiled_cache
+from utils.cache_cleanup import (
+    clear_compiled_cache_unless_shared as _clear_compiled_cache_unless_shared,
+)
 from utils.lifespan_shutdown import run_lifespan_shutdown
 from utils.native_path_leases import native_path_leases_supported
 from utils.update_status import (
     get_studio_install_source_status,
     get_studio_update_status,
 )
-from utils.changelog import get_release_notes, is_supported_version_query
+from utils.release_notes import get_release_notes, is_supported_version_query
 from utils.studio_version import get_studio_version
 from utils.api_errors import install_api_error_handlers
 
@@ -359,13 +369,17 @@ def get_unsloth_version() -> str:
     except PackageNotFoundError:
         pass
 
-    version_file = _Path(__file__).resolve().parents[2] / "unsloth" / "models" / "_utils.py"
-    try:
-        for line in version_file.read_text(encoding = "utf-8").splitlines():
-            if line.startswith("__version__ = "):
-                return line.split("=", 1)[1].strip().strip('"').strip("'")
-    except (OSError, UnicodeDecodeError):
-        pass
+    # Both files: the literal moved to _version.py, and models/_utils.py now holds only a
+    # re-export, which this prefix scan does not match. Trying both keeps a half-updated
+    # tree reporting a real version instead of falling through to "dev".
+    root = _Path(__file__).resolve().parents[2] / "unsloth"
+    for version_file in (root / "_version.py", root / "models" / "_utils.py"):
+        try:
+            for line in version_file.read_text(encoding = "utf-8").splitlines():
+                if line.startswith("__version__ = "):
+                    return line.split("=", 1)[1].strip().strip('"').strip("'")
+        except (OSError, UnicodeDecodeError):
+            continue
     return "dev"
 
 
@@ -485,20 +499,6 @@ def _start_llama_cpp_probes_if_enabled(app: FastAPI) -> None:
     ).start()
 
 
-def _warm_rag_embedder() -> None:
-    """Warm RAG embeddings without blocking backend readiness."""
-    try:
-        from storage import rag_db
-
-        if not rag_db.RAG_AVAILABLE:
-            return
-        from core.rag import embeddings
-
-        embeddings.warm()
-    except Exception:
-        pass
-
-
 _post_warm_thread: Optional[threading.Thread] = None
 _post_warm_lock = threading.Lock()
 # Bumped by every start and stop. A worker captures the value it started with and stops once
@@ -548,9 +548,9 @@ def _stop_post_warm_thread() -> None:
 def _post_warm_retired(generation: Optional[int]) -> bool:
     """True when this post-warm worker's lifespan has ended. Logs once when it has.
 
-    A mismatch means the application that wanted this work has stopped. Everything the
-    worker does imports or loads something, and the RAG warm can spawn a llama-server, so
-    none of it may start for a stopped lifespan.
+    A mismatch means the application that wanted this work has stopped. The remaining
+    work imports optional platform or RAG scheduling modules, so none of it may start for
+    a stopped lifespan.
     """
     if generation is None or _post_warm_current_generation() == generation:
         return False
@@ -583,14 +583,11 @@ def _start_linked_folder_auto_sync(generation: Optional[int]) -> None:
 
 
 def _post_warm_background_work(generation: Optional[int] = None) -> None:
-    """Stack-dependent startup work, run after the coordinated warm.
+    """Platform repair and linked-folder lifecycle work after the coordinated warm.
 
-    Both import the ML stack, and both used to do it their own way before the socket bound:
-    the MLX check inline on the lifespan thread (a healthy Mac waited on mlx.core/mlx_lm/
-    mlx_vlm before uvicorn could bind), the RAG embedder early enough to race the warm for
-    the GIL and the import locks, outside its hardware-first order and purge-on-failure.
-
-    Joining the warm first means the stack is imported once, in the intended order.
+    MLX repair used to probe the runtime before the socket bound. Joining first keeps that
+    optional probe out of the login-screen critical path. Linked-folder startup only loads
+    embeddings when a queued sync has real ingestion work; an idle scheduler stays cold.
     """
     # No-op when the warm never started, so this is safe under the kill switch.
     join_background_warm()
@@ -609,20 +606,25 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
         start_mlx_autorepair_if_needed()
     except Exception as _mlx_exc:
         import structlog as _structlog
-        _structlog.get_logger(__name__).debug("mlx autorepair skipped: %s", _mlx_exc)
+
+        # Warning, not debug: this decides the MLX verdict on every healthy Apple Silicon
+        # boot, so a half-applied update (new mlx_repair.py over older hardware.py) arrives
+        # here and would silently leave Train/Export greyed out for the session.
+        _structlog.get_logger(__name__).warning("mlx autorepair skipped: %s", _mlx_exc)
 
     if _post_warm_retired(generation):
         return
     _start_linked_folder_auto_sync(generation)
 
-    # Only the RAG warm is gated: it pulls sentence-transformers/transformers/torch. MLX
-    # autorepair and linked-folder scheduling have their own lifecycles.
-    if os.environ.get(DISABLE_ENV_VAR) == "1":
-        return
 
-    if _post_warm_retired(generation):
-        return
-    _warm_rag_embedder()
+def clear_compiled_cache_unless_shared(app: FastAPI) -> None:
+    """Clear the compiled cache unless a sibling backend of this install is live.
+
+    The decision lives in cache_cleanup, next to the paths it clears and the lock
+    that serializes it against a sibling's startup; run_server puts the probe on
+    app.state because main.py must not import run.py back.
+    """
+    _clear_compiled_cache_unless_shared(getattr(app.state, "live_sibling_backend", None))
 
 
 @asynccontextmanager
@@ -635,7 +637,7 @@ async def lifespan(app: FastAPI):
     import structlog as _structlog
 
     _lifespan_log = _structlog.get_logger(__name__)
-    clear_unsloth_compiled_cache()
+    clear_compiled_cache_unless_shared(app)
 
     # Move the legacy sandbox up here rather than from the first request: the
     # copy can be minutes when the studio home is on another filesystem.
@@ -693,7 +695,7 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         _lifespan_log.warning("reconcile_orphaned_ingestion_jobs failed at startup: %s", exc)
 
-    # The RAG embedder warm moved to _post_warm_background_work: here it raced for the GIL.
+    # Embeddings stay cold until ingestion or retrieval actually requests vectors.
     _start_helper_precache_if_enabled()
 
     from core.research_runs import ResearchSupervisor
@@ -748,18 +750,22 @@ async def lifespan(app: FastAPI):
 
     # Before any shutdown await: a warm finishing during one would still read the lifespan as current.
     _stop_post_warm_thread()
+
+    # Retire the coordinated warm at shutdown entry too. run_lifespan_shutdown() repeats
+    # this after cleanup, but its awaits would otherwise let startup imports continue for
+    # a lifespan that has already stopped.
+    _invalidate_detection = getattr(_hw_module, "invalidate_detection", None)
+    if _invalidate_detection is not None:
+        _invalidate_detection()
+
+    from core.inference.openai_codex_auth import shutdown_flows
+
+    await shutdown_flows()
     try:
         from core.rag.folder_sync import stop_auto_sync
         stop_auto_sync()
     except Exception as exc:
         _lifespan_log.warning("linked-folder auto-sync failed at shutdown: %s", exc)
-
-    # Same for the coordinated warm: retiring its epoch stops it at the next stage boundary.
-    # run_lifespan_shutdown() also invalidates, but only after several awaits, through which the
-    # warm keeps importing for a stopped lifespan. Retiring twice is harmless; getattr for tests.
-    _invalidate_detection = getattr(_hw_module, "invalidate_detection", None)
-    if _invalidate_detection is not None:
-        _invalidate_detection()
 
     _idle_task = getattr(app.state, "idle_unload_task", None)
     if _idle_task is not None:
@@ -779,7 +785,7 @@ async def lifespan(app: FastAPI):
 
     await run_lifespan_shutdown(
         terminate_hub_downloads,
-        clear_unsloth_compiled_cache,
+        lambda: clear_compiled_cache_unless_shared(app),
         _hw_module,
     )
     # Shutdown cleared the state this warm produced, so release the one-per-process latch.
@@ -791,7 +797,14 @@ app = FastAPI(
     version = UNSLOTH_VERSION,
     description = "Backend API for Unsloth UI - Training and Model Management",
     lifespan = lifespan,
+    # Swagger UI and ReDoc are re-registered below on these same paths, against vendored
+    # assets instead of a CDN. FastAPI's built-ins point at cdn.jsdelivr.net, and this origin
+    # holds the auth tokens, so nothing third-party may execute here.
+    docs_url = None,
+    redoc_url = None,
+    swagger_ui_oauth2_redirect_url = None,
 )
+app.state.secure = os.environ.get("UNSLOTH_SECURE") == "1"
 
 # The MCP surface is opt-in: it can start GPU jobs and write model artifacts.
 if os.environ.get("UNSLOTH_STUDIO_ENABLE_MCP") == "1":
@@ -844,10 +857,11 @@ from starlette.datastructures import MutableHeaders  # noqa: E402
 
 _CSP_SCRIPT_NONCE_HEADER = "x-internal-script-nonce"
 _ARTIFACT_PREVIEW_FRAME_PATH = "/api/inference/artifact-preview-frame"
-_DOCS_CDN = "https://cdn.jsdelivr.net"
 _DOCS_FONT_CSS = "https://fonts.googleapis.com"
 _DOCS_FONT_FILES = "https://fonts.gstatic.com"
 _DOCS_PATHS = frozenset({"/docs", "/docs/oauth2-redirect", "/redoc"})
+_DOCS_ASSETS_URL = "/docs-assets"
+_DOCS_ASSETS_DIR = Path(__file__).parent / "assets" / "docs_ui"
 
 
 # /content is Colab's working directory -- more reliable than env vars.
@@ -866,9 +880,11 @@ def _build_csp(script_nonce: "str | None" = None, *, docs: bool = False) -> str:
     worker_src = "worker-src 'self'"
     font_src = "font-src 'self' data:"
     if docs:
-        script_src += f" 'unsafe-inline' {_DOCS_CDN}"
-        # 'unsafe-inline' does not cover ReDoc's Google Fonts sheet, which pulls faces from gstatic.
-        style_src += f" {_DOCS_CDN} {_DOCS_FONT_CSS}"
+        # script-src is deliberately untouched: the docs bundles are served from this origin
+        # and their inline init runs off the nonce. What is left cannot execute script, only
+        # style and lay out the page. ReDoc's Google Fonts sheet pulls faces from gstatic, and
+        # its search index runs in a worker it builds from a blob.
+        style_src += f" {_DOCS_FONT_CSS}"
         font_src += f" {_DOCS_FONT_FILES}"
         worker_src += " blob:"
     if script_nonce:
@@ -957,6 +973,84 @@ class SecurityHeadersMiddleware:
 app.add_middleware(SecurityHeadersMiddleware)
 
 
+# Swagger UI and ReDoc, on FastAPI's own paths but served entirely from this origin.
+# FastAPI's built-in pages load ~2.3 MB of JavaScript from cdn.jsdelivr.net and start it with
+# an inline script. localStorage is origin-scoped, not path-scoped, so anything running on
+# /docs can read the Studio tokens session.ts keeps there and call the API as that user. The
+# bundles are vendored under assets/docs_ui (pinned + digest-checked by
+# tests/test_docs_ui_assets.py) and the inline init runs off the same per-response nonce the
+# bootstrap script uses, so script-src stays 'self' and works offline as a bonus.
+import secrets as _secrets_for_docs  # noqa: E402
+from fastapi.openapi.docs import (  # noqa: E402
+    get_redoc_html,
+    get_swagger_ui_html,
+    get_swagger_ui_oauth2_redirect_html,
+)
+
+# fastapi is unpinned, so match the opening tag by what follows it rather than by the
+# surrounding whitespace and comment: a reflowed template must not 500 the page.
+_SWAGGER_INIT_TAG = _re.compile(r"<script>(?=\s*const ui = SwaggerUIBundle)")
+_OAUTH2_REDIRECT_TAG = _re.compile(r"<script>")
+
+
+def _nonced_docs_response(html: str, *, tag: "_re.Pattern[str]") -> HTMLResponse:
+    """Hand the page's own inline script a nonce; injected script never gets one."""
+    nonce = _secrets_for_docs.token_urlsafe(16)
+    nonced, replaced = tag.subn(f'<script nonce="{nonce}">', html, count = 1)
+    if not replaced:
+        # Upstream retemplated the page: fail loudly rather than serve a blank one.
+        raise RuntimeError(f"docs template changed, inline script tag not found: {tag.pattern!r}")
+    return HTMLResponse(nonced, headers = {_CSP_SCRIPT_NONCE_HEADER: nonce})
+
+
+if _DOCS_ASSETS_DIR.is_dir():
+    app.mount(
+        _DOCS_ASSETS_URL,
+        StaticFiles(directory = _DOCS_ASSETS_DIR),
+        name = "docs-assets",
+    )
+
+    def _docs_url(request: Request, path: str) -> str:
+        """Prefix with the mount point, as FastAPI's own docs routes do.
+
+        Behind a path-stripping proxy (or `uvicorn --root-path`) the browser sees the prefix
+        the server never does, so an unprefixed URL escapes the mapping and 404s.
+        """
+        return f"{request.scope.get('root_path', '').rstrip('/')}{path}"
+
+    @app.get("/docs", include_in_schema = False)
+    async def swagger_ui_html(request: Request):
+        assets = _docs_url(request, _DOCS_ASSETS_URL)
+        html = get_swagger_ui_html(
+            openapi_url = _docs_url(request, app.openapi_url),
+            title = f"{app.title} - Swagger UI",
+            oauth2_redirect_url = _docs_url(request, "/docs/oauth2-redirect"),
+            swagger_js_url = f"{assets}/swagger-ui-bundle.js",
+            swagger_css_url = f"{assets}/swagger-ui.css",
+            swagger_favicon_url = f"{assets}/favicon-32x32.png",
+        ).body.decode()
+        return _nonced_docs_response(html, tag = _SWAGGER_INIT_TAG)
+
+    @app.get("/docs/oauth2-redirect", include_in_schema = False)
+    async def swagger_ui_redirect():
+        # This page is nothing but an inline script, so it needs the nonce too.
+        html = get_swagger_ui_oauth2_redirect_html().body.decode()
+        return _nonced_docs_response(html, tag = _OAUTH2_REDIRECT_TAG)
+
+    @app.get("/redoc", include_in_schema = False)
+    async def redoc_html(request: Request):
+        assets = _docs_url(request, _DOCS_ASSETS_URL)
+        # ReDoc's bundle carries no inline init, so this one needs no nonce.
+        return HTMLResponse(
+            get_redoc_html(
+                openapi_url = _docs_url(request, app.openapi_url),
+                title = f"{app.title} - ReDoc",
+                redoc_js_url = f"{assets}/redoc.standalone.js",
+                redoc_favicon_url = f"{assets}/favicon-32x32.png",
+            ).body.decode()
+        )
+
+
 # Cap request bodies on protected POSTs; upload routes get explicit multipart headroom.
 import json as _json_for_413  # noqa: E402
 from utils.upload_limits import (  # noqa: E402
@@ -993,17 +1087,26 @@ _DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX = (
 # The diffusion dataset upload (POST /api/train/diffusion/dataset) is a multipart upload
 # under /api/train; like /api/datasets/upload it enforces its own cap. EXACT path.
 _DIFFUSION_DATASET_UPLOAD_PATH = "/api/train/diffusion/dataset"
+_STT_MULTIPART_UPLOAD_PATHS = (
+    "/v1/audio/transcriptions",
+    "/api/inference/audio/transcriptions",
+)
 _BODY_UPLOAD_PASSTHROUGH_PREFIXES = (
     *_DATASET_UPLOAD_PASSTHROUGH_PREFIXES,
     _DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX,
 )
-# Matched by EXACT path (the multipart upload only), so sibling JSON sub-routes keep the normal cap.
-_BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS = (_DIFFUSION_DATASET_UPLOAD_PATH,)
+# Matched by EXACT path (multipart uploads only), so sibling JSON sub-routes keep the normal cap.
+_BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS = (
+    _DIFFUSION_DATASET_UPLOAD_PATH,
+    *_STT_MULTIPART_UPLOAD_PATHS,
+)
 
 
 def _get_upload_passthrough_request_max_bytes(path: str) -> int:
     if path.startswith(_DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX):
         return upload_request_limit_bytes(UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES)
+    if path.rstrip("/") in _STT_MULTIPART_UPLOAD_PATHS:
+        return upload_request_limit_bytes(STT_AUDIO_RAW_MAX_BYTES)
     # The trailing-slash variant reaches this middleware BEFORE the router's redirect_slashes
     # 307, so it must resolve to the same cap. JSON sub-routes keep extra path components.
     if (
@@ -1019,6 +1122,9 @@ def _get_request_body_max_bytes(path: str) -> int:
         return STT_AUDIO_RAW_MAX_BYTES
     if path.startswith("/api/inference/audio/transcribe"):
         return STT_AUDIO_JSON_MAX_BYTES
+    # multipart headroom over the raw stt cap for the openai transcription route on both mounts
+    if path.rstrip("/") in _STT_MULTIPART_UPLOAD_PATHS:
+        return upload_request_limit_bytes(STT_AUDIO_RAW_MAX_BYTES)
     return default_request_body_limit_bytes()
 
 
@@ -1241,6 +1347,10 @@ app.add_middleware(
     max_age = 60,
 )
 
+from utils.keyless_api_access import KeylessToolPolicyMiddleware  # noqa: E402
+
+app.add_middleware(KeylessToolPolicyMiddleware)
+
 from utils.remote_access_settings import RemoteAccessStopResponseMiddleware  # noqa: E402
 
 app.add_middleware(RemoteAccessStopResponseMiddleware)
@@ -1264,6 +1374,9 @@ app.include_router(video_router, prefix = "/api/inference", tags = ["inference"]
 app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])
 app.include_router(preview_router, prefix = "/p", tags = ["preview"])
 app.include_router(providers_router, prefix = "/api/providers", tags = ["providers"])
+
+app.include_router(openai_codex_auth_router, prefix = "/api/providers", tags = ["providers"])
+
 app.include_router(settings_router, prefix = "/api/settings", tags = ["settings"])
 app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp"])
 app.include_router(prompts_router, prefix = "/api/prompts", tags = ["prompts"])
@@ -1279,6 +1392,7 @@ app.include_router(hub_inventory_router, prefix = "/api/hub", tags = ["hub"])
 app.include_router(hub_datasets_router, prefix = "/api/hub/datasets", tags = ["hub"])
 app.include_router(picker_templates_router, prefix = "/api/picker", tags = ["picker"])
 app.include_router(hub_token_router, prefix = "/api/hub", tags = ["hub"])
+app.include_router(youtube_router, prefix = "/api/youtube", tags = ["youtube"])
 
 # Re-wrap /v1/* client errors into OpenAI/Anthropic envelopes; non-/v1 keeps {"detail": ...}.
 install_api_error_handlers(app)
@@ -1453,8 +1567,8 @@ def _torch_warm_in_progress() -> bool:
     """True while the coordinated warm thread is still working through its stages.
 
     A separate field from ``hardware_detecting`` on purpose, rather than widening that one.
-    Hardware detection is only ``_STAGES[0]``; inference_backend, transformers, datasets and
-    unsloth_zoo import after it, and those C-extension imports are the ones that hold the GIL
+    Hardware detection is only ``_STAGES[0]``; inference_backend, transformers, and datasets
+    run after it, and those C-extension imports can hold the GIL
     for seconds at a time. A launcher ending its startup grace on ``hardware_detecting``
     alone ends it with the expensive half of the warm still ahead of it, which is the window
     the grace exists for. But that marker also means "this hardware verdict is provisional,
@@ -1473,6 +1587,50 @@ def _torch_warm_in_progress() -> bool:
     """
     status = warm_status()
     return bool(status["started"] and not status["finished"] and status["alive"])
+
+
+# Modules that expose generation_in_flight(). The three engines answer for the render itself;
+# routes.inference answers for the image-persist tail, which outlives the engine's own marker.
+_MEDIA_BACKEND_MODULES = (
+    "core.inference.video",
+    "core.inference.diffusion",
+    "core.inference.sd_cpp_backend",
+    "routes.inference",
+)
+
+
+def _media_generation_active() -> bool:
+    """Check imported media backends without importing, constructing, or locking them."""
+    for module_name in _MEDIA_BACKEND_MODULES:
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
+        try:
+            if module.generation_in_flight():
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _inference_active() -> bool:
+    """True while at least one generation is in flight.
+
+    Published so the desktop health watchdog can tell a backend that is busy serving from
+    one that has died: a saturated host can stall the event loop past a probe budget, and
+    killing there ends a response the user is still waiting on.
+
+    A len() under a threading.Lock held only for that read, plus a bool off each resident
+    media backend, so the route stays cheap. Failures report "not busy", the same answer as
+    before this field existed.
+    """
+    try:
+        from state import active_generations
+        if active_generations.count() > 0:
+            return True
+    except Exception:
+        pass
+    return _media_generation_active()
 
 
 @app.get("/api/liveness")
@@ -1494,12 +1652,18 @@ async def liveness_check():
     # are the point of the route: it probes liveness every 15s and holds its startup grace
     # period open until a reply says the warm-up is over, because the warm thread's
     # `import torch` holds the GIL and can stall the next probes on a healthy process.
-    # The watchdog reads torch_warm_in_progress for that, not hardware_detecting: the GIL is
-    # held just as hard by transformers and unsloth_zoo, which import after detection settles.
+    # The watchdog reads torch_warm_in_progress for that, not hardware_detecting: later
+    # transformers and datasets stages can also hold the GIL after detection settles.
     # Both are non-blocking reads of module-level state, so unlike health this neither starts
     # detection nor waits on it and the route stays cheap.
     if _torch_warm_in_progress():
         alive["torch_warm_in_progress"] = True
+    # Startup is not the only window where a healthy backend can miss probes: an
+    # oversubscribed host generating on every slot stalls this loop the same way, long
+    # after the warm is over. The watchdog widens its failure budget on this marker
+    # rather than ending a stream that is still producing tokens.
+    if _inference_active():
+        alive["inference_active"] = True
     if _hardware_snapshot() is None:
         alive["hardware_detecting"] = True
         if os.environ.get(DISABLE_ENV_VAR) == "1":
@@ -1551,6 +1715,10 @@ async def health_check(request: Request):
     # to have liveness, so the warm marker has to reach it by the same path.
     if _torch_warm_in_progress():
         base["torch_warm_in_progress"] = True
+    # Lockstep with /api/liveness for the same reason: the fallback route has to carry the
+    # busy marker too, or an older backend loses the widened budget.
+    if _inference_active():
+        base["inference_active"] = True
     if snapshot is None:
         # chat_only above is the pre-detection default, not a measurement; clients should re-read.
         base["hardware_detecting"] = True
@@ -1560,13 +1728,15 @@ async def health_check(request: Request):
             # Nothing is detecting until a hardware-dependent operation runs; say so instead of making clients poll.
             base["hardware_detection_deferred"] = True
     auth = request.headers.get("authorization", "")
-    if not auth.lower().startswith("bearer "):
-        return base
+    bearer = auth.split(" ", 1)[1] if auth.lower().startswith("bearer ") else None
     try:
+        from auth.authentication import credentials_for_token
         from auth.authentication import get_current_subject as _gcs
-        from fastapi.security import HTTPAuthorizationCredentials
 
-        creds = HTTPAuthorizationCredentials(scheme = "Bearer", credentials = auth.split(" ", 1)[1])
+        # resolved rather than built, so a scope covering this route answers it in full
+        creds = await credentials_for_token(request, bearer)
+        if creds is None:
+            return base
         # Must await: a bare coroutine is truthy and would skip the auth check
         subject = await _gcs(creds)
     except HTTPException:
@@ -1584,6 +1754,12 @@ async def health_check(request: Request):
 
     platform_map = {"darwin": "mac", "win32": "windows", "linux": "linux"}
     device_type = platform_map.get(sys.platform, sys.platform)
+    # Alongside device_type, not folded into it: "mac" is every Darwin host, and an Intel
+    # Mac with a discrete GPU spills to system RAM like a PC while Apple Silicon has one
+    # pool and nowhere to spill. The UI words its memory warnings from this. Same gate the
+    # Metal context budget uses, and a pure platform check, so a health poll pays nothing.
+    from utils.hardware import is_apple_silicon
+
     authed = {
         **base,
         "version": UNSLOTH_VERSION,
@@ -1604,6 +1780,7 @@ async def health_check(request: Request):
         # cannot come from a different detection pass than the reason beside it.
         authed["chat_only_detail"] = snapshot[2]
         authed["device_type"] = device_type
+        authed["apple_silicon"] = is_apple_silicon()
         # base predates the bearer await; never ship "detecting" beside a measurement.
         authed.pop("hardware_detecting", None)
         # Same for the deferred marker: the client reads it first and would keep the old reason.
@@ -1642,7 +1819,7 @@ def studio_release_notes(
     refresh: bool = Query(False),
     _current_subject: str = Depends(get_current_subject),
 ):
-    """Return CHANGELOG.md notes for exactly `version` (never a nearby one)."""
+    """Return the newest release's notes. `version` is echoed, not looked up."""
     if not is_supported_version_query(version):
         raise HTTPException(status_code = 422, detail = "Invalid version.")
     return get_release_notes(version, refresh = refresh)
@@ -1748,6 +1925,15 @@ def _get_cached_system_gpu_info(logger) -> tuple[dict[str, Any], dict[str, Any]]
             )
             enriched_devices.append(enriched_dev)
 
+        # The tile divides the aggregate by the SUMMED per-device totals, so both must
+        # describe the same cards. The two probes enumerate independently: visibility
+        # drops a device whose mem_get_info raises, the aggregate side reads torch
+        # properties only and keeps it. A device in one and not the other inflates the
+        # percentage and floors free at 0, so identical index sets only (#7452).
+        aggregate_basis_matches = metrics_match and {
+            d.get("index") for d in utilization_info.get("devices", [])
+        } == {d.get("index") for d in enriched_devices}
+
         try:
             from core.inference.llama_cpp import LlamaCppBackend
             from utils.hardware import DeviceType, get_device
@@ -1775,6 +1961,11 @@ def _get_cached_system_gpu_info(logger) -> tuple[dict[str, Any], dict[str, Any]]
             "devices": enriched_devices,
             "backend": visibility_info.get("backend"),
             "gguf_gpu_ids_supported": gpu_ids_supported,
+            # Host-level used VRAM, for when no counter is attributable to one card
+            # (#7452). Only the Windows ROCm path sets it; None everywhere else.
+            "vram_used_gb_aggregate": utilization_info.get("vram_used_gb_aggregate")
+            if aggregate_basis_matches
+            else None,
         }
 
         # Keep inference placement separate on train-capable hosts where a forced Vulkan llama.cpp
@@ -1813,7 +2004,12 @@ def get_system_info(current_subject: str = Depends(get_current_subject)):
     import os
     import time
     import logging
-    from utils.hardware import get_device, export_capability, video_capability
+    from utils.hardware import (
+        get_device,
+        export_capability,
+        video_capability,
+        cpu_frequency_mhz,
+    )
     from utils.hardware.hardware import _backend_label
 
     logger = logging.getLogger(__name__)
@@ -1822,11 +2018,8 @@ def get_system_info(current_subject: str = Depends(get_current_subject)):
 
     memory = psutil.virtual_memory()
 
-    try:
-        cpu_freq = psutil.cpu_freq()
-    except Exception as e:
-        logger.debug(f"Failed to get CPU frequency: {e}")
-        cpu_freq = None
+    # Corrects psutil's 1000x-too-small Apple Silicon M4+ reading (issue #8519).
+    cpu_freq_mhz = cpu_frequency_mhz()
 
     try:
         disk = psutil.disk_usage(os.path.abspath(os.sep))
@@ -1869,9 +2062,7 @@ def get_system_info(current_subject: str = Depends(get_current_subject)):
             "logical_count": psutil.cpu_count(logical = True),
             "physical_count": psutil.cpu_count(logical = False),
             "usage_percent": psutil.cpu_percent(interval = None),
-            "frequency_mhz": round(cpu_freq.current, 2)
-            if cpu_freq and cpu_freq.current is not None
-            else None,
+            "frequency_mhz": cpu_freq_mhz,
         },
         "memory": {
             "total_gb": round(memory.total / 1024**3, 2),
@@ -2170,13 +2361,24 @@ def _is_live_cloudflare_frontend_request(scope, app_state) -> bool:
     return bool(expected_host) and request_host == expected_host
 
 
+def _is_remote_frontend_request(scope, app_state) -> bool:
+    """True for a request the desktop backend may answer with its packaged web UI.
+
+    Two ways in, both identified by the connection itself rather than a client
+    header the caller controls: Cloudflare's own edge, or one of the sockets the
+    runtime LAN listener bound (Settings > LAN access).
+    """
+    from lan_access import request_on_lan_listener
+    return _is_live_cloudflare_frontend_request(scope, app_state) or request_on_lan_listener(scope)
+
+
 class _TunnelOnlyFrontend:
     def __init__(self, frontend_app, app_state):
         self.frontend_app = frontend_app
         self.app_state = app_state
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or _is_live_cloudflare_frontend_request(scope, self.app_state):
+        if scope["type"] != "http" or _is_remote_frontend_request(scope, self.app_state):
             await self.frontend_app(scope, receive, send)
             return
         await Response(status_code = 404)(scope, receive, send)
@@ -2188,7 +2390,11 @@ def setup_frontend(
     *,
     tunnel_only: bool = False,
 ):
-    """Mount frontend static files (optional)"""
+    """Mount frontend static files (optional).
+
+    ``tunnel_only`` restricts the mount to remote callers: the Cloudflare edge, or
+    a socket the runtime LAN listener bound. See :func:`_is_remote_frontend_request`.
+    """
     if not build_path.exists():
         return False
 
@@ -2204,7 +2410,7 @@ def setup_frontend(
         app.mount("/assets", assets_app, name = "assets")
 
     def _frontend_request_allowed(request: Request) -> bool:
-        return not tunnel_only or _is_live_cloudflare_frontend_request(request.scope, app.state)
+        return not tunnel_only or _is_remote_frontend_request(request.scope, app.state)
 
     def _build_index_response(request: Request) -> Response:
         content = (build_path / "index.html").read_bytes()

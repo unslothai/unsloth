@@ -18,6 +18,18 @@ from core.inference.diffusion_prequant import (
     resolve_prequant_source,
 )
 from core.inference.video import VideoBackend
+
+
+@pytest.fixture(autouse = True)
+def _assume_the_restricted_load_is_available(monkeypatch):
+    """Policy/planning tests, not a check on whether this host's torchao imports.
+
+    Without this, a machine with no (or a skewed) torchao turns every hosted-prequant decision
+    below into "keep the dense weights". The capability is covered in test_diffusion_prequant.py."""
+    import core.inference.diffusion_prequant as _pq
+    monkeypatch.setattr(_pq, "restricted_prequant_load_supported", lambda scheme = None: True)
+
+
 from core.inference.video_families import (
     VideoFamily,
     detect_video_family,
@@ -86,7 +98,8 @@ def test_minimax_h3_declares_hosted_denoiser_checkpoints():
     assert set(video_family_prequant_schemes(fam)) == {"int8", "fp8"}
     for scheme in ("int8", "fp8"):
         repo = video_family_prequant_repo(fam, scheme)
-        # Curated hosted artifacts only: a third-party repo here would be unpickled by the loader.
+        # Curated hosted artifacts only: a third-party repo here would be served as this family's
+        # own weights, for a load that may never have asked for a scheme at all.
         assert repo and repo.startswith("unsloth/")
 
 
@@ -836,10 +849,18 @@ def test_the_planned_sizing_matches_the_measured_one_it_stands_in_for():
     assert fp32 is not None and bf16 is not None and fp32[0] == bf16[0] * 2
 
 
-def test_auto_keeps_the_released_denoiser_on_a_card_that_can_hold_it(monkeypatch):
-    """The whole point of making this conditional. A card with room gets exactly what it got
-    before: the released weights and the same picture, because the pin plus the regional compile
-    make it fast without changing a single value."""
+def test_auto_takes_the_hosted_denoiser_even_on_a_card_with_room_to_spare(monkeypatch):
+    """int8 is the DEFAULT, not a fallback, so having room for the released denoiser is not a
+    reason to load it.
+
+    It is not a tie broken on memory. Measured on an H200 and a B200, every component resident in
+    both rows, the hosted checkpoint is faster per generation AND 45 GB smaller:
+
+        released bf16   20.06 / 12.76 / 12.77 s   102.8 GB steady
+        hosted int8     23.08 / 11.74 / 11.84 s    57.8 GB steady
+
+    What it costs is the picture (mean SSIM 0.49 against the released weights), which is a choice
+    ``transformer_quant='none'`` reverses and which no amount of free VRAM changes."""
     import torch
 
     from core.inference import video as vid
@@ -859,7 +880,7 @@ def test_auto_keeps_the_released_denoiser_on_a_card_that_can_hold_it(monkeypatch
             task = "fl2va",
             base_repo = fam.base_repo,
         )
-        is None
+        == "int8"
     )
 
 
@@ -1103,3 +1124,58 @@ def test_the_fallback_is_resolved_before_the_download_is_planned(monkeypatch):
     predownload = src.index("_predownload_base")
     assert planned < verified < predownload
     assert 'h3_auto_denoiser or kwargs.get("transformer_quant")' in src
+
+
+def _h3_placement_probe(
+    monkeypatch,
+    *,
+    free_gb,
+    te_gb,
+    denoiser_gb,
+    speed = "default",
+):
+    """Drive just the placement decision: does this load install the CPU-offload rotation?"""
+    from core.inference import video as vid
+
+    monkeypatch.setattr(
+        vid,
+        "_h3_dense_denoiser_resident_bytes",
+        lambda fam, **kw: (int(denoiser_gb * 1e9), int(te_gb * 1e9)),
+    )
+    monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: int(free_gb * 1e9))
+    sizes = vid._h3_dense_denoiser_resident_bytes(None)
+    free = vid._h3_free_device_bytes("cuda")
+    return speed != vid.SPEED_OFF and vid._h3_dense_denoiser_fits(sizes, free)
+
+
+def test_a_card_that_holds_everything_does_not_install_the_offload_rotation(monkeypatch):
+    """``enable_auto_cpu_offload`` parks every component in HOST RAM and moves each one back inside
+    its own pre_forward. On a card that can hold the whole set that buys nothing and costs twice:
+    measured 42.2 GB peak host RSS on a 183 GB card with 103 GB of it in use, plus the conditioner
+    and VAEs crossing the bus on every generation."""
+    assert _h3_placement_probe(monkeypatch, free_gb = 183, te_gb = 40, denoiser_gb = 66) is True
+
+
+def test_a_card_that_cannot_hold_everything_keeps_the_rotation(monkeypatch):
+    # The rotation is what makes H3 run at all here, so the saving must never be taken on credit.
+    assert _h3_placement_probe(monkeypatch, free_gb = 80, te_gb = 40, denoiser_gb = 66) is False
+
+
+def test_speed_off_keeps_the_rotation_even_on_a_card_that_could_hold_everything(monkeypatch):
+    """The headroom in the sizing is for the family's DEFAULT frame count, so a resident set trades
+    the rotation's ability to absorb a much longer clip for throughput. An explicit speed_mode=off
+    is the one request that says do not make that trade."""
+    from core.inference import video as vid
+    assert (
+        _h3_placement_probe(monkeypatch, free_gb = 183, te_gb = 40, denoiser_gb = 66, speed = vid.SPEED_OFF)
+        is False
+    )
+
+
+def test_an_unreadable_card_keeps_the_rotation(monkeypatch):
+    # Cannot tell is not evidence of room, and guessing wrong here is an OOM rather than a slow load.
+    from core.inference import video as vid
+
+    monkeypatch.setattr(vid, "_h3_dense_denoiser_resident_bytes", lambda fam, **kw: (1, 1))
+    monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: None)
+    assert vid._h3_dense_denoiser_fits(vid._h3_dense_denoiser_resident_bytes(None), None) is False

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import re
 from pathlib import Path
 
 
@@ -44,6 +45,8 @@ def test_research_api_is_isolated_and_cursor_based() -> None:
 
 def test_research_mode_is_single_chat_and_detaches_without_cancel() -> None:
     adapter = source("features/chat/api/chat-adapter.ts")
+
+    inference_request = source("features/chat/research-inference-request.ts")
     thread = source("components/assistant-ui/thread.tsx")
     assert "runtime.deepResearchEnabled" in adapter
     assert "!options.pairId" in adapter
@@ -58,10 +61,10 @@ def test_research_mode_is_single_chat_and_detaches_without_cancel() -> None:
     assert "watchResearchRun(createdRun.id" in adapter
     assert "followResearchRun" not in adapter
     assert "inferenceRequest" in adapter
-    assert "Number.isFinite(params.temperature)" in adapter
-    assert "Number.isFinite(params.topP)" in adapter
-    assert "Number.isFinite(params.maxTokens)" in adapter
-    assert "Math.min(8192, Math.floor(params.maxTokens))" in adapter
+    assert "Number.isFinite(input.temperature)" in inference_request
+    assert "Number.isFinite(input.topP)" in inference_request
+    assert "Number.isFinite(input.maxTokens)" in inference_request
+    assert "Math.min(8192, Math.floor(input.maxTokens))" in inference_request
     assert '{ type: "text" as const, text: report }' in adapter
     # yields are deduped by status, or every streamed delta drives an autosave the server rejects.
     assert "run.status === yieldedStatus" in adapter
@@ -99,12 +102,11 @@ def test_research_reasoning_effort_is_clamped_to_the_loaded_model() -> None:
     # fall back to the template default. Must use the same helper and levels as normal local
     # chat so the two paths cannot drift apart again.
     adapter = source("features/chat/api/chat-adapter.ts")
-    branch = adapter.split("Deep research requires a selected local model.", 1)[1].split(
-        "createdRun = await createResearchRun({", 1
-    )[0]
-    assert "inferenceRequest.reasoningEffort = runtime.reasoningEffort;" not in branch
-    assert "inferenceRequest.reasoningEffort = clampReasoningEffortToLevels(" in branch
-    assert "runtime.reasoningEffortLevels," in branch
+    inference_request = source("features/chat/research-inference-request.ts")
+    assert "buildResearchInferenceRequest({" in adapter
+    assert "request.reasoningEffort = input.reasoningEffort;" not in inference_request
+    assert "request.reasoningEffort = input.clampReasoningEffort(" in inference_request
+    assert "input.reasoningEffortLevels," in inference_request
     assert "const localReasoningEffort = clampReasoningEffortToLevels(" in adapter
 
 
@@ -153,7 +155,18 @@ def test_research_presentation_is_integrated() -> None:
     assert "if (researchRunId) return null" in thread
     assert "!researchRunId &&" in thread
     assert "if (researchRunId || ownsResearchMessage)" in thread
-    assert "parentId === messageId && Boolean(getResearchRunId(message.metadata))" in thread
+    # A prompt whose reply is a research message loses its edit and delete controls. Ownership is
+    # a question about the whole repository, not the visible message list: a reply can sit on a
+    # branch the view is not showing. It used to be one export per user message (quadratic in
+    # thread length); the answer is now shared across the thread, so what is pinned here is the
+    # question and its scope rather than the expression that computed it.
+    owners = source("components/assistant-ui/research-reply-owners.ts")
+    assert "researchReplyOwners(" in thread
+    assert "() => aui.thread().export().messages" in thread
+    # An empty run id still means "no research reply", as Boolean() rather than a null check.
+    assert "Boolean(getResearchRunId(metadata))" in thread
+    assert "isResearchReply(message.metadata)" in owners
+    assert "owners.add(parentId)" in owners
     user_actions = thread.split("const UserActionBar: FC = () =>", 1)[1].split(
         "const EditComposer:", 1
     )[0]
@@ -214,8 +227,25 @@ def test_research_presentation_is_integrated() -> None:
         1
     ].split("setActiveThreadId:", 1)[0]
     assert "saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false)" in checkpoint_update
-    assert "const permissionMode = loadPermissionMode();" in store
-    assert "permissionMode," in store
+    # #8686 put a chat-scoped override in front of the global read here, so the literal
+    # `const permissionMode = loadPermissionMode();` this used to pin is gone. The read
+    # itself is the contract, and it is still per call: toggling deep research re-resolves
+    # the permission level, taking the chat's own level when it has one and the persisted
+    # global otherwise, rather than reusing a stale value. Scoped to the setter, because
+    # over the whole file this would also match the initial-state constant, which is a
+    # different property and would keep passing if this read were dropped.
+    deep_research_update = store.split("setDeepResearchEnabled: (deepResearchEnabled) =>", 1)[
+        1
+    ].split("setResearchWebsitePolicy:", 1)[0]
+    assert re.search(
+        r"const\s+permissionMode\s*=\s*threadScopedOverride\(\s*[\"']permissionMode[\"']\s*\)"
+        r"\s*\?\?\s*loadPermissionMode\(\)",
+        deep_research_update,
+    ), (
+        "toggling deep research must re-resolve permissionMode from the chat's own level "
+        "falling back to the persisted global"
+    )
+    assert "permissionMode," in deep_research_update
 
 
 def test_research_plan_and_status_contract() -> None:
@@ -239,7 +269,7 @@ def test_research_website_limits_are_configurable_and_sent_with_each_run() -> No
     assert 'label="Allow only"' in component
     assert 'label="Always block"' in component
     assert "their subdomains" in component
-    assert "<DialogTitle>Website access</DialogTitle>" in component
+    assert "<DialogTitle>Deep research</DialogTitle>" in component
     assert "DeepResearchWebsiteAccessDialog" in thread
     assert "researchWebsitePolicy" in store
     assert "CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY" in store
@@ -298,7 +328,9 @@ def test_research_stop_is_prompt_only_and_deduplicated() -> None:
     activity = source("features/chat/components/research-activity-panel.tsx")
 
     assert "stoppingResearchRunIdRef" in thread
-    assert 'activeResearchRun.status === "cancelling"' in thread
+    # The composer selects the run status, not the run object, so a streamed research delta
+    # does not re-render it. The cancelling guard reads that status.
+    assert 'activeResearchRunStatus === "cancelling"' in thread
     assert 'aria-label={researchStopping ? "Stopping research"' in thread
     assert "cancelResearchRun" not in activity
     assert "Stop research" not in activity

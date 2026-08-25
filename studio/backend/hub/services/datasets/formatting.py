@@ -43,6 +43,8 @@ from hub.utils.paths import (
     normalize_path,
     resolve_dataset_path,
 )
+from utils.datasets.audio_decode import ensure_audio_decoding
+from utils.paths.path_utils import drop_shadowed_appledouble_names
 
 logger = get_logger(__name__)
 
@@ -119,6 +121,22 @@ def _serialize_binary_value(data):
         return f"<binary data, {len(data)} bytes>"
 
 
+def _serialize_decoded_audio(value):
+    """Summarise a decoded Audio cell the way binary cells are summarised."""
+    samples = value.get("array") or []
+    rate = value.get("sampling_rate")
+    try:
+        seconds = len(samples) / rate if rate else None
+    except (TypeError, ZeroDivisionError):
+        seconds = None
+    detail = f"{len(samples)} samples"
+    if rate:
+        detail += f" @ {rate} Hz"
+    if seconds is not None:
+        detail += f", {seconds:.1f}s"
+    return f"<audio, {detail}>"
+
+
 def _serialize_preview_value(value):
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
@@ -140,6 +158,13 @@ def _serialize_preview_value(value):
             value.keys() - {"bytes", "path"}
         ):
             return _serialize_binary_value(raw)
+        # A decoded Audio cell is {"array", "sampling_rate", "path"}. torchcodec hands back
+        # an AudioDecoder, which falls through to str() below, but the soundfile fallback
+        # returns the waveform and the dataset formatter turns it into a plain list -- one
+        # float per sample, so ten preview rows of a few seconds each is tens of MB of JSON
+        # and the client dies rendering it.
+        if "sampling_rate" in value and isinstance(value.get("array"), (list, tuple)):
+            return _serialize_decoded_audio(value)
         return {str(key): _serialize_preview_value(item) for key, item in value.items()}
 
     if isinstance(value, (list, tuple)):
@@ -202,7 +227,12 @@ def _select_tier1_repo_file(
     train_split: str,
     allow_unlabeled_fallback: bool = False,
 ) -> Optional[str]:
-    data_files = sorted(f for f in files if any(f.lower().endswith(ext) for ext in DATA_EXTS))
+    # "._train.parquet" sorts first and would be handed to the single-file preview load.
+    data_files = sorted(
+        f
+        for f in drop_shadowed_appledouble_names(list(files))
+        if any(f.lower().endswith(ext) for ext in DATA_EXTS)
+    )
     if not data_files:
         return None
     tabular_files = [f for f in data_files if any(f.lower().endswith(ext) for ext in _TABULAR_EXTS)]
@@ -314,6 +344,9 @@ def check_format_response(
         PREVIEW_SIZE = 10
 
         logger.info(f"Checking format for dataset: {request.dataset_name}")
+
+        # An audio column decodes on the first preview row, so this precedes every tier.
+        ensure_audio_decoding()
 
         try:
             dataset_path = resolve_dataset_path(request.dataset_name)

@@ -452,11 +452,15 @@ def test_deepseek_v3_with_call_terminator_parses_in_strict_mode():
 
 def test_strip_tool_markup_removes_nested_wrapperless_gemma_call():
     # Wrapper-less Gemma call with a NESTED object arg: the balanced helper must strip the whole call, not leave a trailing ``}``.
-    text = "answer: call:f{loc:{city:NYC},n:3} done"
+    text = "answer:\ncall:f{loc:{city:NYC},n:3} done"
     stripped = strip_tool_markup(text, final = True)
     assert "call:f" not in stripped
     assert "}" not in stripped
     assert "answer:" in stripped and "done" in stripped
+
+    # Mid-sentence the same shape is a sentence about the syntax: kept whole.
+    prose = "answer: call:f{loc:{city:NYC},n:3} done"
+    assert strip_tool_markup(prose, final = True) == prose
 
 
 # Pass-3 review findings: bare-Kimi streaming (non-final) strip symmetry
@@ -482,10 +486,14 @@ def test_routes_layer_strip_removes_wrapperless_gemma_call():
     # Gemma 4 (skip_special_tokens) emits a wrapper-less ``call:NAME{..}`` with no XML markers.
     from routes.inference import _strip_tool_xml as _routes_strip
 
-    text = 'before call:web_search{query:"weather in Sydney"} after'
+    text = 'before\ncall:web_search{query:"weather in Sydney"} after'
     stripped = _routes_strip(text)
     assert "call:web_search" not in stripped
     assert "before" in stripped and "after" in stripped
+
+    # The same call mid-sentence reads as prose, so the route keeps the answer intact.
+    prose = 'before call:web_search{query:"weather in Sydney"} after'
+    assert _routes_strip(prose) == prose
 
 
 def test_deepseek_envelope_end_inside_arg_string_is_not_a_truncation():
@@ -536,13 +544,21 @@ def test_wrapperless_gemma_call_gated_by_enabled_tools():
     assert "call:foo{x:1}" in strip_tool_markup(
         prose, final = True, enabled_tool_names = {"web_search"}
     )
-    # An enabled name is still a real call (parsed, and stripped from display).
-    real = "Answer. call:web_search{query:hi}"
+    # An enabled name is still a real call, and a call at a line boundary (the shape
+    # Gemma emits) is stripped from display.
+    real = "Answer.\ncall:web_search{query:hi}"
     calls = parse_tool_calls_from_text(real, enabled_tool_names = {"web_search"})
     assert [c["function"]["name"] for c in calls] == ["web_search"], calls
     assert "call:web_search" not in strip_tool_markup(
         real, final = True, enabled_tool_names = {"web_search"}
     )
+
+    # Mid-sentence the strip is deliberately NOT the parser's mirror: the call is still
+    # promoted, and its text stays visible instead of the answer being deleted around it.
+    inline = "Answer. call:web_search{query:hi}"
+    inline_calls = parse_tool_calls_from_text(inline, enabled_tool_names = {"web_search"})
+    assert [c["function"]["name"] for c in inline_calls] == ["web_search"], inline_calls
+    assert strip_tool_markup(inline, final = True, enabled_tool_names = {"web_search"}) == inline
 
 
 def test_kimi_section_end_inside_arg_string_is_not_a_truncation():

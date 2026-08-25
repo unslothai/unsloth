@@ -198,6 +198,43 @@ def _md_text(text: str) -> str:
 SUMMARY_HEADING = "### VirusTotal release asset scan"
 
 
+def submission_packet_lines(detected: Sequence[FileReport]) -> list[str]:
+    """Pre-fill a false-positive submission for every flagged asset.
+
+    The build job assembles one too, but only for the Windows `-setup.exe`, so the detection
+    that actually arrived -- `Trojan:Script/Wacatac.B!ml` on the 0.1.701-beta Linux AppImage --
+    produced nothing to submit. Anything flagged here gets a packet, whatever built it.
+
+    Engine names are not repeated: third-party text, already escaped under "Flagging engines".
+    """
+    lines = [
+        "",
+        "#### False-positive submission packet",
+        "",
+        "Submit each flagged asset before announcing this release.",
+        "",
+        "- Microsoft: <https://www.microsoft.com/en-us/wdsi/filesubmission>, "
+        "**Software developer** -> **Incorrectly detected as malware/malicious** "
+        "(50 MB cap; use <https://security.microsoft.com/reportsubmission> for larger bundles).",
+        "- Any other flagging vendor: use that vendor's own false-positive form. "
+        "Microsoft clearance does not carry across engines.",
+        "",
+        "| Asset | SHA-256 | Size |",
+        "| --- | --- | ---: |",
+    ]
+    for report in detected:
+        lines.append(
+            f"| `{_md_code(report.name)}` | `{_md_code(report.sha256 or 'n/a')}` | "
+            f"{report.size} bytes |"
+        )
+    lines += [
+        "",
+        "> Clearance is per hash. It fixes the release you submit and nothing after it, so this",
+        "> is a complement to signing, not a substitute.",
+    ]
+    return lines
+
+
 def render_markdown(reports: Sequence[FileReport], threshold: int) -> str:
     """Render the job-summary table. Kept pure so it is unit testable."""
     lines = [
@@ -230,6 +267,13 @@ def render_markdown(reports: Sequence[FileReport], threshold: int) -> str:
         lines += ["", "#### Notes", ""]
         for report in notes:
             lines.append(f"- `{_md_code(report.name)}`: {_md_text(report.note)}")
+
+    # Keyed on the counts, not the engine list: stats and results are separate fields of the
+    # same response, so an asset can carry a flagged count with no readable results map. The
+    # table would report it and the packet would skip it, which is the one asset that needs one.
+    flagged = [report for report in reports if report.stats is not None and report.stats.flagged]
+    if flagged:
+        lines += submission_packet_lines(flagged)
 
     lines += ["", "<details><summary>SHA-256</summary>", ""]
     for report in reports:

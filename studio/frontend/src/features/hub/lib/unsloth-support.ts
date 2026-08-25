@@ -31,6 +31,7 @@ const UNSUPPORTED_PIPELINE_TAGS: ReadonlySet<string> = new Set([
   "text-to-video",
   "video-to-video",
   "image-to-video",
+  "image-text-to-video",
   "video-text-to-text",
   "video-classification",
   "unconditional-image-generation",
@@ -144,6 +145,7 @@ const IMAGE_PAGE_TASKS: ReadonlySet<string> = new Set([
 const VIDEO_PAGE_TASKS: ReadonlySet<string> = new Set([
   "text-to-video",
   "image-to-video",
+  "image-text-to-video",
 ]);
 
 /** Which Studio page runs this pipeline task, if any. */

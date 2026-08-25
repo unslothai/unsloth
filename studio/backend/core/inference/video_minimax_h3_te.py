@@ -47,6 +47,7 @@ nothing configured.
 
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Any, Optional
 
 # The ConvRot primitives, shared with the denoiser's hosted INT8 checkpoint. Re-exported below
@@ -155,8 +156,15 @@ def h3_te_resident_gb(scheme: Optional[str], *, bf16_gb: float) -> float:
 # exactly how they would stop agreeing. Both stay importable from here.
 
 
+@lru_cache(maxsize = None)
 def _int8_convrot_linear_class() -> Any:
-    """The ConvRot INT8 ``nn.Linear`` stand-in, built lazily so importing this module never imports torch."""
+    """The ConvRot INT8 ``nn.Linear`` stand-in, built lazily so importing this module never imports
+    torch, and built exactly ONCE.
+
+    One load already shares a single class across every projection, so the cache is about the
+    SECOND load in a process: a fresh class there is a fresh ``___check_type_id`` guard, which
+    retraces every compiled block that survived the first one. Same reason the denoiser's
+    ``convrot_linear_class`` is cached."""
     import torch
     from torch import nn
 
@@ -284,6 +292,7 @@ def load_h3_quantized_text_encoder(
     hf_token: Optional[str] = None,
     cache_dir: Optional[str] = None,
     local_base: Optional[str] = None,
+    local_files_only: bool = False,
     logger: Any = None,
 ) -> Optional[Any]:
     """The hosted quantized Qwen3-VL conditioner for ``scheme``, on CPU, ready to seed into the
@@ -298,6 +307,14 @@ def load_h3_quantized_text_encoder(
     the artifact download above and every other loader call in this backend do -- unset, it
     resolves through huggingface_hub's import-time constant instead and can re-download into a root
     Studio no longer reads (or fail outright on an offline host that has already staged it).
+
+    ``local_files_only`` is a load nobody asked for, which may not fetch anything. The artifact is
+    ~27 GB, and the caller's staging phase (``_fetch_h3_te_quant``) has already accepted it -- so
+    without the flag this is where that promise is broken, after the resident pipeline was evicted.
+    It rides with the same other-root reuse the stager uses: the stager accepts a copy living only
+    under huggingface_hub's import-time root, so a lookup pinned to ``cache_dir`` alone would refuse
+    an artifact the load was cleared on and drop to the dense encoder the base pull already left
+    behind. A genuine miss still returns None through the handler below.
 
     CPU on purpose: ``enable_auto_cpu_offload`` owns placement for every component, and a
     pre-placed encoder would only be moved again."""
@@ -314,7 +331,14 @@ def load_h3_quantized_text_encoder(
         from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
         path = hf_hub_download_with_xet_fallback(
-            H3_TE_QUANT_REPO, filename, hf_token, cache_dir = cache_dir
+            H3_TE_QUANT_REPO,
+            filename,
+            hf_token,
+            cache_dir = cache_dir,
+            # Resolve the artifact through whichever root holds it, exactly as the stager that
+            # cleared this load did; pinned to cache_dir alone a moved cache folder re-pulls 27 GB.
+            reuse_other_cache_root = True,
+            local_files_only = local_files_only,
         )
 
         config = transformers.AutoConfig.from_pretrained(
@@ -322,6 +346,9 @@ def load_h3_quantized_text_encoder(
             subfolder = "text_encoder",
             token = hf_token,
             cache_dir = cache_dir,
+            # ``local_base`` is None on an offline load (the scoped base predownload stands down),
+            # so this reads the hub id and would go out for the config without the flag.
+            local_files_only = local_files_only,
         )
         text_config = getattr(config, "text_config", config)
         released_layers = int(getattr(text_config, "num_hidden_layers", 0))

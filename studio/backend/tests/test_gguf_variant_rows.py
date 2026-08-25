@@ -26,6 +26,7 @@ from hub.utils.gguf import (
     gguf_variant_family,
     gguf_variant_key,
     group_gguf_variant_files,
+    is_qualified_gguf_variant_key,
     list_local_gguf_variants,
 )
 from hub.utils.gguf_plan import build_gguf_variant_plans, is_main_gguf_variant_path
@@ -47,6 +48,12 @@ SHARDED_FILES = [
     ("BF16/DeepSeek-R1-BF16-00001-of-00003.gguf", 40),
     ("BF16/DeepSeek-R1-BF16-00002-of-00003.gguf", 40),
     ("BF16/DeepSeek-R1-BF16-00003-of-00003.gguf", 20),
+]
+
+H3_FILES = [
+    "minimax_h3_fl2va_pruned-UD-Q2_K_XL.gguf",
+    "minimax_h3_fl2va_pruned-Q4_K.gguf",
+    "minimax_h3_ref2va_pruned-Q4_K.gguf",
 ]
 
 
@@ -196,6 +203,13 @@ def test_h3_variant_keys_match_the_loader_copy():
         "minimax_h3_ref2va_pruned-Q4_K_M.gguf",
     ):
         assert _gguf_variant_key(filename) == gguf_variant_key(filename)
+
+
+def test_h3_root_stems_are_qualified_keys():
+    qualified = gguf_variant_key(H3_FILES[0])
+    assert qualified == "minimax_h3_fl2va_pruned-UD-Q2_K_XL"
+    assert is_qualified_gguf_variant_key(qualified)
+    assert not is_qualified_gguf_variant_key("UD-Q2_K_XL")
 
 
 def test_local_lister_matches_the_remote_shape(tmp_path):
@@ -484,6 +498,11 @@ def test_the_exact_key_wins_over_the_bare_quant_label():
     assert _main_variant_rank("model-UD-Q4_K_XL.gguf", "udq4kxl") == 0
     assert _main_variant_rank("exp-a/model-Q6_K.gguf", "expa/model-Q6_K") is None
     assert _main_variant_rank("exp-a/model-Q6_K.gguf", "exp-a/model-q6_k") == 0
+    h3 = "minimax_h3_ref2va_pruned-Q4_K"
+    assert _main_variant_rank(f"{h3}.gguf", h3) == 0
+    assert _main_variant_rank(f"{h3}.gguf", "Q4_K") is None
+    assert _main_variant_rank("minimax_h3_fl2va_pruned-Q4_K.gguf", "Q4_K") is None
+    assert _main_variant_rank(f"{h3}.gguf", "minimax-h3-ref2va-pruned-Q4_K") is None
 
 
 def test_two_checkpoints_in_one_directory_get_distinguishable_labels():
@@ -523,6 +542,63 @@ def test_the_model_config_listers_advertise_the_qualified_keys(tmp_path):
         resolved = _find_local_gguf_by_variant(str(snapshot), variant.quant)
         assert resolved is not None, variant.quant
         assert _gguf_variant_key(Path(resolved).relative_to(snapshot).as_posix()) == variant.quant
+
+
+def test_the_model_config_lister_advertises_h3_root_stem_keys(tmp_path):
+    """H3 qualifies partitions in the root filename rather than a directory. The generic
+    lister must still advertise the key that the Hub worker plans and the loader resolves."""
+    from utils.models.model_config import list_local_gguf_variants
+
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    for name in H3_FILES:
+        (snapshot / name).write_bytes(b"x" * 64)
+    (snapshot / "config.json").write_text("{}")
+
+    variants, _ = list_local_gguf_variants(str(snapshot))
+    assert {variant.quant for variant in variants} == {gguf_variant_key(name) for name in H3_FILES}
+    for variant in variants:
+        assert _find_local_gguf_by_variant(str(snapshot), variant.quant) is not None
+
+
+def test_h3_variants_require_the_advertised_full_stem():
+    """Root-level partition keys stay canonical instead of creating a second state identity."""
+    from types import SimpleNamespace
+
+    from core.inference.openai_auto_download import _gguf_variants, _match_variant
+    from hub.utils.gguf_plan import plan_for_variant
+
+    plans = build_gguf_variant_plans([_Sibling(name, 64) for name in H3_FILES])
+    variants = _gguf_variants([SimpleNamespace(rfilename = name, size = 64) for name in H3_FILES])
+
+    ud_key = gguf_variant_key(H3_FILES[0]).lower()
+    assert {key.lower() for key in variants} == set(plans)
+    assert plan_for_variant(plans, H3_FILES[0][:-5]) is plans[ud_key]
+    assert _match_variant(H3_FILES[0][:-5], variants).lower() == ud_key
+    assert plan_for_variant(plans, "UD-Q2_K_XL") is None
+    assert _match_variant("UD-Q2_K_XL", variants) is None
+    assert plan_for_variant(plans, "Q4_K") is None
+    assert _match_variant("Q4_K", variants) is None
+
+
+def test_h3_auto_download_excludes_the_bundled_text_encoders():
+    """The Qwen GGUFs are load-time companions, never selectable H3 transformers."""
+    from types import SimpleNamespace
+
+    from core.inference.openai_auto_download import _gguf_variants
+
+    siblings = [
+        SimpleNamespace(rfilename = name, size = 64)
+        for name in [
+            *H3_FILES,
+            "qwen3vl_32b_minimax_h3-Q2_K_M.gguf",
+            "qwen3vl_32b_minimax_h3-Q4_K_M.gguf",
+        ]
+    ]
+    variants = _gguf_variants(siblings, "unsloth/MiniMax-H3-GGUF")
+    assert set(variants) == {gguf_variant_key(name) for name in H3_FILES}
+    assert "Q2_K_M" not in variants
+    assert "Q4_K_M" not in variants
 
 
 def test_the_ordinary_repo_keeps_its_bare_labels(tmp_path):
@@ -770,6 +846,27 @@ def test_deleting_a_container_variant_accepts_the_bare_quant_the_download_admits
     assert not (snap / "weights" / "model-Q4_K_M.gguf").is_symlink()
 
 
+def test_deleting_an_h3_variant_requires_the_full_stem(tmp_path):
+    from fastapi import HTTPException
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+
+    repo, snap = _cache_repo(tmp_path, "unsloth/MiniMax-H3-GGUF", H3_FILES)
+    _delete_gguf_variant_from_repos(
+        repo.repo_id,
+        H3_FILES[0][:-5],
+        [repo],
+        None,
+        root = tmp_path,
+    )
+    assert not (snap / H3_FILES[0]).is_symlink()
+
+    with pytest.raises(HTTPException) as exc_info:
+        _delete_gguf_variant_from_repos(repo.repo_id, "UD-Q2_K_XL", [repo], None, root = tmp_path)
+    assert exc_info.value.status_code == 404
+    assert (snap / H3_FILES[1]).is_symlink()
+    assert (snap / H3_FILES[2]).is_symlink()
+
+
 def test_an_ambiguous_bare_quant_deletes_nothing(tmp_path):
     """Two checkpoints at one quant: the bare name genuinely does not name one of them, and
     deleting the wrong one is unrecoverable. Same rule ``plan_for_variant`` applies."""
@@ -986,6 +1083,8 @@ def test_the_load_guard_sees_the_alias_the_delete_accepts():
     assert same("Q4_K_M", "weights/model-Q4_K_M")
     assert same("weights/model-Q4_K_M", "Q4_K_M")
     assert same("Q4_K_M", "Q4_K_M")
+    assert same("Q6_K", "minimax_h3_fl2va_pruned-Q6_K")
+    assert not same("minimax_h3_fl2va_pruned-Q6_K", "minimax_h3_ref2va_pruned-Q6_K")
     # Two different checkpoints are never the same, in either direction.
     assert not same("Q4_K_M", "Q6_K")
     assert not same("distilled/model-Q6_K", "other/model-Q6_K")

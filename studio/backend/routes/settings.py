@@ -2,16 +2,26 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import functools
+import hashlib
 import re
 import threading
-from typing import Any, Literal, Optional
+import time
+from typing import Any, Literal, Optional, get_args
 from urllib.parse import unquote, urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError, field_validator
 
-from auth.authentication import authenticated_via_api_key, get_current_subject
+from auth.authentication import (
+    authenticated_via_api_key,
+    get_current_credential,
+    get_current_subject,
+)
 from auth.storage import rotate_preview_link_secret
+
+from routes.provider_credentials import current_credential_write, require_ui_session
+
+from storage import credential_secrets
 from core.rag.config import default_gguf_repo, effective_gguf_repo
 from loggers import get_logger
 from utils.utils import safe_error_detail, log_and_http_error
@@ -30,11 +40,16 @@ from utils.upload_limits import (
     upload_limit_bytes,
     upload_limit_label,
 )
+from utils.xet_notice_settings import reserve_xet_notice
 from utils.helper_precache_settings import (
     DEFAULT_HELPER_PRECACHE_ENABLED,
     get_helper_precache_enabled,
     helper_model_disabled_by_env,
     set_helper_precache_enabled,
+)
+from utils.download_transport_settings import (
+    get_download_transport_mode,
+    set_download_transport_mode,
 )
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES, chat_template_byte_length
 from utils.coding_agents import CODING_AGENTS, detect_installed_coding_agents
@@ -46,34 +61,61 @@ from utils.model_memory_settings import (
     set_model_memory_settings,
     should_mlock,
 )
+from utils.vram_budget_settings import (
+    VRAM_FRACTION_DEFAULT,
+    VRAM_FRACTION_MAX,
+    VRAM_FRACTION_MIN,
+    get_vram_budget_state,
+    set_vram_budget_fraction,
+)
 from utils.openai_auto_switch_settings import (
     BATCH_SIZE_MAX,
     BATCH_SIZE_MIN,
+    CACHE_RAM_MAX_MIB,
+    CACHE_RAM_MIN_MIB,
+    CTX_CHECKPOINTS_MAX,
     DEFAULT_AUTO_UNLOAD_API_ONLY,
     DEFAULT_AUTO_UNLOAD_KEEP_KV,
+    DEFAULT_MEDIA_AUTO_SWITCH_ENABLED,
+    DEFAULT_MEDIA_AUTO_UNLOAD_IDLE_SECONDS,
     DEFAULT_OPENAI_AUTO_DOWNLOAD_ENABLED,
     DEFAULT_OPENAI_AUTO_SWITCH_ENABLED,
     MAX_GPU_ID,
     PARALLEL_SLOTS_MAX,
     PARALLEL_SLOTS_MIN,
     cached_repo_alias_keys,
+    is_cache_load_path_key,
     get_auto_unload_api_only,
     get_auto_unload_idle_seconds,
     get_auto_unload_keep_kv,
+    get_media_auto_switch_enabled,
+    get_media_auto_unload_idle_seconds,
     get_model_overrides,
     get_openai_auto_switch_enabled,
     resolve_model_override_key,
     resolve_model_override_keys,
     get_stored_auto_unload_idle_seconds,
+    get_stored_media_auto_unload_idle_seconds,
     get_stored_openai_auto_download_enabled,
     idle_unload_is_configured,
     set_model_override,
     set_openai_auto_switch,
 )
+from utils.keyless_api_access import (
+    access_exposure,
+    get_keyless_api_access_settings,
+    set_keyless_api_access,
+)
 from utils.preview_sharing_settings import (
     DEFAULT_PREVIEW_SHARING_ENABLED,
     get_preview_sharing_enabled,
     set_preview_sharing_enabled,
+)
+from utils.lan_access_settings import (
+    lan_access_status,
+    set_lan_access_auto_start,
+    start_lan_access,
+    stop_lan_access,
 )
 from utils.remote_access_settings import (
     DEFAULT_REMOTE_ACCESS_AUTO_START,
@@ -92,10 +134,357 @@ from utils.embedding_model_settings import (
     validate_embedding_model,
 )
 from utils.hf_cache_settings import cache_status, get_hf_cache_paths, set_hf_cache_home
+from utils.llama_cpp_path_settings import (
+    MAX_CUSTOM_LLAMA_CPP_PATH_LENGTH,
+    custom_llama_cpp_path_status,
+    set_custom_llama_cpp_path,
+)
+from utils.media_generation_preset_settings import (
+    delete_media_generation_preset,
+    get_media_generation_preset_settings,
+    set_media_generation_preset_settings,
+    upsert_media_generation_preset,
+)
 
 router = APIRouter()
 
 logger = get_logger(__name__)
+
+
+class ImageGenerationPresetParams(BaseModel):
+    """Bounds track DiffusionGenerateRequest. A preset the generate endpoint would refuse is not
+    a usable preset: selecting it would make every following Generate fail validation."""
+
+    model_config = ConfigDict(extra = "forbid")
+
+    negativePrompt: str = ""
+    width: int = Field(default = 1024, ge = 256, le = 2048, multiple_of = 16)
+    height: int = Field(default = 1024, ge = 256, le = 2048, multiple_of = 16)
+    steps: int = Field(default = 9, ge = 1, le = 100)
+    guidance: float = Field(default = 0, ge = 0, le = 20)
+    batchSize: int = Field(default = 1, ge = 1, le = 32)
+    runs: int = Field(default = 1, ge = 1)
+
+
+class VideoGenerationPresetParams(BaseModel):
+    """Bounds track VideoGenerateRequest, as the image params track theirs."""
+
+    model_config = ConfigDict(extra = "forbid")
+
+    negativePrompt: str = ""
+    width: int = Field(default = 768, ge = 32, le = 2048)
+    height: int = Field(default = 512, ge = 32, le = 2048)
+    durationSeconds: float = Field(default = 3, gt = 0, le = 3600)
+    steps: int = Field(default = 8, ge = 1, le = 100)
+    guidance: float = Field(default = 1, ge = 0, le = 20)
+    flowShift: Optional[float] = Field(default = None, gt = 0, le = 100)
+    audioFlowShift: Optional[float] = Field(default = None, gt = 0, le = 100)
+
+
+class MediaGenerationPreset(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    name: str = Field(..., min_length = 1, max_length = 80)
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        name = value.strip()
+        if not name or name == "Default":
+            raise ValueError("Preset name is reserved or empty")
+        return name
+
+
+class ImageGenerationPreset(MediaGenerationPreset):
+    params: ImageGenerationPresetParams
+
+
+class VideoGenerationPreset(MediaGenerationPreset):
+    params: VideoGenerationPresetParams
+
+
+class MediaGenerationPresetState(BaseModel):
+    """A saved generation recipe and the selection that owns it.
+
+    Model-load options are deliberately not here: they take effect only on a reload, they follow
+    the hardware and the checkpoint rather than the recipe, and the resident build already reports
+    them, so a second stored copy would only ever compete with it.
+    """
+
+    model_config = ConfigDict(extra = "forbid")
+
+    activePreset: str = Field(default = "Default", min_length = 1, max_length = 80)
+
+
+class ImageGenerationPresetState(MediaGenerationPresetState):
+    currentParams: ImageGenerationPresetParams = Field(default_factory = ImageGenerationPresetParams)
+
+
+class VideoGenerationPresetState(MediaGenerationPresetState):
+    currentParams: VideoGenerationPresetParams = Field(default_factory = VideoGenerationPresetParams)
+
+
+class ImageGenerationPresetSettings(ImageGenerationPresetState):
+    # No cap on the read: upsert_media_generation_preset owns the limit, and refusing to
+    # report a store that somehow exceeds it would only turn a GET into a 500.
+    customPresets: list[ImageGenerationPreset] = Field(default_factory = list)
+    saved: bool = False
+
+
+class VideoGenerationPresetSettings(VideoGenerationPresetState):
+    # No cap on the read: upsert_media_generation_preset owns the limit, and refusing to
+    # report a store that somehow exceeds it would only turn a GET into a 500.
+    customPresets: list[VideoGenerationPreset] = Field(default_factory = list)
+    saved: bool = False
+
+
+def _nested_model(annotation: Any) -> Optional[type[BaseModel]]:
+    for candidate in (annotation, *get_args(annotation)):
+        if isinstance(candidate, type) and issubclass(candidate, BaseModel):
+            return candidate
+    return None
+
+
+def _readable(model: type[BaseModel], value: Any) -> Any:
+    """Drop what this build's schema does not define, keeping every field it does.
+
+    `extra = "forbid"` is right for a submitted payload but wrong for reading storage back: a blob
+    holding one field from a newer build would otherwise fail validation, and a stored recipe the
+    user can no longer read is worse than one missing a field this build cannot render anyway.
+    """
+    if isinstance(value, list):
+        return [_readable(model, item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    readable = {}
+    for name, field in model.model_fields.items():
+        if name not in value:
+            continue
+        nested = _nested_model(field.annotation)
+        readable[name] = _readable(nested, value[name]) if nested else value[name]
+    return readable
+
+
+def _without_field_at_location(value: Any, location: tuple[Any, ...]) -> tuple[Any, bool]:
+    """Return a copy with one invalid leaf removed from a nested model payload."""
+    if not location:
+        return value, False
+    key, *rest = location
+    if not isinstance(value, dict) or key not in value:
+        return value, False
+    result = dict(value)
+    if not rest:
+        result.pop(key)
+        return result, True
+    nested, removed = _without_field_at_location(result[key], tuple(rest))
+    if removed:
+        result[key] = nested
+    return result, removed
+
+
+def _validated_without_invalid_fields(
+    schema: type[BaseModel], payload: dict
+) -> tuple[BaseModel, list[tuple[Any, ...]]]:
+    """Validate, dropping only the fields that fail.
+
+    Resetting the whole recipe over one unreadable field would hand the client schema defaults,
+    which it then autosaves over the rest of a perfectly good stored recipe.
+    """
+    remaining = payload
+    removed_locations = []
+    while True:
+        try:
+            return schema.model_validate(remaining), removed_locations
+        except ValidationError as exc:
+            for error in exc.errors():
+                location = tuple(error.get("loc", ()))
+                remaining, removed = _without_field_at_location(remaining, location)
+                if removed:
+                    removed_locations.append(location)
+                    break
+            else:
+                return schema(), removed_locations
+
+
+_MISSING = object()
+
+
+def _value_at_location(value: Any, location: tuple[Any, ...]) -> Any:
+    for key in location:
+        if not isinstance(value, dict) or key not in value:
+            return _MISSING
+        value = value[key]
+    return value
+
+
+def _with_value_at_location(
+    value: Any, location: tuple[Any, ...], replacement: Any
+) -> tuple[Any, bool]:
+    if not location:
+        return replacement, True
+    key, *rest = location
+    if not isinstance(value, dict) or key not in value:
+        return value, False
+    result = dict(value)
+    nested, replaced = _with_value_at_location(result[key], tuple(rest), replacement)
+    if replaced:
+        result[key] = nested
+    return result, replaced
+
+
+def _preserve_recovered_defaults(schema: type[BaseModel], stored: dict, submitted: dict) -> dict:
+    """Do not mistake a recovery default for an edit to an unreadable stored field.
+
+    A downgraded GET omits known fields whose values this schema cannot validate, then Pydantic
+    supplies their defaults in the response. The client cannot tell those defaults from stored
+    values and echoes them in its next state write. Preserve the raw leaf only while the submitted
+    value is still the synthesized value; a real edit remains authoritative.
+    """
+    recovered, locations = _validated_without_invalid_fields(schema, _readable(schema, stored))
+    recovered_values = recovered.model_dump()
+    merged = submitted
+    for location in locations:
+        previous = _value_at_location(stored, location)
+        submitted_value = _value_at_location(submitted, location)
+        recovered_value = _value_at_location(recovered_values, location)
+        if (
+            previous is not _MISSING
+            and submitted_value is not _MISSING
+            and recovered_value is not _MISSING
+            and submitted_value == recovered_value
+        ):
+            merged, _ = _with_value_at_location(merged, location, previous)
+    return merged
+
+
+def _validated_readable_model(schema: type[BaseModel], payload: Any) -> Optional[BaseModel]:
+    try:
+        return schema.model_validate(_readable(schema, payload))
+    except ValidationError:
+        return None
+
+
+def _get_generation_preset_settings(kind, schema):
+    stored = get_media_generation_preset_settings(kind)
+    try:
+        response = schema.model_validate(_readable(schema, stored))
+    except ValidationError:
+        # A value this build cannot represent at all. Drop only what fails: one unreadable entry
+        # costs neither the rest of the list nor the state, which is validated on its own here.
+        logger.warning("Dropping unreadable %s generation preset entries", kind)
+        presets = schema.model_fields["customPresets"].annotation
+        item = _nested_model(get_args(presets)[0] if get_args(presets) else presets)
+        readable = []
+        # Only a list is a preset collection. Recovery exists so a store this build cannot
+        # represent still reads; iterating a scalar here would answer 500 instead, which is the
+        # one outcome it is meant to prevent. _custom_presets takes the same view on the write.
+        raw_presets = stored.get("customPresets")
+        for raw in raw_presets if isinstance(raw_presets, list) else []:
+            validated = _validated_readable_model(item, raw)
+            if validated is not None:
+                readable.append(validated)
+        state = {
+            key: value for key, value in _readable(schema, stored).items() if key != "customPresets"
+        }
+        response, _ = _validated_without_invalid_fields(
+            schema, {**state, "customPresets": readable}
+        )
+    # Saved means the store owns the CURRENT recipe, not merely that something is stored. A blob
+    # holding named presets but no recipe -- a preset write that landed while the state write did
+    # not -- would otherwise hand back schema defaults dressed as the user's own choice, and the
+    # client suppresses the resident model's defaults for exactly as long as it believes that.
+    response.saved = isinstance(stored.get("currentParams"), dict)
+    return response
+
+
+@router.get(
+    "/generation-presets/image",
+    response_model = ImageGenerationPresetSettings,
+)
+def get_image_generation_preset_settings(
+    current_subject: str = Depends(get_current_subject),
+) -> ImageGenerationPresetSettings:
+    return _get_generation_preset_settings("image", ImageGenerationPresetSettings)
+
+
+@router.put("/generation-presets/image")
+def update_image_generation_preset_settings(
+    payload: ImageGenerationPresetState, current_subject: str = Depends(get_current_subject)
+) -> dict[str, bool]:
+    set_media_generation_preset_settings(
+        "image",
+        payload.model_dump(),
+        lambda stored, submitted: _preserve_recovered_defaults(
+            ImageGenerationPresetState, stored, submitted
+        ),
+    )
+    return {"saved": True}
+
+
+@router.get(
+    "/generation-presets/video",
+    response_model = VideoGenerationPresetSettings,
+)
+def get_video_generation_preset_settings(
+    current_subject: str = Depends(get_current_subject),
+) -> VideoGenerationPresetSettings:
+    return _get_generation_preset_settings("video", VideoGenerationPresetSettings)
+
+
+@router.put("/generation-presets/video")
+def update_video_generation_preset_settings(
+    payload: VideoGenerationPresetState, current_subject: str = Depends(get_current_subject)
+) -> dict[str, bool]:
+    set_media_generation_preset_settings(
+        "video",
+        payload.model_dump(),
+        lambda stored, submitted: _preserve_recovered_defaults(
+            VideoGenerationPresetState, stored, submitted
+        ),
+    )
+    return {"saved": True}
+
+
+def _upsert_custom_generation_preset(
+    kind: Literal["image", "video"], payload: ImageGenerationPreset | VideoGenerationPreset
+) -> dict[str, bool]:
+    try:
+        schema = type(payload)
+        upsert_media_generation_preset(
+            kind,
+            payload.model_dump(),
+            lambda stored: _validated_readable_model(schema, stored) is not None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    return {"saved": True}
+
+
+@router.put("/generation-presets/image/custom")
+def upsert_custom_image_generation_preset(
+    payload: ImageGenerationPreset, current_subject: str = Depends(get_current_subject)
+) -> dict[str, bool]:
+    return _upsert_custom_generation_preset("image", payload)
+
+
+@router.put("/generation-presets/video/custom")
+def upsert_custom_video_generation_preset(
+    payload: VideoGenerationPreset, current_subject: str = Depends(get_current_subject)
+) -> dict[str, bool]:
+    return _upsert_custom_generation_preset("video", payload)
+
+
+@router.delete("/generation-presets/{kind}/custom")
+def delete_custom_generation_preset(
+    kind: Literal["image", "video"],
+    name: str,
+    current_subject: str = Depends(get_current_subject),
+) -> dict[str, bool]:
+    name = name.strip()
+    if not name or name == "Default" or len(name) > 80:
+        raise HTTPException(status_code = 422, detail = "Invalid preset name")
+    delete_media_generation_preset(kind, name)
+    return {"deleted": True}
 
 
 class UploadLimitPayload(BaseModel):
@@ -111,6 +500,74 @@ class UploadLimitResponse(BaseModel):
     max_allowed_upload_size_mb: int = MAX_UPLOAD_LIMIT_MB
 
 
+class HuggingFaceTokenPayload(BaseModel):
+    token: str = Field(..., min_length = 1, max_length = 512)
+
+    @field_validator("token")
+    @classmethod
+    def normalize_token(cls, value: str) -> str:
+        normalized = value.strip(" \t\r\n\"'")
+        if not normalized:
+            raise ValueError("Hugging Face token cannot be empty")
+        return normalized
+
+
+class HuggingFaceTokenResponse(BaseModel):
+    token: Optional[str] = None
+    has_token: bool = False
+
+
+@router.get("/hugging-face-token", response_model = HuggingFaceTokenResponse)
+def get_hugging_face_token(
+    _current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> HuggingFaceTokenResponse:
+    require_ui_session(via_api_key)
+    token = credential_secrets.get_hf_token()
+    return HuggingFaceTokenResponse(token = token, has_token = token is not None)
+
+
+@router.put("/hugging-face-token", response_model = HuggingFaceTokenResponse)
+def update_hugging_face_token(
+    payload: HuggingFaceTokenPayload,
+    credential: tuple = Depends(get_current_credential),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> HuggingFaceTokenResponse:
+    require_ui_session(via_api_key)
+
+    # Warm the auth-owned key before the generation guard takes its write lock.
+    credential_secrets.get_or_create_credential_encryption_key()
+    with current_credential_write(credential):
+        credential_secrets.save_hf_token(payload.token)
+    return HuggingFaceTokenResponse(token = payload.token, has_token = True)
+
+
+@router.put("/hugging-face-token/migrate", response_model = HuggingFaceTokenResponse)
+def migrate_hugging_face_token(
+    payload: HuggingFaceTokenPayload,
+    credential: tuple = Depends(get_current_credential),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> HuggingFaceTokenResponse:
+    """Insert a browser legacy token only when the installation has none."""
+    require_ui_session(via_api_key)
+    credential_secrets.get_or_create_credential_encryption_key()
+    with current_credential_write(credential):
+        credential_secrets.save_hf_token_if_absent(payload.token)
+        token = credential_secrets.get_hf_token()
+    return HuggingFaceTokenResponse(token = token, has_token = token is not None)
+
+
+@router.delete("/hugging-face-token", response_model = HuggingFaceTokenResponse)
+def clear_hugging_face_token(
+    credential: tuple = Depends(get_current_credential),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> HuggingFaceTokenResponse:
+    require_ui_session(via_api_key)
+    with current_credential_write(credential):
+        credential_secrets.delete_hf_token()
+    return HuggingFaceTokenResponse(token = None, has_token = False)
+
+
 class HelperPrecachePayload(BaseModel):
     enabled: bool
 
@@ -119,6 +576,32 @@ class HelperPrecacheResponse(BaseModel):
     enabled: bool
     default_enabled: bool = DEFAULT_HELPER_PRECACHE_ENABLED
     disabled_by_env: bool
+
+
+class DownloadTransportPayload(BaseModel):
+    mode: Literal["auto", "xet", "http"]
+
+
+class DownloadTransportResponse(BaseModel):
+    mode: str
+    xet_available: bool
+    xet_unavailable_reason: Optional[str] = None
+    # What "auto" resolves to here right now, and why.
+    auto_resolves_to: str
+    auto_reason: Optional[str] = None
+
+
+class XetNoticeReservePayload(BaseModel):
+    # A legacy localStorage count from a client that has not reported one before.
+    # Can only raise the stored count (see reserve_xet_notice), so a client cannot
+    # talk its own way back under the limit with it.
+    seen_hint: int = 0
+
+
+class XetNoticeResponse(BaseModel):
+    granted: bool
+    shown: int
+    limit: int
 
 
 class ModelMemoryPayload(BaseModel):
@@ -142,6 +625,35 @@ class ModelMemoryResponse(BaseModel):
     memlock_limit_bytes: Optional[int] = None
 
 
+class VramBudgetPayload(BaseModel):
+    # None clears the stored budget so env/default applies again; it cannot also
+    # mean "leave untouched" as the model-memory switches do, since there is one
+    # field. Hence required, not defaulted: with a default, {} would mean "clear it"
+    # and a client that dropped the field would silently discard the stored budget.
+    fraction: Optional[float] = Field(ge = VRAM_FRACTION_MIN, le = VRAM_FRACTION_MAX)
+
+    @field_validator("fraction", mode = "before")
+    @classmethod
+    def _reject_bool(cls, value: object) -> object:
+        # bool subclasses int, so non-strict parsing turns True into 1.0 and stores
+        # the max budget instead of 422; pydantic coerces before the util's guard.
+        if isinstance(value, bool):
+            raise ValueError("fraction must be a number, not a boolean")
+        return value
+
+
+class VramBudgetResponse(BaseModel):
+    fraction: float
+    # False when inherited from UNSLOTH_VRAM_FRACTION or the default, so the UI
+    # knows whether clearing it would change anything.
+    is_stored: bool
+    default_fraction: float = VRAM_FRACTION_DEFAULT
+    min_fraction: float = VRAM_FRACTION_MIN
+    max_fraction: float = VRAM_FRACTION_MAX
+    # Read when a load sizes itself, so a change cannot reach a running child.
+    reload_required: bool
+
+
 class HuggingFaceCachePayload(BaseModel):
     cache_home: Optional[str] = Field(default = None, max_length = 4096)
 
@@ -159,6 +671,20 @@ class HuggingFaceCacheResponse(BaseModel):
     environment_variable: Optional[str] = None
 
 
+class LlamaCppPathPayload(BaseModel):
+    path: Optional[str] = Field(default = None, max_length = MAX_CUSTOM_LLAMA_CPP_PATH_LENGTH)
+
+
+class LlamaCppPathResponse(BaseModel):
+    path: Optional[str] = None
+    source: Literal["default", "studio", "environment"]
+    editable: bool
+    available: bool
+    resolved_binary: Optional[str] = None
+    environment_variable: Optional[str] = None
+    reload_required: bool = False
+
+
 class OpenAIAutoSwitchPayload(BaseModel):
     enabled: bool
     # None leaves the stored value untouched (partial updates can't clobber it).
@@ -166,6 +692,10 @@ class OpenAIAutoSwitchPayload(BaseModel):
     auto_unload_keep_kv: Optional[bool] = None
     auto_download_model: Optional[bool] = None
     auto_unload_api_only: Optional[bool] = None
+    # The image/video TTL is its own setting, not a share of the chat one.
+    media_auto_unload_idle_seconds: Optional[int] = Field(default = None, ge = 0)
+    # And so is image/video auto-switch, for the same reason.
+    media_auto_switch_model: Optional[bool] = None
 
 
 class OpenAIAutoSwitchResponse(BaseModel):
@@ -181,6 +711,12 @@ class OpenAIAutoSwitchResponse(BaseModel):
     auto_download_model: bool = DEFAULT_OPENAI_AUTO_DOWNLOAD_ENABLED
     # When true, the idle unload spares models loaded from the UI, not just via the API.
     auto_unload_api_only: bool = DEFAULT_AUTO_UNLOAD_API_ONLY
+    # Stored, then effective: the UI shows the saved seconds and flags when a veto
+    # (residency, or API-loaded only) is holding the image/video unload off.
+    media_auto_unload_idle_seconds: int = DEFAULT_MEDIA_AUTO_UNLOAD_IDLE_SECONDS
+    media_idle_unload_active: bool = False
+    # When true, a media request may load the image or video model it names.
+    media_auto_switch_model: bool = DEFAULT_MEDIA_AUTO_SWITCH_ENABLED
 
 
 # A quant suffix, as modelOverrideKey builds it. Matched against the loader's quant pattern,
@@ -190,6 +726,9 @@ _MAX_VARIANT_SUFFIX_LEN = 64
 # A local id is a path plus an optional quant suffix, and LoadRequest.model_path is unbounded.
 # A limit under PATH_MAX would 422 the server sync while the local save succeeded.
 MAX_MODEL_OVERRIDE_KEY_LEN = 4096 + 1 + _MAX_VARIANT_SUFFIX_LEN
+
+# GgufVariantDetail.quant may be a path-qualified variant key, not just a quant suffix.
+MAX_GGUF_VARIANT_KEY_LEN = 4096
 
 # A list longer than MAX_GPU_ID cannot name a device the normalizer would store, so bound it
 # here and reject an oversized array at the boundary instead of walking it.
@@ -222,7 +761,27 @@ class ModelOverridePayload(BaseModel):
     # prompt batch sizes (--batch-size / --ubatch-size), gguf-only; none = llama.cpp defaults
     n_batch: Optional[int] = Field(default = None, ge = BATCH_SIZE_MIN, le = BATCH_SIZE_MAX)
     n_ubatch: Optional[int] = Field(default = None, ge = BATCH_SIZE_MIN, le = BATCH_SIZE_MAX)
+    # The remaining llama-server tuning the picker remembers. model_override_load_kwargs
+    # already applies all four off a stored row, so a route that drops them leaves the
+    # setting reaching a picker load and nothing else, and the panel reads the gap back
+    # as unset. Load mode is a discrete set, left to the normalizer like the KV dtype.
+    load_mode: Optional[str] = Field(default = None, max_length = 32)
+    spec_draft_cache_type: Optional[str] = Field(default = None, max_length = 32)
+    # Stored on "is not None", not on truth: 0 checkpoints and a 0 or -1 cache are
+    # meaningful values (none kept; cache disabled; no limit). Bounds mirror LoadRequest.
+    ctx_checkpoints: Optional[int] = Field(default = None, ge = 0, le = CTX_CHECKPOINTS_MAX)
+    cache_ram: Optional[int] = Field(default = None, ge = CACHE_RAM_MIN_MIB, le = CACHE_RAM_MAX_MIB)
+    # Does this client know the four above exist? A save REPLACES the entry, so an
+    # omission from a build that predates them is indistinguishable from a user
+    # clearing them, and during an upgrade -- a cached bundle, or another LAN client
+    # still on the old build -- that silently deletes settings it never sent. Only a
+    # client that sets this may clear by omission; for anyone else the stored values
+    # are carried over. Default False so an old payload, which cannot set it, is the
+    # safe case. Not a blanket carry-over: that would make clearing impossible for
+    # everyone, trading a mixed-version window for a permanent bug.
+    mirrors_server_tuning: bool = False
     tensor_parallel: bool = False
+    disable_vision: bool = False
     # Validated in bytes below: pydantic counts characters, so a multi-byte template would pass.
     chat_template_override: Optional[str] = None
     gpu_memory_mode: Optional[Literal["auto", "manual"]] = None
@@ -257,6 +816,8 @@ class ModelOverridePayload(BaseModel):
         "n_parallel",
         "n_batch",
         "n_ubatch",
+        "ctx_checkpoints",
+        "cache_ram",
         "gpu_layers",
         "n_cpu_moe",
         "gpu_ids",
@@ -276,6 +837,12 @@ class ModelOverridePayload(BaseModel):
 
 class ModelOverridesResponse(BaseModel):
     overrides: dict[str, dict]
+    # Filled only when the caller named a model: the entry ITS load would apply,
+    # resolved here rather than in the browser. The folding rules are Python's
+    # (casefold is not toLowerCase, and an ambiguous fold matches nothing on
+    # purpose), so a client mirroring them can only approximate.
+    resolved: Optional[dict] = None
+    resolved_key: Optional[str] = None
 
 
 def _upload_limit_response(limit_mb: int) -> UploadLimitResponse:
@@ -291,6 +858,20 @@ def _helper_precache_response(enabled: bool | None = None) -> HelperPrecacheResp
     return HelperPrecacheResponse(
         enabled = get_helper_precache_enabled() if enabled is None else enabled,
         disabled_by_env = helper_model_disabled_by_env(),
+    )
+
+
+def _download_transport_response(mode: str | None = None) -> DownloadTransportResponse:
+    # No Xet probe: this renders a row, not a download start. The free-RAM gate is asked for
+    # anyway, since the row states what the next download will use.
+    from hub.utils.download_registry import get_download_transport_capabilities
+    caps = get_download_transport_capabilities(ram_gate = True)
+    return DownloadTransportResponse(
+        mode = get_download_transport_mode() if mode is None else mode,
+        xet_available = caps.xet.available,
+        xet_unavailable_reason = caps.xet.reason,
+        auto_resolves_to = caps.auto_resolves_to,
+        auto_reason = caps.auto_reason,
     )
 
 
@@ -376,8 +957,68 @@ def _model_memory_response() -> ModelMemoryResponse:
     )
 
 
+def _vram_budget_reload_required(fraction: float) -> bool:
+    """True when a child is running that was sized against a different budget.
+
+    Compares against the fraction the child actually launched with, not merely
+    "is something loaded", so re-saving the same value does not nag for a reload.
+    Exact equality is fine: both sides come from the same clamp, so a stored 0.97
+    and a launched 0.97 are the same float.
+    """
+    try:
+        from routes.inference import get_llama_cpp_backend
+
+        backend = get_llama_cpp_backend()
+        # A planned-but-unspawned load has no _process, so is_active is False while
+        # the child is already committed to its captured fraction; answer from the
+        # pending value there, as _active_launch_placement does for Model Memory.
+        pending = getattr(backend, "_vram_fraction_pending", None)
+        if pending is not None:
+            return float(pending) != float(fraction)
+        if not backend.is_active:
+            return False
+        launched = getattr(backend, "_vram_fraction_launched", None)
+        # A child predating this field, or from a path that never set it, cannot be
+        # compared; say no rather than nagging on every save.
+        if launched is None:
+            return False
+        return float(launched) != float(fraction)
+    except Exception:
+        return False
+
+
+def _vram_budget_response() -> VramBudgetResponse:
+    fraction, is_stored = get_vram_budget_state()
+    return VramBudgetResponse(
+        fraction = fraction,
+        is_stored = is_stored,
+        reload_required = _vram_budget_reload_required(fraction),
+    )
+
+
 def _hugging_face_cache_response() -> HuggingFaceCacheResponse:
     return HuggingFaceCacheResponse(**cache_status(get_hf_cache_paths()))
+
+
+def _llama_cpp_path_reload_required() -> bool:
+    """Whether a running or pending GGUF server predates the path selection."""
+    try:
+        from routes.inference import get_llama_cpp_backend
+
+        backend = get_llama_cpp_backend()
+        pending = getattr(backend, "_binary_revision_pending", None)
+        if pending is not None:
+            return backend._binary_changed_since_revision(pending)
+        return bool(backend.is_active and backend._binary_changed_since_launch())
+    except Exception:
+        return False
+
+
+def _llama_cpp_path_response() -> LlamaCppPathResponse:
+    return LlamaCppPathResponse(
+        **custom_llama_cpp_path_status(),
+        reload_required = _llama_cpp_path_reload_required(),
+    )
 
 
 @router.get("/hugging-face-cache", response_model = HuggingFaceCacheResponse)
@@ -398,6 +1039,35 @@ def update_hugging_face_cache(
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
     return _hugging_face_cache_response()
+
+
+@router.get("/llama-cpp-path", response_model = LlamaCppPathResponse)
+def get_llama_cpp_path(current_subject: str = Depends(get_current_subject)) -> LlamaCppPathResponse:
+    return _llama_cpp_path_response()
+
+
+@router.put("/llama-cpp-path", response_model = LlamaCppPathResponse)
+def update_llama_cpp_path(
+    payload: LlamaCppPathPayload,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> LlamaCppPathResponse:
+    # Only the interactive Studio UI may change this executable setting.
+    require_ui_session(via_api_key)
+    try:
+        set_custom_llama_cpp_path(payload.path)
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            # Validator messages are safe to expose to the UI.
+            str(exc),
+            event = "settings.update_llama_cpp_path_failed",
+            log = logger,
+        ) from exc
+    return _llama_cpp_path_response()
 
 
 @router.get("/upload-limit", response_model = UploadLimitResponse)
@@ -446,6 +1116,48 @@ def update_helper_precache(
     return _helper_precache_response(enabled)
 
 
+@router.get("/download-transport", response_model = DownloadTransportResponse)
+def get_download_transport(
+    current_subject: str = Depends(get_current_subject),
+) -> DownloadTransportResponse:
+    return _download_transport_response()
+
+
+@router.put("/download-transport", response_model = DownloadTransportResponse)
+def update_download_transport(
+    payload: DownloadTransportPayload, current_subject: str = Depends(get_current_subject)
+) -> DownloadTransportResponse:
+    try:
+        mode = set_download_transport_mode(payload.mode)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid download transport."),
+            event = "settings.update_download_transport_failed",
+            log = logger,
+        ) from exc
+    return _download_transport_response(mode)
+
+
+@router.post("/xet-notice/reserve", response_model = XetNoticeResponse)
+def post_xet_notice_reserve(
+    payload: XetNoticeReservePayload, current_subject: str = Depends(get_current_subject)
+) -> XetNoticeResponse:
+    """Take one of the remaining notices. POST because it mutates the count."""
+    try:
+        result = reserve_xet_notice(payload.seen_hint)
+    except Exception as exc:
+        raise log_and_http_error(
+            exc,
+            500,
+            safe_error_detail(exc, fallback = "Could not reserve the Xet download notice."),
+            event = "settings.reserve_xet_notice_failed",
+            log = logger,
+        ) from exc
+    return XetNoticeResponse(**result)
+
+
 @router.get("/model-memory", response_model = ModelMemoryResponse)
 def get_model_memory(current_subject: str = Depends(get_current_subject)) -> ModelMemoryResponse:
     return _model_memory_response()
@@ -469,6 +1181,131 @@ def update_model_memory(
             log = logger,
         ) from exc
     return _model_memory_response()
+
+
+LAST_LOCAL_MODEL_SETTING_KEY = "last_local_model_load"
+_LAST_LOCAL_MODEL_LOCK = threading.Lock()
+
+
+def _last_local_model_key(subject: str) -> str:
+    """Per-subject key: one shared row would hand user B user A's last model."""
+    subject = (subject or "").strip()
+    if not subject:
+        return LAST_LOCAL_MODEL_SETTING_KEY
+    # Hashed so an arbitrary subject cannot collide with another key.
+    digest = hashlib.sha256(subject.encode("utf-8")).hexdigest()[:32]
+    return f"{LAST_LOCAL_MODEL_SETTING_KEY}:{digest}"
+
+
+def _read_last_local_model(subject: str) -> "dict | None":
+    """The subject's record, falling back to the pre-scoping shared row so an
+    upgrade keeps the model the install already remembered."""
+    from storage.studio_db import get_app_setting
+
+    stored = get_app_setting(_last_local_model_key(subject), None)
+    if not isinstance(stored, dict):
+        stored = get_app_setting(LAST_LOCAL_MODEL_SETTING_KEY, None)
+    return stored if isinstance(stored, dict) else None
+
+
+# Clients stamp loads, so cap how far ahead of server time a client clock may claim.
+_LAST_LOCAL_MODEL_CLOCK_SLACK_MS = 5 * 60 * 1000
+
+
+class LastLocalModelPayload(BaseModel):
+    id: str = Field(..., min_length = 1, max_length = MAX_MODEL_OVERRIDE_KEY_LEN)
+    kind: Literal["gguf", "model"]
+    gguf_variant: Optional[str] = Field(default = None, max_length = MAX_GGUF_VARIANT_KEY_LEN)
+    # Epoch ms of the load; orders writes from surfaces that keep their own local shadow.
+    loaded_at: Optional[int] = Field(default = None, ge = 0)
+    # The client clock when the request was sent: the skew (server_now - client_now)
+    # translates loaded_at into the server frame. Never persisted.
+    client_now: Optional[int] = Field(default = None, ge = 0)
+
+
+class LastLocalModelResponse(BaseModel):
+    id: Optional[str] = None
+    kind: Optional[Literal["gguf", "model"]] = None
+    gguf_variant: Optional[str] = None
+    loaded_at: Optional[int] = None
+    # Lets the client translate loaded_at back into its own clock frame.
+    server_now: Optional[int] = None
+
+
+@router.get("/last-local-model", response_model = LastLocalModelResponse)
+def get_last_local_model(
+    current_subject: str = Depends(get_current_subject),
+) -> LastLocalModelResponse:
+    stored = _read_last_local_model(current_subject)
+    _now = int(time.time() * 1000)
+    if stored is None:
+        return LastLocalModelResponse(server_now = _now)
+    try:
+        payload = LastLocalModelPayload(**stored)
+    except Exception:
+        return LastLocalModelResponse(server_now = _now)
+    return LastLocalModelResponse(**payload.model_dump(exclude = {"client_now"}), server_now = _now)
+
+
+@router.put("/last-local-model", response_model = LastLocalModelResponse)
+def update_last_local_model(
+    payload: LastLocalModelPayload, current_subject: str = Depends(get_current_subject)
+) -> LastLocalModelResponse:
+    from storage.studio_db import upsert_app_settings
+
+    # loaded_at orders stamped writes so a delayed older PUT cannot overwrite a newer
+    # load; the stored record is returned. Unstamped writes stay last-write-wins.
+    _server_now = int(time.time() * 1000)
+    _key = _last_local_model_key(current_subject)
+    with _LAST_LOCAL_MODEL_LOCK:
+        if payload.loaded_at is not None:
+            if payload.client_now is not None:
+                # Into the server frame: fresh loads land near now, re-issued shadows stay old.
+                _shifted = payload.loaded_at + (_server_now - payload.client_now)
+                payload = payload.model_copy(update = {"loaded_at": max(0, _shifted)})
+            _cap = _server_now + _LAST_LOCAL_MODEL_CLOCK_SLACK_MS
+            if payload.loaded_at > _cap:
+                payload = payload.model_copy(update = {"loaded_at": _cap})
+            stored = _read_last_local_model(current_subject)
+            if stored is not None:
+                try:
+                    current = LastLocalModelPayload(**stored)
+                except Exception:
+                    current = None
+                if (
+                    current is not None
+                    and current.loaded_at is not None
+                    and payload.loaded_at < current.loaded_at
+                ):
+                    return LastLocalModelResponse(
+                        **current.model_dump(exclude = {"client_now"}), server_now = _server_now
+                    )
+        upsert_app_settings({_key: payload.model_dump(exclude = {"client_now"})})
+    return LastLocalModelResponse(
+        **payload.model_dump(exclude = {"client_now"}), server_now = _server_now
+    )
+
+
+@router.get("/vram-budget", response_model = VramBudgetResponse)
+def get_vram_budget(current_subject: str = Depends(get_current_subject)) -> VramBudgetResponse:
+    return _vram_budget_response()
+
+
+@router.put("/vram-budget", response_model = VramBudgetResponse)
+def update_vram_budget(
+    payload: VramBudgetPayload, current_subject: str = Depends(get_current_subject)
+) -> VramBudgetResponse:
+    try:
+        set_vram_budget_fraction(payload.fraction)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid VRAM budget."),
+            event = "settings.update_vram_budget_failed",
+            log = logger,
+        ) from exc
+    return _vram_budget_response()
 
 
 class CodingAgentsResponse(BaseModel):
@@ -495,6 +1332,9 @@ def get_openai_auto_switch(
         auto_unload_keep_kv = get_auto_unload_keep_kv(),
         auto_download_model = get_stored_openai_auto_download_enabled(),
         auto_unload_api_only = get_auto_unload_api_only(),
+        media_auto_unload_idle_seconds = get_stored_media_auto_unload_idle_seconds(),
+        media_idle_unload_active = get_media_auto_unload_idle_seconds() > 0,
+        media_auto_switch_model = get_media_auto_switch_enabled(),
     )
 
 
@@ -503,12 +1343,22 @@ def update_openai_auto_switch(
     payload: OpenAIAutoSwitchPayload, current_subject: str = Depends(get_current_subject)
 ) -> OpenAIAutoSwitchResponse:
     try:
-        enabled, idle_seconds, keep_kv, auto_download, api_only = set_openai_auto_switch(
+        (
+            enabled,
+            idle_seconds,
+            keep_kv,
+            auto_download,
+            api_only,
+            media_idle_seconds,
+            media_auto_switch,
+        ) = set_openai_auto_switch(
             payload.enabled,
             payload.auto_unload_idle_seconds,
             payload.auto_unload_keep_kv,
             payload.auto_download_model,
             payload.auto_unload_api_only,
+            payload.media_auto_unload_idle_seconds,
+            payload.media_auto_switch_model,
         )
     except ValueError as exc:
         raise log_and_http_error(
@@ -531,14 +1381,34 @@ def update_openai_auto_switch(
         auto_unload_keep_kv = keep_kv,
         auto_download_model = auto_download,
         auto_unload_api_only = api_only,
+        media_auto_unload_idle_seconds = media_idle_seconds,
+        media_idle_unload_active = get_media_auto_unload_idle_seconds() > 0,
+        media_auto_switch_model = media_auto_switch,
     )
 
 
 @router.get("/openai-auto-switch/overrides", response_model = ModelOverridesResponse)
 def get_openai_auto_switch_overrides(
+    model_id: Optional[str] = None,
+    alias_id: Optional[str] = None,
+    gguf_variant: Optional[str] = None,
     current_subject: str = Depends(get_current_subject),
 ) -> ModelOverridesResponse:
-    return ModelOverridesResponse(overrides = get_model_overrides())
+    """Every stored override, and optionally the one a named model's load would use.
+
+    The resolution is the loader's own (``resolve_override_for_load``), so what a
+    panel shows and what a load applies cannot disagree.
+    """
+    resolved_key: Optional[str] = None
+    resolved: Optional[dict] = None
+    if model_id:
+        from utils.openai_auto_switch_settings import resolve_override_for_load
+        resolved_key, resolved = resolve_override_for_load(model_id, alias_id, gguf_variant)
+    return ModelOverridesResponse(
+        overrides = get_model_overrides(),
+        resolved = resolved,
+        resolved_key = resolved_key,
+    )
 
 
 def _bare_model_id(model_id: str) -> Optional[str]:
@@ -548,6 +1418,35 @@ def _bare_model_id(model_id: str) -> Optional[str]:
     # Must look like a quant, not a short path segment; a bpw modifier and stem label both count.
     split = split_quant_suffix(model_id)
     return split[0] if split is not None else None
+
+
+def _fallback_supplies_extra_args(model_id: str, target_id: str) -> bool:
+    """Whether a load for this model would still pick flags off another entry.
+
+    The carry-over copies a legacy bare ``repo`` row's flags onto the first
+    ``repo:QUANT`` save and leaves the bare row in place, and a load reads the
+    qualified key first and the bare one after it. So clearing the box for the quant
+    is only a clear while the quant keeps a row of its own: an all-default save
+    stores nothing, and the next load falls through to a row no page can show.
+
+    Answered rather than repaired. Stripping the flags off the bare row was the first
+    fix and it is too broad: that row is the fallback for every quant that has no row,
+    so forgetting Q4's flags took Q6's with them, and it did nothing at all when a
+    sibling quant had a row of its own.
+    """
+    from utils.openai_auto_switch_settings import get_model_override
+
+    for candidate in (
+        _bare_model_id(model_id),
+        _legacy_standalone_gguf_key(model_id),
+    ):
+        if (
+            candidate
+            and candidate != target_id
+            and get_model_override(candidate).get("llama_extra_args")
+        ):
+            return True
+    return False
 
 
 def _other_quants_remain(bare_id: str, removed_ids: list[str]) -> bool:
@@ -658,7 +1557,7 @@ def _serialized_override_write(func):
 def update_openai_auto_switch_override(
     payload: ModelOverridePayload, current_subject: str = Depends(get_current_subject)
 ) -> ModelOverridesResponse:
-    from core.inference.llama_server_args import validate_extra_args
+    from core.inference.llama_server_args import drop_managed_flags, validate_extra_args
     from utils.openai_auto_switch_settings import get_model_override
 
     try:
@@ -667,18 +1566,34 @@ def update_openai_auto_switch_override(
             raise ValueError("fill_absent_fields cannot be combined with remove.")
         # Only model_id is the documented "remove"; otherwise omitted flags carry over.
         requested_extra_args = payload.llama_extra_args
-        # fill_absent_fields is a write mode, not a saved field: leaving it in would make
-        # every payload look non-empty and break the legacy "no fields means remove".
+        # fill_absent_fields and mirrors_server_tuning are write modes, not saved fields:
+        # leaving either in would make every payload look non-empty (they are bools, so
+        # exclude_none does not drop them) and break the legacy "no fields means remove".
         saved_fields = payload.model_dump(
-            exclude = {"model_id", "llama_extra_args", "remove", "fill_absent_fields"},
+            exclude = {
+                "model_id",
+                "llama_extra_args",
+                "remove",
+                "fill_absent_fields",
+                "mirrors_server_tuning",
+            },
             exclude_none = True,
         )
         if payload.remove is not None:
             is_removal = payload.remove
         else:
-            is_removal = not payload.tensor_parallel and not {
-                key: value for key, value in saved_fields.items() if key != "tensor_parallel"
-            }
+            # Both booleans are carried, not just counted: they are stored only when
+            # true, so an override whose one setting is either of them has no other
+            # saved field and would otherwise read as a removal and be deleted.
+            is_removal = (
+                not payload.tensor_parallel
+                and not payload.disable_vision
+                and not {
+                    key: value
+                    for key, value in saved_fields.items()
+                    if key not in ("tensor_parallel", "disable_vision")
+                }
+            )
         if requested_extra_args is None and not is_removal:
             stored = get_model_override(payload.model_id)
             # A fill keeps the stored flags without echoing them back through validation: one
@@ -705,7 +1620,67 @@ def update_openai_auto_switch_override(
                         if requested_extra_args is not None:
                             break
         # Not validated on an explicit remove: a 400 would only leave the override in place.
-        extra_args = [] if payload.remove is True else validate_extra_args(requested_extra_args)
+        if payload.remove is True:
+            extra_args = []
+        elif payload.llama_extra_args is None:
+            # Carried over, not sent: the caller is saving some other field and this
+            # value predates the request. A flag denylisted since it was written is
+            # dropped rather than refused, or an unrelated save fails naming a flag
+            # the user may not remember writing (and cannot fix from this payload).
+            extra_args, dropped_flags = drop_managed_flags(requested_extra_args)
+            if dropped_flags:
+                logger.warning(
+                    "model_override.dropped_managed_flags model_id=%s flags=%s",
+                    payload.model_id,
+                    ", ".join(dropped_flags),
+                )
+        else:
+            extra_args = validate_extra_args(requested_extra_args)
+        # Same shape as the extra-args carry-over above, for the same reason: a save
+        # replaces the entry, so a field the caller never knew about must survive it.
+        # A client that declares it mirrors these clears by omission as usual; an
+        # older one keeps whatever is stored. On a remove the whole entry goes, so
+        # there is nothing to preserve.
+        # Gated on is_removal, not on payload.remove: the documented legacy contract is a
+        # payload carrying only model_id, which leaves remove None while is_removal is
+        # true. Carrying anything over there would rebuild a non-empty row and the clear
+        # would silently do nothing.
+        _tuning_fields = ("load_mode", "spec_draft_cache_type", "ctx_checkpoints", "cache_ram")
+        _kept_tuning = {name: getattr(payload, name) for name in _tuning_fields}
+        if not payload.mirrors_server_tuning and not is_removal:
+            # The same spellings the extra-args carry-over walks, and in the same order.
+            # A cached repo is not an ordinary folded match, so a save under the repo id
+            # while the row sits under the snapshot path finds nothing here and then
+            # retires that alias below, taking the tuning with it.
+            _alias_ids = [payload.model_id]
+            for _candidate in (
+                _bare_model_id(payload.model_id),
+                _legacy_standalone_gguf_key(payload.model_id),
+                *cached_repo_alias_keys(payload.model_id),
+            ):
+                if _candidate and _candidate not in _alias_ids:
+                    _alias_ids.append(_candidate)
+            # Load order, not the order they were collected in. A lookup reads the
+            # concrete load path before the advertised repo id, so on a cache upgraded
+            # from a build that keyed rows by path, the snapshot row is the one that
+            # applies and the one the retirement block below clears. Reading the repo
+            # row first would adopt tuning no load has ever used and drop the tuning
+            # that was live. Stable, so every other spelling keeps its position.
+            _alias_ids.sort(key = lambda _key: not is_cache_load_path_key(_key))
+            # Taken as a unit from the first row that exists, not field by field down
+            # the list. A load stops at the first non-empty row (resolve_override_for_load)
+            # rather than merging, so tuning in a row that never wins is dormant, and
+            # filling a gap in the winner from a loser would switch it on as a side effect
+            # of saving something unrelated. Single-valued above, so the distinction only
+            # shows up here.
+            for _alias_id in _alias_ids:
+                _stored_tuning = get_model_override(_alias_id)
+                if not _stored_tuning:
+                    continue
+                for name in _tuning_fields:
+                    if _kept_tuning[name] is None:
+                        _kept_tuning[name] = _stored_tuning.get(name)
+                break
         if payload.remove is True:
             # An explicit remove wins over any other field. Remove the key a load resolves to,
             # not the literal one sent (the browser normalizes casing), and every spelling:
@@ -756,9 +1731,19 @@ def update_openai_auto_switch_override(
                 # A fill retires nothing below, so it must not create the higher-priority
                 # spelling of a row the server already holds.
                 target_id = _fill_target_id(target_id)
+            # An explicit clear keeps a row even when nothing else is set, so long as a
+            # fallback would otherwise answer for this model: "no launch flags" and
+            # "nothing stored" are the same thing everywhere else, and different here.
+            # Written on the quant's own key, so no other quant is touched.
+            keep_empty = (
+                payload.llama_extra_args == []
+                and not payload.fill_absent_fields
+                and _fallback_supplies_extra_args(payload.model_id, target_id)
+            )
             set_model_override(
                 target_id,
                 llama_extra_args = extra_args,
+                keep_empty_extra_args = keep_empty,
                 max_seq_length = payload.max_seq_length,
                 custom_context_length = payload.custom_context_length,
                 kv_cache_dtype = payload.kv_cache_dtype,
@@ -768,7 +1753,12 @@ def update_openai_auto_switch_override(
                 n_parallel = payload.n_parallel,
                 n_batch = payload.n_batch,
                 n_ubatch = payload.n_ubatch,
+                load_mode = _kept_tuning["load_mode"],
+                spec_draft_cache_type = _kept_tuning["spec_draft_cache_type"],
+                ctx_checkpoints = _kept_tuning["ctx_checkpoints"],
+                cache_ram = _kept_tuning["cache_ram"],
                 tensor_parallel = payload.tensor_parallel,
+                disable_vision = payload.disable_vision,
                 chat_template_override = payload.chat_template_override,
                 gpu_memory_mode = payload.gpu_memory_mode,
                 gpu_layers = payload.gpu_layers,
@@ -1077,6 +2067,17 @@ def rotate_preview_links(
     return PreviewLinkRotateResponse(rotated = True)
 
 
+class KeylessApiAccessPayload(BaseModel):
+    scope: Literal["off", "inference", "full"]
+    tools: Optional[StrictBool] = None
+
+
+class KeylessApiAccessResponse(BaseModel):
+    scope: Literal["off", "inference", "full"]
+    tools: bool
+    exposure: Optional[Literal["colab", "public_url", "private_lan", "network"]] = None
+
+
 class PreviewSharingPayload(BaseModel):
     enabled: bool
 
@@ -1178,6 +2179,85 @@ def update_remote_access_auto_start(
     return _remote_access_response(request)
 
 
+class LanAccessAutoStartPayload(BaseModel):
+    enabled: StrictBool
+
+
+class LanAccessResponse(BaseModel):
+    state: Literal["off", "online", "error"]
+    urls: list[str] = []
+    public_urls: list[str] = []
+    error: Optional[str] = None
+    auto_start: bool
+    managed_by: Optional[Literal["launch", "settings"]] = None
+    can_start: bool
+    can_stop: bool
+    block_reason: Optional[str] = None
+    serves_web_ui: bool = True
+    keyless_lan_eligible: bool = False
+    keyless_scope: Literal["off", "inference", "full"] = "off"
+    keyless_tools: bool = False
+
+
+def _lan_access_response(request: Request) -> LanAccessResponse:
+    return LanAccessResponse(**lan_access_status(request.app))
+
+
+@router.get("/lan-access", response_model = LanAccessResponse)
+def get_lan_access(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> LanAccessResponse:
+    return _lan_access_response(request)
+
+
+@router.post("/lan-access/start", response_model = LanAccessResponse)
+def start_lan_access_route(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> LanAccessResponse:
+    try:
+        response = LanAccessResponse(**start_lan_access(request.app))
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    logger.info("settings.lan_access_start_requested subject=%s", current_subject)
+    return response
+
+
+@router.post("/lan-access/stop", response_model = LanAccessResponse)
+def stop_lan_access_route(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> LanAccessResponse:
+    try:
+        response = LanAccessResponse(**stop_lan_access(request.app))
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    logger.info("settings.lan_access_stop_requested subject=%s", current_subject)
+    return response
+
+
+@router.put("/lan-access/auto-start", response_model = LanAccessResponse)
+def update_lan_access_auto_start(
+    request: Request,
+    payload: LanAccessAutoStartPayload,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> LanAccessResponse:
+    if bool(getattr(request.app.state, "lan_access_is_colab", False)):
+        raise HTTPException(status_code = 409, detail = "colab")
+    set_lan_access_auto_start(payload.enabled)
+    logger.info(
+        "settings.lan_access_auto_start_updated subject=%s enabled=%s",
+        current_subject,
+        payload.enabled,
+    )
+    return _lan_access_response(request)
+
+
 @router.get("/preview-sharing", response_model = PreviewSharingResponse)
 def get_preview_sharing(
     current_subject: str = Depends(get_current_subject),
@@ -1202,6 +2282,57 @@ def update_preview_sharing(
         ) from exc
     logger.info("settings.preview_sharing_updated subject=%s enabled=%s", current_subject, enabled)
     return PreviewSharingResponse(enabled = enabled)
+
+
+def _require_ui_session_for_keyless(via_api_key: bool = Depends(authenticated_via_api_key)) -> None:
+    """Only a signed-in UI session may change who needs a key.
+
+    An sk-unsloth key must not be able to switch authentication off for the whole
+    install, and a keyless caller must not be able to widen its own scope; both are
+    ``authenticated_via_api_key``, so one check covers them.
+    """
+    if via_api_key:
+        raise HTTPException(
+            status_code = 403,
+            detail = "Keyless API access can only be changed from the Unsloth UI.",
+        )
+
+
+def _keyless_api_access_response(request: Request) -> KeylessApiAccessResponse:
+    scope, tools = get_keyless_api_access_settings()
+    return KeylessApiAccessResponse(
+        scope = scope,
+        tools = tools,
+        exposure = access_exposure(request.app.state),
+    )
+
+
+@router.get("/keyless-api-access", response_model = KeylessApiAccessResponse)
+def get_keyless_api_access(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session_for_keyless),
+) -> KeylessApiAccessResponse:
+    return _keyless_api_access_response(request)
+
+
+@router.put("/keyless-api-access", response_model = KeylessApiAccessResponse)
+def update_keyless_api_access(
+    request: Request,
+    payload: KeylessApiAccessPayload,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session_for_keyless),
+) -> KeylessApiAccessResponse:
+    """Choose which routes are served without an API key, and whether tools come too."""
+    scope, tools = set_keyless_api_access(payload.scope, tools = payload.tools)
+    logger.info(
+        "settings.keyless_api_access_updated subject=%s scope=%s tools=%s exposure=%s",
+        current_subject,
+        scope,
+        tools,
+        access_exposure(request.app.state),
+    )
+    return _keyless_api_access_response(request)
 
 
 def _is_bundled_avatar_url(value: str) -> bool:
@@ -1324,7 +2455,8 @@ SIDEBAR_NAV_ITEM_DEFAULTS = {
     "hub": True,
     "projects": True,
     "images": True,
-    "video": False,
+    "video": True,
+    "audio": False,
     "train": True,
     "recipes": False,
     "export": False,
@@ -1373,6 +2505,7 @@ class PersonalizationSidebarNavItem(BaseModel):
         "projects",
         "images",
         "video",
+        "audio",
         "train",
         "recipes",
         "export",
@@ -1537,3 +2670,133 @@ def update_personalization_settings(
     # Return the stored record, not the defaults-filled request, so the response
     # matches storage (and the next GET) for fields the client omitted.
     return PersonalizationPayload.model_validate(merged)
+
+
+# ── Logs: read the log files from inside the app ─────────────────────────────
+# Backs the Settings > Logs tab. The session log always existed, but its
+# path was only printed to a console the desktop user never sees.
+
+
+class DebugLogSourceModel(BaseModel):
+    id: str
+    family: str
+    label: str
+    realpath: str
+    size_bytes: int
+    modified_at: float
+    is_current: bool
+
+
+class DebugLogSourcesResponse(BaseModel):
+    sources: list[DebugLogSourceModel]
+    default_source_id: Optional[str] = None
+    file_logging_disabled: bool = False
+
+
+class DebugLogResponse(BaseModel):
+    status: Literal["ok", "empty", "missing", "unreadable", "disabled"]
+    reason: Optional[str] = None
+    source_id: Optional[str] = None
+    realpath: Optional[str] = None
+    lines: list[str] = Field(default_factory = list)
+    cursor: Optional[str] = None
+    reset: bool = False
+    reset_reason: Optional[str] = None
+    dropped_bytes: int = 0
+    truncated_head: bool = False
+    # The reader stopped at the response cap and the rest arrives on the next
+    # poll. Without this the caller cannot tell a complete answer from a partial
+    # one, which is invisible in manual mode because no next poll is coming.
+    more_pending: bool = False
+    # File logging is off, so anything readable here is a PREVIOUS session and
+    # will never grow. The status stays "ok" because the content is real and
+    # worth reading; saying nothing made a stale log look live.
+    file_logging_disabled: bool = False
+    size_bytes: int = 0
+
+
+@router.get("/debug/logs/sources", response_model = DebugLogSourcesResponse)
+def get_debug_log_sources(
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> DebugLogSourcesResponse:
+    """Every log file the viewer may read, newest first within each family.
+
+    Individual files, not one entry per family: the llama runner writes one file
+    per load ATTEMPT, so after a retry the useful one is often not the newest.
+    """
+    from utils import debug_log_sources
+
+    sources = debug_log_sources.list_sources()
+    return DebugLogSourcesResponse(
+        sources = [DebugLogSourceModel(**vars(source)) for source in sources],
+        default_source_id = debug_log_sources.default_source_id(),
+        file_logging_disabled = debug_log_sources.file_logging_disabled(),
+    )
+
+
+@router.get("/debug/logs", response_model = DebugLogResponse)
+def get_debug_log(
+    source: Optional[str] = None,
+    cursor: Optional[str] = None,
+    lines: int = 1000,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> DebugLogResponse:
+    """The tail of one log, then only what was appended after `cursor`.
+
+    Every content state answers 200. This is polled once a second in Live mode,
+    and a 404 or a 500 on "the file is not there yet" would make the viewer
+    flash an error on every tick; the caller reads `status` instead.
+    """
+    from utils import debug_log_reader, debug_log_sources
+
+    source_id = source or debug_log_sources.default_source_id()
+    if not source_id:
+        disabled = debug_log_sources.file_logging_disabled()
+        return DebugLogResponse(
+            status = "disabled" if disabled else "missing",
+            reason = (
+                "File logging is turned off (UNSLOTH_STUDIO_NO_FILE_LOG=1)."
+                if disabled
+                else "No log files have been written yet."
+            ),
+        )
+
+    path = debug_log_sources.resolve_source_id(source_id)
+    if path is None:
+        # An id the enumeration no longer produces. 404 here (unlike the content
+        # states above) so a stale picker refetches its sources.
+        raise HTTPException(status_code = 404, detail = "Unknown log source.")
+
+    try:
+        result = debug_log_reader.read_since(path, cursor, lines)
+    except FileNotFoundError:
+        return DebugLogResponse(
+            status = "missing",
+            reason = "The log file was removed.",
+            source_id = source_id,
+        )
+    except (OSError, PermissionError) as exc:
+        # The message embeds the path, so it goes through redaction too.
+        from utils.log_redaction import redact_log_text
+        return DebugLogResponse(
+            status = "unreadable",
+            reason = redact_log_text(str(exc)),
+            source_id = source_id,
+        )
+
+    return DebugLogResponse(
+        status = "empty" if (result.size_bytes == 0 and not result.lines) else "ok",
+        source_id = source_id,
+        realpath = str(path),
+        lines = result.lines,
+        cursor = result.cursor,
+        reset = result.reset,
+        reset_reason = result.reset_reason,
+        dropped_bytes = result.dropped_bytes,
+        truncated_head = result.truncated_head,
+        more_pending = result.more_pending,
+        file_logging_disabled = debug_log_sources.source_is_frozen(source_id),
+        size_bytes = result.size_bytes,
+    )

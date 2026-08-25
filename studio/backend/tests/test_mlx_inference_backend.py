@@ -948,6 +948,92 @@ def test_mlx_text_normalizes_native_reasoning_and_close_releases_lock(monkeypatc
     assert not backend._generation_lock.locked()
 
 
+def test_mlx_text_post_tool_prompt_opens_reasoning_channel(monkeypatch):
+    """Gemma-style templates open the thought channel in the POST-TOOL prompt.
+
+    Generation then emits only the closing marker, so a parser assuming it starts
+    outside reasoning would leak the post-tool reasoning and a raw ``<channel|>``
+    into the visible answer.
+    """
+    _install_fake_mlx(monkeypatch)
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    post_tool_prompt = (
+        "<|turn>model\n<|tool_response>response:web_search{}<tool_response|><|channel>thought\n"
+    )
+    # Give the pre-fallback render a non-opening tail, so state read from the wrong
+    # prompt fails here.
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda *_args, **_kwargs: "<|turn>model\n",
+        raising = True,
+    )
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.render_with_native_template_fallback",
+        lambda formatted_prompt, **_kwargs: SimpleNamespace(
+            prompt = post_tool_prompt,
+            reasoning_channel_markers = ("<|channel>thought", "<channel|>"),
+        ),
+        raising = True,
+    )
+
+    mlx_lm_pkg = types.ModuleType("mlx_lm")
+    mlx_lm_sample = types.ModuleType("mlx_lm.sample_utils")
+    mlx_lm_sample.make_sampler = lambda **_kw: object()
+    mlx_lm_sample.make_logits_processors = lambda **_kw: None
+
+    class _Resp:
+        def __init__(self, text, tok):
+            self.text = text
+            self.token = tok
+
+    def _stream_generate(_model, _tokenizer, **_kw):
+        yield _Resp("The search says 18C.", 10)
+        yield _Resp("<channel|>", 11)
+        yield _Resp("It is 18C.", 12)
+
+    mlx_lm_pkg.stream_generate = _stream_generate
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm_pkg)
+    monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", mlx_lm_sample)
+
+    backend = MLXInferenceBackend()
+    backend._model = object()
+    backend._tokenizer = SimpleNamespace(all_special_tokens = [])
+    backend._is_vlm = False
+
+    snapshots = list(
+        backend.generate_chat_response(
+            messages = [{"role": "user", "content": "weather?"}],
+            max_new_tokens = 3,
+        )
+    )
+    assert snapshots[-1] == "<think>The search says 18C.</think>It is 18C."
+    assert "<channel|>" not in snapshots[-1]
+    assert all(later.startswith(earlier) for earlier, later in zip(snapshots, snapshots[1:]))
+
+    # The flag survives into the next pass, but the tool result is the trailing turn,
+    # so nothing was resumed and the prompt must still be read.
+    resumed_then_tool = [
+        {"role": "user", "content": "weather?"},
+        {
+            "role": "assistant",
+            "content": "partial",
+            "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "web_search"}}],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "18C"},
+    ]
+    assert (
+        list(
+            backend.generate_chat_response(
+                messages = resumed_then_tool,
+                max_new_tokens = 3,
+                continue_final_message = True,
+            )
+        )[-1]
+        == "<think>The search says 18C.</think>It is 18C."
+    )
+
+
 def test_mlx_text_native_metadata_preserves_prefilled_think_snapshots(monkeypatch):
     _install_fake_mlx(monkeypatch)
     from core.inference.mlx_inference import MLXInferenceBackend
@@ -1052,6 +1138,53 @@ def test_mlx_vlm_normalizes_native_reasoning_channels(monkeypatch):
         "<think>vision</think>",
         "<think>vision</think> answer",
     ]
+
+
+def test_mlx_vlm_post_tool_prompt_opens_reasoning_channel(monkeypatch):
+    """The VLM snapshot path must derive channel state from its rendered prompt too."""
+    _install_fake_mlx(monkeypatch)
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    post_tool_prompt = "<|tool_response>response:web_search{}<tool_response|><|channel>thought\n"
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda *_args, **_kwargs: post_tool_prompt,
+        raising = True,
+    )
+
+    mlx_vlm_pkg = types.ModuleType("mlx_vlm")
+
+    class _Resp:
+        def __init__(self, text, tok):
+            self.text = text
+            self.token = tok
+
+    def _stream_generate(_model, _processor, _prompt, _images, **_kw):
+        yield _Resp("looking at it", 10)
+        yield _Resp("<channel|>", 11)
+        yield _Resp("A cat.", 12)
+
+    mlx_vlm_pkg.stream_generate = _stream_generate
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm_pkg)
+
+    backend = MLXInferenceBackend()
+    backend._model = SimpleNamespace(config = SimpleNamespace())
+    backend._processor = SimpleNamespace(
+        chat_template = "<|channel>thought\n...<channel|>",
+        all_special_tokens = [],
+        apply_chat_template = lambda *_args, **_kwargs: post_tool_prompt,
+    )
+    backend._is_vlm = True
+
+    snapshots = list(
+        backend.generate_chat_response(
+            messages = [{"role": "user", "content": "describe"}],
+            image = object(),
+            max_new_tokens = 3,
+        )
+    )
+    assert snapshots[-1] == "<think>looking at it</think>A cat."
+    assert "<channel|>" not in snapshots[-1]
 
 
 class _FakeLRUPromptCache:
@@ -1669,16 +1802,15 @@ def test_mlx_audio_probe_that_answered_no_still_retracts_audio_vlm(monkeypatch):
         ("gemma4", True),
         ("phi4mm", True),
         ("minicpmo", True),
-        ("qwen3_omni_moe", False),
+        ("qwen3_omni_moe", True),
     ],
 )
 def test_mlx_vlm_renderer_audio_marker_contract(model_type, places_marker):
     """Pins which mlx-vlm message builders honour num_audios.
 
     This is the message-construction layer, not the final template render:
-    qwen3_omni_moe is registered but its formatter drops audio here, so
-    classifying on registry membership alone would advertise a model whose
-    prompt can never carry an audio marker.
+    Every currently registered native-audio formatter preserves the requested
+    audio count under mlx-vlm 0.6.10.
     """
     pu = pytest.importorskip("mlx_vlm.prompt_utils")
     render = lambda n: pu.apply_chat_template(
@@ -1690,6 +1822,114 @@ def test_mlx_vlm_renderer_audio_marker_contract(model_type, places_marker):
         return_messages = True,
     )
     assert (render(1) != render(0)) is places_marker
+
+
+def test_mlx_registered_renderer_accepts_published_nemotron_model_type_case():
+    """The official checkpoint capitalizes its model type while mlx-vlm's
+    registry uses lowercase. Studio must reach the registered renderer rather
+    than rejecting the checkpoint before the loader's normalization can run."""
+    # Real mlx-vlm and Zoo, like the renderer contract test above. Bare
+    # backend CI ships neither, so skip rather than error.
+    pytest.importorskip("mlx_vlm.prompt_utils")
+    loader = pytest.importorskip("unsloth_zoo.mlx.loader")
+    from core.inference.mlx_inference import _render_registered_vlm_prompt
+
+    loader._ensure_vlm_prompt_utils_patched()
+    published = "NemotronH_Nano_Omni_Reasoning_V3"
+    config = {"model_type": published}
+    model = SimpleNamespace(config = config)
+    messages = [{"role": "user", "content": "Transcribe this audio."}]
+
+    plain = _render_registered_vlm_prompt(
+        None,
+        model,
+        messages,
+        num_images = 0,
+        num_audios = 0,
+    )
+    marked = _render_registered_vlm_prompt(
+        None,
+        model,
+        messages,
+        num_images = 0,
+        num_audios = 1,
+    )
+
+    assert plain and marked and plain != marked
+    # Later capability and export logic must not see a value the config
+    # never carried.
+    assert config["model_type"] == published
+    assert model.config is config
+
+
+@pytest.mark.parametrize(
+    ("published", "resolves"),
+    [
+        ("NemotronH_Nano_Omni_Reasoning_V3", True),  # the real published case
+        ("SMOLVLM", True),  # ordinary ASCII case shift
+        ("smolvlm", True),  # already canonical
+        ("ſmolvlm", False),  # casefold("ſ") == "s"
+        ("smolvlẞ", False),  # casefold("ẞ") == "ss"
+        ("no_such_renderer_anywhere", False),
+    ],
+)
+def test_mlx_renderer_canonicalization_is_ascii_only(monkeypatch, published, resolves):
+    """casefold maps U+017F onto "s" and U+1E9E onto "ss", so a checkpoint
+    publishing those would reach a renderer it never named."""
+    from core.inference.mlx_inference import _render_registered_vlm_prompt
+
+    rendered = []
+    prompt_utils = types.ModuleType("mlx_vlm.prompt_utils")
+    prompt_utils.MODEL_CONFIG = {"smolvlm": object(), "nemotronh_nano_omni_reasoning_v3": object()}
+
+    def _apply_chat_template(_processor, config, _messages, **kwargs):
+        rendered.append(config["model_type"])
+        return f"prompt<{config['model_type']}>"
+
+    prompt_utils.apply_chat_template = _apply_chat_template
+    fake = types.ModuleType("mlx_vlm")
+    fake.prompt_utils = prompt_utils
+    monkeypatch.setitem(sys.modules, "mlx_vlm", fake)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.prompt_utils", prompt_utils)
+
+    model = SimpleNamespace(config = {"model_type": published})
+    out = _render_registered_vlm_prompt(
+        None,
+        model,
+        [{"role": "user", "content": "hi"}],
+        num_images = 0,
+    )
+
+    if resolves:
+        assert out and rendered and rendered[0].isascii() and rendered[0].islower()
+    else:
+        assert out is None and rendered == []
+    # Never mutate what the checkpoint published.
+    assert model.config["model_type"] == published
+
+
+def test_mlx_renderer_refuses_ambiguous_case_insensitive_registry(monkeypatch):
+    """Two keys folding to the same value is not evidence for either one."""
+    from core.inference.mlx_inference import _render_registered_vlm_prompt
+
+    prompt_utils = types.ModuleType("mlx_vlm.prompt_utils")
+    prompt_utils.MODEL_CONFIG = {"dupe_model": object(), "Dupe_Model": object()}
+    prompt_utils.apply_chat_template = lambda *a, **k: "should not be reached"
+    fake = types.ModuleType("mlx_vlm")
+    fake.prompt_utils = prompt_utils
+    monkeypatch.setitem(sys.modules, "mlx_vlm", fake)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.prompt_utils", prompt_utils)
+
+    model = SimpleNamespace(config = {"model_type": "DUPE_MODEL"})
+    assert (
+        _render_registered_vlm_prompt(
+            None,
+            model,
+            [{"role": "user", "content": "hi"}],
+            num_images = 0,
+        )
+        is None
+    )
 
 
 def test_mlx_generate_audio_input_deltas_and_reject(monkeypatch):
@@ -1746,6 +1986,69 @@ def test_mlx_generate_audio_input_deltas_and_reject(monkeypatch):
     backend.models["m"]["audio_type"] = None
     with pytest.raises(RuntimeError, match = "not supported .* MLX"):
         next(backend.generate_audio_input_response(**args))
+
+
+def test_mlx_audio_input_normalizes_split_native_reasoning_channels(monkeypatch):
+    from core.inference import mlx_inference
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    stats = dict(prompt_tokens = 3, prompt_tps = 1.0, generation_tokens = 6, generation_tps = 1.0)
+
+    def _fake_stream(*_args, **_kwargs):
+        for text in ("<|chan", "nel>thought\n", "transcript", "<chan", "nel|>", " answer"):
+            yield SimpleNamespace(text = text, **stats)
+
+    fake_vlm = types.ModuleType("mlx_vlm")
+    fake_vlm.stream_generate = _fake_stream
+    monkeypatch.setitem(sys.modules, "mlx_vlm", fake_vlm)
+    monkeypatch.setattr(
+        mlx_inference,
+        "_render_registered_vlm_prompt",
+        lambda *a, num_images = 0, num_audios = 0: "P<audio>",
+    )
+
+    backend = MLXInferenceBackend.__new__(MLXInferenceBackend)
+    backend._generation_lock = __import__("threading").Lock()
+    # Protocol selection follows the template, never a Gemma model-name branch.
+    backend._model = _audio_model(model_type = "template_declared_audio")
+    backend._processor = _audio_processor()
+    backend._processor.chat_template = "...<|channel>thought\n...<channel|>"
+    backend.active_model_name = "m"
+    backend.last_generation_stats = None
+    backend.models = {"m": {"audio_type": "audio_vlm"}}
+
+    assert list(
+        backend.generate_audio_input_response(
+            messages = [{"role": "user", "content": "transcribe"}],
+            system_prompt = "",
+            audio_array = [0.0],
+            max_new_tokens = 8,
+        )
+    ) == ["<think>", "transcript", "</think>", " answer"]
+
+    def _open_stream(*_args, **_kwargs):
+        for text in ("<|channel>thought\n", "unfinished"):
+            yield SimpleNamespace(text = text, **stats)
+
+    fake_vlm.stream_generate = _open_stream
+    assert list(
+        backend.generate_audio_input_response(
+            messages = [{"role": "user", "content": "transcribe"}],
+            system_prompt = "",
+            audio_array = [0.0],
+        )
+    ) == ["<think>", "unfinished", "</think>"]
+
+    cancelled = __import__("threading").Event()
+    cancelled.set()
+    assert list(
+        backend.generate_audio_input_response(
+            messages = [{"role": "user", "content": "transcribe"}],
+            system_prompt = "",
+            audio_array = [0.0],
+            cancel_event = cancelled,
+        )
+    ) == ["<think>"]
 
 
 def test_mlx_audio_input_honors_adapter_selection(monkeypatch):
@@ -2408,6 +2711,69 @@ def test_an_entry_the_upstream_lru_cannot_size_is_not_retainable(monkeypatch):
     assert probe(SimpleNamespace(state = (), nbytes = 128))[3] is True
 
 
+class _SentinelRandomState:
+    """``mx.random.state`` as mlx >= 0.32.1 exposes it: readable, not writable."""
+
+    def __init__(self, words):
+        self._words = list(words)
+
+    def __len__(self):
+        return 1
+
+    def __getitem__(self, index):
+        if index not in (0, -1):
+            raise IndexError("random state index out of range")
+        return SimpleNamespace(tolist = lambda: list(self._words))
+
+    def __iter__(self):
+        return iter([self[0]])
+
+
+def test_kv_quant_probe_rewinds_the_rng_without_assigning_to_the_state(monkeypatch):
+    """mlx 0.32.1 made mx.random.state a sentinel with no __setitem__, so the
+    assignment this used to do raised out of the probe's finally and failed the
+    whole model load.
+    """
+    from core.inference import mlx_inference
+
+    _install_fake_mlx(monkeypatch)
+    mx = sys.modules["mlx.core"]
+    # High word's top bit set, so a rewind that packs the seed as signed is visible.
+    words = (0xFEDCBA98, 0x76543210)
+    events = []
+    mx.random = SimpleNamespace(
+        state = _SentinelRandomState(words),
+        seed = lambda value: events.append(("seed", value)),
+    )
+    mx.array = lambda v: v
+    mx.eval = lambda *a: None
+    mx.clear_cache = lambda: None
+
+    def language_model(*args, **kwargs):
+        events.append(("forward", None))
+
+    def to_quantized(group_size, bits):
+        events.append(("convert", None))
+        return SimpleNamespace(state = (), nbytes = 128)
+
+    entry = SimpleNamespace(
+        to_quantized = to_quantized,
+        max_size = None,
+        window_size = None,
+        state = (),
+    )
+    outcome = mlx_inference._kv_quant_probe(language_model, [entry], 8)
+
+    assert outcome == (1, 0, None, True)
+    # A rewind that ran before the forward pass would leave the probe's own
+    # draws in the stream the caller goes on to sample.
+    assert events == [
+        ("forward", None),
+        ("convert", None),
+        ("seed", (words[0] << 32) | words[1]),
+    ]
+
+
 def test_a_successful_override_does_not_pin_the_tokenizer_past_load(monkeypatch):
     """The restore pairs hold the tokenizer, so unload_model cannot free it.
 
@@ -2561,3 +2927,293 @@ def test_a_vision_override_is_checked_even_when_the_native_render_needs_recovery
     assert backend._template_override["applied"] is None
     assert backend._template_override["reason"] == mlx_inference.MLX_TEMPLATE_DROPS_IMAGE
     assert backend._processor.chat_template == "{{ native }}"
+
+
+# ── Per-request seed ────────────────────────────────────────────────
+
+
+def test_vlm_seed_rides_on_the_sampler_not_a_seed_kwarg(monkeypatch):
+    """The pinned mlx-vlm has no seed parameter, and a newer one ignores it at
+    Studio's default min_p/top_k -- so the seed must ride on the sampler, built
+    with the whole filtering chain the runtime would otherwise have built."""
+    from core.inference import mlx_inference
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    seen, built = [], []
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.prompt_utils = SimpleNamespace(
+        MODEL_CONFIG = {}, apply_chat_template = lambda *_a, **_k: "<image> prompt"
+    )
+
+    def _vlm_stream(*_args, **kwargs):
+        seen.append(kwargs)
+        yield SimpleNamespace(text = "ok", prompt_tokens = 1, generation_tokens = 1)
+
+    mlx_vlm.stream_generate = _vlm_stream
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda *_a, **_k: "<image> prompt",
+    )
+    monkeypatch.setattr(
+        mlx_inference, "_temporary_mlx_adapter_state", lambda *_a, **_k: contextlib.nullcontext()
+    )
+    # Stubbed so the wiring is checked without an mlx wheel: what matters here is
+    # which seed and stages reach the builder, not the array maths inside it.
+    monkeypatch.setattr(
+        mlx_inference,
+        "_make_seeded_mlx_sampler",
+        lambda seed, **kw: built.append((seed, kw)) or (lambda _l: _l),
+    )
+    backend = MLXInferenceBackend()
+    backend._model = SimpleNamespace(config = {"model_type": "generic_vlm"})
+    backend._processor = SimpleNamespace(chat_template = "template")
+    args = (
+        [{"role": "user", "content": [{"type": "image"}]}],
+        object(),
+        0.7,
+        0.9,
+        40,
+        0.01,
+        4,
+        1.0,
+        None,
+    )
+
+    assert list(backend._generate_vlm(*args, seed = 4242)) == ["ok"]
+    assert callable(seen[-1]["sampler"]) and "seed" not in seen[-1]
+    assert built == [(4242, {"temp": 0.7, "top_p": 0.9, "top_k": 40, "min_p": 0.01})]
+    assert list(backend._generate_vlm(*args)) == ["ok"]
+    assert "sampler" not in seen[-1] and len(built) == 1
+
+
+@pytest.mark.parametrize(
+    "factory_name, factory_args, vocab, sequence, expected",
+    [
+        # Frequency counts multiplicity where presence charges once.
+        (
+            "_make_mlx_frequency_penalty_processor",
+            (0.5,),
+            20,
+            [10, 11, 5, 5, 5, 6, 99, -1],
+            {5: -1.5, 6: -0.5, 10: 0.0, 19: 0.0, 0: 0.0},
+        ),
+        # Bias is history-free, so it also applies on the prompt-only first call.
+        (
+            "_make_mlx_logit_bias_processor",
+            ({1: 4.0, 3: -2.5, 99: 100.0, -1: 100.0},),
+            8,
+            [10, 11],
+            {1: 4.0, 3: -2.5, 0: 0.0, 7: 0.0},
+        ),
+    ],
+)
+def test_mlx_processors_penalize_in_range_ids_and_route_strays_away(
+    factory_name, factory_args, vocab, sequence, expected
+):
+    # MLX does no bounds checking, so a stray id is undefined behaviour.
+    mx = pytest.importorskip("mlx.core")
+    from core.inference import mlx_inference
+
+    proc = getattr(mlx_inference, factory_name)(*factory_args)
+    proc(mx.array([10, 11]), mx.zeros((1, vocab)))  # first call latches prompt_len
+    out = proc(mx.array(sequence), mx.zeros((1, vocab)))
+    for token, value in expected.items():
+        assert float(out[0, token]) == pytest.approx(value), token
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        SimpleNamespace(config = {"model_type": "generic_vlm", "eos_token_id": [1, 2]}),
+        SimpleNamespace(config = SimpleNamespace(eos_token_id = [1, 2])),
+        SimpleNamespace(_config = {"eos_token_id": [1, 2]}),
+        SimpleNamespace(_config = SimpleNamespace(eos_token_id = [1, 2])),
+        SimpleNamespace(config = {"model_type": "g"}, _config = {"eos_token_id": [1, 2]}),
+    ],
+    ids = ["dict-config", "object-config", "dict-_config", "object-_config", "config-then-_config"],
+)
+def test_eos_ids_are_read_from_every_shape_a_config_arrives_in(model):
+    """A checkpoint's config is a dict on some models and an object on others,
+    under config or _config -- the spread _mlx_vlm_model_config already walks. A
+    getattr-only read silently fell through to the tokenizer, which is the source
+    the priority order exists to outrank, so an EOS sampled on the last allowed
+    token was reported as truncation."""
+    from core.inference.mlx_inference import _mlx_finish_reason, _mlx_stop_token_ids
+
+    tokenizer = SimpleNamespace(eos_token_id = 9)  # disagrees with the config
+    stop_ids = _mlx_stop_token_ids(tokenizer, model)
+    assert stop_ids == (1, 2)
+    at_cap = SimpleNamespace(finish_reason = None, token = 2)
+    assert _mlx_finish_reason(at_cap, stop_ids, 10, 10) == "stop"
+
+
+def test_the_tokenizer_is_still_the_fallback_when_no_config_carries_eos():
+    from core.inference.mlx_inference import _mlx_stop_token_ids
+
+    tokenizer = SimpleNamespace(eos_token_id = 9)
+    assert _mlx_stop_token_ids(tokenizer, SimpleNamespace(config = {"model_type": "g"})) == (9,)
+    assert _mlx_stop_token_ids(tokenizer, None) == (9,)
+
+
+def test_finish_reason_separates_truncation_from_natural_end():
+    """At the limit the count alone is ambiguous -- a stop token sampled as the
+    final allowed token looks identical to exhaustion -- so the last token
+    decides, against the ids read from the source the runtime stops on. Those
+    sources disagree on real repos: Kimi-VL lists two config ids and a different
+    tokenizer id, and each may be a bare int (Qwen2-VL) rather than a list."""
+    from core.inference.mlx_inference import _mlx_finish_reason, _mlx_stop_token_ids
+
+    model = SimpleNamespace(config = SimpleNamespace(eos_token_id = [163584, 163586]))
+    ids = _mlx_stop_token_ids(SimpleNamespace(eos_token_ids = 163594), model)
+    assert ids == (163584, 163586)
+    assert _mlx_stop_token_ids(SimpleNamespace(eos_token_ids = 151645)) == (151645,)
+    assert _mlx_stop_token_ids(SimpleNamespace()) == ()
+    assert _mlx_finish_reason(SimpleNamespace(token = 5), ids, 3, 8) == "stop"
+    assert _mlx_finish_reason(SimpleNamespace(token = 5), ids, 8, 8) == "length"
+    assert _mlx_finish_reason(SimpleNamespace(token = 163584), ids, 8, 8) == "stop"
+
+
+# ── Stop sequences ──────────────────────────────────────────────────
+
+
+def test_stop_sequences_cut_the_reply_and_never_show_a_partial_match():
+    """The matcher decides how much of a reply may be shown: text that could still
+    grow into a sequence is held back, since a client cannot unsee a fragment the
+    next token completes."""
+    from core.inference.mlx_inference import _mlx_stop_cut
+
+    # Held back while it could still grow into "ab"; released once it cannot.
+    assert [_mlx_stop_cut(t, ["ab"]) for t in ("xa", "xac", "xab")] == [
+        (1, False),
+        (3, False),
+        (1, True),
+    ]
+    # A sequence at position 0 ends the turn with nothing shown.
+    assert _mlx_stop_cut("abc", ["a"]) == (0, True)
+    # The longest partial across all sequences wins; a shorter one cannot release it.
+    assert _mlx_stop_cut("aaAB", ["ABC", "BX"]) == (2, False)
+    # The earliest match ends the turn, whether one sequence matches twice or two
+    # sequences match in a different order than they were declared.
+    assert _mlx_stop_cut("a then a", ["a"]) == (0, True)
+    assert _mlx_stop_cut("early late", ["late", "early"]) == (0, True)
+    # An unresolved character is not a character yet: it can neither be shown nor
+    # complete a sequence, and dropping it can uncover the start of one. Only the
+    # trailing run is unresolved -- one the reply has already written past is text.
+    assert _mlx_stop_cut("hi\ufffd", ["END"]) == (2, False)
+    assert _mlx_stop_cut("a\ufffd", ["a"]) == (0, True)
+    assert _mlx_stop_cut("a\ufffd\ufffd", ["\ufffd"]) == (1, False)
+    assert _mlx_stop_cut("a\ufffdb", ["\ufffd"]) == (1, True)
+
+
+def _fake_rng_state(monkeypatch, words):
+    from core.inference import mlx_inference
+
+    _install_fake_mlx(monkeypatch)
+    mx = sys.modules["mlx.core"]
+    seeded = []
+    mx.random = SimpleNamespace(
+        state = _SentinelRandomState(words),
+        seed = lambda value: seeded.append(value),
+    )
+    return mlx_inference, seeded
+
+
+@pytest.mark.parametrize(
+    "words,expected",
+    [
+        ((-1, -2), (0xFFFFFFFF, 0xFFFFFFFE)),
+        ((-2147483648, 5), (0x80000000, 5)),
+        ((0, -1), (0, 0xFFFFFFFF)),
+        ((0, 0), (0, 0)),
+        ((0xFFFFFFFF, 0xFFFFFFFF), (0xFFFFFFFF, 0xFFFFFFFF)),
+    ],
+)
+def test_rng_capture_reinterprets_signed_words(monkeypatch, words, expected):
+    """A negative word is the two's complement of the uint32 mlx stores.
+
+    Reinterpreting it loses nothing, and it is what keeps the seed inside the
+    uint64 domain. The rewind is deliberately unguarded, which only holds if the
+    words cannot put it out of range; capture does not type-check the state, so
+    this conversion is what makes that true. A raise would land in the probe's
+    finally and replace the probe's own outcome, the failure shape #9478 set out
+    to remove.
+    """
+    mlx_inference, seeded = _fake_rng_state(monkeypatch, words)
+
+    captured = mlx_inference._mlx_rng_key_words()
+    assert captured == expected
+
+    mlx_inference._restore_mlx_rng_key(captured)
+    assert seeded == [(expected[0] << 32) | expected[1]]
+    assert 0 <= seeded[0] < 2**64
+
+
+@pytest.mark.parametrize(
+    "words", [(2**32, 0), (0, 2**32), (2**63, 1), (-(2**31) - 1, 0), (0, -(2**40))]
+)
+def test_rng_capture_declines_words_that_are_not_32_bit(monkeypatch, words):
+    """Masking these would be worse than declining them.
+
+    (2**32, 0) masks to (0, 0): a key we cannot represent becomes a plausible
+    wrong one, the probe reports success, and sampling silently diverges from an
+    unprobed run. Declining is the outcome the caller already handles, and it is
+    the only one that says so out loud.
+    """
+    mlx_inference, seeded = _fake_rng_state(monkeypatch, words)
+    warnings = _capture_rng_warnings(monkeypatch, mlx_inference)
+
+    assert mlx_inference._mlx_rng_key_words() is None
+    assert any("32-bit word" in w for w in warnings), warnings
+
+    # The rewind must stay a no-op on the value capture actually returns, and
+    # total besides: handed these words directly it declines rather than raising
+    # into the probe's finally, and never seeds a wrong key.
+    mlx_inference._restore_mlx_rng_key(None)
+    mlx_inference._restore_mlx_rng_key(words)
+    assert seeded == []
+
+
+def _capture_rng_warnings(monkeypatch, mlx_inference):
+    """Collect this module's warnings. It logs through structlog, which caplog
+    does not see."""
+    warnings = []
+    monkeypatch.setattr(
+        mlx_inference.logger,
+        "warning",
+        lambda msg, *args, **kwargs: warnings.append(msg % args if args else msg),
+    )
+    return warnings
+
+
+@pytest.mark.parametrize("n", [1, 3, 4])
+def test_rng_capture_reports_a_key_that_is_not_two_words(monkeypatch, n):
+    """Returning a bare None would leave the probe silently not restoring, which
+    is the same shape of silent divergence the item assignment used to cause,
+    just moved from the write to the read."""
+    from core.inference import mlx_inference
+
+    _install_fake_mlx(monkeypatch)
+    mx = sys.modules["mlx.core"]
+    mx.random = SimpleNamespace(
+        state = _SentinelRandomState(tuple(range(n))),
+        seed = lambda value: None,
+    )
+    warnings = _capture_rng_warnings(monkeypatch, mlx_inference)
+
+    assert mlx_inference._mlx_rng_key_words() is None
+    assert any("random key" in w for w in warnings), warnings
+
+
+def test_rng_capture_stays_quiet_when_the_state_cannot_be_read(monkeypatch):
+    """An unreadable state is an intentional no-op, not a surprise. Warning on it
+    every call would train operators to ignore the warning that matters."""
+    from core.inference import mlx_inference
+
+    _install_fake_mlx(monkeypatch)
+    mx = sys.modules["mlx.core"]
+    mx.random = SimpleNamespace(state = lambda: {"counter": 0}, seed = lambda value: None)
+    warnings = _capture_rng_warnings(monkeypatch, mlx_inference)
+
+    assert mlx_inference._mlx_rng_key_words() is None
+    assert warnings == []

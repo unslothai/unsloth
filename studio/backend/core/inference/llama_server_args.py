@@ -13,8 +13,12 @@ Ref: https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md
 
 from __future__ import annotations
 
+import logging
 import os
+import sys
 from typing import Iterable, Mapping, Optional
+
+logger = logging.getLogger(__name__)
 
 # Valid llama-server --parallel range, shared with LoadRequest.n_parallel.
 # Mirrored by callers that cannot import this: run.py and unsloth_cli/commands/
@@ -26,6 +30,12 @@ PARALLEL_MAX = 64
 # --batch-size / --ubatch-size range, mirrored by N_BATCH_MIN/MAX in per-model-config.ts
 BATCH_MIN = 1
 BATCH_MAX = 65536
+
+# Sanity bounds, not upstream ones: a stray keystroke fails here rather than in the
+# child. --cache-ram floors at -1 ("no limit"); 0 disables the cache. Mirrored by
+# CTX_CHECKPOINTS_MAX / CACHE_RAM_MAX in per-model-config.ts.
+CTX_CHECKPOINTS_MAX = 256
+CACHE_RAM_MAX_MIB = 1024 * 1024
 
 # Each group = every alias (short + long) of one hard-denied flag.
 # Extend the matching group when llama.cpp adds a new alias.
@@ -67,25 +77,110 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     # llama.cpp binaries match.
     frozenset({"--webui", "--no-webui"}),
     frozenset({"--ui", "--no-ui"}),
-    frozenset({"--ui-config"}),
-    frozenset({"--ui-config-file"}),
-    frozenset({"--ui-mcp-proxy", "--no-ui-mcp-proxy"}),
+    frozenset({"--ui-config", "--webui-config"}),
+    frozenset({"--ui-config-file", "--webui-config-file"}),
+    frozenset({"--ui-mcp-proxy", "--webui-mcp-proxy", "--no-ui-mcp-proxy", "--no-webui-mcp-proxy"}),
     frozenset({"--models-dir"}),
     frozenset({"--models-preset"}),
     frozenset({"--models-max"}),
     frozenset({"--models-autoload", "--no-models-autoload"}),
-    # Server-mode flips: --embedding / --rerank restrict llama-server to
-    # those endpoints, breaking Unsloth's /v1/chat/completions hop.
+    # Server-mode flips: --embedding is set from the GGUF pooling type at load, not by hand.
     frozenset({"--embedding", "--embeddings"}),
     frozenset({"--rerank", "--reranking"}),
+    # Pooling decides whether the managed embedding launch is safe. A pass-through
+    # override appended after --embedding could switch it to NONE or RANK.
+    frozenset({"--pooling"}),
     # llama-server's own built-in tools flag would silently stack on top of
     # Unsloth's --enable-tools / --disable-tools policy resolver.
     frozenset({"--tools"}),
-    # Slot-state dir: Studio owns it for KV persistence across idle unload.
+    # --agent is --tools by another name: upstream documents it as "enable CORS
+    # proxy and ALL built-in tools", and that set includes exec_shell_command.
+    # Denying --tools while allowing this left the same capability one alias away.
+    frozenset({"-ag", "--agent", "-no-ag", "--no-agent"}),
+    # Where those tools run: docker:/podman: spins up a container, ssh:<target>
+    # runs them on another host entirely.
+    frozenset({"--tools-runtime"}),
+    # MCP servers are tools from a config file or an inline JSON blob; upstream
+    # says "do not enable in untrusted environments" for both.
+    frozenset({"--mcp-servers-config"}),
+    frozenset({"--mcp-servers-json"}),
+    # CORS: Unsloth terminates browser access at its own origin, so widening the
+    # child's would hand a page past the boundary the proxy exists to hold.
+    frozenset({"--cors-origins"}),
+    frozenset({"--cors-headers"}),
+    frozenset({"--cors-methods"}),
+    frozenset({"--cors-credentials", "--no-cors-credentials"}),
+    # Serves local files over the child's HTTP surface.
+    frozenset({"--media-path"}),
+    # Startup output is how _classify_llama_start_failure tells a bad GGUF from an
+    # OOM from a rejected flag; redirecting or silencing it makes every failure
+    # the same opaque one.
+    frozenset({"--log-file"}),
+    frozenset({"--log-disable"}),
+    # Slot-state dir: Studio owns it for KV persistence across idle unload. Endpoint
+    # exposure (--slots, --props) is deliberately NOT denied alongside it: Unsloth
+    # reads GET /props and never /slots, so either is the user's own call.
     frozenset({"--slot-save-path"}),
+    # These print and exit instead of serving, so the load would "succeed" with no
+    # server behind it and only time out later.
+    frozenset({"-h", "--help", "--usage"}),
+    frozenset({"--version"}),
+    frozenset({"--list-devices"}),
+    frozenset({"-cl", "--cache-list"}),
+    frozenset({"--completion-bash"}),
 )
 
 _DENYLIST: frozenset[str] = frozenset().union(*_DENYLIST_GROUPS)
+
+# Flags that take TWO values rather than one. Scanned out of `llama-server --help`:
+# every other option is `--flag VALUE` or a switch, and this list exists so the
+# positional check below does not refuse a legitimate second value.
+_TWO_VALUE_FLAGS: frozenset[str] = frozenset({"--control-vector-layer-range"})
+
+# Flags that take a second value on SOME builds. Today's llama.cpp writes the scale
+# into the value ("--lora-scaled FNAME:SCALE"), and older ones took it as a separate
+# token ("--lora-scaled FNAME SCALE"); both spellings are already handled in
+# _sidecar_weight_files. So the second token is allowed but never required: demanding
+# it would refuse the current syntax, and refusing it broke a list that loaded before
+# the positional check existed.
+_OPTIONAL_SECOND_VALUE_FLAGS: frozenset[str] = frozenset(
+    {"--lora-scaled", "--control-vector-scaled"}
+)
+
+# Shape bounds. Not a security boundary -- the denylist is -- but a pasted file or a
+# runaway generator should fail here, naming the limit, rather than at execve or in
+# llama-server's own parser. Generous enough that a grammar or a JSON schema fits.
+MAX_EXTRA_ARG_TOKENS = 256
+MAX_EXTRA_ARGS_BYTES = 32 * 1024
+# Windows passes CreateProcess ONE string for the whole command line, capped at 32767
+# characters, and the model path, Unsloth's own flags and the quoting subprocess adds
+# all come out of the same budget. So the extras get a smaller share there: accepting
+# the full 32 KiB would pass every check here and then fail inside Popen, after the
+# load had already begun switching models.
+MAX_EXTRA_ARGS_BYTES_WINDOWS = 24 * 1024
+
+
+# CreateProcess takes the whole command line as ONE string, capped here. The rest of
+# the command (the binary, the model path, Unsloth's own flags) has to fit too, so the
+# extras are checked against the limit minus this reserve.
+WINDOWS_COMMAND_LIMIT = 32767
+WINDOWS_COMMAND_RESERVE = 8192
+
+
+def windows_command_length(args: list) -> int:
+    """Characters ``subprocess`` would put on a Windows command line for ``args``.
+
+    list2cmdline is the exact serializer Popen uses there, and it is not a sum of
+    lengths: a value needing quotes has its backslashes doubled, so an escape-heavy
+    grammar can nearly double. Measuring it is the only honest check.
+    """
+    import subprocess
+    return len(subprocess.list2cmdline([str(a) for a in args]))
+
+
+def max_extra_args_bytes() -> int:
+    """The size cap for this platform."""
+    return MAX_EXTRA_ARGS_BYTES_WINDOWS if sys.platform == "win32" else MAX_EXTRA_ARGS_BYTES
 
 
 def _flag_name(token: str) -> Optional[str]:
@@ -113,6 +208,35 @@ def _flag_name(token: str) -> Optional[str]:
     return name
 
 
+def _value_is_attached(token: str, flag: str) -> bool:
+    """Whether this token carries its own value, rather than expecting the next one.
+
+    Not "the name changed": _flag_name also folds llama.cpp's underscore spelling
+    (--ctx_size is --ctx-size to it, and the binary takes both), so comparing the
+    normalised name against the raw token read "--ctx_size 4096" as attached and then
+    refused the 4096 as a bare value. Only "=" and an attached short like -np8 are
+    values in the same token.
+    """
+    raw = token.strip()
+    if "=" in raw:
+        return True
+    return raw.replace("_", "-") != flag
+
+
+def _is_spawnable(token: str) -> bool:
+    """Whether execve could carry this token at all (no unpaired surrogates)."""
+    try:
+        token.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def _has_control_characters(token: str) -> bool:
+    """A NUL, or any C0 control other than tab and newline."""
+    return any(ch == "\x00" or (ord(ch) < 32 and ch not in "\t\n") for ch in token)
+
+
 def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
     """Validate user-supplied llama-server args. Returns a flat list ready to
     extend the llama-server command; raises ``ValueError`` naming the
@@ -120,20 +244,271 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
     if not args:
         return []
     out: list[str] = []
+    total_bytes = 0
+    # How many following tokens the flag just seen may still claim as values. A
+    # switch claims none, so the next bare token has no owner.
+    pending_values = 0
+    # Values still owed to a two-value flag, tracked apart because it is the one
+    # arity this module knows for certain.
+    pending_two_value = 0
+    two_value_flag = ""
     for raw in args:
         token = str(raw)
+        if len(out) >= MAX_EXTRA_ARG_TOKENS:
+            raise ValueError(
+                f"too many extra llama-server args (limit {MAX_EXTRA_ARG_TOKENS} tokens)"
+            )
+        # A grammar or JSON schema is a legitimately long single token, so the cap
+        # is on the whole list rather than per token.
+        # Strictly, unlike the sizing below: JSON and the browser can both carry an
+        # unpaired surrogate, which survives every check here and then makes
+        # subprocess.Popen raise while it encodes argv, long after the load has begun
+        # switching models. Refused at the boundary, where it is still a 400.
+        try:
+            encoded = token.encode("utf-8")
+        except UnicodeEncodeError as error:
+            raise ValueError(
+                "extra llama-server args cannot contain unpaired surrogate characters"
+            ) from error
+        total_bytes += len(encoded)
+        limit = max_extra_args_bytes()
+        if total_bytes > limit:
+            raise ValueError(f"extra llama-server args are too large (limit {limit} bytes)")
+        # execve rejects a NUL outright; the rest would reach the child's parser as
+        # invisible characters and be blamed on the flag they are attached to.
+        if _has_control_characters(token):
+            raise ValueError("extra llama-server args cannot contain control characters")
         flag = _flag_name(token)
         if flag is not None and flag in _DENYLIST:
-            raise ValueError(
+            message = (
                 f"llama-server flag '{flag}' is managed by Unsloth Studio "
                 f"and cannot be passed as an extra arg"
             )
+            # Why (#9510): users reaching for `--parallel 1` to cap concurrent predictions on a
+            # local model hit this refusal with no pointer to the supported knob; name it.
+            if flag in {"-np", "--parallel", "--n-parallel"}:
+                message += "; set n_parallel on the load request (parallel decode slots) instead"
+            raise ValueError(message)
+        if flag is None:
+            # A token belonging to no flag. Today's llama-server answers "invalid
+            # argument" and refuses to start, which is a failed load rather than a
+            # 400, and a build that did accept a positional would read it as the
+            # model path: that is the one thing the -m / --model denial exists to
+            # prevent, and it would sidestep the native-path lease as well.
+            if pending_values <= 0:
+                raise ValueError(
+                    "extra llama-server args cannot contain a bare value "
+                    f"('{token[:64]}'); every value must follow its flag"
+                )
+            pending_values -= 1
+            if pending_two_value > 0:
+                pending_two_value -= 1
+        elif token != token.strip():
+            # _flag_name strips before it looks anything up, so a quoted "--top-k "
+            # passed the denylist and the arity walk as --top-k and then went to the
+            # child with the space still on it. llama.cpp looks the whole token up,
+            # so it answers "error: invalid argument: --top-k" (measured on b10342),
+            # naming a flag that looks correct in the log. Only flag-shaped tokens:
+            # a VALUE may legitimately end in whitespace, a chat template or a
+            # grammar being the obvious ones.
+            raise ValueError(
+                f"llama-server does not accept the spaces around '{token[:64]}': "
+                f"write it as '{flag}'"
+            )
+        elif "=" in token:
+            # llama.cpp looks the WHOLE token up in its option map, folding only the
+            # underscore spelling, so "--top-k=20" is not "--top-k" with a value: it
+            # is an argument it has never heard of. Measured on b10342 and b10360,
+            # where --top-k=20, --ctx-size=4096 and --flash-attn=on each exit with
+            # "error: invalid argument". Accepting the GNU spelling here meant the
+            # switch tore down the resident model and the child then refused to
+            # start, so it is refused while it is still a 400 with somewhere to go.
+            # Splitting it here would be a guess: for a switch the value is not one,
+            # and this module cannot know an ordinary flag's arity.
+            value = token.partition("=")[2]
+            raise ValueError(
+                f"llama-server does not read an attached value: write '{flag}' and "
+                f"'{value[:32]}' as two separate arguments, not '{token[:64]}'"
+            )
+        else:
+            # Its own value when attached, otherwise the tokens that follow.
+            attached = _value_is_attached(token, flag)
+            if pending_two_value > 0:
+                raise ValueError(f"llama-server flag '{two_value_flag}' takes two values")
+            # An attached value is ONE of the two, not the whole option:
+            # "--control-vector-layer-range=1" still owes its END, and
+            # llama-server exits on the incomplete option.
+            if flag in _TWO_VALUE_FLAGS:
+                pending_values = 1 if attached else 2
+                pending_two_value = pending_values
+            elif flag in _OPTIONAL_SECOND_VALUE_FLAGS:
+                # Allowed, not owed: pending_two_value stays 0, so nothing here
+                # insists on the second token.
+                pending_values = 1 if attached else 2
+                pending_two_value = 0
+            else:
+                pending_values = 0 if attached else 1
+                pending_two_value = 0
+            two_value_flag = flag
         out.append(token)
+    if pending_two_value > 0:
+        # Only this shape is checkable: an ordinary flag's arity is unknown here, so
+        # a list ending in one is left to llama-server. START without END is a launch
+        # that fails on the command line rather than a request that fails here.
+        raise ValueError(f"llama-server flag '{two_value_flag}' takes two values")
+    if sys.platform == "win32":
+        # After the per-token walk, because this is a property of the whole list.
+        serialized = windows_command_length(out)
+        budget = WINDOWS_COMMAND_LIMIT - WINDOWS_COMMAND_RESERVE
+        if serialized > budget:
+            raise ValueError(
+                "extra llama-server args are too long for a Windows command line "
+                f"({serialized} characters after quoting, limit {budget})"
+            )
     parse_ctx_override(out)
     parse_cache_override(out)
     parse_split_mode_override(out)
     parse_gpu_layers_override(out)
     return out
+
+
+def drop_managed_flags(args: Optional[Iterable[str]]) -> tuple[list[str], list[str]]:
+    """Split stored args into what still loads and the flag names removed.
+
+    For the paths that CARRY OVER an existing value rather than receive a new one.
+    The denylist grows (``--agent`` and the MCP flags were added once a text box
+    made them one paste away), so an override saved by an older build can hold a
+    name that is refused today. Refusing there punishes a user for a decision made
+    later: the load, or the save of an unrelated setting, fails naming a flag they
+    may not remember writing. Dropping is the same judgement applied quietly.
+
+    A flag takes its value with it, or ``--log-file /var/log/x`` would leave a bare
+    ``/var/log/x`` behind, which llama.cpp reads as a positional model path. The
+    bounds and the control-character rule are enforced by re-validating what is
+    left, so the result is always something ``validate_extra_args`` accepts.
+    """
+    tokens = [str(raw) for raw in (args or [])]
+
+    def _takes_next(
+        index: int,
+        token: str,
+        flag: str,
+        source: list = None,
+    ) -> bool:
+        """True when the token's value is the NEXT token rather than its own.
+
+        ``source`` defaults to the input list; the trimming loop passes the list it
+        is shortening, where "the next token" means the one just removed.
+        """
+        if _value_is_attached(token, flag):
+            return False
+        seq = tokens if source is None else source
+        if source is not None:
+            # Called on the last surviving token, whose value was the token just shed.
+            return True
+        following = seq[index + 1] if index + 1 < len(seq) else None
+        return following is not None and _flag_name(following) is None
+
+    kept: list[str] = []
+    dropped: list[str] = []
+    skip_next = False
+    for index, token in enumerate(tokens):
+        if skip_next:
+            skip_next = False
+            continue
+        flag = _flag_name(token)
+        if flag is not None and flag in _DENYLIST:
+            dropped.append(flag)
+            skip_next = _takes_next(index, token, flag)
+            continue
+        # A control character never reached the child as anything but noise, and a
+        # NUL never reached it at all (execve refuses). A poisoned VALUE takes its
+        # flag with it for the same reason a denied flag takes its value: a flag
+        # left expecting one would eat the next token and change what that means.
+        if _has_control_characters(token) or not _is_spawnable(token):
+            # A placeholder either way: this list is joined into a warning log, and
+            # the unusable characters are in the token itself, so echoing its name
+            # would rewrite whatever is reading that log just as echoing its value
+            # would.
+            dropped.append("<flag>" if flag is not None else "<value>")
+            if flag is not None:
+                # Its value goes too, exactly as a denied flag's does: an orphan left
+                # behind is a bare positional, which llama-server reads as the model
+                # path.
+                skip_next = _takes_next(index, token, flag)
+            elif kept:
+                owner = _flag_name(kept[-1])
+                if owner is not None:
+                    dropped.append(owner)
+                    kept.pop()
+            continue
+        if flag is not None and "=" in token:
+            # An attached value llama-server refuses outright, whatever the flag. Dropped
+            # here with the denied names rather than left to the trimming loop below:
+            # that loop sheds the TAIL, so one legacy "--top-k=20" in the middle would
+            # cost every flag written after it. Nothing to skip, the value is in the
+            # token. After the control-character check, so a poisoned name is still
+            # logged as a placeholder rather than echoed.
+            dropped.append(flag)
+            continue
+        if flag is not None and token != token.strip():
+            # Refused for the same reason, and its value goes with it: the padding is
+            # part of the token llama.cpp looks up, so the flag never arrives and the
+            # value it was written for would be left as a bare positional.
+            dropped.append(flag)
+            skip_next = _takes_next(index, token, flag)
+            continue
+        if (
+            flag is not None
+            and _takes_next(index, token, flag)
+            and (_has_control_characters(tokens[index + 1]) or not _is_spawnable(tokens[index + 1]))
+        ):
+            # Recorded, not just skipped: the value is about to be dropped for its
+            # control characters, and a flag that vanished without a word in the log
+            # is the harder half of that to explain afterwards.
+            dropped.append(flag)
+            continue
+        kept.append(token)
+
+    while kept:
+        try:
+            return validate_extra_args(kept), dropped
+        except ValueError:
+            # Only the bounds can still fail here, and they are about length, so the
+            # tail is the right thing to shed. A flag whose value has just gone with
+            # it goes too: `['--grammar', <33 KiB>]` trimmed to `['--grammar']` is
+            # syntactically valid to this validator, which knows the arity of only a
+            # few flags, and llama-server then refuses the launch over a flag with
+            # no value.
+            # Names, not values: this list goes into a log line, and the token that
+            # broke the bound is by definition enormous.
+            dropped.append(_flag_name(kept[-1]) or "<value>")
+            kept = kept[:-1]
+            last_flag = _flag_name(kept[-1]) if kept else None
+            if last_flag is not None and _takes_next(len(kept) - 1, kept[-1], last_flag, kept):
+                dropped.append(last_flag)
+                kept = kept[:-1]
+            # A two-value flag loses the whole option rather than half of it: one
+            # value left behind is a command llama-server refuses at startup, which
+            # is the failure this trimming exists to avoid.
+            while len(kept) >= 2:
+                owner = _flag_name(kept[-2])
+                if (
+                    owner in _TWO_VALUE_FLAGS
+                    and _flag_name(kept[-1]) is None
+                    and "=" not in kept[-2]
+                ):
+                    dropped.append(owner)
+                    kept = kept[:-2]
+                    continue
+                break
+    return [], dropped
+
+
+def sorted_managed_flags() -> list[str]:
+    """Every denied flag, sorted, for a UI that wants to explain a rejection before
+    the request is made. The validator stays the authority; this is only a mirror."""
+    return sorted(_DENYLIST)
 
 
 def is_managed_flag(flag: str) -> bool:
@@ -162,11 +537,12 @@ _SPEC_FLAGS: frozenset[str] = frozenset(
         # and HF --spec-draft-hf aliases) are Unsloth-managed since the separate-
         # drafter support (Gemma 4): an inherited copy must not last-wins-override
         # the auto-detected drafter. Explicit extras for the current load are never
-        # stripped. The per-drafter tuning knobs (--spec-draft-type-*, -ngld,
-        # --spec-draft-device) are deliberately NOT stripped: the VRAM budget reads
-        # them via the same parsers the child honors, so they stay consistent on
-        # inherit, and stripping them would silently move a CPU-offloaded drafter
-        # back onto the GPU.
+        # stripped. The per-drafter tuning knobs (-ngld, --spec-draft-device) are
+        # deliberately NOT stripped: the VRAM budget reads them via the same parsers
+        # the child honors, so they stay consistent on inherit, and stripping them
+        # would silently move a CPU-offloaded drafter back onto the GPU. The draft
+        # cache dtype is in that group too, and has its own toggle used only when
+        # spec_draft_cache_type is set, the same rule the batch pair follows.
         "--model-draft",
         "-md",
         "--spec-draft-model",
@@ -216,6 +592,21 @@ _GPU_LAYER_FLAGS: frozenset[str] = frozenset({"-ngl", "--gpu-layers", "--n-gpu-l
 # inherited copies of these shadow n_batch / n_ubatch, stripped only when the field is set
 _BATCH_FLAGS: frozenset[str] = frozenset({"-b", "--batch-size"})
 _UBATCH_FLAGS: frozenset[str] = frozenset({"-ub", "--ubatch-size"})
+# Same rule for the tuning group: stripped only when its field is supplied.
+# --swa-checkpoints is upstream's older spelling of --ctx-checkpoints.
+_CTX_CHECKPOINTS_FLAGS: frozenset[str] = frozenset(
+    {"-ctxcp", "--ctx-checkpoints", "--swa-checkpoints"}
+)
+_CACHE_RAM_FLAGS: frozenset[str] = frozenset({"-cram", "--cache-ram"})
+# One group: the control sets a single dtype, so an inherited pair that split K
+# from V has to go whole.
+_SPEC_DRAFT_CACHE_K_FLAGS: frozenset[str] = frozenset(
+    {"-ctkd", "--cache-type-k-draft", "--spec-draft-type-k"}
+)
+_SPEC_DRAFT_CACHE_V_FLAGS: frozenset[str] = frozenset(
+    {"-ctvd", "--cache-type-v-draft", "--spec-draft-type-v"}
+)
+_SPEC_DRAFT_CACHE_FLAGS: frozenset[str] = _SPEC_DRAFT_CACHE_K_FLAGS | _SPEC_DRAFT_CACHE_V_FLAGS
 _FIT_FLAGS: frozenset[str] = frozenset({"-fit", "--fit"})
 _LAYER_OFFLOAD_FLAGS: frozenset[str] = _GPU_LAYER_FLAGS | _FIT_FLAGS
 _MOE_OFFLOAD_FLAGS: frozenset[str] = frozenset({"-ncmoe", "--n-cpu-moe", "-cmoe", "--cpu-moe"})
@@ -316,6 +707,31 @@ def parse_ctx_override(args: Optional[Iterable[str]]) -> Optional[int]:
     return override
 
 
+def parse_ctx_checkpoints_override(args: Optional[Iterable[str]]) -> Optional[int]:
+    """Return the last user-supplied ``--ctx-checkpoints`` value, or None.
+
+    The control emits its flag before the extras, so a copy typed for this load
+    last-wins at launch. Sizing has to price that value, not the field, or a
+    ``--ctx-checkpoints 256`` in the extras allocates 256 per-slot snapshots
+    against a fit that budgeted the field's count.
+    """
+    value = _last_flag_value(args, _CTX_CHECKPOINTS_FLAGS)
+    if value is None:
+        return None
+    try:
+        parsed = int(str(value).strip())
+    except ValueError:
+        # Malformed extras are refused at the boundary; sizing must not raise here.
+        return None
+    return max(0, parsed)
+
+
+def resolve_ctx_checkpoints(args: Optional[Iterable[str]], requested: Optional[int]) -> int:
+    """The checkpoint count the launch will actually run: extras beat the field."""
+    override = parse_ctx_checkpoints_override(args)
+    return int(override if override is not None else (requested or 0))
+
+
 def resolve_requested_ctx(args: Optional[Iterable[str]], fallback_n_ctx: int) -> int:
     """Return the context size load_model should treat as requested.
 
@@ -392,6 +808,33 @@ def parse_gpu_layers_override(args: Optional[Iterable[str]]) -> Optional[int]:
     if value < -1:
         raise ValueError("llama-server GPU layers flag requires an integer value of at least -1")
     return value
+
+
+def check_batch_floor(args: Optional[Iterable[str]], n_parallel: int) -> None:
+    """Raise when a pass-through --batch-size would abort llama-server.
+
+    The launcher raises the value it emits itself to ``max(slots, 2)``, with the
+    measurements recorded beside that code: ``-b 1`` aborts at any slot count, and a
+    batch below ``--parallel`` aborts too. Extras are appended AFTER that flag and win
+    the last-wins parse, so a small value here is not a smaller batch, it is a server
+    that dies during startup, and by then the previous model has been unloaded.
+
+    Only the shapes that are certainly wrong: an unreadable value is left to
+    llama-server, which names it better than a guess here would.
+    """
+    raw_value = _last_flag_value(args, _BATCH_FLAGS)
+    if raw_value is None:
+        return
+    try:
+        value = int(raw_value)
+    except ValueError:
+        return
+    floor = max(2, int(n_parallel or 1))
+    if value < floor:
+        raise ValueError(
+            f"llama-server aborts on --batch-size {value}: it needs at least {floor} "
+            f"for the {max(1, int(n_parallel or 1))} parallel slot(s) this load serves"
+        )
 
 
 def fit_is_enabled_in(args: Optional[Iterable[str]]) -> bool:
@@ -565,6 +1008,9 @@ def strip_shadowing_flags(
     strip_load_mode: bool = False,
     strip_batch: bool = False,
     strip_ubatch: bool = False,
+    strip_ctx_checkpoints: bool = False,
+    strip_cache_ram: bool = False,
+    strip_spec_draft_cache: bool = False,
 ) -> list[str]:
     """Strip flags that shadow first-class Unsloth settings.
 
@@ -615,6 +1061,12 @@ def strip_shadowing_flags(
         shadowing |= _BATCH_FLAGS
     if strip_ubatch:
         shadowing |= _UBATCH_FLAGS
+    if strip_ctx_checkpoints:
+        shadowing |= _CTX_CHECKPOINTS_FLAGS
+    if strip_cache_ram:
+        shadowing |= _CACHE_RAM_FLAGS
+    if strip_spec_draft_cache:
+        shadowing |= _SPEC_DRAFT_CACHE_FLAGS
 
     tokens = [str(a) for a in (args or [])]
     out: list[str] = []
@@ -654,6 +1106,24 @@ def strip_split_mode_only(args: Optional[Iterable[str]]) -> Optional[list[str]]:
     )
 
 
+def strip_context_only(args: Optional[Iterable[str]]) -> Optional[list[str]]:
+    """Remove the context group (``-c`` / ``--ctx-size``) from ``args``, keeping
+    every other shadow flag. Preserves a None/empty input so the
+    inherit-vs-explicit-empty distinction survives. Used by the Metal
+    zero-context floor, where a trailing ``-c 0`` would last-wins override the
+    floor and pin the native length again."""
+    if not args:
+        return args
+    return strip_shadowing_flags(
+        args,
+        strip_context = True,
+        strip_cache = False,
+        strip_spec = False,
+        strip_template = False,
+        strip_split_mode = False,
+    )
+
+
 def apply_model_memory_policy(
     extra_args: Optional[Iterable[str]],
     *,
@@ -677,6 +1147,9 @@ def apply_model_memory_policy(
     "Don't reserve system RAM" drops ``--mlock`` / ``--no-mmap``, leaving the
     default mmap path. With both off nothing is stripped, so a hand-typed flag
     still applies.
+
+    The per-model Mmap/Mlock control is resolved separately, by
+    ``apply_load_mode_policy``, which runs after this and defers to it.
     """
     try:
         from utils.model_memory_settings import get_model_memory_settings
@@ -719,6 +1192,77 @@ def apply_model_memory_policy(
             strip_load_mode = True,
         )
     return managed, tokens
+
+
+def apply_load_mode_policy(
+    extra_args: Optional[Iterable[str]],
+    *,
+    supports_load_mode: bool = False,
+    weights_in_host_memory: bool = True,
+    requested_load_mode: Optional[str] = None,
+) -> tuple[list[str], list[str]]:
+    """Resolve the per-model Mmap/Mlock control into llama-server flags.
+
+    Returns ``(managed_flags, extras)``, like ``apply_model_memory_policy``, and
+    is meant to run straight after it on the extras that call returned.
+
+    The Model Memory settings win, which is what the Run settings panel tells the
+    user, so changing the order without changing ``loadModeOverrideNotice`` makes
+    that note wrong. "Keep model in GPU memory" owns the mode outright while it
+    applies; "Don't reserve system RAM" vetoes the values holding a full host copy
+    (``none``, ``mlock``, ``mmap+mlock``) and leaves ``mmap`` and ``dio`` alone.
+
+    ``auto`` emits nothing: it IS llama.cpp's default, so pinning it would freeze
+    what a later build may redefine. An unknown value is dropped rather than passed
+    through, since llama-server exits on one.
+    """
+    tokens = list(extra_args or [])
+    mode = _normalize_load_mode_value(requested_load_mode)
+    if not mode:
+        return [], tokens
+    try:
+        from utils.model_memory_settings import get_model_memory_settings
+        keep_resident, no_ram_reserve = get_model_memory_settings()
+    except Exception:
+        # Settings unavailable (bare unit-test import): nothing to defer to.
+        keep_resident, no_ram_reserve = False, False
+    if keep_resident and not no_ram_reserve and weights_in_host_memory:
+        logger.info(
+            "Model Memory: 'Keep model in GPU memory' owns the load mode; "
+            "ignoring the requested %r.",
+            mode,
+        )
+        return [], tokens
+    if no_ram_reserve and mode in _LOAD_MODE_MLOCK_VALUES | _LOAD_MODE_RESERVING_VALUES:
+        logger.info(
+            "Model Memory: 'Don't reserve system RAM' drops the requested load mode %r.",
+            mode,
+        )
+        return [], tokens
+    if not supports_load_mode:
+        # A build predating the enum understands the spellings it replaced, and
+        # only for the values that had one.
+        legacy = _LEGACY_LOAD_MODE_FLAGS.get(mode)
+        if not legacy:
+            logger.info("llama-server has no --load-mode; skipping the requested %r mode.", mode)
+            return [], tokens
+        return list(legacy), tokens
+    # Emitted BEFORE the extras and stripping nothing, like every other control
+    # here: a flag typed for THIS load is appended after and last-wins, which is
+    # what the panel's diagnostics promise. An INHERITED copy is a different
+    # thing, and the route drops that one before it ever reaches here.
+    return ["--load-mode", mode], tokens
+
+
+def _normalize_load_mode_value(value: Optional[str]) -> str:
+    """Canonical --load-mode, or "" for "no opinion" (unset, auto, unknown)."""
+    mode = (value or "").strip().lower()
+    if mode in {"", "auto"}:
+        return ""
+    if mode not in _LOAD_MODE_VALUES:
+        logger.warning("Ignoring unknown load mode %r", value)
+        return ""
+    return mode
 
 
 def _strip_reserving_load_modes(tokens: list[str]) -> list[str]:
@@ -782,6 +1326,115 @@ def _env_var_locks_or_reserves(name: str, value: str) -> bool:
     return False
 
 
+# The LLAMA_ARG_* twins of flags the denylist refuses. llama.cpp reads these before
+# argv, so a name refused in extra args is still reachable through the environment
+# Unsloth's own process inherits. Anyone who can set that environment can already do
+# worse, so this is not the boundary -- it just stops a denied flag arriving by the
+# back door and leaving no trace in the recorded command.
+DENIED_ENV_VARS: tuple[str, ...] = (
+    "LLAMA_ARG_TOOLS",
+    "LLAMA_ARG_TOOLS_RUNTIME",
+    "LLAMA_ARG_AGENT",
+    "LLAMA_ARG_MCP_SERVERS_CONFIG",
+    "LLAMA_ARG_MCP_SERVERS_JSON",
+    "LLAMA_ARG_CORS_ORIGINS",
+    "LLAMA_ARG_CORS_HEADERS",
+    "LLAMA_ARG_CORS_METHODS",
+    "LLAMA_ARG_CORS_CREDENTIALS",
+    "LLAMA_ARG_MEDIA_PATH",
+    # The twins of --log-file and --log-disable. Studio classifies a failed start by
+    # reading llama-server's own output, so an inherited redirect leaves every
+    # failure looking like the same opaque one; and unlike the flags, Studio emits
+    # nothing later that would override these. LLAMA_ARG_LOG_DISABLE has no twin in
+    # today's builds, and is listed so it cannot arrive as one.
+    "LLAMA_ARG_LOG_FILE",
+    "LLAMA_ARG_LOG_DISABLE",
+    # --api-prefix moves every endpoint, including the /health Studio waits on, so an
+    # inherited one turns every load into a timeout.
+    "LLAMA_ARG_API_PREFIX",
+    # --api-key and its file. Studio terminates auth itself and sends the child no
+    # Authorization header, so an inherited key makes the healthy child refuse every
+    # request. The bundled build reads LLAMA_API_KEY for the flag and
+    # LLAMA_ARG_API_KEY_FILE for the file; the third spelling is listed because the
+    # name has moved between releases and none of them is ours to honour.
+    "LLAMA_API_KEY",
+    "LLAMA_ARG_API_KEY",
+    "LLAMA_ARG_API_KEY_FILE",
+    # The twins of --ssl-key-file and --ssl-cert-file. Given both, llama-server
+    # listens on https, while Studio probes /health and proxies over http against
+    # the port it launched: the child comes up healthy and every load times out.
+    # Measured on b10360, where an inherited pair turns "listening on
+    # http://127.0.0.1:PORT" into "listening on https://...".
+    "LLAMA_ARG_SSL_KEY_FILE",
+    "LLAMA_ARG_SSL_CERT_FILE",
+    # The rest of the twins its --help documents for a denied flag, enumerated from
+    # the bundled b10342 help rather than picked one at a time: every "(env: NAME)"
+    # whose option this module refuses. Studio emits most of these itself and argv
+    # wins over the environment, so removing them changes nothing in the ordinary
+    # case; they are here for the paths where it does not, and so a flag denied in
+    # the box is not reachable through the environment instead. The mapping below
+    # records which flag each one belongs to, since the name does not always say
+    # (LLAMA_ARG_STATIC_PATH is --path).
+    "LLAMA_ARG_MODEL",
+    "LLAMA_ARG_MODEL_URL",
+    "LLAMA_ARG_DOCKER_REPO",
+    "LLAMA_ARG_HF_REPO",
+    "LLAMA_ARG_HF_FILE",
+    "LLAMA_ARG_ALIAS",
+    "LLAMA_ARG_HOST",
+    "LLAMA_ARG_PORT",
+    "LLAMA_ARG_REUSE_PORT",
+    "LLAMA_ARG_N_PARALLEL",
+    "LLAMA_ARG_POOLING",
+    "LLAMA_ARG_EMBEDDINGS",
+    "LLAMA_ARG_RERANKING",
+    # The web UI and its MCP proxy, which upstream marks as not for untrusted
+    # environments, and the directory the child serves files from.
+    "LLAMA_ARG_UI",
+    "LLAMA_ARG_UI_CONFIG",
+    "LLAMA_ARG_UI_CONFIG_FILE",
+    "LLAMA_ARG_UI_MCP_PROXY",
+    "LLAMA_ARG_STATIC_PATH",
+    # Deliberately absent: LLAMA_ARG_MMPROJ and LLAMA_ARG_MMPROJ_URL. --mmproj is
+    # refused in the box because Unsloth resolves the projector itself, but the
+    # environment twin is an INPUT here: _launch_has_mmproj reads both to know the
+    # launch has a projector at all, which is what keeps the vision and audio state
+    # of a model loaded through an inherited one. Only the paravirtual CPU recovery
+    # drops them, where an unpinned projector is the corrupt path it is undoing.
+    # The pooling twins are absent for the opposite reason: load_model already pops
+    # LLAMA_ARG_POOLING / _RERANKING / _EMBEDDINGS itself, next to where it decides
+    # what the GGUF header says.
+    # The multi-model server mode: a child holding its own model directory, preset
+    # and autoload policy is not the single model Studio launched and accounts for.
+    "LLAMA_ARG_MODELS_DIR",
+    "LLAMA_ARG_MODELS_PRESET",
+    "LLAMA_ARG_MODELS_MAX",
+    "LLAMA_ARG_MODELS_AUTOLOAD",
+)
+
+# Which flag each twin belongs to, for the drift test. Derived by name for most of
+# them, but not all: LLAMA_ARG_STATIC_PATH is --path, LLAMA_API_KEY is --api-key, and
+# a rename upstream would otherwise leave a variable here guarding nothing.
+DENIED_ENV_TWIN_FLAGS: dict[str, str] = {
+    "LLAMA_ARG_STATIC_PATH": "--path",
+    "LLAMA_API_KEY": "--api-key",
+    "LLAMA_ARG_API_KEY": "--api-key",
+    "LLAMA_ARG_N_PARALLEL": "--parallel",
+    "LLAMA_ARG_EMBEDDINGS": "--embeddings",
+    "LLAMA_ARG_RERANKING": "--reranking",
+    "LLAMA_ARG_UI_CONFIG_FILE": "--ui-config-file",
+    "LLAMA_ARG_MODELS_AUTOLOAD": "--models-autoload",
+}
+
+
+def scrub_denied_env(env: dict) -> list[str]:
+    """Drop inherited ``LLAMA_ARG_*`` twins of denied flags. Returns the names removed."""
+    removed = [name for name in DENIED_ENV_VARS if name in env]
+    for name in removed:
+        env.pop(name, None)
+    return removed
+
+
 def scrub_memory_env(env: dict) -> list[str]:
     """Drop inherited memory placement the settings override.
 
@@ -807,6 +1460,18 @@ def scrub_memory_env(env: dict) -> list[str]:
 _ENV_TRUE_VALUES = frozenset({"on", "enabled", "true", "1"})
 _ENV_FALSE_VALUES = frozenset({"off", "disabled", "false", "0"})
 
+# Every --load-mode value llama-server documents, so an unknown one is dropped
+# here rather than exiting the child. Mirrored by LOAD_MODES in per-model-config.ts.
+_LOAD_MODE_VALUES = frozenset({"auto", "none", "mmap", "mlock", "mmap+mlock", "dio"})
+# What each mode meant before the enum existed, for a build that predates it.
+# "auto" is the default and needs no flag; "mmap+mlock" is what a bare --mlock
+# asked for alongside the default mmap. There is no pre-enum spelling for plain
+# "mmap" or for "dio", so those are skipped rather than approximated.
+_LEGACY_LOAD_MODE_FLAGS: dict[str, list[str]] = {
+    "none": ["--no-mmap"],
+    "mlock": ["--no-mmap", "--mlock"],
+    "mmap+mlock": ["--mlock"],
+}
 _LOAD_MODE_MLOCK_VALUES = frozenset({"mlock", "mmap+mlock"})
 # Modes that read the weights into a full host buffer. "dio" streams via
 # DirectIO and "mmap" maps, so neither reserves RAM for the whole model.

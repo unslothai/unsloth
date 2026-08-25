@@ -1812,3 +1812,41 @@ def test_the_batch_remedy_appears_only_when_a_batch_was_budgeted():
     assert batched is not None
     assert "at a batch of 4" in batched
     assert "or a smaller batch size" in batched
+
+
+def test_cpu_offload_hooks_take_the_indexed_card_not_a_bare_cuda():
+    # diffusers reads the index off this device and, finding none, falls back to _offload_gpu_id 0
+    # and onloads to cuda:0 (pipeline_utils.py, 0.39). A load pinned elsewhere generates there, so
+    # the modules would page onto the wrong GPU: a cross-device failure, or the small card filling.
+    for build, policy, call in (
+        (_plan, OFFLOAD_MODEL, "model_offload"),
+        (_manual_plan, OFFLOAD_SEQUENTIAL, "sequential_offload"),
+    ):
+        pipe = _RecordingPipe()
+        apply_memory_plan(
+            pipe, build(policy, tiling = False), device = "cuda", placement_device = "cuda:1"
+        )
+        assert call in pipe.calls
+        assert pipe.offload_device == "cuda:1"
+
+
+def test_the_resident_placement_follows_the_selected_card_too():
+    pipe = _RecordingPipe()
+    apply_memory_plan(
+        pipe, _plan(OFFLOAD_NONE, tiling = False), device = "cuda", placement_device = "cuda:1"
+    )
+    assert pipe.calls == ["to:cuda:1"]
+
+
+def test_an_automatic_load_still_hands_over_a_bare_device():
+    # No selection: every call receives exactly the string it did before, resolved against the
+    # current device as always.
+    for policy, expected in (
+        (OFFLOAD_NONE, ["to:cuda"]),
+        (OFFLOAD_MODEL, ["model_offload"]),
+    ):
+        pipe = _RecordingPipe()
+        apply_memory_plan(pipe, _plan(policy, tiling = False), device = "cuda")
+        assert expected[0] in pipe.calls
+        if policy is OFFLOAD_MODEL:
+            assert pipe.offload_device == "cuda"

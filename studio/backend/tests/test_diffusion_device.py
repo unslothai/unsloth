@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import sys
 import types
+from typing import Optional
 
 import pytest
 
@@ -73,14 +74,25 @@ def _make_torch(
     mps_probe: str = "pass",  # "pass" | "raise" | "nonfinite"
     xpu_available = None,  # None -> no xpu attr; True/False -> present
     xpu_bf16: bool = False,
+    device_count: int = 1,
+    # Free VRAM per physical index, for the multi-card pick. Absent -> 0.
+    free_vram_by_index: Optional[dict] = None,
+    # Records every torch.cuda.set_device() this fake receives, so a test can assert the pin.
+    set_device_calls: Optional[list] = None,
 ) -> types.ModuleType:
     torch = types.ModuleType("torch")
     torch.bfloat16 = BF16
     torch.float16 = FP16
     torch.float32 = FP32
     torch.version = types.SimpleNamespace(hip = hip)
+    free_vram_by_index = free_vram_by_index or {}
 
-    def _get_cap():
+    def _set_device(index):
+        if set_device_calls is not None:
+            set_device_calls.append(index)
+
+    # Same optional-device signature as torch's own, so a probe of a SELECTED card is answered rather than raising.
+    def _get_cap(device = None):
         if capability_raises:
             raise RuntimeError("no capability")
         return capability
@@ -89,6 +101,9 @@ def _make_torch(
         is_available = lambda: cuda_available,
         get_device_capability = _get_cap,
         is_bf16_supported = lambda: bf16_supported,
+        device_count = lambda: device_count,
+        mem_get_info = lambda index = None: (free_vram_by_index.get(index, 0), 0),
+        set_device = _set_device,
     )
 
     mps_ns = types.SimpleNamespace(is_available = lambda: mps_available)
@@ -629,3 +644,319 @@ def test_decoder_sync_survives_a_synchronize_that_raises(monkeypatch):
     decoder = _FakeDecoder()
     assert dd.install_decoder_sync(_pipe_with(decoder), _target("mps")) is True
     assert decoder.decode(2) == ["out0", "out1"]
+
+
+# ── GPU selection ─────────────────────────────────────────────────────
+
+
+def _mask(
+    monkeypatch,
+    visible,
+    *,
+    physical_count = None,
+):
+    """Stub the hardware layer's parent-visible view, the mask `gpu_ids` is expressed against."""
+    import utils.hardware.hardware as hw
+
+    monkeypatch.setattr(
+        hw,
+        "_get_parent_visible_gpu_spec",
+        lambda: {"raw": None, "numeric_ids": list(visible), "supports_explicit_gpu_ids": True},
+    )
+    monkeypatch.setattr(
+        hw, "get_physical_gpu_count", lambda: physical_count or (max(visible) + 1 if visible else 0)
+    )
+
+
+def test_no_selection_leaves_the_target_on_the_default_device(monkeypatch):
+    # The automatic pick must stay byte-for-byte what it was: no index, nothing pinned.
+    calls: list = []
+    torch = _make_torch(cuda_available = True, capability = (8, 0), set_device_calls = calls)
+    _install(monkeypatch, torch, studio_device = "cuda")
+    t = dd.resolve_diffusion_device_target()
+    assert t.ordinal is None
+    assert t.torch_device == "cuda"
+    dd.apply_diffusion_device_ordinal(t)
+    assert calls == []
+
+
+def test_a_single_card_pick_is_honoured_exactly(monkeypatch):
+    calls: list = []
+    torch = _make_torch(
+        cuda_available = True, capability = (8, 0), device_count = 2, set_device_calls = calls
+    )
+    _install(monkeypatch, torch, studio_device = "cuda")
+    _mask(monkeypatch, [0, 1])
+    t = dd.resolve_diffusion_device_target(ordinal = dd.resolve_selected_cuda_ordinal([1]))
+    assert t.ordinal == 1
+    # The device string stays BARE: is_cuda / memory / speed / attention all compare it by value.
+    assert t.device == "cuda"
+    assert t.is_cuda_torch_device is True
+    assert t.torch_device == "cuda:1"
+    dd.apply_diffusion_device_ordinal(t)
+    assert calls == [1]
+
+
+def test_physical_ids_are_translated_through_the_visibility_mask(monkeypatch):
+    # CUDA_VISIBLE_DEVICES=4,5: physical 4 and 5 are the valid picks and torch sees 0 and 1.
+    # Validating against torch.cuda.device_count() would reject both.
+    torch = _make_torch(cuda_available = True, capability = (8, 0), device_count = 2)
+    _install(monkeypatch, torch, studio_device = "cuda")
+    _mask(monkeypatch, [4, 5], physical_count = 8)
+    assert dd.resolve_selected_cuda_ordinal([4]) == 0
+    assert dd.resolve_selected_cuda_ordinal([5]) == 1
+    with pytest.raises(ValueError):
+        dd.resolve_selected_cuda_ordinal([0])
+
+    # A REORDERED mask: physical 1 is torch ordinal 0, so the order matters, not just membership.
+    _mask(monkeypatch, [1, 0], physical_count = 2)
+    assert dd.resolve_selected_cuda_ordinal([1]) == 0
+    assert dd.resolve_selected_cuda_ordinal([0]) == 1
+
+
+def test_several_cards_resolve_to_the_one_with_the_most_free_vram(monkeypatch):
+    # The mixed box this exists for: ordinal 0 is the SMALL card, so taking the first id lands on the GPU that cannot hold the checkpoint.
+    torch = _make_torch(
+        cuda_available = True,
+        capability = (8, 0),
+        device_count = 2,
+        free_vram_by_index = {0: 6 * 1024**3, 1: 15 * 1024**3},
+    )
+    _install(monkeypatch, torch, studio_device = "cuda")
+    _mask(monkeypatch, [0, 1])
+    assert dd.resolve_selected_cuda_ordinal([0, 1]) == 1
+
+    # Equal cards take the lowest ordinal, so the same selection always resolves the same way.
+    torch.cuda.mem_get_info = lambda index = None: (8 * 1024**3, 0)
+    assert dd.resolve_selected_cuda_ordinal([0, 1]) == 0
+
+
+def test_free_vram_is_read_on_the_torch_ordinal_not_the_physical_id(monkeypatch):
+    # Under a mask the two differ, and querying the physical id would rank the wrong cards.
+    seen: list = []
+    torch = _make_torch(cuda_available = True, capability = (8, 0), device_count = 2)
+    torch.cuda.mem_get_info = lambda index = None: (seen.append(index), 1 << 30)[1:]
+    _install(monkeypatch, torch, studio_device = "cuda")
+    _mask(monkeypatch, [4, 5], physical_count = 8)
+    dd.resolve_selected_cuda_ordinal([4, 5])
+    assert seen == [0, 1]
+
+
+def test_an_unreadable_card_sorts_last_rather_than_failing_the_load(monkeypatch):
+    torch = _make_torch(
+        cuda_available = True,
+        capability = (8, 0),
+        device_count = 3,
+        free_vram_by_index = {2: 4 * 1024**3},
+    )
+    _install(monkeypatch, torch, studio_device = "cuda")
+    _mask(monkeypatch, [0, 1, 2])
+    assert dd.resolve_selected_cuda_ordinal([0, 2]) == 2
+    # Nothing readable at all: a stable answer, not an exception.
+    assert dd.resolve_selected_cuda_ordinal([0, 1]) == 0
+
+
+def test_an_index_this_host_does_not_have_is_refused(monkeypatch):
+    torch = _make_torch(cuda_available = True, capability = (8, 0), device_count = 2)
+    _install(monkeypatch, torch, studio_device = "cuda")
+    _mask(monkeypatch, [0, 1])
+    with pytest.raises(ValueError):
+        dd.resolve_selected_cuda_ordinal([5])
+    with pytest.raises(ValueError):
+        dd.resolve_selected_cuda_ordinal([-1])
+    # Empty and None are "automatic", never a refusal.
+    assert dd.resolve_selected_cuda_ordinal([]) is None
+    assert dd.resolve_selected_cuda_ordinal(None) is None
+
+
+def test_the_capability_probe_asks_about_the_selected_card(monkeypatch):
+    # Ordinal 0 is pre-Ampere and ordinal 1 is not, so an index-less probe picks the wrong dtype.
+    torch = _make_torch(cuda_available = True, device_count = 2)
+    seen: list = []
+    _NOTHING = object()
+
+    def _cap(device = _NOTHING):
+        seen.append(device)
+        return (7, 5) if device in (_NOTHING, 0) else (8, 9)
+
+    torch.cuda.get_device_capability = _cap
+    _install(monkeypatch, torch, studio_device = "cuda")
+    assert dd.resolve_diffusion_device_target(ordinal = 1).dtype == BF16
+    assert seen == [1]
+
+    # No selection probes with NO argument: a stub or older build that takes none would
+    # otherwise raise into the fp16 fallback.
+    seen.clear()
+    assert dd.resolve_diffusion_device_target().dtype == FP16
+    assert seen == [_NOTHING]
+
+
+def test_an_indexed_override_string_keeps_its_card(monkeypatch):
+    # _pick_device_and_dtype hands back the indexed string; rebuilding must not drop to ordinal 0.
+    torch = _make_torch(cuda_available = True, capability = (8, 0))
+    _install(monkeypatch, torch, studio_device = "cuda")
+    t = dd.diffusion_device_target_from_torch_device("cuda:1", BF16)
+    assert (t.device, t.ordinal, t.torch_device) == ("cuda", 1, "cuda:1")
+    assert dd.diffusion_device_target_from_torch_device("cuda", BF16).ordinal is None
+
+
+def test_a_selection_is_ignored_where_physical_indices_mean_nothing(monkeypatch):
+    # MPS has one device and no applicator for an index; the pick must not become a refusal.
+    torch = _make_torch(mps_available = True)
+    _install(monkeypatch, torch, studio_device = "mlx")
+    assert dd.resolve_diffusion_device_target(ordinal = 1).ordinal is None
+
+
+def test_the_device_scope_restores_the_previous_card(monkeypatch):
+    # Route preflights run on a pooled executor, so a pin left set there is inherited by the
+    # NEXT request on that thread, including an automatic one.
+    calls: list = []
+    torch = _make_torch(cuda_available = True, device_count = 2, set_device_calls = calls)
+
+    class _Scope:
+        def __init__(self, index):
+            calls.append(("enter", index))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            calls.append(("exit", None))
+            return False
+
+    torch.cuda.device = _Scope
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    with dd.diffusion_device_scope(1):
+        pass
+    assert calls == [("enter", 1), ("exit", None)]
+
+    # No selection is a plain no-op, so the automatic path never touches the current device.
+    calls.clear()
+    with dd.diffusion_device_scope(None):
+        pass
+    assert calls == []
+
+
+def test_the_rocm_bf16_probe_asks_about_the_selected_card(monkeypatch):
+    # is_bf16_supported() takes no device argument, so asking about the selected card means
+    # making it current; otherwise a bf16-capable pick behind an older default goes to fp32.
+    torch = _make_torch(cuda_available = True, hip = "6.0", device_count = 2)
+    scoped: list = []
+
+    class _Scope:
+        def __init__(self, index):
+            scoped.append(index)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    torch.cuda.device = _Scope
+    torch.cuda.is_bf16_supported = lambda: bool(scoped and scoped[-1] == 1)
+    _install(monkeypatch, torch, studio_device = "cuda", is_rocm = True)
+    assert dd.resolve_diffusion_device_target(ordinal = 1).dtype == BF16
+    assert scoped == [1]
+
+
+def test_the_device_scope_lets_the_body_exception_through(monkeypatch):
+    # Catching around the yield made contextlib raise "generator didn't stop after throw()",
+    # replacing a precision refusal with an error the route maps to the wrong status.
+    torch = _make_torch(cuda_available = True, device_count = 2)
+
+    class _Scope:
+        def __init__(self, index):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    torch.cuda.device = _Scope
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    with pytest.raises(RuntimeError, match = "the real refusal"):
+        with dd.diffusion_device_scope(1):
+            raise RuntimeError("the real refusal")
+
+
+def test_the_device_scope_still_runs_the_body_on_an_unusable_index(monkeypatch):
+    # Entering may fail on a stale index; the probe then runs unpinned rather than not at all.
+    torch = _make_torch(cuda_available = True, device_count = 2)
+
+    def _boom(_index):
+        raise RuntimeError("invalid device ordinal")
+
+    torch.cuda.device = _boom
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    ran = []
+    with dd.diffusion_device_scope(9):
+        ran.append(True)
+    assert ran == [True]
+
+
+def test_the_placed_ordinal_records_the_card_an_automatic_load_used(monkeypatch):
+    # /images/generate runs on a pooled worker, so a pinned load leaves that thread on its card
+    # for good and a later automatic load has no ordinal to re-pin with. The card it landed on is
+    # recorded separately and puts the worker back.
+    current = [3]
+    torch = _make_torch(cuda_available = True, device_count = 4)
+    torch.cuda.current_device = lambda: current[0]
+    torch.cuda.set_device = lambda index: current.__setitem__(0, index)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    _install(monkeypatch, torch, studio_device = "cuda")
+
+    automatic = dd.resolve_diffusion_device_target()
+    assert automatic.ordinal is None  # the target itself stays un-indexed
+    assert dd.placed_cuda_ordinal(automatic) == 3  # but the card is known
+
+    selected = dd.resolve_diffusion_device_target(ordinal = 1)
+    assert dd.placed_cuda_ordinal(selected) == 1  # a selection needs no observation
+
+    # Nothing to record off CUDA: there is no thread-local device to put back.
+    cpu_torch = _make_torch(cuda_available = False)
+    monkeypatch.setitem(sys.modules, "torch", cpu_torch)
+    _install(monkeypatch, cpu_torch, studio_device = "cpu")
+    assert dd.placed_cuda_ordinal(dd.resolve_diffusion_device_target()) is None
+
+
+def test_pinning_an_automatic_load_puts_a_shared_worker_back(monkeypatch):
+    current = [0]
+    torch = _make_torch(cuda_available = True, device_count = 4)
+    torch.cuda.current_device = lambda: current[0]
+    torch.cuda.set_device = lambda index: current.__setitem__(0, index)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    _install(monkeypatch, torch, studio_device = "cuda")
+
+    # A pinned load runs here first and leaves the thread on its card.
+    dd.apply_diffusion_device_ordinal(dd.resolve_diffusion_device_target(ordinal = 2))
+    assert current == [2]
+    # The next model loaded automatically; its weights are on 0, so the worker goes back to 0.
+    dd.pin_cuda_ordinal(0)
+    assert current == [0]
+    # And a None never moves anything.
+    dd.pin_cuda_ordinal(None)
+    assert current == [0]
+
+
+def test_a_multi_card_pick_declines_to_rank_when_ranking_is_barred(monkeypatch):
+    # The plan routes must not open a CUDA context while a trainer holds the cards; validating
+    # and translating the ids costs none, so a bad pick is still refused at the plan.
+    torch = _make_torch(cuda_available = True, device_count = 4, free_vram_by_index = {0: 1, 1: 2})
+    probed: list = []
+    torch.cuda.mem_get_info = lambda index = None: (probed.append(index), (1, 2))[1]
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    _install(monkeypatch, torch, studio_device = "cuda")
+    import utils.hardware.hardware as hw
+
+    monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: [0, 1, 2, 3])
+    monkeypatch.setattr(hw, "get_physical_gpu_count", lambda: 4)
+
+    assert dd.resolve_selected_cuda_ordinal([2], allow_ranking = False) == 2
+    assert probed == []  # no free-VRAM probe, so no CUDA context
+    assert dd.resolve_selected_cuda_ordinal([0, 1], allow_ranking = False) is None
+    assert probed == []
+    with pytest.raises(ValueError):
+        dd.resolve_selected_cuda_ordinal([9], allow_ranking = False)

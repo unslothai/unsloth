@@ -116,10 +116,9 @@ test("upload selection clears Hub streaming and preserves uploaded evaluation", 
     evalSteps: 0,
   });
 
-  useTrainingConfigStore.getState().selectLocalDataset(null);
   useTrainingConfigStore
     .getState()
-    .setUploadedFile("/datasets/uploads/train.jsonl");
+    .selectLocalDataset("/datasets/uploads/train.jsonl");
   useTrainingConfigStore
     .getState()
     .setUploadedEvalFile("/datasets/uploads/eval.jsonl");
@@ -284,7 +283,11 @@ test("S3 preserves and restores a prior uploaded selection", () => {
 test("reselecting a non-Hub source repairs stale streaming state", () => {
   for (const datasetSource of ["upload", "s3"] as const) {
     resetState({ datasetSource, datasetStreaming: true, evalSteps: 0.1 });
-    useTrainingConfigStore.getState().setDatasetSource(datasetSource);
+    if (datasetSource === "upload") {
+      useTrainingConfigStore.getState().selectLocalDataset(null);
+    } else {
+      useTrainingConfigStore.getState().selectS3Source();
+    }
     const state = useTrainingConfigStore.getState();
     assert.equal(state.datasetStreaming, false);
     assert.equal(state.evalSteps, 0.1);

@@ -37,6 +37,7 @@ from utils.paths import (
     resolve_output_dir,
 )
 from core.inference import get_inference_backend
+from utils.paths.path_utils import drop_appledouble_metadata
 
 # GPU/PyTorch-only imports, skipped on MLX and --no-torch installs so the module stays importable.
 torch = None
@@ -155,6 +156,18 @@ def _cpu_offloaded_modules(model) -> int:
     return sum(1 for target in device_map.values() if str(target) in ("cpu", "disk"))
 
 
+def _accepts_by_keyword(params, name):
+    """True if `name` is passable as a keyword, not merely named.
+
+    Every call site passes by keyword, so a positional-only parameter is not support: counting
+    it turns a clean refusal into a TypeError.
+    """
+    import inspect
+
+    parameter = params.get(name)
+    return parameter is not None and parameter.kind is not inspect.Parameter.POSITIONAL_ONLY
+
+
 def _supports_kwarg(fn, name):
     """True if `fn` accepts keyword `name` directly or via **kwargs."""
     import inspect
@@ -163,7 +176,30 @@ def _supports_kwarg(fn, name):
         params = inspect.signature(fn).parameters
     except (TypeError, ValueError):
         return False
-    return name in params or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+    return _accepts_by_keyword(params, name) or any(
+        p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
+
+
+def _imatrix_export_supported(save_fn):
+    """True when this build can apply an imatrix, not merely swallow the keyword: the MLX binding
+    takes `**kwargs` and filters them, so only unsloth_zoo itself settles it."""
+    import inspect
+
+    try:
+        params = inspect.signature(save_fn).parameters
+    except (TypeError, ValueError):
+        return False
+    if _accepts_by_keyword(params, "imatrix_file"):
+        return True
+    if not any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return False
+    try:
+        from unsloth_zoo.llama_cpp import resolve_imatrix_file  # noqa: F401
+    except Exception:
+        # Runs before export_gguf's exception boundary, which must return a tuple, not raise.
+        return False
+    return True
 
 
 def _reported_gguf_files(result):
@@ -195,9 +231,8 @@ def _materialized_imatrix_path(model_dir, imatrix_file):
     """Where unsloth copies a `*.gguf_file` imatrix beside the model, else None.
 
     `_materialize_imatrix` drops that copy in the model directory, so the owned-root scan
-    would otherwise relocate an importance matrix as if it were a converted model. Matching
-    the full path, not the basename: an imatrix named after the quant would otherwise
-    suppress the real output in `model_gguf/` as well.
+    would otherwise relocate it as if it were a converted model. Callers compare the whole path
+    (see `_is_imatrix`): a basename match would suppress a real output of the same name.
     """
     if imatrix_file is True:
         name = "imatrix_unsloth.gguf"  # the upstream imatrix_unsloth.gguf_file, renamed
@@ -209,6 +244,26 @@ def _materialized_imatrix_path(model_dir, imatrix_file):
     else:
         return None
     return Path(model_dir) / name
+
+
+def _is_imatrix(path, imatrix_path):
+    """True when `path` is the materialized imatrix, asked of the filesystem rather than `==`.
+
+    The on-disk spelling is the filesystem's to choose (a folding mount changes case, APFS
+    stores NFD), so byte-exact `Path.__eq__` misses and the imatrix is relocated as a model.
+    """
+    if imatrix_path is None:
+        return False
+    try:
+        return os.path.samefile(path, imatrix_path)
+    except OSError:
+        # Either side may be gone by cleanup time; fall back to a folded comparison.
+        return _folded(path) == _folded(imatrix_path)
+
+
+def _folded(path):
+    import unicodedata
+    return unicodedata.normalize("NFC", os.path.normcase(os.fspath(path)))
 
 
 def _compressed_export_supported():
@@ -1007,6 +1062,7 @@ class ExportBackend:
         repo_id: Optional[str] = None,
         hf_token: Optional[str] = None,
         imatrix_file = None,
+        private: bool = False,
     ) -> Tuple[bool, str, Optional[str]]:
         """
         Export model in GGUF format.
@@ -1019,6 +1075,8 @@ class ExportBackend:
             push_to_hub: Whether to push to Hugging Face Hub
             repo_id: Hub repository ID
             hf_token: Hugging Face token
+            imatrix_file: Optional importance matrix file path or boolean
+            private: Whether to make the Hub repository private
 
         Returns:
             Tuple of (success: bool, message: str, output_path: Optional[str])
@@ -1030,16 +1088,24 @@ class ExportBackend:
 
         # Only forward imatrix_file to an unsloth build that accepts it, else older builds raise
         # an unexpected-keyword error even for a plain no-imatrix export.
-        if imatrix_file is not None and not _supports_kwarg(
-            self.current_model.save_pretrained_gguf, "imatrix_file"
-        ):
+        if imatrix_file and not _imatrix_export_supported(self.current_model.save_pretrained_gguf):
             return (
                 False,
                 "This Unsloth build does not support GGUF imatrix export. "
                 "Upgrade unsloth and unsloth_zoo, or disable the imatrix option.",
                 None,
             )
-        imatrix_kw = {"imatrix_file": imatrix_file} if imatrix_file is not None else {}
+        # Truthiness, as above: a disabled imatrix must not reach an exporter without the kwarg.
+        imatrix_kw = {"imatrix_file": imatrix_file} if imatrix_file else {}
+        # Resolution reads a Hub repo, so the local save needs the token too -- kept out of
+        # imatrix_kw, which the push below shares and already names token= itself.
+        local_token_kw = (
+            {"token": hf_token}
+            if imatrix_file
+            and hf_token
+            and _supports_kwarg(self.current_model.save_pretrained_gguf, "token")
+            else {}
+        )
 
         output_path: Optional[str] = None
         try:
@@ -1061,7 +1127,9 @@ class ExportBackend:
                     _resolve_local_convert_script,  # noqa: F401
                 )
                 os.environ.setdefault("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", LLAMA_CPP_DEFAULT_DIR)
-            except ImportError:
+            except Exception:
+                # Not just ImportError: a half-built unsloth_zoo raises RuntimeError or
+                # AttributeError, and this pin is an optimisation, not worth failing an export.
                 if not _LLAMA_CPP_SCRIPTS_WARNING_EMITTED:
                     logger.warning(
                         "Unsloth: installed unsloth_zoo does not honor "
@@ -1095,13 +1163,14 @@ class ExportBackend:
                         self.current_tokenizer,
                         quantization_method = quant_method,
                         **imatrix_kw,
+                        **local_token_kw,
                     )
 
                     # Scan only the owned root; exact reported paths cover external outputs.
                     reported = result if isinstance(result, dict) else {}
                     produced = {p for p in model_tmp_path.rglob("*.gguf") if p.is_file()}
                     produced.update(Path(f) for f in _reported_gguf_files(result) or [])
-                    produced = {p for p in produced if p != imatrix_path}
+                    produced = {p for p in produced if not _is_imatrix(p, imatrix_path)}
                     modelfiles = {p for p in model_tmp_path.rglob("Modelfile") if p.is_file()}
                     reported_modelfile = reported.get("modelfile_location")
                     if reported_modelfile and Path(reported_modelfile).is_file():
@@ -1143,7 +1212,9 @@ class ExportBackend:
                     unrelocated = []
                     if model_tmp_path.is_dir():
                         unrelocated = sorted(
-                            str(p) for p in model_tmp_path.rglob("*.gguf") if p != imatrix_path
+                            str(p)
+                            for p in model_tmp_path.rglob("*.gguf")
+                            if not _is_imatrix(p, imatrix_path)
                         )
                     if unrelocated:
                         logger.error(
@@ -1154,10 +1225,11 @@ class ExportBackend:
                         shutil.rmtree(model_tmp_root, ignore_errors = True)
 
                 # iterdir, not glob.glob: glob hides dot-leading names, so an empty
-                # model stem's ".Q4_K_M.gguf" got reported as "(none)".
+                # model stem's ".Q4_K_M.gguf" got reported as "(none)". This list is the
+                # success gate, so a leftover companion would report a run that wrote nothing.
                 final_ggufs = sorted(
                     str(p)
-                    for p in Path(abs_save_dir).iterdir()
+                    for p in drop_appledouble_metadata(list(Path(abs_save_dir).iterdir()))
                     if p.is_file() and p.name.lower().endswith(".gguf")
                 )
                 logger.info(
@@ -1196,6 +1268,7 @@ class ExportBackend:
                     self.current_tokenizer,
                     quantization_method = quant_method,
                     token = hf_token,
+                    private = private,
                     **imatrix_kw,
                 )
                 logger.info(f"GGUF model pushed successfully to {repo_id}")
@@ -1306,7 +1379,7 @@ class ExportBackend:
                     # iterdir, not glob.glob: glob hides dot-leading names.
                     final_ggufs = sorted(
                         str(p)
-                        for p in Path(save_directory).iterdir()
+                        for p in drop_appledouble_metadata(list(Path(save_directory).iterdir()))
                         if p.is_file() and p.name.lower().endswith(".gguf")
                     )
                     logger.info(

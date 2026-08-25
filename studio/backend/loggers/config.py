@@ -100,6 +100,171 @@ def _truncate_exception_processor(logger, method_name, event_dict):
     return truncate_exception(event_dict)
 
 
+def _plain_tracebacks_enabled() -> bool:
+    """Echo readable tracebacks? ``UNSLOTH_STUDIO_PLAIN_TRACEBACKS=0`` turns it off."""
+    return (os.environ.get("UNSLOTH_STUDIO_PLAIN_TRACEBACKS") or "").strip().lower() not in (
+        "0",
+        "off",
+        "no",
+        "false",
+    )
+
+
+# Prefix on every echoed line. NOT whitespace: RFC 8259 lets a parser skip leading
+# space/tab, so json.loads('  {"event": ...}') SUCCEEDS and a request-derived exception
+# message could forge a record (CWE-117). "| " cannot begin a JSON value, so no echoed
+# line parses as one, and a records-only reader can drop them on the prefix alone.
+_TRACEBACK_ECHO_PREFIX = "| "
+
+
+# Unicode's Bidi_Control set (PropList.txt), exactly what the UAX #9 algorithm acts on and
+# what UTR #36 / Trojan Source (CVE-2021-42574) name. json.dumps already escapes these
+# (ensure_ascii), so only the echo would emit them raw.
+#
+# Deliberately NOT all of category Cf: U+200B-200D, U+00AD and U+FEFF occur in ordinary
+# text (ZWNJ in Persian/Arabic, ZWJ in emoji) and reorder nothing.
+_BIDI_CONTROLS = frozenset(
+    "؜"  # ARABIC LETTER MARK
+    "‎‏"  # LEFT-TO-RIGHT / RIGHT-TO-LEFT MARK
+    "‪‫‬‭‮"  # LRE, RLE, PDF, LRO, RLO
+    "⁦⁧⁨⁩"  # LRI, RLI, FSI, PDI
+)
+
+
+def _escape_unprintable(text: str) -> str:
+    """Spell as ``\\uXXXX`` what a terminal would ACT on or stdout cannot encode, leaving
+    ordinary non-ASCII text readable. The JSON renderer used to cover all three for free:
+
+    * **Lone surrogates** (reachable via ``json.loads('"\\ud800"')`` in a request body)
+      raise ``UnicodeEncodeError`` on a UTF-8 stdout, which inside an exception handler
+      loses the traceback AND replaces the original exception with the encoding error.
+    * **Terminal controls**: raw ESC lets request-derived text rewrite what the reader
+      sees, and a backspace run can rub out the prefix record forgery depends on.
+    * **Bidi controls** need no terminal -- any UAX #9 viewer reorders the line. Measured:
+      ``"| ValueError: rejected upload \\u202egnp.eliforp/sdaolpu/"`` DISPLAYS as
+      ``| ValueError: rejected upload /uploads/profile.png``. Escaped, not stripped, so
+      the record still says one was there.
+
+    Tab is kept: it shifts alignment but cannot move the cursor back or erase.
+    """
+    out = []
+    for ch in text:
+        code = ord(ch)
+        if ch == "\t":
+            out.append(ch)
+        elif (
+            code < 0x20
+            or code == 0x7F
+            or 0x80 <= code <= 0x9F
+            or 0xD800 <= code <= 0xDFFF
+            or ch in _BIDI_CONTROLS
+        ):
+            out.append(f"\\u{code:04x}")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def _echoable(exception: str) -> str:
+    """The traceback as lines that can never read as a log record, nor act on a terminal.
+
+    ``splitlines`` also splits on \\r, \\x0b, \\x0c, \\x85 and U+2028/9, so rejoining on
+    \\n normalises every separator a message could smuggle in, including the \\r the export
+    worker's log reader treats as a line break.
+
+    Capped AFTER escaping: the field arrives bounded by ``truncate_exception`` at
+    ``_MAX_EXC_CHARS``, but escaping costs six characters each, so an all-C0 payload turns
+    16 KiB of bounded field into 98 KiB of echo. Capping the input keeps that multiplier."""
+    lines = [
+        f"{_TRACEBACK_ECHO_PREFIX}{_escape_unprintable(part)}"
+        for part in exception.rstrip().splitlines()
+    ]
+    return _cap_echoed_lines(lines, _MAX_EXC_CHARS)
+
+
+def _cap_echoed_lines(lines: list[str], limit: int) -> str:
+    """Join the echoed lines within `limit` characters, keeping the head and the tail.
+
+    Whole lines where they fit, and the omission notice is prefixed too, so no emitted line
+    can begin a JSON value. A line too long for its budget is cut, not dropped: the cut can
+    land inside a ``\\uXXXX`` escape, but the tail holds the exception type and message and
+    a control-heavy message is exactly what makes that last line oversized."""
+    if limit <= 0:
+        return "\n".join(lines)
+    total = sum(len(line) + 1 for line in lines)
+    if total <= limit:
+        return "\n".join(lines)
+    tail_budget = max(1, limit // 4)
+    head_budget = limit - tail_budget
+    head: list[str] = []
+    used = 0
+    for line in lines:
+        if used + len(line) + 1 > head_budget:
+            break
+        head.append(line)
+        used += len(line) + 1
+    tail: list[str] = []
+    used = 0
+    for line in reversed(lines[len(head) :]):
+        if used + len(line) + 1 > tail_budget:
+            # Cut the boundary line rather than drop it: losing a traceback's last line
+            # leaves the reader every frame and no reason.
+            room = tail_budget - used - 1
+            if room > 0:
+                tail.append(line[:room])
+            break
+        tail.append(line)
+        used += len(line) + 1
+    tail.reverse()
+    if not head and not tail:
+        head = [lines[0][:head_budget]]
+    # A cut boundary line counts as kept, so say "cut" rather than claim zero lines went.
+    dropped = len(lines) - len(head) - len(tail)
+    what = f"{dropped} lines omitted" if dropped else "cut here"
+    notice = (
+        f"{_TRACEBACK_ECHO_PREFIX}... [{what}; raise "
+        "UNSLOTH_STUDIO_MAX_EXCEPTION_CHARS to see it all] ..."
+    )
+    return "\n".join([*head, notice, *tail])
+
+
+def with_readable_traceback(renderer):
+    """Wrap the JSON renderer so an exception is ALSO echoed as a real multi-line traceback
+    on the lines after the record.
+
+    ~/.unsloth/studio/logs is a tee of stdout and stdout is JSON, so every traceback
+    reached its reader as one enormous line with newlines escaped to ``\\n`` -- correct
+    JSON, unreadable prose. The reported Image Transform failure ("RuntimeError: Input type
+    (float) and bias type (c10::BFloat16)...") arrived that way, and so does every crash
+    anyone is asked to send in.
+
+    The JSON record is emitted UNCHANGED, so record-by-record readers see what they always
+    saw, and every echoed line is prefixed so it cannot parse as a record. Non-JSON lines
+    in that file are already expected -- faulthandler dumps native stacks to the same
+    handle.
+
+    Returned as part of the SAME string rather than written to another stream, so one
+    ``print`` under ``PrintLogger``'s lock keeps record and traceback adjacent and ordered:
+    a processor runs BEFORE that print, and the export worker reads stdout and stderr on
+    separate pipes.
+
+    JSON only. ConsoleRenderer (development) already prints tracebacks as tracebacks."""
+
+    def _render(logger, method_name, event_dict):
+        exception = event_dict.get("exception")
+        line = renderer(logger, method_name, event_dict)
+        if (
+            isinstance(exception, str)
+            and exception.strip()
+            and isinstance(line, str)
+            and _plain_tracebacks_enabled()
+        ):
+            return f"{line}\n{_echoable(exception)}"
+        return line
+
+    return _render
+
+
 # Set alongside HF_HUB_DISABLE_PROGRESS_BARS when the value is Studio's default rather
 # than the operator's, so allow_progress_bars() can tell them apart.
 _PROGRESS_BARS_DEFAULTED = "UNSLOTH_STUDIO_PROGRESS_BARS_DEFAULTED"
@@ -391,7 +556,8 @@ class LogConfig:
                     },
                 },
                 (
-                    structlog.processors.JSONRenderer(sort_keys = False)  # Preserve order
+                    # Preserve order; the wrapper adds the human-readable traceback copy.
+                    with_readable_traceback(structlog.processors.JSONRenderer(sort_keys = False))
                     if env == "production"
                     else structlog.dev.ConsoleRenderer()
                 ),

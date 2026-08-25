@@ -167,6 +167,22 @@ def test_successful_duplicate_is_internal_noop_and_keeps_remaining_tools():
     ]
 
 
+def test_web_search_alias_args_share_the_duplicate_key():
+    controller = ToolLoopController(tools = [_tool("web_search")])
+    first = controller.prepare_call(_call("web_search", {"q": "unsloth"}, "call_a"))
+    assert first.should_execute
+    assert first.arguments == {"query": "unsloth"}
+    assert first.status_text == "Searching: unsloth"
+    controller.record_result(first, "ok")
+
+    duplicate = controller.prepare_call(
+        _call("web_search", {"query": "unsloth"}, "call_b")
+    )
+    assert duplicate.action == "duplicate"
+    assert duplicate.key == first.key
+    assert not duplicate.should_execute
+
+
 def test_repeated_successful_duplicate_becomes_terminal_after_one_recovery_nudge():
     controller = ToolLoopController(tools = [_tool("web_search"), _tool("python")])
     first = controller.prepare_call(_call("web_search", {"query": "gpu prices"}, "call_a"))

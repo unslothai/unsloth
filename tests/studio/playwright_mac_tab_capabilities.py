@@ -79,7 +79,7 @@ TABS = [
 
 # Routes that mean "not signed in". Landing on one invalidates every later assertion,
 # so they are matched explicitly rather than folded into the generic redirect check.
-_SIGNED_OUT_PATHS = ("/login", "/onboarding", "/change-password")
+_SIGNED_OUT_PATHS = ("/login", "/change-password")
 
 # Rows the sidebar pins inline by default, per SIDEBAR_NAV_DEFAULT_PINNED in
 # studio/frontend/src/features/settings/stores/appearance-custom-store.ts. Only these
@@ -88,13 +88,13 @@ _SIGNED_OUT_PATHS = ("/login", "/onboarding", "/change-password")
 # `[data-testid="nav-row-video"]` returns null on every host, every time.
 #
 # That matters for what this file can claim. The field report named Train AND Video, and
-# the first version of this script sampled both -- but the Video half could never observe
-# anything, so half of its evidence was structurally empty. Video is not lost coverage:
-# both rows carry the one `pending: capabilitiesUnknown` flag and both resolve it through
-# resolveNavRowState (studio/frontend/src/components/nav-row-state.ts), so Train is the
-# observable end of the same wire and the More flyout is covered by the frontend unit
-# tests instead.
-INLINE_ROW_IDS = ("hub", "projects", "images", "train")
+# the first version of this script sampled both -- but while Video sat under "More" (layout
+# v5, #7863) its half could never observe anything, so that evidence was structurally empty.
+# #8932 pins Video under Images again as layout v7, so it renders a testid and is sampled
+# once more. test_inline_row_ids_match_the_frontends_default_pinned_set holds this tuple to
+# the store's pinned set, in both directions, so neither a pin nor an unpin can leave an
+# assertion here silently observing nothing.
+INLINE_ROW_IDS = ("hub", "projects", "images", "video", "train")
 # The row every pending-state assertion below is pinned to.
 GATED_ROW_ID = "train"
 # Intercept pattern for the browser's health reads. Matches whether api-base.ts builds a

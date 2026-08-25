@@ -20,7 +20,9 @@ from hub.utils.gguf import (
     bare_quant_alias,
     extract_quant_token,
     gguf_variant_key,
+    is_qualified_gguf_variant_key,
     quant_token_with_bpw,
+    remove_appledouble_sidecar,
     is_reclaimable_drafter_path as _is_reclaimable_drafter_path,
 )
 from hub.utils.hf_cache_state import (
@@ -39,9 +41,11 @@ from hub.services import resolve_destructive_repo_ids
 from hub.services.models import cache_inventory, downloads, gguf_variants
 from hub.services.models.common import (
     _is_gguf_filename,
+    _is_imatrix_filename,
     _is_main_gguf_filename,
     _is_mmproj_filename,
 )
+from utils.paths.path_utils import is_appledouble_metadata
 
 logger = get_logger(__name__)
 
@@ -83,6 +87,20 @@ def _path_exists_or_symlink(path: Path) -> bool:
         return False
 
 
+def _unlink_snapshot_entry(snap: Path) -> int:
+    """Unlink one snapshot entry, plus any AppleDouble sidecar beside it.
+
+    Returns the entries removed, which never counts the sidecar: it is metadata about a file the
+    caller asked to remove, not a second file.
+    """
+    removed = 0
+    if _path_exists_or_symlink(snap):
+        snap.unlink()
+        removed += 1
+    remove_appledouble_sidecar(snap)
+    return removed
+
+
 def _repo_file_matches(target_repo, predicate) -> list[tuple[Path, Optional[Path], str]]:
     """Files whose snapshot-relative path satisfies *predicate*.
 
@@ -107,6 +125,11 @@ def _repo_file_matches(target_repo, predicate) -> list[tuple[Path, Optional[Path
             if not predicate(name):
                 continue
             if not file_path:
+                continue
+            # Every predicate here keys on the name, which a sidecar answers exactly as its
+            # neighbour does, so it would be counted as a deleted model in its own right.
+            # Proven metadata only: anything else carrying this key is a file to delete.
+            if is_appledouble_metadata(Path(file_path)):
                 continue
             blob_path = getattr(f, "blob_path", None)
             matches.append(
@@ -133,11 +156,14 @@ def _remove_empty_variant_dirs(target_repos: list, variant: str) -> tuple[int, l
     """Remove now-empty ``snapshots/<rev>/<quant>/`` folders for *variant* (the
     quant label names the folder); only empty dirs go, so siblings are safe.
     Returns (count removed, removal failures other than a concurrent refill)."""
-    # A qualified variant key names its own folder; its quant token belongs to sibling
-    # checkpoints too, so it must not reach for a <quant>/ dir it does not own. Qualification
-    # has two shapes: a path (``distilled/...-Q6_K``) and a bpw modifier (``IQ4_XS-3.53bpw``,
-    # whose token-only ``IQ4_XS/`` folder, if it exists, is a different build's).
-    qualified = "/" in variant or (quant_token_with_bpw(variant) or "").lower() == variant.lower()
+    # A qualified key names its own folder; its quant token belongs to sibling checkpoints too,
+    # so it must not reach for a <quant>/ dir it does not own. Qualified means a path
+    # (``distilled/...-Q6_K``), an H3 root stem, or a bpw modifier (``IQ4_XS-3.53bpw``, whose
+    # token-only ``IQ4_XS/`` folder is a different build's).
+    qualified = (
+        is_qualified_gguf_variant_key(variant)
+        or (quant_token_with_bpw(variant) or "").lower() == variant.lower()
+    )
     variant_key = (
         variant.lower() if qualified else (extract_quant_token(variant) or variant).lower()
     )
@@ -229,6 +255,8 @@ def _variant_keys_to_delete(target_repo, variant: str) -> set[str]:
     }
     if wanted in keys:
         return {wanted}
+    # PATH-qualified keys only, not is_qualified_gguf_variant_key: an H3 root stem's bare quant
+    # names both partitions, so it must not delete either.
     aliased = {key for key in keys if "/" in key and bare_quant_alias(key).lower() == wanted}
     return aliased if len(aliased) == 1 else {wanted}
 
@@ -259,9 +287,7 @@ def _delete_gguf_variant_from_repos(
 
         for snap, _blob, name in matched:
             try:
-                if _path_exists_or_symlink(snap):
-                    snap.unlink()
-                    removed_snapshots += 1
+                removed_snapshots += _unlink_snapshot_entry(snap)
             except OSError as e:
                 failures.append(f"{name}: {e}")
 
@@ -271,15 +297,19 @@ def _delete_gguf_variant_from_repos(
                 target_repo,
                 # Companions: mmproj and the drafters Studio downloads (MTP with
                 # every variant, DSpark on opt-in). No main GGUF is left, so they
-                # cannot be launched; reclaim them with the last variant.
+                # cannot be launched; reclaim them with the last variant. An imatrix
+                # joins them: no longer offered as a variant, so a copy an older build
+                # fetched as one would be unreachable from the UI.
                 lambda name: _is_gguf_filename(name)
-                and (_is_mmproj_filename(name) or _is_reclaimable_drafter_path(name)),
+                and (
+                    _is_mmproj_filename(name)
+                    or _is_reclaimable_drafter_path(name)
+                    or _is_imatrix_filename(name)
+                ),
             )
             for snap, _blob, name in companion_matches:
                 try:
-                    if _path_exists_or_symlink(snap):
-                        snap.unlink()
-                        removed_snapshots += 1
+                    removed_snapshots += _unlink_snapshot_entry(snap)
                 except OSError as e:
                     failures.append(f"{name}: {e}")
 
@@ -496,9 +526,7 @@ def reclaim_replaced_gguf_variant(
 
         for snap, _blob, name in stale_matches:
             try:
-                if _path_exists_or_symlink(snap):
-                    snap.unlink()
-                    removed_snapshots += 1
+                removed_snapshots += _unlink_snapshot_entry(snap)
             except OSError as e:
                 failures.append(f"{name}: {e}")
 
@@ -814,6 +842,23 @@ async def delete_cached_model_response(
         )
         raise HTTPException(status_code = 400, detail = detail)
     try:
+        # Re-derived now the scope is reserved, as only_if_orphan re-derives its own answer
+        # below. The first read ran before the reservation existed, so a load starting in
+        # between published its claim too late to be seen, and begin_delete misses it too:
+        # image and video loads download directly rather than through a registry claim.
+        try:
+            blocks_detail = await asyncio.to_thread(_load_state_blocks_delete)
+        except Exception as e:
+            logger.warning(f"Load-state verification failed for {repo_id}; refusing delete: {e}")
+            raise HTTPException(
+                status_code = 503,
+                detail = _LOAD_STATE_UNVERIFIABLE_DETAIL,
+            )
+        if blocks_detail:
+            raise HTTPException(
+                status_code = 400,
+                detail = blocks_detail,
+            )
         return await asyncio.to_thread(
             _delete_cached_model_blocking,
             repo_id,

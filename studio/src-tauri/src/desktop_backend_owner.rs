@@ -91,6 +91,24 @@ pub(crate) enum OwnedBackendProbe {
     Verified(VerifiedOwnedBackend),
 }
 
+/// `NotVerified` reason for a port that answered the probe in full and named an owner that is
+/// not this app's.
+///
+/// Kept apart from `owned_backend_not_found`, which also covers a port that said nothing at
+/// all. The health watchdog needs the difference: silence from a port an Unsloth backend just
+/// answered on is a stall and earns the wide busy budget, while a complete answer carrying a
+/// different root id, a different token or no desktop owner at all is proof that the backend
+/// this app adopted is gone and something else has the port.
+pub(crate) const OWNED_BACKEND_OWNER_MISMATCH: &str = "owned_backend_owner_mismatch";
+
+/// Whether a failed probe answered with a different owner rather than falling silent.
+pub(crate) fn probe_saw_a_different_owner(probe: &OwnedBackendProbe) -> bool {
+    matches!(
+        probe,
+        OwnedBackendProbe::NotVerified { reason } if reason == OWNED_BACKEND_OWNER_MISMATCH
+    )
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PreviousAppPidStatus {
     Dead,
@@ -107,6 +125,7 @@ struct HealthDesktopOwner {
 #[derive(Debug, Deserialize)]
 struct HealthResponse {
     version: Option<String>,
+    native_path_leases_supported: Option<bool>,
 }
 
 #[derive(Debug)]
@@ -309,8 +328,46 @@ fn is_blank_studio_root_id(raw: &str) -> bool {
     raw.trim().is_empty()
 }
 
+// create_studio_root_id_file hard-links the temp file onto the real path and then
+// removes the temp name, so for the width of that unlink there are two names for one
+// file. Windows denies an open of EITHER name while a delete is pending, with
+// ERROR_ACCESS_DENIED rather than a sharing violation, so a concurrent reader is turned
+// away from a file that is intact on both sides of the window.
+const STUDIO_ROOT_ID_READ_ATTEMPTS: usize = 5;
+const STUDIO_ROOT_ID_READ_BACKOFF: Duration = Duration::from_millis(20);
+
+fn read_studio_root_id_to_string(path: &Path) -> std::io::Result<String> {
+    read_studio_root_id_to_string_with(path, |path| std::fs::read_to_string(path))
+}
+
+fn read_studio_root_id_to_string_with(
+    path: &Path,
+    mut read: impl FnMut(&Path) -> std::io::Result<String>,
+) -> std::io::Result<String> {
+    let mut attempt = 0;
+    loop {
+        match read(path) {
+            Ok(raw) => return Ok(raw),
+            // Absent is an answer, not a transient state.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err(error),
+            Err(error) if is_transient_read_denial(&error) => {
+                attempt += 1;
+                if attempt >= STUDIO_ROOT_ID_READ_ATTEMPTS {
+                    return Err(error);
+                }
+                std::thread::sleep(STUDIO_ROOT_ID_READ_BACKOFF);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn is_transient_read_denial(error: &std::io::Error) -> bool {
+    matches!(error.kind(), std::io::ErrorKind::PermissionDenied)
+}
+
 fn read_studio_root_id_file(path: &Path) -> Result<Option<String>, String> {
-    let raw = match std::fs::read_to_string(path) {
+    let raw = match read_studio_root_id_to_string(path) {
         Ok(raw) => raw,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
@@ -757,9 +814,14 @@ fn ready_for_use_status(health: Option<&HealthResponse>) -> OwnedBackendReadines
     let version = health
         .and_then(|h| h.version.as_deref())
         .filter(|v| !v.is_empty());
-    match crate::preflight::backend_version_stale_reason(version) {
-        Some(reason) => OwnedBackendReadiness::Stale { reason },
-        None => OwnedBackendReadiness::Ready,
+    if let Some(reason) = crate::preflight::backend_version_stale_reason(version) {
+        return OwnedBackendReadiness::Stale { reason };
+    }
+    match health.and_then(|health| health.native_path_leases_supported) {
+        Some(true) => OwnedBackendReadiness::Ready,
+        _ => OwnedBackendReadiness::Stale {
+            reason: "native_path_leases_unsupported".to_string(),
+        },
     }
 }
 
@@ -777,13 +839,15 @@ async fn health_ready_status(
                 let Some(version) = authenticated_version else {
                     return Err("desktop_auth_health_unverified".to_string());
                 };
-                return match crate::preflight::backend_version_stale_reason(Some(version)) {
-                    None => Ok(OwnedBackendReadiness::Ready),
-                    Some(reason) if reason == "desktop_backend_version_too_old" => {
+                if let Some(reason) = crate::preflight::backend_version_stale_reason(Some(version))
+                {
+                    return if reason == "desktop_backend_version_too_old" {
                         Ok(OwnedBackendReadiness::Stale { reason })
-                    }
-                    Some(reason) => Err(reason),
-                };
+                    } else {
+                        Err(reason)
+                    };
+                }
+                return Ok(ready_for_use_status(health.as_ref()));
             }
             Ok(ready_for_use_status(health.as_ref()))
         }
@@ -932,6 +996,9 @@ pub(crate) async fn probe_owned_backend_state_with_timeout(
         None => desktop_candidate_ports().collect(),
     };
     let mut verified = Vec::new();
+    // Set only by a complete, parsed answer that names someone else. A transport error or a
+    // non-success status leaves it alone, so silence never reads as a takeover.
+    let mut answered_with_a_different_owner = false;
     for port in ports {
         let liveness = match fetch_liveness(port, timeout).await {
             Ok(Some(liveness)) => liveness,
@@ -945,6 +1012,7 @@ pub(crate) async fn probe_owned_backend_state_with_timeout(
             }
         };
         if !liveness_verifies_metadata(&liveness, &owner.metadata) {
+            answered_with_a_different_owner = true;
             continue;
         }
         if let Some(reason) = lifecycle_control_block_reason(&liveness) {
@@ -982,10 +1050,12 @@ pub(crate) async fn probe_owned_backend_state_with_timeout(
 
     if verified.len() != 1 {
         return OwnedBackendProbe::NotVerified {
-            reason: if verified.is_empty() {
-                "owned_backend_not_found".to_string()
-            } else {
+            reason: if !verified.is_empty() {
                 "owned_backend_ambiguous".to_string()
+            } else if answered_with_a_different_owner {
+                OWNED_BACKEND_OWNER_MISMATCH.to_string()
+            } else {
+                "owned_backend_not_found".to_string()
             },
         };
     }
@@ -1050,6 +1120,16 @@ async fn probe_verified_owned_backend_at_path_with_expected(
     let owner = BackendOwnerState::from_metadata(path.to_path_buf(), metadata);
     let port = owner.port();
     Ok(probe_owned_backend_state(owner, port, true).await)
+}
+
+/// False only when the pid is provably gone.
+///
+/// A pid we cannot resolve counts as running: on Windows an OpenProcess that
+/// fails for anything but a bad pid usually means the process is there and
+/// owned by somebody else, and every caller here treats "still running" as the
+/// safe answer.
+pub(crate) fn pid_is_not_dead(pid: u32) -> bool {
+    process_liveness(pid) != PreviousAppPidStatus::Dead
 }
 
 fn previous_app_pid_status(pid: u32) -> PreviousAppPidStatus {
@@ -1327,7 +1407,10 @@ mod tests {
     async fn authenticated_health_uses_login_bearer_and_accepts_ready_version() {
         let (port, seen, server) = http_sequence_server(vec![
             ("200 OK", r#"{"access_token":"test-access-token"}"#),
-            ("200 OK", r#"{"version":"2026.8.4"}"#),
+            (
+                "200 OK",
+                r#"{"version":"2026.8.4","native_path_leases_supported":true}"#,
+            ),
         ])
         .await;
 
@@ -1342,6 +1425,31 @@ mod tests {
         assert!(seen[1]
             .to_ascii_lowercase()
             .contains("authorization: bearer test-access-token"));
+    }
+
+    #[tokio::test]
+    async fn authenticated_health_marks_missing_or_disabled_native_leases_stale() {
+        for health in [
+            r#"{"version":"2026.8.4"}"#,
+            r#"{"version":"2026.8.4","native_path_leases_supported":false}"#,
+        ] {
+            let (port, _, server) = http_sequence_server(vec![
+                ("200 OK", r#"{"access_token":"test-access-token"}"#),
+                ("200 OK", health),
+            ])
+            .await;
+
+            let readiness = authenticated_health_ready_status(port, "desktop-test-secret")
+                .await
+                .unwrap();
+            server.await.unwrap();
+
+            assert!(matches!(
+                readiness,
+                OwnedBackendReadiness::Stale { reason }
+                    if reason == "native_path_leases_unsupported"
+            ));
+        }
     }
 
     #[tokio::test]
@@ -1463,6 +1571,139 @@ mod tests {
                 token_sha256: Some(token_sha256(TOKEN)),
             }),
         }
+    }
+
+    /// A backend that answers the ownership probe's first request and then goes quiet, the
+    /// way a saturated one does. The later connections are parked, not closed: closing them
+    /// would answer with a reset, which is a different failure entirely.
+    async fn owned_backend_that_stalls_after_the_first_request() -> u16 {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let body = format!(
+            r#"{{"status":"alive","service":"Unsloth UI Backend","desktop_protocol_version":{},"desktop_manageability_version":{},"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{}","desktop_owner":{{"kind":"{}","token_sha256":"{}"}},"inference_active":true}}"#,
+            crate::preflight::DESKTOP_PROTOCOL_VERSION,
+            crate::preflight::DESKTOP_MANAGEABILITY_VERSION,
+            ROOT_ID,
+            OWNER_KIND_TAURI,
+            token_sha256(TOKEN),
+        );
+        tokio::spawn(async move {
+            let mut answered = false;
+            let mut parked = Vec::new();
+            while let Ok((mut socket, _)) = listener.accept().await {
+                if answered {
+                    parked.push(socket);
+                    continue;
+                }
+                answered = true;
+                let mut chunk = [0u8; 2048];
+                let _ = socket.read(&mut chunk).await;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+            }
+        });
+        port
+    }
+
+    #[tokio::test]
+    async fn a_stall_after_the_first_request_is_indistinguishable_from_a_foreign_port() {
+        // Why the health watchdog cannot ask this probe whether a failure was a stall: the
+        // liveness GET succeeds and verifies ownership, then the desktop-login POST runs out
+        // of budget, and the answer that comes back carries no trace of which it was. The
+        // watchdog has to classify the failure from its own read instead, which is what
+        // `commands::adopted_failure_is_a_stall` does. Only the opposite case is decidable
+        // here, and is reported as `OWNED_BACKEND_OWNER_MISMATCH`: a port that answered in
+        // full for somebody else did not fall silent, so it is not a stall.
+        let port = owned_backend_that_stalls_after_the_first_request().await;
+        // The probe never touches the file, so nothing has to exist on disk for this.
+        let owner = BackendOwnerState::from_metadata(
+            std::env::temp_dir().join("unsloth-stall-after-first-request.json"),
+            metadata(std::process::id(), Some(port)),
+        );
+
+        let probe = probe_owned_backend_state_with_timeout(
+            owner,
+            Some(port),
+            false,
+            Duration::from_millis(400),
+        )
+        .await;
+
+        match probe {
+            OwnedBackendProbe::Unmanageable { reason, .. } => {
+                assert_eq!(reason, "desktop_login_probe_failed");
+            }
+            OwnedBackendProbe::NotVerified { reason } => {
+                assert_eq!(reason, "owned_backend_not_found");
+            }
+            other => panic!("a stalled owned backend should not verify: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_port_taken_over_by_another_backend_is_reported_as_an_owner_mismatch() {
+        // The other half of the classification above. A backend the app adopted can exit and
+        // have its port rebound by the next Unsloth backend the user starts, which answers
+        // the watchdog's pre-probe exactly as the old one did. The probe gets a complete
+        // reply here, not silence, so it must say so: the watchdog reads this to keep the
+        // dead adopted backend on the normal three-strike budget instead of the busy one.
+        //
+        // A backend started outside the app omits `desktop_owner` entirely (main.py only
+        // emits the key when one is loaded), and a second app instance sends a different
+        // token hash. Both are takeovers.
+        for body in [
+            // Same install, so the root id matches; no desktop owner at all.
+            r#"{"status":"alive","service":"Unsloth UI Backend","studio_root_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","supports_desktop_auth":true,"supports_desktop_backend_ownership":true}"#,
+            // A desktop-owned backend, but not the one this app is holding.
+            r#"{"status":"alive","service":"Unsloth UI Backend","studio_root_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"desktop_owner":{"kind":"tauri","token_sha256":"0000000000000000000000000000000000000000000000000000000000000000"}}"#,
+        ] {
+            let (port, _, server) = http_sequence_server(vec![("200 OK", body)]).await;
+            let owner = BackendOwnerState::from_metadata(
+                std::env::temp_dir().join("unsloth-port-taken-over.json"),
+                metadata(std::process::id(), Some(port)),
+            );
+
+            let probe = probe_owned_backend_state_with_timeout(
+                owner,
+                Some(port),
+                false,
+                Duration::from_secs(5),
+            )
+            .await;
+            server.await.unwrap();
+
+            assert!(
+                probe_saw_a_different_owner(&probe),
+                "a port answering for a different owner read as silence: {probe:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_port_that_says_nothing_is_not_reported_as_an_owner_mismatch() {
+        // The guard on the above: a closed port and a stalled one both fail to verify, and
+        // neither is evidence that someone else took the port. Only a parsed answer is.
+        let port = closed_port();
+        let owner = BackendOwnerState::from_metadata(
+            std::env::temp_dir().join("unsloth-silent-port.json"),
+            metadata(std::process::id(), Some(port)),
+        );
+
+        let probe =
+            probe_owned_backend_state_with_timeout(owner, Some(port), false, Duration::from_secs(5))
+                .await;
+
+        assert!(!probe_saw_a_different_owner(&probe), "{probe:?}");
+        assert!(matches!(
+            probe,
+            OwnedBackendProbe::NotVerified { ref reason } if reason == "owned_backend_not_found"
+        ));
     }
 
     #[test]
@@ -1612,6 +1853,68 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "not-a-root-id");
 
         let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+    }
+
+    // Injected reader, not a real race: the window is one unlink wide, so a test that
+    // raced for it would pass on any machine that never entered it.
+    fn denial() -> std::io::Error {
+        std::io::Error::new(std::io::ErrorKind::PermissionDenied, "Access is denied.")
+    }
+
+    #[test]
+    fn a_reader_denied_while_the_temp_name_is_unlinked_still_gets_the_id() {
+        let mut seen = 0;
+        let raw = read_studio_root_id_to_string_with(Path::new("id"), |_| {
+            seen += 1;
+            if seen < 3 {
+                Err(denial())
+            } else {
+                Ok("an-id".to_string())
+            }
+        })
+        .unwrap();
+        assert_eq!(raw, "an-id");
+        assert_eq!(seen, 3, "the read should have been retried until it succeeded");
+    }
+
+    #[test]
+    fn a_denial_that_never_clears_is_still_reported() {
+        // Bounded: a genuinely unreadable file must not become a hang or a silent
+        // success, and the last error is what the caller sees.
+        let mut seen = 0;
+        let error = read_studio_root_id_to_string_with(Path::new("id"), |_| {
+            seen += 1;
+            Err(denial())
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert_eq!(seen, STUDIO_ROOT_ID_READ_ATTEMPTS);
+    }
+
+    #[test]
+    fn a_missing_id_is_answered_without_waiting() {
+        // A first start has no id file; retrying would add backoff to every cold
+        // launch for the same answer.
+        let mut seen = 0;
+        let error = read_studio_root_id_to_string_with(Path::new("id"), |_| {
+            seen += 1;
+            Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        assert_eq!(seen, 1, "a missing id must not be retried");
+    }
+
+    #[test]
+    fn an_unrelated_read_error_is_not_retried() {
+        let mut seen = 0;
+        let error = read_studio_root_id_to_string_with(Path::new("id"), |_| {
+            seen += 1;
+            Err(std::io::Error::from(std::io::ErrorKind::InvalidData))
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(seen, 1, "only a denial is treated as transient");
     }
 
     #[test]

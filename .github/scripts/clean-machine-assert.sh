@@ -7,7 +7,10 @@
 #   absent   The toolchain really was absent for the whole run. Catches a leg that
 #            "passed" because masking silently failed, or because the installer
 #            quietly installed Xcode CLT behind our back.
-#   notools  The trace recorded no compiler/git/brew invocation (trace mode).
+#   notools       The trace recorded no compiler/git/brew invocation (trace mode),
+#                 except uv's exact optional libpython self-ID operation.
+#   nodylibtool   No install_name_tool invocation escaped the CLT-absent guard.
+#   dylibpatch    A CLT-present control observed only exact libpython self-ID patches.
 #   nobuild  Wheels-only: no "Building wheel" from pip, no "Building <pkg>==<ver>"
 #            from uv. Needs UNSLOTH_VERBOSE=1, or run_install_cmd
 #            (install.sh:193-243) discards uv's output on success.
@@ -15,7 +18,7 @@
 #            Mach-O MAIN EXECUTABLE is signed. Closes the Rosetta 2 gap, the one
 #            divergence masking cannot reproduce.
 #
-# Usage: bash .github/scripts/clean-machine-assert.sh absent notools nobuild macho
+# Usage: bash .github/scripts/clean-machine-assert.sh absent nodylibtool notools dylibpatch nobuild macho
 set -uo pipefail
 
 LOG="${INSTALL_LOG:-logs/install.log}"
@@ -24,6 +27,50 @@ rc=0
 
 fail() { echo "::error::$*"; rc=1; }
 ok()   { echo "[assert] OK  $*"; }
+
+_decode_trace_arg() { # encoded, destination variable
+  _encoded=$1
+  case "$_encoded" in h*) _hex=${_encoded#h} ;; *) return 1 ;; esac
+  case "$_hex" in *[!0123456789abcdef]* ) return 1 ;; esac
+  [ $(( ${#_hex} % 2 )) -eq 0 ] || return 1
+  _decoded=""
+  while [ -n "$_hex" ]; do
+    _rest=${_hex#??}
+    _pair=${_hex%"$_rest"}
+    _hex=$_rest
+    printf -v _byte '%b' "\\x$_pair"
+    _decoded+=$_byte
+  done
+  printf -v "$2" '%s' "$_decoded"
+}
+
+_is_uv_libpython_self_id_patch() { # argc, operation, source, destination, extra
+  [ "$1" = "3" ] && [ "$2" = "-id" ] && [ -n "$3" ] && [ "$3" = "$4" ] \
+    && [ -z "$5" ] || return 1
+  _patch_name=${3##*/}
+  case "$_patch_name" in libpython*.dylib) ;; *) return 1 ;; esac
+  _patch_dir=${3%/*}
+
+  if [ -n "${UV_PYTHON_INSTALL_DIR:-}" ]; then
+    _patch_root=${UV_PYTHON_INSTALL_DIR%/}
+  else
+    # Default uv data locations end in uv/python; this fallback keeps the assertion
+    # useful outside CI, where UV_PYTHON_INSTALL_DIR is normally unset.
+    case "$3" in */uv/python/*) ;; *) return 1 ;; esac
+    _patch_root=${3%%/uv/python/*}/uv/python
+  fi
+
+  # Resolve both directories physically before comparing them. A lexical shell glob
+  # would accept "$root/x/../../outside/..." (and symlink escapes) because * spans '/'.
+  _patch_root=$(CDPATH= cd "$_patch_root" 2>/dev/null && pwd -P) || return 1
+  _patch_dir=$(CDPATH= cd "$_patch_dir" 2>/dev/null && pwd -P) || return 1
+  case "$_patch_dir" in "$_patch_root"/*/lib) ;; *) return 1 ;; esac
+  _patch_install=${_patch_dir#"$_patch_root"/}
+  _patch_install=${_patch_install%/lib}
+  [ -n "$_patch_install" ] || return 1
+  case "$_patch_install" in */*) return 1 ;; esac
+  return 0
+}
 
 for check in "$@"; do
   case "$check" in
@@ -63,6 +110,52 @@ for check in "$@"; do
       fi
       ;;
 
+    nodylibtool)
+      if [ -z "$TRACE" ] || [ ! -f "$TRACE" ]; then
+        fail "nodylibtool requested but no trace file (\$UNSLOTH_TOOL_TRACE=$TRACE)"
+      else
+        _dylib_hits=0
+        while IFS=$'\t' read -r tool _rest; do
+          [ "$tool" = "install_name_tool" ] && _dylib_hits=$((_dylib_hits + 1))
+        done < "$TRACE"
+        if [ "$_dylib_hits" -ne 0 ]; then
+          fail "install_name_tool escaped the CLT-absent uv guard ($_dylib_hits invocation(s))"
+          grep '^install_name_tool[[:space:]]' "$TRACE" | head -20 || true
+        else
+          ok "install_name_tool was never reached on the CLT-absent path"
+        fi
+      fi
+      ;;
+
+    dylibpatch)
+      if [ -z "$TRACE" ] || [ ! -f "$TRACE" ]; then
+        fail "dylibpatch requested but no trace file (\$UNSLOTH_TOOL_TRACE=$TRACE)"
+      else
+        _dylib_hits=0
+        _dylib_bad=0
+        while IFS=$'\t' read -r tool argc operation_encoded source_encoded destination_encoded extra; do
+          [ "$tool" = "install_name_tool" ] || continue
+          _dylib_hits=$((_dylib_hits + 1))
+          operation=""; source=""; destination=""
+          if ! _decode_trace_arg "$operation_encoded" operation \
+             || ! _decode_trace_arg "$source_encoded" source \
+             || ! _decode_trace_arg "$destination_encoded" destination \
+             || ! _is_uv_libpython_self_id_patch "$argc" "$operation" "$source" "$destination" "$extra"; then
+            _dylib_bad=$((_dylib_bad + 1))
+            echo "::error::invalid install_name_tool trace record: $tool argc=$argc"
+          fi
+        done < "$TRACE"
+        if [ "$_dylib_hits" -eq 0 ]; then
+          fail "CLT-present control recorded no install_name_tool patch; managed Python may have been reused"
+        elif [ "$_dylib_bad" -ne 0 ]; then
+          fail "$_dylib_bad of $_dylib_hits install_name_tool invocation(s) were not exact libpython self-ID patches"
+        else
+          ok "all $_dylib_hits install_name_tool invocation(s) were exact libpython self-ID patches"
+        fi
+      fi
+      ;;
+
+
     notools)
       if [ -z "$TRACE" ] || [ ! -f "$TRACE" ]; then
         fail "notools requested but no trace file (\$UNSLOTH_TOOL_TRACE=$TRACE)"
@@ -71,13 +164,26 @@ for check in "$@"; do
         # leg allow-lists it via UNSLOTH_ALLOW_TOOLS.
         allow="${UNSLOTH_ALLOW_TOOLS:-}"
         hits=""
-        while IFS=$'\t' read -r tool rest; do
+        while IFS=$'\t' read -r tool argc_or_rest arg1 arg2 arg3 extra; do
           [ -n "$tool" ] || continue
+          # This optional uv operation is the only permitted developer-tool use. Keep it
+          # structural rather than name-only: arbitrary install_name_tool calls still fail.
+          if [ "$tool" = "install_name_tool" ]; then
+            operation=""; source=""; destination=""
+            if _decode_trace_arg "$arg1" operation \
+               && _decode_trace_arg "$arg2" source \
+               && _decode_trace_arg "$arg3" destination \
+               && _is_uv_libpython_self_id_patch "$argc_or_rest" "$operation" "$source" "$destination" "$extra"; then
+              continue
+            fi
+            hits="$hits $tool"
+            continue
+          fi
           case " $allow " in *" $tool "*) continue ;; esac
           # `xcode-select -p` only ASKS whether a toolchain is selected and the fix is
           # carrying on without one, so it is not USE. `--install` stays a hit.
           if [ "$tool" = "xcode-select" ]; then
-            case "$rest" in
+            case "$argc_or_rest" in
               -p|--print-path|-v|--version|"") continue ;;
             esac
           fi

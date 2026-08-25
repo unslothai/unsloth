@@ -24,7 +24,6 @@ const { initialTrainingConfigState } = await import(
 
 const CONFIG: TrainingConfigState = {
   ...initialTrainingConfigState,
-  currentStep: 5,
   modelType: "text",
   selectedModel: "unsloth/gemma-3-270m-it",
   projectName: "grad-norm",

@@ -48,7 +48,91 @@ pub fn classify_native_model_path(path: &Path) -> Result<ClassifiedPath, String>
 
 /// Document types the RAG ingest accepts; keep in sync with `config.UPLOAD_EXTS`.
 pub const ATTACHMENT_EXTS: &[&str] = &["pdf", "txt", "md", "markdown", "docx", "html", "htm"];
+/// OpenDocument files the chat composer parses directly rather than indexing as RAG sources.
+pub const OPEN_DOCUMENT_ATTACHMENT_EXTS: &[&str] = &["ods", "odt"];
 pub const TRAINING_DATASET_EXTS: &[&str] = &["csv", "json", "jsonl", "parquet"];
+
+/// Keep in sync with `text-attachment-accept.ts`. RAG types are absent so a
+/// dropped .txt/.md keeps being indexed.
+pub const TEXT_ATTACHMENT_EXTS: &[&str] = &[
+    "text",
+    "log",
+    "mdx",
+    "rst",
+    "csv",
+    "tsv",
+    "json",
+    "jsonl",
+    "ndjson",
+    "xml",
+    "yaml",
+    "yml",
+    "toml",
+    "ini",
+    "cfg",
+    "conf",
+    "env",
+    "properties",
+    "css",
+    "scss",
+    "sass",
+    "less",
+    "svg",
+    "js",
+    "jsx",
+    "mjs",
+    "cjs",
+    "ts",
+    "tsx",
+    "py",
+    "pyi",
+    "ipynb",
+    "rb",
+    "php",
+    "go",
+    "rs",
+    "java",
+    "kt",
+    "kts",
+    "scala",
+    "swift",
+    "c",
+    "h",
+    "cc",
+    "cpp",
+    "hpp",
+    "cxx",
+    "cs",
+    "m",
+    "mm",
+    "sh",
+    "bash",
+    "zsh",
+    "fish",
+    "ps1",
+    "bat",
+    "lua",
+    "pl",
+    "pm",
+    "r",
+    "jl",
+    "dart",
+    "vue",
+    "svelte",
+    "astro",
+    "sql",
+    "graphql",
+    "gql",
+    "proto",
+    "tf",
+    "tfvars",
+    "gradle",
+    "dockerfile",
+    "makefile",
+    "cmake",
+    "diff",
+    "patch",
+];
 
 /// Vision chat image attachments; keep in sync with `drop-paths.ts` `CHAT_IMAGE_DROP_ACCEPT`.
 pub const IMAGE_ATTACHMENT_EXTS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif"];
@@ -56,11 +140,19 @@ pub const IMAGE_ATTACHMENT_EXTS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif"
 /// Chat audio attachments; keep in sync with `audio-attachment-adapter.ts` `accept`.
 pub const AUDIO_ATTACHMENT_EXTS: &[&str] = &["wav", "mp3", "m4a", "ogg", "oga", "flac"];
 
+/// Chat video attachments; keep in sync with `drop-paths.ts`
+/// `CHAT_VIDEO_DROP_ACCEPT`. llama-server decodes with ffmpeg, so this is what
+/// ffmpeg reads, not what the webview can play.
+pub const VIDEO_ATTACHMENT_EXTS: &[&str] = &["mp4", "mov", "webm", "mkv", "avi"];
+
 fn accepted_attachment_exts() -> impl Iterator<Item = &'static &'static str> {
     ATTACHMENT_EXTS
         .iter()
+        .chain(OPEN_DOCUMENT_ATTACHMENT_EXTS.iter())
+        .chain(TEXT_ATTACHMENT_EXTS.iter())
         .chain(IMAGE_ATTACHMENT_EXTS.iter())
         .chain(AUDIO_ATTACHMENT_EXTS.iter())
+        .chain(VIDEO_ATTACHMENT_EXTS.iter())
 }
 
 pub fn classify_native_attachment_path(path: &Path) -> Result<ClassifiedPath, String> {
@@ -68,8 +160,8 @@ pub fn classify_native_attachment_path(path: &Path) -> Result<ClassifiedPath, St
     if classified.path_type != NativePathType::File {
         return Err("Only files can be attached to a chat.".to_string());
     }
-    let supported = accepted_attachment_exts()
-        .any(|ext| has_extension(&classified.canonical_path, ext));
+    let supported =
+        accepted_attachment_exts().any(|ext| has_extension(&classified.canonical_path, ext));
     if !supported {
         return Err(format!(
             "Unsupported attachment type. Supported: {}",
@@ -364,7 +456,7 @@ fn reject_document_folder_root(path: &Path) -> Result<(), String> {
     }
 }
 
-fn reject_sensitive_document_folder(path: &Path) -> Result<(), String> {
+pub(crate) fn reject_sensitive_document_folder(path: &Path) -> Result<(), String> {
     let has_sensitive_segment = path.components().any(|component| {
         matches!(
             component
@@ -545,6 +637,80 @@ fn has_extension(path: &Path, expected: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Guards process-global environment variables for tests.
+///
+/// `std::env::set_var` is process-wide while the harness runs tests in
+/// parallel, and the policy below reads `XDG_DATA_HOME` through
+/// `dirs::data_local_dir`. Anything that sets or depends on those variables
+/// takes this, `main.rs`'s `with_xdg_data_home` included.
+#[cfg(test)]
+pub(crate) static PROCESS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// A directory that scratch paths for the path-policy tests can be built in:
+/// writable, and accepted by the very policy those tests exercise.
+///
+/// Picking one is not obvious. `std::env::temp_dir()` is out on macOS, where it
+/// is /var/folders/..., whose real path is under /private and which the policy
+/// rejects on purpose, so every scratch path built from it would fail for that
+/// reason rather than the one under test. The test binary's directory is the
+/// usual answer but is not safe either: a checkout under /root or /usr/src puts
+/// it inside a sensitive root, a target directory on /dev/shm or a UNC share is
+/// refused as a device path, and a read-only build tree cannot be written to at
+/// all.
+///
+/// So each candidate is tried for real: a uniquely named child is created in
+/// it, a file is written inside that child, and the child is put through
+/// `classify_native_document_folder`, which is the whole policy rather than one
+/// clause of it. The first candidate that survives all three wins. Chosen once
+/// per test binary, under `PROCESS_ENV_LOCK`, so a concurrent
+/// `with_xdg_data_home` cannot change the answer midway.
+#[cfg(test)]
+pub(crate) fn scratch_root() -> PathBuf {
+    static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    ROOT.get_or_init(|| {
+        let _guard = PROCESS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // The temp directory first, since the OS clears it, then the build
+        // tree, then home. On macOS the first is rejected by the policy and the
+        // second is taken, which is the case that started all this.
+        let candidates = [
+            Some(std::env::temp_dir()),
+            std::env::current_exe()
+                .ok()
+                .and_then(|exe| exe.parent().map(Path::to_path_buf)),
+            dirs::home_dir(),
+        ];
+        for candidate in candidates.into_iter().flatten() {
+            // tempfile, not a name derived from the PID: the first candidate is
+            // a shared temp directory, where another local user can pre-create
+            // a predictable path and leave a symlink for the probe write below
+            // to follow. tempdir_in creates an unguessable directory with an
+            // exclusive operation, or fails.
+            let Ok(child) = tempfile::Builder::new()
+                .prefix("unsloth-test-scratch-")
+                .tempdir_in(&candidate)
+            else {
+                continue;
+            };
+            // Existing is not writable: a directory that is already there is
+            // accepted without a byte being written.
+            if fs::write(child.path().join("writable"), b"1").is_err() {
+                continue;
+            }
+            if classify_native_document_folder(child.path()).is_ok() {
+                // Kept rather than dropped, which would delete it out from
+                // under every test that follows.
+                return child.keep();
+            }
+        }
+        // Nothing qualifies. Fall back rather than skip, so the tests fail
+        // loudly here instead of quietly not running.
+        std::env::temp_dir()
+    })
+    .clone()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -556,7 +722,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!(
+        scratch_root().join(format!(
             "unsloth-native-policy-{name}-{}-{nanos}",
             std::process::id()
         ))

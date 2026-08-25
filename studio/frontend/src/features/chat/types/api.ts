@@ -5,6 +5,11 @@ import type { TransformersUpgradeInfo } from "@/features/transformers-upgrade";
 
 export type CpuFallbackReason = "vulkan_startup_crash";
 
+export type MmprojFallbackReason =
+  | "cpu_offload"
+  | "projector_incompatible"
+  | "projector_startup_failure";
+
 export interface BackendModelDetails {
   id: string;
   name?: string | null;
@@ -15,6 +20,7 @@ export interface BackendModelDetails {
   is_audio?: boolean;
   audio_type?: string | null;
   has_audio_input?: boolean;
+  has_video_input?: boolean;
 }
 
 export interface ListModelsResponse {
@@ -28,6 +34,8 @@ export interface BackendLoraInfo {
   base_model?: string | null;
   source?: "training" | "exported" | null;
   export_type?: "lora" | "merged" | "gguf" | null;
+  /** Codec of the checkpoint's base model when it fine-tunes an audio model, else null. */
+  audio_type?: string | null;
 }
 
 export interface ListLorasResponse {
@@ -37,6 +45,11 @@ export interface ListLorasResponse {
 
 export interface LoadModelRequest {
   model_path: string;
+  /** Opaque client attempt ID used to cancel only this in-flight load. */
+  load_request_id?: string | null;
+
+  /** Start a fresh runtime even when the active settings already match. */
+  force_reload?: boolean;
   /**
      * Stop any chats still generating instead of getting a 409: a load replaces the single
      * llama-server they all decode on. Set only after the user confirms.
@@ -57,16 +70,17 @@ export interface LoadModelRequest {
   mlx_kv_bits?: number | null;
   /**
    * Speculative decoding mode for GGUF models. Canonical values: "auto"
-   * (platform-aware: MTP on MTP GGUFs, ngram-mod fallback for sub-3B), "mtp"
-   * (force draft-mtp), "dspark" (force draft-dspark with a sidecar),
-   * "ngram" (force ngram-mod), "mtp+ngram" (ngram-mod +
-   * draft-mtp chain), "off". Legacy "default"/"draft-mtp"/"ngram-mod"/
-   * "ngram-simple" are still accepted by the backend.
+   * (platform-aware: DSpark or DFlash when the model ships that sidecar, else
+   * MTP on MTP GGUFs, ngram-mod fallback for sub-3B), "mtp" (force draft-mtp),
+   * "dspark" (force draft-dspark with a sidecar), "dflash" (force draft-dflash
+   * with a sidecar), "ngram" (force ngram-mod), "mtp+ngram" (ngram-mod +
+   * draft-mtp chain), "off". Legacy "default"/"draft-mtp"/"draft-dspark"/
+   * "draft-dflash"/"ngram-mod"/"ngram-simple" are still accepted by the backend.
    */
   speculative_type?: string | null;
   /**
-   * Override --spec-draft-n-max for MTP speculative decoding. Applied only
-   * when speculative_type resolves to "mtp", "mtp+ngram", or "dspark".
+   * Override --spec-draft-n-max for drafter speculative decoding. Applied only
+   * when speculative_type resolves to "mtp", "mtp+ngram", "dspark" or "dflash".
    */
   spec_draft_n_max?: number | null;
   /**
@@ -78,11 +92,36 @@ export interface LoadModelRequest {
   n_batch?: number | null;
   /** prompt micro-batch size (--ubatch-size), 1..65536; omit/null = llama.cpp default 512, capped at the batch size */
   n_ubatch?: number | null;
+  /** weight loading mode (--load-mode): auto/none/mmap/mlock/mmap+mlock/dio.
+   *  Omit/null = llama.cpp's own `auto`. Settings -> Model Memory overrides it. */
+  load_mode?: string | null;
+  /** KV cache dtype for the DRAFT model's context (--spec-draft-type-k/-v);
+   *  omit/null = llama.cpp default f16. Only reaches the command line when the
+   *  load attaches a separate draft model. */
+  spec_draft_cache_type?: string | null;
+  /** context checkpoints per slot (--ctx-checkpoints); omit/null = default 32, 0 disables */
+  ctx_checkpoints?: number | null;
+  /** host prompt cache size in MiB (--cache-ram); omit/null = default 8192, 0 disables, -1 unlimited */
+  cache_ram?: number | null;
+  /**
+   * Pass-through llama-server args, one argv token per entry, appended after
+   * Unsloth's own flags so llama.cpp's last-wins parser takes these. Flags Unsloth
+   * manages are refused with a 4xx naming the flag. Omit/null inherits the stored
+   * per-model value; [] launches with none. GGUF only.
+   */
+  // biome-ignore lint/style/useNamingConvention: API schema
+  llama_extra_args?: string[] | null;
   /**
    * Split the model across GPUs by tensor (--split-mode tensor) instead
    * of by layer for GGUF models. Multi-GPU only; no effect on a single GPU.
    */
   tensor_parallel?: boolean | null;
+  /**
+   * Load a vision-capable GGUF without its mmproj, freeing the VRAM the
+   * projector would occupy. Image input is unavailable for the session;
+   * text generation is unaffected.
+   */
+  disable_vision?: boolean | null;
   /** GPU memory strategy for GGUF models. "auto" (default): Unsloth selects GPUs
    *  and caps context to fit VRAM. "manual": you own the offload -- gpu_layers
    *  -1 (Auto) hands sizing to llama.cpp's --fit, >= 0 pins layers/n_cpu_moe. */
@@ -196,6 +235,7 @@ export interface LoadModelResponse {
   is_audio?: boolean;
   audio_type?: string | null;
   has_audio_input?: boolean;
+  has_video_input?: boolean;
   inference?: {
     temperature?: number;
     top_p?: number;
@@ -216,6 +256,7 @@ export interface LoadModelResponse {
   reasoning_effort_levels?: string[];
   reasoning_always_on?: boolean;
   supports_preserve_thinking?: boolean;
+  preserve_thinking_default?: boolean;
   supports_tools?: boolean;
   cache_type_kv?: string | null;
   mlx_kv_bits?: number | null;
@@ -230,10 +271,18 @@ export interface LoadModelResponse {
   spec_draft_n_max?: number | null;
   /** Whether tensor-parallel split (--split-mode tensor) is active. */
   tensor_parallel?: boolean;
+  /** The load ran with the vision projector deliberately left unloaded. Echoes the
+   * request, so it round-trips the Advanced Settings switch even on a GGUF that
+   * never had a projector -- unlike vision_disabled_by_user below. */
+  disable_vision?: boolean;
+  /** Image input is off because the user asked, not because the mmproj is missing. */
+  vision_disabled_by_user?: boolean;
   gpu_memory_mode?: "auto" | "manual";
   gpu_layers?: number;
   /** Set when an automatic Vulkan startup crash was recovered by loading on CPU. */
   cpu_fallback_reason?: CpuFallbackReason | null;
+  /** How Studio recovered after a multimodal projector failed at startup. */
+  mmproj_fallback_reason?: MmprojFallbackReason | null;
   n_cpu_moe?: number;
   tensor_split?: number[] | null;
   n_layers?: number | null;
@@ -253,10 +302,22 @@ export interface LoadModelResponse {
   requested_n_batch?: number | null;
   /** micro-batch size (--ubatch-size) the load was invoked with; null = default */
   requested_n_ubatch?: number | null;
+  /** load mode (--load-mode) the load was invoked with; null = default */
+  requested_load_mode?: string | null;
+  /** draft KV cache dtype the load was invoked with; null = default */
+  requested_spec_draft_cache_type?: string | null;
+  /** checkpoints (--ctx-checkpoints) the load was invoked with; null = default */
+  requested_ctx_checkpoints?: number | null;
+  /** host prompt cache (--cache-ram) the load was invoked with; null = default */
+  requested_cache_ram?: number | null;
+  /** Pass-through llama-server arguments the running load was invoked with. */
+  requested_llama_extra_args?: string[] | null;
 }
 
 export interface UnloadModelRequest {
   model_path: string;
+  /** Cancel this exact in-flight load; never unload an already-resident model. */
+  cancel_load_request_id?: string | null;
   /** Stop any chats still generating instead of getting a 409: the unload takes down the
    * llama-server they all decode on. */
   force_cancel_active?: boolean;
@@ -278,6 +339,7 @@ export interface InferenceStatusResponse {
   is_audio?: boolean;
   audio_type?: string | null;
   has_audio_input?: boolean;
+  has_video_input?: boolean;
   loading: string[];
   loaded: string[];
   inference?: {
@@ -297,6 +359,7 @@ export interface InferenceStatusResponse {
   reasoning_effort_levels?: string[];
   reasoning_always_on?: boolean;
   supports_preserve_thinking?: boolean;
+  preserve_thinking_default?: boolean;
   supports_tools?: boolean;
   chat_template?: string | null;
   context_length?: number | null;
@@ -315,10 +378,18 @@ export interface InferenceStatusResponse {
   spec_draft_n_max?: number | null;
   /** Whether tensor-parallel split (--split-mode tensor) is active. */
   tensor_parallel?: boolean;
+  /** The load ran with the vision projector deliberately left unloaded. Echoes the
+   * request, so it round-trips the Advanced Settings switch even on a GGUF that
+   * never had a projector -- unlike vision_disabled_by_user below. */
+  disable_vision?: boolean;
+  /** Image input is off because the user asked, not because the mmproj is missing. */
+  vision_disabled_by_user?: boolean;
   gpu_memory_mode?: "auto" | "manual";
   gpu_layers?: number;
   /** Set while the active model is a recovered CPU-only Vulkan load. */
   cpu_fallback_reason?: CpuFallbackReason | null;
+  /** How the active GGUF recovered after a multimodal projector startup failure. */
+  mmproj_fallback_reason?: MmprojFallbackReason | null;
   n_cpu_moe?: number;
   tensor_split?: number[] | null;
   /** n_ctx the active GGUF load was invoked with (0 = Auto); re-seeds a
@@ -338,6 +409,16 @@ export interface InferenceStatusResponse {
   requested_n_batch?: number | null;
   /** micro-batch size (--ubatch-size) the active load was invoked with; null = default */
   requested_n_ubatch?: number | null;
+  /** load mode (--load-mode) the active load was invoked with; null = default */
+  requested_load_mode?: string | null;
+  /** draft KV cache dtype the active load was invoked with; null = default */
+  requested_spec_draft_cache_type?: string | null;
+  /** checkpoints (--ctx-checkpoints) the active load was invoked with; null = default */
+  requested_ctx_checkpoints?: number | null;
+  /** host prompt cache (--cache-ram) the active load was invoked with; null = default */
+  requested_cache_ram?: number | null;
+  /** Pass-through llama-server arguments the running load was invoked with. */
+  requested_llama_extra_args?: string[] | null;
   n_layers?: number | null;
   /** Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not MoE. */
   n_moe_layers?: number;
@@ -345,18 +426,41 @@ export interface InferenceStatusResponse {
    * Why a speculative drafter was disabled despite being requested.
    * "binary_no_mtp" / "binary_outdated" -> updating llama.cpp would re-enable
    * it; "runtime_error" -> the current build could not run it;
-   * "drafter_not_found" -> its MTP or DSpark sidecar was unavailable;
+   * "drafter_not_found" -> its MTP, DSpark or DFlash sidecar was unavailable;
+   * "drafter_no_vram" -> an Auto-mode fit downgrade: the model pins on GPU but
+   * the drafter's reserve does not, and Auto keeps the context rather than
+   * shrink it (choose the drafter in Settings to force it);
    * "mla_mtp_disabled" -> an Auto-mode policy downgrade for MLA models
    * (GLM-5.2 et al.) whose llama.cpp MTP path is slower than no speculation
-   * (updating won't help; choose MTP in Settings to force it). Null otherwise.
+   * (updating won't help; choose MTP in Settings to force it);
+   * "mtp_partial_offload" -> an Auto-mode policy downgrade for an embedded
+   * Hybrid Mamba MTP head on a partially offloaded placement, whose recurrent
+   * rollback copies cost more layers than the drafting wins back (updating
+   * won't help; choose MTP in Settings to force it). Null otherwise.
    */
   /**
-   * Which drafter the resolution was about, "mtp" or "dspark". Auto resolves the
-   * kind itself, so speculative_type still reads "auto", and a fallback leaves
+   * Which drafter the resolution was about: "mtp", "dspark" or "dflash". Auto
+   * resolves the kind itself, so speculative_type still reads "auto", and a fallback leaves
    * the engaged type at "default": neither names the file to fix.
    */
   spec_drafter_kind?: string | null;
   spec_fallback_reason?: string | null;
+  /** Only for a binary stand-down: whether a different llama-server is installed now. */
+  spec_fallback_binary_changed?: boolean | null;
+  /** The capability probe has started answering since a launch it degraded. */
+  spec_probe_retry_pending?: boolean | null;
+  /** A DFlash sidecar fetch failed retryably, which records no fallback reason. */
+  spec_dflash_retry_pending?: boolean | null;
+  /** The DSpark drafter is absent for good, not transiently unfetchable. */
+  spec_dspark_sidecar_absent?: boolean | null;
+  /** The architecture gate normalized a tensor-parallel request to layer mode. */
+  tensor_parallel_dropped_by_arch_gate?: boolean | null;
+  /** A virtualised Metal device: every GGUF request is rewritten to the CPU pin. */
+  gpu_placement_paravirtual?: boolean | null;
+  /** The post-launch audio probe did not finish; only a load retries it. */
+  audio_probe_pending?: boolean | null;
+  /** A diffusion launch right now would honour --ngl. */
+  diffusion_split_supported?: boolean | null;
 }
 
 export interface ApiMonitorEntry {
@@ -395,6 +499,8 @@ export interface ApiMonitorEntry {
   // Server-side time to first token (measured, else engine prefill).
   ttft_ms?: number | null;
   tok_per_sec?: number | null;
+  /** Final request-specific prompt rate from engine timings. */
+  prompt_tok_per_sec?: number | null;
   stop_reason?: string | null;
 }
 
@@ -504,6 +610,7 @@ export interface OpenAIChatCompletionsRequest {
   presence_penalty?: number;
   image_base64?: string;
   audio_base64?: string;
+  video_base64?: string;
   use_adapter?: boolean | string | null;
   enable_thinking?: boolean | null;
   reasoning_effort?:
@@ -552,7 +659,11 @@ export interface OpenAIChatCompletionsRequest {
     context_length?: number;
   };
   auto_heal_tool_calls?: boolean;
+  /** Run the selected tools here rather than as the provider's hosted builtins. */
+  run_tools_locally?: boolean;
   nudge_tool_calls?: boolean;
+  /** Local GGUF overflow policy. Rolling mode preserves the transcript but omits oldest turns. */
+  context_overflow?: "error" | "truncate_middle" | "truncate_oldest";
   max_tool_calls_per_message?: number;
   tool_call_timeout?: number;
   session_id?: string;
@@ -626,4 +737,45 @@ export interface OpenAIChatChunk {
     total_tokens: number;
   };
   timings?: Record<string, number>;
+  context_truncated?: {
+    dropped_messages: number;
+    prompt_tokens_before?: number;
+    prompt_tokens_after?: number;
+    context_length?: number;
+    fits: boolean;
+    // Present when the evicted turns were archived and searched. Counts only, never
+    // message text: this rides an SSE chunk that reaches the client.
+    archived_messages?: number;
+    recalled_chunks?: number;
+    // Present only when `fits` is false: the floor the conversation cannot go below, and
+    // how much of it is the message just sent. Together they say whether the history or
+    // that one message is the problem, i.e. whether "shorten the conversation" helps.
+    irreducible_tokens?: number;
+    latest_turn_tokens?: number;
+    // Whether `latest_turn_tokens` is a real token count or the four-characters-a-token
+    // estimate the fit falls back to when nothing could price the turn at all. A turn the
+    // template renders as nothing on its own is priced by difference and stays exact.
+    // Only the counted one may be quoted as the turn's size.
+    latest_turn_exact?: boolean;
+    // The floor both counts above carry: what a rendered prompt costs with no messages in
+    // it, which on a tool-enabled request is the whole tool catalogue. Subtract it before
+    // comparing them, or the catalogue is blamed on the turn. Absent from an older server,
+    // where zero reproduces the old behaviour.
+    shared_prompt_tokens?: number;
+    // Where the compaction boundary sits in the messages THIS request was sent with.
+    // Absolute, unlike dropped_messages, so re-sending it after a turn that refit several
+    // times cannot advance the boundary past the turns actually evicted.
+    boundary_messages?: number;
+    // The text the boundary landed ON, so the count can be re-derived by position. A count
+    // is only valid against the transcript it was counted on, and deleting an already
+    // evicted prompt shortens that transcript; without the anchor the replayed count then
+    // evicts live turns instead. Carried through untouched, like boundary_messages.
+    boundary_anchor?: string;
+    // Whose message that is: in a tool loop the last one is often a tool result rather
+    // than anything the user typed.
+    latest_turn_role?: string;
+    // The prompt's share of the window (context_length minus the reply reserve), which is
+    // what one turn must fit inside. Not re-derived here: the formula lives in the fit.
+    prompt_target?: number;
+  };
 }

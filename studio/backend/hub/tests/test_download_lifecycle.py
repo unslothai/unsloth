@@ -87,6 +87,7 @@ def test_xet_failure_retries_over_http_for_model_and_dataset(monkeypatch, tmp_pa
             *,
             use_xet,
             protected_blob_hashes = None,
+            allow_ambient_token = True,
         ):
             spawned.append((args, use_xet, protected_blob_hashes))
             return _Proc(0)
@@ -154,6 +155,7 @@ def test_a_stalled_xet_worker_respawns_over_xet_keeping_its_claim(monkeypatch, t
         *,
         use_xet,
         protected_blob_hashes = None,
+        allow_ambient_token = True,
     ):
         spawned.append((args, use_xet))
         return _Proc(0)
@@ -249,13 +251,17 @@ def test_a_verdict_carried_onto_the_http_rung_is_still_charged(monkeypatch, tmp_
         on_stall(verdict)
         return None
 
+    spawned = []
+
     def flaky_spawn(
         args,
         _token,
         *,
         use_xet,
         protected_blob_hashes = None,
+        **_kwargs,
     ):
+        spawned.append(use_xet)
         if use_xet:
             raise OSError("cannot fork")
         return _Proc(0)  # the HTTP worker starts and completes
@@ -289,6 +295,10 @@ def test_a_verdict_carried_onto_the_http_rung_is_still_charged(monkeypatch, tmp_
         transport = download_registry.TRANSPORT_XET,
         watch_name = "model-watch",
     )
+    # Before the verdict: a double whose signature has fallen behind spawn_worker raises
+    # TypeError at the call, which reads as a spawn failure and still records the verdict via
+    # _give_up() -- green while this path never ran. Assert the HTTP worker actually started.
+    assert spawned == [True, False], "the HTTP rung never ran, so the verdict proves nothing"
     assert recorded == [verdict], "a real Xet stall was dropped when HTTP finished the download"
 
 

@@ -39,6 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
     install_view_transition_killer,
+    install_wall_clock_watchdog,
     wait_for_health,
 )
 
@@ -50,6 +51,15 @@ ART.mkdir(parents = True, exist_ok = True)
 
 PLAYWRIGHT_BROWSER = os.environ.get("STUDIO_PLAYWRIGHT_BROWSER", "chromium").lower()
 PLAYWRIGHT_CHANNEL = os.environ.get("STUDIO_PLAYWRIGHT_CHANNEL") or None
+
+# The wall this suite did not have. Its siblings (playwright_chat_ui.py,
+# playwright_extra_ui.py) have carried one since a `page.evaluate` -- which
+# takes no `timeout=` at all -- hung a job for 27 minutes in #5387. This suite
+# has four raw `page.evaluate` calls of its own and is the LAST thing the
+# Windows chat lane runs, so a wedge here used to be indistinguishable from the
+# job simply never finishing. Same 720s default and same env knob as the
+# siblings, so a slow runner is tuned in one place.
+WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "720"))
 
 # The card polls every 5s; two ticks plus slack is enough to see a change land.
 SETTLE_MS = int(os.environ.get("STUDIO_UI_INDICATOR_SETTLE_MS", "12000"))
@@ -255,7 +265,7 @@ def boot(
     # The card is deliberately hidden on /login, so an auth slip would make
     # every "no card" check pass for the wrong reason.
     path = page.evaluate("location.pathname")
-    if path.startswith(("/login", "/onboarding", "/change-password")):
+    if path.startswith(("/login", "/change-password")):
         raise AssertionError(f"not authenticated: landed on {path}")
 
 
@@ -290,6 +300,11 @@ def main() -> int:
         return 1
 
     with sync_playwright() as p:
+        install_wall_clock_watchdog(
+            WALL_TIMEOUT_S,
+            label = "ui-indicator",
+            info = info,
+        )
         browser_type = getattr(p, PLAYWRIGHT_BROWSER)
         launch_kwargs: dict = {"headless": True}
         if PLAYWRIGHT_BROWSER == "chromium":

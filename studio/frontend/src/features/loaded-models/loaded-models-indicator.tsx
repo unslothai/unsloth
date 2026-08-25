@@ -61,14 +61,9 @@ const KIND_ICONS: Record<LoadedModelKind, typeof SparkleIcon> = {
   stt: Mic01Icon,
 };
 
-// Nothing to report on the auth and onboarding screens. Desktop auto-authenticates,
-// so only the browser needs the token check: polling before one exists is all 401s.
-const HIDDEN_ROUTES = new Set([
-  "/login",
-  "/signup",
-  "/change-password",
-  "/onboarding",
-]);
+// Nothing to report on auth screens. Desktop auto-authenticates, so only the
+// browser needs the token check: polling before one exists is all 401s.
+const HIDDEN_ROUTES = new Set(["/login", "/signup", "/change-password"]);
 
 function canShowIndicator(pathname: string): boolean {
   if (HIDDEN_ROUTES.has(pathname)) return false;
