@@ -415,7 +415,6 @@ def test_the_forced_verdict_check_is_wired_into_the_public_entry_point():
     assert "assert_row_never_greyed_while_unmeasured" in called.get("main", set())
 
 
-
 # --------------------------------------------------------------------------------
 # What the survival poller fails on, now that it no longer replays the watchdog.
 # --------------------------------------------------------------------------------
@@ -432,6 +431,7 @@ def _timeline(duration_s, stalls = ()):
     Probes are sequential and a timeout costs the whole budget before the next route is
     tried, which is what the real poller does.
     """
+
     def lifts_at(t):
         for start, end in stalls:
             if start <= t < end:
@@ -449,17 +449,28 @@ def _timeline(duration_s, stalls = ()):
             else:
                 took, kind = BUDGET_S, "timeout"
             now += took
-            samples.append({
-                "t": round(now, 3), "path": path, "kind": kind,
-                "status": 200 if kind == "ok" else 0,
-                "ms": round(took * 1000, 1), "inference_active": None,
-                "hardware_detecting": None, "torch_warm_in_progress": None,
-            })
+            samples.append(
+                {
+                    "t": round(now, 3),
+                    "path": path,
+                    "kind": kind,
+                    "status": 200 if kind == "ok" else 0,
+                    "ms": round(took * 1000, 1),
+                    "inference_active": None,
+                    "hardware_detecting": None,
+                    "torch_warm_in_progress": None,
+                }
+            )
         now += POLL_S
     return samples
 
 
-def _verdict(mod, samples, final_kind = "ok", final_status = 200):
+def _verdict(
+    mod,
+    samples,
+    final_kind = "ok",
+    final_status = 200,
+):
     poller = mod.BackendSurvivalPoller()
     poller.samples = samples
     poller.report(final_kind = final_kind, final_status = final_status)
@@ -488,7 +499,9 @@ def test_a_backend_that_never_answers_again_fails(tmp_path, monkeypatch):
     watchdog arithmetic: the backend stopped answering and was still not answering when
     the run ended, confirmed by the final probe."""
     mod = _load(tmp_path, monkeypatch)
-    failed = _verdict(mod, _timeline(150, stalls = [(60, 9999)]), final_kind = "timeout", final_status = 0)
+    failed = _verdict(
+        mod, _timeline(150, stalls = [(60, 9999)]), final_kind = "timeout", final_status = 0
+    )
     assert len(failed) == 1, failed
     assert "never answered again" in failed[0], failed
 
@@ -548,10 +561,26 @@ def test_an_answer_from_either_route_closes_a_stall(tmp_path, monkeypatch):
     from either is proof the backend was serving and ends the span."""
     mod = _load(tmp_path, monkeypatch)
     samples = [
-        {"t": 10.0, "path": "/api/liveness", "kind": "timeout", "status": 0, "ms": 10000.0,
-         "inference_active": None, "hardware_detecting": None, "torch_warm_in_progress": None},
-        {"t": 10.1, "path": "/api/health", "kind": "ok", "status": 200, "ms": 5.0,
-         "inference_active": None, "hardware_detecting": None, "torch_warm_in_progress": None},
+        {
+            "t": 10.0,
+            "path": "/api/liveness",
+            "kind": "timeout",
+            "status": 0,
+            "ms": 10000.0,
+            "inference_active": None,
+            "hardware_detecting": None,
+            "torch_warm_in_progress": None,
+        },
+        {
+            "t": 10.1,
+            "path": "/api/health",
+            "kind": "ok",
+            "status": 200,
+            "ms": 5.0,
+            "inference_active": None,
+            "hardware_detecting": None,
+            "torch_warm_in_progress": None,
+        },
     ]
     spans = mod._stall_windows(samples)
     assert len(spans) == 1, spans

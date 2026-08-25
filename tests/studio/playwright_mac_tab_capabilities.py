@@ -279,7 +279,11 @@ class BackendSurvivalPoller:
         self.stop.set()
         self.thread.join(timeout = 30)
 
-    def report(self, final_kind: str = "ok", final_status: int = 200) -> None:
+    def report(
+        self,
+        final_kind: str = "ok",
+        final_status: int = 200,
+    ) -> None:
         """Write the samples out and decide whether the backend survived.
 
         *final_kind* is the outcome of one last probe taken after sampling stopped. It is
