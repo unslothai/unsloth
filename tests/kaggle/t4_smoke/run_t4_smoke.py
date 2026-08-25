@@ -84,6 +84,7 @@ from determinism import (  # noqa: E402
     set_all_seeds_fast,
     set_deterministic_algorithms,
 )
+from kernel_provenance import attention_choice, probe_kernels, vision_kernel_failures  # noqa: E402
 from naive_trl_compare import comparison_failures  # noqa: E402
 from training_evidence import LORA_B_MARKER, LORA_MARKER  # noqa: E402
 from versions import (  # noqa: E402
@@ -284,6 +285,19 @@ def train_once(args, run_index: int) -> dict:
     resolved_checkpoint = getattr(_config, "_name_or_path", None)
     resolved_revision = getattr(_config, "_commit_hash", None)
     _log(f"loaded {resolved_checkpoint} @ {resolved_revision}")
+
+    # AFTER the load and not before, which is measured rather than tidy: on
+    # kernel unsloth-probe-vision-recon-c76ea3 `fla` was NOT importable before
+    # from_pretrained and WAS after, because unsloth reaches for it lazily when
+    # it sees the model. Reading provenance up front reports it absent.
+    if getattr(args, "kernel_provenance", False):
+        result_kernels = probe_kernels()
+        result_attention = attention_choice(model)
+        _log(f"kernels: {json.dumps(result_kernels)}")
+        _log(f"attention: {json.dumps(result_attention)}")
+    else:
+        result_kernels = None
+        result_attention = None
 
     # Bound to a name so the saved config is checked against the adapter that
     # was actually requested, rather than against a list repeated further down.
@@ -495,6 +509,8 @@ def train_once(args, run_index: int) -> dict:
 
     result = {
         "run_index": run_index,
+        "kernels": result_kernels,
+        "attention": result_attention,
         "metrics": stats.logs,
         "generated": generated,
         # Both, because they answer different questions when this goes red:
@@ -1609,6 +1625,15 @@ def main() -> int:
         default = False,
         help = "also train the same rows with plain TRL and report both traces",
     )
+    ap.add_argument(
+        # Off by default: only the vendored-kernel leg is asking, and probing
+        # imports in every leg would add imports to legs that never wanted them.
+        "--kernel-provenance",
+        dest = "kernel_provenance",
+        action = "store_true",
+        default = False,
+        help = "record which fast kernels loaded and where each resolved from",
+    )
     ap.add_argument("--label", default = "t4-smoke")
     args = ap.parse_args()
 
@@ -1705,6 +1730,11 @@ def main() -> int:
             cmd += [flag, str(value)]
         if args.export_gguf:
             cmd.append("--export-gguf")
+        # Forwarded explicitly. A flag parsed in the parent and never passed on
+        # is not hypothetical here: --export-gguf did exactly that on kernel
+        # unsloth-probe-default-gguf-637565 and every cycle reported null.
+        if args.kernel_provenance:
+            cmd.append("--kernel-provenance")
         if args.force_sdpa:
             cmd.append("--force-sdpa")
         if args.strict_deterministic:
@@ -1792,6 +1822,20 @@ def main() -> int:
     }
 
     failures: list[str] = []
+
+    # -2. the vendored fast kernels and the attention choice. Read off cycle 0:
+    # every cycle loads the same model in the same process shape, so a
+    # per-cycle comparison would be comparing a constant with itself.
+    if args.kernel_provenance:
+        report["kernels"] = runs[0].get("kernels")
+        report["attention"] = runs[0].get("attention")
+        kernel_broken = vision_kernel_failures(
+            runs[0].get("kernels"),
+            runs[0].get("attention"),
+            capability = str(env.get("gpu_capability", "")),
+        )
+        report["kernel_failures"] = kernel_broken
+        failures += kernel_broken
 
     # -1. the plain-TRL control arm, reported side by side and NOT asserted
     # equal. Two library stacks do not produce one fp16 trajectory -- frontier

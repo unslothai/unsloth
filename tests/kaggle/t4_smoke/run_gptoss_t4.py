@@ -208,6 +208,91 @@ def build_dataset(tokenizer, rows: list[dict]):
     return Dataset.from_dict({"text": texts})
 
 
+def build_completion_dataset(tokenizer, rows: list[dict]):
+    """The same rows as a PROMPT/COMPLETION pair, so the loss covers only the
+    answer.
+
+    Two columns rather than a collator: TRL treats a dataset with `prompt` and
+    `completion` columns as prompt-completion and masks the prompt itself
+    (`completion_only_loss` defaults to True for that shape). The older
+    `DataCollatorForCompletionOnlyLM` route needs a response template string
+    that has to match the chat template exactly, and a template change turns it
+    silently into "mask nothing" -- which trains on everything and passes every
+    assertion about losses.
+
+    The prompt ends with the generation prompt, so the boundary is exactly where
+    the model would start generating. That is what makes the mask meaningful
+    rather than approximately right.
+    """
+    from datasets import Dataset
+
+    prompts, completions = [], []
+    for row in rows:
+        prompts.append(
+            tokenizer.apply_chat_template(
+                [{"role": "user", "content": row["question"]}],
+                tokenize = False,
+                add_generation_prompt = True,
+            )
+        )
+        completions.append(row["answer"])
+    return Dataset.from_dict({"prompt": prompts, "completion": completions})
+
+
+def masking_evidence(trainer) -> dict:
+    """Whether the prompt tokens are ACTUALLY masked out of the loss.
+
+    This is the whole point of the feature and the one thing a loss curve
+    cannot show: a run that masks nothing trains on prompt and answer alike,
+    converges perfectly well, and reports numbers indistinguishable from a
+    correct one. So the labels are read off a real collated batch.
+
+    Never raises: a diagnostic that kills the leg is worse than a missing one.
+    """
+    record: dict = {}
+    try:
+        batch = next(iter(trainer.get_train_dataloader()))
+        labels = batch["labels"]
+        total = int(labels.numel())
+        masked = int((labels == -100).sum())
+        record["label_tokens"] = total
+        record["masked_tokens"] = masked
+        record["masked_fraction"] = round(masked / total, 4) if total else None
+        record["columns"] = sorted(batch.keys())
+    except BaseException as exc:  # noqa: BLE001
+        record["error"] = f"{type(exc).__name__}: {exc}"[:400]
+    return record
+
+
+def masking_failures(record: dict | None, *, expected: bool) -> list[str]:
+    """The rule, as a pure function, so it is checkable without a GPU."""
+    if not expected:
+        return []
+    if not record:
+        return ["completions-only training was requested but no masking evidence was collected"]
+    if record.get("error"):
+        return [f"could not read the collated labels: {record['error']}"]
+
+    total = record.get("label_tokens") or 0
+    masked = record.get("masked_tokens")
+    if not total:
+        return ["the collated batch carried no labels at all"]
+    if not masked:
+        # The failure this function exists for. Every loss-based assertion
+        # passes in this state.
+        return [
+            "completions-only training was requested and NOTHING was masked "
+            f"({masked} of {total} label tokens are -100), so the prompt is in "
+            f"the loss and this leg is not testing what it says it is"
+        ]
+    if masked >= total:
+        return [
+            f"every one of the {total} label tokens is masked, so there is no "
+            f"completion left to learn from"
+        ]
+    return []
+
+
 def train_and_infer(args) -> dict:
     import torch
     from unsloth import FastLanguageModel
@@ -270,13 +355,22 @@ def train_and_infer(args) -> dict:
         for line in Path(args.dataset).read_text(encoding = "utf-8").splitlines()
         if line.strip()
     ]
-    dataset = build_dataset(tokenizer, rows)
+    # Prompt/completion when the loss should cover only the answer, one `text`
+    # column otherwise. `dataset_text_field` must go with the second shape and
+    # NOT the first: naming a text field TRL cannot find is how a
+    # prompt-completion dataset silently falls back to training on everything.
+    if args.train_on_completions:
+        dataset = build_completion_dataset(tokenizer, rows)
+    else:
+        dataset = build_dataset(tokenizer, rows)
+    result["train_on_completions"] = bool(args.train_on_completions)
+    result["dataset_columns"] = sorted(dataset.column_names)
 
     from trl import SFTConfig, SFTTrainer
 
     config = SFTConfig(
         output_dir = str(Path(args.outdir) / "trainer"),
-        dataset_text_field = "text",
+        **({} if args.train_on_completions else {"dataset_text_field": "text"}),
         per_device_train_batch_size = 1,
         gradient_accumulation_steps = 1,
         max_length = args.max_seq_length,
@@ -308,6 +402,13 @@ def train_and_infer(args) -> dict:
         train_dataset = dataset,
         args = config,
     )
+
+    # Read BEFORE training, off a real collated batch. After training the
+    # dataloader has been consumed and a re-created one is not necessarily the
+    # object the trainer used.
+    if args.train_on_completions:
+        result["masking"] = masking_evidence(trainer)
+        _log(f"masking {json.dumps(result['masking'])}")
 
     # The precision after Unsloth's patches have had their say. On a T4 this
     # should be float32 and NOT fp16; fp16 here means FORCE_FLOAT32 stopped
@@ -392,6 +493,66 @@ def train_and_infer(args) -> dict:
     result["generated"] = generated
     result["canary_found"] = CANARY in generated
     result["memory_peak"] = memory()
+
+    # GGUF, LAST, because it merges a 20B checkpoint and the merge is the
+    # heaviest thing in the leg. Anything after it would be measuring a session
+    # that has just written ~28GB.
+    #
+    # MXFP4, NOT Q8_0, and this is documented behaviour rather than a
+    # workaround. Measured on kernel unsloth-probe-gguf-q8-peft-920e3e's
+    # gpt-oss sibling, unsloth says so out loud:
+    #
+    #   GPT-OSS does not support GGUF quantization (requested: q8_0).
+    #     Overriding to MXFP4 format.
+    #   GPT-OSS model - skipping additional quantizations
+    #
+    # So the leg asks for MXFP4 and accepts MXFP4. Asking for q8_0 and
+    # accepting whatever came back would pass while proving nothing about
+    # either format.
+    if getattr(args, "export_gguf", False):
+        from gguf_export import export_gguf, llama_cpp_facts, run_gguf
+
+        install_log = ""
+        llama_dir = None
+        try:
+            import contextlib
+            import io
+
+            # After `import unsloth`, which has happened by now: unsloth_zoo's
+            # llama_cpp raises "Please install Unsloth via pip install unsloth!"
+            # if it is reached first. A probe already lost a session to that.
+            from unsloth_zoo.llama_cpp import install_llama_cpp
+
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                returned = install_llama_cpp()
+            install_log = buffer.getvalue()
+            facts = llama_cpp_facts(install_log, returned)
+            llama_dir = facts.get("dir")
+        except BaseException as exc:  # noqa: BLE001
+            facts = {"error": f"{type(exc).__name__}: {exc}"[:2000]}
+        _log(f"llama.cpp: {json.dumps(facts)}")
+
+        record = export_gguf(
+            model,
+            tokenizer,
+            os.path.join(args.outdir, "gguf"),
+            quantization = args.gguf_quantization,
+        )
+        record["llama_cpp"] = facts
+        result["gguf_export"] = record
+        _log(f"gguf export: {json.dumps({k: v for k, v in record.items() if k != 'llama_cpp'})}")
+
+        # Deliberately NOT run through llama.cpp here, and the reason is
+        # measured: the prebuilt bundle is the -cpu build, and a 20B MXFP4 file
+        # on 4 vCPUs is not a few seconds of work. The Default leg already
+        # covers "the exported file runs" on a 610MB Q8_0, where the claim is
+        # affordable. Asserting the export and not the run is a smaller claim,
+        # and it is the one this leg can honestly make.
+        ggufs = record.get("ggufs") or []
+        result["gguf_ran"] = False
+        if ggufs:
+            _log(f"largest gguf: {ggufs[0]['path']} ({ggufs[0]['mb']} MB), not executed here")
     _log(f"generated {generated!r}")
     return result
 
@@ -455,6 +616,16 @@ def failures_for(result: dict, args) -> list[str]:
     that costs a Kaggle session has to be checkable without one.
     """
     failures: list[str] = []
+    if getattr(args, "export_gguf", False):
+        from gguf_export import export_failures
+
+        # MXFP4 only. gpt-oss refuses every other quantization by design, so a
+        # wider accept list would let a silently-overridden export pass as
+        # though the request had been honoured.
+        failures += export_failures(result.get("gguf_export"), accept_quantizations = ("mxfp4",))
+    failures += masking_failures(
+        result.get("masking"), expected = bool(getattr(args, "train_on_completions", False))
+    )
     metrics = result.get("metrics") or []
     if len(metrics) != args.max_steps:
         failures.append(f"expected {args.max_steps} logged steps, got " f"{len(metrics)}")
@@ -619,6 +790,22 @@ def main() -> int:
     ap.add_argument("--max-seq-length", type = int, default = 1024)
     ap.add_argument("--lora-r", type = int, default = 8)
     ap.add_argument("--max-new-tokens", type = int, default = 32)
+    ap.add_argument(
+        # On by default: the leg is specified to train on completions, and a
+        # flag that has to be remembered at every call site is one that will be
+        # forgotten at one of them.
+        "--train-on-completions",
+        dest = "train_on_completions",
+        action = "store_true",
+        default = True,
+    )
+    ap.add_argument(
+        "--no-train-on-completions", dest = "train_on_completions", action = "store_false"
+    )
+    ap.add_argument("--export-gguf", dest = "export_gguf", action = "store_true", default = False)
+    # MXFP4 by name. gpt-oss overrides any other request to it and says so, so
+    # asking for q8_0 here would be asking for something that cannot happen.
+    ap.add_argument("--gguf-quantization", default = "mxfp4")
     ap.add_argument("--require-compile", dest = "require_compile", action = "store_true", default = True)
     ap.add_argument("--no-require-compile", dest = "require_compile", action = "store_false")
     ap.add_argument(

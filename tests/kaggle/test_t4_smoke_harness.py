@@ -1544,7 +1544,7 @@ def test_every_setting_the_child_needs_is_forwarded_to_it():
 
 # ------------------------------------------------------------ kernel build
 
-LEG_NAMES = ("control", "canary", "gptoss", "grpo", "default", "latest_compile")
+LEG_NAMES = ("control", "canary", "gptoss", "grpo", "default", "latest_compile", "vision_fla_compile")
 
 
 def _build(
@@ -2143,6 +2143,7 @@ def test_the_files_the_payload_carries_are_byte_identical_to_the_repo(tmp_path):
         "determinism.py",
         "gguf_export.py",
         "naive_trl_compare.py",
+        "kernel_provenance.py",
         "pins/control.txt",
         "references/t4_qwen2.5-0.5b.json",
     }, sorted(files)

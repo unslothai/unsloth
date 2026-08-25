@@ -210,6 +210,9 @@ SMOKE_FILES = COMMON_FILES + (
     # module itself imports nothing heavier than the stdlib, so the cost
     # of shipping it unused is a few kilobytes.
     "naive_trl_compare.py",
+    # Imported at module scope by run_t4_smoke, like naive_trl_compare, so a
+    # leg without it cannot start even though only one leg passes the flag.
+    "kernel_provenance.py",
 )
 
 
@@ -284,6 +287,48 @@ LEGS: dict[str, Leg] = {
         # No reference, for the frontier/canary reason: two library sets do not
         # produce one fp16 trajectory, and a band here would go red on ordinary
         # cross-version drift. See references/README.md.
+        reference = "",
+    ),
+    # NOT WIRED. The recon probe (unsloth-probe-vision-recon-c76ea3) answered
+    # the kernel questions and left ONE open, which is the one the scheduler
+    # needs. See UNWIRED.
+    "vision_fla_compile": Leg(
+        # Placeholder, and knowingly so. The recon measured 0.92GB peak on
+        # cuda:0 -- but `parameters_by_device` showed the model SPLIT across
+        # both cards (897.7MB on cuda:0, 1017.1MB on cuda:1) because a probe
+        # body sees both, where a leg gets exactly one. So 0.92 is one card's
+        # share of a two-card placement and the single-card resident set is
+        # roughly double it, before any training activation. 4.0 is a guess
+        # with headroom, not a measurement, and it is replaced before wiring.
+        vram_gb = 4.0,
+        name = "Vision_FLA_compile",
+        summary = "Qwen3.5-2B on the newest stack: vendored FLA, sdpa on Turing, completions-only",
+        install = BASE_INSTALL + ((("--upgrade", "transformers", "trl")),),
+        entry = "run_t4_smoke.py",
+        files = SMOKE_FILES,
+        args = (
+            "--model",
+            "unsloth/Qwen3.5-2B",
+            "--max-steps",
+            "10",
+            # The point of the leg. Measured on the recon probe: `fla` resolves
+            # to unsloth_zoo/_vendored/fla 0.5.1 and is importable only AFTER
+            # the model load, and attention resolves to `sdpa` while
+            # `flash_attn` is not importable at all.
+            #
+            # What is deliberately NOT asserted: that causal_conv1d or mamba_ssm
+            # are installed. Neither is, on this path, before or after the load
+            # -- the wheel-first machinery in studio/backend/utils/ssm_runtime.py
+            # belongs to Studio's TRAINING WORKER and the notebook path never
+            # calls it. Asserting them would be red on correct behaviour.
+            #
+            # And NOT that FlashAttention-2 ran. FA2 supports Ampere, Ada and
+            # Hopper; sm_75 cannot execute it. The rule instead fails if
+            # anything selects FA2 on a Turing card, which is the regression
+            # that would otherwise surface as an unexplained crash at the first
+            # forward.
+            "--kernel-provenance",
+        ),
         reference = "",
     ),
     "frontier": Leg(
@@ -426,8 +471,24 @@ LEGS: dict[str, Leg] = {
         # third-party repo on every run for no observable effect.
         install = BASE_INSTALL,
         entry = "run_gptoss_t4.py",
-        files = COMMON_FILES + ("run_gptoss_t4.py",),
-        args = ("--max-steps", "3", "--max-seq-length", "1024"),
+        # gguf_export.py travels too, now that this leg exports. It is
+        # imported lazily inside the export branch, so a leg that never exports
+        # would not notice it missing -- which is exactly why it is declared
+        # here rather than left to chance.
+        files = COMMON_FILES + ("run_gptoss_t4.py", "gguf_export.py"),
+        args = (
+            "--max-steps",
+            "3",
+            "--max-seq-length",
+            "1024",
+            # MXFP4, measured: gpt-oss overrides any other request and logs
+            # "GPT-OSS does not support GGUF quantization ... Overriding to
+            # MXFP4 format", then "skipping additional quantizations". The
+            # export itself was 326.9s for 27.6GB of transient disk on kernel
+            # unsloth-probe-gptoss-gguf, which fits with room to spare against
+            # the ~1.1TB free measured on a Kaggle session.
+            "--export-gguf",
+        ),
     ),
     # NOT WIRED, for a smaller reason than it used to be. See UNWIRED below:
     # the install that killed three probe sessions is re-solved, and what
@@ -618,6 +679,29 @@ MAX_LEGS_PER_KERNEL = 5
 UNWIRED: dict[str, str] = {
     # A leg belongs here only while a specific unanswered question about it
     # would be answered by a session. "Not tried yet" is not that.
+    "vision_fla_compile": (
+        "STILL UNKNOWN: what Qwen3.5-2B costs on ONE card.\n"
+        "The recon probe (unsloth-probe-vision-recon-c76ea3) settled everything "
+        "else on a real 2xT4: the model loads in 40.0s, it is genuinely vision "
+        "(has_vision_config, Qwen3_5ForConditionalGeneration, Qwen3VLProcessor "
+        "with an image processor), fla resolves to unsloth_zoo/_vendored/fla "
+        "0.5.1 and only AFTER the load, attention resolves to sdpa, flash_attn "
+        "is not importable, and causal_conv1d and mamba_ssm are absent before "
+        "and after -- so this path never calls the ssm_runtime wheel installer "
+        "at all.\n"
+        "What it could NOT settle is vram_gb, and the reason is worth keeping: "
+        "it read 0.92GB peak on cuda:0, but parameters_by_device showed the "
+        "model SPLIT across both cards (897.7MB + 1017.1MB) because a probe "
+        "body sees both T4s where a leg gets one. 0.92 is one card's share of a "
+        "two-card placement. The admission scheduler in build_kernel.py "
+        "schedules against vram_gb, and its own comment records what happens "
+        "when that number is too low: contention that came back as an OOM "
+        "reading like a code failure. So a single-card measurement is required "
+        "before this is wired, not a doubling of a number measured wrong.\n"
+        "Also still to build: the short vision training run itself. This leg "
+        "currently trains text and asserts the kernels; the image path is a "
+        "separate payload."
+    ),
     "latest_compile": (
         "STILL UNKNOWN: two questions, both needing one T4 session and "
         "neither answerable from here.\n"
