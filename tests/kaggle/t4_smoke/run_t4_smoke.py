@@ -1683,8 +1683,19 @@ def main() -> int:
             ("--gradient-checkpointing", args.gradient_checkpointing),
             ("--max-new-tokens", args.max_new_tokens),
             ("--label", args.label),
+            # The export settings travel too. Forgetting them is not a
+            # hypothetical: --export-gguf reached the PARENT on kernel
+            # unsloth-probe-default-gguf-637565, was parsed there, and never
+            # reached the child that actually runs train_once, so every cycle
+            # reported `gguf_export: null` and the leg failed with "GGUF export
+            # was never run" while the driver log plainly showed the flag on
+            # the command line.
+            ("--gguf-quantization", args.gguf_quantization),
+            ("--gguf-accept", args.gguf_accept),
         ):
             cmd += [flag, str(value)]
+        if args.export_gguf:
+            cmd.append("--export-gguf")
         if args.force_sdpa:
             cmd.append("--force-sdpa")
         if args.strict_deterministic:

@@ -15,6 +15,7 @@ costs a Kaggle session has to be checkable without one.
 from __future__ import annotations
 
 import json
+import re
 import sys
 import types
 from pathlib import Path
@@ -2206,3 +2207,100 @@ def test_a_source_build_is_visible_even_though_it_succeeds():
     facts = llama_cpp_facts("-- Configuring done\ncmake --build . -j 4\n", ())
     assert facts["prebuilt"] is False
     assert "cmake" in facts["source_build_markers"]
+
+
+# ------------------------------- run_t4_smoke.py: parent -> child argv
+
+
+# Options the PARENT alone acts on, so their absence from the child command is
+# correct rather than a leak. Each is here for a stated reason; an entry added
+# without one is how this guard stops working.
+PARENT_ONLY_DESTS = {
+    "outdir",          # the parent gives each cycle its own subdirectory
+    "cycle",           # set by the parent per child, never forwarded verbatim
+    "repeat",          # how many children to launch
+    "reference",       # band check runs in the parent, over collected cycles
+    "rel_tol",         # ... and its tolerances
+    "abs_floor",
+    "require_canary",  # evaluated by the parent's failure collector
+    "check_batched_generation",
+    "export_gguf",     # forwarded as a bare flag, asserted separately below
+    # The pin check reads the report the cycles produced, in the parent
+    # (run_t4_smoke.py:1741), so the children have nothing to do with it.
+    "pins",
+}
+
+
+def _smoke_source() -> str:
+    return (SMOKE_DIR / "run_t4_smoke.py").read_text(encoding = "utf-8")
+
+
+def _child_command_block() -> str:
+    """The argv the parent builds for each cycle."""
+    source = _smoke_source()
+    start = source.index('cmd = [\n            sys.executable,')
+    end = source.index("proc = subprocess.run(cmd)", start)
+    return source[start:end]
+
+
+def test_every_option_the_child_needs_actually_reaches_the_child():
+    """The class of bug, not one instance of it.
+
+    Cycles run in fresh child processes and the parent rebuilds their argv from
+    an explicit list. A flag added to the parser but not to that list is
+    accepted on the command line, parsed, logged in the driver's exec line, and
+    silently ignored -- which is exactly what happened to --export-gguf on
+    kernel unsloth-probe-default-gguf-637565: the leg failed with "GGUF export
+    was never run" while the driver log showed --export-gguf right there in the
+    command.
+
+    --check-batched-generation escaped this only because it defaults to True, so
+    the child got it without being told. That is luck, not design.
+    """
+    import argparse
+    import importlib
+
+    sys.path.insert(0, str(SMOKE_DIR))
+    module = importlib.import_module("run_t4_smoke")
+
+    # Build the parser the same way main() does, by calling it with a sentinel
+    # that makes it return rather than run.
+    parser = argparse.ArgumentParser()
+    source = _smoke_source()
+    dests = set(re.findall(r'dest\s*=\s*"([a-z_0-9]+)"', source))
+    dests |= {
+        m.replace("-", "_")
+        for m in re.findall(r'ap\.add_argument\(\s*"--([a-z0-9-]+)"', source)
+    }
+    assert "export_gguf" in dests, "the parser no longer defines --export-gguf"
+    assert "model" in dests, "the dest scrape found nothing; fix the scrape"
+
+    block = _child_command_block()
+    forwarded = {
+        m.replace("-", "_")
+        for m in re.findall(r'"--([a-z0-9-]+)"', block)
+    }
+
+    missing = sorted(d for d in dests - forwarded - PARENT_ONLY_DESTS
+                     if not d.startswith("no_"))
+    assert not missing, (
+        f"these options are parsed but never forwarded to the cycle child, so "
+        f"setting them does nothing: {missing}. Either forward them or list "
+        f"them in PARENT_ONLY_DESTS with a reason."
+    )
+    del parser, module
+
+
+def test_the_export_flag_is_forwarded_as_a_bare_flag():
+    """store_true options cannot ride the (flag, value) loop -- `--export-gguf
+    True` is not a thing -- so they need their own append, and that is the line
+    that was missing."""
+    block = _child_command_block()
+    assert 'cmd.append("--export-gguf")' in block
+    assert "if args.export_gguf:" in block
+
+
+def test_the_export_settings_ride_the_value_loop():
+    block = _child_command_block()
+    assert '("--gguf-quantization", args.gguf_quantization)' in block
+    assert '("--gguf-accept", args.gguf_accept)' in block
