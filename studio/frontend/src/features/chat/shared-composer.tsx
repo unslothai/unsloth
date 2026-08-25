@@ -543,6 +543,8 @@ export function SharedComposer({
   const textRef = useRef(text);
   const pendingImagesRef = useRef(pendingImages);
   const pendingAudioRef = useRef(pendingAudio);
+  // Audio files still being read into base64, which pendingAudio cannot see yet.
+  const audioDecodingRef = useRef(0);
   useEffect(() => {
     textRef.current = text;
     pendingImagesRef.current = pendingImages;
@@ -554,23 +556,34 @@ export function SharedComposer({
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
   const [recentPrompts, setRecentPrompts] = useState<PromptEntry[]>([]);
   const [recentLists, setRecentLists] = useState<PromptListEntry[]>([]);
+  // Sequence, so two overlapping opens cannot land out of order and leave the
+  // menu showing the older library.
+  const recentSeqRef = useRef(0);
   const refreshRecentPrompts = useCallback(async () => {
+    recentSeqRef.current += 1;
+    const seq = recentSeqRef.current;
     try {
       const rows = await listPromptEntries();
+      if (seq !== recentSeqRef.current) return;
       const byRecent = [...rows].sort((a, b) => b.updatedAt - a.updatedAt);
       // Pinned prompts take over the submenu; fall back to the 3 most recent.
       const pinnedIds = usePlusMenuPrefsStore.getState().pinnedPromptIds;
       const pinned = byRecent.filter((p) => pinnedIds.includes(p.id));
       setRecentPrompts(pinned.length > 0 ? pinned : byRecent.slice(0, 3));
     } catch {
+      // Drop the rows rather than keep serving them: an entry deleted elsewhere
+      // stays clickable otherwise, and selecting a list runs its cached items.
+      if (seq === recentSeqRef.current) setRecentPrompts([]);
     }
     try {
       // Lists only appear here when explicitly bookmarked: running one fires a
       // whole queue of prompts, so it is not something to surface by default.
       const rows = await listPromptLists();
+      if (seq !== recentSeqRef.current) return;
       const pinnedIds = usePlusMenuPrefsStore.getState().pinnedListIds;
       setRecentLists(rows.filter((l) => pinnedIds.includes(l.id)));
     } catch {
+      if (seq === recentSeqRef.current) setRecentLists([]);
     }
   }, []);
   const plusPins = usePlusMenuPrefsStore((s) => s.pins);
@@ -937,10 +950,21 @@ export function SharedComposer({
             audioSizeError ??= sizeError;
             continue;
           }
-          fileToBase64(file).then((base64) => {
-            setPendingAudio({ name: file.name, base64, contentType: file.type });
-            setPendingAudioStore(base64, file.name);
-          });
+          // Counted from here, not from when it resolves: until then the audio
+          // is staged but invisible to pendingAudio, so a list started in the
+          // gap passes the attachment guard and then picks it up mid-queue.
+          audioDecodingRef.current += 1;
+          fileToBase64(file)
+            .then((base64) => {
+              setPendingAudio({ name: file.name, base64, contentType: file.type });
+              setPendingAudioStore(base64, file.name);
+            })
+            .catch(() => {
+              toast.error("Could not read that audio file.");
+            })
+            .finally(() => {
+              audioDecodingRef.current -= 1;
+            });
           continue;
         }
         // Handle image files
@@ -1775,7 +1799,11 @@ export function SharedComposer({
       }
       // send() picks up whatever is staged, so only the first prompt would carry
       // the attachment. Refuse rather than clear: it is the user's, not ours.
-      if (pendingImagesRef.current.length > 0 || pendingAudioRef.current) {
+      if (
+        pendingImagesRef.current.length > 0 ||
+        pendingAudioRef.current ||
+        audioDecodingRef.current > 0
+      ) {
         toast.error("Remove the staged attachment before running a list", {
           description: "Only the first prompt in the list would carry it.",
         });

@@ -4734,14 +4734,21 @@ const ComposerToolsMenu: FC<{
   const exportDisabled = incognito || !activeThreadId || messageCount === 0;
   const { startQueue } = useContext(PromptQueueContext);
   const { overlay: generatedImageOverlay } = useGeneratedImageOverlay();
+  const menuIsDictating = useAuiState((s) => s.composer.dictation != null);
 
   const plusPins = usePlusMenuPrefsStore((s) => s.pins);
 
   const [recentPrompts, setRecentPrompts] = useState<PromptEntry[]>([]);
   const [recentLists, setRecentLists] = useState<PromptListEntry[]>([]);
+  // Sequence, so two overlapping opens cannot land out of order and leave the
+  // menu showing the older library.
+  const recentSeqRef = useRef(0);
   const refreshRecentPrompts = useCallback(async () => {
+    recentSeqRef.current += 1;
+    const seq = recentSeqRef.current;
     try {
       const rows = await listPromptEntries();
+      if (seq !== recentSeqRef.current) return;
       const byRecent = [...rows].sort((a, b) => b.updatedAt - a.updatedAt);
       // Pinned prompts take over the submenu; fall back to the 3 most recent
       // when nothing is pinned.
@@ -4749,14 +4756,19 @@ const ComposerToolsMenu: FC<{
       const pinned = byRecent.filter((p) => pinnedIds.includes(p.id));
       setRecentPrompts(pinned.length > 0 ? pinned : byRecent.slice(0, 3));
     } catch {
+      // Drop the rows rather than keep serving them: an entry deleted elsewhere
+      // stays clickable otherwise, and selecting a list runs its cached items.
+      if (seq === recentSeqRef.current) setRecentPrompts([]);
     }
     try {
       // Lists only appear here when explicitly bookmarked: running one fires a
       // whole queue of prompts, so it is not something to surface by default.
       const rows = await listPromptLists();
+      if (seq !== recentSeqRef.current) return;
       const pinnedIds = usePlusMenuPrefsStore.getState().pinnedListIds;
       setRecentLists(rows.filter((l) => pinnedIds.includes(l.id)));
     } catch {
+      if (seq === recentSeqRef.current) setRecentLists([]);
     }
   }, []);
 
@@ -4766,6 +4778,13 @@ const ComposerToolsMenu: FC<{
   // should reopen it. A menu-started one would throw a modal over the chat.
   const runPromptList = useCallback(
     (items: string[], fromDialog = false) => {
+      // The plus menu stays live while recording, and a queue starting under it
+      // blocks the transcript send, then overwrites the composer with the first
+      // queued prompt, which spends the held send on nothing.
+      if (menuIsDictating) {
+        toast.error("Finish dictating before running a list");
+        return;
+      }
       // The composer sits above the image overlay, so this stays clickable mid
       // edit. Submitting rewrites the prompt and closes the overlay; startQueue
       // appends the text as-is, hitting the image or eating the reference.
@@ -4791,7 +4810,7 @@ const ComposerToolsMenu: FC<{
         description: "Open a chat first, then run the list.",
       });
     },
-    [startQueue, generatedImageOverlay],
+    [startQueue, generatedImageOverlay, menuIsDictating, setPromptStorageOpen],
   );
 
   // Adjustable "+" menu items, keyed by id. Pinned ones render at the top

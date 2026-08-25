@@ -1259,10 +1259,14 @@ function relativeTime(ts: number): string {
   return new Date(ts).toLocaleDateString();
 }
 
+// `current` drives the roving tabindex and stays true while a New form covers
+// the pane: without it every row is tabbable, so reaching the editor means
+// tabbing through the whole library.
 function RailRow({
   title,
   preview,
   selected,
+  current,
   dirty,
   badge,
   leading,
@@ -1271,6 +1275,7 @@ function RailRow({
   title: string;
   preview: string;
   selected: boolean;
+  current: boolean;
   dirty: boolean;
   badge?: string;
   leading?: ReactElement | null;
@@ -1279,9 +1284,13 @@ function RailRow({
   return (
     <button
       type="button"
+      data-rail-row=""
+      tabIndex={current ? 0 : -1}
+      aria-current={selected ? "true" : undefined}
       onClick={onSelect}
       className={cn(
         "w-full rounded-lg px-2.5 py-2 text-left transition-colors border",
+        "focus-visible:ring-1 focus-visible:ring-ring outline-none",
         selected
           ? "bg-muted/70 border-border"
           : "border-transparent hover:bg-muted/40",
@@ -1406,26 +1415,49 @@ function PromptDetail({
     [name, text, entry.name, entry.text, onDraftChange],
   );
 
+  // One mutation at a time. PUT is an unconditional upsert, so a Save pressed
+  // while a DELETE is still in flight writes the row straight back.
+  const [pending, setPending] = useState(false);
+
   const handleSave = useCallback(async () => {
     const trimText = text.trim();
     if (!trimText) return;
-    await savePromptEntry({
-      ...entry,
-      name: name.trim() || "Untitled Prompt",
-      text: trimText,
-      updatedAt: now(),
-    });
-    onDraftChange(undefined);
-    onRefresh();
+    setPending(true);
+    try {
+      await savePromptEntry({
+        ...entry,
+        name: name.trim() || "Untitled Prompt",
+        text: trimText,
+        updatedAt: now(),
+      });
+      onDraftChange(undefined);
+      onRefresh();
+    } catch (err) {
+      toast.error("Could not save prompt", {
+        description: err instanceof Error ? err.message : "Please try again.",
+      });
+    } finally {
+      setPending(false);
+    }
   }, [entry, name, text, onDraftChange, onRefresh]);
 
   const handleDelete = useCallback(async () => {
-    await deletePromptEntry(entry.id);
+    setPending(true);
+    try {
+      await deletePromptEntry(entry.id);
+    } catch (err) {
+      toast.error("Could not delete prompt", {
+        description: err instanceof Error ? err.message : "Please try again.",
+      });
+      setPending(false);
+      return;
+    }
     onDraftChange(undefined);
     // Id goes up so the parent only clears if this row is still selected: the
     // delete is awaited, and a click elsewhere meanwhile would be undone.
     onDeleted(entry.id);
     onRefresh();
+    setPending(false);
   }, [entry.id, onDraftChange, onDeleted, onRefresh]);
 
   // Export what the pane shows, normalised as saving would, or a dirty entry
@@ -1491,8 +1523,9 @@ function PromptDetail({
         </button>
         <button
           type="button"
+          disabled={pending}
           onClick={() => (dirty ? setConfirmingDelete(true) : void handleDelete())}
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors"
+          className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
           title="Delete"
         >
           <Trash2Icon className="size-4" />
@@ -1510,7 +1543,7 @@ function PromptDetail({
             <><EyeIcon className="size-3.5 mr-1" />Preview</>
           )}
         </Button>
-        <Button size="sm" variant="outline" disabled={!dirty || !text.trim()} onClick={handleSave}>
+        <Button size="sm" variant="outline" disabled={pending || !dirty || !text.trim()} onClick={handleSave}>
           <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-3.5 mr-1" />Save
         </Button>
         <Button size="sm" onClick={() => onUse(text)} disabled={!text.trim()}>
@@ -1639,25 +1672,47 @@ function PromptListDetail({
     [name, items, entry.name, entry.items, onDraftChange],
   );
 
+  // See PromptDetail: a Save landing after a DELETE would upsert the row back.
+  const [pending, setPending] = useState(false);
+
   const handleSave = useCallback(async () => {
     const filtered = items.filter((t) => t.trim());
     if (filtered.length === 0) return;
-    await savePromptList({
-      ...entry,
-      name: name.trim() || "Untitled List",
-      items: filtered,
-      updatedAt: now(),
-    });
-    onDraftChange(undefined);
-    onRefresh();
+    setPending(true);
+    try {
+      await savePromptList({
+        ...entry,
+        name: name.trim() || "Untitled List",
+        items: filtered,
+        updatedAt: now(),
+      });
+      onDraftChange(undefined);
+      onRefresh();
+    } catch (err) {
+      toast.error("Could not save list", {
+        description: err instanceof Error ? err.message : "Please try again.",
+      });
+    } finally {
+      setPending(false);
+    }
   }, [entry, name, items, onDraftChange, onRefresh]);
 
   const handleDelete = useCallback(async () => {
-    await deletePromptList(entry.id);
+    setPending(true);
+    try {
+      await deletePromptList(entry.id);
+    } catch (err) {
+      toast.error("Could not delete list", {
+        description: err instanceof Error ? err.message : "Please try again.",
+      });
+      setPending(false);
+      return;
+    }
     onDraftChange(undefined);
     // See PromptDetail: only the parent knows whether this row is still current.
     onDeleted(entry.id);
     onRefresh();
+    setPending(false);
   }, [entry.id, onDraftChange, onDeleted, onRefresh]);
 
   // Run what the editor shows. Off entry.items, deleting every draft item left
@@ -1736,8 +1791,9 @@ function PromptListDetail({
         </button>
         <button
           type="button"
+          disabled={pending}
           onClick={() => (dirty ? setConfirmingDelete(true) : void handleDelete())}
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors"
+          className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
           title="Delete"
         >
           <Trash2Icon className="size-4" />
@@ -1755,7 +1811,7 @@ function PromptListDetail({
             <><EyeIcon className="size-3.5 mr-1" />Preview</>
           )}
         </Button>
-        <Button size="sm" variant="outline" disabled={!dirty || !savable} onClick={handleSave}>
+        <Button size="sm" variant="outline" disabled={pending || !dirty || !savable} onClick={handleSave}>
           <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-3.5 mr-1" />Save
         </Button>
         {onRunList && (
@@ -1976,26 +2032,19 @@ export function PromptStorageDialog({
   }, [promptLists, searchQuery]);
 
   // Keep a row selected whenever the filtered rail is non-empty, so the detail
-  // pane never sits blank next to a list full of prompts.
-  useEffect(() => {
-    if (filteredPrompts.length === 0) {
-      if (selectedPromptId !== null) setSelectedPromptId(null);
-      return;
-    }
-    if (!filteredPrompts.some((e) => e.id === selectedPromptId)) {
-      setSelectedPromptId(filteredPrompts[0].id);
-    }
-  }, [filteredPrompts, selectedPromptId]);
+  // pane never sits blank next to a list full of prompts. During render, not in
+  // an effect: an effect paints the blank pane once before correcting it.
+  if (filteredPrompts.length === 0) {
+    if (selectedPromptId !== null) setSelectedPromptId(null);
+  } else if (!filteredPrompts.some((e) => e.id === selectedPromptId)) {
+    setSelectedPromptId(filteredPrompts[0].id);
+  }
 
-  useEffect(() => {
-    if (filteredLists.length === 0) {
-      if (selectedListId !== null) setSelectedListId(null);
-      return;
-    }
-    if (!filteredLists.some((e) => e.id === selectedListId)) {
-      setSelectedListId(filteredLists[0].id);
-    }
-  }, [filteredLists, selectedListId]);
+  if (filteredLists.length === 0) {
+    if (selectedListId !== null) setSelectedListId(null);
+  } else if (!filteredLists.some((e) => e.id === selectedListId)) {
+    setSelectedListId(filteredLists[0].id);
+  }
 
   const selectedPrompt = useMemo(
     () => promptEntries.find((e) => e.id === selectedPromptId) ?? null,
@@ -2024,6 +2073,22 @@ export function PromptStorageDialog({
     },
     [onUse, onOpenChange],
   );
+
+  // The rail is one tab stop; arrows move within it. Clicking rather than
+  // setting the id keeps the two tabs on one handler.
+  const handleRailKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    const rows = Array.from(
+      e.currentTarget.querySelectorAll<HTMLButtonElement>("[data-rail-row]"),
+    );
+    const at = rows.indexOf(document.activeElement as HTMLButtonElement);
+    if (at < 0) return;
+    const next = rows[at + (e.key === "ArrowDown" ? 1 : -1)];
+    if (!next) return;
+    e.preventDefault();
+    next.focus();
+    next.click();
+  }, []);
 
   const handleImportFile = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -2236,7 +2301,12 @@ export function PromptStorageDialog({
                 )}
               </button>
 
-              <div className="min-h-0 flex-1 overflow-y-auto flex flex-col gap-0.5">
+              <div
+                role="group"
+                aria-label={activeTab === "prompts" ? "Saved prompts" : "Prompt lists"}
+                onKeyDown={handleRailKeyDown}
+                className="min-h-0 flex-1 overflow-y-auto flex flex-col gap-0.5"
+              >
                 {activeTab === "prompts" &&
                   filteredPrompts.map((entry) => (
                     <RailRow
@@ -2244,6 +2314,7 @@ export function PromptStorageDialog({
                       title={entry.name}
                       preview={entry.text.replace(/\s+/g, " ").trim()}
                       selected={!showNewPrompt && entry.id === selectedPromptId}
+                      current={entry.id === selectedPromptId}
                       dirty={promptDrafts.has(entry.id)}
                       leading={
                         pinnedPromptIds.includes(entry.id) ? (
@@ -2265,6 +2336,7 @@ export function PromptStorageDialog({
                       preview={(entry.items[0] ?? "").replace(/\s+/g, " ").trim()}
                       badge={String(entry.items.length)}
                       selected={!showNewList && entry.id === selectedListId}
+                      current={entry.id === selectedListId}
                       dirty={listDrafts.has(entry.id)}
                       leading={
                         pinnedListIds.includes(entry.id) ? (

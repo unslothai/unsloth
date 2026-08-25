@@ -31,3 +31,26 @@ export function autoscrollDelta(
   }
   return 0;
 }
+
+export interface VerticalSpan {
+  top: number;
+  bottom: number;
+}
+
+/**
+ * A pane's own rect intersected with everything clipping it. A nested scroller
+ * reports its full unclipped height, so its edge can sit past the ancestor that
+ * hides it and past the viewport, where the pointer can never reach it.
+ * Null once nothing is left visible.
+ */
+export function clipSpan(
+  span: VerticalSpan,
+  clips: readonly VerticalSpan[],
+): VerticalSpan | null {
+  let { top, bottom } = span;
+  for (const clip of clips) {
+    top = Math.max(top, clip.top);
+    bottom = Math.min(bottom, clip.bottom);
+  }
+  return bottom > top ? { top, bottom } : null;
+}

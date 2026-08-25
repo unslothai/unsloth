@@ -3,7 +3,8 @@
 
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { cn } from "@/lib/utils";
-import { autoscrollDelta } from "./autoscroll";
+import { autoscrollDelta, clipSpan } from "./autoscroll";
+import { insertionIndex } from "./reorder";
 import { GripVerticalIcon, XIcon } from "lucide-react";
 import {
   type ReactElement,
@@ -100,20 +101,19 @@ function nextUid(): string {
   return `i${uidSeq}`;
 }
 
-// Nearest ancestor a drag can scroll.
-function findScrollParent(el: HTMLElement | null): HTMLElement | null {
+// Every ancestor a drag could scroll, nearest first. The whole chain, not just
+// the nearest: the list sits inside the dialog's own scroller, so a drag that
+// runs the inner one out has to hand off to the outer one.
+function findScrollParents(el: HTMLElement | null): HTMLElement[] {
+  const out: HTMLElement[] = [];
   let node = el?.parentElement ?? null;
   while (node) {
     const overflowY = getComputedStyle(node).overflowY;
-    if (
-      (overflowY === "auto" || overflowY === "scroll") &&
-      node.scrollHeight > node.clientHeight
-    ) {
-      return node;
-    }
+    // Scrollability is checked per frame instead: rows grow as you type.
+    if (overflowY === "auto" || overflowY === "scroll") out.push(node);
     node = node.parentElement;
   }
-  return null;
+  return out;
 }
 
 // Rows are keyed by a synthetic uid, not array index: index keys would swap the
@@ -136,36 +136,38 @@ export function SortablePromptItems({
   const pointerYRef = useRef(0);
   const pointerIdRef = useRef<number | null>(null);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
-  const prevRects = useRef(new Map<string, DOMRect>());
+  const prevOffsets = useRef(new Map<string, number>());
   const uidsRef = useRef(uids);
-  uidsRef.current = uids;
-  // Rects are re-recorded on every commit but only a reorder animates, or an
+  // Offsets are re-recorded on every commit but only a reorder animates, or an
   // auto-growing textarea would make the rows below it wobble as you type.
   const reorderTick = useRef(0);
   const animatedTick = useRef(0);
 
   // Resync when the count changes from outside (revert, switching lists, import).
-  useEffect(() => {
-    setUids((prev) =>
-      prev.length === items.length
-        ? prev
-        : items.map((_, i) => prev[i] ?? nextUid()),
-    );
-  }, [items.length]);
+  // During render rather than in an effect, which would paint the new row once
+  // under a stale key first.
+  let rowUids = uids;
+  if (uids.length !== items.length) {
+    rowUids = items.map((_, i) => uids[i] ?? nextUid());
+    setUids(rowUids);
+  }
 
   // FLIP: snap each moved row back to where it was, then release, so the browser
   // animates one transform per row rather than animating layout.
   useLayoutEffect(() => {
-    const next = new Map<string, DOMRect>();
-    rowRefs.current.forEach((el, uid) => next.set(uid, el.getBoundingClientRect()));
+    // Layout offsets, not client rects: a rect moves with the scroll position,
+    // so scrolling between reorders (autoscroll does it every frame) would be
+    // baked into every transform and jump the whole list.
+    const next = new Map<string, number>();
+    rowRefs.current.forEach((el, uid) => next.set(uid, el.offsetTop));
 
     if (reorderTick.current !== animatedTick.current) {
       animatedTick.current = reorderTick.current;
-      next.forEach((rect, uid) => {
-        const old = prevRects.current.get(uid);
+      next.forEach((offset, uid) => {
+        const old = prevOffsets.current.get(uid);
         const el = rowRefs.current.get(uid);
-        if (!old || !el) return;
-        const dy = old.top - rect.top;
+        if (old === undefined || !el) return;
+        const dy = old - offset;
         if (Math.abs(dy) < 1) return;
         el.style.transition = "none";
         el.style.transform = `translateY(${dy}px)`;
@@ -176,20 +178,31 @@ export function SortablePromptItems({
       });
     }
 
-    prevRects.current = next;
+    prevOffsets.current = next;
   }, [uids, items]);
 
-  // Refs so the drag listener does not resubscribe on every keystroke.
+  // Mirrors, so the drag listener does not resubscribe on every keystroke. A
+  // layout effect, not an assignment during render: they only have to be
+  // current before the next pointer event, and this runs well before that.
   const itemsRef = useRef(items);
-  itemsRef.current = items;
   const onChangeRef = useRef(onChange);
-  onChangeRef.current = onChange;
+  useLayoutEffect(() => {
+    itemsRef.current = items;
+    onChangeRef.current = onChange;
+    uidsRef.current = rowUids;
+  });
 
   const applyOrder = useCallback((from: number, to: number) => {
     if (from === to) return;
     reorderTick.current += 1;
-    onChangeRef.current(move(itemsRef.current, from, to));
-    setUids((prev) => move(prev, from, to));
+    const nextItems = move(itemsRef.current, from, to);
+    const nextUids = move(uidsRef.current, from, to);
+    // Advance the mirrors here too. A drag reorders faster than a commit, and
+    // the next hit-test must not run against the pre-move order.
+    itemsRef.current = nextItems;
+    uidsRef.current = nextUids;
+    onChangeRef.current(nextItems);
+    setUids(nextUids);
   }, []);
 
   const handlePointerDown = useCallback(
@@ -214,7 +227,7 @@ export function SortablePromptItems({
     if (!draggingUid) return;
     const container = containerRef.current;
     if (!container) return;
-    const scroller = findScrollParent(container);
+    const scrollers = findScrollParents(container);
     let raf = 0;
 
     const evaluate = () => {
@@ -225,30 +238,36 @@ export function SortablePromptItems({
       // Layout offsets, not client rects: mid-FLIP a client rect still reports
       // the pre-animation position. offsetTop/offsetHeight ignore transforms.
       const localY = pointerYRef.current - container.getBoundingClientRect().top;
-      let to = order.length - 1;
-      for (let i = 0; i < order.length; i++) {
-        const el = rowRefs.current.get(order[i]);
-        if (!el) continue;
-        if (localY <= el.offsetTop + el.offsetHeight) {
-          to = i;
-          break;
-        }
-      }
+      const boxes = order.map((uid) => {
+        const el = rowRefs.current.get(uid);
+        return el ? { top: el.offsetTop, height: el.offsetHeight } : undefined;
+      });
+      const to = insertionIndex(boxes, from, localY);
       if (to !== from) applyOrder(from, to);
     };
 
     // Holding near an edge scrolls and re-runs the hit-test; pointerdown
     // suppresses the browser's own gesture, so nothing else would scroll.
+    // Walks outwards, so running the inner pane out hands off to the dialog.
     const tick = () => {
-      if (scroller) {
-        const rect = scroller.getBoundingClientRect();
-        const delta = autoscrollDelta(pointerYRef.current, rect.top, rect.bottom);
-        if (delta !== 0) {
-          const limit = scroller.scrollHeight - scroller.clientHeight;
-          const before = scroller.scrollTop;
-          scroller.scrollTop = Math.max(0, Math.min(limit, before + delta));
-          if (scroller.scrollTop !== before) evaluate();
-        }
+      for (let i = 0; i < scrollers.length; i++) {
+        const scroller = scrollers[i];
+        const limit = scroller.scrollHeight - scroller.clientHeight;
+        if (limit <= 0) continue;
+        const span = clipSpan(scroller.getBoundingClientRect(), [
+          ...scrollers.slice(i + 1).map((el) => el.getBoundingClientRect()),
+          { top: 0, bottom: window.innerHeight },
+        ]);
+        if (!span) continue;
+        const delta = autoscrollDelta(pointerYRef.current, span.top, span.bottom);
+        if (delta === 0) continue;
+        const before = scroller.scrollTop;
+        const next = Math.max(0, Math.min(limit, before + delta));
+        // Already at that end: leave it to the ancestor rather than stalling.
+        if (next === before) continue;
+        scroller.scrollTop = next;
+        evaluate();
+        break;
       }
       raf = requestAnimationFrame(tick);
     };
@@ -317,7 +336,7 @@ export function SortablePromptItems({
       )}
     >
       {items.map((item, i) => {
-        const uid = uids[i] ?? `fallback-${i}`;
+        const uid = rowUids[i] ?? `fallback-${i}`;
         const isDragging = uid === draggingUid;
         return (
           <div
