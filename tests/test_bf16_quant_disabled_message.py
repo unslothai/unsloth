@@ -12,6 +12,8 @@ Source-level, because reaching the branch needs a real checkpoint download.
 """
 
 import ast
+import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -64,6 +66,87 @@ def test_the_notice_is_gated_on_no_user_quantization_config(index):
 def test_the_flags_are_still_cleared():
     """The notice is a message; it must not change what the branch does."""
     assert SRC.count("load_in_16bit = True") >= 4
+
+
+@pytest.mark.parametrize("index", [0, 1, 2, 3])
+def test_the_notice_never_calls_the_load_requested(index):
+    """`load_in_4bit` defaults to True in both loaders, so a set flag is not a
+    request: a bare `from_pretrained("org/model-bf16")` reaches this branch with
+    the default still on, and calling that "requested" tells the caller their
+    request was refused when they made none."""
+    guards = _bf16_notice_guards()
+    assert len(guards) == 4, "the notice moved; update this test"
+    text = ast.get_source_segment(SRC, guards[index].body[0]) or ""
+    assert "request" not in text.lower(), (
+        "the '-bf16' notice must describe what happens, not claim the caller "
+        f"asked for it: load_in_4bit defaults to True. Got: {text}"
+    )
+
+
+@pytest.mark.parametrize("index", [0, 1, 2, 3])
+def test_an_explicit_16bit_request_is_not_told_its_quant_was_dropped(index):
+    """`load_in_16bit` defaults to False and nothing sets it True before this
+    branch, so True here is the caller's own word: they asked for the 16bit load
+    they are about to get, and a 'quantization disabled' line is wrong there."""
+    guards = _bf16_notice_guards()
+    assert len(guards) == 4, "the notice moved; update this test"
+    test_src = ast.get_source_segment(SRC, guards[index].test) or ""
+    assert "load_in_16bit" in test_src, (
+        "gate the notice on `not load_in_16bit`: with `load_in_16bit = True` the "
+        "caller explicitly asked for the 16bit load this branch performs"
+    )
+
+
+BEHAVIOUR_PROBE = r"""
+import contextlib, io, os, sys
+os.environ["HF_HUB_OFFLINE"] = "1"  # the notice prints before any download
+from unsloth import FastLanguageModel, FastModel
+
+NAME = "unslothtestorg/Definitely-Not-A-Real-Repo-bf16"
+
+def notice(cls, **kwargs):
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            cls.from_pretrained(NAME, **kwargs)
+    except BaseException:
+        pass  # the fake repo cannot resolve; the notice prints long before that
+    lines = [l for l in buf.getvalue().splitlines() if "(-bf16) checkpoint" in l]
+    return lines[0] if lines else ""
+
+for cls in (FastLanguageModel, FastModel):
+    name = cls.__name__
+    bare = notice(cls)
+    assert bare, f"{name}: bare call printed no notice"
+    assert "request" not in bare.lower(), f"{name}: bare call was told it requested 4bit: {bare}"
+    assert not notice(cls, load_in_16bit = True), f"{name}: explicit 16bit call got a notice"
+    assert not notice(cls, load_in_4bit = False), f"{name}: 4bit-off call got a notice"
+print("PROBE_OK")
+"""
+
+
+def test_the_notice_on_a_real_bare_call():
+    """The source checks above pin the shape; this one runs the actual call.
+
+    Out of process: importing unsloth patches the interpreter, and the probe
+    needs an offline environment that must not leak into the rest of the suite.
+    """
+    import subprocess
+
+    env = dict(os.environ, PYTHONPATH = str(ROOT), HF_HUB_OFFLINE = "1")
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", BEHAVIOUR_PROBE],
+            capture_output = True,
+            text = True,
+            timeout = 1200,
+            env = env,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.skip("unsloth import timed out")
+    if "PROBE_OK" not in proc.stdout and "AssertionError" not in proc.stderr:
+        pytest.skip(f"unsloth could not be imported here:\n{proc.stderr[-2000:]}")
+    assert "PROBE_OK" in proc.stdout, proc.stderr[-3000:]
 
 
 if __name__ == "__main__":
