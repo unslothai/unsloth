@@ -384,6 +384,7 @@ def _ensure_external_project_workspace(
     workspace_path: str,
     managed_root_path: Optional[str] = None,
     check_descendants: bool = False,
+    exclude_project_id: str | None = None,
 ) -> str:
     workspace = Path(workspace_path).expanduser()
     try:
@@ -406,16 +407,29 @@ def _ensure_external_project_workspace(
             str(resolved), "root_path", check_descendants = check_descendants
         ):
             raise PermissionError("workspace overlaps a managed project folder")
+        if _workspace_overlaps_live_project_path(
+            str(resolved),
+            "workspace_path",
+            check_descendants = check_descendants,
+            exclude_project_id = exclude_project_id,
+        ):
+            raise PermissionError("workspace overlaps another external project folder")
     except (OSError, RuntimeError, ValueError) as exc:
         raise ProjectWorkspaceUnavailableError(str(workspace), exc) from exc
     return str(resolved)
 
 
 def _external_project_workspace_available(
-    workspace_path: str, managed_root_path: Optional[str] = None
+    workspace_path: str,
+    managed_root_path: Optional[str] = None,
+    exclude_project_id: str | None = None,
 ) -> bool:
     try:
-        _ensure_external_project_workspace(workspace_path, managed_root_path)
+        _ensure_external_project_workspace(
+            workspace_path,
+            managed_root_path,
+            exclude_project_id = exclude_project_id,
+        )
     except ProjectWorkspaceUnavailableError:
         return False
     return True
@@ -2017,7 +2031,11 @@ def _chat_project_from_row(row: sqlite3.Row) -> dict:
         "workspaceKind": "external" if external_workspace_path else "managed",
         "workspaceAvailable": (
             bool(workspace_path)
-            and _external_project_workspace_available(workspace_path, root_path)
+            and _external_project_workspace_available(
+                workspace_path,
+                root_path,
+                exclude_project_id = str(data["id"]),
+            )
         )
         if external_workspace_path
         else True,
@@ -2819,12 +2837,17 @@ def _upsert_chat_project(project: dict, external_workspace_path: Optional[str] =
         else None
     )
     if workspace_path:
-        workspace_path = _ensure_external_project_workspace(workspace_path, root_path)
+        workspace_path = _ensure_external_project_workspace(
+            workspace_path,
+            root_path,
+            exclude_project_id = str(project["id"]),
+        )
     elif external_workspace_path and not existing:
         workspace_path = _ensure_external_project_workspace(
             external_workspace_path,
             root_path,
             check_descendants = True,
+            exclude_project_id = str(project["id"]),
         )
     else:
         root_path = _ensure_project_workspace(
@@ -2954,6 +2977,7 @@ def _set_chat_project_workspace(id: str, external_workspace_path: Optional[str])
             external_workspace_path,
             root_path,
             check_descendants = True,
+            exclude_project_id = id,
         )
         if (
             project.get("workspaceKind") == "external"
@@ -2982,6 +3006,7 @@ def ensure_chat_project_workspace(id: str) -> Optional[dict]:
         workspace_path = _ensure_external_project_workspace(
             str(project.get("workspacePath") or ""),
             str(project.get("rootPath") or "") or None,
+            exclude_project_id = id,
         )
         if project.get("workspacePath") == workspace_path:
             return project

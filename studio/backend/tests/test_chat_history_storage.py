@@ -732,6 +732,25 @@ def test_external_workspace_cannot_overlap_another_project_managed_folder(
         studio_db.set_chat_project_workspace("external-project", managed["workspacePath"])
 
 
+def test_external_workspace_cannot_overlap_another_external_project(
+    tmp_path, monkeypatch, workspace_projects_home
+):
+    _reset_studio_db(tmp_path, monkeypatch, projects_home = workspace_projects_home)
+    external_parent = workspace_projects_home / "external-parent"
+    claimed = external_parent / "claimed"
+    descendant = claimed / "descendant"
+    descendant.mkdir(parents = True)
+    studio_db.upsert_chat_project(
+        _project("first-project"),
+        external_workspace_path = str(claimed),
+    )
+    studio_db.upsert_chat_project(_project("second-project"))
+
+    for selected in (external_parent, claimed, descendant):
+        with pytest.raises(studio_db.ProjectWorkspaceUnavailableError, match = "unavailable"):
+            studio_db.set_chat_project_workspace("second-project", str(selected))
+
+
 def test_managed_delete_keeps_a_corrupt_overlapping_external_workspace(
     tmp_path, monkeypatch, workspace_projects_home
 ):
