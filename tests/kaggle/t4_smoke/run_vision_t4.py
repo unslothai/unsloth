@@ -81,11 +81,16 @@ def conversation_dataset(dataset):
     Two things force this shape, and both were measured rather than guessed.
 
     **TRL 1.x rejects a plain list.** The notebook passes
-    `converted_dataset` straight in, which worked on the trl it was written
-    against and raises on trl 1.10.0:
+    `converted_dataset` straight in and raises on trl 1.10.0:
 
         TypeError: `train_dataset` must be a `Dataset` or `IterableDataset`,
         got `list`.
+
+    The notebook is NOT broken for its own users, and it is worth saying so
+    here because the opposite conclusion is the easy one: it pins
+    `trl==0.22.2` in its install cell, as do all 62 notebooks using this shape.
+    This leg installs the NEWEST trl on purpose, which is why it meets the
+    incompatibility first -- that is the leg working, not the notebook failing.
 
     **`Dataset.from_list` corrupts the images silently.** Arrow-encoding a
     nested PIL object turns it into a `{bytes, path}` DICT on the way back out,
