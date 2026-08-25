@@ -71,15 +71,15 @@ def test_no_public_url_is_ever_opened_from_ci():
     """--secure implies a Cloudflare quick tunnel, which publishes this server
     to the internet from a CI kernel. --no-cloudflare is explicit rather than
     relying on the default, because a default is a thing that changes."""
-    body = _body()
+    body = "".join(_body().split())  # formatter-proof; see the cloudflare guards
     assert '"--no-cloudflare",' in body
     assert '"--secure"' not in body
 
 
 def test_the_key_comes_from_the_marker_the_cli_itself_prints():
-    body = _body()
+    body = "".join(_body().split())
     assert '"--start-api-key-marker",' in body
-    assert '"UNSLOTH_START_API_KEY:" in text' in body
+    assert '"UNSLOTH_START_API_KEY:"intext' in body  # whitespace-stripped
 
 
 def test_the_key_is_registered_as_a_secret_before_anything_reads_the_log():

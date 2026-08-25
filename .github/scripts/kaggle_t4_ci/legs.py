@@ -289,6 +289,12 @@ LEGS: dict[str, Leg] = {
             # seed (10.3222 against 6.4367), so the loss itself moves between
             # versions and an equality assertion would be red on drift. What it
             # DOES assert is that both paths train and both converge.
+            # Q8_0 through the prebuilt llama.cpp binaries, then inference on
+            # the file. Asked for on every leg, and this one had been missed.
+            # It costs a merge of a ~5B-equivalent checkpoint, which is
+            # affordable: the export lands in /tmp (1.1 TB free, measured) and
+            # this leg already holds its card alone at 12.8 GB.
+            "--export-gguf",
             "--compare-naive-trl",
             # Measured on kernels unsloth-probe-latestcompile-r4-e67ef2 and
             # -r5-45cf5b: the plain arm asks for 8.75GiB with 8.96GiB already

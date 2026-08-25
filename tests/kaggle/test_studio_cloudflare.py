@@ -53,9 +53,17 @@ def test_the_assertion_exists_and_is_driven_from_the_run():
     assert "self.assert_cloudflare()" in _body("execute")
 
 
+def _flat(text: str) -> str:
+    """Whitespace-stripped, because the repo's formatter reflows an argument
+    list to one entry per line and a guard matching the unformatted spelling
+    goes red on a reformat rather than on a regression. That has happened three
+    times in this payload now."""
+    return "".join(text.split())
+
+
 def test_it_binds_a_wildcard_or_there_is_nothing_to_publish():
-    body = _body()
-    assert '"--host", "0.0.0.0",' in body
+    body = _flat(_body())
+    assert '"--host","0.0.0.0",' in body
     assert '"--cloudflare",' in body
 
 
