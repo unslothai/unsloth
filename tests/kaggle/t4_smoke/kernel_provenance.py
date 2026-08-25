@@ -98,7 +98,9 @@ def _is_turing(capability) -> bool:
     return len(head) >= 2 and head[0] == "7"
 
 
-def vision_kernel_failures(kernels: dict | None, attention: dict | None, *, capability: str) -> list:
+def vision_kernel_failures(
+    kernels: dict | None, attention: dict | None, *, capability: str
+) -> list:
     """The pass rule, as a pure function so it is checkable without a GPU.
 
     Three claims, each chosen so it is neither false nor vacuous on a T4:

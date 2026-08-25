@@ -1248,9 +1248,12 @@ def _session(module, tmp_path, **overrides):
     # nothing about the flag -- which is what --studio-password did.
     args = module.parse_args(
         [
-            "--outdir", str(tmp_path / "out"),
-            "--repo-root", str(tmp_path / "repo"),
-            "--studio-home", str(tmp_path / "home"),
+            "--outdir",
+            str(tmp_path / "out"),
+            "--repo-root",
+            str(tmp_path / "repo"),
+            "--studio-home",
+            str(tmp_path / "home"),
         ]
     )
     for key, value in overrides.items():

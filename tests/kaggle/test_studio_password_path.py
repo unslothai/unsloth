@@ -53,8 +53,7 @@ def test_there_is_no_fallback_to_the_bootstrap_password():
     branch = next(
         node
         for node in func.body
-        if isinstance(node, ast.If)
-        and "studio_password" in ast.dump(node.test)
+        if isinstance(node, ast.If) and "studio_password" in ast.dump(node.test)
     )
     # The LAST statement of the branch, unconditionally, and not merely "a
     # Return somewhere inside". `if not failures: return ...` contains a Return
@@ -94,9 +93,9 @@ def test_no_constant_password_is_committed():
             if "--studio-password" in names:
                 for kw in node.keywords:
                     if kw.arg == "default":
-                        assert kw.value.value == "", (
-                            f"a default password is committed: {kw.value.value!r}"
-                        )
+                        assert (
+                            kw.value.value == ""
+                        ), f"a default password is committed: {kw.value.value!r}"
                 break
     else:
         raise AssertionError("--studio-password is not declared at all")

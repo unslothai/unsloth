@@ -67,7 +67,12 @@ def test_the_arms_are_never_asserted_equal():
     """Mutation-proof against the obvious "improvement". Two wildly different
     converging traces must PASS, because asserting agreement is what would make
     this check red on every ordinary version bump."""
-    assert comparison_failures(_trace(10.3222, 6.0, 1.0), [{"loss": 6.4367}, {"loss": 3.0}, {"loss": 0.5}]) == []
+    assert (
+        comparison_failures(
+            _trace(10.3222, 6.0, 1.0), [{"loss": 6.4367}, {"loss": 3.0}, {"loss": 0.5}]
+        )
+        == []
+    )
 
 
 def test_the_control_module_never_imports_unsloth():
@@ -94,6 +99,6 @@ def test_the_payload_runs_the_control_in_a_separate_process():
     src = (PAYLOAD / "run_t4_smoke.py").read_text(encoding = "utf-8")
     assert "naive_trl_compare.py" in src
     assert "if args.compare_naive_trl:" in src
-    cycles_at = src.index('runs.append(json.loads(report_file.read_text')
+    cycles_at = src.index("runs.append(json.loads(report_file.read_text")
     spawn_at = src.index('"naive_trl_compare.py"')
     assert cycles_at < spawn_at, "the control arm must be spawned after the cycles"

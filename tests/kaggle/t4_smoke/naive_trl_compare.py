@@ -206,7 +206,10 @@ def comparison_failures(naive: dict | None, unsloth_metrics: list[dict] | None) 
         return failures
 
     losses = [m.get("loss") for m in metrics]
-    if any(not isinstance(v, (int, float)) or v != v or v in (float("inf"), float("-inf")) for v in losses):
+    if any(
+        not isinstance(v, (int, float)) or v != v or v in (float("inf"), float("-inf"))
+        for v in losses
+    ):
         failures.append(f"the plain-TRL arm produced a non-finite loss: {losses}")
         return failures
 

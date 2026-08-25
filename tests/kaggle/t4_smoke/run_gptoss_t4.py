@@ -822,9 +822,7 @@ def main() -> int:
         action = "store_true",
         default = True,
     )
-    ap.add_argument(
-        "--no-train-on-completions", dest = "train_on_completions", action = "store_false"
-    )
+    ap.add_argument("--no-train-on-completions", dest = "train_on_completions", action = "store_false")
     ap.add_argument("--export-gguf", dest = "export_gguf", action = "store_true", default = False)
     # q8_0 as the REQUEST. `mxfp4` is not an accepted input value; the override
     # is the only way to reach that format. See the export block above.

@@ -1544,7 +1544,15 @@ def test_every_setting_the_child_needs_is_forwarded_to_it():
 
 # ------------------------------------------------------------ kernel build
 
-LEG_NAMES = ("control", "canary", "gptoss", "grpo", "default", "latest_compile", "vision_fla_compile")
+LEG_NAMES = (
+    "control",
+    "canary",
+    "gptoss",
+    "grpo",
+    "default",
+    "latest_compile",
+    "vision_fla_compile",
+)
 
 
 def _build(

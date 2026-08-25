@@ -48,9 +48,11 @@ def test_the_measured_configuration_passes():
 
 
 def test_a_pip_installed_fla_is_not_the_vendored_one():
-    """"importable" is the tempting assertion and it is the wrong one: it passes
+    """ "importable" is the tempting assertion and it is the wrong one: it passes
     on a copy that is not what ships."""
-    kernels = {"fla": {"importable": True, "file": "/site-packages/fla/__init__.py", "vendored": False}}
+    kernels = {
+        "fla": {"importable": True, "file": "/site-packages/fla/__init__.py", "vendored": False}
+    }
     broken = vision_kernel_failures(kernels, {"config": "sdpa"}, capability = "7.5")
     assert broken and "not the vendored copy" in broken[0]
 
@@ -74,9 +76,10 @@ def test_flash_attention_2_on_turing_is_a_failure():
 def test_flash_attention_2_is_not_flagged_off_turing():
     """The same choice is correct on Ampere. A rule that fired everywhere would
     be wrong rather than strict."""
-    assert vision_kernel_failures(
-        {"fla": VENDORED}, {"config": "flash_attention_2"}, capability = "8.6"
-    ) == []
+    assert (
+        vision_kernel_failures({"fla": VENDORED}, {"config": "flash_attention_2"}, capability = "8.6")
+        == []
+    )
 
 
 def test_a_missing_attention_record_is_a_failure_not_a_silence():
@@ -115,9 +118,12 @@ def test_both_capability_spellings_reach_the_turing_rule():
         assert broken, f"the Turing rule never fired for capability={spelling!r}"
 
     for spelling in ("8.6", "sm_86", "86", ""):
-        assert vision_kernel_failures(
-            {"fla": VENDORED}, {"config": "flash_attention_2"}, capability = spelling
-        ) == [], f"the Turing rule fired for capability={spelling!r}"
+        assert (
+            vision_kernel_failures(
+                {"fla": VENDORED}, {"config": "flash_attention_2"}, capability = spelling
+            )
+            == []
+        ), f"the Turing rule fired for capability={spelling!r}"
 
 
 def test_the_payload_passes_the_capability_the_fingerprint_records():

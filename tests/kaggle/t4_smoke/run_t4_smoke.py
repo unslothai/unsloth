@@ -1787,7 +1787,8 @@ def main() -> int:
         cmd = [
             sys.executable,
             str(Path(__file__).resolve().parent / "naive_trl_compare.py"),
-            "--outdir", str(naive_dir),
+            "--outdir",
+            str(naive_dir),
         ]
         for flag, value in (
             ("--model", args.model),
