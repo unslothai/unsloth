@@ -1085,19 +1085,14 @@ def update_helper_precache(
 
 
 @router.get("/xet-notice", response_model = XetNoticeResponse)
-def get_xet_notice(
-    current_subject: str = Depends(get_current_subject),
-) -> XetNoticeResponse:
+def get_xet_notice(current_subject: str = Depends(get_current_subject)) -> XetNoticeResponse:
     shown = get_xet_notice_count()
-    return XetNoticeResponse(
-        granted = False, shown = shown, limit = XET_NOTICE_LIMIT
-    )
+    return XetNoticeResponse(granted = False, shown = shown, limit = XET_NOTICE_LIMIT)
 
 
 @router.post("/xet-notice/reserve", response_model = XetNoticeResponse)
 def post_xet_notice_reserve(
-    payload: XetNoticeReservePayload,
-    current_subject: str = Depends(get_current_subject),
+    payload: XetNoticeReservePayload, current_subject: str = Depends(get_current_subject)
 ) -> XetNoticeResponse:
     """Take one of the remaining notices. POST because it mutates the count."""
     try:
