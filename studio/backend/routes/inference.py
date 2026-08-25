@@ -17903,7 +17903,11 @@ def _normalized_sampling_thinking_mode(payload) -> Optional[bool]:
     thinking = getattr(payload, "thinking", None)
     thinking_type = getattr(thinking, "type", None)
     if thinking_type is not None:
-        return str(thinking_type).lower() != "disabled"
+        # AnthropicThinkingConfig.type is a plain str so unknown Anthropic tiers
+        # stay servable, and resolved_enable_thinking() treats only the exact
+        # "disabled" as off. Match it, or a case variant generates in thinking
+        # mode while sampling picks the non-thinking preset.
+        return str(thinking_type) != "disabled"
     return None
 
 

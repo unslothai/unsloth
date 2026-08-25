@@ -626,3 +626,39 @@ def test_fill_recommended_sampling_completions_operator_pin(monkeypatch):
     assert body["temperature"] == 0.9  # operator pin wins over the client's explicit value
     assert body["repeat_penalty"] == 1.2  # repetition pin lands on llama-server's key
     assert "repetition_penalty" not in body  # never leak the schema field name into the body
+
+
+@pytest.mark.parametrize("thinking_type", ["DISABLED", "Disabled", "adaptive", "enabled"])
+def test_anthropic_sampling_mode_matches_the_generation_resolver(thinking_type):
+    """Sampling and generation must read the same sentinel.
+
+    AnthropicThinkingConfig.type is a plain str so unreleased Anthropic tiers stay
+    servable, and resolved_enable_thinking() treats only the exact "disabled" as
+    off. Lowercasing in the sampling helper made a case variant generate in
+    thinking mode while sampling picked the non-thinking preset.
+    """
+    from models.inference import AnthropicMessagesRequest
+    from routes.inference import _normalized_sampling_thinking_mode
+
+    payload = AnthropicMessagesRequest.model_validate(
+        {
+            "model": "unsloth/Qwen3.8-27B-GGUF",
+            "messages": [{"role": "user", "content": "hi"}],
+            "thinking": {"type": thinking_type},
+        }
+    )
+    assert _normalized_sampling_thinking_mode(payload) == payload.resolved_enable_thinking()
+
+
+def test_anthropic_disabled_sentinel_still_selects_the_non_thinking_preset():
+    from models.inference import AnthropicMessagesRequest
+    from routes.inference import _normalized_sampling_thinking_mode
+
+    payload = AnthropicMessagesRequest.model_validate(
+        {
+            "model": "unsloth/Qwen3.8-27B-GGUF",
+            "messages": [{"role": "user", "content": "hi"}],
+            "thinking": {"type": "disabled"},
+        }
+    )
+    assert _normalized_sampling_thinking_mode(payload) is False

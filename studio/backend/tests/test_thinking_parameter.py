@@ -106,3 +106,40 @@ def test_thinking_overrides_enable_thinking_when_both_provided():
     assert req.enable_thinking is False
     assert "enable_thinking" in req.model_fields_set
     assert req.thinking.type == "enabled"
+
+
+def test_thinking_mapping_ignores_an_explicitly_null_enable_thinking():
+    """A client that serializes every optional field must not change precedence.
+
+    pydantic records an explicit ``null`` in ``model_fields_set``, so without the
+    discard the derived value reads as a typed override and the route drops a
+    higher-priority nested control that the omitted form honors.
+    """
+    req = ChatCompletionRequest.model_validate(
+        {
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "hello"}],
+            "thinking": {"type": "disabled"},
+            "enable_thinking": None,
+        }
+    )
+    assert req.enable_thinking is False
+    assert "enable_thinking" not in req.model_fields_set
+
+
+def test_explicit_null_and_omitted_enable_thinking_resolve_the_same():
+    from routes.inference import _normalize_chat_reasoning_controls
+
+    body = {
+        "model": "test-model",
+        "messages": [{"role": "user", "content": "hello"}],
+        "thinking": {"type": "disabled"},
+        "chat_template_kwargs": {"reasoning_effort": "high"},
+    }
+    with_null = ChatCompletionRequest.model_validate({**body, "enable_thinking": None})
+    omitted = ChatCompletionRequest.model_validate(dict(body))
+    for payload in (with_null, omitted):
+        _normalize_chat_reasoning_controls(payload)
+
+    assert (with_null.enable_thinking, with_null.reasoning_effort) == (True, "high")
+    assert (omitted.enable_thinking, omitted.reasoning_effort) == (True, "high")
