@@ -31,23 +31,23 @@ Download the native Unsloth Desktop app for your operating system:
   </tr>
   <tr>
     <td><b>Windows</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.801-beta/Unsloth-Desktop-0_1_801_beta-Windows.exe'>Download</a></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.802-beta/Unsloth-Desktop-0_1_802_beta-Windows.exe'>Download</a></td>
   </tr>
   <tr>
     <td><b>macOS</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.801-beta/Unsloth-Desktop-0_1_801_beta-MacOS.dmg'>Download</a></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.802-beta/Unsloth-Desktop-0_1_802_beta-MacOS.dmg'>Download</a></td>
   </tr>
   <tr>
     <td><b>Linux / Ubuntu (deb)</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.801-beta/Unsloth-Desktop-0_1_801_beta-Ubuntu.deb'>Download</a></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.802-beta/Unsloth-Desktop-0_1_802_beta-Ubuntu.deb'>Download</a></td>
   </tr>
   <tr>
     <td><b>Linux (AppImage)</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.801-beta/Unsloth-Desktop-0_1_801_beta-Linux.AppImage'>Download</a></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.802-beta/Unsloth-Desktop-0_1_802_beta-Linux.AppImage'>Download</a></td>
   </tr>
   <tr>
     <td><b>Linux (Arm64)</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.801-beta/Unsloth-Desktop-0_1_801_beta-ARM64.app.tar.gz'>Download</a></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.802-beta/Unsloth-Desktop-0_1_802_beta-ARM64.app.tar.gz'>Download</a></td>
   </tr>
 </table>
 
@@ -115,23 +115,23 @@ Unsloth can be used in three ways: **[Unsloth Desktop](https://unsloth.ai/downlo
   </tr>
   <tr>
     <td><b>Windows</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.801-beta/Unsloth-Desktop-0_1_801_beta-Windows.exe'>Download</a></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.802-beta/Unsloth-Desktop-0_1_802_beta-Windows.exe'>Download</a></td>
   </tr>
   <tr>
     <td><b>macOS</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.801-beta/Unsloth-Desktop-0_1_801_beta-MacOS.dmg'>Download</a></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.802-beta/Unsloth-Desktop-0_1_802_beta-MacOS.dmg'>Download</a></td>
   </tr>
   <tr>
     <td><b>Linux / Ubuntu (deb)</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.801-beta/Unsloth-Desktop-0_1_801_beta-Ubuntu.deb'>Download</a></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.802-beta/Unsloth-Desktop-0_1_802_beta-Ubuntu.deb'>Download</a></td>
   </tr>
   <tr>
     <td><b>Linux (AppImage)</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.801-beta/Unsloth-Desktop-0_1_801_beta-Linux.AppImage'>Download</a></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.802-beta/Unsloth-Desktop-0_1_802_beta-Linux.AppImage'>Download</a></td>
   </tr>
   <tr>
     <td><b>Linux (Arm64)</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.801-beta/Unsloth-Desktop-0_1_801_beta-ARM64.app.tar.gz'>Download</a></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.802-beta/Unsloth-Desktop-0_1_802_beta-ARM64.app.tar.gz'>Download</a></td>
   </tr>
 </table>
 
