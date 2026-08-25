@@ -22,6 +22,7 @@ from loggers import get_logger
 # Dependency-light leaf (PEP 562 package init): no llama.cpp / torch import chain.
 from core.inference.model_ids import display_model_name
 from hub.services.models import catalog_classification as _catalog_classification
+from utils import gguf_archs as _gguf_archs
 from hub.services.models.catalog_classification import (
     _cached_repo_task,
     _is_sd_cpp_companion_repo,
@@ -56,6 +57,20 @@ _task_classify_sort_key = _catalog_classification._task_classify_sort_key
 # probe's `except Exception: return True` reads the raise as "the page can build it",
 # promising an MoE or familyless GGUF a load that dies in llama-server.
 _video_family_buildable = _catalog_classification._video_family_buildable
+# The rest of what moved. No in-repo caller reads these any more, which is exactly why they
+# went unnoticed: the one name that did have a caller only announced itself as a wrong
+# message, never as an ImportError. Each of these was importable from routes.models in
+# every release so far and two of them are public, so an older script or a downstream fork
+# can be holding one, and there is no way to find that out from inside this repo.
+_H3_DENOISER_GGUF_PREFIXES = _catalog_classification._H3_DENOISER_GGUF_PREFIXES
+_LOADABLE_MEDIA_GGUF_TASKS = _catalog_classification._LOADABLE_MEDIA_GGUF_TASKS
+_MAX_TASK_CLASSIFY_GGUFS = _catalog_classification._MAX_TASK_CLASSIFY_GGUFS
+_PLACEHOLDER_DIFFUSION_GGUF_ARCHS = _catalog_classification._PLACEHOLDER_DIFFUSION_GGUF_ARCHS
+_TASK_CLASSIFY_READ_SECONDS = _catalog_classification._TASK_CLASSIFY_READ_SECONDS
+_gguf_family_buildable = _catalog_classification._gguf_family_buildable
+_is_h3_bundle_gguf_hint = _catalog_classification._is_h3_bundle_gguf_hint
+SPEECH_GGUF_ARCHS = _gguf_archs.SPEECH_GGUF_ARCHS
+is_speech_gguf_architecture = _gguf_archs.is_speech_gguf_architecture
 from utils.utils import canonical_model_repo_id, log_and_http_error
 
 import re as _re
@@ -3836,6 +3851,18 @@ def _recovered_repo_is_unusable_by_repo_id(repo_info) -> bool:
 def _repo_id_will_not_resolve(repo_cache_dir: Path) -> bool:
     """See hub.utils.inventory_scan; True only in the dangling refs/main window."""
     from hub.utils.inventory_scan import repo_id_will_not_resolve as impl
+    return impl(repo_cache_dir)
+
+
+def _default_ref_offers_no_whole_quant(repo_cache_dir: Path) -> bool:
+    """See hub.utils.inventory_scan; True when refs/main resolves onto a torn quant.
+
+    _gguf_copy_is_usable no longer asks this -- it now requires the active root and a
+    ref snapshot with complete variants, which is strictly the stronger test -- so this
+    has no caller here. It stays because it was importable from this module before, and
+    a name that is only ever read from outside cannot be seen to be in use from inside.
+    """
+    from hub.utils.inventory_scan import default_ref_offers_no_whole_quant as impl
     return impl(repo_cache_dir)
 
 
