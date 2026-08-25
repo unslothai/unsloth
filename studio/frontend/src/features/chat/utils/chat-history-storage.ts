@@ -3,6 +3,7 @@
 
 import {
   ChatThreadDeletedError,
+  type ChatThreadWritePatch,
   batchListChatMessages,
   buildBackendChatExport,
   clearBackendChats,
@@ -22,7 +23,6 @@ import {
   saveChatThread,
   syncChatMessages,
   updateChatProject,
-  type ChatThreadWritePatch,
   updateChatThread,
 } from "../api/chat-api";
 import { DEXIE_DB_NAME, db } from "../db";
@@ -894,6 +894,7 @@ export async function getStoredChatProject(
 
 export async function createStoredChatProject(
   name: string,
+  workspace?: { nativePathLease: string },
 ): Promise<ProjectRecord> {
   const trimmed = name.trim();
   if (!trimmed) {
@@ -904,6 +905,8 @@ export async function createStoredChatProject(
     id: crypto.randomUUID(),
     name: trimmed,
     instructions: "",
+    workspaceKind: workspace ? "external" : "managed",
+    ...(workspace ? { nativePathLease: workspace.nativePathLease } : {}),
     archived: false,
     createdAt: now,
     updatedAt: now,
@@ -912,7 +915,7 @@ export async function createStoredChatProject(
 
 export async function updateStoredChatProject(
   projectId: string,
-  patch: Partial<ProjectRecord>,
+  patch: Partial<ProjectRecord> & { nativePathLease?: string },
 ): Promise<ProjectRecord> {
   return updateChatProject(projectId, {
     ...patch,
@@ -1095,9 +1098,9 @@ export function clearStoredChats(
   return tracked;
 }
 
-async function clearStoredChatsWithAdmissionClosed(
-  options: { deleteFiles?: boolean },
-): Promise<ClearStoredChatsResult> {
+async function clearStoredChatsWithAdmissionClosed(options: {
+  deleteFiles?: boolean;
+}): Promise<ClearStoredChatsResult> {
   // Admission is closed before this one-shot fence snapshot.
   const pendingThreadIds = threadRecordWrites.idsRequiringFence();
   const operationId = crypto.randomUUID();

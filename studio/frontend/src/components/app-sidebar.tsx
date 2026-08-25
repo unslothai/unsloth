@@ -138,6 +138,7 @@ import {
   listStoredChatMessages,
   listStoredChatThreads,
   moveChatItemToProject,
+  NewProjectDialog,
   recordedSandboxSessionId,
   notifyChatHistoryUpdated,
   renameChatItem,
@@ -174,7 +175,6 @@ import {
   revealSandbox,
   sandboxHasFiles,
 } from "@/components/assistant-ui/sandbox-reveal";
-import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
 import {
   useAppearanceCustomStore,
   useSettingsDialogStore,
@@ -1660,6 +1660,9 @@ export function AppSidebar() {
   // between a pill and the scrollbar, matched to the gap on the other side.
   const scrollRowPadding = usesDesktopTitlebar ? "px-[5px]" : "px-1.5";
 
+  const [creatingProject, setCreatingProject] = useState(false);
+  const [projectCreateMoveTarget, setProjectCreateMoveTarget] =
+    useState<SidebarItem | null>(null);
 
   // One definition per row, so pinned rows and the flyout can't drift apart.
   const navRows: Record<SidebarNavItemId, NavRowDef> = {
@@ -1955,9 +1958,6 @@ export function AppSidebar() {
       );
     });
   }, [allChatItems, pendingRename]);
-  const [creatingProject, setCreatingProject] = useState(false);
-  const [projectCreateMoveTarget, setProjectCreateMoveTarget] =
-    useState<SidebarItem | null>(null);
   const renameTrimmed = renameDraft.trim();
   const nextRunDisplayName = renameTrimmed.length > 0 ? renameTrimmed : null;
   const renameDirty =
@@ -2380,7 +2380,12 @@ export function AppSidebar() {
     // honest single folder to offer for it.
     const sandboxSessionId =
       item.type === "single" || item.projectId
-        ? sandboxSessionIdFor(threadIds[0] ?? item.id, item.projectId)
+        ? sandboxSessionIdFor(
+            threadIds[0] ?? item.id,
+            item.projectId,
+            projects.find((project) => project.id === item.projectId)
+              ?.workspaceSessionId,
+          )
         : undefined;
     // A compare row's id is the pair id while runningByThreadId is per pane thread; aggregate.
     const isGenerating =
@@ -3990,10 +3995,16 @@ export function AppSidebar() {
               </span>
               <span className="block break-words text-xs leading-5 text-muted-foreground">
                 {confirmingDelete?.kind === "project"
-                  ? (confirmingDelete.project.rootPath ??
-                    "The project workspace folder will be removed from disk.")
+                  ? confirmingDelete.project.workspaceKind === "external"
+                    ? `The Unsloth-managed folder${confirmingDelete.project.rootPath ? ` at ${confirmingDelete.project.rootPath}` : ""} will be removed. The selected folder will be kept.`
+                    : (confirmingDelete.project.rootPath ??
+                      "The project workspace folder will be removed from disk.")
                   : confirmingDelete?.kind === "projects"
-                    ? t("shell.selection.deleteProjectsFilesDescription")
+                    ? confirmingDelete.projects.some(
+                        (project) => project.workspaceKind === "external",
+                      )
+                      ? "Unsloth-managed workspace folders will be removed. Selected folders will be kept."
+                      : t("shell.selection.deleteProjectsFilesDescription")
                     : confirmingDelete?.kind === "chats"
                       ? t("shell.selection.deleteFilesDescription")
                     : t("shell.selection.deleteChatFilesDescription")}

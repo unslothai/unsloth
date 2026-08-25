@@ -5,8 +5,8 @@ use crate::native_backend_lease::{
 };
 use crate::native_path_policy::{
     classify_artifact_path, classify_native_attachment_path, classify_native_dataset_path,
-    classify_native_document_folder, classify_native_model_path, reveal_target, ClassifiedPath,
-    NativeArtifactKind,
+    classify_native_document_folder, classify_native_model_path, classify_native_project_workspace,
+    reveal_target, ClassifiedPath, NativeArtifactKind,
 };
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
@@ -66,6 +66,7 @@ enum NativePathValidationPolicy {
     Model,
     Dataset,
     Attachment,
+    ProjectWorkspace,
     Artifact(NativeArtifactKind),
 }
 
@@ -97,6 +98,14 @@ pub struct NativeIntent {
 pub struct NativeDocumentFolderSelection {
     token: String,
     display_name: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeProjectWorkspaceSelection {
+    token: String,
+    display_name: String,
+    path: String,
 }
 
 #[derive(Default)]
@@ -245,6 +254,24 @@ impl NativeIntakeState {
         })
     }
 
+    fn register_project_workspace_path(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> Result<NativeProjectWorkspaceSelection, String> {
+        let classified = classify_native_project_workspace(path.as_ref())?;
+        let path = portable_path_string(&classified.canonical_path);
+        let entry = self.insert_entry(
+            classified,
+            NativePathSourceKind::Dialog,
+            NativePathValidationPolicy::ProjectWorkspace,
+        )?;
+        Ok(NativeProjectWorkspaceSelection {
+            token: entry.token,
+            display_name: entry.display_label,
+            path,
+        })
+    }
+
     fn register_classified_path(
         &self,
         classified: ClassifiedPath,
@@ -358,22 +385,30 @@ fn validate_entry_path(
         NativePathValidationPolicy::Attachment => {
             classify_native_attachment_path(&entry.canonical_path)?
         }
+        NativePathValidationPolicy::ProjectWorkspace => {
+            classify_native_project_workspace(&entry.canonical_path)?
+        }
         NativePathValidationPolicy::Artifact(kind) => {
             classify_artifact_path(kind, &entry.canonical_path)?
         }
     };
-    let check_fingerprint = !matches!(
+    let check_identity = !matches!(
         operation,
         NativePathOperation::Reveal | NativePathOperation::Open
     );
+    let check_content_fingerprint = check_identity
+        && !matches!(
+            entry.validation_policy,
+            NativePathValidationPolicy::ProjectWorkspace
+        );
     if classified.canonical_path != entry.canonical_path
         || classified.path_kind != entry.path_kind
         || classified.path_type != entry.path_type
         || !classified.allowed_operations.contains(&operation)
-        || (check_fingerprint && classified.size_bytes != entry.size_bytes)
-        || (check_fingerprint && classified.modified_ms != entry.modified_ms)
-        || (check_fingerprint && classified.device_id != entry.device_id)
-        || (check_fingerprint && classified.file_id != entry.file_id)
+        || (check_content_fingerprint && classified.size_bytes != entry.size_bytes)
+        || (check_content_fingerprint && classified.modified_ms != entry.modified_ms)
+        || (check_identity && classified.device_id != entry.device_id)
+        || (check_identity && classified.file_id != entry.file_id)
     {
         return Err("Native path changed after it was selected.".to_string());
     }
@@ -524,6 +559,29 @@ pub async fn pick_native_document_folder(
         .into_path()
         .map_err(|_| "Only local filesystem folders are supported.".to_string())?;
     state.sign_document_folder_path(path).map(Some)
+}
+
+#[tauri::command]
+pub async fn pick_native_project_workspace(
+    window: WebviewWindow,
+    app: AppHandle,
+    state: tauri::State<'_, NativeIntakeState>,
+) -> Result<Option<NativeProjectWorkspaceSelection>, String> {
+    ensure_main_window(&window)?;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title("Choose a project workspace")
+        .pick_folder(move |path| {
+            let _ = tx.send(path);
+        });
+    let Some(folder_path) = rx.await.map_err(|_| "Dialog closed".to_string())? else {
+        return Ok(None);
+    };
+    let path = folder_path
+        .into_path()
+        .map_err(|_| "Only local filesystem folders are supported.".to_string())?;
+    state.register_project_workspace_path(path).map(Some)
 }
 
 #[tauri::command]
@@ -1111,6 +1169,43 @@ mod tests {
             .entry_for_operation("path_token", NativePathOperation::LinkDocuments)
             .is_err());
         let _ = fs::remove_dir(path);
+    }
+
+    #[test]
+    fn project_workspace_picker_grant_is_scoped_to_workspace_changes() {
+        let state = new_native_intake_state();
+        let path = temp_path("project-workspace");
+        fs::create_dir(&path).unwrap();
+
+        let selection = state.register_project_workspace_path(&path).unwrap();
+        let lease = state
+            .sign_grant(&selection.token, NativePathOperation::SetProjectWorkspace)
+            .unwrap();
+        let payload = lease.native_path_lease.split('.').next().unwrap();
+        let payload: serde_json::Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).unwrap()).unwrap();
+        assert_eq!(payload["operation"], "set-project-workspace");
+        assert_eq!(payload["path_kind"], "project-workspace");
+        assert_eq!(payload["path_type"], "directory");
+        assert_eq!(selection.path, portable_path_string(&path));
+        assert!(payload["device_id"].as_str().is_some());
+        assert!(payload["file_id"].as_str().is_some());
+        let _ = fs::remove_dir(path);
+    }
+
+    #[test]
+    fn project_workspace_picker_allows_children_to_change_before_submission() {
+        let state = new_native_intake_state();
+        let path = temp_path("project-workspace-children");
+        fs::create_dir(&path).unwrap();
+        let selection = state.register_project_workspace_path(&path).unwrap();
+
+        fs::write(path.join("created-after-selection.txt"), b"ok").unwrap();
+
+        state
+            .sign_grant(&selection.token, NativePathOperation::SetProjectWorkspace)
+            .unwrap();
+        let _ = fs::remove_dir_all(path);
     }
 
     #[cfg(unix)]

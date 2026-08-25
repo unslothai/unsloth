@@ -192,6 +192,24 @@ pub fn classify_native_document_folder(path: &Path) -> Result<ClassifiedPath, St
     })
 }
 
+pub fn classify_native_project_workspace(path: &Path) -> Result<ClassifiedPath, String> {
+    let classified = classify_existing_path(path)?;
+    if classified.path_type != NativePathType::Directory {
+        return Err("Only folders can be used as project workspaces.".to_string());
+    }
+    if classified.canonical_path.parent().is_none() {
+        return Err("A filesystem root cannot be used as a project workspace.".to_string());
+    }
+    reject_sensitive_document_folder(&classified.canonical_path).map_err(|_| {
+        "Sensitive system or application folders cannot be used as project workspaces.".to_string()
+    })?;
+    Ok(ClassifiedPath {
+        path_kind: NativePathKind::ProjectWorkspace,
+        allowed_operations: vec![NativePathOperation::SetProjectWorkspace],
+        ..classified
+    })
+}
+
 pub fn classify_native_dataset_path(path: &Path) -> Result<ClassifiedPath, String> {
     let classified = classify_existing_path(path)?;
     if classified.path_type != NativePathType::File {
@@ -825,6 +843,34 @@ mod tests {
         fs::write(&file, b"not a folder").unwrap();
         assert!(classify_native_document_folder(&file).is_err());
         assert!(classify_native_document_folder(Path::new(std::path::MAIN_SEPARATOR_STR)).is_err());
+        let _ = fs::remove_file(file);
+    }
+
+    #[test]
+    fn project_workspace_is_directory_with_workspace_only_capability() {
+        let path = temp_path("project-workspace");
+        fs::create_dir(&path).unwrap();
+        let classified = classify_native_project_workspace(&path).unwrap();
+        assert_eq!(classified.path_kind, NativePathKind::ProjectWorkspace);
+        assert_eq!(classified.path_type, NativePathType::Directory);
+        assert_eq!(
+            classified.allowed_operations,
+            vec![NativePathOperation::SetProjectWorkspace]
+        );
+        let _ = fs::remove_dir(path);
+    }
+
+    #[test]
+    fn project_workspace_rejects_files_and_sensitive_folders() {
+        let file = temp_path("project-workspace-file");
+        fs::write(&file, b"not a folder").unwrap();
+        assert!(classify_native_project_workspace(&file).is_err());
+        assert!(
+            classify_native_project_workspace(Path::new(std::path::MAIN_SEPARATOR_STR)).is_err()
+        );
+        if let Some(home) = dirs::home_dir() {
+            assert!(classify_native_project_workspace(&home).is_err());
+        }
         let _ = fs::remove_file(file);
     }
 

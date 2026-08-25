@@ -3423,7 +3423,9 @@ def test_a_project_delete_uses_the_membership_it_really_deleted():
     from routes import chat_history
     from storage import studio_db
 
-    storage = inspect.getsource(studio_db.delete_chat_project)
+    storage = inspect.getsource(studio_db.delete_chat_project) + inspect.getsource(
+        studio_db._delete_chat_project
+    )
     assert 'project["memberIds"] = sorted(thread_ids)' in storage
 
     route = inspect.getsource(chat_history.delete_project)
@@ -4129,7 +4131,7 @@ def test_a_workspace_delete_waits_for_the_tool_calls_in_it(tmp_path, monkeypatch
 
     route = inspect.getsource(chat_history.delete_project)
     assert route.index("run_in_threadpool(wait_for_sessions_idle") < route.index(
-        "run_in_threadpool(delete_project_workspace, project)"
+        "run_in_threadpool(delete_project_workspace, managed_project)"
     )
 
 
@@ -4187,7 +4189,7 @@ def test_a_project_workspace_a_fork_still_shows_is_kept():
     assert "project_session_id(project_id)" in route
     assert "sandbox_is_referenced_elsewhere, shared" in route
     assert route.index("sandbox_is_referenced_elsewhere, shared") < route.index(
-        "run_in_threadpool(delete_project_workspace, project)"
+        "run_in_threadpool(delete_project_workspace, managed_project)"
     )
 
 
@@ -4199,7 +4201,9 @@ def test_a_project_delete_cancels_the_research_it_removed():
     from routes import chat_history
     from storage import studio_db
 
-    storage = inspect.getsource(studio_db.delete_chat_project)
+    storage = inspect.getsource(studio_db.delete_chat_project) + inspect.getsource(
+        studio_db._delete_chat_project
+    )
     assert 'project["activeResearchRunIds"] = active_runs' in storage
     assert storage.index("SELECT id FROM research_runs") < storage.index("DELETE FROM chat_threads")
 
@@ -4217,7 +4221,7 @@ def test_the_wait_covers_the_session_a_project_tool_runs_as():
 
     route = inspect.getsource(chat_history.delete_project)
     assert "wait_for_sessions_idle, [shared, *member_ids]" in route
-    assert route.index("shared = project_session_id(project_id)") < route.index(
+    assert route.index('shared = project.get("workspaceSessionId")') < route.index(
         "run_in_threadpool(wait_for_sessions_idle"
     )
 
@@ -4359,12 +4363,11 @@ def test_a_workspace_is_kept_when_the_wait_ran_out():
 
     route = inspect.getsource(chat_history.delete_project)
     assert "run_in_threadpool(wait_for_sessions_idle, [shared, *member_ids])" in route
-    assert "if delete_files and idle and not referenced and not recreated:" in route
-    assert route.index(
-        "if delete_files and idle and not referenced and not recreated:"
-    ) < route.index("run_in_threadpool(delete_project_workspace, project)")
+    assert route.index("and not ownership_unknown") < route.index(
+        "run_in_threadpool(delete_project_workspace, managed_project)"
+    )
     # And a wait that ran out queues the finish rather than dropping it.
-    assert "finish_workspace_delete_when_idle(project_id)" in route
+    assert "finish_workspace_delete_when_idle(project_id, session_id = shared)" in route
 
 
 def test_a_kept_workspace_the_user_moved_still_resolves(tmp_path, monkeypatch):
@@ -4495,7 +4498,7 @@ def test_a_kept_workspace_is_recorded_even_when_nothing_was_deleted():
     from routes import chat_history
 
     route = inspect.getsource(chat_history.delete_project)
-    assert 'if project.get("sandboxPath"):' in route
+    assert "if managed_sandbox_path and" in route
     assert "if not delete_files:" in route
     body = route[route.index("if not delete_files:") :]
     assert "record_orphaned_project," in body[:400]
@@ -4837,6 +4840,510 @@ def test_a_workspace_delete_that_declined_can_still_be_retried(tmp_path, monkeyp
     monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
     tools.collect_orphaned_project_workspaces()
     assert not workspace.exists()
+
+
+def test_external_project_delete_cleans_only_its_old_managed_workspace(tmp_path, monkeypatch):
+    import asyncio
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+    from routes import chat_history
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    project_id = "external1"
+    managed_root = tmp_path / "Notes-external"
+    (managed_root / "sandbox").mkdir(parents = True)
+    external = tmp_path / "user-folder"
+    external.mkdir()
+    external_file = external / "keep.txt"
+    external_file.write_text("keep", encoding = "utf-8")
+    project = {
+        "id": project_id,
+        "name": "Notes",
+        "createdAt": 1,
+        "updatedAt": 1,
+        "workspaceKind": "external",
+        "workspacePath": str(external),
+        "sandboxPath": str(external),
+        "rootPath": str(managed_root),
+        "memberIds": [],
+        "activeResearchRunIds": [],
+    }
+    monkeypatch.setattr(
+        chat_history, "delete_chat_project", lambda pid, delete_files: dict(project)
+    )
+    monkeypatch.setattr(chat_history, "get_chat_project", lambda pid: {"id": pid})
+    monkeypatch.setattr(tools, "live_project_ownership", lambda *args: False)
+    monkeypatch.setattr(chat_history, "_cancel_research_runs", lambda request, ids: None)
+    monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda ids: None)
+    monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
+    monkeypatch.setattr(studio_db, "_denied_path_prefixes", lambda: [])
+
+    asyncio.new_event_loop().run_until_complete(
+        chat_history.delete_project(
+            project_id,
+            request = None,
+            delete_files = True,
+            current_subject = "test",
+        )
+    )
+
+    assert not managed_root.exists()
+    assert external_file.read_text(encoding = "utf-8") == "keep"
+    assert tools.list_orphaned_projects() == [
+        (project_id, str(external.resolve()), None, False, False)
+    ]
+
+
+def test_external_project_failed_managed_cleanup_stays_pending(tmp_path, monkeypatch):
+    import asyncio
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+    from routes import chat_history
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    project_id = "external-pending"
+    managed_root = tmp_path / "Notes-external"
+    managed_sandbox = managed_root / "sandbox"
+    managed_sandbox.mkdir(parents = True)
+    external = tmp_path / "user-folder"
+    external.mkdir()
+    project = {
+        "id": project_id,
+        "name": "Notes",
+        "createdAt": 1,
+        "updatedAt": 1,
+        "workspaceKind": "external",
+        "workspacePath": str(external),
+        "sandboxPath": str(external),
+        "rootPath": str(managed_root),
+        "memberIds": [],
+        "activeResearchRunIds": [],
+    }
+    monkeypatch.setattr(
+        chat_history, "delete_chat_project", lambda pid, delete_files: dict(project)
+    )
+    monkeypatch.setattr(tools, "live_project_ownership", lambda *args: False)
+    monkeypatch.setattr(chat_history, "_cancel_research_runs", lambda request, ids: None)
+    monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda ids: None)
+    monkeypatch.setattr(studio_db, "delete_chat_project_workspace", lambda project: None)
+    monkeypatch.setattr(tools, "_delete_recorded_workspace", lambda *args: None)
+
+    asyncio.new_event_loop().run_until_complete(
+        chat_history.delete_project(
+            project_id,
+            request = None,
+            delete_files = True,
+            current_subject = "test",
+        )
+    )
+
+    assert sorted(tools.list_orphaned_projects(), key = lambda item: item[1]) == sorted(
+        [
+            (project_id, str(external.resolve()), None, False, False),
+            (
+                project_id,
+                str(managed_sandbox.resolve()),
+                str(managed_root.resolve()),
+                True,
+                False,
+            ),
+        ],
+        key = lambda item: item[1],
+    )
+
+
+def test_external_project_delete_keeps_its_current_session_reachable(tmp_path, monkeypatch):
+    import asyncio
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+    from routes import chat_history
+
+    _forget_sandbox_state(tools)
+    project_id = "external-kept"
+    session_id = "project-workspace-ZXh0ZXJuYWwta2VwdA-0123456789abcdef0123456789abcdef"
+    managed_root = tmp_path / "Notes-external"
+    (managed_root / "sandbox").mkdir(parents = True)
+    external = tmp_path / "user-folder"
+    external.mkdir()
+    (external / "keep.txt").write_text("keep", encoding = "utf-8")
+    project = {
+        "id": project_id,
+        "name": "Notes",
+        "createdAt": 1,
+        "updatedAt": 1,
+        "workspaceKind": "external",
+        "workspacePath": str(external),
+        "workspaceSessionId": session_id,
+        "sandboxPath": str(external),
+        "rootPath": str(managed_root),
+        "memberIds": [],
+        "activeResearchRunIds": [],
+    }
+    monkeypatch.setattr(
+        chat_history, "delete_chat_project", lambda pid, delete_files: dict(project)
+    )
+    monkeypatch.setattr(chat_history, "_cancel_research_runs", lambda request, ids: None)
+    monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda ids: None)
+
+    asyncio.new_event_loop().run_until_complete(
+        chat_history.delete_project(
+            project_id,
+            request = None,
+            delete_files = False,
+            current_subject = "test",
+        )
+    )
+
+    assert Path(tools.resolve_sandbox_workdir(session_id)) == external.resolve()
+    assert managed_root.exists()
+
+
+def test_reused_project_id_keeps_each_workspace_session_record(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    first_session = "project-workspace-c2FtZS1pZA-0123456789abcdef0123456789abcdef"
+    second_session = "project-workspace-c2FtZS1pZA-fedcba9876543210fedcba9876543210"
+    tools.record_orphaned_project("same-id", str(first), False, None, first_session)
+    tools.record_orphaned_project("same-id", str(second), False, None, second_session)
+
+    assert Path(tools.resolve_sandbox_workdir(first_session)) == first.resolve()
+    assert Path(tools.resolve_sandbox_workdir(second_session)) == second.resolve()
+
+
+def test_pre_upgrade_orphan_forces_a_new_session_on_recreate(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
+
+    from core.inference import tools
+    from storage import studio_db
+
+    studio_db._schema_ready = False
+    _forget_sandbox_state(tools)
+    project_id = "legacy-recreated"
+    old_root = tmp_path / "old-project"
+    old_workspace = old_root / "sandbox"
+    old_workspace.mkdir(parents = True)
+    tools._write_orphan_record(
+        tools._ORPHAN_PROJECT,
+        project_id,
+        {
+            "path": str(old_workspace),
+            "rootPath": str(old_root),
+            "pendingDelete": False,
+        },
+    )
+
+    recreated = studio_db.upsert_chat_project(
+        {
+            "id": project_id,
+            "name": "Recreated",
+            "archived": False,
+            "createdAt": 1,
+            "updatedAt": 1,
+        }
+    )
+
+    assert recreated["workspaceSessionId"].startswith("project-workspace-")
+    assert (
+        Path(tools.resolve_sandbox_workdir(recreated["workspaceSessionId"]))
+        == Path(recreated["workspacePath"]).resolve()
+    )
+
+
+def test_default_session_orphan_survives_database_recovery(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
+
+    from core.inference import tools
+    from storage import studio_db
+
+    studio_db._schema_ready = False
+    _forget_sandbox_state(tools)
+    project_id = "recovered-project"
+    old_workspace = tmp_path / "old-workspace"
+    old_workspace.mkdir()
+    old_session = f"project-{project_id}"
+    tools.record_orphaned_project(project_id, str(old_workspace), False, None, old_session)
+
+    recreated = studio_db.upsert_chat_project(
+        {
+            "id": project_id,
+            "name": "Recovered",
+            "archived": False,
+            "createdAt": 1,
+            "updatedAt": 1,
+        }
+    )
+
+    assert recreated["workspaceSessionId"].startswith("project-workspace-")
+    monkeypatch.setattr(
+        studio_db,
+        "_directory_tree_contains_identity",
+        lambda root, target: (_ for _ in ()).throw(AssertionError("walked tree")),
+    )
+    with pytest.raises(tools.ProjectWorkspaceSessionUnavailableError, match = "changed"):
+        tools.resolve_sandbox_workdir(old_session)
+    assert (
+        Path(tools.resolve_sandbox_workdir(recreated["workspaceSessionId"]))
+        == Path(recreated["workspacePath"]).resolve()
+    )
+    studio_db.delete_chat_project(project_id)
+    assert Path(tools.resolve_sandbox_workdir(old_session)) == old_workspace.resolve()
+
+
+def test_invalid_default_session_orphan_metadata_forces_a_new_session(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
+
+    from storage import studio_db
+    from utils.paths import studio_root
+
+    studio_db._schema_ready = False
+    project_id = "recovered-corrupt-project"
+    orphan_dir = studio_root() / "orphaned-projects"
+    orphan_dir.mkdir(parents = True)
+    digest = hashlib.sha256(project_id.encode("utf-8")).hexdigest()[:32]
+    (orphan_dir / f"project-{digest}").write_text("{", encoding = "utf-8")
+
+    recreated = studio_db.upsert_chat_project(
+        {
+            "id": project_id,
+            "name": "Recovered",
+            "archived": False,
+            "createdAt": 1,
+            "updatedAt": 1,
+        }
+    )
+
+    assert recreated["workspaceSessionId"].startswith("project-workspace-")
+
+
+def test_recreated_project_uses_a_new_managed_folder(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
+
+    from core.inference import tools
+    from storage import studio_db
+
+    studio_db._schema_ready = False
+    _forget_sandbox_state(tools)
+    payload = {
+        "id": "same-managed-project",
+        "name": "Same managed project",
+        "archived": False,
+        "createdAt": 1,
+        "updatedAt": 1,
+    }
+    first = studio_db.upsert_chat_project(payload)
+    old_session = first["workspaceSessionId"]
+    old_marker = Path(first["workspacePath"]) / "old-marker.txt"
+    old_marker.write_text("old", encoding = "utf-8")
+    tools.record_orphaned_project(
+        first["id"],
+        first["workspacePath"],
+        False,
+        first["rootPath"],
+        old_session,
+    )
+    studio_db.delete_chat_project(first["id"])
+
+    with tools._session_in_flight(old_session):
+        recreated = studio_db.upsert_chat_project(payload)
+    secret = Path(recreated["workspacePath"]) / "new-secret.txt"
+    secret.write_text("new", encoding = "utf-8")
+
+    assert recreated["workspacePath"] != first["workspacePath"]
+    assert recreated["workspaceSessionId"] != old_session
+    assert old_marker.read_text(encoding = "utf-8") == "old"
+    with pytest.raises(tools.ProjectWorkspaceSessionUnavailableError, match = "changed"):
+        tools.resolve_sandbox_workdir(old_session)
+    assert (
+        Path(tools.resolve_sandbox_workdir(recreated["workspaceSessionId"]))
+        == Path(recreated["workspacePath"]).resolve()
+    )
+    studio_db.delete_chat_project(recreated["id"])
+    assert (
+        Path(tools.resolve_sandbox_workdir(old_session)) == Path(first["workspacePath"]).resolve()
+    )
+
+
+def test_orphan_collection_checks_every_session_sharing_a_workspace(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    workspace = tmp_path / "shared"
+    workspace.mkdir()
+    first_session = "project-workspace-c2FtZS1pZA-0123456789abcdef0123456789abcdef"
+    second_session = "project-workspace-c2FtZS1pZA-fedcba9876543210fedcba9876543210"
+    tools.record_orphaned_project("same-id", str(workspace), True, None, first_session)
+    tools.record_orphaned_project("same-id", str(workspace), True, None, second_session)
+    deleted = []
+    monkeypatch.setattr(tools, "live_project_owns", lambda *args: False)
+    monkeypatch.setattr(tools, "wait_for_sessions_idle", lambda *args, **kwargs: True)
+    monkeypatch.setattr(tools, "_delete_recorded_workspace", lambda *args: deleted.append(args))
+    monkeypatch.setattr(
+        studio_db,
+        "sandbox_is_referenced_elsewhere",
+        lambda session, exclude = None: session == second_session,
+    )
+
+    tools.collect_orphaned_project_workspaces()
+
+    assert deleted == []
+    assert len(tools.list_orphaned_projects()) == 2
+
+
+def test_forgetting_one_project_session_keeps_other_incarnations(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    first_session = "project-workspace-c2FtZS1pZA-0123456789abcdef0123456789abcdef"
+    second_session = "project-workspace-c2FtZS1pZA-fedcba9876543210fedcba9876543210"
+    tools.record_orphaned_project("same-id", str(first), False, None, first_session)
+    tools.record_orphaned_project("same-id", str(second), False, None, second_session)
+
+    tools.forget_orphaned_project_session("same-id", second_session)
+
+    assert Path(tools.resolve_sandbox_workdir(first_session)) == first.resolve()
+    assert tools._recorded_project_workdir("same-id", second_session) is None
+
+
+def test_project_id_cannot_overwrite_another_projects_session_record(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    first_id = "first-project"
+    first_session = "project-workspace-Zmlyc3QtcHJvamVjdA-0123456789abcdef0123456789abcdef"
+    second_id = first_session[len("project-") :]
+    second_session = f"project-{second_id}"
+    tools.record_orphaned_project(first_id, str(first), False, None, first_session)
+    tools.record_orphaned_project(second_id, str(second), False, None, second_session)
+
+    assert len(tools.list_orphaned_projects()) == 2
+    with pytest.raises(tools.ProjectWorkspaceSessionUnavailableError, match = "ambiguous"):
+        tools.resolve_sandbox_workdir(first_session)
+
+
+def test_version_shaped_legacy_project_session_resolves_its_orphan(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    workspace = tmp_path / "legacy-workspace"
+    workspace.mkdir()
+    project_id = "workspace-Zm9v-0123456789abcdef0123456789abcdef"
+    session_id = f"project-{project_id}"
+    tools.record_orphaned_project(project_id, str(workspace), False, None, session_id)
+
+    assert Path(tools.resolve_sandbox_workdir(session_id)) == workspace.resolve()
+
+
+def test_version_shaped_project_id_gets_an_unambiguous_live_session(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
+
+    from storage import studio_db
+
+    studio_db._schema_ready = False
+    payload = {
+        "id": "first-project",
+        "name": "First",
+        "archived": False,
+        "createdAt": 1,
+        "updatedAt": 1,
+    }
+    studio_db.upsert_chat_project(payload)
+    studio_db.delete_chat_project(payload["id"])
+    recreated = studio_db.upsert_chat_project(payload)
+    colliding_id = recreated["workspaceSessionId"][len("project-") :]
+
+    second = studio_db.upsert_chat_project(
+        {
+            **payload,
+            "id": colliding_id,
+            "name": "Second",
+        }
+    )
+
+    assert second["workspaceSessionId"] != recreated["workspaceSessionId"]
+    assert second["workspaceSessionId"].startswith("project-workspace-")
+
+
+def test_corrupt_workspace_overlap_is_never_deleted(tmp_path, monkeypatch):
+    import asyncio
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+    from routes import chat_history
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    project_id = "overlap1"
+    selected = tmp_path / "selected"
+    (selected / "sandbox").mkdir(parents = True)
+    marker = selected / "keep.txt"
+    marker.write_text("keep", encoding = "utf-8")
+    project = {
+        "id": project_id,
+        "name": "Notes",
+        "createdAt": 1,
+        "updatedAt": 1,
+        "workspaceKind": "external",
+        "workspacePath": str(selected),
+        "sandboxPath": str(selected),
+        "rootPath": str(selected),
+        "memberIds": [],
+        "activeResearchRunIds": [],
+    }
+    monkeypatch.setattr(
+        chat_history, "delete_chat_project", lambda pid, delete_files: dict(project)
+    )
+    monkeypatch.setattr(chat_history, "_cancel_research_runs", lambda request, ids: None)
+    monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda ids: None)
+    monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
+
+    asyncio.new_event_loop().run_until_complete(
+        chat_history.delete_project(
+            project_id,
+            request = None,
+            delete_files = True,
+            current_subject = "test",
+        )
+    )
+
+    assert marker.read_text(encoding = "utf-8") == "keep"
 
 
 def test_a_half_deleted_workspace_keeps_its_record(tmp_path, monkeypatch):
@@ -5581,6 +6088,148 @@ def test_a_chat_called_like_a_project_session_keeps_its_own_sandbox(tmp_path, mo
     assert tools.remove_session_sandbox(session, delete_files = True) is True
 
 
+def test_external_project_workspace_is_the_exact_tool_workdir_and_tracks_changes(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    first = tmp_path / "first-project"
+    second = tmp_path / "second-project"
+    first.mkdir()
+    second.mkdir()
+    current = {"path": first}
+
+    monkeypatch.setattr(
+        studio_db,
+        "ensure_chat_project_workspace",
+        lambda pid: {
+            "id": pid,
+            "rootPath": str(tmp_path / "managed"),
+            "workspacePath": str(current["path"]),
+            "workspaceKind": "external",
+            "workspaceAvailable": True,
+            "sandboxPath": str(current["path"]),
+        },
+    )
+    session = tools.project_session_id("external-project")
+
+    assert Path(tools.get_sandbox_workdir(session)) == first.resolve()
+    assert not (first / "sandbox").exists()
+    current["path"] = second
+    assert Path(tools.get_sandbox_workdir(session)) == second.resolve()
+    assert not (second / "sandbox").exists()
+
+
+def test_unavailable_external_workspace_never_falls_back_to_a_sandbox(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    external = tmp_path / "external-project"
+    external.mkdir()
+    available = True
+
+    def resolve(pid):
+        if not available:
+            raise studio_db.ProjectWorkspaceUnavailableError(
+                str(external), FileNotFoundError(str(external))
+            )
+        return {
+            "id": pid,
+            "rootPath": str(tmp_path / "managed"),
+            "workspacePath": str(external),
+            "workspaceKind": "external",
+            "workspaceAvailable": True,
+            "sandboxPath": str(external),
+        }
+
+    monkeypatch.setattr(studio_db, "ensure_chat_project_workspace", resolve)
+    session = tools.project_session_id("external-project")
+    assert Path(tools.get_sandbox_workdir(session)) == external.resolve()
+    available = False
+
+    with pytest.raises(studio_db.ProjectWorkspaceUnavailableError, match = "unavailable"):
+        tools.get_sandbox_workdir(session)
+
+    assert not (tmp_path / "home" / "sandbox" / session).exists()
+
+
+def test_project_workspace_change_is_fenced_against_active_tools():
+    from core.inference import tools
+
+    session = tools.project_session_id("workspace-change")
+    called = []
+
+    with tools._session_in_flight(session):
+        changed, result = tools.update_project_workspace_when_idle(
+            "workspace-change", lambda: called.append(True)
+        )
+    assert changed is False
+    assert result is None
+    assert called == []
+
+    tools._workdirs[session] = "/old/workspace"
+    changed, result = tools.update_project_workspace_when_idle(
+        "workspace-change", lambda: "updated"
+    )
+    assert changed is True
+    assert result == "updated"
+    assert session not in tools._workdirs
+
+    nested = []
+
+    def first_update():
+        nested.append(
+            tools.update_project_workspace_when_idle("workspace-change", lambda: "second update")
+        )
+        return "first update"
+
+    changed, result = tools.update_project_workspace_when_idle("workspace-change", first_update)
+    assert (changed, result) == (True, "first update")
+    assert nested == [(False, None)]
+
+
+def test_old_project_file_session_cannot_resolve_after_workspace_change(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
+
+    from core.inference import tools
+    from storage import studio_db
+
+    studio_db._schema_ready = False
+    _forget_sandbox_state(tools)
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    project = studio_db.upsert_chat_project(
+        {
+            "id": "workspace-revision",
+            "name": "Revision",
+            "archived": False,
+            "createdAt": 1,
+            "updatedAt": 1,
+        },
+        external_workspace_path = str(first),
+    )
+    old_session = project["workspaceSessionId"]
+    (first / "report.txt").write_text("old", encoding = "utf-8")
+    (second / "report.txt").write_text("new", encoding = "utf-8")
+
+    changed = studio_db.set_chat_project_workspace(project["id"], str(second))
+
+    assert changed["workspaceSessionId"] != old_session
+    assert Path(tools.resolve_sandbox_workdir(changed["workspaceSessionId"])) == second.resolve()
+    with pytest.raises(tools.ProjectWorkspaceSessionUnavailableError, match = "changed"):
+        tools.resolve_sandbox_workdir(old_session)
+
+
 def test_a_long_project_id_still_reaches_its_workspace(tmp_path, monkeypatch):
     """`project-` plus the id can be longer than a directory name may be, and
     the workspace comes from the row, not from the id."""
@@ -5623,11 +6272,218 @@ def test_a_project_recreated_under_the_same_id_keeps_its_workspace(tmp_path, mon
     (workspace / "sandbox" / "fresh.csv").write_text("a,b\n", encoding = "utf-8")
 
     monkeypatch.setattr(chat_history, "get_chat_project", lambda pid: {"id": pid})
+    monkeypatch.setattr(tools, "live_project_ownership", lambda *args: True)
     monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
     _deleted_project(tmp_path, monkeypatch, project_id, workspace)
 
     assert (workspace / "sandbox" / "fresh.csv").is_file(), "the new project's files went"
     assert tools.list_orphaned_projects() == [], "a live project was recorded as orphaned"
+
+
+def test_a_project_recreated_elsewhere_does_not_strand_the_old_workspace(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+    from routes import chat_history
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    project_id = "projmoved2"
+    workspace = tmp_path / "Notes-projmove"
+    (workspace / "sandbox").mkdir(parents = True)
+    deleted = []
+    monkeypatch.setattr(chat_history, "get_chat_project", lambda pid: {"id": pid})
+    monkeypatch.setattr(tools, "live_project_ownership", lambda *args: False)
+    monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
+    monkeypatch.setattr(
+        studio_db, "delete_project_workspace", lambda project: deleted.append(project)
+    )
+    monkeypatch.setattr(tools, "collect_orphaned_project_workspaces", lambda: None)
+
+    _deleted_project(tmp_path, monkeypatch, project_id, workspace)
+
+    assert deleted and deleted[0]["rootPath"] == str(workspace)
+
+
+def test_live_external_owner_retires_stale_pending_cleanup(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    orphan_project_id = "projorphan"
+    old_workspace = tmp_path / "old-workspace"
+    old_workspace.mkdir()
+    new_workspace = tmp_path / "new-workspace"
+    new_workspace.mkdir()
+    tools.record_orphaned_project(
+        orphan_project_id,
+        str(old_workspace / "sandbox"),
+        True,
+        str(old_workspace),
+    )
+    monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
+
+    live_project = studio_db.upsert_chat_project(
+        {
+            "id": "projexternal",
+            "name": "External",
+            "instructions": "",
+            "archived": False,
+            "createdAt": 1,
+            "updatedAt": 1,
+        },
+        external_workspace_path = str(old_workspace),
+    )
+
+    assert tools.list_orphaned_projects() == []
+    assert old_workspace.is_dir()
+
+    studio_db.set_chat_project_workspace(live_project["id"], str(new_workspace))
+    tools.collect_orphaned_project_workspaces()
+    assert old_workspace.is_dir()
+
+
+def test_external_adoption_invalidates_kept_workspace_sessions(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
+
+    from core.inference import tools
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    workspace = tmp_path / "adopted-workspace"
+    workspace.mkdir()
+    tools.record_orphaned_project(
+        "old-project",
+        str(workspace),
+        False,
+        None,
+        "project-workspace-old-session",
+    )
+
+    studio_db.upsert_chat_project(
+        {
+            "id": "new-project",
+            "name": "New project",
+            "instructions": "",
+            "archived": False,
+            "createdAt": 1,
+            "updatedAt": 1,
+        },
+        external_workspace_path = str(workspace),
+    )
+
+    assert tools.list_orphaned_projects() == []
+    assert tools._recorded_project_workdir("old-project", "project-workspace-old-session") is None
+
+
+def test_external_adoption_waits_for_a_deleted_projects_active_session(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
+
+    from core.inference import tools
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    old_project = studio_db.upsert_chat_project(
+        {
+            "id": "old-project",
+            "name": "Old project",
+            "instructions": "",
+            "archived": False,
+            "createdAt": 1,
+            "updatedAt": 1,
+        }
+    )
+    new_project = {
+        "id": "new-project",
+        "name": "New project",
+        "instructions": "",
+        "archived": False,
+        "createdAt": 2,
+        "updatedAt": 2,
+    }
+
+    with tools._session_in_flight(old_project["workspaceSessionId"]):
+        studio_db.delete_chat_project(old_project["id"])
+        with pytest.raises(studio_db.ProjectWorkspaceConflictError, match = "active tool"):
+            studio_db.upsert_chat_project(
+                new_project,
+                external_workspace_path = old_project["rootPath"],
+            )
+
+    adopted = studio_db.upsert_chat_project(
+        new_project,
+        external_workspace_path = old_project["rootPath"],
+    )
+    assert adopted["workspacePath"] == str(Path(old_project["rootPath"]).resolve())
+    assert tools.list_orphaned_projects() == []
+    assert Path(tools.resolve_sandbox_workdir(old_project["workspaceSessionId"])) != Path(
+        adopted["workspacePath"]
+    )
+
+
+def test_unknown_recreated_project_ownership_keeps_a_pending_record(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    project_id = "projunknown"
+    workspace = tmp_path / "Notes-projunkn"
+    (workspace / "sandbox").mkdir(parents = True)
+    monkeypatch.setattr(tools, "live_project_ownership", lambda *args: None)
+    monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
+
+    _deleted_project(tmp_path, monkeypatch, project_id, workspace)
+
+    assert tools.list_orphaned_projects() == [
+        (
+            project_id,
+            str((workspace / "sandbox").resolve()),
+            str(workspace.resolve()),
+            True,
+            False,
+        )
+    ]
+
+
+def test_unknown_second_ownership_check_keeps_the_pending_record(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+    from routes import chat_history
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    project_id = "projsecond"
+    workspace = tmp_path / "Notes-projseco"
+    (workspace / "sandbox").mkdir(parents = True)
+    ownership_checks = 0
+
+    def ownership(*args):
+        nonlocal ownership_checks
+        ownership_checks += 1
+        return False if ownership_checks == 1 else None
+
+    monkeypatch.setattr(tools, "live_project_ownership", ownership)
+    monkeypatch.setattr(chat_history, "get_chat_project", lambda pid: {"id": pid})
+    monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
+
+    _deleted_project(tmp_path, monkeypatch, project_id, workspace)
+
+    assert tools.list_orphaned_projects() == [
+        (
+            project_id,
+            str((workspace / "sandbox").resolve()),
+            str(workspace.resolve()),
+            True,
+            False,
+        )
+    ]
 
 
 def test_a_download_serves_the_file_it_checked(tmp_path, monkeypatch):
@@ -5960,6 +6816,10 @@ def test_a_kept_workspace_is_found_past_a_crowd_of_records(tmp_path, monkeypatch
 
     monkeypatch.setattr(tools, "_MAX_ORPHAN_RECORDS", 4)
     assert tools._recorded_project_workdir(project_id) == str((workspace / "sandbox").resolve())
+    assert (
+        Path(tools.resolve_sandbox_workdir(f"project-{project_id}"))
+        == (workspace / "sandbox").resolve()
+    )
 
 
 def test_a_project_created_during_the_record_write_keeps_its_files(tmp_path, monkeypatch):
@@ -6118,6 +6978,7 @@ def test_a_project_remade_somewhere_else_does_not_strand_the_old_workspace(tmp_p
     tools.record_orphaned_project(project_id, str(old / "sandbox"), True, str(old))
 
     monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
+    monkeypatch.setattr(studio_db, "_denied_path_prefixes", lambda: [])
     monkeypatch.setattr(
         studio_db,
         "get_chat_project",

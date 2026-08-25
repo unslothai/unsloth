@@ -119,8 +119,9 @@ export function sandboxRoutePrefix(sessionId: string): {
 export function sandboxSessionIdFor(
   threadId: string | undefined,
   projectId: string | null | undefined,
+  workspaceSessionId?: string | null,
 ): string | undefined {
-  return projectId ? `project-${projectId}` : threadId;
+  return projectId ? workspaceSessionId || `project-${projectId}` : threadId;
 }
 
 export function sandboxFilePath(sessionId: string, filename: string): string {
