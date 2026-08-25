@@ -758,7 +758,14 @@ def test_the_training_guard_charges_a_hand_added_repo_root_projector(tmp_path):
     projector.write_bytes(b"\x00" * (3 * MIB))
     seen = {}
 
-    def fake_companions(repo, *, hf_token, include_mmproj, local_mmproj_bytes = 0, **kw):
+    def fake_companions(
+        repo,
+        *,
+        hf_token,
+        include_mmproj,
+        local_mmproj_bytes = 0,
+        **kw,
+    ):
         seen["local_mmproj_bytes"] = local_mmproj_bytes
         # What the real helper returns when the repo lists no projector of its own.
         return max(int(local_mmproj_bytes), 0)
