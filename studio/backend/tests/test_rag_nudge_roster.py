@@ -15,11 +15,18 @@ BASE = "Existing tool nudge."
 
 def _nudge(rag_scope, base = ""):
     from routes import inference
-
     return asyncio.run(inference._apply_rag_nudge(base, TOOLS, rag_scope = rag_scope))
 
 
-def _doc(conn, scope, doc_id, filename, status = "completed", chunks = 3, folder_id = None):
+def _doc(
+    conn,
+    scope,
+    doc_id,
+    filename,
+    status = "completed",
+    chunks = 3,
+    folder_id = None,
+):
     store.create_document(
         conn,
         scope = scope,
@@ -158,13 +165,8 @@ def test_roster_degrades_when_the_database_is_unavailable(rag_conn, monkeypatch)
 
 def test_nudge_unchanged_without_scope_or_tool(rag_conn):
     from routes import inference
-
-    assert asyncio.run(
-        inference._apply_rag_nudge(BASE, TOOLS, rag_scope = None)
-    ) == BASE
-    assert asyncio.run(
-        inference._apply_rag_nudge(BASE, [], rag_scope = {"project_id": "p1"})
-    ) == BASE
+    assert asyncio.run(inference._apply_rag_nudge(BASE, TOOLS, rag_scope = None)) == BASE
+    assert asyncio.run(inference._apply_rag_nudge(BASE, [], rag_scope = {"project_id": "p1"})) == BASE
 
 
 @pytest.mark.parametrize("scope", [{}, {"default_top_k": 5, "mode": "hybrid"}])

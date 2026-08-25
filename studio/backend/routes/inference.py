@@ -18321,9 +18321,7 @@ async def openai_chat_completions(
         )
 
         # RAG nudge, mirroring the GGUF path.
-        _sf_nudge = await _apply_rag_nudge(
-            _sf_nudge, _sf_tools_to_use, rag_scope = payload.rag_scope
-        )
+        _sf_nudge = await _apply_rag_nudge(_sf_nudge, _sf_tools_to_use, rag_scope = payload.rag_scope)
         # No `checkpoint_fitted`: this path never calls `fit_checkpoint_context`, so there
         # is no reset and no carried_forward block to describe.
         _sf_nudge = _apply_compaction_nudge(_sf_nudge, _sf_tools_to_use)
