@@ -122,11 +122,7 @@ _FLAG_RE = re.compile(
 # sensitive, or indented records belong to a YAML block scalar. Never retain a
 # credential value itself.
 _CONTINUED_SECRET_RE = re.compile(
-    r"(?i)^(?P<indent>[ \t]*)"
-    + _KEY_START
-    + r"(?:"
-    + _SECRET_KEYS
-    + r")\b[\"']?\s*[:=]\s*"
+    r"(?i)^(?P<indent>[ \t]*)" + _KEY_START + r"(?:" + _SECRET_KEYS + r")\b[\"']?\s*[:=]\s*"
     r"(?P<block>[|>](?:[1-9][+-]?|[+-][1-9]?)?)?\s*(?:#.*)?$"
 )
 
