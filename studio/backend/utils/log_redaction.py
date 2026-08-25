@@ -104,6 +104,7 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 # single-quoted secret contain double quotes (and vice versa) without exposing
 # the suffix, while an escaped matching quote does not end the value early.
 _QUOTED_VALUE = r"(?:\\.|(?!(?P=quote))[^\\\n])*"
+_UNTERMINATED_QUOTED_VALUE = _QUOTED_VALUE + r"\\?"
 _QUOTED_KV_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
     r"(?P<sep>[\"']?\s*[:=]\s*)(?P<quote>[\"'])"
@@ -112,7 +113,7 @@ _QUOTED_KV_RE = re.compile(
 _UNTERMINATED_QUOTED_KV_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
     r"(?P<sep>[\"']?\s*[:=]\s*)(?P<quote>[\"'])"
-    r"(?P<val>" + _QUOTED_VALUE + r")(?=\r?$)",
+    r"(?P<val>" + _UNTERMINATED_QUOTED_VALUE + r")(?=\r?$)",
     re.MULTILINE,
 )
 _KV_RE = re.compile(
@@ -125,7 +126,7 @@ _QUOTED_FLAG_RE = re.compile(
 )
 _UNTERMINATED_QUOTED_FLAG_RE = re.compile(
     r"(?i)(?P<key>--(?:" + _SECRET_KEYS + r"))"
-    r"(?P<sep>\s+)(?P<quote>[\"'])(?P<val>" + _QUOTED_VALUE + r")(?=\r?$)",
+    r"(?P<sep>\s+)(?P<quote>[\"'])(?P<val>" + _UNTERMINATED_QUOTED_VALUE + r")(?=\r?$)",
     re.MULTILINE,
 )
 _FLAG_RE = re.compile(r"(?i)(?P<key>--(?:" + _SECRET_KEYS + r"))(?P<sep>\s+)(?P<val>[^\s\"']+)")
@@ -143,14 +144,14 @@ _CONTINUED_SECRET_RE = re.compile(
 _CONTINUED_COOKIE_RE = re.compile(r"(?i)^(?P<indent>[ \t]*)(?:set-)?cookie[\"']?\s*[:=]\s*$")
 _UNTERMINATED_QUOTED_SECRET_RE = re.compile(
     r"(?i)^(?P<indent>[ \t]*)" + _KEY_START + r"(?:" + _SECRET_KEYS + r")\b[\"']?\s*[:=]\s*"
-    r"(?:(?P<double>\")(?:\\.|[^\"\\])*|(?P<single>')(?:\\.|[^'\\])*)$"
+    r"(?:(?P<double>\")(?:\\.|[^\"\\])*\\?|(?P<single>')(?:\\.|[^'\\])*\\?)$"
 )
 _INLINE_PLAIN_SECRET_RE = re.compile(
     r"(?i)^(?P<indent>[ \t]*)"
     + _KEY_START
     + r"(?:"
     + _SECRET_KEYS
-    + r")\b[\"']?\s*[:=]\s*(?![|>\"'])(?=\S).+$"
+    + r")\b[\"']?\s*[:=]\s*(?![|>\"'])(?P<value>\S.*)$"
 )
 _OMITTED_CONTEXT_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?:(?:" + _SECRET_KEYS + r")|(?:set-)?cookie)\b[\"']?\s*[:=]"
@@ -437,7 +438,9 @@ class StreamingLogRedactor:
             return self._masked_record(redacted)
 
         inline_plain = _INLINE_PLAIN_SECRET_RE.search(physical_context)
-        if inline_plain and REDACTED in redacted:
+        if inline_plain and (
+            REDACTED in redacted or inline_plain.group("value").strip().lower() in _SCHEMES
+        ):
             self._plain_key_indent = len(inline_plain.group("indent"))
             self._plain_has_value = True
             self._plain_explicit_continuation = self._ends_with_unescaped_backslash(

@@ -425,6 +425,31 @@ def test_export_tracks_an_unindented_shell_secret_continuation(client):
     assert "ordinary: kept" in exported
 
 
+def test_export_tracks_a_quoted_shell_secret_continuation(client):
+    first = "correct-horse"
+    second = "battery-staple"
+    path = _seed_server_log(f'PASSWORD="{first}-\\\n{second}"\nordinary: kept\n')
+
+    response = client.get("/api/settings/debug/logs/export")
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        exported = archive.read(f"server/{path.name}").decode("utf-8")
+    assert first not in exported
+    assert second not in exported
+    assert "ordinary: kept" in exported
+
+
+def test_export_tracks_a_token_after_a_standalone_authorization_scheme(client):
+    secret = "short-auth-token"
+    path = _seed_server_log(f"Authorization: Bearer\n  {secret}\nordinary: kept\n")
+
+    response = client.get("/api/settings/debug/logs/export")
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        exported = archive.read(f"server/{path.name}").decode("utf-8")
+    assert secret not in exported
+    assert "Authorization: Bearer" in exported
+    assert "ordinary: kept" in exported
+
+
 def test_export_uses_the_opening_quote_for_multiline_secret_state(client):
     first = 'first "nickname'
     second = 'second "alias'
