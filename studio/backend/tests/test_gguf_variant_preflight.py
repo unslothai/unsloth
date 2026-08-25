@@ -200,12 +200,12 @@ def test_audio_only_repo_root_projector_still_triggers_companion_loading(
     assert config.gguf_mmproj_file is None
 
 
-def test_a_repo_root_projector_counts_before_the_quant_verifies(
+def test_an_uncached_quant_leaves_the_repo_root_projector_to_the_next_apply(
     remote_gguf_repo, monkeypatch, hub_cache
 ):
-    """Another quant can have created the repo dir, so the requested one is not cached
-    yet. load_model gates companion resolution on the config's vision flag, so without
-    this the projector attaches only on a second Apply."""
+    """Nothing has paired while no quant of the repo verifies, so no projector is named
+    and the callers that would read a modality off one are not handed a guess. The
+    loader picks it up on the Apply that follows the download."""
     repo_root = hub_cache / f"models--{REPO.replace('/', '--')}"
     repo_root.mkdir()
     (repo_root / "mmproj-F16.gguf").write_bytes(b"mmproj")
@@ -213,59 +213,9 @@ def test_a_repo_root_projector_counts_before_the_quant_verifies(
 
     config = ModelConfig.from_identifier(REPO, gguf_variant = "Q8_0")
 
-    projector = repo_root / "mmproj-F16.gguf"
     assert config.gguf_verified is None
-    assert config.is_vision is True
-    # A ceiling, not a selection: nothing has paired, so no file is named and the
-    # guard still charges something for what the launch attaches once the weight lands.
     assert config.gguf_local_mmproj_file is None
-    assert config.gguf_local_mmproj_bound_bytes == projector.stat().st_size
-
-    # The largest candidate, split shards summed, not whichever one iterdir named first.
-    first = repo_root / "model-mmproj-BF16-00001-of-00002.gguf"
-    second = repo_root / "model-mmproj-BF16-00002-of-00002.gguf"
-    first.write_bytes(b"mmproj shard one")
-    second.write_bytes(b"mmproj shard two")
-
-    assert (
-        ModelConfig.from_identifier(REPO, gguf_variant = "Q8_0").gguf_local_mmproj_bound_bytes
-        == first.stat().st_size + second.stat().st_size
-    )
-
-    # And across a case-variant copy of the same repo dir.
-    other = hub_cache / f"models--{REPO.replace('/', '--')}".upper()
-    other.mkdir()
-    biggest = other / "mmproj-Q8.gguf"
-    biggest.write_bytes(b"mmproj in a case variant of the same repo dir")
-
-    assert (
-        ModelConfig.from_identifier(REPO, gguf_variant = "Q8_0").gguf_local_mmproj_bound_bytes
-        == biggest.stat().st_size
-    )
-
-    # A shard left at zero bytes is a set discovery will reject, so it must not make the
-    # bound positive and advertise a projector the launch then cannot open.
-    for path in (biggest, first, second, projector):
-        path.unlink()
-    (repo_root / "mmproj-F16-00001-of-00002.gguf").write_bytes(b"mmproj")
-    (repo_root / "mmproj-F16-00002-of-00002.gguf").write_bytes(b"")
-
-    stalled = ModelConfig.from_identifier(REPO, gguf_variant = "Q8_0")
-    assert stalled.gguf_local_mmproj_bound_bytes == 0
-    assert stalled.is_vision is False
-
-    # The snapshots container is one of the directories the widened walk reaches, so a
-    # projector dropped straight into it has to be bounded like one at the repo dir.
-    (repo_root / "mmproj-F16-00001-of-00002.gguf").unlink()
-    (repo_root / "mmproj-F16-00002-of-00002.gguf").unlink()
-    snapshots = repo_root / "snapshots"
-    snapshots.mkdir()
-    nested = snapshots / "mmproj-F16.gguf"
-    nested.write_bytes(b"mmproj in the snapshots container")
-
-    in_container = ModelConfig.from_identifier(REPO, gguf_variant = "Q8_0")
-    assert in_container.is_vision is True
-    assert in_container.gguf_local_mmproj_bound_bytes == nested.stat().st_size
+    assert config.is_vision is False
 
 
 def test_every_shard_of_a_verified_cached_copy_is_measured(

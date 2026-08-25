@@ -2700,54 +2700,6 @@ def _detect_local_mmproj(
     return None
 
 
-def _hf_cache_repo_root_mmproj_bound_bytes(repo_id: str) -> int:
-    """Upper bound on a hand-added projector at ``models--<repo>/`` (#9286), or 0.
-
-    For the window where no quant of the repo verifies yet, so there is no weight to
-    pair against and no file to name. Without it a repo that publishes no projector
-    skips companion resolution on the first Apply and attaches the projector only on a
-    second one, and the training guard charges nothing for what the launch makes
-    resident.
-
-    A bound and not a selection: pairing decides which candidate the load opens and
-    its modality decides whether the switch suppresses it, so naming one file would let
-    the caller answer either from a guess. The largest qualifying candidate across every
-    case variant cannot be too small, and the guard charges it whatever the switch says,
-    as it charges an unread remote projector.
-    """
-    bound = 0
-    try:
-        from utils.hf_cache_settings import get_hf_cache_paths
-        target = f"models--{repo_id.replace('/', '--')}".lower()
-        # Case drift can leave several dirs for one repo, as _cached_hf_snapshot_file
-        # already allows for; the bound has to cover whichever the load resolves into.
-        for repo_dir in Path(get_hf_cache_paths().hub_cache).iterdir():
-            if not repo_dir.is_dir() or repo_dir.name.lower() != target:
-                continue
-            candidates = [
-                candidate
-                for directory in _hf_repo_root_companion_dirs(repo_dir)
-                for candidate in _iter_gguf_files(directory)
-            ]
-            for candidate in candidates:
-                # The same completeness rule discovery applies, or the bound would be
-                # positive for a set discovery then rejects, and the first Apply would
-                # advertise vision and launch without a projector.
-                if not _drafter_split_is_complete(candidate):
-                    continue
-                shards, _complete = colocated_split_shards(candidate)
-                by_metadata = is_mmproj_by_metadata(read_gguf_general_metadata(str(candidate)))
-                if not (
-                    by_metadata is True or (by_metadata is None and _is_mmproj(candidate.name))
-                ):
-                    continue
-                bound = max(bound, sum(shard.stat().st_size for shard in shards))
-    except Exception as exc:
-        # A cache-path lookup must never be what fails a config resolve.
-        logger.debug(f"Could not check the HF cache repo root of {repo_id} for a projector: {exc}")
-    return bound
-
-
 def _snapshot_selection_key(snapshot: Path) -> tuple[float, str]:
     """Order snapshots by mtime, then by resolved path.
 
@@ -3835,9 +3787,7 @@ class ModelConfig:
     # A hand-added projector a REMOTE (-hf) load will attach, resolved against the
     # cached weight. Read by the training guard and the GPU-ownership predicate, never
     # handed to llama-server, which resolves its own beside the weight it downloads.
-    # ``bound_bytes`` stands in before any quant is cached, where nothing has paired.
     gguf_local_mmproj_file: Optional[str] = None
-    gguf_local_mmproj_bound_bytes: int = 0
     gguf_mtp_file: Optional[str] = None  # Full path to the separate MTP drafter (local mode)
     gguf_dspark_file: Optional[str] = None  # Full path to a DSpark sidecar (local mode)
     gguf_dflash_file: Optional[str] = None  # Full path to a DFlash sidecar (local mode)
@@ -4152,17 +4102,16 @@ class ModelConfig:
                 # The repo may publish no projector while the user hand-added one at the
                 # HF cache repo root (#9286). load_model only resolves a projector when
                 # the config says vision, so the listing's answer alone would skip it.
+                #
+                # Paired against a cached weight, so there is a file to name and a
+                # modality to read off it. A repo with no verifiable quant is left
+                # alone: the loader picks the projector up on the Apply after the
+                # download, and naming one before anything has paired only lets the
+                # callers below answer from a guess.
                 local_mmproj: Optional[str] = None
-                local_mmproj_bound_bytes = 0
                 if not has_vision and verified_file:
                     local_mmproj = _detect_local_mmproj(verified_file, verified_file)
                     has_vision = local_mmproj is not None
-                if local_mmproj is None:
-                    # A ceiling for a projector the loader may still fall back to, not
-                    # only when the listing says no vision: a repo can publish a set the
-                    # fetch refuses, and before a quant is cached nothing pairs anyway.
-                    local_mmproj_bound_bytes = _hf_cache_repo_root_mmproj_bound_bytes(identifier)
-                    has_vision = has_vision or local_mmproj_bound_bytes > 0
 
                 display_name = f"{identifier.split('/')[-1]} ({variant})"
                 logger.info(
@@ -4181,7 +4130,6 @@ class ModelConfig:
                     gguf_file = None,
                     gguf_verified = verified_gguf,
                     gguf_local_mmproj_file = local_mmproj,
-                    gguf_local_mmproj_bound_bytes = local_mmproj_bound_bytes,
                     gguf_hf_repo = identifier,
                     gguf_variant = variant,
                 )

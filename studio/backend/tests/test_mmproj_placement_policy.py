@@ -875,50 +875,6 @@ def test_gpu_ownership_reads_the_remote_configs_own_projector(tmp_path):
         assert _load_keeps_a_projector(config, disable_vision = True) is True
 
 
-@pytest.mark.parametrize("kwargs", [{}, {"disable_vision": True}])
-def test_an_unpaired_projector_bound_is_charged_whatever_the_switch_says(tmp_path, kwargs):
-    """No file is named before a quant is cached, so which candidate the load opens and
-    whether the switch suppresses it are both unanswerable. Charging the ceiling either
-    way is what the guard already does with an unread remote projector."""
-    seen = {}
-
-    def fake_companions(
-        repo,
-        *,
-        hf_token,
-        include_mmproj,
-        local_mmproj_bytes = 0,
-        **kw,
-    ):
-        seen["local_mmproj_bytes"] = local_mmproj_bytes
-        return max(int(local_mmproj_bytes), 0)
-
-    config = SimpleNamespace(
-        gguf_file = None,
-        gguf_mmproj_file = None,
-        gguf_local_mmproj_file = None,
-        gguf_local_mmproj_bound_bytes = 3 * MIB,
-        gguf_mtp_file = None,
-        gguf_dspark_file = None,
-        gguf_dflash_file = None,
-        gguf_hf_repo = "unsloth/some-vl-GGUF",
-        gguf_variant = "UD-Q4_K_XL",
-        is_vision = True,
-    )
-    variant = SimpleNamespace(quant = "UD-Q4_K_XL", size_bytes = 4 * GIB)
-
-    with (
-        patch("routes.inference._remote_gguf_companion_bytes", fake_companions),
-        patch(
-            "utils.models.model_config.list_gguf_variants",
-            lambda *a, **k: ([variant], False),
-        ),
-    ):
-        _estimate_gguf_required_gb(config, **kwargs)
-
-    assert seen.get("local_mmproj_bytes") == 3 * MIB
-
-
 def _ambient_mmproj(tmp_path, monkeypatch):
     ambient = tmp_path / "ambient-mmproj.gguf"
     ambient.write_bytes(b"\x00" * (1 * MIB))
