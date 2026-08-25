@@ -604,3 +604,10 @@ test("a window past the route cap resets the strip instead of stranding the rest
     /wanted > asked\s*\?\s*\{ clips: \[\.\.\.page\.audio\], stitched: false \}\s*:\s*mergeGalleryPage\(/,
   );
 });
+
+test("a capped restore refresh invalidates a page fetched from the older cursor", () => {
+  assert.match(
+    audioPageSource,
+    /const cursor = galleryCache\.nextCursor;\s*try\s*{\s*const page = await listAudioGallery\(\s*0,\s*PAGE_SIZE,\s*cursor,?\s*\);\s*if \(\s*refreshGeneration !== galleryRefreshGeneration\.current \|\|\s*cursor !== galleryCache\.nextCursor\s*\)\s*return;/,
+  );
+});

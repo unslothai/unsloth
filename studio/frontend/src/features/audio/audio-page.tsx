@@ -650,13 +650,14 @@ export function AudioPage({
     if (loadingMoreRef.current) return;
     loadingMoreRef.current = true;
     const refreshGeneration = galleryRefreshGeneration.current;
+    const cursor = galleryCache.nextCursor;
     try {
-      const page = await listAudioGallery(
-        0,
-        PAGE_SIZE,
-        galleryCache.nextCursor,
-      );
-      if (refreshGeneration !== galleryRefreshGeneration.current) return;
+      const page = await listAudioGallery(0, PAGE_SIZE, cursor);
+      if (
+        refreshGeneration !== galleryRefreshGeneration.current ||
+        cursor !== galleryCache.nextCursor
+      )
+        return;
       galleryCache.nextCursor =
         page.next_before_mtime !== null && page.next_before_id !== null
           ? { mtime: page.next_before_mtime, id: page.next_before_id }
