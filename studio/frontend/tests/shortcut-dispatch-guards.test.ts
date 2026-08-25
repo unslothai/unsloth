@@ -470,3 +470,67 @@ test("both composers refuse to attach from behind a modal", async () => {
     );
   }
 });
+
+// Answering a tool call the user cannot see is the one decision here that must
+// not be reachable by accident, and the Chat route stays mounted under a
+// dialog, so `keyboardReady` alone still says yes.
+test("a tool call cannot be answered from behind a dialog", async () => {
+  const source = await readFile(
+    new URL(
+      "../src/components/assistant-ui/tool-confirmation-controls.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  for (const id of ["approveToolRequest", "declineToolRequest"]) {
+    const at = source.indexOf(`"${id}",`);
+    assert.notEqual(at, -1, `${id} is gone`);
+    const body = source.slice(at, at + 200);
+    const guard = body.indexOf("if (chatCovered()) return;");
+    const call = body.indexOf("resolve(");
+    assert.notEqual(guard, -1, `${id} answers from behind a dialog`);
+    assert.ok(guard < call, `${id} resolves before it checks`);
+  }
+  assert.match(source, /isSurfaceBackgrounded\(COMPOSER_INPUT_SELECTOR\)/);
+});
+
+// A selection made behind a dialog is invisible and still what the mutating
+// chords act on afterwards, and the clipboard is outside the app entirely.
+test("selection and clipboard chords stop at a covered sidebar", async () => {
+  const sidebar = await readFile(
+    new URL("../src/components/app-sidebar.tsx", import.meta.url),
+    "utf8",
+  );
+  for (const id of ["selectAllChats", "copyChatAsMarkdown", "copySessionId"]) {
+    const at = sidebar.indexOf(`useShortcut("${id}", () => {`);
+    assert.notEqual(at, -1, `${id} is gone`);
+    const body = sidebar.slice(at, sidebar.indexOf("\n  });", at));
+    assert.match(
+      body,
+      /if \(sidebarCovered\(\)\) return;/,
+      `${id} acts behind an open dialog`,
+    );
+  }
+});
+
+// The rows these chords stand in for stay enabled while the hardware verdict is
+// out: resolveNavRowState returns disabled false for a pending row on purpose,
+// so the click lands on a page that shows its own loading state. Gating the
+// chords on the unknown verdict would make them disagree with their own rows.
+test("the workspace chords wait on the same verdict their rows do", async () => {
+  const root = await readFile(
+    new URL("../src/app/routes/__root.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(root, /enabled: !isAuthFlowRoute && !chatOnlyMeasured,/);
+  assert.match(root, /enabled: !isAuthFlowRoute && !videoDisabled,/);
+  const rowState = await readFile(
+    new URL("../src/components/nav-row-state.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    rowState,
+    /if \(row\.pending\) \{\n\s*return \{\n\s*disabled: false,/,
+    "a pending row now blocks the click the chord is allowed to make",
+  );
+});

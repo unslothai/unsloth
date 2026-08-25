@@ -1217,10 +1217,10 @@ test("one Escape does not both drop a selection and deny a tool call", async () 
   assert.match(toolCard, /!selectionActive &&/);
   // Both keys, not just Escape: the buttons stay either way.
   for (const id of ["approveToolRequest", "declineToolRequest"]) {
-    const at = toolCard.indexOf(`useShortcut("${id}"`);
+    const at = toolCard.indexOf(`"${id}",`);
     assert.ok(at !== -1, `${id} lost its call site`);
     assert.match(
-      toolCard.slice(at, toolCard.indexOf("});", at)),
+      toolCard.slice(at, toolCard.indexOf("\n  );", at)),
       /enabled: keyboardReady/,
     );
   }

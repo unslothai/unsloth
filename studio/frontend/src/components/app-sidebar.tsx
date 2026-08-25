@@ -2730,7 +2730,13 @@ export function AppSidebar() {
     if (followsSelectionAction("togglePinChat")) return;
     withActiveChat((item) => togglePinnedChat(item.id));
   });
-  useShortcut("selectAllChats", selectAllChats);
+  // A selection made behind a dialog is invisible and still what the mutating
+  // chords hit once the dialog closes, which is the thing those chords being
+  // guarded was meant to prevent.
+  useShortcut("selectAllChats", () => {
+    if (sidebarCovered()) return;
+    selectAllChats();
+  });
   useShortcut("clearChatSelection", clearSelection);
   useShortcut("deleteSelectedChats", () => {
     if (sidebarCovered()) return;
@@ -2744,12 +2750,17 @@ export function AppSidebar() {
     if (sidebarCovered()) return;
     withActiveChat((item) => openRenameChat(item, false));
   });
-  useShortcut("copyChatAsMarkdown", () =>
-    withActiveChat((item) => void copyChatItemAsMarkdown(item)),
-  );
-  useShortcut("copySessionId", () =>
-    withActiveChat((item) => void copyChatSessionId(item)),
-  );
+  // The clipboard is outside the app, so writing a hidden chat's contents into
+  // it from behind a dialog is not something the user can take back by closing
+  // the dialog.
+  useShortcut("copyChatAsMarkdown", () => {
+    if (sidebarCovered()) return;
+    withActiveChat((item) => void copyChatItemAsMarkdown(item));
+  });
+  useShortcut("copySessionId", () => {
+    if (sidebarCovered()) return;
+    withActiveChat((item) => void copyChatSessionId(item));
+  });
 
   // These four walk the list, so holding them steps through it, the way an
   // arrow key does. The rest are one-shot and ignore auto-repeat.

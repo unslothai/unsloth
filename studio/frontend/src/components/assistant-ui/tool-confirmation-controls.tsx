@@ -6,7 +6,11 @@
 import { Button } from "@/components/ui/button";
 import { resolveToolConfirmation } from "@/features/chat/api/chat-api";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { COMPOSER_INPUT_SELECTOR, useShortcut } from "@/features/settings";
+import {
+  COMPOSER_INPUT_SELECTOR,
+  isSurfaceBackgrounded,
+  useShortcut,
+} from "@/features/settings";
 import type {
   ToolCallMessagePartComponent,
   ToolCallMessagePartStatus,
@@ -124,21 +128,40 @@ export function ToolConfirmationControls({
     showControls &&
     pending === null &&
     !(autoAllowed && !failed);
-  useShortcut("approveToolRequest", () => void resolve("allow"), {
-    enabled: keyboardReady,
-    // Enter belongs to the composer while it has focus.
-    skipInTextFields: true,
-  });
-  useShortcut("declineToolRequest", () => void resolve("deny"), {
-    enabled: keyboardReady,
-    skipInTextFields: true,
-    // A request usually arrives with the composer still focused from the
-    // prompt that caused it, and Escape types nothing there, so the gate would
-    // hold the decline back at the one moment it is most wanted. Enter above
-    // gets no such pass: that key sends. Every other field keeps its Escape,
-    // the queued-prompt editor and the settings search included.
-    textFieldException: COMPOSER_INPUT_SELECTOR,
-  });
+  // The Chat route stays mounted under a dialog, so `keyboardReady` still says
+  // yes while the request itself is hidden behind one. Answering a tool call
+  // the user cannot see is the one decision here that must not be reachable by
+  // accident, so both chords ask at press time.
+  const chatCovered = () => isSurfaceBackgrounded(COMPOSER_INPUT_SELECTOR);
+  useShortcut(
+    "approveToolRequest",
+    () => {
+      if (chatCovered()) return;
+      void resolve("allow");
+    },
+    {
+      enabled: keyboardReady,
+      // Enter belongs to the composer while it has focus.
+      skipInTextFields: true,
+    },
+  );
+  useShortcut(
+    "declineToolRequest",
+    () => {
+      if (chatCovered()) return;
+      void resolve("deny");
+    },
+    {
+      enabled: keyboardReady,
+      skipInTextFields: true,
+      // A request usually arrives with the composer still focused from the
+      // prompt that caused it, and Escape types nothing there, so the gate
+      // would hold the decline back at the one moment it is most wanted. Enter
+      // above gets no such pass: that key sends. Every other field keeps its
+      // Escape, the queued-prompt editor and the settings search included.
+      textFieldException: COMPOSER_INPUT_SELECTOR,
+    },
+  );
 
   if (!showControls) return null;
   // Auto-approved tools resolve silently unless the post fails.
