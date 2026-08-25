@@ -5,6 +5,7 @@ import { useEffect, useRef } from "react";
 import { Switch } from "@/components/ui/switch";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { useT } from "@/i18n";
+import { isTauri } from "@/lib/api-base";
 import {
   ActiveColorControl,
   ChatFontRow,
@@ -13,6 +14,7 @@ import {
   ContrastSliderRow,
   FontSmoothingSwitch,
   HeadingFontRow,
+  InterfaceScaleRow,
   PointerCursorsSwitch,
   ReduceMotionSegmented,
   ResetCustomizationButton,
@@ -127,6 +129,16 @@ export function AppearanceTab() {
       </SettingsSection>
 
       <SettingsSection title={t("settings.appearance.custom.preferencesTitle")}>
+        {isTauri && (
+          <SettingsRow
+            label={t("settings.appearance.custom.interfaceScale.label")}
+            description={t(
+              "settings.appearance.custom.interfaceScale.description",
+            )}
+          >
+            <InterfaceScaleRow />
+          </SettingsRow>
+        )}
         <SettingsRow
           label={t("settings.appearance.custom.pointerCursors.label")}
           description={t(

@@ -7,6 +7,10 @@ import { createRoot } from "react-dom/client";
 import "./index.css";
 import { App } from "./app/app";
 import { fetchDeviceType } from "./config/env";
+import {
+  applyInterfaceScale,
+  useInterfaceScaleStore,
+} from "./features/settings/stores/interface-scale-store";
 import { initializeLocale } from "./i18n";
 import { isTauri } from "./lib/api-base";
 import { watchOverlayScrollbarGutter } from "./lib/overlay-scrollbar";
@@ -40,8 +44,13 @@ function renderApp(): void {
 }
 
 const localeInitialization = initializeLocale();
-if (typeof localeInitialization !== "string") {
-  localeInitialization.then(renderApp);
+const interfaceScaleInitialization = applyInterfaceScale(
+  useInterfaceScaleStore.getState().scale,
+).catch(() => undefined);
+if (typeof localeInitialization !== "string" || isTauri) {
+  Promise.all([localeInitialization, interfaceScaleInitialization]).then(
+    renderApp,
+  );
 } else {
   renderApp();
 }

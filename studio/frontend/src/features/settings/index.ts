@@ -45,6 +45,10 @@ export type {
 } from "./stores/appearance-custom-store";
 export { useMonitorOverlayStore } from "./stores/monitor-overlay-store";
 export {
+  applyInterfaceScale,
+  useInterfaceScaleStore,
+} from "./stores/interface-scale-store";
+export {
   type MonitorFrame,
   useMonitorFrameStore,
 } from "./stores/monitor-frame-store";

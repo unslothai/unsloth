@@ -24,7 +24,9 @@ import { LoadedModelsIndicator } from "@/features/loaded-models";
 import { NativeIntentDrain } from "@/features/native-intents/native-intent-drain";
 import {
   applyCustomizationToDocument,
+  applyInterfaceScale,
   useAppearanceCustomStore,
+  useInterfaceScaleStore,
   useTheme,
 } from "@/features/settings";
 import { SttDownloadPrompt } from "@/features/settings/components/stt-download-prompt";
@@ -852,6 +854,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
 function AppearanceCustomizationEffect() {
   const { theme, resolved } = useTheme();
   const customization = useAppearanceCustomStore((s) => s.customization);
+  const interfaceScale = useInterfaceScaleStore((s) => s.scale);
   useEffect(() => {
     applyCustomizationToDocument(customization, resolved);
   }, [customization, resolved]);
@@ -863,6 +866,9 @@ function AppearanceCustomizationEffect() {
       )
       .catch(() => undefined);
   }, [theme]);
+  useEffect(() => {
+    void applyInterfaceScale(interfaceScale).catch(() => undefined);
+  }, [interfaceScale]);
   return null;
 }
 
