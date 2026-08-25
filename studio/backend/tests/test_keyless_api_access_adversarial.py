@@ -545,6 +545,38 @@ def test_a_real_credential_authenticates_under_every_scope_and_transport(monkeyp
             )
 
 
+def test_a_rebound_hostname_cannot_pose_as_a_local_client():
+    """DNS rebinding produces every local signal the socket checks look at.
+
+    A page on `evil.example` whose record is re-pointed at 127.0.0.1 keeps its own
+    origin, so the fetch is same-origin: no `Origin`, `Sec-Fetch-Site: same-origin`,
+    loopback peer on a loopback socket. Unlike the `no-cors` case the response is
+    readable, so under `full` this reads local admin data. `Host` is the one header
+    that still names the page's own domain.
+    """
+    seed_user()
+    for scope_name in ("inference", "full"):
+        set_keyless_api_access(scope_name)
+        path = "/v1/models" if scope_name == "inference" else "/api/chat/threads"
+        for hostile in ("evil.example:8888", "localhost.evil.example:8888",
+                        "evil.example", "127.0.0.1.evil.example:8888",
+                        "[::1]evil.example", "studio.internal:8888"):
+            assert keyless_request_allowed(
+                request_for(path = path, method = "GET",
+                            headers = {"Host": hostile, "Sec-Fetch-Site": "same-origin"})
+            ) is False, f"{hostile} was admitted under {scope_name}"
+
+        # a client that addressed the socket directly is unaffected
+        for direct in ("127.0.0.1:8888", "localhost:8888", "[::1]:8888", "127.0.0.1",
+                       "LOCALHOST:8888", "localhost.:8888"):
+            assert keyless_request_allowed(
+                request_for(path = path, method = "GET", headers = {"Host": direct})
+            ) is True, f"{direct} was refused under {scope_name}"
+
+        # and no Host at all stays admitted: the merged suite sends none
+        assert keyless_request_allowed(request_for(path = path, method = "GET")) is True
+
+
 # ── the reported race, pinned deterministically ──────────────────────────────
 
 

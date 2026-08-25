@@ -327,6 +327,40 @@ def _browser_initiated_elsewhere(request: Any) -> bool:
     return site.strip().lower() not in ("same-origin", "none")
 
 
+def _host_authority_is_direct(request: Any) -> bool:
+    """Whether the caller addressed this server directly rather than through a name.
+
+    Guards DNS rebinding, which the socket checks cannot see. A page on
+    ``evil.example`` whose record is re-pointed at ``127.0.0.1`` keeps its own
+    origin, so its fetch is same-origin: no ``Origin``, ``Sec-Fetch-Site:
+    same-origin``, and a loopback peer on a loopback socket. Every signal above
+    reads as a local client, and the response is readable by the page.
+
+    ``Host`` is what still differs, since the browser sends the name the page was
+    served from. A direct client sends the literal address or ``localhost``; only a
+    rebound page sends a domain. Absent stays admitted, because the merged suite
+    and HTTP/1.0 callers send none and no browser omits it.
+    """
+    from utils.lan_access_settings import _normalized_ip
+
+    try:
+        host = request.headers.get("host")
+    except Exception:
+        return False
+    if not host:
+        return True
+    host = host.strip()
+    if host.startswith("["):  # [::1] or [::1]:port, rejecting junk after the bracket
+        end = host.find("]")
+        if end == -1 or (host[end + 1 :] and not host[end + 1 :].startswith(":")):
+            return False
+        host = host[1:end]
+    elif host.count(":") == 1:
+        host = host.split(":", 1)[0]
+    host = host.lower().rstrip(".")
+    return host == "localhost" or _normalized_ip(host) is not None
+
+
 def keyless_transport_allowed(request: Any, scope: str) -> bool:
     """Enforce the loopback/private-LAN boundary from authoritative ASGI state."""
     try:
@@ -335,6 +369,8 @@ def keyless_transport_allowed(request: Any, scope: str) -> bool:
     except Exception:
         return False
     if _browser_initiated_elsewhere(request):
+        return False
+    if not _host_authority_is_direct(request):
         return False
     app_state = _request_app_state(request)
     if _hosted_mode_forbidden(app_state):
