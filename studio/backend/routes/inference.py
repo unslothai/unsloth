@@ -24058,13 +24058,18 @@ async def _anthropic_passthrough_stream(
     )
 
 
-def _sum_passthrough_attempt_stats(prior: dict, selected: dict) -> dict:
-    """Keep the selected response while accounting for an earlier attempt."""
-    if not isinstance(prior, dict) or not isinstance(selected, dict):
+def _sum_passthrough_attempt_stats(first: dict, retry: dict, selected: dict) -> dict:
+    """Keep selected content with the chronological attempts' aggregate stats."""
+    if not all(isinstance(item, dict) for item in (first, retry, selected)):
         return selected
-    if not isinstance(prior.get("usage"), dict) or not isinstance(selected.get("usage"), dict):
+    if not isinstance(first.get("usage"), dict) or not isinstance(retry.get("usage"), dict):
         return selected
-    return _summed_tool_loop_stats(prior, selected)
+    aggregate = _summed_tool_loop_stats(first, retry)
+    result = dict(selected)
+    result["usage"] = aggregate["usage"]
+    if "timings" in aggregate:
+        result["timings"] = aggregate["timings"]
+    return result
 
 
 async def _anthropic_passthrough_non_streaming(
@@ -24200,9 +24205,13 @@ async def _anthropic_passthrough_non_streaming(
                 if retry_resp.status_code == 200:
                     retry_data = retry_resp.json()
                     if response_has_promotable_calls(retry_data, _allowed_tools, openai_tools):
-                        data = _sum_passthrough_attempt_stats(first_data, retry_data)
+                        data = _sum_passthrough_attempt_stats(
+                            first_data, retry_data, retry_data
+                        )
                     else:
-                        data = _sum_passthrough_attempt_stats(retry_data, first_data)
+                        data = _sum_passthrough_attempt_stats(
+                            first_data, retry_data, first_data
+                        )
             except (httpx.RequestError, ValueError) as exc:
                 logger.warning("tool-call nudge retry failed; keeping original: %s", exc)
 
@@ -26114,9 +26123,9 @@ async def _openai_passthrough_non_streaming_upstream(
                 retry_data = retry_resp.json()
                 if response_has_promotable_calls(retry_data, _allowed_tools, body.get("tools")):
                     resp = retry_resp
-                    data = _sum_passthrough_attempt_stats(first_data, retry_data)
+                    data = _sum_passthrough_attempt_stats(first_data, retry_data, retry_data)
                 else:
-                    data = _sum_passthrough_attempt_stats(retry_data, first_data)
+                    data = _sum_passthrough_attempt_stats(first_data, retry_data, first_data)
                 usage_aggregated = data is not first_data and data is not retry_data
         except asyncio.CancelledError:
             api_monitor.finish(monitor_id, "cancelled")

@@ -962,7 +962,8 @@ class TestNudgeRetryAnthropic:
             )
 
             assert len(client.posts) == 2
-            assert data["usage"]["input_tokens"] == 7
+            assert data["content"][0]["text"] == GARBAGE_SIGNAL
+            assert data["usage"]["input_tokens"] == 20
             assert data["usage"]["output_tokens"] == 8
 
         asyncio.run(_run())
