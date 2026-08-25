@@ -15,7 +15,12 @@
 import logging
 
 from .loader import FastModel, DISABLE_SDPA_MODEL_NAMES
-from .loader_utils import DEFAULT_DEVICE_MAP, UNSLOTH_DEVICE_MAP, requested_device_map
+from .loader_utils import (
+    DEFAULT_DEVICE_MAP,
+    UNSLOTH_DEVICE_MAP,
+    requested_device_map,
+    unmarked_device_map,
+)
 from ._utils import (
     SUPPORTS_BFLOAT16,
     resolve_model_class,
@@ -1848,17 +1853,17 @@ class FastSentenceTransformer(FastModel):
         if _st_cache_dir is not None and "cache_dir" not in kwargs:
             kwargs["cache_dir"] = _st_cache_dir
 
-        # The decline above only spends the sentinel on our copy. Hand the nested load a
-        # plain `str`, not the marked default: FastModel would read that marker as "nobody
-        # chose this" and re-upgrade it under UNSLOTH_AUTO_DEVICE_MAP, splitting the model
-        # across cards while `st_device` below still says "sequential" and
-        # SentenceTransformer pulls it back onto one.
+        # The decline above only spends the sentinel on our copy. Strip the marker before
+        # the nested load: FastModel would read it as "nobody chose this" and re-upgrade it
+        # under UNSLOTH_AUTO_DEVICE_MAP, splitting the model across cards while `st_device`
+        # below still says "sequential" and SentenceTransformer pulls it back onto one.
+        # Only the marker -- an explicit dict placement has to arrive as a dict.
         #
         # A plain value rather than pinning the env var around the call: os.environ is
         # process-wide, so that pin also reached unrelated loads on other threads, and two
         # overlapping sentence loads could restore it out of order and leave the switch in
         # whichever state finished last.
-        device_map = str(device_map)
+        device_map = unmarked_device_map(device_map)
         try:
             model, tokenizer = FastModel.from_pretrained(
                 model_name = model_name,

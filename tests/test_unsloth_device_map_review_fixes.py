@@ -67,7 +67,13 @@ def _build(
         keep = (
             (
                 isinstance(node, ast.FunctionDef)
-                and node.name in ("requested_device_map", "resolve_unsloth_device_map", "_as_bytes")
+                and node.name
+                in (
+                    "requested_device_map",
+                    "resolve_unsloth_device_map",
+                    "_as_bytes",
+                    "unmarked_device_map",
+                )
             )
             or (isinstance(node, ast.ClassDef) and node.name == "_DefaultDeviceMap")
             or (
@@ -145,7 +151,10 @@ def test_sentence_transformers_hands_the_nested_load_a_plain_value():
     that fix reached unrelated loads on other threads.
     """
     source = open(os.path.join(MODELS, "sentence_transformer.py"), encoding = "utf-8").read()
-    assert "device_map = str(device_map)" in source
+    assert "device_map = unmarked_device_map(device_map)" in source
+    assert "device_map = str(device_map)" not in source, (
+        "a bare str() also stringifies an explicit dict placement into \"{'': 0}\""
+    )
     assert (
         'os.environ["UNSLOTH_AUTO_DEVICE_MAP"]' not in source
     ), "the process-wide pin is back; it is visible to every other thread"
@@ -172,9 +181,7 @@ def test_a_caller_supplied_max_memory_does_not_collide_with_the_measured_one():
     assert len(planner.calls) == 1
     _, kwargs = planner.calls[0]
     assert kwargs["retained_rows"] == 128
-    # Theirs on the device they capped, ours everywhere else.
     assert kwargs["max_memory"][0] == 4 * 2**30
-    assert kwargs["max_memory"][1] == 10 * 2**30
 
 
 def test_a_cap_above_free_memory_does_not_raise_the_budget():
@@ -341,3 +348,115 @@ def test_the_legacy_diffusion_alias_declines_planning_with_its_own_reason():
         assert "diffusion_gemma" in rendered
         return
     raise AssertionError("no resolve_unsloth_device_map call in diffusion.py")
+
+
+# --------------------------------------------------------------------------------------
+# 4. Second round: the caller's device set, the marker, and the prequantized skip list.
+# --------------------------------------------------------------------------------------
+
+
+def test_the_caller_max_memory_keys_are_the_devices_the_load_may_use():
+    """A caller who writes `{0: ..., 1: ...}` on a four-GPU host is reserving GPUs 2 and 3
+    for something else. accelerate reads a supplied mapping that way -- its
+    `_init_infer_auto_device_map` takes `devices = list(max_memory.keys())` and
+    `get_max_memory` never widens the mapping back out -- so overlaying the caps onto every
+    visible card left the planner free to place weights on the two they had withheld."""
+    planner = _Recorder(plan = _Plan())
+    ns = _build(
+        devices = 4,
+        free = {i: 16 * 2**30 for i in range(4)},
+        planner = planner,
+    )
+    ns["resolve_unsloth_device_map"](
+        "unsloth",
+        "unsloth/Qwen3-0.6B",
+        planner_kwargs = {"max_memory": {0: "12GiB", 1: "12GiB"}},
+    )
+    assert sorted(planner.calls[0][1]["max_memory"]) == [0, 1]
+
+
+def test_a_device_the_caller_names_but_we_cannot_measure_survives():
+    """`cpu` and `disk` are legitimate `max_memory` keys and there is no `mem_get_info` for
+    them, so an intersection that kept only measured devices would silently delete the
+    offload targets the caller set up."""
+    planner = _Recorder(plan = _Plan())
+    ns = _build(free = {0: 8 * 2**30, 1: 8 * 2**30}, planner = planner)
+    ns["resolve_unsloth_device_map"](
+        "unsloth",
+        "unsloth/Qwen3-0.6B",
+        planner_kwargs = {"max_memory": {0: "4GiB", "cpu": "30GiB", "disk": "unreadable"}},
+    )
+    budgets = planner.calls[0][1]["max_memory"]
+    assert budgets[0] == 4 * 2**30
+    assert budgets["cpu"] == 30 * 2**30
+    # Unreadable and unmeasured: theirs, verbatim, for the planner to make sense of.
+    assert budgets["disk"] == "unreadable"
+
+
+def test_an_empty_max_memory_is_not_a_request_to_use_no_devices():
+    """`{}` carries no device set to honour, and reading it as one would leave the planner
+    with nothing to place on."""
+    planner = _Recorder(plan = _Plan())
+    ns = _build(free = {0: 8 * 2**30, 1: 8 * 2**30}, planner = planner)
+    ns["resolve_unsloth_device_map"](
+        "unsloth",
+        "unsloth/Qwen3-0.6B",
+        planner_kwargs = {"max_memory": {}},
+    )
+    assert sorted(planner.calls[0][1]["max_memory"]) == [0, 1]
+
+
+@pytest.mark.parametrize(
+    "placement",
+    [
+        {"": 0, "model": 1},
+        {"": "cuda:0"},
+        "auto",
+        "balanced",
+        "cuda:0",
+        None,
+    ],
+)
+def test_only_the_marker_is_stringified_on_the_way_to_the_nested_load(placement):
+    """`str()` on the marked default is the point; `str()` on a dict turns an explicit
+    placement into the text `"{'': 0, 'model': 1}"`, which transformers reads as a device
+    name and rejects."""
+    ns = _build()
+    assert ns["unmarked_device_map"](placement) is placement
+
+
+def test_the_marker_still_arrives_at_the_nested_load_as_a_plain_string():
+    ns = _build()
+    plain = ns["unmarked_device_map"](ns["DEFAULT_DEVICE_MAP"])
+    assert plain == "sequential"
+    assert type(plain) is str
+
+
+def test_a_prequantized_hybrid_checkpoint_declines_rather_than_mis_sizing_mamba():
+    """`merge_quantization_configs` overlays loading attributes for GPTQ/AWQ/... but never
+    for bitsandbytes, so a prequantized checkpoint is sized by the list in its own
+    config.json no matter what the loader passes. The mamba exclusions the load adds
+    afterwards would then be charged at 4bit while the load keeps them dense."""
+    source = open(os.path.join(MODELS, "llama.py"), encoding = "utf-8").read()
+    tree = ast.parse(source)
+
+    guard_line = None
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If):
+            continue
+        rendered = ast.unparse(node)
+        if "IS_FALCON_H1" in rendered and "llm_int8_skip_modules" in rendered:
+            guard_line = node.lineno
+            break
+    assert guard_line is not None, "nothing guards the plan against the unbundled exclusions"
+
+    plan_line = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "resolve_unsloth_device_map":
+            plan_line = node.lineno
+            break
+    assert plan_line is not None
+    assert guard_line < plan_line, (
+        f"llama.py:{guard_line} decides the skip-list gap after llama.py:{plan_line} has "
+        f"already planned, so the plan is built before the veto exists"
+    )

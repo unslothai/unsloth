@@ -2648,6 +2648,32 @@ class FastLlamaModel:
                 or "num_labels loads a task head the repo config does not describe"
             )
 
+        # The skip list below is merged into a prequantized checkpoint's own bundled list
+        # (#5027) AFTER this plan is built, and handing the planner the merged list would not
+        # reach it either: `AutoHfQuantizer.merge_quantization_configs` overlays loading
+        # attributes only for GPTQ / AWQ / AutoRound / FbgemmFp8 / CompressedTensors / Mxfp4,
+        # never for bitsandbytes, so a prequantized checkpoint is always sized by the list
+        # baked into its config.json. Modules the load then keeps in compute dtype are
+        # charged at 4bit here, and the head device is budgeted short by the difference.
+        #
+        # Mamba is the case worth refusing over: the hybrid path keeps whole `out_proj`
+        # stacks dense, which is GiBs of error. Everything else this adds that can match a
+        # module on this loader is an MoE router, and those top out near 70 MiB even on
+        # Qwen3-235B-A22B (4096 x 128 experts x 94 layers, bf16 against 4bit) -- inside the
+        # planner's own 256 MiB safety margin, and not worth losing the plan over.
+        if _planner_skip_reason is None and IS_FALCON_H1 and _ckpt_quant_method == "bitsandbytes":
+            _bundled = getattr(model_config, "quantization_config", None)
+            _bundled_skip = (
+                _bundled.get("llm_int8_skip_modules")
+                if isinstance(_bundled, dict)
+                else getattr(_bundled, "llm_int8_skip_modules", None)
+            ) or []
+            if not all(_m in _bundled_skip for _m in ("mamba", "out_proj")):
+                _planner_skip_reason = (
+                    "this prequantized checkpoint does not bundle the mamba exclusions the "
+                    "load adds, so the plan would size dense weights at 4bit"
+                )
+
         # Here, not in loader.py: the mapper up there can still substitute the repo (a
         # -bnb-4bit name resolving to its 16-bit twin), so a plan sized for the name the
         # caller gave is the wrong plan for the one actually loaded.

@@ -139,8 +139,9 @@ def test_sentence_transformer_decline_survives_the_env_var():
     plans a split map while the `st_device` blocks read "sequential" and pull that model
     onto one card.
 
-    The guard is that the nested call is handed a plain `str`, which carries no marker and
-    so cannot be re-upgraded. Asserted as the absence of the process-wide pin too: pinning
+    The guard is that the nested call is handed the marker stripped off, leaving a value it
+    cannot re-upgrade -- and only the marker, since `str()` over everything turns an explicit
+    dict placement into text. Asserted as the absence of the process-wide pin too: pinning
     `os.environ` around the call worked, but `os.environ` is shared, so it also reached
     unrelated loads on other threads and two overlapping sentence loads could restore it
     out of order.
@@ -164,7 +165,7 @@ def test_sentence_transformer_decline_survives_the_env_var():
         for node in ast.walk(function)
         if isinstance(node, ast.Assign)
         and any(getattr(t, "id", None) == "device_map" for t in node.targets)
-        and ast.unparse(node.value) == "str(device_map)"
+        and ast.unparse(node.value) == "unmarked_device_map(device_map)"
     ]
     assert strips, "the nested load still gets the marked default, which it will re-upgrade"
 

@@ -129,6 +129,17 @@ class _DefaultDeviceMap(str):
 DEFAULT_DEVICE_MAP = _DefaultDeviceMap("sequential")
 
 
+def unmarked_device_map(device_map):
+    """The default with its marker removed; anything else exactly as it came in.
+
+    For handing a value to a nested load that must not re-read it as "nobody chose this".
+    `str()` on its own would do that to the marker and to a dict alike, turning a caller's
+    `{"": 0, "model": 1}` into the literal text `"{'': 0, 'model': 1}"`, which transformers
+    then tries to read as a placement name.
+    """
+    return str(device_map) if isinstance(device_map, _DefaultDeviceMap) else device_map
+
+
 def requested_device_map(device_map):
     """`UNSLOTH_AUTO_DEVICE_MAP=1` opts in without touching any call site.
 
@@ -334,15 +345,35 @@ def resolve_unsloth_device_map(
     # and keep it under what is actually free: a caller reserving room for another workload
     # knows something we cannot measure, but they cannot conjure memory the card has not
     # got, and planning above free is how a plan OOMs on dispatch.
+    # Popped, not forwarded: `max_memory` is a named parameter of the planner, so a caller's
+    # copy left in `planner_kwargs` raises `TypeError: got multiple values for keyword
+    # argument 'max_memory'`, which the handler below turns into a silent "sequential",
+    # losing both the cap they asked for and the plan.
+    #
+    # A `max_memory` the caller wrote replaces the measured one rather than editing it: its
+    # keys are the devices they are willing to have the load use. That is accelerate's own
+    # reading -- `_init_infer_auto_device_map` takes `devices = list(max_memory.keys())`, and
+    # `get_max_memory` validates a supplied mapping without ever widening it back to every
+    # visible card -- so `{0: "12GiB", 1: "12GiB"}` on a four-GPU host means "GPUs 2 and 3
+    # are somebody else's". Overlaying the caps onto all four left the planner free to put
+    # weights on the two they had reserved.
     planner_kwargs = dict(planner_kwargs or {})
     requested_memory = planner_kwargs.pop("max_memory", None)
-    if requested_memory is not None:
-        for device, budget in dict(requested_memory).items():
-            budget = _as_bytes(budget)
-            if budget is None:
-                continue
+    if requested_memory:
+        budgets = {}
+        for device, written in dict(requested_memory).items():
             measured = max_memory.get(device)
-            max_memory[device] = budget if measured is None else min(measured, budget)
+            budget = _as_bytes(written)
+            if budget is None:
+                # Unreadable, so nothing to compare: what we measured, or, for a device we
+                # never measured (cpu, disk), their value untouched for the planner to read.
+                budgets[device] = measured if measured is not None else written
+            else:
+                # Under what is actually free: a caller reserving room for another workload
+                # knows something we cannot measure, but they cannot conjure memory the card
+                # has not got, and planning above free is how a plan OOMs on dispatch.
+                budgets[device] = budget if measured is None else min(measured, budget)
+        max_memory = budgets
 
     try:
         plan = plan_device_map_for_pretrained(
