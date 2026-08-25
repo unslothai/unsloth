@@ -156,21 +156,114 @@ def test_display_check_reads_the_candidate_environment():
     assert freeze._has_display({"GDK_BACKEND": "x11", "DISPLAY": ":0"})
 
 
-def test_interface_heartbeat_counts_the_whole_liveness_bucket():
-    """studio/backend/loggers/handlers.py collapses the UI liveness group into one shared
-    10s bucket and writes down whichever member won it. Counting only
-    /api/inference/monitor reads zero across a window the webview spent polling."""
+def test_the_heartbeat_survives_the_backend_keeping_its_suppressors_on():
+    """The widened access log is a request, not a guarantee: a run that attached to a
+    backend it did not start never delivered those variables, so that backend still
+    collapses the UI liveness group into one shared 10s bucket and writes down whichever
+    member won it (studio/backend/loggers/handlers.py). Counting the whole group rather
+    than one path is what keeps a count above zero in that case, and the verdict then
+    lands on NO SIGNAL through the branch above rather than on a wrong FROZE."""
     log = (
         '127.0.0.1 "GET /api/inference/images/status" 200\n'
-        '127.0.0.1 "GET /api/auth/status" 200\n'
         '127.0.0.1 "GET /api/inference/audio/stt/status" 200\n'
     )
-    assert len(freeze.MONITOR.findall(log)) == 3
-    # /api/inference/status is deliberately NOT in that bucket: it keeps its own log line,
-    # so counting it would double-count windows the bucket already reported.
-    assert not freeze.MONITOR.findall('"GET /api/inference/status" 200')
+    assert len(freeze.INTERFACE.findall(log)) == 2
+
+
+def test_a_silent_interface_is_not_a_freeze_when_silence_proves_nothing():
+    """The scenario that defeated the previous fix, end to end through the verdict.
+
+    Every repeating poll the previous heartbeat matched is behind a user preference, and
+    the loaded-model ones are behind one that is OFF until somebody turns it on
+    (show-loaded-models-pref.ts: `localStorage.getItem(KEY) === "true"`). Turn the API
+    monitor off in Settings on top of that and the whole group goes quiet on an app that
+    is working perfectly, while /api/liveness carries on because the native shell owns it.
+    The old classifier read exactly that as "the interface never polled at all while the
+    app kept running" and told the reporter their app froze, for every candidate.
+
+    A count of zero cannot distinguish that from a real freeze, so the only correct answer
+    is that there was nothing to measure.
+    """
+    healthy_watchdog = [(t, 0, t // 15) for t in range(15, 241, 15)]
+    result = verdict(healthy_watchdog, n_mon = 0)
+    assert not result.startswith("FROZE")
+    assert result.startswith("NO SIGNAL")
+
+
+def test_the_heartbeat_includes_a_poll_no_preference_can_switch_off():
+    """So that a zero above is rare rather than routine.
+
+    use-export-runtime-lifecycle.ts polls /api/export/status every 5s from an effect with
+    an empty dependency list, mounted at the app root on every route, gated on nothing but
+    hasAuthToken(). There is no setting for it, and unlike every other poll in the app it
+    has no document.hidden check either, so a minimised window keeps it going.
+    """
+    assert freeze.INTERFACE.findall('127.0.0.1 "GET /api/export/status" 200')
+    # The preference-gated polls still count when they are running: a hit from any of them
+    # is equally good proof that the webview is alive. Only their absence means nothing.
+    optional = (
+        '127.0.0.1 "GET /api/inference/monitor" 200\n'
+        '127.0.0.1 "GET /api/inference/status" 200\n'
+        '127.0.0.1 "GET /api/inference/images/status" 200\n'
+        '127.0.0.1 "GET /api/inference/video/status" 200\n'
+        '127.0.0.1 "GET /api/inference/audio/stt/status" 200\n'
+    )
+    assert len(freeze.INTERFACE.findall(optional)) == 5
+    # /api/auth/status is navigation-driven with a 30s TTL (app/auth-guards.ts), never a
+    # timer. Scoring it flatlines the moment the reporter stops clicking, which is the
+    # false FROZE this test exists to keep out.
+    assert not freeze.INTERFACE.findall('"GET /api/auth/status" 200')
     # The watchdog stays its own signal; it must not be swept into the interface count.
-    assert not freeze.MONITOR.findall('"GET /api/liveness" 200')
+    assert not freeze.INTERFACE.findall('"GET /api/liveness" 200')
+
+
+def test_the_run_widens_the_access_log_so_the_heartbeat_is_written_down():
+    """The heartbeat above is invisible by default: /api/export/status is in
+    _QUIET_SUCCESS_PATHS, so the backend drops its 2xx line outright, and the loaded-model
+    polls share one 10s dedup bucket. Both suppressors are off when the two window
+    variables are 0, which is what --verbose sets."""
+    env = freeze.candidate_env({"PATH": "/usr/bin"}, {})
+    assert env["UNSLOTH_STUDIO_ACCESS_LOG_DEDUP_MS"] == "0"
+    assert env["UNSLOTH_STUDIO_ACCESS_LOG_POLL_DEDUP_MS"] == "0"
+    # It is a logging window, not a rendering setting: it must not vary by candidate.
+    for _, extra, _ in freeze.CANDIDATES:
+        assert freeze.candidate_env({}, extra)["UNSLOTH_STUDIO_ACCESS_LOG_DEDUP_MS"] == "0"
+
+
+def test_control_is_not_pinned_by_an_override_the_candidates_never_name():
+    """linux_webkit.rs returns PreserveEnvironment on an inherited
+    WEBKIT_DISABLE_DMABUF_RENDERER or WEBKIT_DMABUF_RENDERER_FORCE_SHM, honours
+    WEBKIT_FORCE_DMABUF_RENDERER as the NVIDIA patch's opt-out, and reads
+    UNSLOTH_WEBKIT_RENDERER_WORKAROUND as its own claim on values it set itself. None of
+    those four are in CANDIDATES, so a set derived from CANDIDATES leaves them active and
+    they pin every launch including the control."""
+    base = {
+        "WEBKIT_DISABLE_DMABUF_RENDERER": "1",
+        "WEBKIT_DMABUF_RENDERER_FORCE_SHM": "1",
+        "WEBKIT_FORCE_DMABUF_RENDERER": "1",
+        "UNSLOTH_WEBKIT_RENDERER_WORKAROUND": "WEBKIT_DISABLE_DMABUF_RENDERER",
+        "GDK_BACKEND": "x11",
+        "PATH": "/usr/bin",
+    }
+    control = freeze.candidate_env(base, {})
+    for name in base:
+        if name != "PATH":
+            assert name not in control, f"{name} still pins the control"
+    assert control["PATH"] == "/usr/bin"
+    # A candidate still gets its own value, and still sheds everything else.
+    shm = freeze.candidate_env(base, {"WEBKIT_DISABLE_COMPOSITING_MODE": "1"})
+    assert shm["WEBKIT_DISABLE_COMPOSITING_MODE"] == "1"
+    assert "WEBKIT_DMABUF_RENDERER_FORCE_SHM" not in shm
+    assert "UNSLOTH_WEBKIT_RENDERER_WORKAROUND" not in shm
+
+
+def test_the_app_marker_is_recorded_so_a_stale_claim_is_visible():
+    """UNSLOTH_WEBKIT_RENDERER_WORKAROUND decides whether the app reads a renderer
+    variable as its own output or as an instruction, so a report that omits it cannot
+    explain a launch that preserved the environment."""
+    import inspect
+
+    assert "UNSLOTH_WEBKIT_RENDERER_WORKAROUND" in inspect.getsource(freeze.exec_env)
 
 
 def test_ports_cover_the_range_the_desktop_actually_uses():
@@ -242,10 +335,10 @@ def test_busy_port_is_not_taken_as_permission_to_stop_a_live_studio(monkeypatch)
 
 
 def test_main_aborts_instead_of_killing_a_running_studio(monkeypatch, capsys, tmp_path):
-    """The end to end shape of the above: a busy port with nobody to ask must reach no
-    candidate at all, so nothing is ever killed."""
+    """The end to end shape of the above: a Studio backend already answering, with nobody
+    to ask, must reach no candidate at all, so nothing is ever killed."""
     launched = []
-    monkeypatch.setattr(freeze, "port_busy", lambda: True)
+    monkeypatch.setattr(freeze, "studio_backend_pids", lambda: [4321])
     monkeypatch.setattr(freeze, "confirm_stop_running_studio", lambda: False)
     monkeypatch.setattr(freeze, "stop_leftover_backend", lambda: launched.append("killed"))
     monkeypatch.setattr(freeze, "run_candidate", lambda *a, **k: launched.append("ran"))
@@ -253,9 +346,61 @@ def test_main_aborts_instead_of_killing_a_running_studio(monkeypatch, capsys, tm
     app.write_text("#!/bin/sh\n")
     app.chmod(0o755)
     monkeypatch.setattr(freeze.sys, "argv", ["unsloth_freeze_report.py", str(app)])
+    # main() writes its report to the working directory. Without this, a regression that
+    # walks past the gate drops a report file into the repository instead of failing here.
+    monkeypatch.chdir(tmp_path)
     assert freeze.main() == 2
     assert launched == []
     assert "no report was written" in capsys.readouterr().out
+    assert not list(tmp_path.glob("unsloth-freeze-report-*.json"))
+
+
+def test_a_listener_that_is_not_ours_does_not_refuse_the_run(monkeypatch, tmp_path):
+    """The abort above must fire on something of ours to stop, not on any listener at all.
+
+    Somebody else's Jupyter on 8888 needs nothing done about it: run.py falls back to the
+    next free port, and stop_leftover_backend() would refuse to touch it anyway. Refusing
+    on it turned every unattended invocation into an immediate exit 2, because
+    confirm_stop_running_studio() returns False when there is nobody to ask.
+    """
+    ran = []
+    monkeypatch.setattr(freeze, "studio_backend_pids", lambda: [])
+    monkeypatch.setattr(freeze, "port_busy", lambda: True)
+    monkeypatch.setattr(
+        freeze, "confirm_stop_running_studio", lambda: pytest.fail("must not ask")
+    )
+    monkeypatch.setattr(freeze, "stop_leftover_backend", lambda: None)
+    monkeypatch.setattr(
+        freeze,
+        "host_facts",
+        lambda: {"session_type": "wayland", "desktop": "GNOME", "gpus": [], "nvidia_driver": ""},
+    )
+    monkeypatch.setattr(
+        freeze,
+        "run_candidate",
+        lambda label, extra, why, cmd: ran.append(label) or {"candidate": label, "verdict": "OK: x"},
+    )
+    app = tmp_path / "unsloth-studio"
+    app.write_text("#!/bin/sh\n")
+    app.chmod(0o755)
+    monkeypatch.setattr(freeze.sys, "argv", ["unsloth_freeze_report.py", str(app)])
+    monkeypatch.chdir(tmp_path)
+    assert freeze.main() == 0
+    assert len(ran) == len(freeze.CANDIDATES)
+
+
+def test_the_gate_and_the_cleanup_share_one_attribution_rule():
+    """Two rules for "is this ours" is how the gate ends up refusing to run against a
+    process the cleanup would then decline to touch. stop_leftover_backend() must ask
+    studio_backend_pids() rather than re-deriving it."""
+    import inspect
+
+    assert "studio_backend_pids()" in inspect.getsource(freeze.stop_leftover_backend)
+    # And the rule itself is the command line, not /proc/<pid>/exe: the backend runs from
+    # a venv whose python is a symlink, so exe resolves to the system interpreter.
+    source = inspect.getsource(freeze.studio_backend_pids)
+    assert "/cmdline" in source
+    assert "{pid}/exe" not in source
 
 
 if __name__ == "__main__":

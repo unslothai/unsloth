@@ -17,19 +17,23 @@ How the freeze is detected
 --------------------------
 Two independent loops poll the backend, and they have different owners:
 
-  the UI liveness polls    the web interface itself; only run while the interface is alive.
-                           Counted as a group (/api/inference/monitor, /api/auth/status and
-                           the three loaded-model status polls) because the backend logs
-                           them through one shared bucket and writes down whichever one
-                           arrived first, so no single path is present in every window.
+  the interface polls      the webview's own requests; only run while the interface is
+                           alive. Led by /api/export/status, which is the one repeating
+                           request the app makes with no preference, no panel and no
+                           window-visibility check in front of it.
   /api/liveness            a native watchdog in the app; keeps running even if the
                            interface is dead
 
 A freeze is the specific pattern where the watchdog keeps ticking and the interface goes
-silent. That is measured here rather than guessed at, which is why this is worth running
-even though you can already see the freeze with your own eyes: it distinguishes "the
-interface stopped" from "the whole app died" from "the app is fine and it looked stuck",
-and it says which of those each workaround produces.
+silent AFTER having been heard. An interface that was never heard from at all is reported
+as NO SIGNAL rather than as a freeze: a count of zero is what a real freeze looks like,
+but it is also what a missing session token looks like, and guessing between them is how
+this script would tell somebody their app froze when it did not.
+
+That is measured here rather than guessed at, which is why this is worth running even
+though you can already see the freeze with your own eyes: it distinguishes "the interface
+stopped" from "the whole app died" from "the app is fine and it looked stuck", and it says
+which of those each workaround produces.
 """
 
 from __future__ import annotations
@@ -51,24 +55,43 @@ from pathlib import Path
 HOME = Path.home()
 STUDIO = HOME / ".unsloth" / "studio"
 BACKEND_LOGS = STUDIO / "logs"
-# The interface's heartbeat, and deliberately not `/api/inference/monitor` alone. The
-# backend collapses the whole UI liveness group into ONE shared 10s log bucket
-# (_LIVENESS_POLL_PATHS / _LIVENESS_DEDUP_KEY in studio/backend/loggers/handlers.py):
-# whichever member of the burst arrives first is written down with its real path and the
-# rest of that window is dropped. Counting one member therefore reads zero for long
-# stretches of a perfectly healthy run, which this script would report as FROZE. Counting
-# the bucket is what makes the count mean "the webview is still asking for things".
+# The interface's heartbeat. /api/export/status is the load-bearing member and the reason
+# this list is trustworthy at all: use-export-runtime-lifecycle.ts polls it every 5s from
+# an effect with an EMPTY dependency list, mounted unconditionally at the app root
+# (studio/frontend/src/app/routes/__root.tsx), and the only thing in front of it is
+# `if (!hasAuthToken()) return;`. There is no setting for it anywhere in the UI, and unlike
+# every other poll in the app it has no `document.hidden` check either, so minimising the
+# window does not stop it.
 #
-# The monitor poll is also conditional: api-monitor-overlay.tsx stands its loop down when
-# the panel is closed with automatic opening turned off. The loaded-model indicators
-# (images/video/stt status) keep polling every 5s for as long as the app is open, so the
-# bucket has a member that does not depend on a UI preference.
+# That property is what the rest of this list lacks. Every other repeating webview poll is
+# behind something the user controls:
+#
+#   /api/inference/monitor          api-monitor-overlay.tsx stands its loop down on
+#                                   `onFullPage || (!autoOpen && !isOpen)`. autoOpen starts
+#                                   out true, but Settings > Resources turns it off and the
+#                                   panel's own "stop opening this automatically" does too.
+#   /api/inference/status and the images / video / audio-stt status polls
+#                                   use-loaded-models.ts returns early on `!track`, and
+#                                   track is show-loaded-models-pref.ts, which is
+#                                   `localStorage.getItem(KEY) === "true"` and therefore
+#                                   OFF until somebody explicitly turns the indicator on.
+#
+# They are still counted, because a hit from any of them is equally good evidence that the
+# webview is alive. What they cannot support is the opposite inference: their silence is
+# the default state of a healthy app, not a symptom. Reading it as one is what made an
+# earlier version of this script report FROZE for every candidate on a stock install, and
+# no amount of grouping them together fixes that, because the whole group is optional.
+#
+# /api/auth/status is deliberately NOT here, even though the backend files it in the same
+# log bucket as the loaded-model polls. app/auth-guards.ts fetches it on navigation with a
+# 30s TTL, never on a timer, so it flatlines as soon as the reporter stops clicking around
+# and scoring it would invent a freeze out of somebody sitting still.
 #
 # None of these are called by the native shell, which only ever requests /api/liveness and
-# /api/health, so every hit here comes from the webview.
-MONITOR = re.compile(
-    r"/api/(?:inference/monitor|auth/status|inference/images/status"
-    r"|inference/video/status|inference/audio/stt/status)"
+# /api/health (studio/src-tauri/src/commands.rs), so every hit here comes from the webview.
+INTERFACE = re.compile(
+    r"/api/(?:export/status|inference/monitor|inference/status"
+    r"|inference/images/status|inference/video/status|inference/audio/stt/status)"
 )
 LIVENESS = re.compile(r"/api/liveness")
 # Printed by the desktop shell (main.rs) before anything else, through a stderr logger, so
@@ -115,19 +138,73 @@ CANDIDATES = [
 
 CANDIDATE_VARS = tuple(sorted({k for _, extra, _ in CANDIDATES for k in extra}))
 
+# Every renderer override the APP reads, which is not the same set as the ones this script
+# tries, and must not be re-derived from CANDIDATES. studio/src-tauri/src/linux_webkit.rs:
+#
+#   WEBKIT_DISABLE_DMABUF_RENDERER    either one present and unclaimed returns
+#   WEBKIT_DMABUF_RENDERER_FORCE_SHM  RenderingPlan::PreserveEnvironment, so the app
+#                                     applies nothing and the inherited value decides the
+#                                     renderer for the whole launch.
+#   WEBKIT_FORCE_DMABUF_RENDERER      the NVIDIA dmabuf patch's own opt-out, honoured
+#                                     explicitly because WebKit returns on DISABLE_DMABUF
+#                                     before it would ever be read.
+#   UNSLOTH_WEBKIT_RENDERER_WORKAROUND  the comma-joined marker naming the variables the
+#                                     app set for itself, so a relaunch can tell its own
+#                                     inherited output from an operator's value. Inherited
+#                                     from an unrelated earlier launch it makes the app
+#                                     read a stale claim as its own and skip the override
+#                                     test above.
+#   GDK_BACKEND                       selects the display backend, which is what decides
+#                                     between the shared-memory switch and no workaround.
+#
+# None of the first four appear in CANDIDATES, so a cleared set derived from CANDIDATES
+# left every one of them active. Any of them still exported in the reporter's shell then
+# pins all four launches, INCLUDING the control, and a control that cannot produce the
+# other answer is not a control: the report comes back saying the comparison was clean
+# when nothing was ever compared.
+RENDERER_OVERRIDE_VARS = (
+    "GDK_BACKEND",
+    "UNSLOTH_WEBKIT_RENDERER_WORKAROUND",
+    "WEBKIT_DISABLE_DMABUF_RENDERER",
+    "WEBKIT_DMABUF_RENDERER_FORCE_SHM",
+    "WEBKIT_FORCE_DMABUF_RENDERER",
+)
+CLEARED_VARS = tuple(sorted(set(CANDIDATE_VARS) | set(RENDERER_OVERRIDE_VARS)))
+
+# Applied to the app this script launches, and to nothing else. The backend's access log
+# suppresses precisely the line the verdict now depends on: /api/export/status is in
+# _QUIET_SUCCESS_PATHS (studio/backend/loggers/handlers.py), so its 2xx is dropped
+# outright, and the loaded-model polls share one 10s dedup bucket. Both suppressors read
+# these two variables once at import, and both are off at 0, which is exactly what
+# `--verbose` sets.
+#
+# This widens what gets written down, not what is being measured: neither variable reaches
+# the renderer, the webview or any user preference, so the app under test is still the app
+# the reporter runs. The backend inherits them because nothing on the spawn path calls
+# env_clear and only UNSLOTH_STUDIO_HOME, STUDIO_HOME and STUDIO_LOCAL_REPO are scrubbed
+# (MANAGED_CHILD_SCRUBBED_ENV in studio/src-tauri/src/process.rs). A run that ATTACHES to a
+# backend it did not start never delivers them, which is why the verdict below treats a
+# heartbeat of zero as "not measured" rather than as a freeze.
+MEASUREMENT_ENV = {
+    "UNSLOTH_STUDIO_ACCESS_LOG_DEDUP_MS": "0",
+    "UNSLOTH_STUDIO_ACCESS_LOG_POLL_DEDUP_MS": "0",
+}
+
 
 def candidate_env(base: dict, extra: dict) -> dict:
-    """The environment for one candidate: the caller's, minus every candidate variable,
-    plus this candidate's own.
+    """The environment for one candidate: the caller's, minus every renderer override,
+    plus the logging this script needs, plus this candidate's own variables.
 
     The subtraction is the point. These are exactly the variables the reporter has already
     been asked to try by hand, so one of them is quite likely still exported in the shell
     this script is run from. Overlaying on top of that leaves the control running with the
     workaround still applied and every comparison in the report meaningless: an inherited
     GDK_BACKEND=x11 puts all four launches through XWayland, and the report says the
-    control was fine.
+    control was fine. It clears RENDERER_OVERRIDE_VARS and not just the four the candidates
+    name, because the app honours a wider set than this script tries.
     """
-    env = {k: v for k, v in base.items() if k not in CANDIDATE_VARS}
+    env = {k: v for k, v in base.items() if k not in CLEARED_VARS}
+    env.update(MEASUREMENT_ENV)
     env.update(extra)
     return env
 
@@ -243,6 +320,38 @@ def port_busy() -> bool:
     return False
 
 
+def studio_backend_pids() -> list[int]:
+    """PIDs listening on a Studio port that are ours, and only those.
+
+    ONE rule, shared by everything that asks the question, so the gate that refuses to run
+    and the cleanup that kills cannot disagree about what counts as ours. They did: the
+    gate keyed on "is any Studio port busy" while the cleanup keyed on attribution, so an
+    unrelated Jupyter on 8888 made the gate refuse to start a run in which the cleanup
+    would have refused to touch it.
+
+    Identify by the command line, not by /proc/<pid>/exe. The backend runs from a
+    virtualenv, and a venv's python is a symlink, so `exe` resolves to the system
+    interpreter (/usr/bin/python3.x) and never matches. Checking it skipped our own backend
+    every time and left the orphan in place.
+    """
+    found = []
+    for pid in sh(
+        [
+            "sh",
+            "-c",
+            f"ss -ltnp 2>/dev/null | grep -E ':({'|'.join(map(str, PORTS))}) ' "
+            "| grep -oE 'pid=[0-9]+' | cut -d= -f2",
+        ]
+    ).split():
+        try:
+            argv = Path(f"/proc/{pid}/cmdline").read_bytes().decode("utf-8", "replace")
+            if str(STUDIO) in argv:
+                found.append(int(pid))
+        except (OSError, ValueError):
+            continue
+    return found
+
+
 def stop_leftover_backend():
     """Stop a backend left behind by the previous candidate.
 
@@ -252,52 +361,35 @@ def stop_leftover_backend():
     into the log died with the app. The result is a backend that serves and is never written
     down, and every candidate after the first reads zero.
 
-    Only processes whose executable lives under ~/.unsloth are touched. Matching on the port
-    alone would happily kill an unrelated program that happens to be listening there.
+    Only processes attributable to Unsloth are touched. Matching on the port alone would
+    happily kill an unrelated program that happens to be listening there.
     """
-    for pid in sh(
-        [
-            "sh",
-            "-c",
-            f"ss -ltnp 2>/dev/null | grep -E ':({'|'.join(map(str, PORTS))}) ' "
-            "| grep -oE 'pid=[0-9]+' | cut -d= -f2",
-        ]
-    ).split():
-        # Identify it by its command line, not by /proc/<pid>/exe. The backend runs from a
-        # virtualenv, and a venv's python is a symlink, so `exe` resolves to the system
-        # interpreter (/usr/bin/python3.x) and never matches. Checking `exe` skipped our own
-        # backend every time and left the orphan in place.
+    for pid in studio_backend_pids():
         try:
-            argv = Path(f"/proc/{pid}/cmdline").read_bytes().decode("utf-8", "replace")
-        except OSError:
-            continue
-        if str(STUDIO) not in argv:
-            print(f"    leaving pid {pid} alone; not started by Unsloth", flush = True)
-            continue
-        try:
-            os.kill(int(pid), signal.SIGTERM)
+            os.kill(pid, signal.SIGTERM)
             print(f"    stopped the previous run's backend (pid {pid})", flush = True)
-        except (OSError, ValueError):
+        except OSError:
             pass
 
 
-def wait_for_free_ports(timeout = 30):
-    """Wait, but say so, and give up early.
+def wait_for_leftover_backend_to_stop(timeout = 30):
+    """Wait for OUR backend to go, but say so, and give up early.
 
-    This used to wait 120s per candidate in silence. When the port is held by a program
-    this script cannot stop (another user's process, or anything that is not Unsloth), it
-    never clears, so a run looked like an eight minute hang with no output and no reason.
+    This used to wait 120s per candidate in silence, and on any listener at all. A port held
+    by something that is not Unsloth never clears and never needed to: the backend walks on
+    to the next free port in the range (_resolve_port in studio/backend/run.py). Waiting on
+    it turned an unrelated service into an eight minute hang with no output and no reason.
     """
-    if not port_busy():
+    if not studio_backend_pids():
         return True
-    print(f"    waiting up to {timeout}s for the Studio port to be released", flush = True)
+    print(f"    waiting up to {timeout}s for the previous backend to exit", flush = True)
     for _ in range(timeout):
-        if not port_busy():
+        if not studio_backend_pids():
             return True
         time.sleep(1)
     print(
-        "    the port is still in use by a program this script cannot stop. Close whatever "
-        "is using it, or this candidate will have nothing to measure.",
+        "    an Unsloth backend is still holding a Studio port and did not stop. Close "
+        "whatever is still running, or this candidate will have nothing to measure.",
         flush = True,
     )
     return False
@@ -353,7 +445,13 @@ def renderer_applied(shell_out: str) -> dict:
 
 
 def exec_env(pid: int) -> dict:
-    """The candidate variables the app was STARTED with, read from the live process."""
+    """The candidate variables the app was STARTED with, read from the live process.
+
+    UNSLOTH_WEBKIT_RENDERER_WORKAROUND is included because it decides whether the app reads
+    a renderer variable as its own earlier output or as an instruction from the operator.
+    Without it the report cannot explain a launch that preserved the environment and
+    applied nothing.
+    """
     try:
         raw = Path(f"/proc/{pid}/environ").read_bytes().decode("utf-8", "replace")
     except OSError:
@@ -361,7 +459,7 @@ def exec_env(pid: int) -> dict:
     found = {}
     for entry in raw.split("\0"):
         k, _, v = entry.partition("=")
-        if k.startswith("WEBKIT_") or k.startswith("__NV_") or k == "GDK_BACKEND":
+        if k.startswith("WEBKIT_") or k.startswith("__NV_") or k in RENDERER_OVERRIDE_VARS:
             found[k] = v
     return found
 
@@ -460,7 +558,29 @@ def classify(
             "signal to tell a frozen interface from a healthy one"
         )
     if n_mon == 0:
-        return "FROZE: the interface never polled at all while the app kept running"
+        # NOT a freeze, however much it looks like one. A heartbeat of zero is what a real
+        # freeze produces, but it is also what several perfectly healthy runs produce, and
+        # nothing in the samples separates them:
+        #
+        #   * the webview only starts polling /api/export/status once it holds a session
+        #     token, so a run sitting on the sign-in screen reads zero;
+        #   * a launch that ATTACHED to a backend it did not start never delivered
+        #     MEASUREMENT_ENV to that backend, which therefore still drops the 2xx line for
+        #     that path and collapses the optional polls into one 10s bucket;
+        #   * every other interface poll is behind a user preference, and the loaded-model
+        #     ones are behind one that is off until somebody turns it on.
+        #
+        # The last of those is why this branch used to be wrong for everybody: on a stock
+        # install with the API monitor switched off, every counted path is silent while
+        # /api/liveness ticks away, and calling that FROZE told a reporter whose app was
+        # fine that all four candidates froze. A verdict the reader has no way to doubt has
+        # to decline when it cannot tell.
+        return (
+            "NO SIGNAL: the interface was never heard from at all, so a frozen webview "
+            "cannot be told apart from one that was never able to poll. Check that you "
+            "are signed in, and that no other copy of Unsloth was already running when "
+            "this started"
+        )
 
     # Did the interface stop polling partway through while the watchdog carried on? That is
     # the reported symptom, and a total that looks healthy can still hide it.
@@ -503,7 +623,7 @@ def run_candidate(label, extra, why, cmd) -> dict:
     print(f"\n=== {label} ===", flush = True)
     print(f"    ({why})", flush = True)
     stop_leftover_backend()
-    if not wait_for_free_ports():
+    if not wait_for_leftover_backend_to_stop():
         print(
             "    the previous run has not released its port; this candidate will attach "
             "to it and is likely to report NO SIGNAL",
@@ -511,7 +631,7 @@ def run_candidate(label, extra, why, cmd) -> dict:
         )
 
     env = candidate_env(dict(os.environ), extra)
-    cleared = sorted(k for k in CANDIDATE_VARS if k in os.environ and k not in extra)
+    cleared = sorted(k for k in CLEARED_VARS if k in os.environ and k not in extra)
     if cleared:
         print(f"    unset for this candidate: {', '.join(cleared)}", flush = True)
     before = backend_offsets()
@@ -548,7 +668,7 @@ def run_candidate(label, extra, why, cmd) -> dict:
             if not at_exec:
                 at_exec = exec_env(proc.pid)
             text = backend_tail(before)
-            n_mon, n_live = len(MONITOR.findall(text)), len(LIVENESS.findall(text))
+            n_mon, n_live = len(INTERFACE.findall(text)), len(LIVENESS.findall(text))
             samples.append((round(time.monotonic() - started), n_mon, n_live))
             if len(samples) % 2 == 0:
                 print(
@@ -575,7 +695,7 @@ def run_candidate(label, extra, why, cmd) -> dict:
 
     text = backend_tail(before)
     shell_out = app_log.read_text(encoding = "utf-8", errors = "replace")
-    n_mon, n_live = len(MONITOR.findall(text)), len(LIVENESS.findall(text))
+    n_mon, n_live = len(INTERFACE.findall(text)), len(LIVENESS.findall(text))
 
     pre_lines = [l for l in (text + shell_out).splitlines() if "desktop_preflight completed" in l]
     preflight = pre_lines[-1].strip() if pre_lines else ""
@@ -601,6 +721,10 @@ def run_candidate(label, extra, why, cmd) -> dict:
         "candidate": label,
         "why": why,
         "env": extra,
+        # What was taken away, not just what was added. A renderer override inherited from
+        # the reporter's shell would otherwise pin this launch invisibly, and the reader of
+        # the report has no other way to see that it was dealt with.
+        "cleared_env": cleared,
         "verdict": verdict,
         "preflight": scrub(preflight) if preflight else "(not seen)",
         "applied_by_app": applied,
@@ -683,10 +807,16 @@ def main() -> int:
     )
     print("Use the app normally during each one. Ctrl-C skips to the next candidate.\n")
 
-    if port_busy():
-        print("Something is already listening on a Studio port. That is either Unsloth")
-        print("running right now, or a backend left behind by an earlier run, and this")
-        print("script cannot tell them apart: continuing STOPS it, which interrupts")
+    # Only refuse over a listener this script would actually stop. Asking about any busy
+    # port at all meant somebody else's Jupyter on 8888 turned every unattended run into an
+    # immediate exit 2, because confirm_stop_running_studio() answers no when there is
+    # nobody to ask, over a process stop_leftover_backend() would then have declined to
+    # touch. An unrelated listener needs nothing done: _resolve_port() in
+    # studio/backend/run.py walks on to the next free port in the range.
+    if studio_backend_pids():
+        print("An Unsloth backend is already listening on a Studio port. That is either")
+        print("Unsloth running right now, or a backend left behind by an earlier run, and")
+        print("this script cannot tell them apart: continuing STOPS it, which interrupts")
         print("whatever that Unsloth is doing.\n")
         print("Close any running Unsloth (including `unsloth studio` in another terminal)")
         print("and start again, or answer below to stop it from here.\n")
@@ -694,6 +824,14 @@ def main() -> int:
             print("Nothing was stopped and no report was written.")
             return 2
         print()
+    elif port_busy():
+        print("Something that is not Unsloth is listening on a Studio port. Nothing needs")
+        print("to be done about it: the backend falls back to the next free port, and this")
+        print("script only ever stops a process it can attribute to Unsloth.\n")
+
+    print("The app is launched with the backend's access log suppressors turned off, so")
+    print("its own liveness polls get written down. That changes what is recorded, not")
+    print("how the interface renders.\n")
 
     facts = host_facts()
     print(f"  session : {facts['session_type']}   desktop: {facts['desktop']}")
@@ -719,7 +857,18 @@ def main() -> int:
 
     out = Path.cwd() / f"unsloth-freeze-report-{datetime.now():%Y%m%d-%H%M%S}.json"
     out.write_text(
-        json.dumps({"host": json.loads(scrub(json.dumps(facts))), "results": results}, indent = 2),
+        json.dumps(
+            {
+                "host": json.loads(scrub(json.dumps(facts))),
+                # Stated, not just commented: every launch below ran with the backend's
+                # access-log suppressors off, which is the only reason the interface
+                # heartbeat appears at all. Anyone comparing this against their own logs
+                # needs to know the recording was widened.
+                "measurement_env": MEASUREMENT_ENV,
+                "results": results,
+            },
+            indent = 2,
+        ),
         encoding = "utf-8",
     )
 
