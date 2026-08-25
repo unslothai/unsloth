@@ -1544,7 +1544,7 @@ def test_every_setting_the_child_needs_is_forwarded_to_it():
 
 # ------------------------------------------------------------ kernel build
 
-LEG_NAMES = ("control", "canary", "gptoss", "grpo")
+LEG_NAMES = ("control", "canary", "gptoss", "grpo", "default")
 
 
 def _build(
@@ -1740,7 +1740,8 @@ def test_every_leg_carries_the_version_recorder(tmp_path):
 
     assert "versions.py" in COMMON_FILES
     for name in LEGS:
-        payload = _payload_notebooks(_build(tmp_path / name, name))[f"t4_{name}.ipynb"]
+        payload = _payload_notebooks(
+            _build(tmp_path / name, name))[f"t4_{LEGS[name].name}.ipynb"]
         assert "versions.py" in _cell(payload, 0)
         assert "versions.flatten_versions" in _cell(payload, 2)
 
@@ -1757,7 +1758,7 @@ def test_every_registered_leg_is_either_carried_or_explicitly_unwired():
 
     carried = [name for kernel in KERNELS for name in kernel]
     assert len(carried) == len(set(carried)), carried
-    assert sorted(carried) + sorted(UNWIRED) == sorted(LEGS), (
+    assert sorted(carried + list(UNWIRED)) == sorted(LEGS), (
         sorted(carried),
         sorted(UNWIRED),
         sorted(LEGS),
@@ -1810,10 +1811,12 @@ def test_generated_cells_compile(tmp_path):
             for index, cell in enumerate(nb["cells"]):
                 compile("".join(cell["source"]), f"{path}/{name}#cell{index}", "exec")
                 seen += 1
-    # 5 builds x (3 driver cells + 4 payload cells), asserted so a refactor that
-    # stops reaching the payloads cannot leave this test passing while compiling
-    # nothing that matters.
-    assert seen == 5 * 7, seen
+    # One build per leg in LEG_NAMES x (3 driver cells + 4 payload cells),
+    # asserted so a refactor that stops reaching the payloads cannot leave this
+    # test passing while compiling nothing that matters. Derived from LEG_NAMES
+    # rather than hardcoded: the literal 5 silently meant "every leg" only for
+    # as long as nobody added one.
+    assert seen == (len(LEG_NAMES) + 1) * 7, seen
 
 
 def _undefined_names(source: str, already_bound: set) -> tuple:
@@ -2277,6 +2280,28 @@ def test_the_grpo_leg_names_its_attention_backend():
     fail loudly rather than quietly select something else."""
     from legs import LEGS
     assert LEGS["grpo"].env.get("VLLM_ATTENTION_BACKEND") == "TRITON_ATTN"
+
+
+def test_the_grpo_leg_disables_flashinfer_at_the_only_layer_that_holds():
+    """Two Kaggle probes died four rungs each on the same flashinfer link, one
+    of them WITH `VLLM_USE_FLASHINFER_SAMPLER=0` already set, because that is
+    not the layer the decision is made at. unsloth_zoo's patch_vllm assigns
+    both vLLM env vars itself during model load:
+
+        vllm_utils.py:2494  VLLM_ATTENTION_BACKEND      = "FLASHINFER"
+        vllm_utils.py:2502  VLLM_USE_FLASHINFER_SAMPLER = "1"
+
+    each behind `elif Version(vllm_version) >= Version("0.11.0")`, which this
+    leg's 0.19.1 pin satisfies. Its guard checks only that nvcc and ninja are
+    present, and on Kaggle both are - the missing piece is the driver stub the
+    compiled objects link against, which that check does not look at. So the
+    two settings above are overwritten before vLLM ever reads them.
+
+    UNSLOTH_VLLM_NO_FLASHINFER is read at vllm_utils.py:2449, ahead of every
+    assignment, and is the only one of the three that survives. Losing it puts
+    the leg straight back on a link that cannot succeed on this image."""
+    from legs import LEGS
+    assert LEGS["grpo"].env.get("UNSLOTH_VLLM_NO_FLASHINFER") == "1"
 
 
 def test_the_grpo_leg_no_longer_carries_xformers():

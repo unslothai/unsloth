@@ -579,6 +579,13 @@ def batched_generation(model, tokenizer, prompts, *, max_new_tokens) -> dict:
     a green left-padding check that never once left-padded. The caller asserts
     the spread; this function measures it.
     """
+    # Imported here, not at module scope, matching every other torch user in
+    # this file: the module is loaded before unsloth is installed in some
+    # paths, and a top-level torch import would move the failure to import
+    # time. Kernel unsloth-probe-defaultleg-723c28 trained all 10 steps and
+    # then died on `NameError: name 'torch' is not defined` right here.
+    import torch
+
     tokenizer.padding_side = "left"
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -594,7 +601,13 @@ def batched_generation(model, tokenizer, prompts, *, max_new_tokens) -> dict:
                 top_p = None,
                 top_k = None,
                 use_cache = True,
-                pad_token_id = tokenizer.pad_token_id or tokenizer.eos_token_id,
+                # `x or y` is wrong here: pad_token_id 0 is a perfectly ordinary
+                # id (Qwen and Llama both use low ids) and is falsy, so `or`
+                # silently substitutes the EOS id for it and pads the batch with
+                # end-of-sequence tokens. Test for None.
+                pad_token_id = (tokenizer.pad_token_id
+                                if tokenizer.pad_token_id is not None
+                                else tokenizer.eos_token_id),
             )
         # Slice by the PADDED width, not by each prompt's own length: with left
         # padding every row starts at the same column, and using the unpadded

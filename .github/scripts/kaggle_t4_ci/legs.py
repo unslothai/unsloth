@@ -283,6 +283,38 @@ LEGS: dict[str, Leg] = {
         # the committed trace.
         reference = "",
     ),
+    "default": Leg(
+        vram_gb = 0.7,
+        name = "Default",
+        summary = "Qwen3-0.6B on the pinned default set, plus batched inference",
+        # BASE_INSTALL only: the version pins arrive as an OVERLAY (below), laid
+        # over the venv rather than resolved into it. Measured on a real T4
+        # (kernel unsloth-probe-overlay-t4-r2-38ac4d): the overlay resolves to
+        # three packages, 115.9 MB, in 10.0s, against the 158-207s each leg
+        # spends on its own install groups. Same versions, a fifteenth of the
+        # time.
+        install = BASE_INSTALL,
+        overlay = ("transformers==4.57.6", "trl~=0.22.0"),
+        entry = "run_t4_smoke.py",
+        files = SMOKE_FILES,
+        # WHY THIS MODEL AND THESE VERSIONS. `control` pins transformers 5.5.0 /
+        # trl 0.24.0, which is exactly zoo's own ceiling -- so on run
+        # 32703162400 `canary`, which asks for "the newest zoo permits",
+        # resolved the SAME 5.5.0 / 0.24.0. Two legs, one library set. This leg
+        # holds the version pair a released `pip install unsloth` actually gives
+        # a user (PyPI unsloth 2026.8.19 declares transformers <=5.5.0,>=4.51.3
+        # and trl <=0.24.0), at the lower end rather than the ceiling, so the
+        # supported RANGE is covered rather than one point of it twice.
+        args = (
+            "--model", "unsloth/Qwen3-0.6B",
+        ),
+        # No reference yet. The committed band
+        # (references/t4_qwen2.5-0.5b.json) is a Qwen2.5-0.5B trajectory and
+        # says nothing about Qwen3-0.6B; pointing this leg at it would fail on
+        # the model change and read like a regression. Captured on a real T4 in
+        # its own run, as references/README.md requires, and wired in then.
+        reference = "",
+    ),
     "gptoss": Leg(
         vram_gb = 12.78,
         name = "gptoss",
@@ -400,6 +432,25 @@ LEGS: dict[str, Leg] = {
             # native path, and skipping the build saves a four-file nvcc compile
             # in a session billed by wall clock.
             "VLLM_USE_FLASHINFER_SAMPLER": "0",
+            # The two settings above are NOT sufficient on their own, and a probe
+            # that set only them failed identically to one that set neither
+            # (kernels unsloth-probe-grpo-ladder-kaggle-7e7697 and -r2-ddcb18,
+            # four rungs each, every one dying on the same link). unsloth_zoo's
+            # patch_vllm OVERWRITES both during model load:
+            #
+            #   vllm_utils.py:2494  VLLM_ATTENTION_BACKEND      = "FLASHINFER"
+            #   vllm_utils.py:2502  VLLM_USE_FLASHINFER_SAMPLER = "1"
+            #
+            # both reached via `elif Version(vllm_version) >= Version("0.11.0")`,
+            # which 0.19.1 satisfies. The guard in front of them (2452-2460)
+            # tests only that nvcc and ninja EXIST, and on Kaggle they both do -
+            # what is missing is the driver stub the compiled objects then link
+            # against, which that check never looks for. So anything set here is
+            # gone by the time vLLM reads it.
+            #
+            # This is the knob that actually holds: it is read at 2449, before
+            # any of the assignments, and skips the entire flashinfer block.
+            "UNSLOTH_VLLM_NO_FLASHINFER": "1",
         },
         # Now true, which is the point of the version choice above: this leg no
         # longer replaces torch, so it shares the image's view instead of
@@ -431,6 +482,23 @@ MAX_LEGS_PER_KERNEL = 4
 UNWIRED: dict[str, str] = {
     # A leg belongs here only while a specific unanswered question about it
     # would be answered by a session. "Not tried yet" is not that.
+    "default": (
+        "The overlay carries this leg, and the overlay is proven for TRAINING as "
+        "of kernel unsloth-probe-defaultleg-723c28 on a real Tesla T4: "
+        "transformers 4.57.6 and trl 0.22.2 resolved from the overlay against the "
+        "image's untouched torch 2.10.0, and 10 of 10 steps ran at 1.16 it/s. "
+        "What is NOT yet answered is the half this leg exists for. That run died "
+        "after training, in batched_generation, on a NameError of mine, so the "
+        "batch-size agreement and the left-padding assertion have never once "
+        "executed on hardware. Wiring it now would carry a leg whose headline "
+        "check is unproven, which is the vacuous-pass failure this file has "
+        "already been caught by five times. It also has reference = \"\", so it "
+        "has no band to check against and cannot detect drift yet. "
+        "STILL UNKNOWN: whether batched generation agrees across batch sizes "
+        "1/2/4/8 under left padding on a T4, and what reference band this model "
+        "holds. unsloth-probe-defaultleg-r2-563e31 answers the first; wire the "
+        "leg when that kernel reports the batched record and a band is captured."
+    ),
     "grpo": (
         "vLLM standby sleep hits an illegal memory access on Turing, and it is "
         "INTERMITTENT. Three sessions on a real Tesla T4, identical to the "

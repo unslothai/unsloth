@@ -1802,6 +1802,84 @@ def test_gptoss_still_reads_a_bf16_card_and_a_t4_the_way_it_did():
     )
 
 
+
+
+def test_batched_generation_runs_end_to_end_against_a_stub_model():
+    """Every other test in this section feeds `batched_generation_failures` a
+    dict someone typed. That checks the RULE and never once executes the code
+    that produces the dict, which is how kernel unsloth-probe-defaultleg-723c28
+    trained all ten steps on a real T4 and then died on
+
+        NameError: name 'torch' is not defined
+
+    inside `batched_generation` itself. Every torch user in run_t4_smoke.py
+    imports it inside the function; that one did not, and no CPU test noticed
+    because none of them ever called it.
+
+    So drive the real function with a stub tokenizer and model. The stub echoes
+    a deterministic continuation per row, so agreement across batch sizes is
+    guaranteed and this asserts the plumbing rather than the model: shapes,
+    the padded-width slice, and that the function runs at all.
+    """
+    import torch
+
+    from run_t4_smoke import batched_generation, batched_generation_failures
+
+    class _Enc(dict):
+        def to(self, _device):
+            return self
+
+    class _Tok:
+        padding_side = "right"
+        pad_token = "<pad>"
+        eos_token = "<eos>"
+        pad_token_id = 0
+
+        def __call__(self, text, return_tensors = None, padding = False):
+            texts = [text] if isinstance(text, str) else list(text)
+            # One token per character, so a length spread in the prompts is a
+            # length spread in the ids and the padding is real.
+            ids = [[ord(c) % 100 + 1 for c in t] for t in texts]
+            if return_tensors is None:
+                return {"input_ids": ids[0] if isinstance(text, str) else ids}
+            width = max(len(i) for i in ids)
+            # LEFT padding, which is what the function asks for and what the
+            # padded-width slice below depends on.
+            padded = [[0] * (width - len(i)) + i for i in ids]
+            return _Enc(input_ids = torch.tensor(padded),
+                        attention_mask = torch.tensor(
+                            [[0] * (width - len(i)) + [1] * len(i) for i in ids]))
+
+        def decode(self, row, skip_special_tokens = False):
+            return "".join(chr(int(v)) for v in row if int(v) != 0)
+
+    class _Model:
+        device = "cpu"
+
+        def generate(self, input_ids = None, attention_mask = None,
+                     max_new_tokens = 8, **_kw):
+            # Append the same continuation to every row, derived from that
+            # row's own unpadded content, so batching cannot change it.
+            outs = []
+            for row in input_ids:
+                real = [int(v) for v in row if int(v) != 0]
+                tail = [(sum(real) % 26) + 65] * max_new_tokens
+                outs.append([int(v) for v in row] + tail)
+            return torch.tensor(outs)
+
+    # Eight, because BATCH_SIZES tops out at 8 and the rule rejects a record
+    # whose largest batch could never have been formed. Lengths 1..8 so every
+    # batch pads and the padded-width slice is exercised rather than skipped.
+    prompts = ["abcdefgh"[:n] * 1 for n in range(1, 9)]
+    record = batched_generation(_Model(), _Tok(), prompts, max_new_tokens = 4)
+
+    assert record["distinct_lengths"] == 8, "the stub prompts must actually pad"
+    assert record["padding_side_observed"] == "left"
+    assert len(record["singles"]) == len(prompts)
+    assert all(s for s in record["singles"]), "the padded-width slice dropped everything"
+    assert batched_generation_failures(record) == []
+
+
 def test_a_healthy_batched_generation_record_reports_no_failures():
     from run_t4_smoke import batched_generation_failures
     assert batched_generation_failures(_batch_record()) == []
