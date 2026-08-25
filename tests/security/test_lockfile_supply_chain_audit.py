@@ -452,11 +452,16 @@ def test_blocking_kinds_contains_unsupported_lockfile_version():
 def test_skip_env_warning_escapes_workflow_command_injection(tmp_path):
     """An attacker controlling ``UNSLOTH_LOCKFILE_AUDIT_SKIP`` could
     embed a literal ``\\n::error::...`` and split the warning into a
-    second workflow-command annotation. Both the invalid-skip branch
-    (raw value echoed) and the accepted-skip branch (stripped value
-    echoed) must escape the value via ``_gha_escape()`` so the message
-    is collapsed onto one annotation line -- meaning no stderr line
-    OTHER than the audit's own ``::warning::`` may begin with ``::``.
+    second workflow-command annotation. Both branches interpolate the
+    value and so both must route it through ``_gha_escape()``: the
+    accepted branch echoes the stripped value, the rejected branch
+    echoes the PRE-strip raw one.
+
+    Which branch a value takes is decided AFTER stripping, so a payload
+    has to be chosen for the branch it is meant to exercise. Anything
+    long enough to carry a whole ``::error::`` lands on the accepted
+    side; the rejected side is reachable only under the 5-char floor or
+    on a booleanish token, which is why branch B below looks so small.
     """
     fixture = FIXTURES / "clean_lockfile.json"
 
@@ -467,11 +472,9 @@ def test_skip_env_warning_escapes_workflow_command_injection(tmp_path):
         # is an injected command.
         return [ln for ln in stderr.splitlines() if ln.lstrip().startswith("::")]
 
-    # Branch A -- invalid skip value (rejected, audit falls through).
-    # Use a value that survives the validation check (not a boolean
-    # token, >=5 chars) BUT contains injection chars. The accepted
-    # branch is the easier-to-trip target; the rejected branch is
-    # exercised in test_skip_env_var_with_short_value_rejected.
+    # Branch A -- accepted skip value (audit skipped, rc 0). It strips
+    # to itself, is not a booleanish token and clears the 5-char floor,
+    # so it carries a full `::error::` into the echoed reason.
     injected_bad = "%inject\n::error::bad"  # contains %, \n, and ::
     env_a = {**os.environ, "UNSLOTH_LOCKFILE_AUDIT_SKIP": injected_bad}
     proc_a = subprocess.run(
@@ -501,17 +504,12 @@ def test_skip_env_warning_escapes_workflow_command_injection(tmp_path):
         f"::warning::); injection split the message into: {cmd_lines_a}"
     )
 
-    # Branch B -- short skip value with embedded injection.
-    # The PRE-strip raw value is also interpolated in the rejected
-    # branch's warning, so it MUST be escaped too.
-    injected_short = "1\n::error::short-bad"
-    # Critically, this value strips to "1\n::error::short-bad" which is
-    # NOT a booleanish token (the literal newline + tail prevents the
-    # ``_skip.lower() in _invalid_tokens`` match), so the audit ends up
-    # routing it through the ACCEPTED branch, not the rejected one.
-    # That is itself a hardening property worth pinning: an attacker
-    # cannot bypass the length check via embedded control chars without
-    # the warning being escaped on the way out.
+    # Branch B -- rejected skip value (audit falls through and runs).
+    # Strips to "1\n%", under the 5-char floor, so it reaches the branch
+    # that echoes _skip_raw. test_skip_env_var_with_short_value_rejected
+    # covers this branch with a plain "1", which carries no control
+    # character and so cannot tell escaped from unescaped.
+    injected_short = "1\n%"
     env_b = {**os.environ, "UNSLOTH_LOCKFILE_AUDIT_SKIP": injected_short}
     proc_b = subprocess.run(
         [
@@ -527,12 +525,28 @@ def test_skip_env_warning_escapes_workflow_command_injection(tmp_path):
         timeout = 30,
         env = env_b,
     )
-    assert (
-        "%0A" in proc_b.stderr
-    ), f"value with embedded \\n must be %0A-escaped; stderr was:\n{proc_b.stderr}"
-    cmd_lines_b = _physical_lines_starting_with_double_colon(proc_b.stderr)
-    assert all(ln.startswith("::warning::") for ln in cmd_lines_b), (
-        f"injection split the message into a non-::warning:: physical " f"line: {cmd_lines_b}"
+    combined_b = proc_b.stdout + proc_b.stderr
+    assert "REQUIRES a justification" in combined_b, combined_b
+    # Per-file banner: a rejected value must fall through to the audit,
+    # not skip it. Clean fixture, so rc 0 with the audit performed.
+    assert "[lockfile-audit] npm:" in combined_b, combined_b
+    assert proc_b.returncode == 0, (
+        f"rejected skip must still run the audit and pass a clean fixture; "
+        f"rc={proc_b.returncode}\n--- stdout ---\n{proc_b.stdout}\n"
+        f"--- stderr ---\n{proc_b.stderr}"
+    )
+    assert "%0A" in proc_b.stderr and "%25" in proc_b.stderr, (
+        "the RAW skip value's \\n and %% must be %0A / %25 escaped; "
+        f"stderr was:\n{proc_b.stderr}"
+    )
+    warnings_b = [
+        ln
+        for ln in _physical_lines_starting_with_double_colon(proc_b.stderr)
+        if ln.startswith("::warning::")
+    ]
+    assert len(warnings_b) == 1 and "Proceeding with audit" in warnings_b[0], (
+        "the rejected-skip warning must stay on ONE physical line; an "
+        f"unescaped newline split it: {proc_b.stderr!r}"
     )
 
 
