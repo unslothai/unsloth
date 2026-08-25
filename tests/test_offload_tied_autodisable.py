@@ -13,8 +13,14 @@ macOS, Windows and WSL alike: the host's own os.name never decides.
 import ast, os
 from contextlib import contextmanager
 
-import torch
-import torch.nn as nn
+import pytest
+
+# Skip rather than error where torch is absent. Only `nn.Embedding` / `nn.Linear` /
+# `torch.device` are wanted here, no GPU, but a bare module-level import turns a machine
+# without torch into a collection error, which aborts the whole pytest session instead of
+# leaving one skipped module behind.
+torch = pytest.importorskip("torch")
+nn = pytest.importorskip("torch.nn")
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VISION = os.path.join(HERE, "unsloth", "models", "vision.py")
