@@ -162,6 +162,20 @@ def test_a_verified_cached_copy_is_carried_to_the_load(remote_gguf_repo, monkeyp
     )
 
 
+def test_a_verified_cached_copy_uses_its_repo_root_projector(
+    remote_gguf_repo, monkeypatch, hub_cache
+):
+    name = "Llama-3.2-1B-Instruct-Q8_0.gguf"
+    cached = _cached(hub_cache, name)
+    projector = cached.parent.parent.parent / "mmproj-F16.gguf"
+    projector.write_bytes(b"mmproj")
+    monkeypatch.setattr(llama_cpp, "cached_gguf_for_load", lambda repo, variant, **kw: str(cached))
+
+    config = ModelConfig.from_identifier(REPO, gguf_variant = "Q8_0")
+
+    assert config.is_vision is True
+
+
 def test_every_shard_of_a_verified_cached_copy_is_measured(
     remote_gguf_repo, monkeypatch, hub_cache
 ):

@@ -1384,24 +1384,19 @@ def snapshot_has_gguf_projector(snapshot: Optional[Path]) -> bool:
         return False
     from hub.utils.gguf import list_local_gguf_variants
     from utils.models.gguf_metadata import mmproj_accepts_image
+    from utils.models.model_config import (
+        _local_gguf_companion_search_root,
+        detect_mmproj_file,
+    )
 
     try:
         snapshot_path = Path(snapshot)
-        if list_local_gguf_variants(str(snapshot_path))[1]:
-            return True
-        snapshots_dir = snapshot_path.parent
-        repo_root = snapshots_dir.parent
-        if snapshots_dir.name != "snapshots" or not repo_root.name.startswith("models--"):
-            return False
-        for candidate in repo_root.iterdir():
-            if (
-                is_gguf_filename(candidate.name)
-                and is_mmproj_filename(candidate.name)
-                and not is_appledouble_metadata(candidate)
-                and candidate.is_file()
-                and candidate.stat().st_size > 0
-                and mmproj_accepts_image(str(candidate))
-            ):
+        variants, _ = list_local_gguf_variants(str(snapshot_path))
+        for variant in variants:
+            weight = snapshot_path / variant.filename
+            search_root = _local_gguf_companion_search_root(str(weight), str(weight))
+            projector = detect_mmproj_file(str(weight), search_root = search_root)
+            if projector is not None and mmproj_accepts_image(projector):
                 return True
         return False
     except Exception:

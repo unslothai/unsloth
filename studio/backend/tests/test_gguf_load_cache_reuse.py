@@ -550,6 +550,30 @@ class TestLoadReusesCachedCopy:
 
         assert out == str(snap / "mmproj-F16.gguf")
 
+    def test_companion_reuses_a_projector_at_the_hf_repo_root(self, hf_cache):
+        backend = LlamaCppBackend()
+        snap = _build_cache(hf_cache, REPO, {MAIN: 4})
+        projector = snap.parent.parent / "mmproj-F16.gguf"
+        projector.write_bytes(b"mmproj")
+
+        with patch("huggingface_hub.list_repo_files", lambda *_a, **_k: [MAIN]):
+            out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN))
+
+        assert out == str(projector)
+
+    def test_audio_only_repo_root_projector_does_not_shadow_remote_vision(self, hf_cache):
+        backend = LlamaCppBackend()
+        snap = _build_cache(hf_cache, REPO, {MAIN: 4})
+        (snap.parent.parent / "mmproj-F16.gguf").write_bytes(b"audio")
+
+        with (
+            patch("utils.models.gguf_metadata.mmproj_accepts_image", return_value = False),
+            patch.object(backend, "_download_companion_gguf", return_value = "/remote/image.gguf"),
+        ):
+            out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN))
+
+        assert out == "/remote/image.gguf"
+
     def test_companion_finds_snapshot_through_hf_symlink(self, hf_cache):
         backend = LlamaCppBackend()
         snap = _build_cache(hf_cache, REPO, {})

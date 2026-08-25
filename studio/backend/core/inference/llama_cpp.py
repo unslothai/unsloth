@@ -11219,6 +11219,26 @@ class LlamaCppBackend:
         copy co-located with the main GGUF's cache snapshot.
         """
 
+        if near_path:
+            from utils.models.model_config import (
+                _local_gguf_companion_search_root,
+                detect_mmproj_file,
+            )
+            from utils.models.gguf_metadata import mmproj_accepts_image
+
+            snapshot_sibling = _companion_snapshot_sibling(near_path, _pick_mmproj)
+            search_root = _local_gguf_companion_search_root(near_path, near_path)
+            cached = detect_mmproj_file(near_path, search_root = search_root)
+            if cached is not None and mmproj_accepts_image(cached):
+                if snapshot_sibling is not None:
+                    try:
+                        if Path(snapshot_sibling).resolve() == Path(cached).resolve():
+                            cached = snapshot_sibling
+                    except OSError:
+                        pass
+                logger.info("Reusing cached mmproj: %s", cached)
+                return cached
+
         return self._download_companion_gguf(
             hf_repo = hf_repo,
             hf_token = hf_token,

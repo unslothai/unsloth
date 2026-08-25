@@ -3960,6 +3960,16 @@ class ModelConfig:
                     if sizes:
                         verified_gguf = (identifier, variant, verified_file, sizes)
 
+                    # A cached repo can have a user-supplied projector at its HF repo root.
+                    # The remote listing cannot report that local file, so derive capability
+                    # from the same selected weight and companion pairing the load will use.
+                    if not has_vision:
+                        companion_root = _local_gguf_companion_search_root(
+                            verified_file, verified_file
+                        )
+                        local_mmproj = detect_mmproj_file(verified_file, search_root = companion_root)
+                        has_vision = local_mmproj is not None and mmproj_accepts_image(local_mmproj)
+
                 display_name = f"{identifier.split('/')[-1]} ({variant})"
                 logger.info(
                     f"Detected remote GGUF repo '{identifier}', "

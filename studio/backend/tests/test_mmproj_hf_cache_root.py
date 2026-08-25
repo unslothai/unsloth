@@ -16,6 +16,7 @@ from utils.models.model_config import (  # noqa: E402
     _local_gguf_companion_search_root,
     detect_mmproj_file,
 )
+from hub.utils.inventory_scan import snapshot_has_gguf_projector  # noqa: E402
 from routes.inference import _native_drafter_accept  # noqa: E402
 
 _GGUF_MAGIC = 0x46554747
@@ -85,6 +86,39 @@ def test_projector_at_the_hf_repo_root_is_found(tmp_path):
         str(weight), search_root = _local_gguf_companion_search_root(str(weight.parent), str(weight))
     )
     assert found is not None and Path(found).resolve() == projector.resolve()
+
+
+def test_inventory_rejects_a_repo_root_projector_with_mismatched_metadata(tmp_path):
+    repo, weight = _hf_repo(tmp_path)
+    _gguf_with_general(
+        weight,
+        {
+            "general.name": "Model",
+            "general.architecture": "qwen3vl",
+            "general.base_model.0.repo_url": "https://huggingface.co/org/Model",
+        },
+    )
+    projector = repo / "mmproj-F16.gguf"
+    _gguf_with_general(
+        projector,
+        {
+            "general.type": "mmproj",
+            "general.architecture": "qwen3vl",
+            "general.base_model.0.repo_url": "https://huggingface.co/other/Model",
+        },
+    )
+
+    assert snapshot_has_gguf_projector(weight.parent) is False
+
+    _gguf_with_general(
+        projector,
+        {
+            "general.type": "mmproj",
+            "general.architecture": "qwen3vl",
+            "general.base_model.0.repo_url": "https://huggingface.co/org/Model",
+        },
+    )
+    assert snapshot_has_gguf_projector(weight.parent) is True
 
 
 def test_a_sibling_repo_s_projector_stays_invisible(tmp_path):
