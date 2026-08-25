@@ -3985,19 +3985,25 @@ _RAG_ROSTER_MAX_NAMES = 40
 _RAG_ROSTER_MAX_NAME_CHARS = 120
 _roster_failure_logged = False
 
-# Mirrors the visibility clauses every retrieval query carries (store.search_lexical,
-# search_dense, all_chunks_for_scope), so the roster can never name a document that
-# retrieval would not return: no chunks, a retired scope, or a linked-folder row whose
-# mapping was never installed.
+# Mirrors the SCOPE-level visibility clauses every retrieval query carries
+# (store.search_lexical, search_dense, all_chunks_for_scope): no chunks, a retired scope,
+# or a linked-folder row whose mapping was never installed. It does not mirror
+# search_dense's embedding-identity filter, which depends on which embedder is live in
+# this process; a document indexed by a superseded embedder is still attached and still
+# answers lexical and hybrid search, which is what the sentence claims.
 _ROSTER_PREDICATE = (
     "d.status = 'completed' AND d.num_chunks > 0 "
     "AND NOT EXISTS (SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope = d.scope) "
     "AND (d.linked_folder_id IS NULL OR EXISTS "
     "(SELECT 1 FROM linked_folder_files ff WHERE ff.document_id = d.id))"
 )
+# Grouped, not a plain LIMIT: a scope holding the same filename many times would
+# otherwise spend the whole limit on one name and silently drop the documents behind
+# it, with nothing left over to say more exist. Distinct here also makes the count
+# below its exact continuation.
 _ROSTER_NAMES_SQL = (
     f"SELECT d.filename FROM documents d WHERE d.scope = ? AND {_ROSTER_PREDICATE} "
-    "ORDER BY d.created_at DESC, d.id LIMIT ?"
+    "GROUP BY d.filename ORDER BY MAX(d.created_at) DESC, MIN(d.id) LIMIT ?"
 )
 _ROSTER_COUNT_SQL = (
     "SELECT COUNT(DISTINCT d.filename) FROM documents d "
@@ -4028,7 +4034,9 @@ def _roster_name(raw: object) -> str:
     name = _re.sub(r"\s+", " ", str(raw or "")).strip()
     if len(name) > _RAG_ROSTER_MAX_NAME_CHARS:
         name = name[:_RAG_ROSTER_MAX_NAME_CHARS] + "..."
-    return name.replace('"', '\\"')
+    # Backslash first: escaping the quote into a name that already ends in one would
+    # spell an escaped backslash and leave the quote live.
+    return name.replace("\\", "\\\\").replace('"', '\\"')
 
 
 def _read_roster(rag_scope: dict) -> tuple[list[str], int]:
