@@ -835,9 +835,8 @@ def _decode_audio_trim_by_timestamp(
                 break
     if not decoded_any:
         return None, None
-    # A soundtrack ending inside the interval leaves the rest of `output` silent rather than
-    # failing: the video covers the range, embedded audio is optional (a video carrying none
-    # is accepted outright), and the untrimmed path clamps a mismatched track the same way.
+    # A track ending inside the interval leaves the rest of `output` silent rather than
+    # failing: embedded audio is optional, and a video carrying none is accepted outright.
     if not copied_any and timeline_end <= start:
         return None, None
     return output, sample_rate
