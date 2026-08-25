@@ -40,7 +40,10 @@ def _gguf_with_general(path: Path, fields: dict) -> Path:
 def _clip_projector(path: Path, *flags: str) -> Path:
     """A projector GGUF declaring the given ``clip.has_*_encoder`` bools."""
     body = b"".join(
-        struct.pack("<Q", len(flag)) + flag.encode() + struct.pack("<I", 7) + struct.pack("<?", True)
+        struct.pack("<Q", len(flag))
+        + flag.encode()
+        + struct.pack("<I", 7)
+        + struct.pack("<?", True)
         for flag in flags
     )
     path.parent.mkdir(parents = True, exist_ok = True)

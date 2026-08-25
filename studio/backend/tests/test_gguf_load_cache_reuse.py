@@ -586,9 +586,7 @@ class TestLoadReusesCachedCopy:
 
             (repo_root / "mmproj-F16-00002-of-00002.gguf").write_bytes(b"mmproj")
             # Complete, and llama-server is handed shard 1 whichever shard ranked first.
-            assert backend._download_mmproj(
-                hf_repo = REPO, near_path = str(snap / MAIN)
-            ) == str(first)
+            assert backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN)) == str(first)
 
     def test_companion_cancelled_before_scanning_cached_projectors(self, hf_cache):
         backend = LlamaCppBackend()
