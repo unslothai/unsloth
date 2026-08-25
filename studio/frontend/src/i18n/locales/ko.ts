@@ -217,23 +217,11 @@ export const ko = {
       clear: "단축키 제거",
       reset: "기본값 복원",
       resetAll: "모두 기본값으로 초기화",
-      groups: {
-        general: "일반",
-        chat: "채팅",
-      },
+      primarySlot: "단축키",
+      alternateSlot: "대체 단축키",
+      browserReserved:
+        "브라우저가 이 조합을 가져갈 수 있습니다. 데스크톱 앱에서는 동작합니다.",
       actions: {
-        newChat: {
-          label: "새 채팅",
-          description: "새 채팅을 시작합니다",
-        },
-        searchChats: {
-          label: "채팅 검색",
-          description: "채팅 검색 창을 엽니다",
-        },
-        toggleSidebar: {
-          label: "사이드바 토글",
-          description: "사이드바를 표시하거나 숨깁니다",
-        },
         openSettings: {
           label: "설정 열기",
           description: "설정 창을 엽니다",
@@ -241,6 +229,206 @@ export const ko = {
         openKeyboardShortcuts: {
           label: "키보드 단축키",
           description: "이 단축키 목록을 엽니다",
+        },
+        searchChats: {
+          label: "채팅 검색",
+          description: "채팅 검색 창을 엽니다",
+        },
+        openMcpServers: {
+          label: "MCP 서버",
+          description: "이 채팅의 MCP 서버를 설정합니다",
+        },
+        logOut: {
+          label: "로그아웃",
+          description: "Unsloth에서 로그아웃합니다",
+        },
+        approveToolRequest: {
+          label: "요청 승인",
+          description: "대기 중인 도구 호출을 허용합니다",
+        },
+        declineToolRequest: {
+          label: "요청 거부",
+          description: "대기 중인 도구 호출을 거부합니다",
+        },
+        newChat: {
+          label: "새 채팅",
+          description: "새 채팅을 시작합니다",
+        },
+        newTemporaryChat: {
+          label: "새 임시 채팅",
+          description: "기록에 저장되지 않는 채팅을 시작합니다",
+        },
+        newStandaloneChat: {
+          label: "새 독립 채팅",
+          description: "프로젝트 밖에서 새 채팅을 시작합니다",
+        },
+        archiveChat: {
+          label: "채팅 보관",
+          description: "선택한 채팅을, 없으면 현재 채팅을 보관합니다",
+        },
+        markChatUnread: {
+          label: "읽지 않음으로 표시",
+          description: "선택한 채팅을, 없으면 현재 채팅을 읽지 않음으로 표시합니다",
+        },
+        togglePinChat: {
+          label: "고정 전환",
+          description: "선택한 채팅을, 없으면 현재 채팅을 고정하거나 해제합니다",
+        },
+        selectAllChats: {
+          label: "모든 채팅 선택",
+          description: "사이드바의 모든 채팅을 선택합니다",
+        },
+        clearChatSelection: {
+          label: "선택 해제",
+          description: "선택한 채팅을 해제합니다. Esc로도 해제됩니다",
+        },
+        deleteSelectedChats: {
+          label: "선택한 채팅 삭제",
+          description: "선택한 모든 채팅을 삭제합니다",
+        },
+        nextRecentlyViewedChat: {
+          label: "다음에 본 채팅",
+          description: "최근 본 채팅을 앞으로 넘깁니다",
+        },
+        previousRecentlyViewedChat: {
+          label: "이전에 본 채팅",
+          description: "최근 본 채팅을 뒤로 넘깁니다",
+        },
+        nextChat: {
+          label: "다음 채팅",
+          description: "사이드바의 다음 채팅으로 이동합니다",
+        },
+        previousChat: {
+          label: "이전 채팅",
+          description: "사이드바의 이전 채팅으로 이동합니다",
+        },
+        nextChatNeedingAttention: {
+          label: "확인이 필요한 다음 채팅",
+          description: "생성 중이거나 대기 중이거나 읽지 않은 다음 채팅으로 이동합니다",
+        },
+        clearAllUnreads: {
+          label: "모두 읽음으로 표시",
+          description: "모든 채팅을 읽음으로 표시합니다",
+        },
+        goToRecentChat1: {
+          label: "최근 채팅 1(으)로 이동",
+          description: "최근 항목의 1번째 채팅을 엽니다",
+        },
+        goToRecentChat2: {
+          label: "최근 채팅 2(으)로 이동",
+          description: "최근 항목의 2번째 채팅을 엽니다",
+        },
+        goToRecentChat3: {
+          label: "최근 채팅 3(으)로 이동",
+          description: "최근 항목의 3번째 채팅을 엽니다",
+        },
+        goToRecentChat4: {
+          label: "최근 채팅 4(으)로 이동",
+          description: "최근 항목의 4번째 채팅을 엽니다",
+        },
+        goToRecentChat5: {
+          label: "최근 채팅 5(으)로 이동",
+          description: "최근 항목의 5번째 채팅을 엽니다",
+        },
+        goToRecentChat6: {
+          label: "최근 채팅 6(으)로 이동",
+          description: "최근 항목의 6번째 채팅을 엽니다",
+        },
+        switchToChat: {
+          label: "채팅으로 전환",
+          description: "채팅 작업 공간으로 이동합니다",
+        },
+        switchToProjects: {
+          label: "프로젝트로 전환",
+          description: "프로젝트 작업 공간으로 이동합니다",
+        },
+        switchToHub: {
+          label: "모델 허브로 전환",
+          description: "모델 허브로 이동합니다",
+        },
+        switchToTrain: {
+          label: "학습으로 전환",
+          description: "학습 작업 공간으로 이동합니다",
+        },
+        switchToRecipes: {
+          label: "Recipes로 전환",
+          description: "Data Recipes로 이동합니다",
+        },
+        switchToImages: {
+          label: "이미지로 전환",
+          description: "이미지 작업 공간으로 이동합니다",
+        },
+        switchToVideo: {
+          label: "비디오로 전환",
+          description: "비디오 작업 공간으로 이동합니다",
+        },
+        switchToAudio: {
+          label: "오디오로 전환",
+          description: "오디오 작업 공간으로 이동합니다",
+        },
+        switchToExport: {
+          label: "내보내기로 전환",
+          description: "내보내기 작업 공간으로 이동합니다",
+        },
+        toggleSidebar: {
+          label: "사이드바 토글",
+          description: "사이드바를 표시하거나 숨깁니다",
+        },
+        toggleApiMonitor: {
+          label: "API 활동 토글",
+          description: "API 활동 모니터를 표시하거나 숨깁니다",
+        },
+        openModelPicker: {
+          label: "모델 선택 열기",
+          description: "이 채팅에 사용할 모델을 고릅니다",
+        },
+        openProjectPicker: {
+          label: "프로젝트 선택 열기",
+          description: "채팅 헤더에서 다른 프로젝트로 전환합니다",
+        },
+        startDictation: {
+          label: "받아쓰기",
+          description: "입력창 받아쓰기를 시작하거나 중지합니다",
+        },
+        attachFiles: {
+          label: "사진 및 파일 첨부",
+          description: "입력창에 첨부 파일을 추가합니다",
+        },
+        sendMessage: {
+          label: "메시지 보내기",
+          description: "입력창의 내용을 보냅니다",
+        },
+        cycleReasoningEffort: {
+          label: "추론 강도 순환",
+          description: "추론 강도 단계를 차례로 바꿉니다",
+        },
+        increaseReasoningEffort: {
+          label: "추론 강도 높이기",
+          description: "추론 강도를 한 단계 올립니다",
+        },
+        decreaseReasoningEffort: {
+          label: "추론 강도 낮추기",
+          description: "추론 강도를 한 단계 내립니다",
+        },
+        toggleFastMode: {
+          label: "Fast 모드 토글",
+          description: "Fast 모드를 켜거나 끕니다",
+        },
+        renameChat: {
+          label: "채팅 이름 바꾸기",
+          description: "현재 채팅의 이름을 바꿉니다",
+        },
+        forkChat: {
+          label: "채팅 분기",
+          description: "마지막 메시지에서 새 채팅으로 분기합니다",
+        },
+        copyChatAsMarkdown: {
+          label: "Markdown으로 복사",
+          description: "채팅 전체를 Markdown으로 클립보드에 복사합니다",
+        },
+        copySessionId: {
+          label: "세션 ID 복사",
+          description: "이 채팅의 샌드박스 세션 ID를 복사합니다",
         },
       },
     },
