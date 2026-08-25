@@ -33,6 +33,7 @@ const GENERAL_TAB = read("features/settings/tabs/general-tab.tsx");
 const TOGGLE = read("features/hub/catalog/transport-toggle.tsx");
 const API = read("features/settings/api/download-transport.ts");
 const POLL_LOOP = read("features/hub/download-manager/poll-loop.ts");
+const SEARCH = read("features/settings/settings-search.ts");
 const EN = read("i18n/locales/en.ts");
 
 test("this browser's own choice beats the install setting", () => {
@@ -112,12 +113,18 @@ test("the copy explains the difference, not just the names", () => {
 // fix rather than its behaviour, so they would not catch a rewrite that keeps the wording
 // and breaks the rule; each names the failure it exists for.
 
-test("the Hub's automatic fallback does not rewrite the install setting", () => {
-  // TransportToggle drops a stored "xet" to "http" by itself when hf_xet is missing. Once the
-  // setter also wrote install-wide, merely opening the Hub replaced everyone's choice for
-  // good: repairing hf_xet later did not bring it back.
-  assert.match(TOGGLE, /setMode\("http",\s*\{\s*persistInstall:\s*false\s*\}\)/);
-  assert.match(PREFERENCE, /opts\.persistInstall === false/);
+test("the Hub's automatic fallback is not stored at all", () => {
+  // TransportToggle drops a stored "xet" to "http" by itself when hf_xet is missing. Writing
+  // that install-wide replaced everyone's choice; writing it locally was no better, since a
+  // local value outranks the install one, so repairing hf_xet later never brought Xet back.
+  assert.match(TOGGLE, /setMode\("http",\s*\{\s*persist:\s*false\s*\}\)/);
+  assert.match(PREFERENCE, /opts\.persist === false/);
+  // Reflected and returned BEFORE either write.
+  const setter = PREFERENCE.slice(PREFERENCE.indexOf("const set = useCallback"));
+  assert.ok(
+    setter.indexOf("opts.persist === false") < setter.indexOf("localStorage.setItem"),
+    "the persist opt-out must be checked before the local write",
+  );
 });
 
 test("a download re-reads the install setting instead of trusting the cache", () => {
@@ -188,4 +195,23 @@ test("Xet cannot be chosen before its availability is known", () => {
   assert.match(ROW, /capabilityPending \|\| settings\?\.xetAvailable === false/);
   // But a load that FAILED must not disable it for good, so pending is its own state.
   assert.match(ROW, /setCapabilityPending\(false\)/);
+});
+
+test("a failed install-wide write is reported, not just logged", () => {
+  // The row calls this setting install-wide. A browser that kept the choice locally while the
+  // install did not is a mismatch the user cannot otherwise see, and reload hides it further.
+  assert.match(PREFERENCE, /Saved for this browser, but not for this install\./);
+});
+
+test("the transport row is reachable from Settings search", () => {
+  // The whole reason it moved here is that nobody found it on the Hub. Leaving it out of the
+  // index means searching for "transport", "Xet" or "HTTPS" still finds nothing.
+  for (const key of [
+    "settings.general.downloads.sectionTitle",
+    "settings.general.downloads.transport",
+    "settings.general.downloads.https",
+    "settings.general.downloads.xet",
+  ]) {
+    assert.ok(SEARCH.includes(key), `search index is missing ${key}`);
+  }
 });

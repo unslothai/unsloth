@@ -41,9 +41,10 @@ export function TransportToggle() {
 
   useEffect(() => {
     if (mode === "xet" && xetUnavailable) {
-      // This browser only. It is a fallback for what this machine can do, not a choice the
-      // user made, so it must not overwrite the install-wide setting for every other browser.
-      setMode("http", { persistInstall: false });
+      // Reflected, never stored. It is a fallback for what this machine can do, not a choice
+      // the user made: storing it would outrank the install-wide setting in this browser and
+      // survive hf_xet being installed later.
+      setMode("http", { persist: false });
     }
   }, [mode, setMode, xetUnavailable]);
 

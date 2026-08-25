@@ -80,7 +80,7 @@ export async function resolveTransportMode(): Promise<TransportMode> {
 
 export function useTransportMode(): [
   TransportMode,
-  (next: TransportMode, opts?: { persistInstall?: boolean }) => void,
+  (next: TransportMode, opts?: { persist?: boolean }) => void,
 ] {
   const [mode, setMode] = useState<TransportMode>(getTransportMode);
 
@@ -114,8 +114,15 @@ export function useTransportMode(): [
 
   const set = useCallback((
     next: TransportMode,
-    opts: { persistInstall?: boolean } = {},
+    opts: { persist?: boolean } = {},
   ) => {
+    // A fallback this machine forced, not a choice: reflect it and write nothing. Storing it
+    // locally pinned the browser to HTTP for good, because a local value outranks the
+    // install-wide one, so repairing hf_xet later never brought the Xet choice back.
+    if (opts.persist === false) {
+      setMode(next);
+      return;
+    }
     // Persist first, reflect after: the engine reads getTransportMode() fresh
     // from localStorage at download time, so an optimistic setMode() before a
     // failed write (private mode / quota) would show the new transport while
@@ -130,30 +137,22 @@ export function useTransportMode(): [
       setMode(next);
       window.dispatchEvent(new Event(CHANGE_EVENT));
     }
-    // A browser with storage blocked used to be stuck: this returned before the write
-    // below, so the setting could not be changed at all. The install now stores it, and
-    // the subscription updates installMode, so the same reflect-after rule holds through
-    // the server instead. Only a failure on BOTH ends is worth a toast.
-    // And the install's setting, so scripted callers and other browsers follow. A failure here
-    // leaves this browser on its own choice, which already applies.
-    //
-    // Opt-out for a fallback the user did not ask for: the Hub toggle drops a stored "xet" to
-    // "http" by itself when hf_xet is missing, and persisting that would replace everyone's
-    // choice for good, with repairing hf_xet later not bringing it back.
-    if (opts.persistInstall === false) {
-      if (!savedLocally) {
-        toast.error("Couldn't save the download transport preference.");
-      }
-      return;
-    }
+    // And the install's setting, so scripted callers and other browsers follow. A browser with
+    // storage blocked reaches here too: the install is the store then, and the subscription
+    // updates installMode, so the reflect-after rule holds through the server instead.
     void updateDownloadTransportSettings(next).catch((error) => {
       console.warn(
         "Couldn't save the download transport for this install.",
         error,
       );
-      if (!savedLocally) {
-        toast.error("Couldn't save the download transport preference.");
-      }
+      // Said out loud either way. The row calls this setting install-wide, so a browser that
+      // kept the choice locally while the install did not is a mismatch worth knowing about,
+      // and a browser that kept it nowhere has silently ignored the click.
+      toast.error(
+        savedLocally
+          ? "Saved for this browser, but not for this install."
+          : "Couldn't save the download transport preference.",
+      );
     });
   }, []);
 
