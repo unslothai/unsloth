@@ -142,8 +142,9 @@ export const ContextUsageBar: FC<
           </div>
           {percent !== null && percent > 85 ? (
             <div className="mt-1 max-w-64 text-ui-11 leading-snug text-muted-foreground/90">
-              Close to the context limit. Long llama.cpp generations may shift
-              the active window while the processed-token total keeps growing.
+              Close to the context limit. Generation will stop at 100%. Increase{" "}
+              <span className="font-medium">Context Length</span> in the chat
+              Settings panel to keep going.
             </div>
           ) : null}
         </div>

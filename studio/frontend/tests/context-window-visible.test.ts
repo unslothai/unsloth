@@ -122,7 +122,7 @@ test("ordinary in-window usage has no separate processed-work row", () => {
   assert.equal(state.totalRowName, "Total");
 });
 
-test("the full-window help distinguishes active and processed tokens", () => {
+test("the near-limit help keeps the context-length guidance", () => {
   const component = readFileSync(
     new URL(
       "../src/features/chat/components/context-usage-bar.tsx",
@@ -130,11 +130,11 @@ test("the full-window help distinguishes active and processed tokens", () => {
     ),
     "utf8",
   );
+  assert.match(component, /Generation will stop at 100%/);
   assert.match(
     component,
-    /llama\.cpp generations may shift\s+the active window/,
+    /Context Length<\/span> in the chat\s+Settings panel to keep going/,
   );
-  assert.match(component, /processed-token total keeps growing/);
 });
 
 // external providers: usage is known, the window is not
