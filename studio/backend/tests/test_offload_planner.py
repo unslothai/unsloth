@@ -600,11 +600,10 @@ def test_q4_ffn_spilled_context_ladder(budget_gib, expected_k):
     assert expected_k * 1024 <= got < (expected_k + 1) * 1024, got
 
 
-# Budgets and expected contexts in this file are ARITHMETIC against a stated
-# overhead reserve, not independent measurements. They pin the reserve they were
-# computed for, so moving the constant (1 GiB -> 1.5 GiB, to cover the prefill
-# compute buffer that was OOMing at depth) does not silently invalidate every
-# expected value. The constant itself is pinned by
+# Budgets and expected contexts here are ARITHMETIC against a stated overhead
+# reserve, not measurements, so moving the constant (1 GiB -> 1.5 GiB, to cover
+# the prefill compute buffer that was OOMing at depth) does not silently
+# invalidate them. The constant itself is pinned by
 # test_the_overhead_reserve_covers_the_measured_prefill_buffer.
 FIXED_OVERHEAD_OPTS = PlanOptions(overhead_bytes_per_device = GIB)
 
@@ -745,9 +744,8 @@ def test_a_split_gguf_abstains_instead_of_planning_on_one_shard():
     partial = _StubReader(_shard_fields(**{"split.count": 4}), _shard_tensors(range(16)))
     assert _layout_from_reader(partial).complete is False
 
-    # And the undercount it is guarding against is real, not theoretical: the
-    # same shard read as if it were the whole model reports a quarter of the
-    # blocks and a quarter of the spillable bytes.
+    # The undercount it guards against is real: the same shard read as the whole
+    # model reports a quarter of the blocks and a quarter of the spillable bytes.
     whole = _layout_from_reader(_StubReader(_shard_fields(), _shard_tensors(range(64))))
     as_if_whole = _layout_from_reader(_StubReader(_shard_fields(), _shard_tensors(range(16))))
     assert as_if_whole.spillable_bytes * 4 == whole.spillable_bytes

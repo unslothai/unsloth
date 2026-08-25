@@ -20,9 +20,8 @@ logger = logging.getLogger(__name__)
 # blk.<N>.<tail>
 _BLOCK_RE = re.compile(r"^blk\.(\d+)\.(.+)$")
 
-# Sparse MoE expert weights: read for only expert_used_count of expert_count
-# experts per token, so host-resident traffic per token is a small fraction of
-# their size. The cheap thing to spill.
+# Sparse MoE experts: only expert_used_count of expert_count read per token, so
+# host traffic is a small fraction of their size. The cheap thing to spill.
 _MOE_EXPERT_RE = re.compile(r"^ffn_(up|gate|down)_exps\.weight$")
 # Dense FFN. Fully activated: every byte crosses the bus every token.
 _DENSE_FFN_RE = re.compile(r"^ffn_(up|gate|down)\.weight$")
@@ -35,8 +34,8 @@ class BlockLayout:
     index: int
     # ffn_*_exps (MoE) or plain ffn_* (dense). Safe to push to host RAM.
     spillable_bytes: int
-    # attention, norms, routers, shared experts, ssm weights. Must stay: either
-    # they are on the critical path every token, or the KV cache hangs off them.
+    # attention, norms, routers, shared experts, ssm: on the critical path every
+    # token, or the KV cache hangs off them.
     resident_bytes: int
 
 
@@ -58,43 +57,37 @@ class ModelLayout:
     other_resident_bytes: int = 0
     # Attention cache for ONE token at f16, across the attention layers only.
     kv_bytes_per_token_f16: int = 0
-    # Mamba conv/SSM state. Context independent, and follows the layer, which
-    # -ot never moves.
+    # Mamba conv/SSM state. Context independent; follows the layer, which -ot never moves.
     recurrent_bytes: int = 0
     n_ctx_train: int = 0
     is_moe: bool = False
     # Sparse-MoE routing: experts read per token is expert_used/expert_count.
-    # The cost model needs it, because offloaded experts move only that
-    # fraction per token while a dense FFN moves all of it.
+    # Offloaded experts move only that fraction per token, a dense FFN all of it.
     n_expert: int = 0
     n_expert_used: int = 0
-    # The tensor table carried blk.<N> tensors that ``blocks`` deliberately
-    # dropped: the trailing nextn/MTP blocks, which the GGUF's block_count
-    # includes (llama-model.cpp reads it into n_layer_all) but the target model
-    # does not use. They are real blk.<N>.ffn_* weights (models/qwen35moe.cpp,
-    # load_block_mtp), so the unbounded ^blk\.\d+\. spill pattern WOULD match
-    # them once a draft is loaded. The planner uses this to stay bounded.
+    # ``blocks`` drops the trailing nextn/MTP blk.<N> tensors: block_count counts
+    # them (llama-model.cpp reads it into n_layer_all) but the target does not use
+    # them. They are real blk.<N>.ffn_* weights (models/qwen35moe.cpp,
+    # load_block_mtp), so an unbounded ^blk\.\d+\. spill pattern WOULD match them
+    # once a draft is loaded. The planner uses this to stay bounded.
     has_excluded_blocks: bool = False
-    # Total bytes of those dropped blocks, kept so a caller that knows a draft
-    # WILL engage can charge them back. Dropping them is right for the ordinary
-    # load -- llama.cpp gives every trailing block TENSOR_SKIP unless load_mtp
-    # is set (models/glm4-moe.cpp:42-44 and the same gate in every embedded-MTP
-    # arch), and TENSOR_SKIP returns before a tensor is even created
-    # (llama-model-loader.cpp:1123-1131), so they cost nothing. But
-    # ``--spec-type draft-mtp`` sets load_mtp on the TARGET's own model params
-    # (common/common.cpp:1713), the whole trailing block is then materialised at
-    # its layer's buffer type, and because i_gpu_start counts backwards from
-    # n_layer_all (llama-model.cpp:1449) those blocks are the FIRST ones placed
-    # on a GPU. llama.cpp's own fitter widens its offloadable-layer count the
-    # same way (common/fit.cpp:139-142). Zero when nothing was dropped.
+    # Total bytes of those dropped blocks, so a caller that knows a draft WILL
+    # engage can charge them back. Dropping them suits the ordinary load: every
+    # trailing block gets TENSOR_SKIP unless load_mtp is set
+    # (models/glm4-moe.cpp:42-44, the same gate in every embedded-MTP arch) and
+    # TENSOR_SKIP returns before the tensor exists
+    # (llama-model-loader.cpp:1123-1131). But ``--spec-type draft-mtp`` sets
+    # load_mtp on the TARGET's own params (common/common.cpp:1713), so the block is
+    # materialised at its layer's buffer type, and i_gpu_start counting back from
+    # n_layer_all (llama-model.cpp:1449) puts those blocks on a GPU FIRST.
+    # llama.cpp's own fitter widens its offloadable-layer count the same way
+    # (common/fit.cpp:139-142). Zero when nothing was dropped.
     excluded_block_bytes: int = 0
-    # Sliding-window attention: some layers keep a window-sized cache and some
-    # the full context (llama-kv-cache-iswa.cpp:69-104 builds two caches and
-    # filters each by hparams.is_swa(il)), and the interleave is per layer. Every
-    # layer is still an attention layer, so n_attention_layers does NOT reveal
-    # this. Recorded because a multi-device split has to know WHERE the big
-    # caches land, and the layout does not; the planner abstains rather than
-    # spread them evenly.
+    # Sliding-window attention: some layers keep a window-sized cache, some the
+    # full context (llama-kv-cache-iswa.cpp:69-104 builds two caches and filters
+    # each by hparams.is_swa(il)), interleaved per layer. Every layer is still an
+    # attention layer, so n_attention_layers does NOT reveal this. A multi-device
+    # split has to know WHERE the big caches land, so the planner abstains.
     has_swa: bool = False
     # False when a needed quantity could not be read. The planner abstains.
     complete: bool = False
@@ -154,16 +147,12 @@ def layout_from_gguf(path: str) -> ModelLayout:
 
 
 def _layout_from_reader(reader) -> ModelLayout:
-    # A split GGUF: llama.cpp reads split.count off the first shard and then
-    # resolves and loads every sibling (llama-model-loader.cpp:590-618), but
-    # GGUFReader memmaps the ONE path it was given and builds its tensor table
-    # from that file alone. Shard 1 still carries the model metadata, so without
-    # this the layout would look complete while holding a fraction of the
-    # tensors: resident and spillable are both undercounted, often by most of
-    # the model, and an undercounted total is an overstated fit. The planner
-    # would then emit too few -ot patterns (or none) and the launch path would
-    # follow them with --fit off, turning a model llama.cpp loads fine into a
-    # startup OOM. Abstain instead; the seam then reproduces --fit on exactly.
+    # Split GGUF: llama.cpp loads every sibling shard
+    # (llama-model-loader.cpp:590-618), but GGUFReader memmaps only the ONE path
+    # it was given. Shard 1 still carries the metadata, so the layout would look
+    # complete while undercounting resident and spillable by most of the model --
+    # an overstated fit, too few -ot patterns, and a startup OOM with --fit off.
+    # Abstain instead; the seam then reproduces --fit on exactly.
     if int(_field(reader, "split.count") or 0) > 1:
         return ModelLayout()
 
@@ -176,9 +165,8 @@ def _layout_from_reader(reader) -> ModelLayout:
         return ModelLayout()
     blocks_total = int(blocks_total)
 
-    # llama.cpp keeps embedded MTP blocks out of the target context for these
-    # architectures, and their cache is priced separately, so the attention
-    # count must not include them.
+    # llama.cpp keeps embedded MTP blocks out of the target context and prices
+    # their cache separately, so the attention count must not include them.
     nextn = int(_field(reader, f"{arch}.nextn_predict_layers") or 0)
     n_layers = max(0, blocks_total - nextn)
 
@@ -235,9 +223,8 @@ def _layout_from_reader(reader) -> ModelLayout:
         if match:
             index = int(match.group(1))
             tail = match.group(2)
-            # Shared experts (ffn_*_shexp) and routers (ffn_gate_inp*) are
-            # deliberately NOT spillable: both run on every token, so they cost
-            # dense-FFN bandwidth for a rounding error of the model's size.
+            # Shared experts (ffn_*_shexp) and routers (ffn_gate_inp*) run on every
+            # token: dense-FFN bandwidth for a rounding error of size. Not spillable.
             spillable = _MOE_EXPERT_RE.match(tail) or (not is_moe and _DENSE_FFN_RE.match(tail))
             if spillable:
                 spill[index] = spill.get(index, 0) + nbytes
@@ -254,34 +241,28 @@ def _layout_from_reader(reader) -> ModelLayout:
     if not spill and not resident:
         return ModelLayout()
 
-    # Tied embeddings do not SAVE the vocabulary matrix, they duplicate it. A
-    # GGUF that omits output.weight makes llama.cpp re-create the output tensor
-    # from token_embd with TENSOR_DUPLICATED (models/llama.cpp:41-45,
-    # models/qwen3.cpp:22-25, models/gemma3.cpp:43-47, and ~60 more), and the
-    # loader routes a duplicated TOKEN_EMBD through the OUTPUT buffer list
-    # (llama-model-loader.cpp:1113-1114). dev_input is pinned to the CPU while
-    # dev_output follows the layer split (llama-model.cpp:1465, 1474), so the
-    # two resolve to different buffer-type contexts, the same-context reuse
-    # check misses (llama-model-loader.cpp:1309-1314), and ggml_dup_tensor
-    # allocates a second full matrix (llama-model-loader.cpp:1318) that
-    # load_all_data fills by name with a real host to device copy (:1542,
-    # :1583). Counting the one stored tensor as host-only therefore understates
-    # VRAM by a whole vocabulary matrix, which is the optimistic direction: too
-    # few blocks spill and the launch path pins that with --fit off.
-    #
-    # Resident, not lm_head: the duplicate keeps the name token_embd.weight, so
-    # LM_HEAD_PATTERN can never match it and the lm_head rung would credit a
-    # spill that moves nothing.
+    # Tied embeddings duplicate the vocabulary matrix, they do not SAVE it. With no
+    # output.weight llama.cpp re-creates the output tensor from token_embd as
+    # TENSOR_DUPLICATED (models/llama.cpp:41-45, models/qwen3.cpp:22-25,
+    # models/gemma3.cpp:43-47, and ~60 more) and routes a duplicated TOKEN_EMBD
+    # through the OUTPUT buffer list (llama-model-loader.cpp:1113-1114). dev_input
+    # is CPU-pinned while dev_output follows the layer split (llama-model.cpp:1465,
+    # 1474), so the buffer-type contexts differ, the same-context reuse check misses
+    # (llama-model-loader.cpp:1309-1314), and ggml_dup_tensor allocates a second
+    # full matrix (llama-model-loader.cpp:1318) that load_all_data fills by name
+    # with a real host to device copy (:1542, :1583). Counting the one stored tensor
+    # as host-only understates VRAM by a whole vocabulary matrix -- the optimistic
+    # direction. Resident, not lm_head: the duplicate keeps the name
+    # token_embd.weight, so LM_HEAD_PATTERN cannot match and the lm_head rung would
+    # credit a spill that moves nothing.
     if not lm_head and token_embd:
         other_resident += token_embd
 
-    # The trailing nextn/MTP blocks are NOT part of the target model. llama.cpp
-    # does not load them unless a draft is engaged, so an -ot pattern naming them
-    # moves nothing: measured, spilling only blk.<nextn> leaves the host buffer at
-    # exactly token_embd and the device buffer unchanged. Counting them as
-    # spillable would credit the plan with bytes it can never free, which is the
-    # optimistic direction that turns a non-fit into a claimed fit. Studio prices
-    # the drafter separately anyway.
+    # Trailing nextn/MTP blocks are NOT part of the target model and are not loaded
+    # unless a draft is engaged, so an -ot naming them moves nothing: measured,
+    # spilling only blk.<nextn> leaves the host buffer at exactly token_embd and the
+    # device buffer unchanged. Counting them spillable would credit bytes that can
+    # never be freed. Studio prices the drafter separately anyway.
     all_block_indices = set(spill) | set(resident)
     block_indices = sorted(i for i in all_block_indices if i < n_layers)
     has_excluded = any(i >= n_layers for i in all_block_indices)

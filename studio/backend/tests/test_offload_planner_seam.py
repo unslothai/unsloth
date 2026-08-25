@@ -19,10 +19,9 @@ from core.inference.llama_cpp import LlamaCppBackend
 from core.inference.offload_layout import LM_HEAD_PATTERN, BlockLayout, ModelLayout
 from core.inference.offload_planner import Plan, plan_placement, smart_offload_enabled
 
-# The planner's own decision table is covered exhaustively in
-# test_offload_planner.py. What belongs HERE is the seam: whether the launch
-# path declines when it should, emits the tokens llama-server actually parses,
-# and takes the plan back out on every retry.
+# The planner's decision table is covered in test_offload_planner.py. HERE is the
+# seam: whether the launch path declines when it should, emits the tokens
+# llama-server actually parses, and takes the plan back out on every retry.
 FFN_SPILL_PATTERN = r"blk\.\d+\.ffn_"
 LM_HEAD_SPILL_PATTERN = LM_HEAD_PATTERN
 

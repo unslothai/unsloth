@@ -70,8 +70,7 @@ class SpillOrder(Enum):
     """
 
     # Best-fit-decreasing: fewest blocks AND least overshoot. Overshoot is real
-    # bandwidth: taking a 209 MiB block to cover a 50 MiB deficit wastes 159 MiB
-    # of host traffic on every token.
+    # bandwidth -- a 209 MiB block for a 50 MiB deficit wastes 159 MiB per token.
     LARGEST_FIRST = "largest_first"
     FRONT_FIRST = "front_first"
     BACK_FIRST = "back_first"
@@ -81,36 +80,27 @@ class SpillOrder(Enum):
 class PlanOptions:
     # Compute buffer + CUDA context + scratch, charged on every device.
     #
-    # 1 GiB was too thin and failed CONSISTENTLY rather than randomly, which is
-    # what made it easy to miss. The planner fills to
-    # ``budget - overhead_bytes_per_device``, so whenever it spills it leaves
-    # exactly this much free WHATEVER the budget is -- the dense 27B at depth
-    # 32768 therefore died with the identical shortfall at 6, 7, 8 and 10 GiB:
+    # 1 GiB was too thin and failed CONSISTENTLY: the planner fills to
+    # ``budget - overhead_bytes_per_device``, leaving exactly this much free
+    # whatever the budget is, so the dense 27B at depth 32768 died identically at
+    # 6, 7, 8 and 10 GiB with
     #
     #   ggml_backend_cuda_buffer_type_alloc_buffer: allocating 594.16 MiB
     #   on device 0: cudaMalloc failed: out of memory
-    #   graph_reserve: failed to allocate compute buffers
-    #   llama_init_from_model: failed to allocate compute pp buffers
     #
-    # The child needs the PREFILL compute buffer (594 MiB measured there) plus
-    # its own CUDA primary context, which is what consumed the rest of the old
-    # 1 GiB. Not fragmentation from the benchmark's VRAM pinning: rerunning the
-    # same case with 16, 64 and 1024 MiB hog blocks reproduced the identical
-    # 594.16 MiB failure, so the block size is not what runs out.
-    #
-    # 1.5 GiB covers the measured requirement of just over 1.07 GiB with margin.
-    # It is a measured floor rather than a fitted curve: the steady-state compute
-    # buffer is flat in context (493 to 509 MiB from depth 4096 to 32768), but
-    # the prefill graph's reservation is not, and two depths do not justify
-    # fitting a slope. Erring high costs some spill -- the penalty is linear at
-    # 5.544 ms/GiB -- while erring low costs the whole load.
+    # The child needs the PREFILL compute buffer (594 MiB measured) plus its own
+    # CUDA primary context, which took the rest of the old 1 GiB. Not benchmark
+    # fragmentation: 16, 64 and 1024 MiB hog blocks all reproduced the identical
+    # 594.16 MiB failure. 1.5 GiB covers the measured 1.07 GiB with margin -- a
+    # measured floor, not a fitted curve, since the steady-state compute buffer is
+    # flat in context (493 to 509 MiB from depth 4096 to 32768) but the prefill
+    # graph's reservation is not. Erring high costs some spill (linear at
+    # 5.544 ms/GiB), erring low costs the whole load.
     overhead_bytes_per_device: int = (3 * GIB) // 2
-    # GPU-resident bytes that are NOT in the layout, charged once against the
-    # pooled budget. The layout is built from the target GGUF's tensor table, so
-    # anything else the child puts on a card -- a vision projector, an MTP draft
-    # reserve -- is invisible to it. Subtracting from the budget is the same
-    # arithmetic as adding to every footprint, and it reaches max_context_for
-    # too. 0 keeps the pure-layout behaviour.
+    # GPU-resident bytes NOT in the layout (a vision projector, an MTP draft
+    # reserve), charged once against the pooled budget: the layout only knows the
+    # target GGUF's tensor table. Subtracting from the budget also reaches
+    # max_context_for. 0 keeps the pure-layout behaviour.
     extra_resident_bytes: int = 0
     # Host RAM this planner refuses to spend, so a spill does not push the box
     # into swap.
@@ -119,12 +109,11 @@ class PlanOptions:
     min_ctx: int = 4096
     spill_order: SpillOrder = SpillOrder.LARGEST_FIRST
     allow_lm_head_spill: bool = True
-    # What the host can bring to bear on spilled weights. This is NOT a detail:
-    # spilled generation runs on the CPU backend, because ggml only moves an op
-    # to the GPU at batch >= 32 (ggml-cuda.cu, op_offload_min_batch_size) and
-    # decode is batch 1. So the penalty scales with core count -- measured
-    # 2.42 / 5.83 / 11.82 / 14.94 t/s at 4 / 16 / 64 / 192 threads. Defaulting
-    # to the reference host would hand a desktop user server-shaped advice.
+    # What the host brings to bear on spilled weights. Spilled generation runs on
+    # the CPU backend -- ggml only moves an op to the GPU at batch >= 32
+    # (ggml-cuda.cu, op_offload_min_batch_size) and decode is batch 1 -- so the
+    # penalty scales with core count: 2.42 / 5.83 / 11.82 / 14.94 t/s at
+    # 4 / 16 / 64 / 192 threads.
     host: HostProfile = field(default_factory = HostProfile)
     # q8_0 measured 35% slower generation, and without GGML_CUDA_FA_ALL_QUANTS
     # only four MATCHED K/V combinations are compiled (a mismatched pair falls
@@ -152,10 +141,9 @@ class Plan:
     insufficient: bool = False
     vram_bytes: int = 0
     host_bytes: int = 0
-    # Predicted extra milliseconds per generated token versus fully resident,
-    # on the host this was planned for. 0.0 when nothing is spilled. Reported so
-    # callers can surface the real cost instead of implying a spill is free, and
-    # so a plan on a small host is visibly expensive rather than quietly so.
+    # Predicted extra ms per generated token versus fully resident, on the host
+    # this was planned for. 0.0 when nothing is spilled. Reported so callers can
+    # surface the real cost instead of implying a spill is free.
     predicted_gen_penalty_ms: float = 0.0
     reason: str = ""
 
@@ -188,8 +176,8 @@ def _select_blocks(
     while freed < deficit and remaining:
         if order is SpillOrder.LARGEST_FIRST:
             residual = deficit - freed
-            # Prefer the SMALLEST block that still closes the gap: that is what
-            # keeps the last pick from overshooting by a whole large block.
+            # Prefer the SMALLEST block that closes the gap: the last pick must
+            # not overshoot by a whole large block.
             covering = [b for b in remaining if b.spillable_bytes >= residual]
             pick = min(covering, key = lambda b: b.spillable_bytes) if covering else remaining[0]
         else:
@@ -375,10 +363,9 @@ def plan_placement(
     if not layout.complete or not vram_bytes_per_device:
         return Plan(reason = "layout or device inventory incomplete, leaving llama.cpp defaults")
     if opts.host.unified_memory:
-        # One pool: "spilling" moves bytes between two names for the same chips,
-        # so it frees nothing and the trade this planner exists to make does not
-        # exist. Metal additionally keeps mmap zero copy (buffer_from_host_ptr),
-        # so the no-mmap rule inverts there too.
+        # One pool: "spilling" renames bytes on the same chips and frees nothing.
+        # Metal also keeps mmap zero copy (buffer_from_host_ptr), so the no-mmap
+        # rule inverts there too.
         return Plan(reason = "unified memory host, spilling frees no device memory")
     budget = _usable_vram(vram_bytes_per_device, opts)
     if budget <= 0:
@@ -391,8 +378,7 @@ def plan_placement(
         return Plan(reason = "no usable context length")
 
     # PREFER_RESIDENT gets its say before the ladder: a smaller fully resident
-    # context is faster than a larger spilled one, when the caller has said the
-    # context may move.
+    # context outruns a larger spilled one, when the caller allows it to move.
     if (
         opts.context_policy is ContextPolicy.PREFER_RESIDENT
         and all_resident_bytes(layout, n_ctx, kv_bytes_floor = kv_bytes_floor) > budget
@@ -538,11 +524,10 @@ def _per_device_shortfall(
             "and the layout does not say which"
         )
     if layout.has_swa:
-        # Every layer IS an attention layer here, so the check above passes --
-        # but a window layer's cache is a fraction of a full-context one (Gemma3
-        # interleaves 5:1), and which rows are which is not in the layout. An
-        # even spread is not conservative: it under-books whichever card drew the
-        # full-context rows.
+        # The check above passes (every layer IS attention), but a window layer's
+        # cache is a fraction of a full-context one (Gemma3 interleaves 5:1) and
+        # the layout does not say which rows are which. An even spread under-books
+        # whichever card drew the full-context rows.
         return "the cache is per-layer uneven (sliding-window attention) and the layout does not say which layers are full-context"
     if layout.has_excluded_blocks:
         return "the GGUF carries trailing blocks that shift llama.cpp's row count"
@@ -622,24 +607,18 @@ def _plan_at(
             # llama.cpp fixes the split before any override exists -- free memory
             # per device at llama-model.cpp:1425-1433, prefix-summed at :1439-1447,
             # then upper_bound on the normalised LAYER INDEX at :1457, so each
-            # device owns a contiguous index range -- and -ot only swaps one
-            # tensor's buffer type inside llama_model_loader::create_tensor
+            # device owns a contiguous index range -- and -ot only swaps a tensor's
+            # buffer type in llama_model_loader::create_tensor
             # (llama-model-loader.cpp:1177-1203), leaving dev_layer(il) untouched
-            # (llama-model.cpp:1467-1474, never written again). Nothing rebalances
-            # afterwards, and with --fit off common/fit.cpp does not run at all,
-            # so a subset of block indices that happens to sit in one device's
-            # range relieves only that device while the others keep their whole
-            # share. The aggregate deficit is then covered while a single card is
-            # still over, and a per-device shortfall is a hard throw
-            # (llama-model.cpp:1731-1733), not a fallback. Abstain: --fit on is
-            # per-device aware (common/fit.cpp:646-651, :687, :705) and is exactly
-            # what this arm did before the planner existed.
-            #
-            # A partial spill cannot be checked at all: which rows the chosen
-            # indices land on is exactly what makes it uneven, so there is no
-            # arithmetic that rescues it. A FULL spill is checkable, and is
-            # checked below rather than assumed -- an even row split is not an
-            # even byte split.
+            # (llama-model.cpp:1467-1474). Nothing rebalances afterwards and with
+            # --fit off common/fit.cpp never runs, so a subset of indices sitting
+            # in one device's range relieves only that device: the aggregate
+            # deficit is covered while a single card is still over, and a
+            # per-device shortfall is a hard throw (llama-model.cpp:1731-1733).
+            # Which rows the chosen indices land on is exactly what makes it
+            # uneven, so no arithmetic rescues it. Abstain: --fit on is per-device
+            # aware (common/fit.cpp:646-651, :687, :705). A FULL spill IS
+            # checkable, and is checked below rather than assumed.
             return Plan(
                 n_ctx = n_ctx,
                 reason = (
@@ -742,14 +721,12 @@ def _finish(
     patterns: list[str] = []
     indices = sorted(b.index for b in chosen)
     if indices:
-        # One global pattern when every spillable block is going, which is both
-        # shorter and exactly the form the benchmarks used. NOT when the GGUF
-        # carries blocks the layout dropped: the unbounded \d+ would also match
-        # the trailing nextn/MTP blocks, whose ffn_*_exps are real weights loaded
-        # the moment a draft is engaged. Spilling those moves bytes neither
-        # host_bytes nor the deficit ever counted -- so the mmap decision is made
-        # on an undercount -- and drags the draft FFN onto the CPU backend, which
-        # slows the very speculative decode it was loaded for.
+        # One global pattern when every spillable block is going -- shorter, and
+        # the form the benchmarks used. NOT when the GGUF carries blocks the layout
+        # dropped: the unbounded \d+ would also match the trailing nextn/MTP
+        # blocks, whose ffn_*_exps load the moment a draft is engaged. That moves
+        # bytes neither host_bytes nor the deficit counted (so the mmap decision is
+        # made on an undercount) and drags the draft FFN onto the CPU backend.
         spillable = [b.index for b in layout.blocks if b.spillable_bytes > 0]
         all_of_them = set(indices) == set(spillable) and not layout.has_excluded_blocks
         patterns.append(spill_pattern_for(layout, None if all_of_them else indices))
@@ -767,9 +744,8 @@ def _finish(
         - spilled_bytes
     )
 
-    # mmap costs 2 to 4.6x on host-resident weight reads, so turn it off -- but
-    # only when host RAM can really hold the host side. Where it cannot, mmap is
-    # the only thing that keeps an over-commit pageable.
+    # mmap costs 2 to 4.6x on host-resident weight reads, so turn it off -- but only
+    # when host RAM holds the host side; otherwise mmap keeps an over-commit pageable.
     if host_ram_bytes is None:
         load_mode_none = False
     else:

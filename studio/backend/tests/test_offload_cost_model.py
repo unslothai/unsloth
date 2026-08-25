@@ -62,11 +62,11 @@ def rel_err(predicted: float, measured: float) -> float:
     return abs(predicted - measured) / measured
 
 
-# The model carries one free constant plus three per-access ratios. It
-# under-predicts every 128K anchor by a near-identical ~7%, because the base
-# rate is calibrated on the cleaner depth-0 partial-spill sweep while these
-# anchors sit at 128K where attention contends. A uniform offset cannot change
-# an ordering, which is all the planner asks of it.
+# One free constant plus three per-access ratios. It under-predicts every 128K
+# anchor by a near-identical ~7%: the base rate is calibrated on the cleaner
+# depth-0 partial-spill sweep while these anchors sit at 128K where attention
+# contends. A uniform offset cannot change an ordering, which is all the planner
+# asks of it.
 ANCHOR_TOL = 0.10
 
 
