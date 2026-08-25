@@ -113,8 +113,13 @@ def test_configure_reads_launch_ownership_from_the_bind_host(bind_host, launch_m
     assert state.lan_access_ready is False
 
 
-def _transport_request(*, server = ("192.168.1.24", 8888),
-                       client = ("192.168.1.90", 54321), state = None, headers = None):
+def _transport_request(
+    *,
+    server = ("192.168.1.24", 8888),
+    client = ("192.168.1.90", 54321),
+    state = None,
+    headers = None,
+):
     return Request(
         {
             "type": "http",
@@ -122,8 +127,9 @@ def _transport_request(*, server = ("192.168.1.24", 8888),
             "path": "/v1/models",
             "root_path": "",
             "query_string": b"",
-            "headers": [(name.lower().encode(), value.encode())
-                        for name, value in (headers or {}).items()],
+            "headers": [
+                (name.lower().encode(), value.encode()) for name, value in (headers or {}).items()
+            ],
             "server": server,
             "client": client,
             "app": SimpleNamespace(state = state or SimpleNamespace()),
@@ -131,7 +137,12 @@ def _transport_request(*, server = ("192.168.1.24", 8888),
     )
 
 
-def _listener(address = "192.168.1.24", *, running = True, port = 8888):
+def _listener(
+    address = "192.168.1.24",
+    *,
+    running = True,
+    port = 8888,
+):
     return {"running": running, "port": port, "addresses": [address]}
 
 
@@ -153,19 +164,22 @@ def _listener(address = "192.168.1.24", *, running = True, port = 8888):
 )
 def test_private_lan_live_listener_matrix(monkeypatch, server, client, listener, expected):
     monkeypatch.setattr(lan_access, "lan_listener_status", lambda: listener)
-    assert lan_settings.request_on_lan_access(
-        _transport_request(server = server, client = client)
-    ) is expected
+    assert (
+        lan_settings.request_on_lan_access(_transport_request(server = server, client = client))
+        is expected
+    )
 
 
 def test_private_lan_ignores_forwarding_headers(monkeypatch):
     monkeypatch.setattr(lan_access, "lan_listener_status", lambda: _listener())
     headers = dict.fromkeys(("host", "forwarded", "x-forwarded-for", "origin"), "192.168.1.90")
-    assert not lan_settings.request_on_lan_access(_transport_request(
-        server = ("127.0.0.1", 8888),
-        client = ("127.0.0.1", 54321),
-        headers = headers,
-    ))
+    assert not lan_settings.request_on_lan_access(
+        _transport_request(
+            server = ("127.0.0.1", 8888),
+            client = ("127.0.0.1", 54321),
+            headers = headers,
+        )
+    )
 
 
 @pytest.mark.parametrize(
@@ -199,14 +213,23 @@ def test_private_lan_launch_managed_matrix(
     )
     state = SimpleNamespace()
     lan_settings.configure_lan_access(
-        state, port = 8888, bind_host = bind_host, secure = secure,
-        is_colab = is_colab, frontend_served = True,
+        state,
+        port = 8888,
+        bind_host = bind_host,
+        secure = secure,
+        is_colab = is_colab,
+        frontend_served = True,
     )
-    assert lan_settings.request_on_lan_access(_transport_request(
-        server = (server, 8888),
-        client = ("192.168.1.90", 54321),
-        state = state,
-    )) is expected
+    assert (
+        lan_settings.request_on_lan_access(
+            _transport_request(
+                server = (server, 8888),
+                client = ("192.168.1.90", 54321),
+                state = state,
+            )
+        )
+        is expected
+    )
 
 
 # ── status ──
