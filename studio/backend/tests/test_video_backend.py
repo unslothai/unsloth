@@ -6310,9 +6310,7 @@ def test_h3_reference_video_trim_tolerates_a_container_longer_than_its_video():
     blob = base64.b64decode(
         _reference_video_data_url(seconds = 14.9, fps = 24, audio_seconds = 15.2).split(",", 1)[1]
     )
-    frames, _, _ = decode_h3_reference_video(
-        blob, trim_start_seconds = 0.0, trim_end_seconds = 15.0
-    )
+    frames, _, _ = decode_h3_reference_video(blob, trim_start_seconds = 0.0, trim_end_seconds = 15.0)
     assert len(frames) == round(15.0 * 24)
 
 
