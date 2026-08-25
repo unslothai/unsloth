@@ -1061,6 +1061,71 @@ class Payload:
         detail["failures"] = failures
         return self.record("code_execution", not failures, detail)
 
+    def assert_web_search(self) -> bool:
+        """The web_search tool must be EXECUTED, and the log is where that shows.
+
+        Same shape as `assert_code_execution` and a different instrument,
+        because a web search leaves nothing on disk to read back. Studio logs
+        `execute_tool: name=...` from INSIDE `execute_tool`, so the line is
+        emitted by execution rather than by selection -- a loop that offered
+        the tool and never ran it produces no such line, which is the failure
+        worth catching.
+
+        What is deliberately NOT asserted: that the search returned results.
+        `_web_search` fans out through ddgs with no API key, and a provider
+        rate-limiting a Kaggle egress IP is a fact about the day, not a Studio
+        defect. Failing on it would put a red in front of every PR for
+        something no reader could act on. The reply and the result count are
+        recorded so a human can see which happened.
+        """
+        failures: list[str] = []
+        detail: dict = {}
+
+        before = ""
+        try:
+            before = self.server_log.read_text(encoding = "utf-8", errors = "replace")
+        except OSError:
+            pass
+
+        code, payload = self.chat(
+            [{
+                "role": "user",
+                "content": (
+                    "Search the web for the current version of the Linux kernel, "
+                    "then answer in one sentence."
+                ),
+            }],
+            enable_tools = True,
+            enabled_tools = ["web_search"],
+            permission_mode = "off",
+            max_tokens = 512,
+        )
+        detail["http_status"] = code
+        if code != 200 or not isinstance(payload, dict):
+            failures.append(f"the web-search completion returned HTTP {code}")
+        else:
+            choice = (payload.get("choices") or [{}])[0]
+            detail["finish_reason"] = choice.get("finish_reason")
+            detail["reply"] = ((choice.get("message") or {}).get("content") or "")[:300]
+
+        try:
+            after = self.server_log.read_text(encoding = "utf-8", errors = "replace")
+        except OSError:
+            after = ""
+        # Only what this request wrote, so an earlier assertion's tool call
+        # cannot be read as this one's evidence.
+        fresh = after[len(before):]
+        marker = "execute_tool: name=web_search"
+        detail["executions"] = fresh.count(marker)
+        if not detail["executions"]:
+            failures.append(
+                f"{marker!r} never appeared in the server log for this request, "
+                f"so the loop offered web_search and never ran it"
+            )
+
+        detail["failures"] = failures
+        return self.record("web_search", not failures, detail)
+
     # ----------------------------------------------------------- assertion B
 
     def assert_training(self) -> bool:
@@ -1583,6 +1648,7 @@ class Payload:
         if gpu_ok:
             self.assert_tool_calling()
             self.assert_code_execution()
+            self.assert_web_search()
         else:
             # Tool calling on a CPU fallback would be a green tick for a
             # question nobody asked. Skip it and say so.
@@ -1593,6 +1659,11 @@ class Payload:
             )
             self.record(
                 "code_execution",
+                False,
+                {"failures": ["skipped: the model was not on the GPU, so this proves nothing"]},
+            )
+            self.record(
+                "web_search",
                 False,
                 {"failures": ["skipped: the model was not on the GPU, so this proves nothing"]},
             )
