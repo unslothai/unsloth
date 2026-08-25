@@ -102,6 +102,7 @@ def client(tmp_path, monkeypatch, captured):
     app = FastAPI()
     app.include_router(preview.router, prefix = "/p")
     app.dependency_overrides[preview.get_current_subject] = lambda: "admin"
+    app.dependency_overrides[preview.authenticated_without_credential] = lambda: False
     # raise_server_exceptions=False so a 5xx surfaces as a response, not a throw.
     return TestClient(app, raise_server_exceptions = False)
 
@@ -177,6 +178,18 @@ def test_list_previews_omits_capability_when_sharing_disabled(client, monkeypatc
     body = r.json()
     # Don't hand out credentials that 404; signal the disabled state instead.
     assert body["sharing_enabled"] is False
+    assert body["data"][0]["key"] is None
+    assert body["data"][0]["share_url"] is None
+
+
+def test_list_previews_omits_capability_for_keyless_caller(client, monkeypatch):
+    monkeypatch.setattr(
+        preview,
+        "list_preview_targets",
+        lambda: [{"ref": "demorun", "is_latest": True}],
+    )
+    client.app.dependency_overrides[preview.authenticated_without_credential] = lambda: True
+    body = client.get("/p").json()
     assert body["data"][0]["key"] is None
     assert body["data"][0]["share_url"] is None
 

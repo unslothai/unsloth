@@ -3309,6 +3309,32 @@ def _probe_env(**extra: str) -> dict:
     return env
 
 
+def _prefer_windows_cmd_sibling(executable: Optional[str]) -> Optional[str]:
+    """Prefer the sibling .cmd when Windows resolved an extensionless npm/pnpm shim.
+
+    cmd-shim writes ``to``, ``to.cmd`` and ``to.ps1``, and shutil.which can return
+    the extensionless POSIX shim, which CreateProcess rejects with WinError 193.
+    Measured on windows-latest: 3.12.0 probes the bare name before PATHEXT
+    (gh-109590), and 3.12.1 onwards do not. A PATHEXT holding "." reaches the same
+    place on any version. Substituted only when the file opens with a shebang, so a
+    real PE keeps priority over a stale wrapper beside it; matched on
+    not-a-Windows-suffix so a dotted bin name is caught too.
+    """
+    if executable is None or os.name != "nt":
+        return executable
+    if Path(executable).suffix.lower() in {".exe", ".com", ".cmd", ".bat", ".ps1"}:
+        return executable
+    with contextlib.suppress(OSError):
+        with open(executable, "rb") as resolved_file:
+            if resolved_file.read(2) == b"#!":
+                # .CMD only matters on case-sensitive volumes; no writer emits .bat.
+                for extension in (".cmd", ".CMD"):
+                    sibling = Path(executable + extension)
+                    if sibling.is_file():
+                        return str(sibling)
+    return executable
+
+
 def _which_with_install_dirs(name: str) -> Optional[str]:
     # shutil.which(name), but searching the known agent install dirs too, so a version probe
     # resolves the same binary _launch() will (it augments PATH before it runs). Without this an
@@ -3318,7 +3344,9 @@ def _which_with_install_dirs(name: str) -> Optional[str]:
     original = os.environ.get("PATH")
     _augment_path_with_install_dirs()
     try:
-        return shutil.which(name)
+        # Callers spawn this result directly, so the shim rescue is needed here
+        # too, not only in _resolved_launch_command.
+        return _prefer_windows_cmd_sibling(shutil.which(name))
     finally:
         if original is None:
             os.environ.pop("PATH", None)
@@ -3345,13 +3373,13 @@ def _pinned_raw_github_commit(source: str) -> Optional[str]:
 def _npm_executable() -> Optional[str]:
     managed_node = _managed_node_tools()
     if not (managed_node and managed_node[2]):
-        executable = shutil.which("npm")
+        executable = _prefer_windows_cmd_sibling(shutil.which("npm"))
         if executable and not _wsl_windows_executable([executable]):
             return executable
         if executable:
             # WSL inherits the Windows PATH, so the rejected shim may shadow a native npm.
             for directory in os.get_exec_path():
-                candidate = shutil.which("npm", path = directory)
+                candidate = _prefer_windows_cmd_sibling(shutil.which("npm", path = directory))
                 if candidate and not _wsl_windows_executable([candidate]):
                     return candidate
 
@@ -3625,6 +3653,9 @@ def _resolved_launch_command(
     environment: Optional[dict] = None,
 ) -> list:
     """Return an argv that preserves arguments through standard Windows npm shims."""
+    # _launch resolves with raw shutil.which, so rescue here too; the sibling
+    # then enters the parser below.
+    executable = _prefer_windows_cmd_sibling(executable)
     if os.name == "nt" and Path(executable).suffix.lower() in {".cmd", ".bat"}:
         # cmd.exe treats CR/LF inside `%*` as command separators, and Windows
         # PowerShell's native-command bridge also rewrites embedded quotes. Match

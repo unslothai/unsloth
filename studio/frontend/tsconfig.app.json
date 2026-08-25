@@ -37,7 +37,6 @@
     "smoke-thread-weight-main.tsx",
     "smoke-settings-main.tsx",
     "smoke-stream-pacing-main.tsx",
-    "smoke-code-block-flicker-main.tsx",
-    "smoke-overlay-rail-main.tsx"
+    "smoke-code-block-flicker-main.tsx"
   ]
 }

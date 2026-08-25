@@ -125,13 +125,6 @@
     wireChars: 0,
     wireFrames: 0,
     wireParseFailures: 0,
-    // How many times a frame that was ALREADY BUFFERED when this call began was completed and
-    // counted. Cumulative and never reset, for the same reason `wireChars` is not: a window wants
-    // the growth across it. This is what turns "a buffer was pending when the window opened" into
-    // "characters that arrived before this window were counted inside it", which is the thing that
-    // actually makes the denominator wrong. A buffer left behind by an ABORTED response never
-    // completes, so it never increments this and never costs the next response its reading.
-    carriedFlushes: 0,
   };
   // The incremental SSE buffer. A decode() call is a slice of the socket, not an SSE frame: one
   // call can carry three frames and half of a fourth. Whatever is left after the last blank line
@@ -152,10 +145,55 @@
   // retained. Within one response the same decoder is reused for every `decode(chunk, {stream:
   // true})` call, so a genuine split still reassembles exactly as before.
   const DECODER_STATE = new WeakMap();
+  //: How many times a frame that was ALREADY BUFFERED when a decode call began was completed and
+  //: counted. Cumulative and never reset, for the same reason `wireChars` is not: a window wants
+  //: the growth across it. This is what turns "a buffer was pending when the window opened" into
+  //: "characters that arrived before this window were counted inside it", which is the thing that
+  //: actually makes the denominator wrong. A buffer left behind by an ABORTED response never
+  //: completes, so it never increments this and never costs the next response its reading.
+  //:
+  //: PER DECODER, alongside `pending`, and it was page-global on `S` until it was not. `close`
+  //: pairs the buffer pending AT THE OPEN with the flushes carried ACROSS the window, and those
+  //: were read at two scopes: the buffer belonged to one decoder, the counter to all of them.
+  //: `stop_generation` leaves the old decoder holding half a frame and `send_turn` follows it in
+  //: all three shipped schedules, so if that NEW response was itself split -- ordinary, and
+  //: likeliest exactly when the renderer is jammed -- its own split moved the shared counter and
+  //: the window was refused for a stale buffer that never flushed. Measured before this change: a
+  //: two-chunk reply after an abort delivered all 13 of its characters inside the window and was
+  //: refused, while the same traffic without the abort was accepted. The loss is biased against
+  //: the most expensive windows, in the flattering direction.
+  const CARRIED_BY_ID = new Map();
+  //: A bounded history, on the same discipline as `MAX_PENDING_CHARS`. `close` asks about the
+  //: decoder pending when the window OPENED, which by then may be neither active nor alive, so
+  //: the count cannot live only in the `WeakMap`. Keyed by an integer and holding no reference to
+  //: any `TextDecoder`, so it cannot defeat the weak scoping above, and trimmed so a long film
+  //: cannot grow it without limit.
+  const MAX_DECODER_HISTORY = 64;
+  let DECODER_SEQ = 0;
+  const noteCarried = (st) => {
+    st.carriedFlushes += 1;
+    CARRIED_BY_ID.set(st.id, st.carriedFlushes);
+    while (CARRIED_BY_ID.size > MAX_DECODER_HISTORY) {
+      CARRIED_BY_ID.delete(CARRIED_BY_ID.keys().next().value);
+    }
+  };
+  //: The carried count of a NAMED decoder, or of whichever one is active when no name is given.
+  //: A decoder that never carried a frame is absent from the map and answers 0, which is the same
+  //: answer it would have given had it still been alive.
+  const carriedFor = (id) => {
+    if (typeof id !== "number") return active.carriedFlushes;
+    return CARRIED_BY_ID.get(id) || 0;
+  };
+  const newState = () => ({
+    pending: "",
+    markerTail: "",
+    carriedFlushes: 0,
+    id: (DECODER_SEQ += 1),
+  });
   const stateFor = (decoder) => {
     let st = DECODER_STATE.get(decoder);
     if (!st) {
-      st = { pending: "", markerTail: "" };
+      st = newState();
       DECODER_STATE.set(decoder, st);
     }
     return st;
@@ -164,7 +202,10 @@
   //: `wireIntegrity` reports THIS buffer: half a frame of the response being measured is a short
   //: denominator and must refuse the window, while half a frame of a response that was aborted
   //: three slots ago says nothing about it.
-  let active = { pending: "", markerTail: "" };
+  //: Built by `newState()` rather than by hand: a sentinel missing any field a real decoder state
+  //: carries reads `undefined` on a window that opens before the first stream, and `undefined` is
+  //: not zero. Its id comes from the same sequence, so `carriedFor` answers about it like any other.
+  let active = newState();
   //: The decoder holding a speculative marker fragment, if any, and there is only ever one worth
   //: holding. A fragment is at most four characters and lives on the decoder that produced it, but
   //: it has to be REPORTED whoever holds it: a decoder whose first chunk is "dat" has not been
@@ -298,7 +339,7 @@
     st.pending = parts.pop();
     // Something that was in the buffer before this call just became a counted frame. A window
     // whose OPEN saw a non-empty buffer is only wrong if this happens inside it.
-    if (carried && parts.length > 0) S.carriedFlushes += 1;
+    if (carried && parts.length > 0) noteCarried(st);
     for (const part of parts) {
       const line = part.trim();
       if (!line.startsWith("data:")) continue;
@@ -543,7 +584,14 @@
     // ever go up.
     // The two things that can make `wireChars` short by an unknown amount, read at the same O(1)
     // cost as the counter itself so a window boundary can capture both ends.
-    wireIntegrity() {
+    // `forId` names the decoder to answer about, which `close` passes back from what `open`
+    // sampled. WHOSE BUFFER AND WHOSE FLUSH HAVE TO BE THE SAME DECODER, and reading the active
+    // one at both ends does not make them so: the decoder pending at the open can complete its
+    // carried frame inside the window and be replaced as active before the close, and comparing
+    // the two ends' ids would call that a mismatch and discard the very carry it looks for.
+    // Naming the decoder answers regardless of who is active now, so a window that really did
+    // count characters delivered before it opened is still refused.
+    wireIntegrity(forId) {
       // The marker fragment counts as buffered, because it is: the frame it begins has not been
       // counted yet, so a window closing on it has a denominator that is short by that frame. The
       // cost of being honest here is that a stray one to four characters of unrelated traffic can
@@ -552,9 +600,11 @@
       return {
         failures: S.wireParseFailures,
         pending_chars: active.pending.length + heldMarkerChars(),
+        // WHICH decoder the two numbers above are about, so the close can ask about the same one.
+        decoder_id: active.id,
         // Read as a DELTA across the window by `StreamCostInstrument.close`, so a buffer that was
-        // pending at the open refuses the window only when its frame was completed inside it.
-        carried_flushes: S.carriedFlushes,
+        // pending at the open refuses the window only when ITS OWN frame was completed inside it.
+        carried_flushes: carriedFor(forId),
       };
     },
     replyChars() {

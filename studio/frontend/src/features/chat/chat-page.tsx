@@ -57,7 +57,9 @@ import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
 import { useIsMobile } from "@/hooks/use-mobile";
 import {
   DOWNLOAD_KIND,
+  dismissStartToast,
   downloadManager,
+  jobKeyOf,
   useRepoDownload,
 } from "@/features/hub/download-manager";
 import {
@@ -2748,13 +2750,14 @@ export function ChatPage({
             repoId: selection.id,
             variant: selection.ggufVariant ?? null,
             expectedBytes: selection.expectedBytes ?? 0,
-          });
-          if (outcome === "started") {
-            toast.info("Downloading in the background", {
+            // Handed over, not raised here, so one start makes one toast.
+            callerToast: {
+              title: "Downloading in the background",
               description:
                 "It'll be ready to load once the current model finishes.",
-            });
-          } else if (outcome === "conflict") {
+            },
+          });
+          if (outcome === "conflict") {
             toast.info("Resume this download from Models", {
               description:
                 "An earlier partial download used a different transport. Open the Model hub tab to resume or restart it.",
@@ -2852,9 +2855,26 @@ export function ChatPage({
       }
     },
   });
+  // The pending auto-load's job, for the context-change effect below. Written from
+  // an effect, never during render.
+  const pendingAutoLoadKeyRef = useRef<string | null>(null);
+  // The live context, so a start still in flight can check it is still on screen.
+  const chatContextKeyRef = useRef(chatContextKey);
+  useEffect(() => {
+    chatContextKeyRef.current = chatContextKey;
+  }, [chatContextKey]);
   useEffect(() => {
     const pending = pendingHubAutoLoad;
-    if (!pending) return;
+    if (!pending) {
+      pendingAutoLoadKeyRef.current = null;
+      return;
+    }
+    const pendingKey = jobKeyOf(
+      DOWNLOAD_KIND.MODEL,
+      pending.selection.id,
+      pending.selection.ggufVariant ?? null,
+    );
+    pendingAutoLoadKeyRef.current = pendingKey;
     let active = true;
     void (async () => {
       const outcome = await downloadManager.requestStart({
@@ -2862,12 +2882,21 @@ export function ChatPage({
         repoId: pending.selection.id,
         variant: pending.selection.ggufVariant ?? null,
         expectedBytes: pending.selection.expectedBytes ?? 0,
+        // Notice-only: #9663 removed this surface's own toast, so it must not
+        // return on an HTTP start or once the three notices are spent.
+        callerToast: {
+          title: "Downloading model",
+          description: "It'll load automatically once the download finishes.",
+          noticeOnly: true,
+          // The cleanup below only reaches a toast that already exists; a raise
+          // still in flight would promise an auto-load onComplete then refuses.
+          stillValid: () => chatContextKeyRef.current === pending.contextKey,
+        },
       });
       if (!active) return;
       if (outcome === "started") {
-        toast.info("Downloading model", {
-          description: "It'll load automatically once the download finishes.",
-        });
+        // No toast here, and none from the manager unless the notice folds the
+        // sentence in. The auto-load runs from onComplete.
         return;
       }
       if (outcome === "conflict") {
@@ -2891,8 +2920,19 @@ export function ChatPage({
     })();
     return () => {
       active = false;
+      // Another model was picked, so this one's completion loads nothing. A no-op
+      // once the download finished, which dismisses the same id.
+      dismissStartToast(pendingKey);
     };
   }, [pendingHubAutoLoad]);
+  // Switching thread or project keeps the pathname and pendingHubAutoLoad, so neither
+  // sweep above runs, yet onComplete refuses to load into a different contextKey.
+  useEffect(() => {
+    return () => {
+      const pendingKey = pendingAutoLoadKeyRef.current;
+      if (pendingKey) dismissStartToast(pendingKey);
+    };
+  }, [chatContextKey]);
   const loadNativeModelIntent = useCallback(
     async (intent: NativeIntent, loadingDescription: string) => {
       const label =
@@ -3667,8 +3707,39 @@ export function ChatPage({
       {/* `--studio-chat-notice-height` is 0 until ChatModelNotice is on screen; the
           thread viewport adds it to the top padding it reserves for the header, so
           without it the first message reads under an opaque bar. Declared on the
-          nearest ancestor of BOTH so the two cannot disagree about its height. */}
-      <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden has-[[data-chat-model-notice]]:[--studio-chat-notice-height:2.25rem]">
+          nearest ancestor of BOTH so the two cannot disagree about its height.
+
+          `has-[>...]`, not `has-[...]`. This element is an ancestor of every
+          message in the thread, and a `:has()` with a DESCENDANT argument must
+          be re-checked whenever anything is inserted or removed anywhere in its
+          subtree. Answering it means walking that subtree, so here it walks the
+          whole thread on every mutation.
+
+          It is a traversal and not a restyle: Blink's own
+          `UpdateLayoutTree.elementCount` for one inserted span is 1 once both
+          this rule and the sidebar wrapper's are in their child form, 2 with
+          one of them still in descendant form and 3 with both, i.e. only the
+          subjects are ever restyled. That is why containment cannot help and
+          why the inheriting custom property this rule declares is not the
+          carrier either: the same rule declaring a non-inherited `background`
+          costs the same. Related to #9328 by family, not by mechanism.
+
+          Measured at the 500K rung, corpus 23cd2464, on a 357,843-element
+          thread, as the cost of appending one EMPTY span inside a message: 17.5
+          and 18.6 ms in two concurrent arms with this rule as it was, 9.8 and
+          9.3 ms with this rule alone deleted, and 0.10 ms with this rule and
+          the one on the sidebar wrapper both deleted. The same span appended to
+          <body> costs 0.10 ms either way, so the cost is the thread being under
+          the subject and nothing else. Chromium only: WebKitGTK and Firefox are
+          flat across all four selector forms, so this neither helps nor hurts
+          the engine Studio uses on Linux.
+
+          ChatModelNotice renders a direct child of this element (see below), so
+          the child combinator matches exactly what the descendant form matched.
+          If it is ever moved deeper, the notice's height stops being reserved
+          and the first message reads under the bar again, which is why
+          `tests/thread-ancestor-has-scope.test.ts` asserts the depth. */}
+      <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden has-[>[data-chat-model-notice]]:[--studio-chat-notice-height:2.25rem]">
         <NativeModelDropOverlay state={nativeModelDropState} />
         {/* Fade under the top bar so messages dissolve as they scroll
             beneath it, instead of a hard cut. */}
