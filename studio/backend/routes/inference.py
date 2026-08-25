@@ -2620,9 +2620,11 @@ def _request_used_api_key(request: Any) -> bool:
     using Unsloth". Internal workflow keys (Deep Research, data recipes) are Studio
     itself and are excluded, or every research step would pop the API monitor open.
     """
-    # Total by construction: this only decides a monitor label and must never fail a
-    # load. Saved-secret authorization uses _request_has_api_key instead, narrowed by
-    # _request_is_internal_workflow where a Studio workflow needs its own connection.
+    # Total by construction: this must never fail a load. It also gates durable API
+    # usage receipts, so an indeterminate key origin must not attribute Studio's own
+    # workflow traffic to an external caller. Saved-secret authorization uses
+    # _request_has_api_key instead, narrowed by _request_is_internal_workflow where a
+    # Studio workflow needs its own connection.
     token = _request_api_key_token(request)
     if token is None:
         # keyless traffic is someone using Unsloth as an API server too
@@ -2632,7 +2634,7 @@ def _request_used_api_key(request: Any) -> bool:
         return not auth_storage.is_internal_api_key(token)
     except Exception:
         logger.debug("api_monitor.internal_key_probe_failed", exc_info = True)
-        return True
+        return False
 
 
 from state.tool_approvals import resolve_tool_decision
