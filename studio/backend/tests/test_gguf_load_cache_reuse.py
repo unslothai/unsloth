@@ -561,6 +561,36 @@ class TestLoadReusesCachedCopy:
 
         assert out == str(projector)
 
+    def test_companion_prefers_f16_among_compatible_repo_root_projectors(self, hf_cache):
+        backend = LlamaCppBackend()
+        snap = _build_cache(hf_cache, REPO, {MAIN: 4})
+        repo_root = snap.parent.parent
+        preferred = repo_root / "mmproj-F16.gguf"
+        preferred.write_bytes(b"mmproj")
+        (repo_root / "gemma-test-mmproj-BF16.gguf").write_bytes(b"mmproj")
+
+        out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN))
+
+        assert out == str(preferred)
+
+    def test_companion_cancelled_before_scanning_cached_projectors(self, hf_cache):
+        backend = LlamaCppBackend()
+        snap = _build_cache(hf_cache, REPO, {MAIN: 4})
+        cancel_event = threading.Event()
+        cancel_event.set()
+
+        with patch(
+            "utils.models.model_config.detect_mmproj_file",
+            side_effect = AssertionError("cancelled lookup scanned the cache"),
+        ):
+            out = backend._download_mmproj(
+                hf_repo = REPO,
+                near_path = str(snap / MAIN),
+                cancel_event = cancel_event,
+            )
+
+        assert out is None
+
     def test_audio_only_repo_root_projector_does_not_shadow_remote_vision(self, hf_cache):
         backend = LlamaCppBackend()
         snap = _build_cache(hf_cache, REPO, {MAIN: 4})

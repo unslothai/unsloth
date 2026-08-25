@@ -1731,13 +1731,15 @@ def detect_mmproj_file(
     path: str,
     search_root: Optional[str] = None,
     accept: Optional[Callable[[str], bool]] = None,
+    prefer: Optional[Callable[[list[str]], Optional[str]]] = None,
 ) -> Optional[str]:
     """Find the mmproj GGUF for a model.
 
     ``path``: directory or a .gguf file. ``search_root``: optional ancestor
     to also walk (snapshot layouts where the weight is in ``snapshot/BF16/``
     but the projector sits at ``snapshot/``). Returns the projector path or
-    ``None``. ``accept`` filters a candidate before its GGUF header is read."""
+    ``None``. ``accept`` filters a candidate before its GGUF header is read.
+    ``prefer`` selects among candidates that pass model-pairing checks."""
     p = Path(path)
     start_dir = p.parent if p.is_file() else p
     if not start_dir.is_dir():
@@ -1839,6 +1841,12 @@ def detect_mmproj_file(
 
     if not scored:
         return None
+
+    if prefer is not None:
+        compatible = [str(candidate) for _, candidate in scored]
+        preferred = prefer(compatible)
+        if preferred in compatible:
+            return preferred
 
     # Score first, then longest shared prefix, then shorter stem.
     best = max(

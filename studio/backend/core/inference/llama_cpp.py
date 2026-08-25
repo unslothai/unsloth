@@ -11858,6 +11858,10 @@ class LlamaCppBackend:
         copy co-located with the main GGUF's cache snapshot.
         """
 
+        cancel_event = cancel_event if cancel_event is not None else self._cancel_event
+        if cancel_event.is_set():
+            return None
+
         if near_path:
             from utils.models.model_config import (
                 _local_gguf_companion_search_root,
@@ -11867,7 +11871,7 @@ class LlamaCppBackend:
 
             snapshot_sibling = _companion_snapshot_sibling(near_path, _pick_mmproj)
             search_root = _local_gguf_companion_search_root(near_path, near_path)
-            cached = detect_mmproj_file(near_path, search_root = search_root)
+            cached = detect_mmproj_file(near_path, search_root = search_root, prefer = _pick_mmproj)
             if cached is not None and mmproj_accepts_image(cached):
                 if snapshot_sibling is not None:
                     try:
