@@ -357,8 +357,7 @@ def run_candidate(label, extra, why, cmd) -> dict:
             stalled_at = samples[i][0]
             break
 
-    pre_lines = [l for l in (text + shell_out).splitlines()
-                 if "desktop_preflight completed" in l]
+    pre_lines = [l for l in (text + shell_out).splitlines() if "desktop_preflight completed" in l]
     preflight = pre_lines[-1].strip() if pre_lines else ""
 
     ran_for = samples[-1][0] if samples else 0
