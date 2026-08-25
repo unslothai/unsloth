@@ -2552,8 +2552,16 @@ def _request_api_key_token(request: Any) -> Optional[str]:
 
 
 def _request_has_api_key(request: Any) -> bool:
-    """Whether the request used any API key rather than an interactive session JWT."""
-    return _request_api_key_token(request) is not None
+    """Whether the request used any API key rather than an interactive session JWT.
+
+    A keyless caller counts too: it sends no session either, so the saved-credential
+    rules that hold back an sk-unsloth key must hold it back the same way.
+    """
+    if _request_api_key_token(request) is not None:
+        return True
+    from auth.authentication import admitted_without_session
+
+    return admitted_without_session(request)
 
 
 def _request_is_internal_workflow(request: Any) -> bool:
@@ -2617,7 +2625,9 @@ def _request_used_api_key(request: Any) -> bool:
     # _request_is_internal_workflow where a Studio workflow needs its own connection.
     token = _request_api_key_token(request)
     if token is None:
-        return False
+        # keyless traffic is someone using Unsloth as an API server too
+        from auth.authentication import admitted_without_session
+        return admitted_without_session(request)
     try:
         return not auth_storage.is_internal_api_key(token)
     except Exception:
@@ -2806,20 +2816,23 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
 async def _authenticate_header_or_query(request: Request, token: Optional[str]) -> str:
     """Resolve the bearer token from the Authorization header or the ``?token=``
     query param (needed for <img src> / <iframe>, which can't send custom
-    headers), validate it, and return the subject. Raises 401 when absent."""
+    headers), validate it, and return the subject. Raises 401 when absent.
+
+    Routed through ``credentials_for_token`` so a scope that covers this path serves it
+    without a key, the way the routes behind ``security`` already do."""
     auth_header = request.headers.get("authorization")
     if auth_header and auth_header.lower().startswith("bearer "):
         jwt_token = auth_header[7:]
-    elif token:
-        jwt_token = token
     else:
+        jwt_token = token or None
+    from auth.authentication import credentials_for_token
+
+    creds = await credentials_for_token(request, jwt_token)
+    if creds is None:
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = "Missing authentication token",
         )
-    from fastapi.security import HTTPAuthorizationCredentials
-
-    creds = HTTPAuthorizationCredentials(scheme = "Bearer", credentials = jwt_token)
     return await get_current_subject(creds)
 
 
@@ -6653,7 +6666,19 @@ async def _maybe_auto_switch_model(
         warm_index_soon()
         return
 
+    from auth.authentication import request_admitted_without_credential
+
+    keyless_caller = request_admitted_without_credential(fastapi_request)
+    # the keyless dialog offers the loaded model, so a stranger swaps or fetches nothing
+    if auto_switch_on and keyless_caller:
+        auto_switch_on = False
+        if not idle_unload_is_configured():
+            await _reject_unservable_model(requested_model, fastapi_request)
+            return
+
     async def _resolve_and_switch() -> None:
+        from core.inference.openai_auto_download import looks_like_quant, split_model_ref
+
         # Off the loop: a cold-cache rebuild walks several model dirs + HF caches.
         # With auto-switch off (or an omitted-model reload-only request), skip the
         # resolve so only the reload-stash path runs and no name is ever matched.
@@ -6698,6 +6723,19 @@ async def _maybe_auto_switch_model(
             else:  # pre-3-tuple stash: fall back to the path as the override key
                 target_id, variant = last
                 override_id = target_id
+            # A credential-less caller may restore only the model it explicitly
+            # named (or the reload-only sentinel used when the model is omitted).
+            # Check before loading so an unrelated name cannot trigger an expensive
+            # stash restore and only then receive the normal mismatch response.
+            if keyless_caller and not reload_only:
+                requested_base, requested_variant = split_model_ref(requested_model)
+                if not _matches_any(
+                    requested_base, (target_id, override_id, public_model_id(target_id))
+                ) or (
+                    looks_like_quant(requested_variant)
+                    and (not variant or requested_variant.lower() != variant.lower())
+                ):
+                    return
         else:
             # load_path is a concrete local path (never the bare repo id), so /load
             # takes the local branch and cannot trigger a download. override_id is the
@@ -6706,8 +6744,6 @@ async def _maybe_auto_switch_model(
         backend = get_llama_cpp_backend()
         # A bare model id (no :VARIANT) is satisfied by any loaded quant of that
         # repo, so it never reloads a different local quant that already serves it.
-        from core.inference.openai_auto_download import looks_like_quant, split_model_ref
-
         # A tag that names no quant (":latest", ":8b") means the repo, as
         # _loaded_satisfies and the resolver read it. Treating it as a quant tears down
         # a serving Q8 to load the preferred Q4 for a request either satisfies.
@@ -15072,6 +15108,14 @@ async def openai_chat_completions(
     # ── External provider routing ────────────────────────────────
     # encrypted_api_key is optional -- local providers (llama.cpp / vLLM / Ollama) may run without auth.
     if payload.provider_id or payload.provider_type:
+        from auth.authentication import request_admitted_without_credential
+
+        # caller-chosen egress from this host, which is not the loaded model on offer
+        if request_admitted_without_credential(request):
+            raise HTTPException(
+                status_code = 403,
+                detail = "External providers can only be used from the Unsloth UI or with an API key.",
+            )
         # External provider: this request won't touch the local GGUF, so drop it
         # from the keep-warm count or its in-flight stream would falsely block a
         # concurrent local model switch from proceeding.
@@ -26308,6 +26352,12 @@ async def diffusion_download_plan(
             cpu_offload = request.cpu_offload,
             transformer_prequant_path = request.transformer_prequant_path,
             loras = request.loras,
+            # Only the verdict, not the probe: the panel stages exactly what this reports.
+            # Clearing the probe drops the hosted DiT prequant, so a GGUF pick naming an explicit
+            # transformer_quant reports ~21 GB short, stages that, says done, and the load pulls
+            # the checkpoint inline. The probe kept here is the pre-existing one: a capability
+            # read plus total_mib, never free VRAM and never an allocation.
+            memory_verdict = not training,
         )
         return DiffusionDownloadPlanResponse(**plan)
     except (ValueError, FileNotFoundError) as exc:
@@ -26592,6 +26642,17 @@ async def load_diffusion_model_gated(
 
 # Count of finished generations still writing their PNG/gallery records; generate-progress reports active while above 0. Mutated only on the event loop, so no lock.
 _diffusion_persist_active = 0
+
+
+def generation_in_flight() -> bool:
+    """Read the image-persist marker without importing or locking anything.
+
+    An image job is not done when the engine's own marker clears: the route is still writing
+    the gallery records the response is built from. generate-progress already treats that
+    window as active; liveness has to agree, or the watchdog sees an idle backend and spends
+    its short budget on a request that is still running.
+    """
+    return _diffusion_persist_active > 0
 
 
 _GENERATE_FAILURE_FALLBACK = "Image generation failed."
@@ -27192,6 +27253,17 @@ async def openai_image_generations(
                 "Streaming image generation is not supported.", status = 400, param = "stream"
             ),
         )
+    if body.response_format != "b64_json":
+        from auth.authentication import request_admitted_without_credential
+        if request_admitted_without_credential(request):
+            raise HTTPException(
+                status_code = 403,
+                detail = openai_error_body(
+                    "URL image responses require an API key. Use response_format='b64_json' for keyless access.",
+                    status = 403,
+                    param = "response_format",
+                ),
+            )
     try:
         width, height = _parse_openai_image_size(body.size)
     except ValueError as exc:
@@ -27358,10 +27430,16 @@ async def _generate_openai_images(
                 items.append(ImageGenerationData(url = _absolute_image_url(request, record["id"])))
         return items
 
+    # Same counter as /images/generate: the request is still in flight until these records
+    # exist, and liveness reads the counter to say so.
+    global _diffusion_persist_active
+    _diffusion_persist_active += 1
     try:
         data = await asyncio.to_thread(_persist)
     except Exception as exc:  # noqa: BLE001
         logger.error("openai_images.persist_failed: %s", exc)
         raise HTTPException(status_code = 500, detail = "Failed to save the generated image.")
+    finally:
+        _diffusion_persist_active -= 1
 
     return ImageGenerationResponse(created = created, data = data)

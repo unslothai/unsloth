@@ -3547,14 +3547,16 @@ def test_variant_scans_take_the_run_signal():
 
 def test_cached_rows_classify_chat_capability_too():
     """The same encoder gate the scan-folder rows get; cached rows built their
-    capabilities from file format alone."""
+    capabilities from file format alone. Both halves are pinned separately, since
+    the gate is now nested rather than one `and`, and the call must read the
+    snapshot the load resolves to rather than any other revision."""
     src = _read_backend("hub/services/models/cache_inventory.py")
     assert "_local_transformers_can_chat" in src
     fields = src.split("def _cache_inventory_fields", 1)[1].split("\ndef ", 1)[0]
     assert "can_chat_override" in fields
-    assert (
-        'model_format in {"safetensors", "checkpoint"} and classify_snapshot is not None' in fields
-    )
+    assert 'model_format in {"safetensors", "checkpoint"}' in fields
+    assert "classify_snapshot is not None" in fields
+    assert "_local_transformers_can_chat(classify_snapshot)" in fields
 
 
 def test_every_load_target_comparison_uses_the_same_case_rules():

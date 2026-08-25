@@ -283,8 +283,8 @@ def _as_bytes(value) -> bytes:
     return value if isinstance(value, bytes) else str(value).encode("utf-8", "replace")
 
 
-def _carries_bearer_credentials(scope) -> bool:
-    """Whether this request carries the ``Authorization: Bearer`` its route demands.
+def _carries_bearer_credentials(scope, path: str = "") -> bool:
+    """Whether this request carries the credentials its route demands.
 
     Every tracked media route depends on ``get_current_subject`` (HTTPBearer), so a request
     without one is refused before any handler runs. Counting it anyway would still pin the
@@ -292,8 +292,16 @@ def _carries_bearer_credentials(scope) -> bool:
     opens the POST and then withholds its body produces no response status either, so the
     401/403 exclusion below never gets to run. One such connection, replaced as it times
     out, would keep a multi-GB pipeline resident for good. Real clients always send the
-    header, so requiring it costs a legitimate generation nothing.
+    header, so requiring it costs a legitimate generation nothing. Keyless API access is
+    the one case where a route demands no bearer at all. Its outer admission middleware
+    records that decision before keep-warm runs, so reuse the snapshot instead of
+    repeating settings, listener, and DNS work on this loop.
     """
+    from utils.keyless_api_access import KEYLESS_ADMISSION_STATE_KEY
+
+    state = scope.get("state")
+    if path and isinstance(state, dict) and state.get(KEYLESS_ADMISSION_STATE_KEY) is True:
+        return True
     headers = scope.get("headers")
     if headers is None:
         # A real ASGI server always populates headers; a caller that does not is not a
@@ -328,7 +336,7 @@ class LlamaKeepWarmMiddleware:
         from core.inference import media_keepwarm
 
         media_owner = media_keepwarm.owner_for_path(path)
-        if media_owner is not None and not _carries_bearer_credentials(scope):
+        if media_owner is not None and not _carries_bearer_credentials(scope, path):
             # Cannot reach the backend, so it must not hold it warm (see the helper). The
             # chat count keeps its own rule: /p/{run}/v1/chat/completions is public by
             # design, so a missing bearer there is not proof of anything.

@@ -842,7 +842,7 @@ function GpuMemorySettings({
                 <span className="min-w-0 truncate text-ui-12 text-nav-fg/80">
                   GPU {d.index}: {d.name}
                   {d.memoryTotalGb
-                    ? ` · ${Math.round(d.memoryTotalGb)} GB`
+                    ? ` · ${Math.round(d.memoryTotalGb)} GiB`
                     : ""}
                 </span>
                 <Switch

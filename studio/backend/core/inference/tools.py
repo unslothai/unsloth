@@ -7336,7 +7336,6 @@ def _session_in_flight(session_id: "str | None"):
         # rename away. Only this session waits; every other chat is untouched.
         while key in _removing_sessions:
             _sessions_free.wait()
-        first = _active_sessions.get(key, 0) == 0
         _active_sessions[key] = _active_sessions.get(key, 0) + 1
     try:
         yield
@@ -7350,22 +7349,23 @@ def _session_in_flight(session_id: "str | None"):
                     _removing_sessions.add(key)
             else:
                 _active_sessions[key] -= 1
-        if not pending:
-            return
-        # Outside the lock: deciding whether the tree holds files can take
-        # seconds, and no other chat could start a call meanwhile. This session
-        # stays closed, so nothing starts in the directory being removed.
-        try:
-            for pending_id, pending_files in pending.items():
-                if _thread_exists(pending_id, unknown = True):
-                    # Recreated while that call ran: this delete belongs to the
-                    # chat that went, and the folder is the new one's now.
-                    continue
-                _remove_session_sandbox_locked(pending_id, pending_files)
-        finally:
-            with _sessions_free:
-                _removing_sessions.discard(key)
-                _sessions_free.notify_all()
+        # Not `if not pending: return` -- a return here swallows whatever the
+        # tool raised, and the caller reports it as an unknown tool instead.
+        if pending:
+            # Outside the lock: deciding whether the tree holds files can take
+            # seconds, and no other chat could start a call meanwhile. This
+            # session stays closed, so nothing starts in the directory removed.
+            try:
+                for pending_id, pending_files in pending.items():
+                    if _thread_exists(pending_id, unknown = True):
+                        # Recreated while that call ran: this delete belongs to
+                        # the chat that went, the folder is the new one's now.
+                        continue
+                    _remove_session_sandbox_locked(pending_id, pending_files)
+            finally:
+                with _sessions_free:
+                    _removing_sessions.discard(key)
+                    _sessions_free.notify_all()
 
 
 # Non-matching session_ids collapse to ``_invalid`` to block cross-session escapes.
