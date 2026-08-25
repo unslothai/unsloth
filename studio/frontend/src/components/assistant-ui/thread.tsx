@@ -4278,11 +4278,17 @@ const Composer: FC<{
   useShortcut(
     "startDictation",
     () => {
+      // Stopping comes first and ungated: the recording bar replaces the
+      // input, so the selector the gate asks about is gone for exactly as long
+      // as there is a recording to stop.
+      if (isDictating) {
+        aui.composer().stopDictation();
+        return;
+      }
       // A dialog over Chat leaves this registered, and a microphone opened
       // behind one is neither visible nor stoppable from where the user is.
       if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
-      if (isDictating) aui.composer().stopDictation();
-      else startDictation();
+      startDictation();
     },
     { enabled: chatActive },
   );
@@ -4296,6 +4302,10 @@ const Composer: FC<{
         if (!dictationBlocked) sendAfterDictation();
         return;
       }
+      // A dialog over Chat leaves this registered too, and the draft behind it
+      // is not what the user is typing into. Sending is not undoable, so it
+      // asks at press time, the way dictation does.
+      if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
       // requestSubmit, not the runtime's send: it runs handleSubmit first,
       // which parks a send behind indexing, queues it behind a run, or
       // refuses it.

@@ -233,3 +233,44 @@ test("both composers answer to the shared selector", async () => {
     );
   }
 });
+
+// The recording bar replaces the composer input while dictation runs, so the
+// foreground gate asks about an element that is gone for exactly as long as
+// there is a recording to stop. Stopping has to come first.
+test("stopping dictation is reachable once the input is gone", async () => {
+  for (const path of [
+    "../src/components/assistant-ui/thread.tsx",
+    "../src/features/chat/shared-composer.tsx",
+  ]) {
+    const source = await readFile(new URL(path, import.meta.url), "utf8");
+    const at = source.indexOf('useShortcut(\n    "startDictation"');
+    const body = source.slice(at, source.indexOf("\n  );", at));
+    const stop = body.search(/stopDictation\(\)/);
+    const gate = body.search(/isSurfaceInForeground\(/);
+    assert.notEqual(stop, -1, `${path} lost its stop branch`);
+    assert.notEqual(gate, -1, `${path} lost its foreground gate`);
+    assert.ok(
+      stop < gate,
+      `${path} gates the stop branch on a surface dictation removes`,
+    );
+  }
+});
+
+// Sending is not undoable, and a dialog over Chat leaves the chord registered
+// with the draft behind it still submittable.
+test("both composers refuse to send from behind a modal", async () => {
+  for (const path of [
+    "../src/components/assistant-ui/thread.tsx",
+    "../src/features/chat/shared-composer.tsx",
+  ]) {
+    const source = await readFile(new URL(path, import.meta.url), "utf8");
+    const at = source.indexOf('useShortcut(\n    "sendMessage"');
+    assert.notEqual(at, -1, `${path} lost its send chord`);
+    const body = source.slice(at, source.indexOf("\n  );", at));
+    assert.match(
+      body,
+      /if \(!isSurfaceInForeground\(COMPOSER_INPUT_SELECTOR\)\) return;/,
+      `${path} sends the hidden draft from behind a dialog`,
+    );
+  }
+});

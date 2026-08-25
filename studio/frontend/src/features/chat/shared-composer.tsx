@@ -1909,9 +1909,14 @@ export function SharedComposer({
       // As in the single-chat composer: a dialog over Chat leaves this
       // registered, and a microphone opened behind one is neither visible nor
       // stoppable from where the user is.
+      // Stopping first and ungated, as in the single-chat composer: a
+      // recording has to stay stoppable wherever the gate would say no.
+      if (isDictating) {
+        stopDictation();
+        return;
+      }
       if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
-      if (isDictating) stopDictation();
-      else startDictation();
+      startDictation();
     },
     { enabled: chatActive },
   );
@@ -1920,6 +1925,9 @@ export function SharedComposer({
   useShortcut(
     "sendMessage",
     () => {
+      // As in the single-chat composer: a dialog over Chat leaves this
+      // registered, and the draft behind it is not what the user is typing.
+      if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
       sendRef.current?.();
     },
     { enabled: chatActive && canSend },
