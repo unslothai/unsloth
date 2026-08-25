@@ -221,6 +221,7 @@ import {
 import { attachmentsSample } from "./utils/pasted-text";
 import { requestTemporaryPromptQueueStop } from "./utils/prompt-queue-boundary";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
+import { estimateMessagesTokenCount } from "./utils/estimate-chat-tokens";
 import {
   consumeProjectSourcesPending,
   hasProjectSourcesPending,
@@ -3351,42 +3352,64 @@ export function ChatPage({
       saved.thread ?? useChatRuntimeStore.getState().activeThreadId;
     if (threadId) {
       void listStoredChatMessages(threadId)
-        .then(
-          (messages) =>
-            [...messages].sort((a, b) => b.createdAt - a.createdAt)[0],
-        )
-        .then((msg) => {
+        .then((messages) => {
+          const sorted = [...messages].sort((a, b) => b.createdAt - a.createdAt);
+          const msg = sorted[0];
           const metadata = msg?.metadata as Record<string, unknown> | undefined;
           const usage = metadata?.contextUsage as ReturnType<
             typeof useChatRuntimeStore.getState
           >["contextUsage"];
-          if (!usage) return;
           const store = useChatRuntimeStore.getState();
           const activeCheckpoint = store.params.checkpoint;
-          const usageModelId = (usage as { modelId?: unknown }).modelId;
-          // Scope by modelId when present; reject if no active checkpoint
-          // (model-scoped usage can't be attributed to "nothing").
-          if (typeof usageModelId === "string" && usageModelId) {
-            if (!activeCheckpoint || usageModelId !== activeCheckpoint) {
-              return;
+          const usageModelId = (usage as { modelId?: unknown })?.modelId;
+          let validUsage: typeof usage | null = null;
+          if (usage) {
+            let modelMatches = true;
+            // Scope by modelId when present; reject if no active checkpoint
+            // (model-scoped usage can't be attributed to "nothing").
+            if (typeof usageModelId === "string" && usageModelId) {
+              if (!activeCheckpoint || usageModelId !== activeCheckpoint) {
+                modelMatches = false;
+              }
+            }
+            // For local turns, also require the restored count to fit in
+            // the active window. Skip when unknown (external provider).
+            const limit = store.ggufContextLength;
+            if (
+              typeof limit === "number" &&
+              limit > 0 &&
+              (usage.totalTokens ?? 0) > limit
+            ) {
+              modelMatches = false;
+            }
+            if (modelMatches) {
+              validUsage = usage;
             }
           }
-          // For local turns, also require the restored count to fit in
-          // the active window. Skip when unknown (external provider).
-          const limit = store.ggufContextLength;
-          if (
-            typeof limit === "number" &&
-            limit > 0 &&
-            (usage.totalTokens ?? 0) > limit
-          ) {
-            return;
-          }
-          // Key by the thread this restore read, like the history loader: the await above can
-          // outlast a switch away, and an unkeyed write would file this thread's usage under
-          // the incoming one.
-          store.setThreadContextUsage(threadId, usage);
-          if (store.activeThreadId === threadId) {
-            store.setContextUsage(usage);
+          if (validUsage) {
+            // Key by the thread this restore read, like the history loader: the await above can
+            // outlast a switch away, and an unkeyed write would file this thread's usage under
+            // the incoming one.
+            store.setThreadContextUsage(threadId, validUsage);
+            if (store.activeThreadId === threadId) {
+              store.setContextUsage(validUsage);
+            }
+          } else {
+            const estimatedTokens = estimateMessagesTokenCount(messages);
+            if (estimatedTokens != null && estimatedTokens > 0) {
+              const estimatedUsage = {
+                promptTokens: estimatedTokens,
+                completionTokens: 0,
+                totalTokens: estimatedTokens,
+                cachedTokens: 0,
+                cacheWriteTokens: 0,
+                estimated: true,
+              };
+              store.setThreadContextUsage(threadId, estimatedUsage);
+              if (store.activeThreadId === threadId) {
+                store.setContextUsage(estimatedUsage);
+              }
+            }
           }
         })
         .catch((error) => {
@@ -3861,6 +3884,7 @@ export function ChatPage({
                 cacheWrites={contextUsage?.cacheWriteTokens}
                 promptTokens={contextUsage?.promptTokens}
                 completionTokens={contextUsage?.completionTokens}
+                estimated={contextUsage?.estimated}
                 className="h-[var(--studio-chat-control-height,34px)]"
               />
             ) : null}

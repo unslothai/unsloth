@@ -119,6 +119,37 @@ test("an uncounted chat reports no per-turn rows", () => {
   );
 });
 
+// #9330: estimated context usage before model load or without exact count
+test("an estimated context usage with unknown window shows estimated tokens face", () => {
+  const state = deriveContextUsageBar({ used: 900, total: null, estimated: true });
+  assert.ok(state);
+  assert.equal(state.face, "~900 tokens");
+  assert.equal(state.percent, null);
+  assert.equal(state.totalRowName, "Estimated tokens");
+  assert.equal(state.totalRowValue, "~900");
+  assert.equal(state.estimated, true);
+  assert.equal(state.hasUsageDetails, false);
+});
+
+test("an estimated context usage formatting thousands with 'k'", () => {
+  const state = deriveContextUsageBar({ used: 4100, total: null, estimated: true });
+  assert.ok(state);
+  assert.equal(state.face, "~4.1k tokens");
+  assert.equal(state.totalRowName, "Estimated tokens");
+  assert.equal(state.totalRowValue, "~4,100");
+});
+
+test("an estimated context usage with known window states the estimated ratio", () => {
+  const state = deriveContextUsageBar({ used: 900, total: 32768, estimated: true });
+  assert.ok(state);
+  assert.equal(state.face, "~900 / 32.8k");
+  assert.equal(state.totalRowName, "Estimated total");
+  assert.equal(state.totalRowValue, "~900 / 32,768");
+  assert.equal(state.percent, (900 / 32768) * 100);
+  assert.equal(state.estimated, true);
+  assert.equal(state.hasUsageDetails, false);
+});
+
 test("the header renders the bar on the window alone, with usage optional", () => {
   const page = readFileSync(
     new URL("../src/features/chat/chat-page.tsx", import.meta.url),
@@ -129,5 +160,6 @@ test("the header renders the bar on the window alone, with usage optional", () =
     /view\.mode === "single" && \(contextUsage \|\| contextWindowKnown\)/,
   );
   assert.match(page, /used=\{contextUsage\?\.totalTokens \?\? null\}/);
+  assert.match(page, /estimated=\{contextUsage\?\.estimated\}/);
 });
 
