@@ -2403,6 +2403,25 @@ def test_a_rate_limit_delivered_inside_the_stream_is_retried(monkeypatch):
     assert "Rate limit reached for gpt-4o" in str(errors[0])
 
 
+def test_an_in_band_rate_limit_honours_the_forwarded_retry_after(monkeypatch):
+    # The proxy carries the provider's Retry-After in the error line, since the 200 the stream
+    # rides on has no status line left to put it on.
+    body = _provider_error_sse(dict(_PROVIDER_429, retry_after = "30"))
+    assert _send_attempts(monkeypatch, 200, body = body) == (3, [30.0, 30.0])
+
+
+def test_a_chatgpt_quota_refusal_in_the_stream_is_retried(monkeypatch):
+    # The ChatGPT connection reports its 429 by type with the delay in metadata, not by code.
+    body = _provider_error_sse(
+        {
+            "message": "ChatGPT subscription quota is temporarily unavailable.",
+            "type": "rate_limit_error",
+            "metadata": {"retry_after": "30"},
+        }
+    )
+    assert _send_attempts(monkeypatch, 200, body = body) == (3, [30.0, 30.0])
+
+
 def test_another_in_band_provider_error_is_not_retried(monkeypatch):
     # Only a rate limit is transient; anything else must surface on the first send.
     errors = []

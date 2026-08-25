@@ -476,23 +476,36 @@ async def _peek_stream_head(lines: AsyncIterator[str]) -> list[str]:
     return []
 
 
-def _stream_is_rate_limited(head: list[str]) -> bool:
-    """Whether the stream opens with a proxied provider rate-limit refusal.
+def _stream_rate_limit_delay(head: list[str]) -> float | None:
+    """The delay a proxied provider rate-limit refusal asks for: None when the stream does not
+    open with one, 0.0 when it names no delay.
 
     core.inference.external_provider turns an upstream non-200 into a 200 stream carrying one
-    OpenAI-shaped error line, so a provider 429 never reaches the status line -- it survives
-    only as that line's ``error.code``."""
+    OpenAI-shaped error line, so a provider 429 never reaches the status line. It survives in
+    that line alone, as ``code`` (``type`` for the ChatGPT connection) plus the Retry-After the
+    proxy forwards beside it."""
     for line in head:
         if not line.startswith("data:"):
             continue
         try:
             chunk = json.loads(line[5:].strip())
         except (TypeError, ValueError):
-            return False
+            return None
         error = chunk.get("error") if isinstance(chunk, dict) else None
-        if isinstance(error, dict) and str(error.get("code")) == "429":
-            return True
-    return False
+        if not isinstance(error, dict):
+            return None
+        if str(error.get("code")) != "429" and error.get("type") != "rate_limit_error":
+            return None
+        requested = error.get("retry_after")
+        metadata = error.get("metadata")
+        if requested is None and isinstance(metadata, dict):
+            requested = metadata.get("retry_after")
+        try:
+            delay = float(str(requested).strip())
+        except (TypeError, ValueError):
+            return 0.0
+        return delay if delay > 0 else 0.0
+    return None
 
 
 async def _with_head(head: list[str], rest: AsyncIterator[str]) -> AsyncIterator[str]:
@@ -1117,6 +1130,17 @@ class ResearchSupervisor:
             remaining -= _MODEL_WAIT_POLL_SECONDS
         await self._check_active(run_id)
 
+    async def _wait_out_rate_limit(
+        self, run: dict, requested: float, model_timeout: float, started: float, headroom: float
+    ) -> None:
+        """Wait out a provider's retry delay, whatever carried it, against the same budget."""
+        remaining = (
+            model_timeout - (asyncio.get_running_loop().time() - started) if model_timeout else None
+        )
+        await self._wait_out_retry_after(
+            run["id"], _rate_limit_wait(run, requested, remaining, headroom)
+        )
+
     async def _wait_out_retry_after(self, run_id: str, delay: float) -> None:
         """Wait out a provider-set retry delay in the same poll-sized slices as the model waits
         above, so a cancel or a lost lease ends the run during the wait rather than after it."""
@@ -1477,18 +1501,12 @@ class ResearchSupervisor:
                                     # A rate-limit wait runs to minutes, so re-read the run
                                     # while it waits; the short transport backoff below does
                                     # not outlast one poll.
-                                    await self._wait_out_retry_after(
-                                        run["id"],
-                                        _rate_limit_wait(
-                                            run,
-                                            _retry_after_seconds(exc.response) or delay,
-                                            (
-                                                model_timeout - (loop.time() - call_started)
-                                                if model_timeout
-                                                else None
-                                            ),
-                                            first_output_budget,
-                                        ),
+                                    await self._wait_out_rate_limit(
+                                        run,
+                                        _retry_after_seconds(exc.response) or delay,
+                                        model_timeout,
+                                        call_started,
+                                        first_output_budget,
                                     )
                                 else:
                                     await asyncio.sleep(delay)
@@ -1501,14 +1519,20 @@ class ResearchSupervisor:
                         # is used, so re-sending cannot duplicate report text.
                         stream = self._iter_stream_lines(run["id"], response, semantic_deadline)
                         head = await _peek_stream_head(stream)
-                        if not _stream_is_rate_limited(head) or attempt == 2:
+                        throttled = _stream_rate_limit_delay(head)
+                        if throttled is None or attempt == 2:
                             # Out of attempts: let the stream raise the provider's own error.
                             break
                         await stream.aclose()
                         await response.aclose()
                         response = None
-                        # No Retry-After survives the proxy, so this is the plain backoff.
-                        await asyncio.sleep(2**attempt)
+                        await self._wait_out_rate_limit(
+                            run,
+                            throttled or 2**attempt,
+                            model_timeout,
+                            call_started,
+                            first_output_budget,
+                        )
                         attempt += 1
                         # re-check the lease and cancellation before re-sending.
                         await self._check_active(run["id"])

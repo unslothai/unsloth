@@ -1241,7 +1241,12 @@ class ExternalProviderClient:
                         response.status_code,
                         error_text[:500],
                     )
-                    yield _error_sse_line(response.status_code, error_text, self.provider_type)
+                    yield _error_sse_line(
+                        response.status_code,
+                        error_text,
+                        self.provider_type,
+                        response.headers.get("Retry-After"),
+                    )
                     return
 
                 # Manual __anext__ (not `async for`) so we can close the
@@ -1541,7 +1546,12 @@ class ExternalProviderClient:
                         response.status_code,
                         error_text[:500],
                     )
-                    yield _error_sse_line(response.status_code, error_text, self.provider_type)
+                    yield _error_sse_line(
+                        response.status_code,
+                        error_text,
+                        self.provider_type,
+                        response.headers.get("Retry-After"),
+                    )
                     return
 
                 lines_gen = response.aiter_lines().__aiter__()
@@ -1632,7 +1642,12 @@ class ExternalProviderClient:
                             response.status_code,
                             error_text[:500],
                         )
-                        yield _error_sse_line(response.status_code, error_text, self.provider_type)
+                        yield _error_sse_line(
+                            response.status_code,
+                            error_text,
+                            self.provider_type,
+                            response.headers.get("Retry-After"),
+                        )
                         return
                     # Manual __anext__ loop instead of `async for` — see the
                     # stream_chat_completion comment for the Python 3.13 +
@@ -1737,7 +1752,12 @@ class ExternalProviderClient:
                         response.status_code,
                         error_text[:500],
                     )
-                    yield _error_sse_line(response.status_code, error_text, self.provider_type)
+                    yield _error_sse_line(
+                        response.status_code,
+                        error_text,
+                        self.provider_type,
+                        response.headers.get("Retry-After"),
+                    )
                     return
 
                 lines_gen = response.aiter_lines().__aiter__()
@@ -2382,7 +2402,12 @@ class ExternalProviderClient:
                                 f"data: "
                                 f"{_json.dumps({'id': completion_id, 'object': 'chat.completion.chunk', 'choices': [{'index': 0, 'delta': {}, 'finish_reason': None}], '_toolEvent': {'type': 'container_invalidated'}})}"
                             )
-                    yield _error_sse_line(response.status_code, error_text, self.provider_type)
+                    yield _error_sse_line(
+                        response.status_code,
+                        error_text,
+                        self.provider_type,
+                        response.headers.get("Retry-After"),
+                    )
                     return
 
                 # NOTE: same manual __anext__ loop as stream_chat_completion — see comment there.
@@ -4159,7 +4184,12 @@ class ExternalProviderClient:
                         response.status_code,
                         error_text[:500],
                     )
-                    yield _error_sse_line(response.status_code, error_text, self.provider_type)
+                    yield _error_sse_line(
+                        response.status_code,
+                        error_text,
+                        self.provider_type,
+                        response.headers.get("Retry-After"),
+                    )
                     return
 
                 if web_search_active:
@@ -5281,7 +5311,12 @@ class ExternalProviderClient:
                             retried = True
                             attempt_container_id = None
                             continue
-                        yield _error_sse_line(response.status_code, error_text, self.provider_type)
+                        yield _error_sse_line(
+                            response.status_code,
+                            error_text,
+                            self.provider_type,
+                            response.headers.get("Retry-After"),
+                        )
                         return
 
                     # NOTE: same manual __anext__ loop as stream_chat_completion --
@@ -6649,19 +6684,28 @@ def _readable_provider_error(status_code: int, message: str, provider_type: str)
     return f"{text} ({code})" if code and code not in text else text
 
 
-def _error_sse_line(status_code: int, message: str, provider_type: str) -> str:
-    """Format an error as an SSE data line in OpenAI error format."""
+def _error_sse_line(
+    status_code: int,
+    message: str,
+    provider_type: str,
+    retry_after: str | None = None,
+) -> str:
+    """Format an error as an SSE data line in OpenAI error format.
+
+    ``retry_after`` carries the upstream Retry-After through: the status line is already spent
+    on the 200 this stream is delivered under, so a client that backs off (Deep Research does)
+    has nowhere else to read the delay the provider asked for."""
     import json
 
-    error_obj = {
-        "error": {
-            "message": _readable_provider_error(status_code, message, provider_type),
-            "type": "provider_error",
-            "code": str(status_code),
-            "provider": provider_type,
-        }
+    error: dict[str, str] = {
+        "message": _readable_provider_error(status_code, message, provider_type),
+        "type": "provider_error",
+        "code": str(status_code),
+        "provider": provider_type,
     }
-    return f"data: {json.dumps(error_obj)}"
+    if retry_after:
+        error["retry_after"] = retry_after
+    return f"data: {json.dumps({'error': error})}"
 
 
 def _build_usage_chunk(
