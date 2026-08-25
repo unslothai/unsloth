@@ -311,6 +311,13 @@ H3_MAX_REFERENCES = 12
 # A reference video's trained window, in seconds.
 H3_REF_VIDEO_MIN_SECONDS = 2.0
 H3_REF_VIDEO_MAX_SECONDS = 15.0
+# How far a trim may reach past the video track before it is refused. A container reports the
+# longest of its tracks, so a file whose audio outruns its video by a little reads as longer
+# than it can show -- and a client that picks an interval from that duration, as the browser's
+# HTMLMediaElement.duration makes Studio do, then asks for slightly more video than exists.
+# Within this margin the last frame is held instead, which is what the decoder already does at
+# the end of a trim; past it the request really did overshoot and still fails.
+H3_REF_TRIM_COVERAGE_SLACK_SECONDS = 0.5
 H3_FPS = 24
 
 # "match" uses the generation area. Diffusers-only "max" uses a 2048px short edge.
@@ -428,7 +435,11 @@ def decode_h3_reference_video(
         )
     expected_frames = int(round(duration * H3_FPS))
     if trim is not None and len(frames) < expected_frames:
-        raise ValueError("That reference video did not cover the selected range.")
+        # Hold the last frame across a shortfall the slack allows, as the trim decoders do at
+        # their own endpoint; a larger gap means the range really was not there.
+        if len(frames) + math.ceil(H3_REF_TRIM_COVERAGE_SLACK_SECONDS * H3_FPS) < expected_frames:
+            raise ValueError("That reference video did not cover the selected range.")
+        frames.extend([frames[-1]] * (expected_frames - len(frames)))
     frames = frames[:expected_frames]
 
     waveform, sample_rate = (None, None)
@@ -595,7 +606,7 @@ def _decode_h3_video_trim_by_timestamp(
             if declared_duration is not None and stream_time_base is not None
             else last_relative + (last_duration or 0.0)
         )
-        if source_end + 1e-6 < end:
+        if source_end + H3_REF_TRIM_COVERAGE_SLACK_SECONDS < end:
             raise ValueError("Reference video trim ends after the source video.")
         _fill_until(end)
         if len(frames) < target_count:
@@ -642,7 +653,8 @@ def _decode_h3_video_trim_by_ordinal(
             ):
                 frames.append(image)
                 next_target += 1
-        if decoded_count < end_source_frame:
+        slack_frames = math.ceil(H3_REF_TRIM_COVERAGE_SLACK_SECONDS * source_fps)
+        if decoded_count + slack_frames < end_source_frame:
             raise ValueError("Reference video trim ends after the source video.")
         if not frames:
             raise ValueError("That reference video decoded to no frames in the selected range.")

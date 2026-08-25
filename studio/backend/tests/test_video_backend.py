@@ -6295,6 +6295,41 @@ def test_h3_reference_video_trim_entirely_past_the_soundtrack_drops_the_audio():
     assert waveform is None
 
 
+def test_h3_reference_video_trim_tolerates_a_container_longer_than_its_video():
+    """A trim taken from the container duration may reach just past the video track.
+
+    A container reports its longest track, so a file whose audio outruns its video reads as
+    longer than it can show, and a browser hands Studio that duration. The last frame is held
+    across the shortfall instead of refusing a clip that decodes fine untrimmed.
+    """
+    pytest.importorskip("av")
+    import base64
+
+    from core.inference.video_minimax_h3 import decode_h3_reference_video
+
+    blob = base64.b64decode(
+        _reference_video_data_url(seconds = 14.9, fps = 24, audio_seconds = 15.2).split(",", 1)[1]
+    )
+    frames, _, _ = decode_h3_reference_video(
+        blob, trim_start_seconds = 0.0, trim_end_seconds = 15.0
+    )
+    assert len(frames) == round(15.0 * 24)
+
+
+def test_h3_reference_video_trim_still_refuses_a_real_overshoot():
+    """The slack covers container metadata, not a range that genuinely is not there."""
+    pytest.importorskip("av")
+    import base64
+
+    from core.inference.video_minimax_h3 import decode_h3_reference_video
+
+    blob = base64.b64decode(
+        _reference_video_data_url(seconds = 6.0, fps = 24, with_audio = False).split(",", 1)[1]
+    )
+    with pytest.raises(ValueError, match = "after the source video"):
+        decode_h3_reference_video(blob, trim_start_seconds = 2.0, trim_end_seconds = 10.0)
+
+
 def test_h3_reference_video_trim_must_be_complete_bounded_and_inside_the_source():
     pytest.importorskip("av")
     import base64
