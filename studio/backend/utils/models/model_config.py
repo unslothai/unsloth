@@ -1743,6 +1743,7 @@ def detect_mmproj_file(
     search_root: Optional[str] = None,
     accept: Optional[Callable[[str], bool]] = None,
     prefer: Optional[Callable[[list[str]], Optional[str]]] = None,
+    candidate_filter: Optional[Callable[[str], bool]] = None,
 ) -> Optional[str]:
     """Find the mmproj GGUF for a model.
 
@@ -1750,6 +1751,7 @@ def detect_mmproj_file(
     to also walk (snapshot layouts where the weight is in ``snapshot/BF16/``
     but the projector sits at ``snapshot/``). Returns the projector path or
     ``None``. ``accept`` filters a candidate before its GGUF header is read.
+    ``candidate_filter`` filters the normalized candidate after discovery.
     ``prefer`` selects among candidates that pass model-pairing checks."""
     p = Path(path)
     start_dir = p.parent if p.is_file() else p
@@ -1825,12 +1827,15 @@ def detect_mmproj_file(
             meta = read_gguf_general_metadata(str(resolved))
             by_meta = is_mmproj_by_metadata(meta)
             if by_meta is True or (by_meta is None and _is_mmproj(candidate_path.name)):
-                seen_resolved.add(resolved)
-                candidates.append(
+                offered = (
                     candidate_path.absolute()
                     if _GGUF_SPLIT_FILE_RE.match(candidate_path.name)
                     else resolved
                 )
+                if candidate_filter is not None and not candidate_filter(str(offered)):
+                    continue
+                seen_resolved.add(resolved)
+                candidates.append(offered)
 
     if not candidates:
         return None
@@ -2722,8 +2727,8 @@ def _iter_hf_cache_snapshots(repo_id: str, cache_dir: Optional[str | Path] = Non
     yield from (snap_dir for _key, snap_dir in ordered)
 
 
-def _cached_hf_repo_root_mmproj(repo_id: str) -> tuple[Optional[str], int, int]:
-    """A projector witness plus conservative total and audio-only size bounds."""
+def _cached_hf_repo_root_mmproj(repo_id: str) -> tuple[Optional[str], int, int, tuple[tuple, ...]]:
+    """A projector witness, size bounds, and mutable repo-root identity."""
     try:
         from utils.hf_cache_settings import get_hf_cache_paths
 
@@ -2736,6 +2741,7 @@ def _cached_hf_repo_root_mmproj(repo_id: str) -> tuple[Optional[str], int, int]:
             if projector is not None:
                 largest = 0
                 largest_audio = 0
+                identity: dict[str, tuple] = {}
                 for candidate in _iter_gguf_files(repo_dir):
                     try:
                         shards = _complete_nonempty_gguf_shards(candidate)
@@ -2753,12 +2759,28 @@ def _cached_hf_repo_root_mmproj(repo_id: str) -> tuple[Optional[str], int, int]:
                         largest = max(largest, size)
                         if not mmproj_accepts_image(str(resolved)):
                             largest_audio = max(largest_audio, size)
+                        for shard in shards:
+                            shard_resolved = shard.resolve()
+                            stat = shard.stat()
+                            identity[str(shard.absolute())] = (
+                                str(shard.absolute()),
+                                str(shard_resolved),
+                                stat.st_dev,
+                                stat.st_ino,
+                                stat.st_size,
+                                stat.st_mtime_ns,
+                            )
                     except OSError:
                         continue
-                return projector, largest, largest_audio
+                return (
+                    projector,
+                    largest,
+                    largest_audio,
+                    tuple(identity[key] for key in sorted(identity)),
+                )
     except OSError:
         pass
-    return None, 0, 0
+    return None, 0, 0, ()
 
 
 def _list_gguf_variants_from_hf_cache(repo_id: str) -> Optional[tuple[list[GgufVariantInfo], bool]]:
@@ -3777,6 +3799,7 @@ class ModelConfig:
     gguf_mmproj_file: Optional[str] = None  # Full path to the mmproj .gguf file (vision projection)
     gguf_mmproj_budget_bytes: int = 0  # Conservative pre-pairing size for a cached projector
     gguf_mmproj_audio_budget_bytes: int = 0  # Audio-only part of that bound for Vision off
+    gguf_mmproj_root_identity: tuple[tuple, ...] = ()  # Mutable hand-added cache state
     gguf_mtp_file: Optional[str] = None  # Full path to the separate MTP drafter (local mode)
     gguf_dspark_file: Optional[str] = None  # Full path to a DSpark sidecar (local mode)
     gguf_dflash_file: Optional[str] = None  # Full path to a DFlash sidecar (local mode)
@@ -4097,15 +4120,18 @@ class ModelConfig:
                 local_mmproj_present = False
                 local_mmproj_budget_bytes = 0
                 local_mmproj_audio_budget_bytes = 0
+                (
+                    witness,
+                    root_mmproj_budget_bytes,
+                    root_mmproj_audio_budget_bytes,
+                    local_mmproj_root_identity,
+                ) = _cached_hf_repo_root_mmproj(identifier)
                 if verified_file:
                     companion_root = _local_gguf_companion_search_root(verified_file, verified_file)
                     local_mmproj = detect_mmproj_file(verified_file, search_root = companion_root)
                 else:
-                    (
-                        witness,
-                        local_mmproj_budget_bytes,
-                        local_mmproj_audio_budget_bytes,
-                    ) = _cached_hf_repo_root_mmproj(identifier)
+                    local_mmproj_budget_bytes = root_mmproj_budget_bytes
+                    local_mmproj_audio_budget_bytes = root_mmproj_audio_budget_bytes
                     local_mmproj_present = witness is not None
                 has_vision = has_vision or local_mmproj is not None or local_mmproj_present
 
@@ -4128,6 +4154,7 @@ class ModelConfig:
                     gguf_mmproj_file = local_mmproj,
                     gguf_mmproj_budget_bytes = local_mmproj_budget_bytes,
                     gguf_mmproj_audio_budget_bytes = local_mmproj_audio_budget_bytes,
+                    gguf_mmproj_root_identity = local_mmproj_root_identity,
                     gguf_hf_repo = identifier,
                     gguf_variant = variant,
                 )

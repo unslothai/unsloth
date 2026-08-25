@@ -407,6 +407,8 @@ class GgufLoadIntent:
     # A cached file and every shard's byte count, already verified for this repo and variant.
     verified_gguf: Optional[tuple[str, str, str, tuple[tuple[str, int], ...]]] = None
     mmproj_path: Optional[str] = None
+    # Remote repo-root cache identity only. It must not select the launch projector.
+    mmproj_cache_identity: tuple[tuple, ...] = ()
     mtp_draft_path: Optional[str] = None
     dspark_draft_path: Optional[str] = None
     dflash_draft_path: Optional[str] = None
@@ -2289,8 +2291,21 @@ def _cached_variant_candidates(
                 str(main_path), main, shards, {}
             ):
                 continue
-            if require_mmproj and not _pick_mmproj(cached_files):
-                continue
+            if require_mmproj:
+                from utils.models.gguf_metadata import mmproj_accepts_image
+                from utils.models.model_config import (
+                    _local_gguf_companion_search_root,
+                    detect_mmproj_file,
+                )
+
+                companion_root = _local_gguf_companion_search_root(str(main_path), str(main_path))
+                projector = detect_mmproj_file(
+                    str(main_path), search_root = companion_root, prefer = _pick_mmproj
+                )
+                # An image projector makes this a read-only cache reuse. Audio-only
+                # projectors remain fallbacks behind remote lookup, which can write.
+                if projector is None or not mmproj_accepts_image(projector):
+                    continue
             yield str(main_path), main, shards, snap
     except Exception as e:
         logger.debug(f"Cache lookup for variant failed: {e}")
@@ -4698,6 +4713,7 @@ class LlamaCppBackend:
         # Snapshot of the exact file(s) handed to the resident process. A local
         # link can be atomically retargeted while `_gguf_path` stays unchanged.
         self._gguf_load_identity: Optional[tuple] = None
+        self._remote_mmproj_identity: Optional[tuple] = None
         self._hf_repo: Optional[str] = None
         # Separate MTP drafter launched with the current model; reload-dedup
         # key so a drafter that appears next to the weights forces a reload.
@@ -11290,6 +11306,7 @@ class LlamaCppBackend:
         # Publish state before the health wait (mirrors the llama-server path).
         self._gguf_path = model_path
         self._gguf_load_identity = self._gguf_load_source_identity(model_path)
+        self._remote_mmproj_identity = None
         self._hf_repo = hf_repo
         self._is_vision = False
         # Clear the prior GGUF's toggle too: a diffusion model must not report the
@@ -11849,6 +11866,7 @@ class LlamaCppBackend:
         hf_token: Optional[str] = None,
         cancel_event: Optional[threading.Event] = None,
         near_path: Optional[str] = None,
+        vision_disabled: bool = False,
     ) -> Optional[str]:
         """Download the mmproj (vision projection) file from a GGUF repo.
 
@@ -11872,7 +11890,16 @@ class LlamaCppBackend:
 
             snapshot_sibling = _companion_snapshot_sibling(near_path, _pick_mmproj)
             search_root = _local_gguf_companion_search_root(near_path, near_path)
-            cached = detect_mmproj_file(near_path, search_root = search_root, prefer = _pick_mmproj)
+            cached = detect_mmproj_file(
+                near_path,
+                search_root = search_root,
+                prefer = _pick_mmproj,
+                candidate_filter = (
+                    (lambda candidate: not mmproj_accepts_image(candidate))
+                    if vision_disabled
+                    else None
+                ),
+            )
             if cached is not None:
                 if snapshot_sibling is not None:
                     try:
@@ -11894,6 +11921,11 @@ class LlamaCppBackend:
             near_path = near_path,
         )
         if resolved is not None:
+            if vision_disabled and cached_audio is not None and mmproj_accepts_image(resolved):
+                logger.info(
+                    "Keeping cached audio mmproj while vision is disabled: %s", cached_audio
+                )
+                return cached_audio
             return resolved
         if cached_audio is not None:
             logger.info("Reusing cached audio mmproj: %s", cached_audio)
@@ -15688,6 +15720,7 @@ class LlamaCppBackend:
                             hf_repo = hf_repo,
                             hf_token = hf_token,
                             near_path = model_path,
+                            vision_disabled = disable_vision,
                         )
                     # Auto-download the separate MTP drafter (e.g. Gemma) when
                     # the requested spec mode can use it. Repos with the head
@@ -20022,6 +20055,9 @@ class LlamaCppBackend:
                 # the mmap progress total while the health wait runs.
                 self._gguf_path = model_path
                 self._gguf_load_identity = self._gguf_load_source_identity(model_path, mmproj_path)
+                self._remote_mmproj_identity = (
+                    tuple(intent.mmproj_cache_identity) if hf_repo else None
+                )
                 self._hf_repo = hf_repo
                 self._mtp_draft_path = launch_mtp_draft_path
                 self._mtp_draft_suppressed_path = _pv_suppressed_draft_path
@@ -21589,7 +21625,12 @@ class LlamaCppBackend:
                 return Path(self._gguf_path).resolve() == Path(intent.gguf_path).resolve()
             except OSError:
                 return False
-        return (self._hf_variant or "").lower() == (intent.hf_variant or "").lower()
+        if (self._hf_variant or "").lower() != (intent.hf_variant or "").lower():
+            return False
+        resident_identity = getattr(self, "_remote_mmproj_identity", None)
+        if resident_identity is not None:
+            return tuple(intent.mmproj_cache_identity) == resident_identity
+        return True
 
     def _classify_gpu_offload(
         self, expected_gpu: bool, detected_gpus: list[tuple[int, int]]
@@ -21702,6 +21743,7 @@ class LlamaCppBackend:
             self._model_identifier = None
             self._gguf_path = None
             self._gguf_load_identity = None
+            self._remote_mmproj_identity = None
             self._hf_repo = None
             self._mtp_draft_path = None
             self._mtp_draft_suppressed_path = None
@@ -22523,18 +22565,20 @@ class LlamaCppBackend:
     @staticmethod
     def _gguf_load_source_identity(path: str, mmproj_path: Optional[str] = None) -> Optional[tuple]:
         """Identity of the exact GGUF inode(s) handed to the resident process."""
-        p = Path(path)
-        paths = [p]
-        match = _SHARD_FULL_RE.match(p.name)
-        if match:
+
+        def _shards(p: Path) -> list[Path]:
+            match = _SHARD_FULL_RE.match(p.name)
+            if match is None:
+                return [p]
             prefix, _first, total = match.groups()
-            paths = [
+            return [
                 p.with_name(f"{prefix}-{index:05d}-of-{total}{p.suffix}")
                 for index in range(1, int(total) + 1)
             ]
+
         try:
             identity = []
-            for shard in paths:
+            for shard in _shards(Path(path)):
                 resolved = shard.resolve()
                 stat = shard.stat()
                 identity.append(
@@ -22547,19 +22591,19 @@ class LlamaCppBackend:
                     )
                 )
             if mmproj_path:
-                projector = Path(mmproj_path)
-                resolved = projector.resolve()
-                stat = projector.stat()
-                identity.append(
-                    (
-                        "mmproj",
-                        str(resolved),
-                        stat.st_dev,
-                        stat.st_ino,
-                        stat.st_size,
-                        stat.st_mtime_ns,
+                for projector in _shards(Path(mmproj_path)):
+                    resolved = projector.resolve()
+                    stat = projector.stat()
+                    identity.append(
+                        (
+                            "mmproj",
+                            str(resolved),
+                            stat.st_dev,
+                            stat.st_ino,
+                            stat.st_size,
+                            stat.st_mtime_ns,
+                        )
                     )
-                )
             return tuple(identity)
         except (OSError, RuntimeError):
             return None

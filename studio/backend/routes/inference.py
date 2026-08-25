@@ -8494,6 +8494,11 @@ def _resolve_gguf_load_intent(
     if config.gguf_hf_repo:
         source = GgufLoadIntent(
             model_identifier = public_model_identifier,
+            mmproj_cache_identity = (
+                ()
+                if extra_args_disable_mmproj(extra_args)
+                else getattr(config, "gguf_mmproj_root_identity", ())
+            ),
             hf_repo = config.gguf_hf_repo,
             hf_variant = config.gguf_variant,
             hf_token = request.hf_token,
@@ -9626,7 +9631,11 @@ async def _load_model_impl(
             )
 
         is_direct_gguf_request = model_identifier.lower().endswith(".gguf")
-        if llama_backend.is_loaded and (request.gguf_variant or is_direct_gguf_request):
+        if (
+            llama_backend.is_loaded
+            and not getattr(llama_backend, "hf_repo", None)
+            and (request.gguf_variant or is_direct_gguf_request)
+        ):
             reused = _reuse_loaded_gguf(
                 _active_gguf_intent(
                     request,

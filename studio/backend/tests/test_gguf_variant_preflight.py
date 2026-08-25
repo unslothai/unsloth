@@ -199,16 +199,24 @@ def test_repo_root_projector_triggers_probe_before_the_weight_is_cached(
     repo_root.mkdir()
     projector = repo_root / "mmproj-F16.gguf"
     projector.write_bytes(b"mmproj")
-    larger = repo_root / "model-mmproj-BF16.gguf"
+    larger = repo_root / "model-mmproj-BF16-00001-of-00002.gguf"
     larger.write_bytes(b"larger projector")
+    larger_2 = repo_root / "model-mmproj-BF16-00002-of-00002.gguf"
+    larger_2.write_bytes(b"second shard")
     monkeypatch.setattr(mc, "mmproj_accepts_image", lambda path: "BF16" in path)
 
     config = ModelConfig.from_identifier(REPO, gguf_variant = "Q8_0")
 
     assert config.is_vision is True
     assert config.gguf_mmproj_file is None
-    assert config.gguf_mmproj_budget_bytes == larger.stat().st_size
+    assert config.gguf_mmproj_budget_bytes == larger.stat().st_size + larger_2.stat().st_size
     assert config.gguf_mmproj_audio_budget_bytes == projector.stat().st_size
+    old_identity = config.gguf_mmproj_root_identity
+
+    larger_2.write_bytes(b"replacement second shard")
+    updated = ModelConfig.from_identifier(REPO, gguf_variant = "Q8_0")
+
+    assert updated.gguf_mmproj_root_identity != old_identity
 
 
 def test_every_shard_of_a_verified_cached_copy_is_measured(
