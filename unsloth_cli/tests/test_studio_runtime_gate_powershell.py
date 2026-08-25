@@ -1,10 +1,7 @@
-"""The Studio-update gate must find PowerShell without PATH help (#9440).
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-A GUI-launched Desktop app can run with a PATH that omits
-``System32\\WindowsPowerShell\\v1.0``; the gate's ``subprocess`` call then died
-with ``FileNotFoundError: [WinError 2]`` during ``unsloth studio setup`` before
-PowerShell ever started.
-"""
+"""Regression coverage for Studio's PowerShell resolution (#9440)."""
 
 import ntpath
 import os
@@ -18,18 +15,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from unsloth_cli._studio_runtime_gate import _resolve_windows_powershell  # noqa: E402
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="requires Windows PowerShell")
 def test_resolves_through_path_when_available(monkeypatch):
     monkeypatch.setenv("SystemRoot", os.environ.get("SystemRoot", r"C:\Windows"))
     resolved = _resolve_windows_powershell()
-    # Either a PATH hit or the builtin absolute location — never a bare name that
-    # depends on the caller's PATH again.
     assert ntpath.isabs(resolved)
     assert os.path.isfile(resolved)
 
 
 def test_falls_back_to_the_builtin_location_when_path_lacks_powershell(monkeypatch, tmp_path):
-    # A PATH with no PowerShell (a stripped GUI environment) must still resolve:
-    # the builtin System32 location is absolute and does not depend on PATH.
+    # Simulate the stripped PATH from a GUI launch.
     monkeypatch.setenv("PATH", str(tmp_path))
     monkeypatch.setenv("SystemRoot", os.environ.get("SystemRoot", r"C:\Windows"))
 
@@ -51,7 +46,5 @@ def test_returns_the_bare_name_as_a_last_resort(monkeypatch, tmp_path):
     monkeypatch.setenv("SystemRoot", str(tmp_path))
     monkeypatch.delenv("ProgramFiles", raising = False)
 
-    # No PATH hit, no builtin under the (faked) SystemRoot, no pwsh: return the
-    # bare name so the subprocess error stays the familiar WinError 2 rather
-    # than a new failure mode.
+    # Preserve the familiar subprocess error when no host exists.
     assert _resolve_windows_powershell() == "powershell.exe"

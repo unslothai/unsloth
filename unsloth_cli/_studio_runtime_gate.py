@@ -74,14 +74,7 @@ def _resolved_windows_path(path: Path) -> str:
 
 
 def _resolve_windows_powershell() -> str:
-    """Absolute Windows PowerShell path that does not depend on PATH (#9440).
-
-    A GUI-launched Desktop app can run with a PATH that omits
-    ``System32\WindowsPowerSphere1.0`` (or a stripped environment), and
-    ``subprocess`` then fails with ``FileNotFoundError: [WinError 2]`` before
-    PowerShell ever starts. Prefer PATH resolution, fall back to the built-in
-    absolute location, then PowerShell 7.
-    """
+    r"""Resolve Windows PowerShell without relying solely on ``PATH`` (#9440)."""
     import shutil
 
     on_path = shutil.which("powershell.exe")
