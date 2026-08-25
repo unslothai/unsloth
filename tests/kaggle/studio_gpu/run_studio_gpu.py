@@ -1548,6 +1548,78 @@ class Payload:
         detail["failures"] = failures
         return self.record("gguf_export", not failures, detail)
 
+    # Every tab in Studio, and the backing endpoint its first render calls.
+    # A tab whose router failed to import does not render a broken panel; the
+    # route is simply absent and the request 404s, which is what this looks for.
+    # Named by tab so a failure says which one, and kept as a mapping so a new
+    # tab that is not covered here is visible as an omission rather than
+    # invisible.
+    TAB_ENDPOINTS = (
+        # NOT /jobs/current: that legitimately 404s when no job is running,
+        # so it would be red on correct behaviour. This one is unconditional
+        # and lives in the same router package, so an import failure takes it
+        # down with everything else.
+        ("data_designer", "/api/data-recipe/seed/github/env-token"),
+        ("image_creation", "/api/inference/images/status"),
+        ("image_creation_gallery", "/api/inference/images/gallery"),
+        ("video_creation", "/api/inference/video/status"),
+        ("video_creation_gallery", "/api/inference/video/gallery"),
+        ("image_training", "/api/train/diffusion/status"),
+        ("image_training_runs", "/api/train/diffusion/runs"),
+        ("training", "/api/train/status"),
+        ("models", "/api/models/local"),
+        ("datasets", "/api/datasets/local"),
+    )
+
+    def assert_tabs(self) -> bool:
+        """Every tab's backing endpoint answers.
+
+        This is a smoke and it is honest about being one: it does not click
+        through the UI, it asks each tab's own first request. What it catches
+        is the failure that actually happens -- a route module that raised on
+        import, so the router was never mounted and the tab renders an error
+        the moment it is opened. That is invisible to every other assertion
+        here, all of which touch inference, training and export only.
+
+        A 404 is the specific signal, so it is separated from other statuses
+        in the record rather than folded into "not 200": a 500 is a live route
+        with a broken handler and a 404 is a route that does not exist, and
+        they lead a reader to different places.
+
+        An endpoint answering 200 with a non-object is a failure too. Several
+        of these are declared with a `response_model`, so a bare string or null
+        means something upstream is substituting for the real handler.
+        """
+        failures: list[str] = []
+        detail: dict = {"checked": len(self.TAB_ENDPOINTS)}
+        results: dict = {}
+
+        for name, path in self.TAB_ENDPOINTS:
+            try:
+                code, body = self.studio.get(path)
+            except BaseException as exc:  # noqa: BLE001
+                results[name] = {"path": path, "error": f"{type(exc).__name__}: {exc}"[:200]}
+                failures.append(f"{name}: {path} raised {type(exc).__name__}")
+                continue
+            entry = {"path": path, "status": code, "type": type(body).__name__}
+            results[name] = entry
+            if code == 404:
+                failures.append(
+                    f"{name}: {path} is 404, so its router was never mounted -- "
+                    f"the tab renders an error the moment it is opened"
+                )
+            elif code >= 400:
+                failures.append(f"{name}: {path} returned HTTP {code}: {str(body)[:200]}")
+            elif not isinstance(body, (dict, list)):
+                failures.append(
+                    f"{name}: {path} answered 200 with {type(body).__name__}, not a "
+                    f"JSON object, so something is standing in for the handler"
+                )
+
+        detail["tabs"] = results
+        detail["failures"] = failures
+        return self.record("tabs", not failures, detail)
+
     def assert_lora_vs_base(self, gguf: str | None) -> bool:
         """The exported model must answer DIFFERENTLY from the base it came from.
 
@@ -1996,6 +2068,11 @@ class Payload:
         # putting it after a 20-minute training run would mean a training
         # failure hides whether API keys work at all.
         self.assert_api_key()
+
+        # Before any model work: these are pure route checks that need only a
+        # logged-in session, and putting them after a 20-minute training run
+        # would mean a training failure hides whether the tabs exist at all.
+        self.assert_tabs()
 
         gpu_ok = self.assert_gpu_inference()
         if gpu_ok:
