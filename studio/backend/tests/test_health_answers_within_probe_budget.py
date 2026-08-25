@@ -561,8 +561,7 @@ def test_a_cold_health_call_answers_inside_the_launcher_deadline():
     result = _probe(_SLOW_DETECT_S)
 
     assert result["cold_hardware_detecting"] is True, (
-        "the cold call got a settled reply, so it never exercised the wait this bound "
-        "is about"
+        "the cold call got a settled reply, so it never exercised the wait this bound is about"
     )
     assert result["cold_elapsed"] < probe_timeout, (
         f"the first /api/health call took {result['cold_elapsed']:.2f}s, past the "
