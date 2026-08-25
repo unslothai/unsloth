@@ -440,9 +440,28 @@ def local_folder_entries() -> List[ModelEntry]:
 
 
 def _safe(fn) -> List[ModelEntry]:
+    """Run one source, and never let it take the other three down with it.
+
+    Still fails open, because a picker missing one group beats a traceback where a model list
+    should be. It no longer fails SILENTLY: a source is all of your downloaded models or all of
+    your fine-tunes, so swallowing the reason turns "my HF cache is unreadable" into an empty
+    list with nothing to go on. UNSLOTH_DEBUG re-raises, for when the empty group IS the bug.
+    """
     try:
         return fn()
-    except Exception:
+    except Exception as error:
+        # Same truthy set the rest of the tree uses (utils.utils, utils.transformers_version).
+        if os.environ.get("UNSLOTH_DEBUG", "").strip().lower() in ("1", "true", "yes", "on"):
+            raise
+        # Imported here, not at module scope: this module is asserted to pull in nothing beyond
+        # the inventory layer (test_catalog_inventory_works_without_fastapi_or_routes).
+        import typer
+
+        typer.echo(
+            f"Could not read one model source ({fn.__name__}): {type(error).__name__}: {error}. "
+            f"Set UNSLOTH_DEBUG=1 for the traceback.",
+            err = True,
+        )
         return []
 
 
@@ -461,6 +480,30 @@ def _shorten_names(entries: List[ModelEntry]) -> None:
             entry.name = short
 
 
+def _dedup_key(model: str):
+    """Identity of a load target, for collapsing the same model reached by two sources.
+
+    For anything that exists on disk the filesystem is ASKED rather than guessed: two paths
+    are the same model when they are the same inode. That is the only rule that holds across
+    the three cases that actually differ, and no platform test gets all three right --
+    ``/models/Foo`` and ``/models/foo`` are two models on ext4, one model on NTFS, and one
+    model on a stock case-insensitive APFS volume, where ``os.path.normcase`` is identity and
+    would wrongly have shown the user the same model twice. It also collapses a path reached
+    once directly and once through a symlink, which the old key could not see at all.
+
+    Falling back on a string is only for what cannot be stat'd: a bare repo id, or a path that
+    has gone away since the scan. A repo id keeps the case-insensitive treatment, since the Hub
+    resolves ``Unsloth/Qwen3`` and ``unsloth/qwen3`` to one repo and the cache folds them into
+    one directory; a vanished path uses ``normcase``, which at worst leaves two rows for a model
+    that is not loadable from either of them.
+    """
+    try:
+        stat = os.stat(model)
+        return (stat.st_dev, stat.st_ino)
+    except (OSError, ValueError):
+        return os.path.normcase(model) if os.path.isabs(model) else model.lower()
+
+
 def list_chat_models() -> List[ModelEntry]:
     entries = []
     for fn in (trained_entries, exported_entries, cached_entries, local_folder_entries):
@@ -468,7 +511,7 @@ def list_chat_models() -> List[ModelEntry]:
     seen = set()
     unique = []
     for entry in entries:
-        key = entry.model.lower()
+        key = _dedup_key(entry.model)
         if key in seen:
             continue
         seen.add(key)

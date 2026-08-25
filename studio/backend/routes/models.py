@@ -53,6 +53,10 @@ _local_family_needles = _catalog_classification._local_family_needles
 _local_is_diffusers = _catalog_classification._local_is_diffusers
 _local_model_can_chat = _catalog_classification._local_model_can_chat
 _task_classify_sort_key = _catalog_classification._task_classify_sort_key
+# core.inference.llama_cpp imports this one to ask the Video page's own question. Without the
+# alias that import raises, and the probe's `except Exception: return True` reads the raise as
+# "the page can build it", promising an MoE or familyless GGUF a load that dies in llama-server.
+_video_family_buildable = _catalog_classification._video_family_buildable
 from utils.utils import canonical_model_repo_id, log_and_http_error
 
 import re as _re

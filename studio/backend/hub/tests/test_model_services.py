@@ -7379,3 +7379,63 @@ def test_cached_gguf_task_describes_the_revision_the_load_id_resolves_to(tmp_pat
     # The id resolves through refs/main to the llama revision, so the row must say so.
     assert row["load_id"] == "Org/Model-GGUF"
     assert row["task"] == "text-generation"
+
+
+def test_every_row_key_the_scanner_emits_survives_the_response_schema():
+    """``response_model`` silently DROPS any key the schema does not declare.
+
+    ``_scan_cached_models`` grew a ``diffusers`` flag, which is the only gate keeping an
+    untrusted or unrecognised pipeline out of a chat picker: such a repo carries no task, and
+    its pipeline root has no config for can_chat to read. Undeclared, the flag reached the CLI
+    (which reads the dict in-process) but never the browser, so the two disagreed about the
+    same row.
+
+    The watched set is an explicit list, not every key the scanner emits: the AST harvest
+    over-approximates, picking up internal bookkeeping from nested dict literals that was never
+    meant to leave the process. So a NEW picker-visible flag is not covered the day it lands --
+    add it here when you add it to the scanner.
+    """
+    import ast
+    import pathlib
+
+    from hub.schemas.inventory import CachedGgufRepo, CachedModelRepo
+
+    source = pathlib.Path(cache_inventory.__file__).read_text(encoding = "utf-8")
+    tree = ast.parse(source)
+
+    def literal_keys(function_name: str) -> set:
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name == function_name
+            ):
+                return {
+                    key.value
+                    for inner in ast.walk(node)
+                    if isinstance(inner, ast.Dict)
+                    for key in inner.keys
+                    if isinstance(key, ast.Constant) and isinstance(key.value, str)
+                }
+        return set()
+
+    # Each scanner against ITS OWN schema. A union would let a key emitted on a model row pass
+    # because the GGUF schema happens to declare it, which is not what response_model does.
+    emitted = literal_keys("_cache_inventory_fields") | literal_keys("_scan_cached_models")
+    watched = ("diffusers", "companion", "single_file", "partial", "load_id", "task")
+    for flag in watched:
+        if flag in emitted:
+            assert flag in CachedModelRepo.model_fields, (
+                f"_scan_cached_models emits {flag!r} but CachedModelRepo does not declare it, so "
+                f"FastAPI's response_model strips it before the frontend sees the row."
+            )
+
+    # And prove it end to end rather than by field name alone: a declared-but-mistyped field is
+    # dropped or 500s at serialization time, which a model_fields check cannot see.
+    row = {
+        "repo_id": "Org/Pipeline",
+        "size_on_disk": 4096,
+        "last_modified": 1.0,
+        "diffusers": True,
+    }
+    assert CachedModelRepo(**row).model_dump()["diffusers"] is True
+    assert set(CachedGgufRepo.model_fields), "GGUF schema import is load-bearing above"

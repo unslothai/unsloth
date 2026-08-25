@@ -3675,7 +3675,7 @@ def test_pipeline_class_guard_is_silent_when_a_lazy_submodule_cannot_import(monk
 def test_cached_pipeline_needs_a_detectable_image_family(monkeypatch):
     # A top-level model_index.json only proves the repo is a diffusers pipeline: an unsloth-hosted pipeline of a class this backend
     # cannot assemble cleared the trust gate, was advertised, then failed validate_load_request. Both gates now, like the video branch.
-    monkeypatch.setattr(models_route, "_repo_has_pipeline_index", lambda info, selected = None: True)
+    monkeypatch.setattr(_classification, "_repo_has_pipeline_index", lambda info, selected = None: True)
 
     def _task(repo_id):
         return models_route._cached_repo_task(SimpleNamespace(repo_id = repo_id, repo_path = "/x"))
@@ -3693,7 +3693,7 @@ def test_cached_repo_task_agrees_with_the_image_loader(monkeypatch):
     # Same invariant as the GGUF arch test: whatever the picker advertises as loadable, validate_load_request must accept.
     from core.inference.diffusion import DiffusionBackend
 
-    monkeypatch.setattr(models_route, "_repo_has_pipeline_index", lambda info, selected = None: True)
+    monkeypatch.setattr(_classification, "_repo_has_pipeline_index", lambda info, selected = None: True)
     backend = DiffusionBackend.__new__(DiffusionBackend)
     for repo_id in (
         "unsloth/Z-Image-Turbo",
@@ -3829,7 +3829,7 @@ def test_the_loader_demands_the_diffusers_class_only_when_diffusers_loads_it(mon
 def test_the_video_picker_hides_a_family_this_diffusers_cannot_build(monkeypatch):
     # Same gap on the video branches: LTX-2's pipeline class is 0.39-only too, and video has no native engine to fall back
     # to, so the load asserts it unconditionally (video.py -> assert_pipeline_class_available).
-    monkeypatch.setattr(models_route, "_repo_is_diffusers", lambda info, selected = None: True)
+    monkeypatch.setattr(_classification, "_repo_is_diffusers", lambda info, selected = None: True)
     info = SimpleNamespace(repo_id = "Lightricks/LTX-2", repo_path = "/x")
     # Offered on this environment's diffusers ...
     assert models_route._arch_to_task("ltxv") == models_route._VIDEO_GEN_TASK
@@ -5004,12 +5004,16 @@ def _both_walk_orders(root: Path, monkeypatch, classify):
     """*classify* under both possible ``_iter_gguf_paths`` orders.
 
     The real walk is ``rglob``, raw directory order, which differs between filesystems and between
-    a folder and a fresh copy of it. Order is the input being varied, so it is forced."""
+    a folder and a fresh copy of it. Order is the input being varied, so it is forced.
+
+    Patched on ``_classification``, not on ``models_route``: ``_gguf_folder_task`` lives in
+    catalog_classification and resolves ``_iter_gguf_paths`` in THAT namespace, so patching the
+    routes alias leaves the real walk running and the order is never varied at all."""
     paths = sorted(root.rglob("*.gguf"))
     answers = []
     for order in (paths, list(reversed(paths))):
         monkeypatch.setattr(
-            models_route, "_iter_gguf_paths", lambda _root, deadline = None, _o = order: iter(_o)
+            _classification, "_iter_gguf_paths", lambda _root, deadline = None, _o = order: iter(_o)
         )
         answers.append(classify())
     return answers
@@ -5310,7 +5314,10 @@ def test_a_slow_walk_cannot_hand_back_the_encoder_this_function_exists_to_avoid(
         time.sleep(models_route._TASK_CLASSIFY_WALK_SECONDS + 0.05)
         return iter(ordered)
 
-    monkeypatch.setattr(models_route, "_iter_gguf_paths", _slow_walk)
+    # On _classification, where _gguf_folder_task resolves the name. Patching the routes
+    # alias instead leaves the real walk running, and the test passes on flux winning the
+    # ordinary sort rather than on the budget being honoured.
+    monkeypatch.setattr(_classification, "_iter_gguf_paths", _slow_walk)
     assert models_route._gguf_folder_task(folder, ("someone/flux-bundle",)) == "text-to-image"
 
 

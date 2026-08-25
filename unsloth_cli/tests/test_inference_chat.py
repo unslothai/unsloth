@@ -672,10 +672,122 @@ def test_catalog_dedupes_and_survives_failing_sources(monkeypatch):
         raise RuntimeError("no studio db")
 
     monkeypatch.setattr(cat, "trained_entries", boom)
+    # The SAME load target reached by two sources is one model, and the first source wins.
     monkeypatch.setattr(cat, "exported_entries", lambda: [cat.ModelEntry("Exports", "a", "", "/A")])
-    monkeypatch.setattr(cat, "cached_entries", lambda: [cat.ModelEntry("GGUF", "b", "", "/a")])
+    monkeypatch.setattr(cat, "cached_entries", lambda: [cat.ModelEntry("GGUF", "b", "", "/A")])
     monkeypatch.setattr(cat, "local_folder_entries", lambda: [])
     assert [e.name for e in cat.list_chat_models()] == ["a"]
+
+
+def test_catalog_keeps_case_distinct_local_paths_where_the_filesystem_does(
+    monkeypatch, tmp_path
+):
+    """``Foo`` and ``foo`` are two models on ext4 and one model on NTFS or a stock APFS volume.
+
+    Built on the real filesystem and asked of it, rather than decided from ``sys.platform`` or
+    from ``os.path.normcase`` -- normcase is identity on macOS, where the DEFAULT volume is
+    case-insensitive, so a platform test gets that case exactly backwards. Whatever this
+    filesystem does, the picker must agree with it: one directory, one row.
+    """
+    from unsloth_cli import _model_catalog as cat
+
+    upper = tmp_path / "Foo"
+    upper.mkdir()
+    (upper / "config.json").write_text("{}")
+    lower = tmp_path / "foo"
+    case_sensitive_fs = not lower.exists()
+    if case_sensitive_fs:
+        lower.mkdir()
+        (lower / "config.json").write_text("{}")
+
+    for name in ("trained_entries", "exported_entries", "cached_entries"):
+        monkeypatch.setattr(cat, name, lambda: [])
+    monkeypatch.setattr(cat, "local_folder_entries", lambda: [
+        cat.ModelEntry("Downloaded", "Foo", "", str(upper)),
+        cat.ModelEntry("Downloaded", "foo", "", str(lower)),
+    ])
+    names = [e.name for e in cat.list_chat_models()]
+    assert names == (["Foo", "foo"] if case_sensitive_fs else ["Foo"])
+
+
+def test_catalog_collapses_a_model_reached_twice_through_a_symlink(monkeypatch, tmp_path):
+    """Two sources naming one model by different paths is one row.
+
+    The scan folder and the models dir can both cover the same directory through a link, which
+    a string key cannot see through however it is cased.
+    """
+    import pytest
+
+    from unsloth_cli import _model_catalog as cat
+
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "config.json").write_text("{}")
+    link = tmp_path / "link"
+    try:
+        link.symlink_to(real, target_is_directory = True)
+    except (OSError, NotImplementedError):
+        pytest.skip("this filesystem does not support symlinks")
+
+    for name in ("trained_entries", "exported_entries"):
+        monkeypatch.setattr(cat, name, lambda: [])
+    monkeypatch.setattr(cat, "cached_entries", lambda: [
+        cat.ModelEntry("Downloaded", "real", "", str(real)),
+    ])
+    monkeypatch.setattr(cat, "local_folder_entries", lambda: [
+        cat.ModelEntry("Downloaded", "link", "", str(link)),
+    ])
+    assert [e.name for e in cat.list_chat_models()] == ["real"]
+
+
+def test_catalog_still_folds_case_on_bare_repo_ids(monkeypatch):
+    """A repo id is not a path. The Hub resolves ``Unsloth/Qwen3`` and ``unsloth/qwen3`` to one
+    repo and the cache folds them into one directory, so these stay a single row everywhere."""
+    from unsloth_cli import _model_catalog as cat
+
+    for name in ("trained_entries", "exported_entries", "local_folder_entries"):
+        monkeypatch.setattr(cat, name, lambda: [])
+    monkeypatch.setattr(cat, "cached_entries", lambda: [
+        cat.ModelEntry("Downloaded", "Unsloth/Qwen3-0.6B", "", "Unsloth/Qwen3-0.6B"),
+        cat.ModelEntry("Downloaded", "unsloth/qwen3-0.6b", "", "unsloth/qwen3-0.6b"),
+    ])
+    assert len(cat.list_chat_models()) == 1
+
+
+def test_a_failing_source_says_so_instead_of_vanishing(monkeypatch, capsys):
+    """A source is ALL of your downloaded models or ALL of your fine-tunes. Returning [] with
+    no word for it turns an unreadable HF cache into a picker that is simply missing half its
+    content, with nothing for the user to act on."""
+    from unsloth_cli import _model_catalog as cat
+
+    monkeypatch.delenv("UNSLOTH_DEBUG", raising = False)
+    for name in ("trained_entries", "exported_entries", "local_folder_entries"):
+        monkeypatch.setattr(cat, name, lambda: [])
+
+    def boom():
+        raise OSError("cache is on a dead mount")
+
+    monkeypatch.setattr(cat, "cached_entries", boom)
+    assert cat.list_chat_models() == []
+    assert "cache is on a dead mount" in capsys.readouterr().err
+
+
+def test_unsloth_debug_re_raises_a_failing_source(monkeypatch):
+    """When the empty group IS the bug, the traceback is the thing you need."""
+    import pytest
+
+    from unsloth_cli import _model_catalog as cat
+
+    monkeypatch.setenv("UNSLOTH_DEBUG", "1")
+    for name in ("trained_entries", "exported_entries", "local_folder_entries"):
+        monkeypatch.setattr(cat, name, lambda: [])
+
+    def boom():
+        raise OSError("cache is on a dead mount")
+
+    monkeypatch.setattr(cat, "cached_entries", boom)
+    with pytest.raises(OSError, match = "dead mount"):
+        cat.list_chat_models()
 
 
 def test_catalog_drops_org_prefix_unless_ambiguous(monkeypatch):
