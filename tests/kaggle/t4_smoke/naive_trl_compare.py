@@ -116,7 +116,14 @@ def run(args) -> dict:
 
     from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 
-    model = prepare_model_for_kbit_training(model)
+    # Gradient checkpointing ON, and leaving it off was an unfair comparison
+    # rather than a neutral one: the unsloth arm runs with
+    # `gradient_checkpointing="unsloth"`, so a control without it is measured
+    # with the single largest memory lever disabled on one side only. On
+    # gemma-4-E2B-it that is the difference between a comparison and an OOM --
+    # the control asked for 8.75GiB on top of 8.96GiB already resident, on a
+    # 14.56GiB card (kernel unsloth-probe-latestcompile-r4-e67ef2).
+    model = prepare_model_for_kbit_training(model, use_gradient_checkpointing = True)
     model = get_peft_model(
         model,
         LoraConfig(
@@ -161,6 +168,12 @@ def run(args) -> dict:
         report_to = [],
         save_strategy = "no",
         max_length = args.max_seq_length,
+        gradient_checkpointing = True,
+        # Required with gradient checkpointing on a PEFT model: without it the
+        # inputs carry no grad and the backward finds nothing to do, which
+        # surfaces as "element 0 of tensors does not require grad" rather than
+        # as a configuration mistake.
+        gradient_checkpointing_kwargs = {"use_reentrant": False},
     )
     trainer = SFTTrainer(model = model, train_dataset = dataset, args = config)
 

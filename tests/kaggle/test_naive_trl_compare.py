@@ -120,3 +120,20 @@ def test_the_control_arm_loads_the_repo_unsloth_resolved():
     src = (ROOT / "tests" / "kaggle" / "t4_smoke" / "run_t4_smoke.py").read_text(encoding = "utf-8")
     assert 'control_model = runs[0].get("resolved_checkpoint") or args.model' in src
     assert '("--model", control_model),' in src
+
+
+def test_the_control_arm_uses_gradient_checkpointing():
+    """Leaving it off was unfair rather than neutral.
+
+    The unsloth arm runs with `gradient_checkpointing="unsloth"`, so a control
+    without it is measured with the single largest memory lever disabled on one
+    side only. On gemma-4-E2B-it that is the difference between a comparison and
+    an OOM: the control asked for 8.75 GiB on top of 8.96 GiB already resident,
+    on a 14.56 GiB card (kernel unsloth-probe-latestcompile-r4-e67ef2).
+    """
+    src = (PAYLOAD / "naive_trl_compare.py").read_text(encoding = "utf-8")
+    assert "use_gradient_checkpointing = True" in src
+    assert "gradient_checkpointing = True," in src
+    # Non-reentrant, or a PEFT model's inputs carry no grad and the backward
+    # fails with "element 0 of tensors does not require grad".
+    assert 'gradient_checkpointing_kwargs = {"use_reentrant": False}' in src
