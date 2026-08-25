@@ -155,3 +155,40 @@ def test_it_runs_while_the_server_is_still_up():
         "image generation is driven after the UI driver stops the server, so "
         "it can only ever report a connection error"
     )
+
+
+def test_the_load_is_WAITED_ON_rather_than_assumed_synchronous():
+    """`images/load` answers 200 having only ACCEPTED the request.
+
+    On kernel unsloth-probe-studio-r3-0b85d4 `load_status` was 200 and
+    `generate_status` was 409 with "No diffusion model is loaded." -- an
+    assertion failing on its own impatience. The wait reads `images/status`
+    for `loaded`, and carries `images/load-progress` alongside so a download
+    that stalls or errors is reported as that rather than as a broken
+    generation.
+    """
+    body = _body()
+    assert "/api/inference/images/status" in body
+    assert "/api/inference/images/load-progress" in body
+    assert 'status.get("loaded")' in body
+
+    func = _func("assert_image_generation")
+    src = ast.get_source_segment(SRC, func) or ""
+    wait_at = src.index('status.get("loaded")')
+    generate_at = src.index("/api/inference/images/generate")
+    assert wait_at < generate_at, "the wait must come before the generate call"
+
+
+def test_a_load_that_never_finishes_fails_rather_than_generating_anyway():
+    """The refusal branch. Falling through to `generate` after the deadline
+    reports a 409 under the generation's name, which sends the reader after the
+    wrong component -- which is exactly what happened."""
+    func = _func("assert_image_generation")
+    src = ast.get_source_segment(SRC, func) or ""
+    marker = "never reported loaded within"
+    assert marker in src
+    after = src[src.index(marker):]
+    assert "return self.record" in after.split("/api/inference/images/generate")[0], (
+        "the deadline branch does not return, so it generates against a model "
+        "that was never loaded"
+    )

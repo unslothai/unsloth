@@ -1217,15 +1217,18 @@ class Payload:
             enable_tools = True,
             enabled_tools = ["web_search"],
             permission_mode = "off",
-            # FORCED, the same way assert_tool_calling forces the weather tool.
+            # Forced BY NAME. `tool_choice: "required"` was tried first and
+            # changed nothing -- kernel unsloth-probe-studio-r3-0b85d4 returned
+            # the same parametric answer, "The current version of the Linux
+            # kernel is 6.10", with executions 0. A bare "required" says only
+            # that some tool must be called; the dict form pins the function,
+            # and `chat_template_helpers.forced_tool_name` reads exactly this
+            # shape, keeping the force as long as the tool is in the catalog.
             # Without it this measures whether a 2B model DECIDES to search,
-            # which is a model property and not a Studio one: on kernel
-            # unsloth-probe-studio-full2-815a0c it answered "The current
-            # version of the Linux kernel is 6.10" from parametric knowledge,
-            # never called the tool, and the assertion read as a broken search.
-            # The claim that matters is that Studio EXECUTES the call it emits,
-            # and the log check below is still what decides that.
-            tool_choice = "required",
+            # which is a model property rather than a Studio one. The claim
+            # that matters is that Studio EXECUTES the call, and the
+            # `execute_tool` log check below is still what decides that.
+            tool_choice = {"type": "function", "function": {"name": "web_search"}},
             max_tokens = 512,
         )
         detail["http_status"] = code
@@ -1776,6 +1779,42 @@ class Payload:
             detail["load_status"] = code
             if code >= 400:
                 failures.append(f"images/load returned HTTP {code}: {str(body)[:300]}")
+                detail["failures"] = failures
+                return self.record("image_generation", False, detail)
+
+            # The load is ASYNCHRONOUS. It answers 200 having only accepted the
+            # request, and generating against it answers 409 "No diffusion
+            # model is loaded." -- measured on kernel
+            # unsloth-probe-studio-r3-0b85d4, where load_status was 200 and
+            # generate_status was 409 twelve lines later. So wait for
+            # `images/status` to say `loaded`, and carry `load-progress` while
+            # waiting: a download that stalls or errors is then reported as
+            # what it is instead of arriving as a generation failure.
+            deadline = time.time() + self.args.export_deadline
+            status: dict = {}
+            progress: dict = {}
+            while time.time() < deadline:
+                _, status_body = self.studio.get("/api/inference/images/status")
+                status = status_body if isinstance(status_body, dict) else {}
+                if status.get("loaded"):
+                    break
+                _, progress_body = self.studio.get("/api/inference/images/load-progress")
+                progress = progress_body if isinstance(progress_body, dict) else {}
+                if progress.get("phase") == "error":
+                    break
+                time.sleep(5.0)
+            detail["load_status_body"] = {
+                k: status.get(k) for k in ("loaded", "repo_id", "family", "device", "model_kind")
+            }
+            detail["load_progress"] = {
+                k: progress.get(k) for k in ("phase", "fraction", "error")
+            }
+            if not status.get("loaded"):
+                failures.append(
+                    f"the diffusion model never reported loaded within "
+                    f"{self.args.export_deadline}s: status={detail['load_status_body']} "
+                    f"progress={detail['load_progress']}"
+                )
                 detail["failures"] = failures
                 return self.record("image_generation", False, detail)
 

@@ -134,4 +134,8 @@ def test_the_search_tool_call_is_FORCED_rather_than_hoped_for():
     thing it is about rather than weakening it.
     """
     body = _body()
-    assert 'tool_choice = "required"' in body
+    # BY NAME, not the bare "required": that was tried on kernel
+    # unsloth-probe-studio-r3-0b85d4 and the model still answered from
+    # parametric knowledge with executions 0.
+    assert '"function": {"name": "web_search"}' in body
+    assert 'tool_choice = "required"' not in body
