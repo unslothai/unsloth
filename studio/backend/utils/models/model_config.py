@@ -2636,24 +2636,27 @@ def _detect_local_mmproj(
     scanning the enclosing ``models--<repo>`` dir in the same pass would let a
     hand-added projector outrank the one shipped beside the selected file. The repo
     root is therefore a second pass, reached only when the snapshot pairs with none,
-    which is the same published-first order ``_download_mmproj`` uses. ``accept_for``
-    builds the pre-read admission filter for a root (native-grant loads)."""
-    roots: list[str] = []
-    for include_hf_repo_root in (False, True):
-        root = _local_gguf_companion_search_root(
-            selected_path, gguf_file, include_hf_repo_root = include_hf_repo_root
-        )
-        if root in roots:
-            continue
-        roots.append(root)
-        found = detect_mmproj_file(
-            gguf_file,
-            search_root = root,
-            accept = accept_for(root) if accept_for is not None else None,
-        )
-        if found is not None:
-            return found
-    return None
+    which is the same published-first order ``_download_mmproj`` uses.
+
+    ``accept_for`` builds the pre-read admission filter for a root (native-grant
+    loads) and applies to the widened pass ONLY: the snapshot pass has to answer
+    exactly what it answered before the widening, refusals included, so the extra
+    rule covers just the directory the widening newly reaches."""
+    snapshot_root = _local_gguf_companion_search_root(
+        selected_path, gguf_file, include_hf_repo_root = False
+    )
+    found = detect_mmproj_file(gguf_file, search_root = snapshot_root)
+    if found is not None:
+        return found
+
+    repo_root = _local_gguf_companion_search_root(selected_path, gguf_file)
+    if repo_root == snapshot_root:
+        return None
+    return detect_mmproj_file(
+        gguf_file,
+        search_root = repo_root,
+        accept = accept_for(repo_root) if accept_for is not None else None,
+    )
 
 
 def _hf_cache_repo_root_has_mmproj(repo_id: str) -> bool:

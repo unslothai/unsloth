@@ -5549,8 +5549,9 @@ def _native_drafter_accept(candidate: str, gguf_path: str, kind: str, search_roo
     a sidecar symlinked out of the lease from being read at all -- rejecting it
     afterwards, which _resolve_gguf_load_intent still does, cannot undo a read.
     Same predicate the rescan uses, so the two passes cannot disagree about what
-    is in bounds. Projectors use the same pre-read filter, but have no permitted
-    companion subdirectory fallback.
+    is in bounds. A projector reaches this only on the widened HF repo-root pass,
+    which is the one directory the companion walk did not see before, and there is
+    no permitted companion subdirectory to fall back to there.
     """
     if kind == "mmproj":
         try:

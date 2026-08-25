@@ -9,6 +9,9 @@ import struct
 import sys
 from pathlib import Path
 
+import pytest
+from fastapi import HTTPException
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from utils.models.model_config import (  # noqa: E402
@@ -18,7 +21,10 @@ from utils.models.model_config import (  # noqa: E402
     detect_mmproj_file,
 )
 from hub.utils.inventory_scan import snapshot_has_gguf_projector  # noqa: E402
-from routes.inference import _native_drafter_accept  # noqa: E402
+from routes.inference import (  # noqa: E402
+    _native_drafter_accept,
+    _validate_native_gguf_companion,
+)
 
 _GGUF_MAGIC = 0x46554747
 
@@ -262,6 +268,30 @@ def test_native_load_drops_a_repo_root_projector_outside_the_file_grant(tmp_path
     assert config is not None
     assert config.gguf_mmproj_file is None
     assert config.is_vision is False
+
+
+def test_native_load_still_refuses_a_projector_above_the_selected_quant(tmp_path):
+    """The snapshot pass answers exactly as it did before the widening. A projector one
+    level up is still discovered and still refused at the intent, rather than being
+    quietly dropped by the boundary filter the repo-root pass adds."""
+    _, weight = _hf_repo(tmp_path)
+    quant_dir = weight.parent / "Q4_K_M"
+    quant_dir.mkdir()
+    weight = weight.rename(quant_dir / weight.name)
+    projector = _gguf_with_general(
+        weight.parent.parent / "mmproj-kquant.gguf",
+        {"general.type": "mmproj", "general.architecture": "qwen3vl"},
+    )
+
+    config = ModelConfig.from_identifier(str(weight), drafter_accept = _native_drafter_accept)
+    assert config is not None
+    assert config.gguf_mmproj_file == str(projector.resolve())
+
+    with pytest.raises(HTTPException) as excinfo:
+        _validate_native_gguf_companion(
+            config.gguf_mmproj_file, config.gguf_file, "vision companion"
+        )
+    assert excinfo.value.status_code == 400
 
 
 def test_native_load_keeps_a_projector_beside_the_selected_file(tmp_path):
