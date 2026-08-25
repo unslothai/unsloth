@@ -6379,6 +6379,24 @@ def test_external_adoption_invalidates_kept_workspace_sessions(tmp_path, monkeyp
     assert tools._recorded_project_workdir("old-project", "project-workspace-old-session") is None
 
 
+def test_missing_project_does_not_adopt_an_orphaned_workspace(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+    from storage import studio_db
+
+    studio_db._schema_ready = False
+    _forget_sandbox_state(tools)
+    workspace = tmp_path / "orphaned-workspace"
+    workspace.mkdir()
+    tools.record_orphaned_project("old-project", str(workspace))
+
+    assert studio_db.set_chat_project_workspace("missing-project", str(workspace)) is None
+    assert tools.list_orphaned_projects() == [
+        ("old-project", str(workspace.resolve()), None, False, False)
+    ]
+
+
 def test_external_adoption_waits_for_a_deleted_projects_active_session(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))

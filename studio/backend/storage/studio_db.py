@@ -18,6 +18,7 @@ import shutil
 import sqlite3
 import tempfile
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -108,6 +109,8 @@ _schema_ready = False
 _SQLITE_IN_CHUNK_SIZE = 900
 _PROJECT_WORKSPACE_SUBDIRS = ("sandbox",)
 _CHAT_ATTACHMENT_INVENTORY_VERSION = 1
+_DIRECTORY_IDENTITY_SCAN_ENTRY_LIMIT = 100_000
+_DIRECTORY_IDENTITY_SCAN_TIME_LIMIT_SECONDS = 1.0
 
 
 def _project_slug(name: str) -> str:
@@ -223,7 +226,11 @@ def _directory_tree_contains_identity(root: str, target: str) -> bool:
     target_identity = (target_stat.st_dev, target_stat.st_ino)
     pending = [root]
     visited = set()
+    scanned_entries = 0
+    deadline = time.monotonic() + _DIRECTORY_IDENTITY_SCAN_TIME_LIMIT_SECONDS
     while pending:
+        if time.monotonic() >= deadline:
+            return True
         current = pending.pop()
         try:
             current_stat = os.stat(current, follow_symlinks = False)
@@ -235,6 +242,12 @@ def _directory_tree_contains_identity(root: str, target: str) -> bool:
             visited.add(current_identity)
             with os.scandir(current) as entries:
                 for entry in entries:
+                    scanned_entries += 1
+                    if (
+                        scanned_entries > _DIRECTORY_IDENTITY_SCAN_ENTRY_LIMIT
+                        or time.monotonic() >= deadline
+                    ):
+                        return True
                     if entry.is_dir(follow_symlinks = False):
                         pending.append(entry.path)
         except OSError:
@@ -2908,6 +2921,8 @@ def update_chat_project(id: str, patch: dict) -> Optional[dict]:
 def set_chat_project_workspace(id: str, external_workspace_path: Optional[str]) -> Optional[dict]:
     with _project_workspace_paths_lock:
         if external_workspace_path:
+            if get_chat_project(id) is None:
+                return None
             from core.inference.tools import adopt_orphaned_workspace_when_idle
 
             changed, result = adopt_orphaned_workspace_when_idle(

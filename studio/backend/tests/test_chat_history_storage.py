@@ -823,6 +823,16 @@ def test_workspace_overlap_finds_an_alias_to_a_managed_descendant(tmp_path, monk
     )
 
 
+def test_workspace_alias_scan_fails_closed_at_its_entry_limit(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    target = tmp_path / "target"
+    (workspace / "child").mkdir(parents = True)
+    target.mkdir()
+    monkeypatch.setattr(studio_db, "_DIRECTORY_IDENTITY_SCAN_ENTRY_LIMIT", 0)
+
+    assert studio_db._directory_tree_contains_identity(str(workspace), str(target))
+
+
 def test_workspace_overlap_finds_a_missing_child_under_a_mount_alias(tmp_path, monkeypatch):
     external = tmp_path / "external"
     descendant = external / "subdirectory"
