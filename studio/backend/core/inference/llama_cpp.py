@@ -72,6 +72,7 @@ from core.inference.llama_server_args import (
     resolve_ctx_checkpoints,
     extra_args_disable_mmproj,
     fit_is_enabled_in,
+    memory_env_selects_load_mode,
     memory_state_satisfies_settings,
     fit_is_effectively_on,
     fit_target_margin_in,
@@ -17044,7 +17045,13 @@ class LlamaCppBackend:
                             ctx, _np = slots, _n_ubatch = ubatch if ubatch else _effective_ubatch
                         )
 
-                    def _kv_bytes(ctx: int) -> int:
+                    def _kv_bytes(ctx: int, ctx_checkpoints: int = 0) -> int:
+                        # Checkpoints default OFF here: the placement paths price the
+                        # SWA snapshots through _fit_context_to_vram / _slots_that_fit,
+                        # which take the count themselves, so charging them a second
+                        # time in this closure would shrink the context they just
+                        # chose. The load-mode fit has no such term of its own and
+                        # passes the effective count in.
                         return self._estimate_kv_cache_bytes(
                             ctx,
                             cache_type_kv,
@@ -17052,6 +17059,7 @@ class LlamaCppBackend:
                             swa_full = swa_full,
                             kv_unified = planned_kv_unified,
                             n_ubatch = _effective_ubatch,
+                            ctx_checkpoints = ctx_checkpoints,
                             flash_attn = planned_flash_attn,
                         )
 
@@ -18618,10 +18626,68 @@ class LlamaCppBackend:
                         if _fitter_runs
                         else 0.0
                     )
+                    # A projector Studio never resolved but the child loads anyway.
+                    # arg.cpp sets params.mmproj.path / .url straight from
+                    # LLAMA_ARG_MMPROJ / LLAMA_ARG_MMPROJ_URL and reads them before
+                    # argv, and nothing on an ordinary vision launch clears either
+                    # (only the vision switch and the paravirtual pin do), which is
+                    # why the audio probe below reads the same var. model_size carries
+                    # none of those bytes: mmproj_size is gated on effective_is_vision,
+                    # itself gated on launch_mmproj_path. A URL names a download that
+                    # has not happened -- and one outranks even the --mmproj this
+                    # launch emits, since its download overwrites mmproj.path -- and an
+                    # unreadable path cannot be sized, so both abstain rather than fit a
+                    # load with a term missing.
+                    _fit_env_mmproj_scrubbed = bool(
+                        _pv_mmproj_unpinnable or _paravirtual_cpu_forced
+                    )
+                    _fit_env_mmproj = (
+                        ""
+                        if (
+                            launch_mmproj_path
+                            or _fit_env_mmproj_scrubbed
+                            or (
+                                disable_vision
+                                # The audio-only reprieve the scrub itself gives: that
+                                # projector survives the switch, so it is loaded.
+                                and not _mmproj_env_is_audio_only(
+                                    _fit_env.get("LLAMA_ARG_MMPROJ")
+                                )
+                            )
+                        )
+                        else (_fit_env.get("LLAMA_ARG_MMPROJ") or "").strip()
+                    )
+                    _fit_env_mmproj_url = (
+                        ""
+                        if (_fit_env_mmproj_scrubbed or disable_vision)
+                        else (_fit_env.get("LLAMA_ARG_MMPROJ_URL") or "").strip()
+                    )
+                    _fit_env_mmproj_bytes = self._mmproj_vram_bytes(_fit_env_mmproj or None)
+                    _fit_env_mmproj_unsized = bool(_fit_env_mmproj_url) or (
+                        bool(_fit_env_mmproj) and _fit_env_mmproj_bytes <= 0
+                    )
+                    # Host-resident when the resolved offload says CPU, the same split
+                    # the resolved projector gets: free VRAM cannot pay for bytes the
+                    # child only ever allocates on the host.
+                    _fit_env_mmproj_on_host = (
+                        _resolved_mmproj_offload(_fit_extras, _fit_env) is False
+                    )
+                    _fit_model_size = model_size
+                    if _fit_env_mmproj_unsized:
+                        # Same abstain the other unreadable terms take.
+                        _fit_model_size = None
+                    elif _fit_model_size and not _fit_env_mmproj_on_host:
+                        _fit_model_size += _fit_env_mmproj_bytes
                     _fit_load_mode = self._fit_derived_load_mode(
-                        model_size = model_size,
-                        mmproj_pinned_bytes = _mmproj_pinned_bytes,
-                        kv_cache_bytes = kv_cache_bytes,
+                        model_size = _fit_model_size,
+                        mmproj_pinned_bytes = _mmproj_pinned_bytes
+                        + (_fit_env_mmproj_bytes if _fit_env_mmproj_on_host else 0),
+                        # Re-read WITH the SWA snapshots --ctx-checkpoints allocates:
+                        # the estimator charges N x window x layer-KV per slot for
+                        # them and the closure leaves them at 0 for the placement
+                        # paths, which price them by their own route. A missing term
+                        # here is the direction that claims a fit that is not there.
+                        kv_cache_bytes = _kv_bytes(effective_ctx, _effective_ctx_checkpoints),
                         kv_sized = self._can_estimate_kv(),
                         mtp_bytes = _mtp_bytes(effective_ctx),
                         # _flat_mtp_engages whole, not re-narrowed to a missing
@@ -19660,6 +19726,26 @@ class LlamaCppBackend:
                 # per-model mode wins over the fit, the Model Memory settings win
                 # over both, and a hand-typed flag in the extras still wins by
                 # last-arg because the managed block is emitted ahead of them.
+                #
+                # An INHERITED loader mode is an explicit choice too. llama.cpp reads
+                # LLAMA_ARG_LOAD_MODE (and the deprecated twins) before argv and both
+                # assign the same params.load_mode, so the managed block below would
+                # beat one silently -- while the hand-typed flag it defers to is argv
+                # and still wins by last-arg. Only the FIT's mode stands aside: a
+                # per-model pick is a choice made for THIS model. Asked of the child's
+                # environment AFTER the same scrub it gets, so a var a Model Memory
+                # toggle drops vetoes nothing.
+                _fit_load_mode_env_view = dict(_mem_env)
+                scrub_memory_env(_fit_load_mode_env_view)
+                if _fit_load_mode and not load_mode and memory_env_selects_load_mode(
+                    _fit_load_mode_env_view
+                ):
+                    logger.info(
+                        "Load mode: the environment already selects a loader mode; "
+                        "leaving the fit's --load-mode %s off this launch.",
+                        _fit_load_mode,
+                    )
+                    _fit_load_mode = None
                 _resolved_load_mode = load_mode or _fit_load_mode
                 _load_mode_managed, _mem_extras = apply_load_mode_policy(
                     _mem_extras,
@@ -21174,6 +21260,31 @@ class LlamaCppBackend:
                             )
 
                         if _cpu_projector_cmd is not None:
+                            # The fit priced the projector as GPU-eligible, and this
+                            # retry moves those bytes into host RAM
+                            # (--no-mmproj-offload clears mmproj_use_gpu and clip.cpp
+                            # gates its whole GPU backend on it). A fit proved on VRAM
+                            # alone returned before asking what host RAM holds, and one
+                            # proved on VRAM plus RAM was answered with the projector on
+                            # the card, so neither covers the launch this respawns. The
+                            # weights this launch left in host RAM are anonymous rather
+                            # than file-backed while "none" stands, which is an OOM kill
+                            # where the mapping would only have paged. Only Unsloth's own
+                            # tokens; a user's --load-mode is theirs. The record is NOT
+                            # cleared, like the --fit on and no-flash retries: the
+                            # fallbacks below respawn from an argv that carries these
+                            # tokens and has to be able to name them.
+                            if self._fit_load_mode_flags:
+                                _stripped_cpu_projector_cmd = _without_subsequence(
+                                    _cpu_projector_cmd, self._fit_load_mode_flags
+                                )
+                                if _stripped_cpu_projector_cmd != _cpu_projector_cmd:
+                                    logger.info(
+                                        "Load mode: dropping the fit's --load-mode none "
+                                        "for the CPU-projector retry; it moves the "
+                                        "projector into host RAM the fit credited to VRAM."
+                                    )
+                                _cpu_projector_cmd = _stripped_cpu_projector_cmd
                             logger.warning(
                                 "llama-server failed while loading this model's GPU "
                                 "vision projector (--mmproj); retrying with the "

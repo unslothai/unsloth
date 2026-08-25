@@ -1616,3 +1616,176 @@ def test_a_partial_draft_offload_leaves_the_drafter_unsized():
     )
     # And it lands on the abstain, not on a term.
     assert "or_draft_split_across_host" in compact
+
+
+# ------------------------------------- round 7: terms and paths the fit missed
+
+
+def test_the_cpu_projector_retry_voids_the_fit_it_was_proved_against():
+    """The premise behind the strip below, priced on real numbers.
+
+    A 24 GiB card and 2 GiB of free host RAM. As launched the projector is on the
+    card and the whole load fits VRAM alone, so ``_fits_without_paging`` answers
+    True without ever consulting RAM. The CPU-projector retry moves exactly those
+    bytes into host RAM (--no-mmproj-offload clears mmproj_use_gpu, and clip.cpp
+    gates its whole GPU backend on it), and there the same footprint does not fit.
+    """
+    stub = _Stub(2 * 1024)
+    rows = [(0, 24 * 1024)]
+    weights, projector = 16 * GIB, 4 * GIB
+
+    assert stub._fits_without_paging(weights + projector, rows) is True
+    assert (
+        stub._fits_without_paging(weights + projector, rows, host_only_bytes = projector)
+        is False
+    )
+
+
+def test_the_cpu_projector_retry_drops_the_fits_load_mode():
+    """The projector respawn changes placement, so the fit's conclusion goes with
+    it, like the --fit on, arch-crash and no-flash retries. Checked at the source,
+    like those, because this arm only runs behind a real projector startup crash."""
+    import inspect
+
+    from core.inference.llama_cpp import LlamaCppBackend as B
+
+    src = inspect.getsource(B.load_model)
+    # Bounded at the respawn, so the strip is proved to happen BEFORE it.
+    arm = src[: src.index('label = "-mmproj-cpu"')]
+    arm = arm[arm.rindex("_cpu_projector_cmd = self._with_mmproj_offload_disabled(") :]
+    assert "self._fit_load_mode_flags" in arm
+    assert "_without_subsequence(" in arm
+    # The record stays: the fallbacks below respawn from an argv carrying these
+    # tokens and have to be able to name them.
+    assert "self._fit_load_mode_flags = []" not in arm
+    assert src.count("self._fit_load_mode_flags = []") == 1
+
+
+def _checkpoint_swa_backend():
+    """A Gemma-shaped SWA model, the one architecture --ctx-checkpoints charges."""
+    b = LlamaCppBackend()
+    for name, value in {
+        "_n_layers": 62,
+        "_n_kv_heads": 16,
+        "_n_heads": 32,
+        "_embedding_length": 5376,
+        "_kv_key_length": 128,
+        "_kv_value_length": 128,
+        "_sliding_window": 1024,
+    }.items():
+        setattr(b, name, value)
+    return b
+
+
+def test_context_checkpoint_snapshots_move_the_fit_verdict(monkeypatch):
+    """The premise: the snapshots are GiBs, not a rounding error.
+
+    62 SWA layers at 8192 context: 1.5 GiB of KV becomes 4.4 GiB with 8 snapshots
+    per slot. A card sized for the first answers "none" for a load that really
+    needs the second, and with the host holding nothing that is an OOM where the
+    mapping would only have paged.
+    """
+    monkeypatch.setattr(hardware, "is_apple_silicon", lambda: False)
+    backend = _checkpoint_swa_backend()
+    ctx = 8192
+    base = backend._estimate_kv_cache_bytes(ctx, "f16")
+    snapshotted = backend._estimate_kv_cache_bytes(ctx, "f16", ctx_checkpoints = 8)
+    assert snapshotted - base > 2 * GIB
+
+    model = 16 * GIB
+    stub = _Stub(1024)  # 1 GiB of RAM: nothing spills anywhere
+    rows = [(0, (model + base) // MIB)]  # exactly holds the unsnapshotted load
+
+    def _verdict(kv_bytes):
+        return LlamaCppBackend._fit_derived_load_mode(
+            stub,
+            model_size = model,
+            kv_cache_bytes = kv_bytes,
+            gpus = rows,
+            avail_mib = 1024,
+        )
+
+    assert _verdict(base) == FIT_MODE
+    assert _verdict(snapshotted) is None
+
+
+def test_the_fit_prices_the_effective_checkpoint_count():
+    """...and the call site really passes it, while the closure default leaves the
+    placement paths -- which price the snapshots by their own route -- unmoved."""
+    import inspect
+
+    from core.inference.llama_cpp import LlamaCppBackend as B
+
+    compact = "".join(inspect.getsource(B.load_model).split())
+    assert "kv_cache_bytes=_kv_bytes(effective_ctx,_effective_ctx_checkpoints)," in compact
+    assert "def_kv_bytes(ctx:int,ctx_checkpoints:int=0)->int:" in compact
+
+
+def test_an_inherited_loader_mode_wins_over_the_fits_pick():
+    """llama.cpp applies LLAMA_ARG_LOAD_MODE before argv, so the managed flag would
+    beat an operator's inherited choice silently. The fit's mode stands aside for
+    it, the way it stands aside for the per-model pick; a per-model pick still
+    wins, and so does a hand-typed flag, by last-arg."""
+    import inspect
+
+    from core.inference.llama_cpp import LlamaCppBackend as B
+
+    compact = "".join(inspect.getsource(B.load_model).split())
+    arm = compact[
+        compact.index("_fit_load_mode_env_view=dict(_mem_env)") : compact.index(
+            "_resolved_load_mode=load_modeor_fit_load_mode"
+        )
+    ]
+    # Asked of the child's environment AFTER the same scrub it gets, so a var a
+    # Model Memory toggle drops vetoes nothing.
+    assert "scrub_memory_env(_fit_load_mode_env_view)" in arm
+    assert (
+        "if_fit_load_modeandnotload_modeandmemory_env_selects_load_mode(_fit_load_mode_env_view):"
+        in arm
+    )
+    assert "_fit_load_mode=None" in arm
+
+
+def test_an_unpriced_projector_is_the_difference_between_a_fit_and_an_oom(monkeypatch):
+    """The premise behind pricing an inherited projector: 18 GiB of weights fit a
+    20 GiB card, and the same load with a 3 GiB projector the child loads from
+    LLAMA_ARG_MMPROJ does not."""
+    monkeypatch.setattr(hardware, "is_apple_silicon", lambda: False)
+    stub = _Stub(1024)
+    rows = [(0, 20 * 1024)]
+    weights, projector = 18 * GIB, 3 * GIB
+
+    def _verdict(model_size):
+        return LlamaCppBackend._fit_derived_load_mode(
+            stub, model_size = model_size, gpus = rows, avail_mib = 1024
+        )
+
+    assert _verdict(weights) == FIT_MODE
+    assert _verdict(weights + projector) is None
+
+
+def test_the_fit_prices_a_projector_inherited_through_the_environment():
+    """model_size is gated on launch_mmproj_path, so a projector that arrives only
+    through LLAMA_ARG_MMPROJ is resident but uncharged. Sized when it can be, and
+    abstaining when it cannot: a URL names a download that has not happened, and an
+    unreadable path cannot be sized."""
+    import inspect
+
+    from core.inference.llama_cpp import LlamaCppBackend as B
+
+    compact = "".join(inspect.getsource(B.load_model).split())
+    assert 'else(_fit_env.get("LLAMA_ARG_MMPROJ")or"").strip()' in compact
+    assert 'else(_fit_env.get("LLAMA_ARG_MMPROJ_URL")or"").strip()' in compact
+    # Unsized -> abstain, the same answer the other unreadable terms give.
+    assert "_fit_env_mmproj_unsized=bool(_fit_env_mmproj_url)or(" in compact
+    assert "if_fit_env_mmproj_unsized:" in compact
+    assert "_fit_model_size=None" in compact
+    assert "model_size=_fit_model_size," in compact
+    # Host-resident when the resolved offload says CPU, pooled otherwise.
+    assert (
+        "mmproj_pinned_bytes=_mmproj_pinned_bytes+(_fit_env_mmproj_bytesif_fit_env_mmproj_on_hostelse0),"
+        in compact
+    )
+    # Not charged where the child never sees it: the vision switch and the
+    # paravirtual pin both scrub those vars out of the child environment.
+    assert "_fit_env_mmproj_scrubbed=bool(_pv_mmproj_unpinnableor_paravirtual_cpu_forced)" in compact

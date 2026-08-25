@@ -1526,6 +1526,39 @@ def scrub_denied_env(env: dict) -> list[str]:
     return removed
 
 
+def memory_env_selects_load_mode(env: Optional[Mapping[str, str]]) -> bool:
+    """Whether the inherited environment already picks a loader mode.
+
+    llama.cpp applies the ``LLAMA_ARG_*`` twins BEFORE argv (common/arg.cpp runs
+    its environment loop and only then "handle command line arguments"), and both
+    assign the same ``params.load_mode``, so a managed ``--load-mode`` emitted here
+    beats an inherited choice without the user typing anything. A mode DERIVED from
+    a fit has to stand aside for that choice, the same way it stands aside for the
+    per-model pick; a hand-typed flag is argv and still wins by last-arg.
+
+    Per variable, matching what upstream really does with each value: a no-value
+    option (``--mlock``) runs its handler only for a truthy one (``opt.handler_void
+    && is_truthy(value)``), a negative alias (``LLAMA_ARG_NO_MMAP`` /
+    ``LLAMA_ARG_NO_DIO``) counts by PRESENCE whatever it says (``get_value_from_env``
+    forces "0" when it exists), and the rest assign a mode for any value they parse.
+    """
+    if not env:
+        return False
+    for name in MEMORY_ENV_VARS:
+        if name not in env:
+            continue
+        value = str(env.get(name) or "").strip()
+        if name == "LLAMA_ARG_MLOCK":
+            if value.lower() in _ENV_TRUE_VALUES:
+                return True
+            continue
+        if name in {"LLAMA_ARG_NO_MMAP", "LLAMA_ARG_NO_DIO"}:
+            return True
+        if value:
+            return True
+    return False
+
+
 def scrub_memory_env(env: dict) -> list[str]:
     """Drop inherited memory placement the settings override.
 
