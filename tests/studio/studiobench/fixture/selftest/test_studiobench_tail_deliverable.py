@@ -45,12 +45,23 @@ def corpus() -> Corpus:
 #: reply-axis test's own two assertions across the ladder, not chosen: every `False` here is a
 #: pair that silently under-delivered before the guard, and every `True` is one that did not.
 MATRIX: list[tuple[str, int, bool]] = [
-    ("1K", 24_000, False), ("1K", 96_000, False), ("1K", 400_000, False),
-    ("10K", 24_000, False), ("10K", 48_000, False), ("10K", 96_000, False),
-    ("100K", 24_000, True), ("100K", 48_000, True), ("100K", 96_000, True),
-    ("100K", 200_000, False), ("100K", 400_000, False),
-    ("500K", 96_000, True), ("500K", 200_000, True), ("500K", 400_000, False),
-    ("1M", 96_000, True), ("1M", 200_000, True), ("1M", 400_000, False),
+    ("1K", 24_000, False),
+    ("1K", 96_000, False),
+    ("1K", 400_000, False),
+    ("10K", 24_000, False),
+    ("10K", 48_000, False),
+    ("10K", 96_000, False),
+    ("100K", 24_000, True),
+    ("100K", 48_000, True),
+    ("100K", 96_000, True),
+    ("100K", 200_000, False),
+    ("100K", 400_000, False),
+    ("500K", 96_000, True),
+    ("500K", 200_000, True),
+    ("500K", 400_000, False),
+    ("1M", 96_000, True),
+    ("1M", 200_000, True),
+    ("1M", 400_000, False),
 ]
 
 
