@@ -804,6 +804,7 @@ app = FastAPI(
     redoc_url = None,
     swagger_ui_oauth2_redirect_url = None,
 )
+app.state.secure = os.environ.get("UNSLOTH_SECURE") == "1"
 
 # The MCP surface is opt-in: it can start GPU jobs and write model artifacts.
 if os.environ.get("UNSLOTH_STUDIO_ENABLE_MCP") == "1":

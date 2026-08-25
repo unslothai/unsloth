@@ -739,7 +739,9 @@ export function UsageExamples({
     ggufContextLength,
   ]);
 
-  const keylessBase = keylessBaseEligible(base, keylessScope, keylessExposure);
+  const keylessBase =
+    !(useTunnel && cloudflareUrl) &&
+    keylessBaseEligible(base, keylessScope, keylessExposure);
   const model = useExampleModelName(keylessBase && !apiKey);
   // The approved SDK dummy is printed only for a transport the backend can admit.
   const key =

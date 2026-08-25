@@ -226,6 +226,7 @@ def test_keyless_examples_match_transport_tool_and_full_scope_policy():
     assert 'exposure === "colab" || exposure === "public_url"' in src
     assert "if (isLoopbackHost(host)) return true;" in src
     assert 'exposure === "private_lan"' in src
+    assert "!(useTunnel && cloudflareUrl)" in src
     assert "useExampleModelName(keylessBase && !apiKey)" in src
     section = KEYLESS_SECTION_TSX.read_text(encoding = "utf-8")
     assert "[cloudflareUrl, onSettingsChange]" in section

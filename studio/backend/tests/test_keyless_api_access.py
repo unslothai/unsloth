@@ -7,6 +7,7 @@ import asyncio
 import secrets
 import threading
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -353,7 +354,7 @@ def test_tool_policy_and_api_identity(monkeypatch):
 
 def test_protected_side_effect_guards_remain_wired():
     import inspect
-    from routes import auth, inference
+    from routes import auth, inference, preview, training_history
 
     auth_source = inspect.getsource(auth)
     assert auth_source.count("_require_a_credential_of_its_own(") >= 6
@@ -362,6 +363,18 @@ def test_protected_side_effect_guards_remain_wired():
         "request_admitted_without_credential" in inspect.getsource(handler)
         for handler in (inference._maybe_auto_switch_model, inference.openai_chat_completions)
     )
+    assert all(
+        "authenticated_without_credential" in inspect.getsource(handler)
+        and "not no_credential" in inspect.getsource(handler)
+        for handler in (
+            preview.list_previews,
+            training_history.list_training_runs,
+            training_history.get_training_run_detail,
+            training_history.update_training_run,
+        )
+    )
+    main_source = (Path(__file__).parents[1] / "main.py").read_text(encoding = "utf-8")
+    assert 'app.state.secure = os.environ.get("UNSLOTH_SECURE") == "1"' in main_source
     assert security.scheme_name == "HTTPBearer"
 
 
