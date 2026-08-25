@@ -1,5 +1,5 @@
 use crate::diagnostics::{self, BackendLog, DiagnosticsState};
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use process_wrap::std::*;
 use regex::Regex;
 use std::collections::VecDeque;
@@ -1213,6 +1213,64 @@ pub(crate) fn trim_line_endings(bytes: &[u8]) -> &[u8] {
         end -= 1;
     }
     &bytes[..end]
+}
+
+/// Longest single line we will hand to `tauri.log`. Matches the phase log's own cap, which
+/// already trimmed these; without it the same line was capped on one sink and not the other.
+pub(crate) const MAX_BACKEND_LOG_LINE_BYTES: usize = 16 * 1024;
+
+/// Keep only the last frame of a carriage-return progress redraw.
+///
+/// We read to `\n`, so a tqdm or pip bar arrives as every frame it ever drew concatenated
+/// into one line, across three sinks: one "Loading weights" bar measured 5086 bytes. Only
+/// the final frame carries information. Text with no interior `\r` is returned untouched,
+/// and a bar whose last frame is empty keeps the last non-empty one rather than a blank line.
+///
+/// `_TeeStream._last_frame` in studio/backend/run.py applies this same rule to this same
+/// input for the session log, so the two sinks stay interchangeable for a reader.
+pub(crate) fn collapse_progress_frames(text: &str) -> &str {
+    if !text.contains('\r') {
+        return text;
+    }
+    text.rsplit('\r')
+        .find(|frame| !frame.trim().is_empty())
+        // All frames blank, so the line is blank. Return a frame, not the whole text, which
+        // still holds the `\r` we were asked to collapse away.
+        .unwrap_or_else(|| text.rsplit('\r').next().unwrap_or(""))
+}
+
+/// True when the line is one of the backend's own structured access-log records **and it
+/// reports success**.
+///
+/// These already reach the phase log (stream-tagged and stamped) and the backend's own
+/// session log, so a third copy in `tauri.log` was pure duplication: 4056 of 5308 lines on
+/// an idle 4h session, pushing real failures out of the 5 MiB window inside a day.
+///
+/// The 2xx check is the point. The backend's heartbeat suppressor exempts non-2xx so a
+/// failing poll logs every time, and `tauri.log` is where a watchdog going red gets read.
+/// A record with no `status_code` we cannot vouch for, so it keeps INFO too.
+///
+/// For the records this *does* match, "debug" means dropped, not demoted: `setup_logging`
+/// in main.rs builds every logger at `LevelFilter::Info` with no `RUST_LOG` to raise it,
+/// so `log::max_level()` is `Info` -- including under backend `--verbose`, which emits
+/// *more* of them. Deliberate: `append_phase_line` below runs before this decision, and
+/// both that log and the session log are already offered by the support report and by
+/// Settings > Logs. Nothing is lost; it moves one source over in the picker.
+fn is_backend_access_log_line(text: &str) -> bool {
+    let trimmed = text.trim_start();
+    if !trimmed.starts_with('{') {
+        return false;
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+        return false;
+    };
+    if value.get("event").and_then(|event| event.as_str()) != Some("request_completed") {
+        return false;
+    }
+    matches!(
+        value.get("status_code").and_then(|code| code.as_u64()),
+        Some(200..=299)
+    )
 }
 
 /// Windows `CREATE_NO_WINDOW` flag — suppresses console windows for child processes.
@@ -3724,7 +3782,8 @@ fn read_output_stream<R: std::io::Read>(
                 break;
             }
             Ok(_) => {
-                let text = String::from_utf8_lossy(trim_line_endings(&buf)).into_owned();
+                let raw = String::from_utf8_lossy(trim_line_endings(&buf));
+                let text = collapse_progress_frames(&raw).to_owned();
                 let log_line = if is_stderr {
                     format!("[stderr] {}", text)
                 } else {
@@ -3788,7 +3847,19 @@ fn read_output_stream<R: std::io::Read>(
                     });
                 }
 
-                info!("[backend] {}", log_line);
+                // Keeping the successful access records out leaves tauri.log for the startup
+                // banner, hardware lines, stderr, tracebacks and failed requests.
+                if is_backend_access_log_line(&text) {
+                    debug!("[backend] {}", log_line);
+                } else if log_line.len() > MAX_BACKEND_LOG_LINE_BYTES {
+                    let mut end = MAX_BACKEND_LOG_LINE_BYTES;
+                    while end > 0 && !log_line.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    info!("[backend] {} [line truncated]", &log_line[..end]);
+                } else {
+                    info!("[backend] {}", log_line);
+                }
 
                 let _ = app.emit("server-log", &log_line);
             }
@@ -4236,6 +4307,135 @@ fn stop_backend_inner(
     }
 
     result
+}
+
+#[cfg(test)]
+mod backend_log_line_tests {
+    use super::*;
+
+    #[test]
+    fn plain_line_is_untouched() {
+        assert_eq!(collapse_progress_frames("Hardware detected: ROCm"), "Hardware detected: ROCm");
+        assert_eq!(collapse_progress_frames(""), "");
+    }
+
+    #[test]
+    fn progress_bar_keeps_only_the_final_frame() {
+        let bar = "Loading weights:   0%| | 0/617\rLoading weights:  47%| | 288/617\rLoading weights: 100%|#| 617/617";
+        assert_eq!(collapse_progress_frames(bar), "Loading weights: 100%|#| 617/617");
+    }
+
+    #[test]
+    fn trailing_blank_frame_falls_back_to_the_last_real_one() {
+        assert_eq!(collapse_progress_frames("Map:  50%\rMap: 100%\r   "), "Map: 100%");
+    }
+
+    #[test]
+    fn an_all_blank_line_never_keeps_its_carriage_returns() {
+        // The log handle appends the platform terminator itself, so a `\r` that survives
+        // here lands as "\r\r\n" in the file on Windows.
+        for line in ["\r", "\r\r\r", "   \r   "] {
+            assert!(
+                !collapse_progress_frames(line).contains('\r'),
+                "collapse left a carriage return in {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_crlf_line_keeps_its_payload() {
+        // read_output_stream trims the terminator before collapsing, so a CRLF's `\r` is
+        // never read as a redraw ending in an empty frame. Every line a Windows child
+        // relays arrives in this shape.
+        let raw = b"Hardware detected: NVIDIA GeForce RTX 4090\r\n";
+        let trimmed = String::from_utf8_lossy(trim_line_endings(raw)).into_owned();
+        assert_eq!(
+            collapse_progress_frames(&trimmed),
+            "Hardware detected: NVIDIA GeForce RTX 4090"
+        );
+    }
+
+    #[test]
+    fn a_crlf_terminated_bar_still_collapses() {
+        let raw = b"Map:  50%\rMap: 100%\r\n";
+        let trimmed = String::from_utf8_lossy(trim_line_endings(raw)).into_owned();
+        assert_eq!(collapse_progress_frames(&trimmed), "Map: 100%");
+    }
+
+    #[test]
+    fn a_crlf_json_record_stays_parseable() {
+        let raw = b"{\"event\": \"request_completed\", \"status_code\": 200}\r\n";
+        let trimmed = String::from_utf8_lossy(trim_line_endings(raw)).into_owned();
+        let line = collapse_progress_frames(&trimmed);
+        assert!(serde_json::from_str::<serde_json::Value>(line).is_ok(), "{line:?}");
+        assert!(is_backend_access_log_line(line));
+    }
+
+    #[test]
+    fn a_marker_line_survives_the_collapse() {
+        // read_output_stream runs the TAURI_PORT regex against the collapsed text, so a
+        // marker that shares its line with a redraw must still be the frame we keep.
+        for raw in [
+            &b"TAURI_PORT=8888\n"[..],
+            &b"TAURI_PORT=8888\r\n"[..],
+            &b"Loading weights:  47%\rTAURI_PORT=8888\r\n"[..],
+        ] {
+            let trimmed = String::from_utf8_lossy(trim_line_endings(raw)).into_owned();
+            assert_eq!(collapse_progress_frames(&trimmed), "TAURI_PORT=8888", "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn truncation_lands_on_a_character_boundary() {
+        let line = "\u{1f680}".repeat(MAX_BACKEND_LOG_LINE_BYTES);
+        let mut end = MAX_BACKEND_LOG_LINE_BYTES;
+        while end > 0 && !line.is_char_boundary(end) {
+            end -= 1;
+        }
+        // Slicing at `end` must not panic and must stay under the cap.
+        assert!(end <= MAX_BACKEND_LOG_LINE_BYTES);
+        assert_eq!(line[..end].len(), end);
+    }
+
+    #[test]
+    fn access_log_records_are_recognised() {
+        assert!(is_backend_access_log_line(
+            r#"{"timestamp": "2026-08-13T14:22:11Z", "level": "info", "event": "request_completed", "path": "/api/liveness", "status_code": 200}"#
+        ));
+        assert!(is_backend_access_log_line(
+            r#"{"event": "request_completed", "path": "/api/models/local", "status_code": 204}"#
+        ));
+    }
+
+    #[test]
+    fn failed_access_records_keep_their_info_line() {
+        // A watchdog probe going red is the case tauri.log exists for; the backend logs
+        // every one of these (the heartbeat suppressor is 2xx-only) and so must we.
+        assert!(!is_backend_access_log_line(
+            r#"{"event": "request_completed", "path": "/api/liveness", "status_code": 503}"#
+        ));
+        assert!(!is_backend_access_log_line(
+            r#"{"event": "request_completed", "path": "/api/train/start", "status_code": 401}"#
+        ));
+        // No status at all: not a record we can vouch for.
+        assert!(!is_backend_access_log_line(
+            r#"{"event": "request_completed", "path": "/api/liveness"}"#
+        ));
+    }
+
+    #[test]
+    fn other_structured_events_and_plain_text_are_not() {
+        assert!(!is_backend_access_log_line(
+            r#"{"level": "info", "event": "engine_stats", "gen_tok_s": 64.9}"#
+        ));
+        assert!(!is_backend_access_log_line("TAURI_PORT=8888"));
+        // Mentioning the event name in free text must not silence the line.
+        assert!(!is_backend_access_log_line("saw request_completed in the trace"));
+        // Truncated JSON is not a record we can vouch for, so it keeps its INFO line.
+        assert!(!is_backend_access_log_line(
+            r#"{"event": "request_completed", "status_code": 200"#
+        ));
+    }
 }
 
 // A login-started desktop on Windows inherits C:\Windows\system32 (issue #8510),
