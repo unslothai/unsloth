@@ -1790,10 +1790,9 @@ def detect_mmproj_file(
         for f in _iter_gguf_files(d):
             if accept is not None and not accept(str(f)):
                 continue
-            # A split projector is usable only as a whole set, since llama-server resolves
-            # the siblings from this path's directory. Dropped during discovery, not after
-            # ranking, or half a set shadows a complete one that would have paired. Same
-            # rule the snapshot reuse and the drafter scan apply.
+            # A split projector is usable only whole: llama-server resolves the siblings
+            # from this path's directory. Dropped here rather than after ranking, or half
+            # a set shadows a complete one. Same rule the drafter scan applies.
             if _GGUF_SPLIT_FILE_RE.match(f.name) and not _drafter_split_is_complete(f):
                 continue
             try:
@@ -2631,10 +2630,9 @@ def _local_gguf_companion_search_root(
 def _is_hf_snapshots_container(directory: Path) -> bool:
     """Whether *directory* is the ``snapshots`` dir of a ``models--*`` cache repo.
 
-    Case-folded, because the resolution side is: _iter_hf_cache_snapshots and the
-    pre-download bound both match a cache dir case-insensitively, so discovery that
-    read the markers literally would refuse to widen inside a directory the weight
-    was resolved out of.
+    Case-folded to match resolution: _iter_hf_cache_snapshots and the pre-download
+    bound find a cache dir case-insensitively, so reading the markers literally would
+    refuse to widen inside a directory the weight was resolved out of.
     """
     return directory.name.casefold() == "snapshots" and directory.parent.name.casefold().startswith(
         "models--"
@@ -2644,11 +2642,9 @@ def _is_hf_snapshots_container(directory: Path) -> bool:
 def _hf_repo_root_companion_dirs(repo_dir: Path) -> list[Path]:
     """The directories above a snapshot that the widened companion walk reaches.
 
-    The walk climbs ``snapshots/<sha>`` -> ``snapshots`` -> ``models--<repo>``, and
-    ``_iter_gguf_files`` is not recursive, so those two containers are the whole of
-    what the widening adds. One definition, because the load, the pre-download bound
-    and the cached row all have to name the same set or a row says no vision for a
-    file the launch opens.
+    The walk climbs ``snapshots/<sha>`` -> ``snapshots`` -> ``models--<repo>`` and
+    ``_iter_gguf_files`` is not recursive, so those two containers are all the
+    widening adds. One definition, or the row says no vision for a file the load opens.
     """
     return [repo_dir, repo_dir / "snapshots"]
 
@@ -2677,9 +2673,8 @@ def _detect_local_mmproj(
     wins. Same published-first order ``_download_mmproj`` uses.
 
     ``accept_for`` builds the pre-read admission filter for a root (native-grant
-    loads) and applies to the widened boundaries ONLY: the first one has to answer
-    exactly what it answered before the widening, refusals included, so the extra
-    rule covers just what the widening newly reaches."""
+    loads) and applies to the widened boundaries ONLY, so the first one answers
+    exactly what it answered before the widening, refusals included."""
     selected_root = _local_gguf_companion_search_root(
         selected_path, gguf_file, include_hf_repo_root = False
     )
@@ -2714,12 +2709,11 @@ def _hf_cache_repo_root_mmproj_bound_bytes(repo_id: str) -> int:
     second one, and the training guard charges nothing for what the launch makes
     resident.
 
-    A BOUND rather than a selection, deliberately: pairing decides which candidate the
-    load opens, and its modality decides whether the Vision switch suppresses it, so
-    naming one file here would let the caller answer either question from a guess. The
-    largest qualifying candidate across every case variant of the cache dir is an
-    answer that cannot be too small, and the guard charges it whatever the switch says,
-    exactly as it charges an unread remote projector.
+    A bound and not a selection: pairing decides which candidate the load opens and
+    its modality decides whether the switch suppresses it, so naming one file would let
+    the caller answer either from a guess. The largest qualifying candidate across every
+    case variant cannot be too small, and the guard charges it whatever the switch says,
+    as it charges an unread remote projector.
     """
     bound = 0
     try:
@@ -3838,11 +3832,10 @@ class ModelConfig:
     # ``sizes`` covers that file and every shard beside it.
     gguf_verified: Optional[tuple[str, str, str, tuple[tuple[str, int], ...]]] = None
     gguf_mmproj_file: Optional[str] = None  # Full path to the mmproj .gguf file (vision projection)
-    # A hand-added projector a REMOTE (-hf) load will attach at launch, resolved
-    # against the cached weight. Read by the training guard and the GPU-ownership
-    # predicate; never handed to llama-server, which resolves its own beside the
-    # weight it downloads. ``bound_bytes`` stands in before any quant is cached: a
-    # size ceiling with no file named, since pairing has not happened yet.
+    # A hand-added projector a REMOTE (-hf) load will attach, resolved against the
+    # cached weight. Read by the training guard and the GPU-ownership predicate, never
+    # handed to llama-server, which resolves its own beside the weight it downloads.
+    # ``bound_bytes`` stands in before any quant is cached, where nothing has paired.
     gguf_local_mmproj_file: Optional[str] = None
     gguf_local_mmproj_bound_bytes: int = 0
     gguf_mtp_file: Optional[str] = None  # Full path to the separate MTP drafter (local mode)
@@ -4159,18 +4152,15 @@ class ModelConfig:
                 # The repo may publish no projector while the user hand-added one at the
                 # HF cache repo root (#9286). load_model only resolves a projector when
                 # the config says vision, so the listing's answer alone would skip it.
-                # Pair it against the weight once one is cached; before that, presence
-                # is enough to make the load resolve companions beside what it downloads.
                 local_mmproj: Optional[str] = None
                 local_mmproj_bound_bytes = 0
                 if not has_vision and verified_file:
                     local_mmproj = _detect_local_mmproj(verified_file, verified_file)
                     has_vision = local_mmproj is not None
                 if local_mmproj is None:
-                    # A ceiling for a projector the loader may still fall back to. Not
+                    # A ceiling for a projector the loader may still fall back to, not
                     # only when the listing says no vision: a repo can publish a set the
-                    # fetch refuses, and before a quant is cached there is nothing to
-                    # pair against either way.
+                    # fetch refuses, and before a quant is cached nothing pairs anyway.
                     local_mmproj_bound_bytes = _hf_cache_repo_root_mmproj_bound_bytes(identifier)
                     has_vision = has_vision or local_mmproj_bound_bytes > 0
 

@@ -11719,10 +11719,9 @@ class LlamaCppBackend:
                 if attempt < 2:
                     cancel_event.wait(2**attempt)
 
-        # What the LIVE listing itself said, captured before the cache fallback can name
-        # a file the current revision no longer publishes. "The repo publishes none" is a
-        # different claim from "an old snapshot still holds one", and a caller choosing
-        # between the repo's companion and a local alternative needs the first.
+        # What the LIVE listing said, captured before the cache fallback can name a file
+        # the current revision no longer publishes. A caller choosing between the repo's
+        # companion and a local alternative needs that claim, not "a snapshot holds one".
         listed_live = (target is not None) if listing_answered else None
 
         if target is None:
@@ -11889,10 +11888,9 @@ class LlamaCppBackend:
             outcome = outcome,
         )
         if resolved is not None:
-            # Same rule discovery applies to a candidate: an interrupted copy is a file
-            # llama-server cannot open, and it must not shadow one that works. The
-            # snapshot and offline paths check it through _drafter_split_is_complete;
-            # what a download resolved out of the cache reaches here unchecked.
+            # Same rule discovery applies: an interrupted copy is a file llama-server
+            # cannot open and must not shadow one that works. The snapshot and offline
+            # paths check it; what a download resolved out of the cache does not.
             try:
                 if Path(resolved).stat().st_size > 0:
                     return resolved
@@ -11903,10 +11901,9 @@ class LlamaCppBackend:
             return None
         # "The repo publishes none" and "the fetch dropped" both come back None, and only
         # the first is what this fallback is for: launching a hand-added file in place of
-        # the repo's own projector is worse than the retry the next Apply gets. The LIVE
-        # listing answers that, not `listed`, which an old snapshot naming a since-removed
-        # projector also sets. An unanswered listing (offline, a hub job holding the
-        # fetch) is not the same claim either, and there the local file is all there is.
+        # the repo's own is worse than the retry the next Apply gets. Only the live
+        # listing answers that. An unanswered one (offline, a hub job holding the fetch)
+        # is not the same claim, and there the local file is all there is.
         if outcome.get("listed_live") is True:
             return None
 
