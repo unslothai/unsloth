@@ -26,13 +26,13 @@ import sqlite3
 import time
 import uuid
 from contextlib import contextmanager
-from typing import Iterator
+from typing import Annotated, Iterator
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from auth.authentication import get_current_subject
+from auth.authentication import get_current_subject, request_admitted_without_credential
 from core.rag import config, folder_sync, ingestion, retrieval, store
 from storage import rag_db
 from utils.paths import ensure_dir, rag_uploads_root
@@ -1036,8 +1036,17 @@ def preview_target(
 
 
 @router.get("/documents/{document_id}/file-url")
-def document_file_url(document_id: str, subject: str = Depends(get_current_subject)) -> dict:
+def document_file_url(
+    document_id: str,
+    subject: str = Depends(get_current_subject),
+    no_credential: Annotated[bool, Depends(request_admitted_without_credential)] = False,
+) -> dict:
     """Mint a short-lived signed URL for the source file."""
+    if no_credential:
+        raise HTTPException(
+            status_code = 403,
+            detail = "Document links can only be created from the Unsloth UI or with an API key.",
+        )
     _require_rag()
     conn = _rag_connection()
     try:

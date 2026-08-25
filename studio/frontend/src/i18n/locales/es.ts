@@ -420,6 +420,16 @@ export const es = {
           "Usa el modelo de audio cargado (por ejemplo, Orpheus)",
         engineSystem: "Voces del sistema",
         engineStudio: "Cargar un modelo de TTS",
+        engineCustom: "Endpoint personalizado",
+        engineCustomDescription:
+          "Un servidor TTS compatible con OpenAI de tus conexiones (p. ej., Kokoro)",
+        connectionLabel: "Conexión",
+        connectionDescription:
+          "Añade un servidor compatible con OpenAI en la pestaña Conexiones",
+        connectionPlaceholder: "Selecciona una conexión",
+        customModelLabel: "Modelo",
+        customVoiceDescription:
+          "Nombre de la voz que espera el endpoint; el valor predeterminado es alloy",
         modelLabel: "Modelo de TTS",
         modelDescription:
           "Carga un modelo de audio desde el selector de modelos (por ejemplo, Orpheus TTS)",
@@ -578,6 +588,29 @@ export const es = {
           "No se pudo actualizar el ajuste de cierre en la bandeja del sistema.",
         loadError: "No se pudo cargar el ajuste de inicio automático.",
         saveError: "No se pudo actualizar el ajuste de inicio automático.",
+      },
+      downloads: {
+        sectionTitle: "Descargas",
+        transport: "Transporte de descarga",
+        transportDescription:
+          "Cómo llegan los archivos de modelos y conjuntos de datos desde Hugging Face. HTTPS retoma donde se detuvo; Xet suele ser más rápido en la primera descarga, pero reinicia el archivo si cancelas.",
+        transportHint:
+          "HTTPS es TLS normal: cualquier red, proxy o VPN lo permite, una transferencia cancelada o cortada continúa desde los bytes ya guardados y el uso de memoria se mantiene estable. Xet descarga bloques deduplicados, así que un repositorio que comparte datos con otro que ya tienes puede llegar mucho más rápido, pero necesita hf_xet, usa más RAM y una cancelación descarta el archivo en curso. Auto decide según la máquina: valora la RAM y si Xet se ha estado atascando aquí, y recurre a HTTPS.",
+        https: "HTTPS",
+        xet: "Xet",
+        auto: "Auto",
+        httpsHint:
+          "TLS estándar. Retoma tras una cancelación, funciona en cualquier red, uso de memoria estable.",
+        transportDescriptionNoResume:
+          "Cómo se descargan los archivos de modelos y conjuntos de datos desde Hugging Face. En esta instalación ningún transporte puede reanudarse, así que una descarga cancelada vuelve a empezar; Xet suele ser más rápido en la primera descarga.",
+        httpsHintNoResume:
+          "TLS estándar. Funciona en cualquier red, uso de memoria estable. Esta instalación no puede reanudar una descarga cancelada.",
+        xetHint:
+          "Transferencia por bloques deduplicados. Suele ser más rápida en una descarga nueva, reinicia el archivo si cancelas y necesita más memoria.",
+        autoHint:
+          "Elige según la máquina y cambia a HTTPS si Xet se atasca o falla aquí.",
+        autoCurrently: "Auto está usando {transport} en esta máquina.",
+        xetMissing: "Xet no está disponible porque hf_xet no está instalado.",
       },
       uploads: {
         sectionTitle: "Subidas",
@@ -871,6 +904,8 @@ export const es = {
         title: "Dispositivos GPU",
         ggufInference: "Inferencia GGUF",
         unavailable: "No disponible",
+        detecting: "Buscando GPU...",
+        unreadable: "No se pudo leer el hardware de este servidor.",
         noGpu:
           "No se detectó ninguna GPU visible. Arriba se muestran los recursos solo de CPU.",
         unknownDevice: "GPU desconocida",
@@ -1117,7 +1152,7 @@ export const es = {
         exportChat: "Exportar chat",
       },
       pastedTextThreshold: "Condensar pegados largos",
-      pastedTextThresholdDescription: "El texto pegado más largo que esto se convierte en un adjunto .txt en lugar de llenar el cuadro de mensaje.",
+      pastedTextThresholdDescription: "El texto pegado más largo que esto se convierte en un adjunto .txt en lugar de llenar el cuadro de mensaje. Pulsa {shortcut} para pegar en el cuadro de mensaje de todos modos.",
       pastedTextThresholdOff: "Desactivado",
       showResponseModel: "Mostrar el modelo de respuesta",
       showResponseModelDescription:
@@ -1592,8 +1627,8 @@ export const es = {
         "Este modelo del dispositivo no se puede usar para entrenar.",
       reasonUnsupportedFormat:
         "Este formato de modelo no es compatible con el entrenamiento.",
-      vramNeeds: "Necesita ~{est} GB de VRAM (GPU: {total} GB)",
-      vramTight: "~{est} GB de VRAM (ajustado para {total} GB)",
+      vramNeeds: "Necesita ~{est} GB de VRAM (GPU: {total} GiB)",
+      vramTight: "~{est} GB de VRAM (ajustado para {total} GiB)",
       vramApprox: "~{est} GB de VRAM",
       sourceModelsFolder: "Carpeta de modelos",
       sourceHfCache: "Caché de HF",

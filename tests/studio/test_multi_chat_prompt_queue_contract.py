@@ -864,3 +864,110 @@ def test_sidebar_exposes_queue_activity_for_each_thread():
     assert "{showWorkSpinner && (" in APP_SIDEBAR
     assert "hasUnreadActivity" in APP_SIDEBAR
     assert "clearChatNotifications(item)" in APP_SIDEBAR
+
+
+def test_a_backgrounded_pane_autosaves_without_naming_itself_active():
+    """The shared provider (#9129) keeps a hidden pane's run alive, so its autosave still fires
+    after Compare has hidden it. The SAVE must keep happening; only the active-thread PUBLICATION
+    is suppressed, or the hidden base pane writes its own remote id into the store and Compare's
+    ``exportThreadIds = [model1, model2, activeThreadId]`` downloads the unrelated base
+    conversation alongside the two compare threads.
+    """
+    autosave = _between(
+        RUNTIME_PROVIDER,
+        "function ThreadBackendAutosave(",
+        "\nexport function useChatActive(",
+    )
+
+    # The pane knows it is hidden.
+    assert (
+        "backgrounded: boolean;" in autosave
+    ), "ThreadBackendAutosave has to be told, like every other sync component here"
+    assert (
+        "backgrounded={backgrounded}" in RUNTIME_PROVIDER
+    ), "and the provider has to pass it, or the prop is inert"
+
+    # Read at publish time, not captured when the save was queued: the save that publishes
+    # may have been scheduled while the pane was on screen and resolve long after Compare
+    # hid it.
+    assert "const backgroundedRef = useRef(backgrounded);" in autosave
+    assert "backgroundedRef.current = backgrounded;" in autosave
+
+    # The publication is what is gated -- and ONLY the publication.
+    assert (
+        "!backgroundedRef.current &&" in autosave
+    ), "the active-thread publication must be gated on the pane being visible"
+    publish_at = autosave.index("store.setActiveThreadId(remoteId)")
+    guard_at = autosave.index("!backgroundedRef.current")
+
+    # ...and on no switch away from this thread being in flight. switchToNewThread() is
+    # async, so mainThreadId still reads as this pane for the whole gap, and a save landing
+    # in it republishes the chat the user just left into the view they navigated to.
+    assert "!switchInFlight" in autosave, (
+        "the publication must also stand down while this provider's own New Chat switch is "
+        "still resolving"
+    )
+    assert (
+        "switchState.landedAttempt !== switchState.attempt" in autosave
+    ), "the in-flight window is attempt != landedAttempt, not merely activeNonce being set"
+    assert guard_at < publish_at, "the guard has to come before the write it guards"
+
+    # The save itself is untouched: gating it would defeat the PR, which exists so a run
+    # that outlives its view still lands on disk.
+    for call in (
+        "await ensureStoredChatThread(remoteId)",
+        "await syncExportedRepositoryToBackend(remoteId, exported)",
+    ):
+        assert call in autosave, f"{call} must still run while backgrounded"
+        assert autosave.index(call) < guard_at, f"{call} must not sit behind the visibility guard"
+
+
+def test_the_history_adapters_publish_stands_down_with_the_autosaves():
+    """``ThreadBackendAutosave`` is not the only place a pane names itself the active thread.
+
+    The history adapter's ``append()`` publishes the same id for every persisted message,
+    including the assistant message of the background run #9129 exists to keep alive.
+    ``enterCompare`` blanks the active id, so the ``!== remoteId`` test passes and a hidden pane
+    republishes itself into the same ``exportThreadIds`` the autosave guard was added for. Both
+    must stand down together, or gating one is decorative.
+    """
+    append = _between(
+        RUNTIME_PROVIDER,
+        "      append({ parentId, message }: ExportedMessageRepositoryItem) {",
+        "\n  // Always register the adapter so the mic stays clickable",
+    )
+
+    assert (
+        "store.setActiveThreadId(remoteId);" in append
+    ), "this test is about the history adapter's publication; if it moved, follow it"
+    assert (
+        "!backgroundedRef?.current &&" in append
+    ), "the history adapter's publication needs the same visibility gate as the autosave's"
+    assert "!switchInFlight" in append, (
+        "...and the same stand-down while a New Chat switch this provider started is still "
+        "resolving; see the autosave test for why mainThreadId cannot be trusted in that gap"
+    )
+
+    # Read at publish time, through a ref, for the same reason the autosave does: the write
+    # is queued when the message arrives and resolves after Compare may have hidden the pane.
+    assert "const backgroundedRef = useRef(backgrounded);" in RUNTIME_PROVIDER
+    assert "backgroundedRef.current = backgrounded;" in RUNTIME_PROVIDER
+
+    # ...and the ref has to actually reach it. A ref rather than the boolean, so handing it
+    # down cannot change the memoized runtime hook's identity and rebuild the runtime.
+    hook_build = _between(
+        RUNTIME_PROVIDER,
+        "  const runtimeHook = useMemo(",
+        "  const runtime = useRemoteThreadListRuntime({",
+    )
+    assert "backgroundedRef," in hook_build, "createRuntimeHook has to be handed the ref"
+    assert "[initialThreadId, modelType, onInitialHistoryReady, pairId]," in hook_build, (
+        "and the ref must NOT join the dependency array: a new hook identity rebuilds the "
+        "runtime, which is the one thing the shared provider must never do"
+    )
+
+    # The write itself is untouched. Only the publication is gated.
+    assert "await awaitStoredChatThreadWrites(remoteId);" in append
+    assert append.index("await awaitStoredChatThreadWrites(remoteId);") < append.index(
+        "!backgroundedRef?.current"
+    ), "persisting a background run's message must not sit behind the visibility guard"

@@ -416,6 +416,15 @@ export const ja = {
           "読み込み済みの音声モデルを使用します (例: Orpheus)",
         engineSystem: "システムの音声",
         engineStudio: "TTS モデルを読み込む",
+        engineCustom: "カスタムエンドポイント",
+        engineCustomDescription:
+          "接続に登録した OpenAI 互換の TTS サーバー（例: Kokoro）",
+        connectionLabel: "接続",
+        connectionDescription:
+          "OpenAI 互換サーバーは「接続」タブで追加できます",
+        connectionPlaceholder: "接続を選択",
+        customModelLabel: "モデル",
+        customVoiceDescription: "エンドポイントが期待する音声名（デフォルトは alloy）",
         modelLabel: "TTS モデル",
         modelDescription:
           "モデルセレクターから音声モデルを読み込んでください (例: Orpheus TTS)",
@@ -553,6 +562,29 @@ export const ja = {
         closeToTraySaveError: "システムトレイに格納する設定を更新できませんでした。",
         loadError: "ログイン時起動の設定を読み込めませんでした。",
         saveError: "ログイン時起動の設定を更新できませんでした。",
+      },
+      downloads: {
+        sectionTitle: "ダウンロード",
+        transport: "ダウンロード方式",
+        transportDescription:
+          "Hugging Face からモデルやデータセットのファイルを取得する方法です。HTTPS は中断した位置から再開します。Xet は初回ダウンロードでは速いことが多い一方、キャンセルするとそのファイルを最初からやり直します。",
+        transportHint:
+          "HTTPS は通常の TLS です。あらゆるネットワーク、プロキシ、VPN が許可し、キャンセルや切断があってもディスク上のバイト列から再開でき、メモリ使用量も一定です。Xet は重複排除されたチャンクを取得するため、既に持っているリポジトリとデータを共有する場合は大幅に速く届きますが、hf_xet が必要で RAM を多く使い、キャンセルすると転送中のファイルは破棄されます。Auto はこのマシンに合わせて判断し、RAM や Xet がここで停滞していないかを見て、必要なら HTTPS に切り替えます。",
+        https: "HTTPS",
+        xet: "Xet",
+        auto: "Auto",
+        httpsHint:
+          "標準の TLS。キャンセル後も再開でき、どのネットワークでも動作し、メモリ使用量が安定します。",
+        transportDescriptionNoResume:
+          "モデルやデータセットのファイルを Hugging Face から取得する方法です。このインストールではどちらの転送方式も再開できないため、キャンセルしたダウンロードは最初からやり直しになります。Xet は初回のダウンロードが速いことが多いです。",
+        httpsHintNoResume:
+          "標準の TLS。どのネットワークでも動作し、メモリ使用量は安定しています。このインストールではキャンセルしたダウンロードを再開できません。",
+        xetHint:
+          "重複排除チャンク転送。新規ダウンロードでは速いことが多く、キャンセルするとファイルをやり直し、メモリを多く使います。",
+        autoHint:
+          "マシンごとに選び、ここで Xet が停滞または失敗した場合は HTTPS に切り替えます。",
+        autoCurrently: "このマシンでは Auto は {transport} を使用しています。",
+        xetMissing: "hf_xet がインストールされていないため Xet は利用できません。",
       },
       uploads: {
         sectionTitle: "アップロード",
@@ -833,6 +865,8 @@ export const ja = {
         title: "GPU デバイス",
         ggufInference: "GGUF 推論",
         unavailable: "利用不可",
+        detecting: "GPU を確認しています...",
+        unreadable: "このサーバーのハードウェアを読み取れませんでした。",
         noGpu:
           "利用可能な GPU が検出されませんでした。CPU のみの環境向けのリソース情報は上に表示されています。",
         unknownDevice: "不明な GPU",
@@ -1080,7 +1114,7 @@ export const ja = {
         exportChat: "チャットをエクスポート",
       },
       pastedTextThreshold: "長い貼り付けを圧縮",
-      pastedTextThresholdDescription: "この長さを超える貼り付けテキストは、入力欄を埋める代わりに .txt 添付ファイルになります。",
+      pastedTextThresholdDescription: "この長さを超える貼り付けテキストは、入力欄を埋める代わりに .txt 添付ファイルになります。 {shortcut} を押すと、それでも入力欄に貼り付けます。",
       pastedTextThresholdOff: "オフ",
       showResponseModel: "応答モデルを表示",
       showResponseModelDescription:
@@ -1534,8 +1568,8 @@ export const ja = {
         "このデバイス上のモデルはトレーニングできません。",
       reasonUnsupportedFormat:
         "このモデル形式はトレーニングでサポートされていません。",
-      vramNeeds: "約 {est}GB VRAM が必要 (GPU: {total}GB)",
-      vramTight: "約 {est}GB VRAM (GPU {total}GB ではギリギリです)",
+      vramNeeds: "約 {est}GB VRAM が必要 (GPU: {total}GiB)",
+      vramTight: "約 {est}GB VRAM (GPU {total}GiB ではギリギリです)",
       vramApprox: "約 {est}GB VRAM",
       vramOomBadge: "OOM",
       vramTightBadge: "ギリギリ",

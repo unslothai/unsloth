@@ -44,9 +44,19 @@ from ._utils import (
 )
 from ._utils import *
 from .loader_utils import (
+    DEFAULT_DEVICE_MAP,
+    OFFLOAD_EMBEDDING_AUTO,
+    planner_config_overrides,
+    planner_hub_kwargs,
+    planner_kwargs_with_max_memory,
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
     _restore_dropped_fp8_scales,
+    planner_class_mismatch_reason,
+    planner_model_class,
+    planner_quantization_kwargs,
+    requested_device_map,
+    resolve_unsloth_device_map,
 )
 from ..save import patch_saving_functions
 from ..models.loader_utils import is_distributed
@@ -327,6 +337,33 @@ def _embedding_dispatch_device(input_embeddings):
     return None if hook is None else getattr(hook, "execution_device", None)
 
 
+# Big in absolute terms and big on this card, since every lookup then crosses PCIe. 2.5 GiB
+# is 16% of a 16 GB T4 and worth moving, 3% of an 80 GB card and not.
+_OFFLOAD_EMBEDDING_MIN_BYTES = 2**30
+_OFFLOAD_EMBEDDING_MIN_FRACTION = 0.05
+
+
+def _embedding_is_worth_offloading(input_embeddings):
+    """Whether `"auto"` should offload, judged from the embedding against its own card.
+
+    False on anything unmeasurable, which is what every release before this one did.
+    """
+    try:
+        weight = getattr(input_embeddings, "weight", None)
+        if weight is None:
+            return False
+        size = weight.numel() * weight.element_size()
+        device = weight.device
+        if device.type != "cuda":
+            return False
+        total = torch.cuda.get_device_properties(device.index or 0).total_memory
+    except Exception:
+        return False
+    if not total:
+        return False
+    return size >= _OFFLOAD_EMBEDDING_MIN_BYTES and size / total >= _OFFLOAD_EMBEDDING_MIN_FRACTION
+
+
 def _resolve_offload_embedding(model, offload_embedding):
     """Report `offload_embedding` as True only when the offload will really run.
 
@@ -334,34 +371,41 @@ def _resolve_offload_embedding(model, offload_embedding):
     cannot help instead of failing the load. It also gates
     `_attach_bnb_multidevice_hooks`, which must still run whenever no offload
     happens, so every "no offload" case has to answer False.
+
+    `"auto"` (the default) decides from the size of the embedding, and the declines below
+    stay silent for it: they explain why something a caller *asked* for is not happening,
+    and nobody asked for a default.
     """
-    if not offload_embedding:
+    automatic = offload_embedding == OFFLOAD_EMBEDDING_AUTO
+
+    def _decline(reason):
+        if not automatic:
+            print(f"Unsloth: Not offloading embeddings; {reason}")
+        return False
+
+    if not automatic and not offload_embedding:
         return False
     platform_name = _offload_embedding_unsupported_platform()
     if platform_name is not None:
-        print(f"Unsloth: Not offloading embeddings; offloading is unsupported on {platform_name}.")
-        return False
+        return _decline(f"offloading is unsupported on {platform_name}.")
     try:
         in_embed = model.get_input_embeddings()
         out_embed = (
             model.get_output_embeddings() if hasattr(model, "get_output_embeddings") else None
         )
     except Exception:
-        # Cannot inspect it, so leave the caller's request alone.
-        return offload_embedding
+        # Cannot inspect it, so leave an explicit request alone and decline the default.
+        return False if automatic else offload_embedding
     if _embeddings_are_tied(in_embed, out_embed):
-        print(
-            "Unsloth: Not offloading embeddings; this model ties embed_tokens "
-            "to lm_head, so offloading saves no VRAM."
-        )
-        return False
+        return _decline("this model ties embed_tokens to lm_head, so offloading saves no VRAM.")
     if _embedding_dispatch_device(in_embed) is not None:
-        print(
-            "Unsloth: Not offloading embeddings; this model is dispatched across devices, "
-            "which overrides the offload."
-        )
-        return False
-    return True
+        return _decline("this model is dispatched across devices, which overrides the offload.")
+    if is_distributed():
+        # The offload leaves embed_tokens on the CPU while the rest of the rank stays on
+        # CUDA. Under full finetuning it is trainable, and DDP with device_ids refuses a
+        # module whose trainable parameters span both, so the run dies before step one.
+        return _decline("a distributed launch cannot wrap a model split across CPU and GPU.")
+    return _embedding_is_worth_offloading(in_embed) if automatic else True
 
 
 VLLM_SUPPORTED_VLM = [
@@ -890,7 +934,9 @@ class FastBaseModel:
         load_in_16bit = False,
         full_finetuning = False,
         token = None,
-        device_map = "sequential",
+        device_map = DEFAULT_DEVICE_MAP,
+        # Planner hints for device_map = "unsloth"; see resolve_unsloth_device_map.
+        device_map_planner_kwargs = None,
         trust_remote_code = False,
         model_types = None,
         tokenizer_name = None,
@@ -900,7 +946,7 @@ class FastBaseModel:
         whisper_language = None,
         whisper_task = None,
         auto_config = None,
-        offload_embedding = False,
+        offload_embedding = OFFLOAD_EMBEDDING_AUTO,
         float32_mixed_precision = None,  # Forces float32 mixed precision
         # vLLM parameters
         fast_inference = False,
@@ -912,6 +958,14 @@ class FastBaseModel:
         unsloth_vllm_standby = False,
         load_in_fp8 = False,  # fp8 LoRA (True, False, 'block')
         text_only = False,
+        # True when the caller already swapped a multimodal config for its text sub-config,
+        # so `auto_config` no longer describes the repo. Set by loader.py, and by the block
+        # below on the direct-call path.
+        text_only_decoder = False,
+        # True when `auto_config` came from the caller. It cannot be inferred here:
+        # FastModel pops `config` out of kwargs before this sees them, so by now it looks
+        # exactly like one we resolved ourselves.
+        auto_config_from_caller = False,
         **kwargs,
     ):
         user_config = kwargs.pop("config", None)
@@ -971,6 +1025,7 @@ class FastBaseModel:
                 auto_config = text_config
                 auto_model = AutoModelForCausalLM
                 _apply_text_only_key_mapping(kwargs, parent_config, text_config)
+                text_only_decoder = True
         elif text_only and auto_model in [
             AutoModelForVision2Seq,
             AutoModelForImageTextToText,
@@ -1123,6 +1178,8 @@ class FastBaseModel:
             )
         model_class = resolve_model_class(auto_model, auto_config)
         # Check if using forced float32 - we load it in bfloat16, then cast to float16!
+        # Resolved here rather than at the load, because attention resolution below and the
+        # device-map planner both have to size the same dtype the load will really use.
         torch_dtype = dtype
         if do_forced_float32:
             torch_dtype = torch.bfloat16
@@ -1166,6 +1223,76 @@ class FastBaseModel:
             load_in_4bit = False
             load_in_8bit = False
             load_in_16bit = False
+
+        # text_only loads the decoder alone, but the planner gets only `model_name` and
+        # rebuilds the whole VLM: it budgets a vision tower this load never creates and
+        # names `model.language_model.layers.0` where the standalone decoder has
+        # `model.layers.0`, so the first decoder weight ends up with no device set.
+        _planner_skip_reason = (
+            "text_only loads a decoder the repo config does not describe"
+            if text_only_decoder
+            else None
+        )
+        # Same failure from the other direction: `num_labels` (or an explicit `auto_model`)
+        # loads a task head whose `score` replaces the planned `lm_head`, and dispatch
+        # refuses a map with no `score.weight`.
+        if _planner_skip_reason is None:
+            _planner_skip_reason = planner_class_mismatch_reason(
+                model_class,
+                planner_model_class(auto_config, trust_remote_code = trust_remote_code),
+            )
+        # The comparison above returns None for a concrete `PreTrainedModel` subclass:
+        # `resolve_model_class` reads `auto_model._model_mapping`, which only Auto classes
+        # have. Unknown is not compatible, so decline rather than plan the repo's class.
+        if (
+            _planner_skip_reason is None
+            and model_class is None
+            and getattr(auto_model, "_model_mapping", None) is None
+        ):
+            _planner_skip_reason = (
+                "an explicit model class has no auto mapping, so the plan cannot be "
+                "checked against the class the load builds"
+            )
+        # The weights load against the caller's config; the planner rebuilds the repo's from
+        # a name. Same class, another `num_hidden_layers` or `vocab_size`, and the map omits
+        # blocks or under-budgets weights. Only the caller knows, so do not guess.
+        if _planner_skip_reason is None and (user_config is not None or auto_config_from_caller):
+            _planner_skip_reason = (
+                "a caller-supplied config may not describe the repo the planner rebuilds"
+            )
+
+        # A no-op unless the caller asked for "unsloth" (or set UNSLOTH_AUTO_DEVICE_MAP);
+        # an already-planned map comes back unchanged, so a direct FastBaseModel call
+        # behaves the same as going through FastModel.
+        device_map = resolve_unsloth_device_map(
+            requested_device_map(device_map),
+            model_name,
+            fast_inference = fast_inference,
+            full_finetuning = full_finetuning,
+            planner_kwargs = planner_kwargs_with_max_memory(device_map_planner_kwargs, kwargs),
+            skip_reason = _planner_skip_reason,
+            **planner_config_overrides(kwargs),
+            token = token,
+            trust_remote_code = trust_remote_code,
+            **planner_hub_kwargs(kwargs),
+            # The pin the config and weights below use; the default branch would size a
+            # different checkpoint than the one being loaded.
+            revision = _revision,
+            # The dtype the load below is given: `from_pretrained` overrides config.json,
+            # so planning the checkpoint's own mis-sizes by 2x whenever it changed.
+            **add_dtype_kwargs(torch_dtype),
+            # A caller-supplied config overrides the flags: loader.py clears them when it
+            # forwards one, so the flags alone would size a 4bit load at full precision.
+            **planner_quantization_kwargs(
+                load_in_4bit = load_in_4bit,
+                load_in_8bit = load_in_8bit,
+                quantization_config = user_quantization_config,
+                # The same extra _skip_modules below adds.
+                extra_skip_modules = ["out_proj"]
+                if any(mt == "nemotron_h" for mt in (model_types or []))
+                else None,
+            ),
+        )
 
         if int(load_in_4bit) + int(load_in_8bit) + int(load_in_16bit) >= 2:
             raise RuntimeError(
@@ -1326,6 +1453,7 @@ class FastBaseModel:
                     if user_quantization_config is None:
                         kwargs["quantization_config"] = quantization_config
 
+        # torch_dtype is resolved above, where the device-map planner also needs it.
         kwargs = add_dtype_kwargs(torch_dtype, kwargs)
 
         config_attn_impl = kwargs.get("attn_implementation", None)
@@ -1347,10 +1475,11 @@ class FastBaseModel:
         raise_handler = RaiseUninitialized()
         try:
             if offload_embedding and fast_inference:
-                # vLLM manages its own weights; embedding offload does not apply.
-                print(
-                    "Unsloth: Not offloading embeddings; incompatible with fast_inference (vLLM)."
-                )
+                # vLLM manages its own weights. Silent for the default, as above.
+                if offload_embedding != OFFLOAD_EMBEDDING_AUTO:
+                    print(
+                        "Unsloth: Not offloading embeddings; incompatible with fast_inference (vLLM)."
+                    )
                 offload_embedding = False
             if not fast_inference:
                 # Prevent load_in_fp8 from being forwarded into HF internal model loading
@@ -1877,7 +2006,7 @@ class FastBaseModel:
         temporary_location = "_unsloth_temporary_saved_buffers",
         qat_scheme = None,
         target_parameters = None,  # For MoE expert layers (nn.Parameter)
-        ensure_weight_tying = False,  # [TODO] Add `ensure_weight_tying` for `modules_to_save` for vision models
+        ensure_weight_tying = None,  # None = auto (tie when we redirect a tied pair)
         finetune_audio_layers = False,  # placed last to preserve existing positional argument order
         **kwargs,
     ):
@@ -1931,6 +2060,34 @@ class FastBaseModel:
         # only the auto (None / "all-linear") path relies on the regex, whose mlp
         # block is the sole remaining MLP-intent signal on fused-expert models.
         _moe_detect_target = target_modules if type(target_modules) in (list, tuple) else None
+
+        # get_peft_regex drops these (no attention/MLP ancestor) and LoRA on them never
+        # trains, so redirect before scoping, matching FastLanguageModel.
+        target_modules, modules_to_save, _moved = _redirect_embedding_targets(
+            target_modules,
+            modules_to_save,
+            allow_redirect = finetune_language_layers,
+            skip = _vllm_unmovable_embedding_modules(model, target_modules),
+        )
+        _raise_if_no_lora_targets_left(target_modules, _moved, target_parameters)
+        ensure_weight_tying = _effective_weight_tying(
+            model,
+            modules_to_save,
+            ensure_weight_tying,
+        )
+        modules_to_save = _drop_tied_output_module(
+            model,
+            modules_to_save,
+            ensure_weight_tying,
+        )
+        if _moved:
+            logger.warning_once(
+                f"Unsloth: Moved {', '.join(_moved)} from `target_modules` to "
+                f"`modules_to_save`, so they are trained as full weight matrices.\n"
+                f"This uses more VRAM than LoRA. Please list them in `modules_to_save` directly."
+            )
+        _raise_if_fast_inference_modules_to_save(model, modules_to_save)
+
         if target_modules is None or target_modules == "all-linear":
             target_modules = get_peft_regex(
                 model,

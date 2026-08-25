@@ -60,6 +60,7 @@ import {
   releasePreStreamRunForThreadIds,
   releasePreStreamRunReservation,
 } from "../utils/pre-stream-run-reservation";
+import { readThreadCreationClaim } from "../utils/chat-thread-creation-claim";
 import {
   consumeQueuedChatRunSettings,
   snapshotQueuedChatRunSettings,
@@ -188,6 +189,9 @@ import {
   getImageInputUnavailableReason,
 } from "../utils/image-input-support";
 import {
+  historyCannotHelp,
+  latestTurnIsTheProblem,
+  latestTurnOwnTokens,
   mergeContextTruncation,
   promptWasShortened,
 } from "../utils/context-truncation";
@@ -582,8 +586,8 @@ export function useThreadAutosaveHandle(): ThreadAutosaveHandle {
  *      "the request exceeds the available context size (N tokens)".
  *   2. The friendly rewrite from
  *      ``backend/routes/inference.py::_friendly_error``: "Message too long:
- *      ... context window. Try increasing the Context Length ..." (the one
- *      most users see on the streaming GGUF path).
+ *      ... context window. ..." (the one most users see on the streaming GGUF
+ *      path). Its advice branches, so only the lead-in is stable to match on.
  *
  * Match substrings, not full regexes: both layers have drifted across
  * versions (llama.cpp phrasing and _friendly_error copy edits).
@@ -3876,8 +3880,18 @@ export function createOpenAIStreamAdapter(
       // Before the first await: hydration and a model load both run ahead of the
       // first resolveProjectId, and a send survives navigation. Only consulted
       // while the thread's own row is still missing.
-      const composerProjectIdAtSend =
-        useChatRuntimeStore.getState().activeProjectId ?? null;
+      //
+      // ...which for a fresh send is exactly the window this has to be right in, and the store
+      // is no longer a safe reading of it: send() awaits document extraction, and initialize()
+      // does not await its row write, so the user may be in another project by now and the run
+      // would take its instructions, RAG sources and sandbox from one the message was never
+      // sent to. A stamp OF null still wins -- a send from outside any project.
+      const creationClaim = unstable_threadId
+        ? readThreadCreationClaim(unstable_threadId)
+        : undefined;
+      const composerProjectIdAtSend = creationClaim
+        ? creationClaim.projectId
+        : (useChatRuntimeStore.getState().activeProjectId ?? null);
       await useChatRuntimeStore.getState().hydratePersistedSettings();
       // After the hydrate, not before: the backend reads some settings out of
       // SQLite at call time rather than taking them from the request -- Search
@@ -5582,10 +5596,10 @@ export function createOpenAIStreamAdapter(
                     // emitting structured tool_calls, so the external loop heals
                     // like the local one. Omitting this left the backend on its
                     // process default, which is not what the user set in Settings.
-                    // nudge_tool_calls is deliberately absent: it is the
-                    // non-streaming client-tool passthrough retry, which this
-                    // streaming server-side loop does not perform.
                     auto_heal_tool_calls: runtime.autoHealToolCalls,
+                    // Keep the external server-side loop under the same user
+                    // setting as the local inference paths.
+                    nudge_tool_calls: runtime.nudgeToolCalls,
                     // This branch runs the tools here, so say so by name:
                     // enabled_tools ["web_search"] is byte-identical to what an
                     // older bundle sent meaning hosted search, so without this
@@ -7112,15 +7126,21 @@ export function createOpenAIStreamAdapter(
             // send the user to a new chat that fails identically.
             const budget =
               irreducible?.prompt_target ?? irreducible?.context_length ?? 0;
-            const oneTurnIsTheProblem =
-              irreducible != null && (irreducible.latest_turn_tokens ?? 0) > budget;
+            // Both the gate and the number below take the shared prompt floor off the turn
+            // first: `latest_turn_tokens` prices a whole rendered prompt, so on a
+            // tool-enabled request it carries the entire tool catalogue, and quoting it
+            // told the user a 6-token message was thousands of tokens "on its own".
+            const oneTurnIsTheProblem = latestTurnIsTheProblem(
+              irreducible,
+              budget,
+            );
             // Whose turn it is decides the advice: in a tool loop the offending turn is
             // often output the user never wrote and cannot edit, so "shorten this
             // message" names the wrong thing and offers no remedy.
             const userCanShortenIt =
               (irreducible?.latest_turn_role ?? "user") === "user";
             const tooLong =
-              `${irreducible?.latest_turn_tokens?.toLocaleString()} tokens on its own, ` +
+              `${latestTurnOwnTokens(irreducible).toLocaleString()} tokens on its own, ` +
               `against the ${budget.toLocaleString()} tokens this ` +
               `${irreducible?.context_length?.toLocaleString()}-token window leaves for the prompt. ` +
               "The earlier turns were already removed and it still does not fit, so " +
@@ -7134,12 +7154,23 @@ export function createOpenAIStreamAdapter(
                   : `The last tool result is ${tooLong}` +
                     'Raise "Context Length" in the chat Settings panel (⚙ in the top-right), ' +
                     "or ask for less output from that tool."
-                : // llama-server runs with --no-context-shift, returning a hard
-                  // error instead of silently dropping old KV-cache turns. Point
-                  // the user at the control that raises the ceiling.
-                  "The conversation has filled the model's context window. " +
-                  'Increase "Context Length" in the chat Settings panel (⚙ in the top-right), ' +
-                  "or start a new chat.",
+                : historyCannotHelp(irreducible)
+                  ? // No one turn to name, and the bulk is in the parts eviction never
+                    // touches, so "start a new chat" opens a chat that fails identically.
+                    // Both levers are named, neither claimed as the cause: the floor
+                    // bundles the template wrapper with the catalogue, so a large one does
+                    // not prove there are tools.
+                    "Even with every earlier turn dropped, this prompt would still be " +
+                    "too long, so shortening the conversation will not help. " +
+                    'Raise "Context Length" in the chat Settings panel (⚙ in the top-right), ' +
+                    "or reduce what every request carries: the system prompt and any " +
+                    "tools that are enabled."
+                  : // llama-server runs with --no-context-shift, returning a hard
+                    // error instead of silently dropping old KV-cache turns. Point
+                    // the user at the control that raises the ceiling.
+                    "The conversation has filled the model's context window. " +
+                    'Increase "Context Length" in the chat Settings panel (⚙ in the top-right), ' +
+                    "or start a new chat.",
               duration: 8000,
             });
           } else {

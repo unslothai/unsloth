@@ -606,6 +606,9 @@ def fit_checkpoint_context(
 
     projected, block = _project(fitted)
     current_tokens = count_tokens(projected)
+    # What `current_tokens` prices, tracked separately because `projected` is rebound
+    # below on a path that does not re-count. The refusal reports the pair together.
+    measured = projected
 
     # Phase two: the epoch is full, so start a new one. keep_ratio 0.0 takes every evictable
     # group in one pass; the primitive itself protects system, developer, final and newest
@@ -620,6 +623,7 @@ def fit_checkpoint_context(
             is_new_epoch = True
             projected, block = _project(fitted)
             current_tokens = count_tokens(projected)
+            measured = projected
 
     if dropped == 0 and current_tokens <= prompt_target:
         return messages, None
@@ -636,18 +640,20 @@ def fit_checkpoint_context(
             projected = _without_block(fitted)
             block = ""
             current_tokens = count_tokens(projected)
+            measured = projected
     if current_tokens > prompt_target:
         # Let the rolling fit retry from the originals; any projection made here would
         # be discarded by `_fit_context`.
-        from core.inference.context_window import _latest_turn_tokens  # noqa: PLC0415
+        from core.inference.context_window import turn_diagnosis  # noqa: PLC0415
         return messages, {
             "fits": False,
             "dropped_messages": 0,
             "prompt_tokens_before": initial_tokens,
             "prompt_tokens_after": initial_tokens,
             "irreducible_tokens": current_tokens,
-            "latest_turn_tokens": _latest_turn_tokens(messages, count_tokens),
-            "latest_turn_role": str(messages[-1].get("role") or "") if messages else "",
+            **turn_diagnosis(
+                messages, count_tokens, irreducible_tokens = current_tokens, fitted = measured
+            ),
             "context_length": context_length,
             "prompt_target": prompt_target,
         }
