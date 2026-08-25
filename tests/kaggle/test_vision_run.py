@@ -84,9 +84,12 @@ def test_a_lora_that_never_reached_the_vision_tower_is_a_failure():
 
 
 def test_the_vision_lora_rule_can_be_turned_off_for_a_language_only_run():
-    assert vision_failures(
-        _good(vision_lora = {"vision_module_count": 0}), _args(require_vision_lora = False)
-    ) == []
+    assert (
+        vision_failures(
+            _good(vision_lora = {"vision_module_count": 0}), _args(require_vision_lora = False)
+        )
+        == []
+    )
 
 
 def test_an_adapter_that_did_not_move_is_a_failure():
@@ -119,10 +122,13 @@ def test_the_export_rule_only_fires_when_the_export_was_requested():
     assert vision_failures(_good(), _args(export = False)) == []
     broken = vision_failures(_good(), _args(export = True))
     assert broken and "failed" in broken[0]
-    assert vision_failures(
-        _good(export = {"ok": True, "files": [{"name": "model.safetensors", "mb": 1200.0}]}),
-        _args(export = True),
-    ) == []
+    assert (
+        vision_failures(
+            _good(export = {"ok": True, "files": [{"name": "model.safetensors", "mb": 1200.0}]}),
+            _args(export = True),
+        )
+        == []
+    )
 
 
 def test_an_export_that_reported_ok_and_wrote_nothing_is_a_failure():
@@ -173,6 +179,8 @@ def test_the_export_does_not_land_in_the_artifact_volume():
     # Anchored on the mkdtemp rather than on `if args.export:`, because that
     # string appears FIRST in vision_failures() and the naive split lands in
     # the wrong function -- which is how this assertion failed the first time.
-    block = SRC.split('export_dir = tempfile.mkdtemp', 1)[1].split('result["export"] = record', 1)[0]
+    block = SRC.split("export_dir = tempfile.mkdtemp", 1)[1].split('result["export"] = record', 1)[
+        0
+    ]
     assert "args.outdir" not in block, "the merged model is written into the artifact volume"
     assert "model.save_pretrained_merged(export_dir, tokenizer)" in block

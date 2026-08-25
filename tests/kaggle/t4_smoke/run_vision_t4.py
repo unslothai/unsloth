@@ -217,9 +217,7 @@ def vision_failures(result: dict, args) -> list:
         if not export.get("ok"):
             failures.append(f"the vision export failed: {export.get('error')}")
         elif not export.get("files"):
-            failures.append(
-                f"the export reported ok and wrote nothing to {export.get('dir')!r}"
-            )
+            failures.append(f"the export reported ok and wrote nothing to {export.get('dir')!r}")
 
     return failures
 
@@ -396,9 +394,7 @@ def main() -> int:
         action = "store_true",
         default = True,
     )
-    ap.add_argument(
-        "--no-require-vision-lora", dest = "require_vision_lora", action = "store_false"
-    )
+    ap.add_argument("--no-require-vision-lora", dest = "require_vision_lora", action = "store_false")
     args = ap.parse_args()
 
     outdir = Path(args.outdir)
@@ -411,7 +407,6 @@ def main() -> int:
     env: dict = {"python": sys.version.split()[0]}
     try:
         import torch
-
         env["torch"] = torch.__version__
         if torch.cuda.is_available():
             cap = torch.cuda.get_device_capability(0)
