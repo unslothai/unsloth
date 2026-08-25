@@ -62,6 +62,17 @@ interface ArchivedRow {
   url: string;
 }
 
+interface AudioCursor {
+  mtime: number;
+  id: string;
+}
+
+interface ArchivedPage {
+  rows: ArchivedRow[];
+  hasMore: boolean;
+  nextAudioCursor: AudioCursor | null;
+}
+
 function formatCreatedAt(ms: number): string {
   if (!Number.isFinite(ms)) return "";
   return new Date(ms).toLocaleDateString(undefined, {
@@ -87,6 +98,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
   // written with every list change rather than during render, so it is current the moment a drop
   // lands instead of one render later.
   const rowsRef = useRef<ArchivedRow[]>([]);
+  const audioCursor = useRef<AudioCursor | null>(null);
   const mutations = useRef(0);
   // Restores and deletes in flight. The counter above is an EDGE, so a page starting after it moves
   // and landing before the row is dropped sees it hold still. A page applies only while this is zero.
@@ -109,7 +121,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
   const [visible, setVisible] = useState<ReadonlySet<string>>(new Set());
 
   const loadPage = useCallback(
-    async (offset: number) => {
+    async (offset: number, before: AudioCursor | null = null): Promise<ArchivedPage> => {
       if (isImages) {
         const page = await getGallery(offset, ARCHIVED_PAGE_SIZE, true);
         return {
@@ -120,10 +132,11 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
             url: i.url,
           })),
           hasMore: page.has_more,
+          nextAudioCursor: null,
         };
       }
       if (isAudio) {
-        const page = await listAudioGallery(offset, ARCHIVED_PAGE_SIZE, null, true);
+        const page = await listAudioGallery(0, ARCHIVED_PAGE_SIZE, before, true);
         return {
           rows: page.audio.map((a) => ({
             id: a.id,
@@ -132,6 +145,10 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
             url: a.url,
           })),
           hasMore: page.has_more,
+          nextAudioCursor:
+            page.next_before_mtime !== null && page.next_before_id !== null
+              ? { mtime: page.next_before_mtime, id: page.next_before_id }
+              : null,
         };
       }
       const page = await getVideoGallery(offset, ARCHIVED_PAGE_SIZE, true);
@@ -143,6 +160,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
           url: v.url,
         })),
         hasMore: page.has_more,
+        nextAudioCursor: null,
       };
     },
     [isImages, isAudio],
@@ -156,6 +174,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
         const page = await loadPage(0);
         if (cancelled) return;
         putRows(page.rows);
+        audioCursor.current = page.nextAudioCursor;
         setHasMore(page.hasMore);
       } catch (err) {
         if (!cancelled) {
@@ -395,16 +414,15 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
     if (loadingMore.current) return;
     loadingMore.current = true;
     try {
-      // Offset paging over a list the user can shorten. A restore or delete landing while this
-      // request is in flight pulls every later row up by one, so the row at the old offset is
-      // never returned by any page and becomes unreachable. Retry at the corrected offset when
-      // that happens; the bound is only there so a burst of clicks cannot spin here.
+      // image and video use offset paging over a shelf the user can shorten. audio uses its stable
+      // cursor, while the same retry fence keeps locally mutated responses off every shelf.
       for (let attempt = 0; attempt < 4; attempt += 1) {
         const before = mutations.current;
-        const page = await loadPage(rowsRef.current.length);
+        const page = await loadPage(rowsRef.current.length, audioCursor.current);
         if (mutations.current !== before || pendingMutations.current > 0) continue;
         const seen = new Set(rowsRef.current.map((r) => r.id));
         putRows([...rowsRef.current, ...page.rows.filter((r) => !seen.has(r.id))]);
+        audioCursor.current = page.nextAudioCursor;
         setHasMore(page.hasMore);
         return;
       }

@@ -200,11 +200,10 @@ export function mergeGalleryPage<T extends { id: string }>(
   const oldestInPage = cached.findIndex(
     (clip) => clip.id === page[page.length - 1].id,
   );
-  // No overlap with a non-empty cache means the page has moved past everything held, so
-  // stitching would render a gap as contiguous and no cursor could ever reach it.
-  if (oldestInPage === -1) {
-    const overlaps = cached.some((clip) => inPage.has(clip.id));
-    if (!overlaps && cached.length > 0) return { clips: [...page], stitched: false };
+  // an absent boundary means the cache cannot prove where safe scrollback begins. an external
+  // archive can shift one unseen row into the page while leaving every earlier row overlapping.
+  if (oldestInPage === -1 && cached.length > 0) {
+    return { clips: [...page], stitched: false };
   }
   const scrollback = oldestInPage === -1 ? cached : cached.slice(oldestInPage + 1);
   const tail = scrollback.filter(

@@ -410,6 +410,15 @@ test("a cache with nothing in common with the page is dropped, not stitched", ()
   assert.deepEqual(merged, { clips: [{ id: "z" }, { id: "y" }], stitched: false });
 });
 
+test("a refresh resets when an external archive moves the page boundary", () => {
+  const cached = Array.from({ length: 50 }, (_, i) => ({ id: `c${i}` }));
+  const page = [...cached.slice(0, 5), ...cached.slice(6), { id: "c50" }];
+  assert.deepEqual(mergeGalleryPage(page, cached, undefined, true), {
+    clips: page,
+    stitched: false,
+  });
+});
+
 test("the recorder is gated on the same capability check the composer uses", () => {
   // Safari ships no MediaRecorder, and an http LAN origin (-H 0.0.0.0) is not a
   // secure context, so navigator.mediaDevices is undefined there. Without this
