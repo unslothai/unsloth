@@ -147,3 +147,47 @@ test("an unprobed host gives no verdict rather than a fit", () => {
   });
   assert.equal(unsized.gpuCapacityGb, HOST.hostGpuTotalGb);
 });
+
+// The VRAM Budget slider sits in the same panel and caps what the next load may claim
+// per GPU. Measuring the verdict against the raw total contradicted the control
+// directly above the row: at 80% a 20 GiB footprint on a 24 GiB card is over the line
+// the slider draws, and the row called it comfortable.
+test("the configured budget caps the GPU capacity a verdict is measured against", () => {
+  const capacity = resolveMemoryCapacityGb({
+    hostGpuTotalGb: 24,
+    hostSharesSystemRam: false,
+    systemRamTotalGb: 64,
+    unifiedMemory: false,
+    pinnedDevices: [],
+    gpuBudgetFraction: 0.8,
+  });
+  assert.equal(capacity.gpuCapacityGb, 19.2);
+  // Host RAM is not the GPU's allowance, so the total follows the capped GPU figure
+  // plus the whole of RAM.
+  assert.equal(capacity.totalCapacityGb, 83.2);
+});
+
+test("the budget applies to a pinned subset too", () => {
+  const capacity = resolveMemoryCapacityGb({
+    ...HOST,
+    pinnedDevices: [DGPU],
+    gpuBudgetFraction: 0.5,
+  });
+  assert.equal(capacity.gpuCapacityGb, 8);
+});
+
+test("an absent or nonsensical budget leaves the capacity alone", () => {
+  const base = {
+    hostGpuTotalGb: 24,
+    hostSharesSystemRam: false,
+    systemRamTotalGb: 64,
+    unifiedMemory: false,
+    pinnedDevices: [],
+  };
+  // A 0 or a missing value must not zero the capacity: every caller reads 0 as
+  // "nothing probed" and would stop showing a verdict at all.
+  assert.equal(resolveMemoryCapacityGb(base).gpuCapacityGb, 24);
+  assert.equal(resolveMemoryCapacityGb({ ...base, gpuBudgetFraction: 0 }).gpuCapacityGb, 24);
+  assert.equal(resolveMemoryCapacityGb({ ...base, gpuBudgetFraction: 1.5 }).gpuCapacityGb, 24);
+  assert.equal(resolveMemoryCapacityGb({ ...base, gpuBudgetFraction: -1 }).gpuCapacityGb, 24);
+});

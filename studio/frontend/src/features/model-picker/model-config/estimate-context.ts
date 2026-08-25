@@ -27,13 +27,19 @@
 export function resolveEstimateContext(
   customContextLength: number | null,
   activeLoadedContext: number | null,
-  fitOwnsContextSizing = false,
+  skipResidentFallback = false,
 ): number {
-  if (fitOwnsContextSizing) {
-    // Manual memory mode with GPU Layers on Auto hands sizing to llama.cpp --fit, and
-    // `resolveFitMaxSeqLength` sends a positive pin or 0 -- never the resident length.
-    // Falling back to what is loaded RIGHT NOW priced the old fit after a change that
-    // moves it (a KV dtype, a batch size), which is precisely when the two diverge.
+  if (skipResidentFallback) {
+    // Two shapes reach here, and `resolveLoadMaxSeqLength` answers 0 for both before
+    // it ever considers the resident context:
+    //
+    //   * Manual memory mode with GPU Layers on Auto, where llama.cpp --fit owns the
+    //     sizing (`resolveFitMaxSeqLength`);
+    //   * a builtin-default preset on a GGUF load, which returns 0 outright.
+    //
+    // In both, pricing what is loaded RIGHT NOW quotes the OLD fit, and it does so
+    // precisely when a context-sensitive setting has just changed and the next fit
+    // will land somewhere else.
     return customContextLength && customContextLength > 0 ? customContextLength : 0;
   }
   return customContextLength ?? activeLoadedContext ?? 0;

@@ -53,6 +53,10 @@ export interface MemoryCapacityInput {
   systemRamTotalGb: number;
   /** Apple Silicon: one pool for everything, whatever the devices say. */
   unifiedMemory: boolean;
+  /** VRAM Budget: the fraction of each GPU a load may claim, from the setting beside
+   *  this row. 1 (or absent) means the whole card. Applied to the GPU figure only --
+   *  it caps what llama.cpp is allowed to take, not how much RAM the host has. */
+  gpuBudgetFraction?: number;
 }
 
 /** What a prospective load may draw on: the GPU pool, and the ceiling once layers
@@ -81,7 +85,19 @@ export function resolveMemoryCapacityGb(input: MemoryCapacityInput): {
   // One flag for both answers, so the capacity and the pool question cannot
   // disagree about which devices they are describing.
   const pinGoverns = pinnedGpuCapacityGb > 0;
-  const gpuCapacityGb = pinGoverns ? pinnedGpuCapacityGb : input.hostGpuTotalGb;
+  const rawGpuCapacityGb = pinGoverns ? pinnedGpuCapacityGb : input.hostGpuTotalGb;
+  // The budget is what the next load is ALLOWED to claim, so it is the capacity a
+  // verdict should be measured against: at 80% a 20 GB footprint on a 24 GB card is
+  // over the line the slider draws, and reading the raw total called it comfortable.
+  // Guarded rather than trusted: a 0 or a missing value would silently zero the
+  // capacity, which every caller reads as "nothing probed".
+  const budget =
+    typeof input.gpuBudgetFraction === "number" &&
+    input.gpuBudgetFraction > 0 &&
+    input.gpuBudgetFraction <= 1
+      ? input.gpuBudgetFraction
+      : 1;
+  const gpuCapacityGb = Math.round(rawGpuCapacityGb * budget * 100) / 100;
   const sharesSystemRam = pinGoverns
     ? input.pinnedDevices.some((device) => device.sharedMemory)
     : input.hostSharesSystemRam;

@@ -920,6 +920,19 @@ function classifyMemoryFit(
   return "fits";
 }
 
+/** The worse of two verdicts, for a load that has to satisfy both at once. */
+function worseMemoryFit(a: MemoryFitVerdict, b: MemoryFitVerdict): MemoryFitVerdict {
+  const rank: Record<MemoryFitVerdict, number> = {
+    unknown: 0,
+    fits: 1,
+    tight: 2,
+    exceeds: 3,
+  };
+  // unknown loses to any real verdict: one half being unmeasurable must not erase the
+  // other half's answer.
+  return rank[a] >= rank[b] ? a : b;
+}
+
 const MEMORY_VALUE_TONE: Record<MemoryFitVerdict, string> = {
   fits: "text-nav-fg",
   tight: "text-amber-500",
@@ -993,6 +1006,7 @@ function MemoryEstimateRow({
   stale,
   gpuCapacityGb,
   totalCapacityGb,
+  systemRamCapacityGb,
   isUnifiedMemory,
   singleMemoryPool,
   expanded,
@@ -1005,6 +1019,9 @@ function MemoryEstimateRow({
   gpuCapacityGb: number;
   /** GPU plus host RAM, the ceiling an offloaded load works against. 0 when unknown. */
   totalCapacityGb: number;
+  /** Host RAM alone. The bytes a load pins OUTSIDE the GPU have to fit in this, and
+   *  unused VRAM cannot help them, so it is a separate question from the total. */
+  systemRamCapacityGb: number;
   isUnifiedMemory: boolean;
   /** GPU and host draw on the same memory, so an offloaded byte is not a freed one. */
   singleMemoryPool: boolean;
@@ -1017,7 +1034,21 @@ function MemoryEstimateRow({
     return null;
   }
   const gpuFit = classifyMemoryFit(estimate.gpuBytes, gpuCapacityGb);
-  const totalFit = classifyMemoryFit(estimate.totalBytes, totalCapacityGb);
+  // The host share has to fit in host RAM on its own. Unused VRAM cannot hold bytes
+  // that placement has pinned outside the GPU, so weighing only the combined ceiling
+  // called a 70 GB CPU placement a fit on a 24 GB card plus 64 GB of RAM. Skipped
+  // where the two are one pool, which is the case the combined figure already
+  // describes exactly.
+  const hostShareFit = singleMemoryPool
+    ? "unknown"
+    : classifyMemoryFit(
+        Math.max(0, estimate.totalBytes - estimate.gpuBytes),
+        systemRamCapacityGb,
+      );
+  const totalFit = worseMemoryFit(
+    classifyMemoryFit(estimate.totalBytes, totalCapacityGb),
+    hostShareFit,
+  );
   // Lower bound, not an estimate. Two ways to get there, and both UNDER-count by a
   // term that grows with context: no attention dims, so the target cache is missing,
   // or a drafter that is a repository rather than a file on this disk, so its cache
@@ -1076,17 +1107,22 @@ function MemoryEstimateRow({
             // aggregate one is asked FIRST. Reading gpuFit alone offered spilling to
             // system RAM as the remedy for a load that does not fit in GPU and RAM
             // combined, which is advice to do something that cannot work.
-            totalFit === "exceeds"
+            hostShareFit === "exceeds"
             ? {
                 tone: "warn",
-                text: "More than this machine holds. The GPU and system RAM together are not enough for this load, so spilling layers or fitting the context down will not recover it.",
+                text: "More than system RAM holds. This placement keeps most of the load outside the GPU, and spare VRAM cannot take those bytes.",
               }
-            : gpuFit === "exceeds"
+            : totalFit === "exceeds"
               ? {
                   tone: "warn",
-                  text: "More than this GPU holds. Layers will spill to system RAM, or the context will be fitted down to what fits.",
+                  text: "More than this machine holds. The GPU and system RAM together are not enough for this load, so spilling layers or fitting the context down will not recover it.",
                 }
-              : null;
+              : gpuFit === "exceeds"
+                ? {
+                    tone: "warn",
+                    text: "More than this GPU holds. Layers will spill to system RAM, or the context will be fitted down to what fits.",
+                  }
+                : null;
   return (
     <div className="space-y-2">
       <div className={ROW_CLASS}>
@@ -2688,6 +2724,9 @@ export function ModelConfigPage({
     target.meta.contextLength ?? stagedDims?.contextLength ?? null;
   const activeLoadedContext =
     isActiveModel && target.isGguf ? loadedContextLength : null;
+  // resolveLoadMaxSeqLength returns 0 for a builtin-default GGUF load before it looks
+  // at the resident context, so the estimate must not fall back to it either.
+  const activePresetSource = useChatRuntimeStore((s) => s.activePresetSource);
   const minContext = CONTEXT_LENGTH_MIN;
   const maxContext = Math.max(
     minContext,
@@ -2789,11 +2828,13 @@ export function ModelConfigPage({
           nCtx: resolveEstimateContext(
             runtimeConfig.customContextLength ?? null,
             activeLoadedContext,
-            // resolveFitMaxSeqLength's own guard: on this shape --fit owns the
-            // context, so the resident length is not what Load would send.
-            target.isGguf === true &&
+            // The two shapes where resolveLoadMaxSeqLength answers 0 before it
+            // reaches the resident context: --fit owns the sizing, or a
+            // builtin-default preset on a GGUF load.
+            (target.isGguf === true &&
               runtimeConfig.gpuMemoryMode === "manual" &&
-              (runtimeConfig.gpuLayers ?? GPU_LAYERS_AUTO) < 0,
+              (runtimeConfig.gpuLayers ?? GPU_LAYERS_AUTO) < 0) ||
+              (target.isGguf === true && activePresetSource === "builtin-default"),
           ),
           cacheTypeKv: runtimeConfig.kvCacheDtype,
           nParallel: runtimeConfig.nParallel,
@@ -2828,11 +2869,32 @@ export function ModelConfigPage({
   // those. Judging a one-card pin against a two-card total called an 8 GB load a fit
   // on 16 GB of VRAM it could not reach.
   const pinnedGpuIds = runtimeConfig.selectedGpuIds;
+  // The VRAM Budget slider sits in this same panel and caps what the next load may
+  // claim per GPU, so the verdict has to be measured against the capped figure or the
+  // row contradicts the control directly above it. Subscribed as well as read once:
+  // dragging that slider must re-classify without a remount.
+  const [memoryVramBudgetFraction, setMemoryVramBudgetFraction] = useState(1);
+  useEffect(() => {
+    let cancelled = false;
+    loadVramBudgetSettings().then((loaded) => {
+      if (!cancelled && loaded) {
+        setMemoryVramBudgetFraction(loaded.fraction);
+      }
+    });
+    const unsubscribe = subscribeVramBudgetSettings((next) => {
+      setMemoryVramBudgetFraction(next.fraction);
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
   const {
     gpuCapacityGb: memoryGpuCapacityGb,
     totalCapacityGb: memoryTotalCapacityGb,
     singleMemoryPool,
   } = resolveMemoryCapacityGb({
+      gpuBudgetFraction: memoryVramBudgetFraction,
       pinnedDevices:
         pinnedGpuIds && pinnedGpuIds.length > 0
           ? gpuDevices.filter((device) => pinnedGpuIds.includes(device.index))
@@ -3068,6 +3130,7 @@ export function ModelConfigPage({
               stale={memoryEstimate.stale}
               gpuCapacityGb={memoryGpuCapacityGb}
               totalCapacityGb={memoryTotalCapacityGb}
+              systemRamCapacityGb={inferenceGpu.systemRamTotalGb}
               isUnifiedMemory={isUnifiedMemory}
               singleMemoryPool={singleMemoryPool}
               expanded={memoryBreakdownOpen}

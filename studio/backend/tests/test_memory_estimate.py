@@ -2609,7 +2609,7 @@ class TestTheEmbeddedHeadIsChargedOnlyWhenItEngages:
         )
         assert out.drafter_runtime_bytes == 0
 
-    def test_extras_owning_the_spec_block_are_left_alone(self, head):
+    def test_extras_asking_for_another_mode_are_left_alone(self, head):
         """Studio emits no spec block of its own once --spec-type is in the extras."""
         out = ri._gguf_memory_breakdown(
             self._config(head, "org/Qwen3-8B"),
@@ -2618,3 +2618,80 @@ class TestTheEmbeddedHeadIsChargedOnlyWhenItEngages:
             llama_extra_args = ["--spec-type", "ngram-mod"],
         )
         assert out.drafter_runtime_bytes == 0
+
+    @pytest.mark.parametrize("spec", ["draft-mtp", "mtp"])
+    def test_extras_asking_for_mtp_engage_the_embedded_head(self, head, spec):
+        """The child honours the extras, and on a NextN GGUF that IS the embedded head.
+
+        There is no drafter file, so nothing in the weights would ever hint at it: the
+        draft cache and the target-side state were simply absent from the total.
+        """
+        out = ri._gguf_memory_breakdown(
+            self._config(head, "org/Qwen3-8B"), head, n_ctx = 131072,
+            llama_extra_args = ["--spec-type", spec],
+        )
+        assert out.drafter_runtime_bytes > 0
+
+    def test_extras_asking_for_mtp_on_a_sub_3b_model_still_engage_it(self, head):
+        """An explicit request is not second-guessed by Auto's size rule."""
+        out = ri._gguf_memory_breakdown(
+            self._config(head, "org/Qwen3-1.7B"), head, n_ctx = 131072,
+            llama_extra_args = ["--spec-type", "draft-mtp"],
+        )
+        assert out.drafter_runtime_bytes > 0
+
+
+class TestTheCpuOnlyCheckIsActuallyReachable:
+    """Driven through the real snapshot, not through a stubbed helper.
+
+    The first version of the CPU-only fix was inert: `_cached_inference_devices` ended
+    in `or None`, so the empty list a probed CPU-only host produces arrived as the same
+    value as a snapshot nobody had filled, and the check for it could never fire. Its
+    unit tests passed because they replaced `_cached_inference_devices` itself, which
+    is the one thing that could not be wrong. These stub the snapshot instead.
+    """
+
+    @pytest.fixture
+    def snapshot(self, monkeypatch):
+        import sys as _sys
+
+        def _set(devices):
+            main = SimpleNamespace(_system_gpu_cache = (0.0, (None, {"devices": devices})))
+            monkeypatch.setitem(_sys.modules, "main", main)
+
+        return _set
+
+    def test_a_probed_cpu_only_host_reads_as_empty_not_unknown(self, snapshot):
+        snapshot([])
+        assert ri._cached_inference_devices() == []
+        assert ri._estimate_host_has_no_gpu() is True
+
+    def test_a_probed_host_with_cards_reads_as_those_cards(self, snapshot):
+        snapshot([{"index": 0}, {"index": 1}])
+        assert len(ri._cached_inference_devices()) == 2
+        assert ri._estimate_host_has_no_gpu() is False
+
+    def test_an_unfilled_snapshot_is_still_unknown(self, monkeypatch):
+        import sys as _sys
+        monkeypatch.setitem(_sys.modules, "main", SimpleNamespace())
+        assert ri._cached_inference_devices() is None
+        assert ri._estimate_host_has_no_gpu() is False
+
+    def test_a_cpu_only_host_cannot_take_a_tensor_split(self, snapshot, monkeypatch):
+        """The other caller of the same snapshot, which was also reading True here."""
+        snapshot([])
+        monkeypatch.setattr(ri.LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda *a: True))
+        assert ri._tensor_split_possible(None) is False
+
+    def test_the_whole_footprint_lands_in_host_ram_end_to_end(self, snapshot, tmp_path):
+        gguf = _write_gguf(tmp_path, "qwen3", {**_GQA_FIELDS, "context_length": 262144})
+        config = SimpleNamespace(
+            identifier = "local/cpu", gguf_file = gguf, is_gguf = True, gguf_variant = None,
+            gguf_mmproj_file = None, gguf_mtp_file = None,
+            gguf_dspark_file = None, gguf_dflash_file = None,
+        )
+        snapshot([])
+        out = ri._gguf_memory_breakdown(config, gguf, n_ctx = 32768)
+        assert out is not None
+        assert out.gpu_bytes == 0
+        assert out.total_bytes > 0

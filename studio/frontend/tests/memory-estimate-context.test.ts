@@ -93,7 +93,7 @@ test("absent and null are the same, so an unset variant does not thrash the row"
 // `resolveFitMaxSeqLength` sends a positive pin or 0 there, never the resident length,
 // so falling back to what is loaded right now priced the OLD fit after a change that
 // moves it -- a KV dtype or a batch size, which is exactly when the two diverge.
-test("when --fit owns the context, the resident length is not what Load sends", () => {
+test("when the fit or a builtin-default owns the context, the resident length is not sent", () => {
   assert.equal(resolveEstimateContext(null, 40960, true), 0);
 });
 
@@ -110,4 +110,12 @@ test("every other shape keeps the resident fallback", () => {
   assert.equal(resolveEstimateContext(null, 40960, false), 40960);
   // And the flag defaults off, so no caller gains the fit rule by accident.
   assert.equal(resolveEstimateContext(null, 40960), 40960);
+});
+
+// resolveLoadMaxSeqLength answers 0 for a builtin-default GGUF load too, before it
+// reaches the reloading-current-GGUF branch that returns the resident context. Same
+// flag, because the consequence is identical: pricing what is loaded right now quotes
+// the OLD fit at exactly the moment a setting has moved the next one.
+test("a builtin-default GGUF load prices the fit, not the resident context", () => {
+  assert.equal(resolveEstimateContext(null, 131072, true), 0);
 });

@@ -8558,7 +8558,13 @@ def _cached_inference_devices() -> Optional[list[tuple[int, int, int]]]:
             return None
         _, (_, inference_gpu) = cached
         devices = (inference_gpu or {}).get("devices") or []
-        return [(int(device.get("index", i)), 0, 0) for i, device in enumerate(devices)] or None
+        # NOT `or None`. An empty list is a probe that ran and found no GPU, which is a
+        # different answer from a snapshot nobody has filled, and callers act on the
+        # difference: it is what puts an Auto load's weights in host RAM on a CPU-only
+        # machine, and what stops a tensor split being priced on one that has no cards.
+        # Collapsing the two made _estimate_host_has_no_gpu unreachable -- a check that
+        # reads as present and does nothing.
+        return [(int(device.get("index", i)), 0, 0) for i, device in enumerate(devices)]
     except Exception:
         return None
 
@@ -8828,7 +8834,16 @@ def _embedded_mtp_engages(probe, config, speculative_type, extras) -> bool:
     )
 
     if _extra_args_set_spec_type(extras):
-        return False
+        # Studio emits no spec block of its own here, but the child still honours what
+        # the extras asked for, and --spec-type draft-mtp on a NextN GGUF engages the
+        # embedded head. Answered from the accumulated types rather than assumed off:
+        # with no drafter file there is nothing in the weights to notice, so the whole
+        # draft cache and target-side state went uncharged.
+        from core.inference.llama_cpp import _accumulated_spec_types, _child_spec_env
+        return bool(
+            _accumulated_spec_types(extras, env = _child_spec_env(extras))
+            & {"mtp", "draft-mtp"}
+        )
     mode = _canonicalize_spec_mode(speculative_type) or "auto"
     if mode not in ("auto", "mtp", "mtp+ngram"):
         return False
