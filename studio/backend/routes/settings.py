@@ -40,11 +40,7 @@ from utils.upload_limits import (
     upload_limit_bytes,
     upload_limit_label,
 )
-from utils.xet_notice_settings import (
-    XET_NOTICE_LIMIT,
-    get_xet_notice_count,
-    reserve_xet_notice,
-)
+from utils.xet_notice_settings import reserve_xet_notice
 from utils.helper_precache_settings import (
     DEFAULT_HELPER_PRECACHE_ENABLED,
     get_helper_precache_enabled,
@@ -1082,12 +1078,6 @@ def update_helper_precache(
             log = logger,
         ) from exc
     return _helper_precache_response(enabled)
-
-
-@router.get("/xet-notice", response_model = XetNoticeResponse)
-def get_xet_notice(current_subject: str = Depends(get_current_subject)) -> XetNoticeResponse:
-    shown = get_xet_notice_count()
-    return XetNoticeResponse(granted = False, shown = shown, limit = XET_NOTICE_LIMIT)
 
 
 @router.post("/xet-notice/reserve", response_model = XetNoticeResponse)
