@@ -69,9 +69,17 @@ def _canonical_text(value: object, limit: int) -> Optional[str]:
     """Bound an identity string without merging values with a shared prefix."""
     if not isinstance(value, str) or not value:
         return None
-    if len(value) <= limit:
+    needs_digest = len(value) > limit
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError:
+        # json accepts unpaired surrogates, but utf-8 storage and hashing do not.
+        encoded = value.encode("utf-8", errors = "surrogatepass")
+        value = value.encode("utf-8", errors = "backslashreplace").decode("utf-8")
+        needs_digest = True
+    if not needs_digest:
         return value
-    digest = hashlib.blake2s(value.encode("utf-8"), digest_size = 16).hexdigest()
+    digest = hashlib.blake2s(encoded, digest_size = 16).hexdigest()
     return f"{value[: limit - len(digest) - 1]}~{digest}"
 
 

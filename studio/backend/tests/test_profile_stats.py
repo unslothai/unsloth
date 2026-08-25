@@ -468,6 +468,26 @@ def test_full_uuid_request_ids_do_not_collapse_same_prefix(stats_db, monkeypatch
     assert [(row["id"], row["total_tokens"]) for row in rows] == [(ids[0], 3), (ids[1], 7)]
 
 
+def test_terminal_receipt_canonicalizes_unpaired_model_surrogate():
+    receipts = []
+    monitor = ApiMonitor(terminal_callback = receipts.append)
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "\ud800" + "m" * MAX_MODEL_CHARS,
+        prompt = "private",
+        subject = "alice",
+        via_api_key = True,
+    )
+    monitor.set_usage(entry_id, total_tokens = 1)
+
+    monitor.finish(entry_id)
+
+    assert len(receipts) == 1
+    assert len(receipts[0].model) == MAX_MODEL_CHARS
+    receipts[0].model.encode("utf-8")
+
+
 def test_api_usage_bounds_every_durable_text_field(stats_db):
     now = datetime.now(timezone.utc)
     long_model_prefix = "m" * (MAX_MODEL_CHARS + 100)
