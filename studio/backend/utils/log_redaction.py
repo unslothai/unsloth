@@ -125,6 +125,14 @@ _CONTINUED_SECRET_RE = re.compile(
     r"(?i)^(?P<indent>[ \t]*)" + _KEY_START + r"(?:" + _SECRET_KEYS + r")\b[\"']?\s*[:=]\s*"
     r"(?P<block>[|>](?:[1-9][+-]?|[+-][1-9]?)?)?\s*(?:#.*)?$"
 )
+_CONTINUED_COOKIE_RE = re.compile(r"(?i)^(?P<indent>[ \t]*)(?:set-)?cookie[\"']?\s*[:=]\s*$")
+_UNTERMINATED_QUOTED_SECRET_RE = re.compile(
+    r"(?i)^(?P<indent>[ \t]*)" + _KEY_START + r"(?:" + _SECRET_KEYS + r")\b[\"']?\s*[:=]\s*"
+    r"(?:\"(?:\\.|[^\"\\])*|'(?:\\.|[^'\\])*)$"
+)
+_OMITTED_CONTEXT_RE = re.compile(
+    r"(?i)" + _KEY_START + r"(?:(?:" + _SECRET_KEYS + r")|(?:set-)?cookie)\b"
+)
 
 # An Authorization value, whatever the scheme. The key/value rule cannot reach
 # it: for "Authorization: Basic dXNlcjpwdw==" the value it captures is "Basic",
@@ -253,6 +261,9 @@ class StreamingLogRedactor:
         self._plain_has_value = False
         self._block_key_indent: int | None = None
         self._block_value_indent: int | None = None
+        self._cookie_key_indent: int | None = None
+        self._cookie_has_value = False
+        self._quoted_secret: str | None = None
 
     @staticmethod
     def _masked_record(text: str) -> str:
@@ -260,7 +271,32 @@ class StreamingLogRedactor:
         indent = re.match(r"[ \t]*", text).group(0)
         return f"{indent}{REDACTED}{newline}"
 
+    @staticmethod
+    def _has_unescaped_quote(text: str, quote: str) -> bool:
+        escaped = False
+        for char in text:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                return True
+        return False
+
+    def observe_omitted_record_suffix(self, text: str) -> None:
+        """Retain only redaction state implied by a discarded record suffix."""
+        matches = list(_OMITTED_CONTEXT_RE.finditer(text))
+        if matches:
+            self.redact_record(text[matches[-1].start() :] + "\n")
+
     def redact_record(self, text: str) -> str:
+        physical = text.rstrip("\r\n")
+        if self._quoted_secret is not None:
+            quote = self._quoted_secret
+            if self._has_unescaped_quote(physical, quote):
+                self._quoted_secret = None
+            return self._masked_record(text)
+
         redacted = redact_log_text(text)
         if self._block_key_indent is not None:
             if not redacted.strip():
@@ -286,12 +322,42 @@ class StreamingLogRedactor:
             self._plain_key_indent = None
             self._plain_has_value = False
 
+        if self._cookie_key_indent is not None:
+            if not redacted.strip():
+                return redacted
+            indent = len(re.match(r"[ \t]*", redacted).group(0))
+            if self._cookie_has_value and indent <= self._cookie_key_indent:
+                self._cookie_key_indent = None
+                self._cookie_has_value = False
+            elif self._cookie_has_value or _COOKIE_PAIR_RE.match(redacted.lstrip()):
+                self._cookie_has_value = True
+                return self._masked_record(redacted)
+            else:
+                self._cookie_key_indent = None
+
+        quoted = _UNTERMINATED_QUOTED_SECRET_RE.search(physical)
+        if quoted:
+            self._quoted_secret = '"' if '"' in physical[quoted.start() :] else "'"
+            return self._masked_record(redacted)
+
         continued = _CONTINUED_SECRET_RE.search(redacted.rstrip("\r\n"))
         if continued:
             if continued.group("block"):
                 self._block_key_indent = len(continued.group("indent"))
-                self._block_value_indent = None
+                explicit = next(
+                    (char for char in continued.group("block") if char.isdigit()),
+                    None,
+                )
+                self._block_value_indent = (
+                    self._block_key_indent + int(explicit) if explicit else None
+                )
             else:
                 self._plain_key_indent = len(continued.group("indent"))
                 self._plain_has_value = False
+            return redacted
+
+        cookie = _CONTINUED_COOKIE_RE.search(redacted.rstrip("\r\n"))
+        if cookie:
+            self._cookie_key_indent = len(cookie.group("indent"))
+            self._cookie_has_value = False
         return redacted

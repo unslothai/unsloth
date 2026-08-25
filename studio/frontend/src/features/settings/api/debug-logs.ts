@@ -136,7 +136,7 @@ export async function exportDebugLogs(): Promise<void> {
     await downloadUrlStreaming(
       apiUrl(exportPath),
       `unsloth-logs-${timestamp}.zip`,
-      { refreshDesktopAuth: true },
+      { refreshDesktopAuth: true, slowFirstChunk: true },
     );
     return;
   }

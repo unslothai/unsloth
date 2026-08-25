@@ -268,6 +268,143 @@ def test_export_masks_every_line_of_a_yaml_block_scalar(client, indicator):
     assert "  ordinary: kept" in exported
 
 
+def test_export_honors_an_explicit_yaml_block_indent(client):
+    first = "deep-secret-value"
+    second = "shallower-secret-value"
+    path = _seed_server_log(
+        f"credentials:\n  password: |2-\n      {first}\n    {second}\n  ordinary: kept\n"
+    )
+
+    response = client.get("/api/settings/debug/logs/export")
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        exported = archive.read(f"server/{path.name}").decode("utf-8")
+    assert first not in exported
+    assert second not in exported
+    assert "  ordinary: kept" in exported
+
+
+def test_export_masks_a_continued_cookie_header(client):
+    secret = "session-cookie-secret"
+    path = _seed_server_log(f"Cookie:\n  session={secret}\nordinary: kept\n")
+
+    response = client.get("/api/settings/debug/logs/export")
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        exported = archive.read(f"server/{path.name}").decode("utf-8")
+    assert secret not in exported
+    assert "  <redacted>" in exported
+    assert "ordinary: kept" in exported
+
+
+def test_export_masks_every_record_of_a_multiline_quoted_secret(client):
+    first = "correct horse"
+    second = "battery staple"
+    path = _seed_server_log(f'password: "{first}\n  {second}"\nordinary: kept\n')
+
+    response = client.get("/api/settings/debug/logs/export")
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        exported = archive.read(f"server/{path.name}").decode("utf-8")
+    assert first not in exported
+    assert second not in exported
+    assert "ordinary: kept" in exported
+
+
+def test_export_keeps_secret_context_after_an_oversized_record(client):
+    from utils.debug_log_export import EXPORT_READ_BYTES
+
+    secret = "correct-horse-battery-staple"
+    path = _seed_server_log("x" * EXPORT_READ_BYTES + f" password:\n  {secret}\nkept\n")
+
+    response = client.get("/api/settings/debug/logs/export")
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        exported = archive.read(f"server/{path.name}").decode("utf-8")
+    assert secret not in exported
+    assert "oversized log record omitted" in exported
+    assert exported.splitlines()[-1] == "kept"
+
+
+def test_export_stops_at_each_sources_enumerated_size(tmp_path):
+    from utils.debug_log_export import build_debug_log_archive
+    from utils.debug_log_sources import LogSource
+
+    path = tmp_path / "growing.log"
+    initial = b"snapshot\n"
+    path.write_bytes(initial)
+    source = LogSource(
+        id = "server:growing",
+        family = "server",
+        label = path.name,
+        realpath = str(path),
+        size_bytes = len(initial),
+        modified_at = 0,
+        is_current = False,
+    )
+    with open(path, "ab") as handle:
+        handle.write(b"appended-after-enumeration\n")
+
+    output = build_debug_log_archive([source])
+    try:
+        with zipfile.ZipFile(output) as archive:
+            exported = archive.read("server/growing.log")
+    finally:
+        output.close()
+    assert exported == initial
+
+
+def test_export_refuses_a_source_replaced_by_a_symlink(tmp_path):
+    from utils.debug_log_export import build_debug_log_archive
+    from utils.debug_log_sources import LogSource
+
+    secret = tmp_path / "private.txt"
+    secret.write_text("must-not-export", encoding = "utf-8")
+    path = tmp_path / "server.log"
+    try:
+        path.symlink_to(secret)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are unavailable on this platform")
+    source = LogSource(
+        id = "server:swapped",
+        family = "server",
+        label = path.name,
+        realpath = str(path),
+        size_bytes = secret.stat().st_size,
+        modified_at = 0,
+        is_current = False,
+    )
+
+    output = build_debug_log_archive([source])
+    try:
+        with zipfile.ZipFile(output) as archive:
+            assert "server/server.log" not in archive.namelist()
+            warning = archive.read("EXPORT_WARNINGS.txt").decode("utf-8")
+    finally:
+        output.close()
+    assert "must-not-export" not in warning
+
+
+def test_export_warning_escapes_a_surrogate_filename(tmp_path):
+    from utils.debug_log_export import build_debug_log_archive
+    from utils.debug_log_sources import LogSource
+
+    label = "broken-\udcff.log"
+    source = LogSource(
+        id = "server:surrogate",
+        family = "server",
+        label = label,
+        realpath = str(tmp_path / label),
+        size_bytes = 0,
+        modified_at = 0,
+        is_current = False,
+    )
+
+    output = build_debug_log_archive([source])
+    try:
+        with zipfile.ZipFile(output) as archive:
+            warning = archive.read("EXPORT_WARNINGS.txt").decode("utf-8")
+    finally:
+        output.close()
+    assert "broken-\\udcff.log" in warning
+
+
 def test_export_warning_does_not_expose_a_source_realpath(tmp_path):
     from utils.debug_log_export import build_debug_log_archive
     from utils.debug_log_sources import LogSource

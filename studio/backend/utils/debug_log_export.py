@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import errno
 import os
+import stat
 import tempfile
 import zipfile
 from pathlib import Path
@@ -20,32 +22,45 @@ from utils.log_redaction import StreamingLogRedactor, redact_log_text
 # are omitted whole rather than split: splitting could put a credential prefix
 # in one chunk and its value in the next, outside the redactor's context.
 EXPORT_READ_BYTES = 1024 * 1024
+OMITTED_CONTEXT_BYTES = 4096
 ARCHIVE_MEMORY_BYTES = 8 * 1024 * 1024
+
+
+def _safe_text(value: str) -> str:
+    """Make surrogate-bearing filesystem text safe for UTF-8 and zipfile."""
+    return value.encode("utf-8", errors = "backslashreplace").decode("utf-8")
 
 
 def _unique_archive_name(source: LogSource, used: set[str]) -> str:
     """A relative, collision-free member name without exposing the host path."""
-    base = Path(source.label).name or "log.txt"
-    candidate = f"{source.family}/{base}"
+    base = _safe_text(Path(source.label).name) or "log.txt"
+    family = _safe_text(source.family)
+    candidate = f"{family}/{base}"
     if candidate in used:
-        digest = source.id.partition(":")[2]
+        digest = _safe_text(source.id.partition(":")[2])
         stem, suffix = os.path.splitext(base)
-        candidate = f"{source.family}/{stem}-{digest}{suffix}"
+        candidate = f"{family}/{stem}-{digest}{suffix}"
     used.add(candidate)
     return candidate
 
 
-def _copy_redacted(source: BinaryIO, destination: BinaryIO) -> None:
+def _copy_redacted(source: BinaryIO, destination: BinaryIO, max_bytes: int) -> None:
     redactor = StreamingLogRedactor()
-    while True:
-        record = source.readline(EXPORT_READ_BYTES + 1)
+    remaining = max(0, max_bytes)
+    while remaining:
+        record = source.readline(min(EXPORT_READ_BYTES + 1, remaining))
         if not record:
             return
+        remaining -= len(record)
         if len(record) > EXPORT_READ_BYTES and not record.endswith(b"\n"):
             omitted = len(record)
-            while record and not record.endswith(b"\n"):
-                record = source.readline(EXPORT_READ_BYTES + 1)
+            suffix = record[-OMITTED_CONTEXT_BYTES:]
+            while record and not record.endswith(b"\n") and remaining:
+                record = source.readline(min(EXPORT_READ_BYTES + 1, remaining))
                 omitted += len(record)
+                remaining -= len(record)
+                suffix = (suffix + record)[-OMITTED_CONTEXT_BYTES:]
+            redactor.observe_omitted_record_suffix(suffix.decode("utf-8", errors = "replace"))
             destination.write(f"[oversized log record omitted: {omitted} bytes]\n".encode("ascii"))
             continue
         text = record.decode("utf-8", errors = "replace")
@@ -58,6 +73,29 @@ def _safe_error_summary(exc: Exception) -> str:
     if isinstance(errno, int):
         return f"{type(exc).__name__} (errno {errno})"
     return type(exc).__name__
+
+
+def _open_regular_source(path: str) -> BinaryIO:
+    """Open the enumerated file without accepting a later symlink substitution."""
+    before = os.stat(path, follow_symlinks = False)
+    if not stat.S_ISREG(before.st_mode):
+        raise OSError(errno.ELOOP, "Log source is not a regular file")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (
+            before.st_dev,
+            before.st_ino,
+        ):
+            raise OSError(
+                getattr(errno, "ESTALE", errno.EIO),
+                "Log source changed while it was opened",
+            )
+        return os.fdopen(descriptor, "rb")
+    except Exception:
+        os.close(descriptor)
+        raise
 
 
 def build_debug_log_archive(sources: Iterable[LogSource]) -> BinaryIO:
@@ -83,12 +121,13 @@ def build_debug_log_archive(sources: Iterable[LogSource]) -> BinaryIO:
             for source in sources:
                 member = _unique_archive_name(source, used)
                 try:
-                    with open(source.realpath, "rb") as log_file:
+                    with _open_regular_source(source.realpath) as log_file:
                         with archive.open(member, "w", force_zip64 = True) as archived:
-                            _copy_redacted(log_file, archived)
+                            _copy_redacted(log_file, archived, source.size_bytes)
                 except (OSError, ValueError) as exc:
                     failures.append(
-                        f"{source.family}/{Path(source.label).name}: {_safe_error_summary(exc)}"
+                        f"{_safe_text(source.family)}/{_safe_text(Path(source.label).name)}: "
+                        f"{_safe_error_summary(exc)}"
                     )
 
             if failures:

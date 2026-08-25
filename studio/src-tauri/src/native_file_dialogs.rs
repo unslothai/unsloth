@@ -412,6 +412,7 @@ pub async fn save_native_file_from_url(
     file_name: String,
     bearer_token: Option<String>,
     refresh_desktop_auth: Option<bool>,
+    slow_first_chunk: Option<bool>,
 ) -> Result<Option<String>, String> {
     crate::native_intents::ensure_main_window(&window)?;
     require_loopback_url(&url)?;
@@ -444,7 +445,14 @@ pub async fn save_native_file_from_url(
     } else {
         (url, bearer_token)
     };
-    stream_url_to_path(&url, &path, DOWNLOAD_READ_TIMEOUT, bearer_token.as_deref()).await?;
+    stream_url_to_path(
+        &url,
+        &path,
+        DOWNLOAD_READ_TIMEOUT,
+        bearer_token.as_deref(),
+        slow_first_chunk.unwrap_or(false),
+    )
+    .await?;
     Ok(Some(saved_file_name(&path)))
 }
 
@@ -457,17 +465,25 @@ async fn stream_url_to_path(
     path: &Path,
     read_timeout: Duration,
     bearer_token: Option<&str>,
+    slow_first_chunk: bool,
 ) -> Result<(), String> {
-    let client = crate::loopback_http::streaming_client(Duration::from_secs(10), read_timeout)
-        .map_err(|error| format!("Download failed: {error}"))?;
+    let client = crate::loopback_http::streaming_client(
+        Duration::from_secs(10),
+        (!slow_first_chunk).then_some(read_timeout),
+    )
+    .map_err(|error| format!("Download failed: {error}"))?;
     let mut request = client.get(url);
     if let Some(token) = bearer_token {
         request = request.bearer_auth(token);
     }
-    let mut response = request
-        .send()
-        .await
-        .map_err(|error| format!("Download failed: {error}"))?;
+    let mut response = if slow_first_chunk {
+        tokio::time::timeout(read_timeout, request.send())
+            .await
+            .map_err(|_| "Download failed: response headers timed out.".to_string())?
+    } else {
+        request.send().await
+    }
+    .map_err(|error| format!("Download failed: {error}"))?;
     // Redirects are refused rather than followed, so a 3xx is a rejection here, not a hop.
     if !response.status().is_success() {
         return Err(format!(
@@ -476,11 +492,18 @@ async fn stream_url_to_path(
         ));
     }
     let mut temporary = staged_temp_file(path)?;
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|error| format!("Download failed: {error}"))?
-    {
+    let mut first_chunk = true;
+    loop {
+        let chunk = if slow_first_chunk && !first_chunk {
+            tokio::time::timeout(read_timeout, response.chunk())
+                .await
+                .map_err(|_| "Download failed: response body timed out.".to_string())?
+        } else {
+            response.chunk().await
+        }
+        .map_err(|error| format!("Download failed: {error}"))?;
+        let Some(chunk) = chunk else { break };
+        first_chunk = false;
         temporary
             .write_all(&chunk)
             .map_err(|error| format!("Failed to save {}: {error}", path.display()))?;
@@ -756,7 +779,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("clip.mp4");
         test_runtime()
-            .block_on(stream_url_to_path(&url, &dest, DOWNLOAD_READ_TIMEOUT, None))
+            .block_on(stream_url_to_path(
+                &url,
+                &dest,
+                DOWNLOAD_READ_TIMEOUT,
+                None,
+                false,
+            ))
             .unwrap();
         server.join().unwrap();
         assert_eq!(fs::read(&dest).unwrap(), body);
@@ -781,10 +810,41 @@ mod tests {
                 &dest,
                 DOWNLOAD_READ_TIMEOUT,
                 Some(token),
+                false,
             ))
             .unwrap();
         server.join().unwrap();
         assert_eq!(fs::read(&dest).unwrap(), b"zip");
+    }
+
+    #[test]
+    fn log_archive_can_wait_for_its_expensive_first_body_chunk() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut discard = [0_u8; 1024];
+            let _ = std::io::Read::read(&mut stream, &mut discard);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\n")
+                .unwrap();
+            stream.flush().unwrap();
+            std::thread::sleep(Duration::from_millis(150));
+            stream.write_all(b"zip").unwrap();
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("logs.zip");
+        test_runtime()
+            .block_on(stream_url_to_path(
+                &format!("http://127.0.0.1:{port}/logs.zip"),
+                &dest,
+                Duration::from_millis(50),
+                None,
+                true,
+            ))
+            .unwrap();
+        server.join().unwrap();
+        assert_eq!(fs::read(dest).unwrap(), b"zip");
     }
 
     #[test]
@@ -807,7 +867,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("clip.mp4");
         let error = test_runtime()
-            .block_on(stream_url_to_path(&url, &dest, DOWNLOAD_READ_TIMEOUT, None))
+            .block_on(stream_url_to_path(
+                &url,
+                &dest,
+                DOWNLOAD_READ_TIMEOUT,
+                None,
+                false,
+            ))
             .unwrap_err();
         server.join().unwrap();
         assert!(error.contains("401"), "{error}");
@@ -868,6 +934,7 @@ mod tests {
                 &dest,
                 Duration::from_millis(250),
                 None,
+                false,
             ))
             .unwrap_err();
         drop(release);
@@ -902,6 +969,7 @@ mod tests {
                 &dest,
                 DOWNLOAD_READ_TIMEOUT,
                 None,
+                false,
             ))
             .unwrap_err();
         server.join().unwrap();

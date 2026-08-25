@@ -136,6 +136,7 @@ export async function downloadUrlStreaming(
   options: {
     bearerToken?: string;
     refreshDesktopAuth?: boolean;
+    slowFirstChunk?: boolean;
   } = {},
 ): Promise<void> {
   if (!isTauri) {
@@ -148,6 +149,7 @@ export async function downloadUrlStreaming(
     fileName: filename,
     bearerToken: options.bearerToken,
     refreshDesktopAuth: options.refreshDesktopAuth ?? false,
+    slowFirstChunk: options.slowFirstChunk ?? false,
   });
   if (savedPath === null) {
     throw new DownloadCancelledError();
