@@ -14,6 +14,7 @@ CDP counter and the Long Tasks API are Chromium-only, and the failure mode is si
 as "no measurement". So no growth axis and no pass/fail decision may rest on one.
 """
 
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -125,6 +126,26 @@ def test_the_verdict_asserts_the_fixture_and_not_just_its_size() -> None:
     assert 'counts.get("highlightedTokens", 0)' in decision
 
 
+def test_the_fixture_assertion_survives_deferred_fence_highlighting() -> None:
+    # A floor on the TOKEN count partly measures where the viewport is: the same unchanged fixture
+    # dropped from 3,216 tokens per cycle to 1,322. Lowering it to fit would leave the check unable
+    # to tell a deferred thread from one that stopped rendering code, which is all it is for. So
+    # the size assertion is on characters, which the deferred shell carries too.
+    page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
+    head = page.index("const EXPECTED_PER_CYCLE")
+    expected = page[head : page.index("};", head)]
+    assert "codeChars: 12000" in expected, "the floor has to be on something deferral cannot move"
+    assert "highlightedTokens:" not in expected, "the token floor was the thing deferral broke"
+
+
+def test_a_fence_may_be_deferred_or_highlighted_but_not_neither() -> None:
+    # The SETTLEMENT half of the old token floor, asked per block. One block stuck on streamdown's
+    # unhighlighted fallback used to pass as long as the others made the count up.
+    page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
+    assert "unhighlightedMountedFences" in page
+    assert 'counts.get("unhighlightedMountedFences", 0)' in verdict()
+
+
 def test_the_verdict_asserts_the_keystroke_reached_the_runtime() -> None:
     # The DOM value is what the harness itself wrote. A keystroke that reached nothing still
     # reports the ~33ms paint floor, which reads as a plausible timing.
@@ -177,12 +198,17 @@ def test_the_smoke_page_is_served_and_owns_its_dev_server() -> None:
     assert "stop_process(vite)" in text
 
 
-def test_the_fork_count_stub_answers_with_a_real_zero() -> None:
-    # `getForkCount` returns `data.count`, and the badge's guard is `count <= 0`. `undefined <= 0`
-    # is false, so a `{}` body renders a badge reading "undefined forks from this message" on every
-    # assistant message. Measured at 25000 chars: 10 badges and 4031 DOM nodes with `{}`, 0 badges
-    # and 3981 with `{"count":0}`. That is DOM in proportion to thread size, on the axis this
-    # harness measures.
+def test_the_fork_count_stub_answers_the_shape_the_endpoint_returns() -> None:
+    # `getThreadForkCounts` reads `data.counts` and builds a Map from it, and the badge renders
+    # nothing for a message the Map has no entry for. `{"counts":{}}` is therefore "no message has
+    # forks" in the endpoint's own vocabulary. A body of some other shape leaves the Map empty by
+    # accident rather than by contract, and an accident is what this stub already had once: the
+    # endpoint used to be per message and answer `{"count":n}`, the allowlist kept matching that
+    # older URL after the app stopped requesting it, and every fork-count GET went to the network
+    # instead. Before that, `{}` against the per-message endpoint left `data.count` undefined,
+    # `undefined <= 0` false, and a badge reading "undefined forks from this message" on every
+    # assistant message: measured at 25000 chars, 10 badges and 4031 DOM nodes rather than 0 and
+    # 3981. Either way the fixture stops being the thing the table says was measured.
     page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
     # Pin the fork-count entry to its own body rather than scanning the whole file: other
     # endpoints in the allowlist legitimately answer "{}", so a bare file-wide check for it
@@ -192,10 +218,46 @@ def test_the_fork_count_stub_answers_with_a_real_zero() -> None:
         "",
     )
     assert forks, "the fork-count endpoint is no longer in the stub allowlist"
-    assert '{"count":0}' in forks, (
-        "the fork-count stub must answer with a numeric count; an empty object makes the parsed "
-        f"count undefined and renders a badge on every assistant message. Got: {forks.strip()!r}"
+    assert '{"counts":{}}' in forks, (
+        "the fork-count stub must answer the counts map the endpoint returns; another shape "
+        f"leaves the parsed map empty only by accident. Got: {forks.strip()!r}"
     )
+
+
+def _stub_patterns(page: str) -> list[str]:
+    """The regex literals in STUBBED_API, as Python patterns.
+
+    They are deliberately plain -- literal path segments, `[^/]+`, `(\\?|$)`, `$` -- so the JS
+    source and the Python equivalent differ only in the escaped forward slashes.
+    """
+    block = page[page.index("const STUBBED_API") : page.index("const stubbedApiCalls")]
+    return [literal.replace("\\/", "/") for literal in re.findall(r"\[/(.+?)/,", block)]
+
+
+def test_the_stub_matches_the_fork_count_url_the_app_actually_requests() -> None:
+    # The drift this file exists to catch, checked against the app rather than against a string
+    # someone remembered to update. The fork-count endpoint moved from per message to per thread
+    # in #8992 and this allowlist was not moved with it; the harness's own stray-request check did
+    # catch it, but only in CI, and only in a job where the browser smokes reach the point of
+    # running at all. A URL the app builds and the stub does not answer is a round trip inside a
+    # timed region, so it is worth failing a unit test for.
+    api = (FRONTEND / "src" / "features" / "chat" / "api" / "chat-api.ts").read_text(
+        encoding = "utf-8"
+    )
+    fork_paths = re.findall(r"`(/api/chat/threads/\$\{[^`]*?\}/forks)`", api)
+    assert fork_paths, "chat-api.ts no longer builds a fork-count URL this test can read"
+    patterns = _stub_patterns(
+        (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
+    )
+    for path in fork_paths:
+        # A stand-in shaped like the synthetic remoteId the local runtime hands the smoke page.
+        # `encodeURIComponent` leaves that form untouched, so the sample below is the URL the
+        # harness really does produce.
+        url = re.sub(r"\$\{[^}]*\}", "__LOCALID_abc123", path)
+        assert any(re.search(pattern, url) for pattern in patterns), (
+            f"the smoke page's STUBBED_API allowlist answers none of {url!r}, which the chat "
+            "client requests; it would reach the network inside a measured action"
+        )
 
 
 def test_the_fetch_stub_only_intercepts_fork_counts() -> None:

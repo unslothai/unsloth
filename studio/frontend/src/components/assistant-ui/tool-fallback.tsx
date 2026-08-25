@@ -37,6 +37,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { toolArgText } from "./tool-arg-text";
 
 const ANIMATION_DURATION = 200;
 
@@ -122,7 +123,10 @@ function ToolFallbackTrigger({
   className,
   ...props
 }: ComponentProps<typeof CollapsibleTrigger> & {
-  toolName: string;
+  // Straight off the wire: provider SSE is relayed verbatim, and a non-string
+  // name matches nothing in thread.tsx's by_name map, which is exactly why it
+  // lands HERE, where formatMcpToolName calls `.startsWith` on it.
+  toolName: unknown;
   mcpServer?: string;
   status?: ToolCallMessagePartStatus;
   icon?: ElementType;
@@ -134,7 +138,8 @@ function ToolFallbackTrigger({
 
   const StatusIcon = statusIconMap[statusType];
   const label = isCancelled ? "Cancelled tool" : "Used tool";
-  const displayName = formatMcpToolName(toolName, mcpServer) ?? toolName;
+  const name = toolArgText(toolName);
+  const displayName = formatMcpToolName(name, mcpServer) ?? name;
 
   return (
     <CollapsibleTrigger
