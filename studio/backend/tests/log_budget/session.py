@@ -108,10 +108,12 @@ BUSY_SECONDS = 5 * 60
 #
 #   /api/settings/remote-access  360 lines per idle half hour  -> fixed by #8763
 #   /api/liveness                120 lines per idle half hour  -> fixed by #8763
-KNOWN_UNCLASSIFIED_POLLS: frozenset[str] = frozenset({
-    "/api/settings/remote-access",
-    "/api/liveness",
-})
+KNOWN_UNCLASSIFIED_POLLS: frozenset[str] = frozenset(
+    {
+        "/api/settings/remote-access",
+        "/api/liveness",
+    }
+)
 
 # The envelopes. These are what catch a NEW chatty endpoint: a path can satisfy its own
 # class formula perfectly and still push the total up, which is exactly what happened to

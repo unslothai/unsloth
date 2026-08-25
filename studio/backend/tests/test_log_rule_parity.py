@@ -24,9 +24,7 @@ from pathlib import Path
 import pytest
 
 _FIXTURE = Path(__file__).resolve().parent / "fixtures" / "access_log_records.json"
-_PROCESS_RS = (
-    Path(__file__).resolve().parents[2] / "src-tauri" / "src" / "process.rs"
-)
+_PROCESS_RS = Path(__file__).resolve().parents[2] / "src-tauri" / "src" / "process.rs"
 
 
 def _cases():
@@ -108,9 +106,9 @@ class TestRustSide:
             "sink and kept on the other is exactly the drift this fixture exists to catch."
         )
 
-        assert '"request_completed"' in source, (
-            "is_backend_access_log_line no longer keys on the request_completed event"
-        )
+        assert (
+            '"request_completed"' in source
+        ), "is_backend_access_log_line no longer keys on the request_completed event"
 
     def test_the_rust_test_consumes_the_shared_fixture(self):
         source = self._source()

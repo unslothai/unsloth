@@ -32,7 +32,11 @@ FAILURE_STATUSES = (400, 401, 403, 404, 409, 422, 429, 500, 502, 503)
 MUTATING_METHODS = ("POST", "PUT", "PATCH", "DELETE")
 
 
-def _drive(monkeypatch, requests, gap_s = 0.0):
+def _drive(
+    monkeypatch,
+    requests,
+    gap_s = 0.0,
+):
     """Send requests through one middleware instance, advancing the clock by `gap_s`."""
     from loggers.handlers import LoggingMiddleware
 
@@ -69,7 +73,8 @@ class TestFailuresAreNeverSuppressed:
         # something this guard can assert away; it is pinned instead by
         # test_the_excluded_set_is_exactly_what_was_reviewed below.
         paths = sorted(
-            p for p in session.ALL_POLLS
+            p
+            for p in session.ALL_POLLS
             if policy.classify(hmod, p) != policy.EXCLUDED
             # Chat-list 401s have one narrow, deliberate exemption during the bootstrap
             # token race. Its exact boundaries are pinned by
@@ -96,8 +101,7 @@ class TestFailuresAreNeverSuppressed:
     @pytest.mark.parametrize("method", MUTATING_METHODS)
     def test_repeated_mutations_all_log(self, method, monkeypatch):
         requests = [
-            replay.Request(method = method, path = "/api/chat/threads", status = 200)
-            for _ in range(3)
+            replay.Request(method = method, path = "/api/chat/threads", status = 200) for _ in range(3)
         ]
         capture = _drive(monkeypatch, requests, gap_s = 0.0)
         assert len(capture.events) == 3, (
@@ -108,18 +112,23 @@ class TestFailuresAreNeverSuppressed:
     def test_a_failure_inside_a_quiet_window_still_logs(self, monkeypatch):
         """The case that matters most: a poll that was quiet and starts failing."""
         quiet = [
-            p for p in session.ALL_POLLS
+            p
+            for p in session.ALL_POLLS
             if policy.classify(hmod, p) in (policy.QUIET, policy.LIVENESS)
         ]
         assert quiet, "no quiet-poll paths configured; this guard would be vacuous"
         path = sorted(quiet)[0]
 
-        capture = _drive(monkeypatch, [
-            replay.Request("GET", path, 200),
-            replay.Request("GET", path, 200),   # collapsed, correctly
-            replay.Request("GET", path, 503),   # must not be
-            replay.Request("GET", path, 503),
-        ], gap_s = 0.0)
+        capture = _drive(
+            monkeypatch,
+            [
+                replay.Request("GET", path, 200),
+                replay.Request("GET", path, 200),  # collapsed, correctly
+                replay.Request("GET", path, 503),  # must not be
+                replay.Request("GET", path, 503),
+            ],
+            gap_s = 0.0,
+        )
 
         failures = [kw for _l, _e, kw in capture.events if kw.get("status_code") == 503]
         assert len(failures) == 2, (
@@ -127,7 +136,6 @@ class TestFailuresAreNeverSuppressed:
             f"{len(failures)} of 2 failures were logged. A watchdog going red is exactly "
             "what these logs are read for."
         )
-
 
     def test_the_chat_list_401_exemption_is_only_pre_auth(self, monkeypatch):
         """The one status-specific exemption, held to its stated scope.
@@ -148,10 +156,13 @@ class TestFailuresAreNeverSuppressed:
 
         def send(status):
             middleware.app = replay._app_returning(status)
-            asyncio.run(middleware(
-                {"type": "http", "path": path, "method": "GET", "query_string": b""},
-                replay._noop_receive, replay._noop_send,
-            ))
+            asyncio.run(
+                middleware(
+                    {"type": "http", "path": path, "method": "GET", "query_string": b""},
+                    replay._noop_receive,
+                    replay._noop_send,
+                )
+            )
 
         send(401)
         assert not capture.events, (
@@ -161,9 +172,9 @@ class TestFailuresAreNeverSuppressed:
 
         # A 500 is not covered by the exemption even during bootstrap.
         send(500)
-        assert len(capture.events) == 1, (
-            "only 401 is exempt during bootstrap; a 500 on the same path must log"
-        )
+        assert (
+            len(capture.events) == 1
+        ), "only 401 is exempt during bootstrap; a 500 on the same path must log"
 
         # After a refresh succeeds, a 401 is real.
         middleware._auth_refreshed = True
@@ -204,9 +215,7 @@ class TestTheGuardIsNotVacuous:
     """Prove the replay exercised the real thing before trusting any count from it."""
 
     def test_the_replay_actually_reaches_the_middleware(self, monkeypatch):
-        result = replay.replay(
-            hmod, monkeypatch, session.IDLE_POLLS, 60.0, session.BOOT_REQUESTS
-        )
+        result = replay.replay(hmod, monkeypatch, session.IDLE_POLLS, 60.0, session.BOOT_REQUESTS)
         assert result.sent, "the scenario issued no requests at all"
         assert result.emitted > 0, (
             "the replay produced zero log lines. Every budget assertion would pass "
@@ -230,12 +239,13 @@ class TestTheGuardIsNotVacuous:
 
         mutations = [r for r in records if r.get("method") in MUTATING_METHODS]
         failures = [
-            r for r in records
-            if isinstance(r.get("status_code"), int)
-            and not 200 <= r["status_code"] < 300
+            r
+            for r in records
+            if isinstance(r.get("status_code"), int) and not 200 <= r["status_code"] < 300
         ]
         successes = [
-            r for r in records
+            r
+            for r in records
             if isinstance(r.get("status_code"), int) and 200 <= r["status_code"] < 300
         ]
 

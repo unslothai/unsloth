@@ -101,15 +101,25 @@ async def _noop_send(message):
     return None
 
 
-def install(handlers, monkeypatch, clock: Optional[FakeClock] = None) -> FakeClock:
+def install(
+    handlers,
+    monkeypatch,
+    clock: Optional[FakeClock] = None,
+) -> FakeClock:
     """Point the middleware at a virtual clock. Returns the clock."""
     clock = clock or FakeClock()
     monkeypatch.setattr(handlers, "time", clock)
     return clock
 
 
-def replay(handlers, monkeypatch, polled: dict, duration_s: float,
-           boot: tuple = (), clock: Optional[FakeClock] = None) -> ReplayResult:
+def replay(
+    handlers,
+    monkeypatch,
+    polled: dict,
+    duration_s: float,
+    boot: tuple = (),
+    clock: Optional[FakeClock] = None,
+) -> ReplayResult:
     """Drive one middleware instance through ``boot`` then ``duration_s`` of polling.
 
     One instance for the whole run, because the de-duplication state lives on the instance

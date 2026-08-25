@@ -79,8 +79,7 @@ def window_ms(handlers, cls: str) -> Optional[int]:
     return handlers._ACCESS_LOG_DEDUP_MS
 
 
-def expected_emissions(window_ms_value: Optional[int], period_s: float,
-                       duration_s: float) -> int:
+def expected_emissions(window_ms_value: Optional[int], period_s: float, duration_s: float) -> int:
     """How many lines a periodic poll SHOULD produce. A formula, not a snapshot.
 
     The middleware stamps only when it emits, so the gap between two emitted lines is the

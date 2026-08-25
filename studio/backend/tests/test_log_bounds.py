@@ -39,10 +39,15 @@ _PROCESS_RS = _STUDIO / "src-tauri" / "src" / "process.rs"
 KNOWN_UNBOUNDED_FAMILIES = frozenset({"llama-server", "diffusion-server"})
 
 # Families the desktop shell owns. Bounded in Rust (rotation), not by a Python pruner.
-_DESKTOP_FAMILIES = frozenset({
-    "desktop-backend", "desktop-install", "desktop-update", "desktop-repair",
-    "desktop-shell",
-})
+_DESKTOP_FAMILIES = frozenset(
+    {
+        "desktop-backend",
+        "desktop-install",
+        "desktop-update",
+        "desktop-repair",
+        "desktop-shell",
+    }
+)
 
 
 def _python_retention_sources() -> str:
@@ -72,12 +77,14 @@ class TestFamiliesAreBounded:
             if glob not in source:
                 unbounded.append(f"{family} ({glob})")
 
-        new = sorted(set(unbounded) - {
-            f"{f} ({debug_log_sources.FAMILIES[f][1]})" for f in KNOWN_UNBOUNDED_FAMILIES
-        })
+        new = sorted(
+            set(unbounded)
+            - {f"{f} ({debug_log_sources.FAMILIES[f][1]})" for f in KNOWN_UNBOUNDED_FAMILIES}
+        )
         assert not new, (
             "these log families are written but never pruned, so they grow for the life "
-            "of the install:\n  " + "\n  ".join(new)
+            "of the install:\n  "
+            + "\n  ".join(new)
             + "\n\nPrune them where they are opened, keeping the newest N and protecting "
             "the handle you just opened."
         )
@@ -85,26 +92,35 @@ class TestFamiliesAreBounded:
     def test_the_unbounded_list_does_not_outlive_the_problem(self):
         source = _python_retention_sources()
         stale = sorted(
-            family for family in KNOWN_UNBOUNDED_FAMILIES
+            family
+            for family in KNOWN_UNBOUNDED_FAMILIES
             if family in debug_log_sources.FAMILIES
             and debug_log_sources.FAMILIES[family][1] in source
         )
         assert not stale, (
             "these families now prune but are still listed in "
-            "KNOWN_UNBOUNDED_FAMILIES:\n  " + "\n  ".join(stale)
+            "KNOWN_UNBOUNDED_FAMILIES:\n  "
+            + "\n  ".join(stale)
             + "\n\nDelete the entries so the list keeps meaning something."
         )
 
     def test_a_new_family_cannot_be_added_unnoticed(self):
         """FAMILIES is the inventory; adding to it is a decision about disk growth."""
         reviewed = {
-            "server", "llama-server", "diffusion-server", "desktop-backend",
-            "desktop-install", "desktop-update", "desktop-repair", "desktop-shell",
+            "server",
+            "llama-server",
+            "diffusion-server",
+            "desktop-backend",
+            "desktop-install",
+            "desktop-update",
+            "desktop-repair",
+            "desktop-shell",
         }
         actual = set(debug_log_sources.FAMILIES)
         added = sorted(actual - reviewed)
         assert not added, (
-            "new log families:\n  " + "\n  ".join(added)
+            "new log families:\n  "
+            + "\n  ".join(added)
             + "\n\nGive each one retention, then add it to the reviewed list here. A "
             "family with no pruning is an install that grows until the disk is full."
         )
@@ -126,9 +142,7 @@ class TestLineCapsAgree:
         phase_bytes = eval(phase.group(1).strip())  # noqa: S307 - digits and '*' only
 
         process = _PROCESS_RS.read_text(encoding = "utf-8") if _PROCESS_RS.is_file() else ""
-        backend_cap = re.search(
-            r"MAX_BACKEND_LOG_LINE_BYTES: usize = ([0-9 *]+);", process
-        )
+        backend_cap = re.search(r"MAX_BACKEND_LOG_LINE_BYTES: usize = ([0-9 *]+);", process)
         if backend_cap is None:
             pytest.skip(
                 "the desktop shell does not cap mirrored backend lines on this revision; "

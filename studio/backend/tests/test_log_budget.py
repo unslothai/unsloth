@@ -79,7 +79,8 @@ class TestClassificationClosure:
         than a few seconds and left in ``normal`` logs on essentially every request.
         """
         offenders = {
-            path for path, (period, _provenance) in session.ALL_POLLS.items()
+            path
+            for path, (period, _provenance) in session.ALL_POLLS.items()
             if policy.classify(hmod, path) == policy.NORMAL
             and period * 1000.0 > hmod._ACCESS_LOG_DEDUP_MS
         }
@@ -88,9 +89,7 @@ class TestClassificationClosure:
         assert not new, (
             "these paths are polled further apart than the `normal` window of "
             f"{hmod._ACCESS_LOG_DEDUP_MS} ms, so every single poll writes a line:\n  "
-            + "\n  ".join(
-                f"{path} every {session.ALL_POLLS[path][0]:g}s" for path in new
-            )
+            + "\n  ".join(f"{path} every {session.ALL_POLLS[path][0]:g}s" for path in new)
             + f"\n\nPick a heartbeat class in loggers/handlers.py: "
             f"{', '.join(policy.ALL_CLASSES)}."
         )
@@ -99,7 +98,8 @@ class TestClassificationClosure:
         fixed = sorted(session.KNOWN_UNCLASSIFIED_POLLS - offenders)
         assert not fixed, (
             "these paths are listed in KNOWN_UNCLASSIFIED_POLLS but now have a heartbeat "
-            "class, so the entry is stale:\n  " + "\n  ".join(fixed)
+            "class, so the entry is stale:\n  "
+            + "\n  ".join(fixed)
             + "\n\nDelete them from tests/log_budget/session.py and tighten the envelopes."
         )
 
@@ -117,14 +117,23 @@ class TestVolumeEnvelope:
     @pytest.mark.parametrize(
         "label, polls, duration, envelope",
         [
-            ("steady idle", session.IDLE_POLLS, session.STEADY_IDLE_SECONDS,
-             session.STEADY_IDLE_LINE_ENVELOPE),
-            ("operation in flight", session.BUSY_POLLS, session.BUSY_SECONDS,
-             session.BUSY_LINE_ENVELOPE),
+            (
+                "steady idle",
+                session.IDLE_POLLS,
+                session.STEADY_IDLE_SECONDS,
+                session.STEADY_IDLE_LINE_ENVELOPE,
+            ),
+            (
+                "operation in flight",
+                session.BUSY_POLLS,
+                session.BUSY_SECONDS,
+                session.BUSY_LINE_ENVELOPE,
+            ),
         ],
     )
-    def test_scenario_stays_inside_its_envelope(self, label, polls, duration, envelope,
-                                                monkeypatch):
+    def test_scenario_stays_inside_its_envelope(
+        self, label, polls, duration, envelope, monkeypatch
+    ):
         result = replay.replay(hmod, monkeypatch, polls, duration)
         counts = Counter(result.capture.paths())
 
@@ -166,9 +175,7 @@ class TestVolumeEnvelope:
             if policy.bucket_of(hmod, path) != path:
                 continue
             cls = policy.classify(hmod, path)
-            expected = policy.expected_emissions(
-                policy.window_ms(hmod, cls), period, duration
-            )
+            expected = policy.expected_emissions(policy.window_ms(hmod, cls), period, duration)
             actual = counts.get(path, 0)
             if actual != expected:
                 mismatches.append(
@@ -188,7 +195,8 @@ class TestVolumeEnvelope:
         together and whichever arrives first legitimately takes the line.
         """
         liveness = {
-            path: value for path, value in session.IDLE_POLLS.items()
+            path: value
+            for path, value in session.IDLE_POLLS.items()
             if policy.classify(hmod, path) == policy.LIVENESS
         }
         if not liveness:
