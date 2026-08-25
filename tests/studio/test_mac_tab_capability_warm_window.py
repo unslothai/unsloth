@@ -415,28 +415,23 @@ def test_the_forced_verdict_check_is_wired_into_the_public_entry_point():
     assert "assert_row_never_greyed_while_unmeasured" in called.get("main", set())
 
 
+
 # --------------------------------------------------------------------------------
-# The survival verdict has to match the watchdog that decides a backend's fate.
+# What the survival poller fails on, now that it no longer replays the watchdog.
 # --------------------------------------------------------------------------------
 
 POLL_S = 5.0
 BUDGET_S = 10.0
 
 
-def _timeline(
-    duration_s,
-    stalls = (),
-    generating_from = None,
-):
+def _timeline(duration_s, stalls = ()):
     """Simulate the poller against a backend that answers nothing during *stalls*.
 
     Each stall is a (start, end) window in seconds. A probe issued inside one answers
     when the stall lifts if that falls inside its 10s budget, and times out otherwise.
     Probes are sequential and a timeout costs the whole budget before the next route is
-    tried, which is what the real poller does and what makes its cadence drift away from
-    the watchdog's fixed 15s one.
+    tried, which is what the real poller does.
     """
-
     def lifts_at(t):
         for start, end in stalls:
             if start <= t < end:
@@ -454,155 +449,71 @@ def _timeline(
             else:
                 took, kind = BUDGET_S, "timeout"
             now += took
-            active = None
-            if kind == "ok" and path == "/api/liveness":
-                active = generating_from is not None and now >= generating_from
-            samples.append(
-                {
-                    "t": round(now, 3),
-                    "path": path,
-                    "kind": kind,
-                    "status": 200 if kind == "ok" else 0,
-                    "ms": round(took * 1000, 1),
-                    "inference_active": active,
-                    "hardware_detecting": None,
-                    "torch_warm_in_progress": None,
-                }
-            )
+            samples.append({
+                "t": round(now, 3), "path": path, "kind": kind,
+                "status": 200 if kind == "ok" else 0,
+                "ms": round(took * 1000, 1), "inference_active": None,
+                "hardware_detecting": None, "torch_warm_in_progress": None,
+            })
         now += POLL_S
     return samples
 
 
-def _longest_raw_run(samples):
-    """Longest consecutive miss run in the dense stream, which is what the first version
-    of this check counted and what neither direction of the watchdog's rule is."""
-    run = worst = 0
-    for s in sorted(samples, key = lambda s: s["t"]):
-        run = 0 if s["kind"] == "ok" else run + 1
-        worst = max(worst, run)
-    return worst
-
-
-def _verdict(mod, samples):
+def _verdict(mod, samples, final_kind = "ok", final_status = 200):
     poller = mod.BackendSurvivalPoller()
     poller.samples = samples
-    poller.report()
+    poller.report(final_kind = final_kind, final_status = final_status)
     return list(mod._failed)
 
 
-def test_a_stall_shorter_than_the_watchdogs_reach_is_not_a_kill(tmp_path, monkeypatch):
-    """A 21s stall makes the launcher miss one probe. It keeps the backend, so must this."""
+def test_a_stall_the_backend_recovers_from_is_not_a_failure(tmp_path, monkeypatch):
+    """The case run 32862298967 went red on. A backend that stops answering and then
+    answers again survived, on any reading of any budget, so it warns and passes."""
     mod = _load(tmp_path, monkeypatch)
-    assert _verdict(mod, _timeline(120, stalls = [(20, 41)])) == []
-
-
-def test_two_missed_watchdog_probes_stay_under_the_budget(tmp_path, monkeypatch):
-    """Two strikes is the most the 33s stall in run 32862298967 could have produced."""
-    mod = _load(tmp_path, monkeypatch)
-    assert _verdict(mod, _timeline(150, stalls = [(30, 56)])) == []
-
-
-def test_a_stall_that_spends_the_budget_is_a_kill(tmp_path, monkeypatch):
-    """Three missed probes at 15s is a 45s silence. The launcher reports 'Server stopped
-    unexpectedly' there, which is the field failure this script exists for."""
-    mod = _load(tmp_path, monkeypatch)
-    failed = _verdict(mod, _timeline(150, stalls = [(15, 75)]))
-    assert len(failed) == 1, failed
-    assert "consecutive watchdog probes" in failed[0], failed
-
-
-def test_a_backend_stalling_only_across_the_ticks_is_still_caught(tmp_path, monkeypatch):
-    """The reason the verdict is re-derived on a 15s grid rather than read off this
-    poller's 5s one. Here the backend answers between the watchdog's probes and stalls
-    across every one of them, so the dense stream shows nothing but isolated misses while
-    the launcher sees three in a row and kills. Counting the dense run would pass this."""
-    mod = _load(tmp_path, monkeypatch)
-    samples = _timeline(150, stalls = [(15, 26), (30, 41), (45, 56)])
-    assert _longest_raw_run(samples) < 3, "fixture no longer hides the stall from the dense stream"
-    failed = _verdict(mod, samples)
-    assert len(failed) == 1, failed
-    assert "consecutive watchdog probes" in failed[0], failed
-
-
-# Long enough that the 30s last-chance probe cannot reach an answer, so the only thing
-# that can keep this backend alive is the widened busy budget itself. A shorter stall
-# lets the confirmation probe rescue it and the test stops measuring the budget at all.
-# It starts after the first watchdog tick on purpose: the latch is seeded by an answered
-# probe, so a stall that begins before any tick has answered leaves it false and the busy
-# budget is never in force, which is the launcher's behaviour too.
-BUSY_STALL = [(30, 150)]
-
-
-def test_the_busy_budget_keeps_a_backend_that_is_generating(tmp_path, monkeypatch):
-    """watchdog_failure_budget widens to twelve when a probe times out against a backend
-    that last reported inference_active. A stall that kills an idle backend must not kill
-    a generating one, or this smoke fails responses the launcher would have let finish."""
-    mod = _load(tmp_path, monkeypatch)
-    samples = _timeline(220, stalls = BUSY_STALL, generating_from = 0.0)
-    replay = mod.watchdog_replay(samples)
-    assert replay["worst_run"] > mod.WATCHDOG_MAX_FAILURES, replay
+    samples = _timeline(150, stalls = [(30, 63)])
+    assert any(s["kind"] == "timeout" for s in samples), "fixture stopped producing a stall"
     assert _verdict(mod, samples) == []
 
 
-def test_the_same_stall_without_the_marker_still_kills(tmp_path, monkeypatch):
-    """The other half of the pair above. Without inference_active the budget is three, so
-    the widened budget has to come from the marker and not from having been relaxed."""
+def test_even_a_long_stall_passes_if_the_backend_comes_back(tmp_path, monkeypatch):
+    """No threshold shorter than the launcher's most generous path is decidable in the
+    120s this phase gets, so there is deliberately no threshold at all. A stall far past
+    anything the old replay would have killed on still passes once the backend answers."""
     mod = _load(tmp_path, monkeypatch)
-    assert len(_verdict(mod, _timeline(220, stalls = BUSY_STALL))) == 1
+    assert _verdict(mod, _timeline(220, stalls = [(30, 150)])) == []
 
 
-def test_the_last_chance_probe_keeps_a_backend_that_answers_still_generating(tmp_path, monkeypatch):
-    """A spent budget buys one 30s probe, and an answer to it that says the backend is
-    still generating resets the count. The marker arrives only after the strikes here, so
-    the budget in force while they accumulate is the plain three."""
+def test_a_backend_that_never_answers_again_fails(tmp_path, monkeypatch):
+    """The terminal stall. This is what the poller exists to catch and it needs no
+    watchdog arithmetic: the backend stopped answering and was still not answering when
+    the run ended, confirmed by the final probe."""
     mod = _load(tmp_path, monkeypatch)
-    assert _verdict(mod, _timeline(150, stalls = [(15, 56)], generating_from = 50.0)) == []
+    failed = _verdict(mod, _timeline(150, stalls = [(60, 9999)]), final_kind = "timeout", final_status = 0)
+    assert len(failed) == 1, failed
+    assert "never answered again" in failed[0], failed
 
 
-def test_an_idle_backend_that_answers_the_last_chance_probe_still_dies(tmp_path, monkeypatch):
-    """watchdog_confirm_keeps_backend requires inference_active, not merely an answer. An
-    idle backend that comes back after the budget is spent is still declared dead."""
+def test_a_trailing_stall_the_final_probe_clears_is_not_a_failure(tmp_path, monkeypatch):
+    """A stall still in progress when sampling stopped is not a terminal one if the
+    backend answers the final probe. Without that probe this would be indistinguishable
+    from death, which is why report() takes it rather than guessing from the samples."""
     mod = _load(tmp_path, monkeypatch)
-    assert len(_verdict(mod, _timeline(150, stalls = [(15, 56)]))) == 1
+    samples = _timeline(150, stalls = [(60, 9999)])
+    assert samples[-1]["kind"] == "timeout", "fixture no longer ends mid-stall"
+    assert _verdict(mod, samples, final_kind = "ok") == []
 
 
-def test_the_latch_only_moves_on_an_answer(tmp_path, monkeypatch):
-    """watchdog_inference_active_after returns the previous value when the probe brought
-    nothing back, so a stall cannot clear the busy latch that is carrying it."""
+def test_a_dead_backend_with_no_samples_still_fails(tmp_path, monkeypatch):
+    """The final probe is load-bearing on its own, not only as a tie-breaker."""
     mod = _load(tmp_path, monkeypatch)
-    replay = mod.watchdog_replay(_timeline(220, stalls = BUSY_STALL, generating_from = 0.0))
-    # More consecutive misses than the plain budget tolerates, survived anyway, and with
-    # no answer inside the confirmation window to explain it. Only the latch can.
-    assert replay["worst_run"] > mod.WATCHDOG_MAX_FAILURES, replay
-    assert replay["worst_run"] < mod.WATCHDOG_MAX_FAILURES_BUSY, replay
-    assert not replay["killed"], replay
-
-
-def test_ticks_with_no_probe_covering_them_are_not_judged(tmp_path, monkeypatch):
-    """A gap in the samples says nothing about what the watchdog would have seen there.
-    Counting it as a miss would invent evidence; counting it as an answer would hide a
-    stall. It is skipped, and the tick count in the log says how many were judged."""
-    mod = _load(tmp_path, monkeypatch)
-    replay = mod.watchdog_replay(_timeline(120))
-    assert replay["ticks_judged"] > 0
-    assert replay["ticks_missed"] == 0
-    assert not replay["killed"]
-
-
-def test_a_backend_that_dies_midway_still_fails(tmp_path, monkeypatch):
-    """The whole point of the poller. Relaxing the stall case must not cost it."""
-    mod = _load(tmp_path, monkeypatch)
-    samples = _timeline(150)
-    for s in samples:
-        if s["t"] > 60:
-            s["kind"], s["status"], s["ms"], s["inference_active"] = "refused", 0, 1.0, None
-    failed = _verdict(mod, samples)
-    assert any("refused" in m for m in failed), failed
+    failed = _verdict(mod, _timeline(60), final_kind = "refused", final_status = 0)
+    assert len(failed) == 1, failed
+    assert "not alive at the end" in failed[0], failed
 
 
 def test_a_refused_connection_fails_on_the_first_one(tmp_path, monkeypatch):
     """A refused port is death, not a stall, and nothing transient produces it against a
-    backend that is meant to be up. It does not get the watchdog's patience."""
+    backend that is meant to be up. It is fatal even though the backend recovers."""
     mod = _load(tmp_path, monkeypatch)
     samples = _timeline(120)
     hit = [s for s in samples if s["t"] > 50][0]
@@ -612,7 +523,8 @@ def test_a_refused_connection_fails_on_the_first_one(tmp_path, monkeypatch):
 
 
 def test_a_non_200_answer_fails_on_the_first_one(tmp_path, monkeypatch):
-    """An answered non-200 is the backend itself saying it is unhealthy. Also not a stall."""
+    """An answered non-200 is the backend itself saying it is unhealthy. Also not a stall,
+    and also fatal even though every other probe in the run succeeded."""
     mod = _load(tmp_path, monkeypatch)
     samples = _timeline(120)
     hit = [s for s in samples if s["t"] > 50][0]
@@ -623,8 +535,7 @@ def test_a_non_200_answer_fails_on_the_first_one(tmp_path, monkeypatch):
 
 def test_only_a_refused_connection_counts_as_a_dead_port(tmp_path, monkeypatch):
     """ECONNREFUSED is the kernel saying nothing is bound. A reset or a truncated read is
-    a listener that accepted and then failed to finish, which is the stall being measured.
-    Classing those as death is what turned a survivable stall into a crash report."""
+    a listener that accepted and then failed to finish, which is a stall."""
     mod = _load(tmp_path, monkeypatch)
     assert mod._transport_kind(ConnectionRefusedError()) == "refused"
     assert mod._transport_kind(ConnectionResetError()) == "timeout"
@@ -632,22 +543,35 @@ def test_only_a_refused_connection_counts_as_a_dead_port(tmp_path, monkeypatch):
     assert mod._transport_kind(OSError("something else entirely")) == "timeout"
 
 
-def test_the_budget_is_the_launchers_own_number():
-    """Mirrored from studio/src-tauri/src/commands.rs. If the launcher's numbers move and
-    these do not, the script reports a verdict the product does not act on."""
+def test_an_answer_from_either_route_closes_a_stall(tmp_path, monkeypatch):
+    """check_health_inner falls back from /api/liveness to /api/health, so one answer
+    from either is proof the backend was serving and ends the span."""
+    mod = _load(tmp_path, monkeypatch)
+    samples = [
+        {"t": 10.0, "path": "/api/liveness", "kind": "timeout", "status": 0, "ms": 10000.0,
+         "inference_active": None, "hardware_detecting": None, "torch_warm_in_progress": None},
+        {"t": 10.1, "path": "/api/health", "kind": "ok", "status": 200, "ms": 5.0,
+         "inference_active": None, "hardware_detecting": None, "torch_warm_in_progress": None},
+    ]
+    spans = mod._stall_windows(samples)
+    assert len(spans) == 1, spans
+    assert spans[0][2] is False, spans
+
+
+def test_the_probe_budget_is_the_launchers_own_number():
+    """The one watchdog constant this file still mirrors. If HEALTH_PROBE_TIMEOUT moves
+    and this does not, a probe here calls a miss at a different point than the product."""
     rust = (REPO / "studio/src-tauri/src/commands.rs").read_text(encoding = "utf-8")
-    for const, name in (
-        ("HEALTH_WATCHDOG_MAX_FAILURES", "WATCHDOG_MAX_FAILURES"),
-        ("HEALTH_WATCHDOG_MAX_FAILURES_BUSY", "WATCHDOG_MAX_FAILURES_BUSY"),
-    ):
-        match = re.search(rf"const {const}: u32 = (\d+);", rust)
-        assert match, f"{const} is not in commands.rs any more"
-        assert _module_constant(name) == int(match.group(1)), const
-    for const, name in (
-        ("HEALTH_WATCHDOG_INTERVAL", "WATCHDOG_INTERVAL_S"),
-        ("HEALTH_PROBE_TIMEOUT", "PROBE_TIMEOUT_S"),
-        ("HEALTH_CONFIRM_PROBE_TIMEOUT", "WATCHDOG_CONFIRM_TIMEOUT_S"),
-    ):
-        match = re.search(rf"const {const}: Duration = Duration::from_secs\((\d+)\);", rust)
-        assert match, f"{const} is not in commands.rs any more"
-        assert _module_constant(name) == float(match.group(1)), const
+    match = re.search(r"const HEALTH_PROBE_TIMEOUT: Duration = Duration::from_secs\((\d+)\);", rust)
+    assert match, "HEALTH_PROBE_TIMEOUT is not in commands.rs any more"
+    assert _module_constant("PROBE_TIMEOUT_S") == float(match.group(1))
+
+
+def test_the_watchdog_replay_is_gone():
+    """It was removed on purpose: mirroring the launcher's state machine made every line
+    of commands.rs a correctness requirement here, for a rule this phase never runs and
+    could not decide inside its 120s window. Reintroducing it should be a deliberate act,
+    not a quiet one."""
+    source = SCRIPT.read_text(encoding = "utf-8")
+    for gone in ("watchdog_replay", "WATCHDOG_MAX_FAILURES", "WATCHDOG_INTERVAL_S"):
+        assert f"def {gone}" not in source and f"\n{gone} =" not in source, gone

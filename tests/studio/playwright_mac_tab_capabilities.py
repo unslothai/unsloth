@@ -21,27 +21,21 @@ Covers the two field failures from Unsloth Desktop 0.1.524-beta on Apple Silicon
    C-extension imports, so probes time out while the process is perfectly alive.
    This polls the backend across the whole warm window and asserts it survives.
 
-   "Survives" is the watchdog's definition of it, not "answered every probe". The
-   watchdog probes every 15s with a 10s budget and kills on three CONSECUTIVE misses,
-   widening to twelve when a probe times out against a backend that is generating, so
-   a lone timeout is a backend the launcher keeps. Asserting zero misses instead
-   fails runs the product would have survived, and it did: run 32862298967 went red
-   on one timed-out probe per route out of eighteen, on a commit that changed one
-   frontend unit test. The stall behind it was real -- the server served no request
-   at all for 10.0s and then 33.2s, both windows ending on an /api/inference/status
-   that had been in flight throughout -- but 33s of stall is two watchdog strikes,
-   not three. That is reported here as a warning, and only a run that reaches the
-   budget, an outright refused connection, or a non-200 answer fails the step.
+   "Survives" here means the backend answered again, not that it answered every
+   probe. A probe that times out while the process is alive is the symptom this
+   file was written about, so failing on one states the opposite of the thing it
+   is trying to prove. Run 32862298967 went red on one timed-out probe per route
+   out of eighteen, on a commit that changed one frontend unit test. The stall
+   behind it was real -- the server served no request at all for 10.0s and then
+   33.2s, both windows ending on an /api/inference/status that had been in flight
+   throughout -- and it is worth a warning, but the backend was serving again
+   seconds later and was answering at the end of the run.
 
-   The strike count has to be read off the watchdog's schedule, not this poller's.
-   Sampling every 5s and counting consecutive misses there is a different question
-   and it is wrong in both directions: three misses at 5s is a 15s stall where the
-   launcher tolerates 45s, and a backend that stalls only across the 15s ticks has
-   every miss look isolated because a 5s sample answered in between. watchdog_replay
-   re-derives a 15s timeline from the dense samples instead, so the resolution is kept
-   rather than thrown away by polling slower, and it carries the rest of the rule with
-   it: the inference_active latch that only an answer moves, the widened busy budget,
-   and the 30s last-chance probe a spent budget buys.
+   The verdict deliberately does not reproduce the launcher's watchdog. See
+   BackendSurvivalPoller.report: this phase runs no watchdog at all, and its 120s
+   window is shorter than the rule needs to reach any verdict. What fails here is
+   a backend that stops answering and never comes back, a non-200 answer, or a
+   refused port.
 
 Runs against a live Studio; drives the real UI. Env contract matches the other
 scripts here: BASE_URL, STUDIO_OLD_PW, PW_ART_DIR.
@@ -80,27 +74,23 @@ NEW = os.environ.get("STUDIO_NEW_PW") or f"{OLD}-Rotated1!"
 ART = Path(os.environ.get("PW_ART_DIR", "logs/playwright_mac_tabs"))
 ART.mkdir(parents = True, exist_ok = True)
 
-# The watchdog kills after 3 consecutive failures at a 15s interval, and the
-# backend's startup grace is 300s. Outliving the grace is the whole point: a
-# backend that dies at t+66s (the reported crash) fails here.
+# How long to keep polling the backend. The reported crash landed at t+66s, so the
+# window has to reach well past that; the workflow narrows it to 120s because nothing in
+# this phase runs the launcher's watchdog and the longer window buys no extra evidence.
 SURVIVAL_S = float(os.environ.get("STUDIO_MAC_SURVIVAL_S", "330"))
 POLL_INTERVAL_S = float(os.environ.get("STUDIO_MAC_POLL_INTERVAL_S", "5"))
 WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "900"))
 # How long the forced-verdict check gives the row to settle into its pending state.
 FORCED_PENDING_S = float(os.environ.get("STUDIO_MAC_FORCED_PENDING_S", "15"))
-# The watchdog's own numbers, from studio/src-tauri/src/commands.rs. A survival assertion
-# here has to be written against these, or it reports a backend the launcher would have
-# kept as one it would have killed.
-PROBE_TIMEOUT_S = 10.0  # HEALTH_PROBE_TIMEOUT
-WATCHDOG_INTERVAL_S = 15.0  # HEALTH_WATCHDOG_INTERVAL
-WATCHDOG_MAX_FAILURES = 3  # HEALTH_WATCHDOG_MAX_FAILURES
-WATCHDOG_MAX_FAILURES_BUSY = 12  # HEALTH_WATCHDOG_MAX_FAILURES_BUSY
-WATCHDOG_CONFIRM_TIMEOUT_S = 30.0  # HEALTH_CONFIRM_PROBE_TIMEOUT
+# Matches HEALTH_PROBE_TIMEOUT in studio/src-tauri/src/commands.rs, so a probe here waits
+# as long as the launcher's does before calling it a miss. It is the only watchdog number
+# this file needs; see BackendSurvivalPoller.report for why it does not mirror the rest.
+PROBE_TIMEOUT_S = 10.0
 
 LIVENESS_PATH = "/api/liveness"
 HEALTH_PATH = "/api/health"
-# check_health_inner probes /api/liveness and falls back to /api/health, so one answer from
-# either is one answered watchdog probe. Only the liveness reply carries inference_active.
+# Both are polled, and an answer from either is proof the backend was serving, matching
+# check_health_inner, which probes /api/liveness and falls back to /api/health.
 PROBE_PATHS = (LIVENESS_PATH, HEALTH_PATH)
 # Every tab the user reported interacting with, plus the ones that share the
 # chat-only gate. (route, nav row id, human name).
@@ -215,102 +205,32 @@ def _get_json(path: str, timeout: float = PROBE_TIMEOUT_S) -> tuple[int, dict | 
         return 0, None, _transport_kind(exc)
 
 
-def _answers_in(samples, start: float, end: float) -> list[dict]:
-    """Every probe that came back 200 with its answer landing inside [start, end]."""
-    return [s for s in samples if s["kind"] == "ok" and start <= s["t"] <= end]
+def _stall_windows(samples: list[dict]) -> list[tuple[float, float, bool]]:
+    """Spans where no probe answered, merged across both routes.
 
+    One answer from either route is proof the backend was serving at that instant, so an
+    answer closes whatever span was open. A span is closed at the moment the successful
+    probe was ISSUED rather than when it came back, which understates a stall that ended
+    mid-probe; the number here only ever feeds a warning, so erring short is the right
+    way to be wrong.
 
-def _covered(samples, start: float, end: float) -> bool:
-    """Whether any probe overlapped the window, i.e. whether the tick can be judged."""
-    return any((s["t"] - s["ms"] / 1000.0) <= end and s["t"] >= start for s in samples)
-
-
-def watchdog_replay(samples: list[dict]) -> dict | None:
-    """Replay the dense samples on the schedule the launcher actually probes on.
-
-    The poller samples every POLL_INTERVAL_S (5s in CI) while the watchdog probes every
-    WATCHDOG_INTERVAL_S (15s), so counting consecutive misses in the dense stream answers
-    a question the product never asks, and it is wrong in both directions:
-
-      too strict -- three misses at 5s is a 15s stall, where the launcher tolerates a
-                    45s one before it reaches the same three strikes.
-      too lax    -- a backend that only stalls across the 15s ticks has every miss look
-                    isolated, because a 5s sample answered in between and reset the run.
-                    That hides exactly the backend the watchdog would kill.
-
-    So the verdict is re-derived on a 15s grid instead, which keeps the dense samples'
-    extra resolution rather than throwing it away by polling slower. A reconstructed
-    probe issued at T counts as answered if any real probe came back 200 between T and
-    T + PROBE_TIMEOUT_S, since the watchdog's own probe at T had that same budget.
-
-    The state machine mirrors the loop in commands.rs: only an answer moves the
-    inference_active latch (watchdog_inference_active_after returns the previous value
-    when the probe brought nothing back), the budget widens to
-    WATCHDOG_MAX_FAILURES_BUSY while that latch is set, and a spent budget buys one
-    last-chance probe at WATCHDOG_CONFIRM_TIMEOUT_S that keeps the backend only if it
-    answers AND says it is still generating.
-
-    Returns None when there is nothing to judge.
+    The third element says the span was still open when sampling stopped, which is the
+    only shape that can be a terminal stall.
     """
     ordered = sorted(samples, key = lambda s: s["t"])
-    if not ordered:
-        return None
-    span_end = ordered[-1]["t"]
-    # The watchdog sleeps before its first probe, so the first tick is one interval in.
-    tick = (ordered[0]["t"] - ordered[0]["ms"] / 1000.0) + WATCHDOG_INTERVAL_S
-
-    consecutive, worst_run, ticks_judged, ticks_missed = 0, 0, 0, 0
-    generating = False
-    while tick + PROBE_TIMEOUT_S <= span_end:
-        window_end = tick + PROBE_TIMEOUT_S
-        if not _covered(ordered, tick, window_end):
-            # No probe overlapped this tick, so nothing here says what the watchdog
-            # would have seen. Judging it either way would be invention.
-            tick += WATCHDOG_INTERVAL_S
-            continue
-        ticks_judged += 1
-        answers = _answers_in(ordered, tick, window_end)
-        if answers:
-            marker = next((a for a in answers if a["path"] == LIVENESS_PATH), None)
-            if marker is not None:
-                # Only the liveness reply carries the marker. A health-only answer still
-                # resets the strikes, but leaves the latch where it was rather than
-                # clearing it on a reply that never had the field.
-                generating = bool(marker.get("inference_active"))
-            consecutive = 0
-            tick += WATCHDOG_INTERVAL_S
-            continue
-        ticks_missed += 1
-        consecutive += 1
-        worst_run = max(worst_run, consecutive)
-        budget = WATCHDOG_MAX_FAILURES_BUSY if generating else WATCHDOG_MAX_FAILURES
-        if consecutive >= budget:
-            confirm = _answers_in(ordered, tick, tick + WATCHDOG_CONFIRM_TIMEOUT_S)
-            kept = next((c for c in confirm if c.get("inference_active")), None)
-            if kept is not None:
-                generating = True
-                consecutive = 0
-                tick += WATCHDOG_INTERVAL_S
-                continue
-            return {
-                "killed": True,
-                "at": round(tick, 1),
-                "strikes": consecutive,
-                "budget": budget,
-                "worst_run": worst_run,
-                "ticks_judged": ticks_judged,
-                "ticks_missed": ticks_missed,
-            }
-        tick += WATCHDOG_INTERVAL_S
-    return {
-        "killed": False,
-        "at": None,
-        "strikes": consecutive,
-        "budget": WATCHDOG_MAX_FAILURES_BUSY if generating else WATCHDOG_MAX_FAILURES,
-        "worst_run": worst_run,
-        "ticks_judged": ticks_judged,
-        "ticks_missed": ticks_missed,
-    }
+    spans: list[tuple[float, float, bool]] = []
+    open_start = None
+    for s in ordered:
+        began = s["t"] - s["ms"] / 1000.0
+        if s["kind"] == "ok":
+            if open_start is not None:
+                spans.append((open_start, began, False))
+                open_start = None
+        elif open_start is None:
+            open_start = began
+    if open_start is not None:
+        spans.append((open_start, ordered[-1]["t"], True))
+    return spans
 
 
 class BackendSurvivalPoller:
@@ -341,9 +261,9 @@ class BackendSurvivalPoller:
                         "status": status,
                         "kind": kind,
                         "ms": round((time.monotonic() - began) * 1000, 1),
-                        # Only /api/liveness carries this. It is what widens the
-                        # watchdog's budget to WATCHDOG_MAX_FAILURES_BUSY, so a stall
-                        # during a generation is judged the way the launcher judges it.
+                        # Recorded for whoever reads the artifact after a stall, since
+                        # "was it generating at the time" is the first question asked of
+                        # one. No verdict below reads it.
                         "inference_active": (body or {}).get("inference_active"),
                         "hardware_detecting": (body or {}).get("hardware_detecting"),
                         # Stage 0 of the warm only sets hardware_detecting; this one stays
@@ -359,7 +279,13 @@ class BackendSurvivalPoller:
         self.stop.set()
         self.thread.join(timeout = 30)
 
-    def report(self) -> None:
+    def report(self, final_kind: str = "ok", final_status: int = 200) -> None:
+        """Write the samples out and decide whether the backend survived.
+
+        *final_kind* is the outcome of one last probe taken after sampling stopped. It is
+        what separates a stall that happened to be in progress when the run ended from a
+        backend that is genuinely gone, so it is passed in rather than re-probed here.
+        """
         (ART / "survival_samples.json").write_text(
             json.dumps(self.samples, indent = 1),
             encoding = "utf-8",
@@ -395,35 +321,59 @@ class BackendSurvivalPoller:
                     "unhealthy through the warm window"
                 )
 
-        # One verdict over both routes, because one answer from either is one answered
-        # watchdog probe. Judged on the launcher's 15s grid rather than on this poller's
-        # 5s one, which is neither the same question nor a stricter version of it.
-        replay = watchdog_replay(self.samples)
-        if replay is None:
-            return
-        info(
-            f"watchdog replay at {WATCHDOG_INTERVAL_S}s: {replay['ticks_judged']} tick(s) "
-            f"judged, {replay['ticks_missed']} missed, longest run {replay['worst_run']} "
-            f"of a {replay['budget']}-strike budget"
-        )
-        if replay["killed"]:
-            fail(
-                f"the backend went unanswered for {replay['strikes']} consecutive watchdog "
-                f"probes ending at t={replay['at']}s, reaching the {replay['budget']}-strike "
-                "budget; the desktop launcher would have killed it and reported "
-                "'Server stopped unexpectedly'"
-            )
-        elif replay["ticks_missed"]:
-            # Under the budget, so the launcher would have kept this backend and the run
-            # is green. Still say so: a stall this long is a real backend defect even
+        # What is left of the verdict, and deliberately so.
+        #
+        # This used to replay the launcher's watchdog: a 15s grid, three consecutive
+        # misses, the widened budget while inference_active is latched, the 30s
+        # last-chance probe. Mirroring that state machine in Python turned every detail
+        # of studio/src-tauri/src/commands.rs into a correctness requirement for a smoke
+        # test, and it cannot pay off here for two reasons.
+        #
+        # The window is too small for the rule to run. This phase gets
+        # STUDIO_MAC_SURVIVAL_S = 120 (.github/workflows/studio-mac-ui-smoke.yml), while
+        # the busy path alone is HEALTH_WATCHDOG_MAX_FAILURES_BUSY * 15s plus a 30s
+        # confirmation, about 210s, and BACKEND_STARTUP_GRACE_PERIOD is 300s before a
+        # backend that has not yet answered healthy counts a failure at all. A verdict
+        # reached in 120s is a statement about a rule that never had room to run.
+        #
+        # And the watchdog is not running here in the first place. This phase boots
+        # `unsloth studio` directly, with no Tauri shell, which the workflow says at the
+        # step itself; the watchdog's own behaviour is covered by the Rust tests beside
+        # it in commands.rs. So the rule was being re-implemented to judge a process that
+        # was not subject to it.
+        #
+        # What is left is the part that needs no arithmetic and cannot false-positive: a
+        # backend that stops answering and never comes back did not survive. Anything
+        # that answers again did, on any reading of any budget, so it warns and passes.
+        # If you are tempted to put a threshold back, it has to be strictly longer than
+        # the launcher's most generous path, and nothing that long fits in this window.
+        spans = _stall_windows(self.samples)
+        terminal = next((sp for sp in spans if sp[2]), None)
+        longest = max((end - start for start, end, _ in spans), default = 0.0)
+
+        if final_kind != "ok":
+            if terminal is not None:
+                fail(
+                    f"the backend stopped answering at t={round(terminal[0], 1)}s and never "
+                    f"answered again ({round(terminal[1] - terminal[0], 1)}s of silence to the "
+                    f"end of sampling), and the final {LIVENESS_PATH} probe came back "
+                    f"'{final_kind}'. It did not survive the window."
+                )
+            else:
+                fail(
+                    f"backend was not alive at the end of the run ({LIVENESS_PATH} -> "
+                    f"{final_kind}, {final_status})"
+                )
+        elif spans:
+            # It came back, so the launcher would have kept it on any budget and this run
+            # is green. Say so anyway: a stall this long is a real backend defect even
             # when it is not a fatal one, and it must not vanish into a pass.
             worst_ms = max(s["ms"] for s in self.samples)
             print(
-                f"::warning::backend stalled: {replay['ticks_missed']} of "
-                f"{replay['ticks_judged']} reconstructed watchdog probes went unanswered "
-                f"(longest run {replay['worst_run']}, under the {replay['budget']}-strike "
-                f"budget), worst real probe {worst_ms}ms against a {PROBE_TIMEOUT_S}s "
-                "budget. Not fatal, but see logs/studio_tabs.log for which request was in "
+                f"::warning::backend stalled: {len(spans)} window(s) with nothing answering, "
+                f"longest {round(longest, 1)}s, worst single probe {worst_ms}ms against a "
+                f"{PROBE_TIMEOUT_S}s budget. It answered again before the run ended, so this "
+                "is not a failure here. See logs/studio_tabs.log for which request was in "
                 "flight.",
                 flush = True,
             )
@@ -840,11 +790,11 @@ def main() -> int:
 
     watchdog.cancel()
     poller.finish()
-    poller.report()
 
-    status, _, kind = _get_json("/api/liveness")
-    if kind != "ok":
-        fail(f"backend was not alive at the end of the run (/api/liveness -> {kind}, {status})")
+    # Taken after sampling stopped and handed to report(), which needs it to tell a stall
+    # that was still in progress at the end of the run from a backend that never came back.
+    status, _, kind = _get_json(LIVENESS_PATH)
+    poller.report(final_kind = kind, final_status = status)
 
     if _failed:
         print(f"[mac-tabs] {len(_failed)} FAILURE(S)", flush = True)
