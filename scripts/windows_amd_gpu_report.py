@@ -44,8 +44,14 @@ GB = 1024**3
 AMD_PCI_VENDOR_ID = 0x1002
 
 # 1 = REG_SZ, 3 = REG_BINARY, 4 = REG_DWORD, 11 = REG_QWORD.
-REG_TYPES = {1: "REG_SZ", 2: "REG_EXPAND_SZ", 3: "REG_BINARY", 4: "REG_DWORD",
-             7: "REG_MULTI_SZ", 11: "REG_QWORD"}
+REG_TYPES = {
+    1: "REG_SZ",
+    2: "REG_EXPAND_SZ",
+    3: "REG_BINARY",
+    4: "REG_DWORD",
+    7: "REG_MULTI_SZ",
+    11: "REG_QWORD",
+}
 
 
 def directx_records() -> dict:
@@ -67,8 +73,14 @@ def directx_records() -> dict:
                 rec = {"subkey": subkey}
                 try:
                     with winreg.OpenKey(dx, subkey) as k:
-                        for field in ("VendorId", "DeviceId", "AdapterLuid",
-                                      "Description", "AdapterFamily", "DriverVersion"):
+                        for field in (
+                            "VendorId",
+                            "DeviceId",
+                            "AdapterLuid",
+                            "Description",
+                            "AdapterFamily",
+                            "DriverVersion",
+                        ):
                             try:
                                 value, regtype = winreg.QueryValueEx(k, field)
                             except OSError:
@@ -103,8 +115,11 @@ def counter(name: str) -> dict:
     try:
         r = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-            capture_output = True, text = True, encoding = "utf-8",
-            errors = "replace", timeout = 60,
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 60,
         )
     except FileNotFoundError:
         return {"error": "powershell not found on PATH"}
@@ -115,8 +130,10 @@ def counter(name: str) -> dict:
     if r.returncode != 0:
         return {"error": f"powershell exited {r.returncode}: {r.stderr.strip()[:300]}"}
     if "__NONE__" in r.stdout:
-        return {"error": "the counter is not available (this is how a localized "
-                         "Windows looks from here, and is itself a useful answer)"}
+        return {
+            "error": "the counter is not available (this is how a localized "
+            "Windows looks from here, and is itself a useful answer)"
+        }
     rows = []
     for line in r.stdout.splitlines():
         line = line.strip()
@@ -171,22 +188,38 @@ def main() -> int:
     if dx.get("error"):
         A(f"**Could not read:** {dx['error']}")
     recs = dx.get("records") or []
-    amd = [r for r in recs if r.get("VendorId") is not None
-           and str(r["VendorId"]).isdigit() and int(r["VendorId"]) == AMD_PCI_VENDOR_ID]
+    amd = [
+        r
+        for r in recs
+        if r.get("VendorId") is not None
+        and str(r["VendorId"]).isdigit()
+        and int(r["VendorId"]) == AMD_PCI_VENDOR_ID
+    ]
     A(f"{len(recs)} adapter record(s), {len(amd)} of them AMD (vendor 0x1002).")
     A("")
     if recs:
-        A("| record | VendorId | AdapterLuid | LUID type | Python type | Description | AdapterFamily |")
+        A(
+            "| record | VendorId | AdapterLuid | LUID type | Python type | Description | AdapterFamily |"
+        )
         A("|---|---|---|---|---|---|---|")
         for r in recs:
-            A("| `{}` | {} | {} | {} | {} | {} | {} |".format(
-                r["subkey"][:9] + "...", r.get("VendorId"), r.get("AdapterLuid"),
-                r.get("AdapterLuid_type"), r.get("AdapterLuid_py"),
-                r.get("Description"), r.get("AdapterFamily")))
+            A(
+                "| `{}` | {} | {} | {} | {} | {} | {} |".format(
+                    r["subkey"][:9] + "...",
+                    r.get("VendorId"),
+                    r.get("AdapterLuid"),
+                    r.get("AdapterLuid_type"),
+                    r.get("AdapterLuid_py"),
+                    r.get("Description"),
+                    r.get("AdapterFamily"),
+                )
+            )
     A("")
-    A("The **LUID type** column is the one to look at: `REG_QWORD` with Python "
-      "type `int` is what the code assumes. `REG_BINARY` with `bytes` would mean "
-      "it is wrong. `ABSENT` would mean the join has nothing to work with.")
+    A(
+        "The **LUID type** column is the one to look at: `REG_QWORD` with Python "
+        "type `int` is what the code assumes. `REG_BINARY` with `bytes` would mean "
+        "it is wrong. `ABSENT` would mean the join has nothing to work with."
+    )
     A("")
 
     A("### 2. GPU Adapter Memory counters")
@@ -202,8 +235,10 @@ def main() -> int:
         A("| instance | LUID from the name | GB |")
         A("|---|---|---|")
         for row in c["rows"]:
-            A(f"| `{row['instance']}` | {parse_instance_luid(row['instance'])} "
-              f"| {round(row['bytes'] / GB, 3)} |")
+            A(
+                f"| `{row['instance']}` | {parse_instance_luid(row['instance'])} "
+                f"| {round(row['bytes'] / GB, 3)} |"
+            )
         A("")
 
     A("### 3. Do the two line up?")
@@ -225,9 +260,11 @@ def main() -> int:
         A(f"- LUIDs in the counter names: {sorted(counter_luids)}")
         A(f"- **in both: {sorted(matched) if matched else 'NONE'}**")
         A("")
-        A("Every AMD adapter appearing on both sides is the result the code needs. "
-          "`NONE` would mean the join cannot work on this machine at all, which is "
-          "the single most useful thing this script can tell us.")
+        A(
+            "Every AMD adapter appearing on both sides is the result the code needs. "
+            "`NONE` would mean the join cannot work on this machine at all, which is "
+            "the single most useful thing this script can tell us."
+        )
     A("")
     A("<details><summary>raw JSON</summary>")
     A("")
