@@ -204,7 +204,14 @@ def _layout_from_reader(reader) -> ModelLayout:
     if not spill and not resident:
         return ModelLayout()
 
-    block_indices = sorted(set(spill) | set(resident))
+    # The trailing nextn/MTP blocks are NOT part of the target model. llama.cpp
+    # does not load them unless a draft is engaged, so an -ot pattern naming them
+    # moves nothing: measured, spilling only blk.<nextn> leaves the host buffer at
+    # exactly token_embd and the device buffer unchanged. Counting them as
+    # spillable would credit the plan with bytes it can never free, which is the
+    # optimistic direction that turns a non-fit into a claimed fit. Studio prices
+    # the drafter separately anyway.
+    block_indices = sorted(i for i in (set(spill) | set(resident)) if i < n_layers)
     blocks = tuple(
         BlockLayout(
             index = i,

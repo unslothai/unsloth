@@ -474,8 +474,8 @@ def test_the_ladder_never_regresses_as_vram_grows():
 @pytest.mark.parametrize(
     "path,spillable_gib,resident_gib,lm_head_gib,embd_gib,moe",
     [
-        (Q2_PATH, 5.495, 2.594, 0.666, 0.389, False),
-        (Q4_PATH, 10.092, 4.614, 0.971, 0.666, False),
+        (Q2_PATH, 5.291, 2.471, 0.666, 0.389, False),
+        (Q4_PATH, 9.888, 4.491, 0.971, 0.666, False),
         (MOE_PATH, 18.320, 1.488, 0.503, 0.503, True),
     ],
 )
@@ -571,3 +571,19 @@ def test_routed_experts_are_charged_less_than_a_dense_ffn_of_equal_size():
     m = plan_placement(moe, [8 * GIB], 64 * GIB, 32768, opts = opts)
     assert d.spilled_blocks == m.spilled_blocks, "same bytes spilled either way"
     assert m.predicted_gen_penalty_ms < d.predicted_gen_penalty_ms
+
+
+@needs_gguf
+def test_the_mtp_block_is_not_counted_as_spillable():
+    """blk.<nextn> is not part of the target model and llama.cpp does not load it
+    unless a draft is engaged, so an -ot pattern naming it moves nothing.
+
+    Measured against the real binary: spilling ONLY that block leaves the host
+    buffer at exactly token_embd (682.03 MiB) and the device buffer unchanged at
+    15718.48 MiB. Counting it would credit the plan 209 MiB it can never free,
+    which is the optimistic direction that claims a fit that is not there.
+    """
+    layout = layout_from_gguf(Q4_PATH)
+    assert layout.n_layers == 64
+    assert [b.index for b in layout.blocks] == list(range(64)), "no nextn block"
+    assert all(b.index < layout.n_layers for b in layout.blocks)
