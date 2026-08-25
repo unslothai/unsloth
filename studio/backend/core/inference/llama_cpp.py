@@ -23490,11 +23490,7 @@ class LlamaCppBackend:
                 return None
             if proc is not served_by:
                 # Replaced while we queued: this child never served our request.
-                return (
-                    _RespawnRetryToken(proc, None, self._unload_epoch)
-                    if self._healthy
-                    else None
-                )
+                return _RespawnRetryToken(proc, None, self._unload_epoch) if self._healthy else None
             if proc.poll() is None:
                 # Still serving, so the error was transient. Charging it the grace below
                 # would cost a second per caller, serialised under this lock.
@@ -23512,11 +23508,7 @@ class LlamaCppBackend:
             if proc.poll() is None:
                 # Alive: either a concurrent caller already respawned it (healthy), or
                 # this connection error wasn't a dead server.
-                return (
-                    _RespawnRetryToken(proc, None, self._unload_epoch)
-                    if self._healthy
-                    else None
-                )
+                return _RespawnRetryToken(proc, None, self._unload_epoch) if self._healthy else None
             with self._mtp_runtime_fallback_lock:
                 if self._mtp_runtime_fallback_in_progress:
                     # An MTP-free reload owns this corpse; replaying the old kwargs
@@ -23978,9 +23970,7 @@ class LlamaCppBackend:
             if self._maybe_recover_from_mtp_crash(e):
                 raise RuntimeError("Lost connection to llama-server")
             respawn_retry = (
-                self._respawn_if_dead()
-                if _allow_respawn_retry and not cumulative
-                else None
+                self._respawn_if_dead() if _allow_respawn_retry and not cumulative else None
             )
             if respawn_retry is not None:
                 logger.warning(
@@ -24725,9 +24715,7 @@ class LlamaCppBackend:
                             if not line:
                                 continue
                             if line == "data: [DONE]":
-                                self._complete_respawn_recovery(
-                                    _iteration_respawn_retry_token
-                                )
+                                self._complete_respawn_recovery(_iteration_respawn_retry_token)
                                 # Flush thinking state for STREAMING
                                 if detect_state == _S_STREAMING and in_thinking:
                                     if has_content_tokens:
