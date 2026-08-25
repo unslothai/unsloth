@@ -1000,10 +1000,9 @@ class FastLanguageModel(FastLlamaModel):
         except Exception as e:
             print(f"Unsloth: Could not patch bitsandbytes for torch.compile - {e}")
 
-        # The optimized architectures take their own path, which has never carried an
-        # `offload_embedding` parameter, so a request for one is dropped here rather than
-        # honoured. Say so instead of leaving the caller to infer it from memory use. The
-        # `"auto"` default stays quiet: it promises a decision, and off is a decision.
+        # The optimized path has never carried `offload_embedding`, so a request for one is
+        # dropped rather than honoured; say so instead of leaving the caller to infer it
+        # from memory use. `"auto"` stays quiet: it promises a decision, and off is one.
         if offload_embedding != OFFLOAD_EMBEDDING_AUTO and offload_embedding:
             print(
                 "Unsloth: Not offloading embeddings; the optimized path for this "
@@ -2033,11 +2032,10 @@ class FastModel(FastBaseModel):
             whisper_task = whisper_task,
             auto_config = model_config,
             auto_config_from_caller = user_config is not None,
-            # `resize_token_embeddings` below replaces the embedding module, and forward
-            # hooks do not travel to the replacement, so an offload installed during the
-            # load would leave a CPU embedding feeding a GPU decoder. Decline the automatic
-            # one rather than offload something about to be thrown away; an explicit
-            # request is left alone, since it was already this caller's to get wrong.
+            # `resize_token_embeddings` below replaces the embedding module and hooks do
+            # not travel to the replacement, so an offload installed during the load would
+            # leave a CPU embedding feeding a GPU decoder. An explicit request is left
+            # alone, since that combination was already this caller's to get wrong.
             offload_embedding = (
                 False
                 if resize_model_vocab is not None and offload_embedding == OFFLOAD_EMBEDDING_AUTO

@@ -256,8 +256,8 @@ class FastDiffusionModel:
                 device_map_planner_kwargs,
                 kwargs,
             ),
-            # This leaf popped `local_files_only` off kwargs above, so the helper is
-            # handed the resolved value rather than the caller's raw mapping.
+            # This leaf popped `local_files_only` off kwargs above, so the helper gets the
+            # resolved value rather than the caller's raw mapping.
             **planner_hub_kwargs(
                 {
                     "cache_dir": cache_dir,

@@ -130,9 +130,8 @@ DEFAULT_DEVICE_MAP = _DefaultDeviceMap("sequential")
 def planner_hub_kwargs(loader_kwargs):
     """The Hub options the planner's own `AutoConfig` lookup needs.
 
-    It resolves the config a second time, from `model_name`, so an offline load or a custom
-    cache has to reach it too. Without them the lookup can go to the network behind a
-    `local_files_only` request, or miss a model that only exists in the caller's cache and
+    It resolves the config a second time, from `model_name`. Without these the lookup can
+    go to the network behind a `local_files_only` request, or miss a cache-only model and
     turn a plan the load needed into a "sequential" fallback.
     """
     loader_kwargs = loader_kwargs or {}
@@ -141,10 +140,9 @@ def planner_hub_kwargs(loader_kwargs):
         hub["cache_dir"] = loader_kwargs["cache_dir"]
     if _get_effective_local_files_only(loader_kwargs):
         hub["local_files_only"] = True
-    # Resolving a remote model class is a second Hub lookup, and the planner honours
-    # `code_revision` for it (`_HUB_KWARGS` in unsloth_zoo's `device_map_planner`). Left
-    # out, the plan is built from whatever code the default revision holds while the load
-    # builds the caller's, so the map can name a module tree the model does not have.
+    # Resolving a remote class is a third lookup, and the planner honours `code_revision`
+    # for it (`_HUB_KWARGS` in unsloth_zoo's `device_map_planner`). Left out, the plan is
+    # built from the default revision's code and can name a tree the model does not have.
     if loader_kwargs.get("code_revision") is not None:
         hub["code_revision"] = loader_kwargs["code_revision"]
     return hub
@@ -153,12 +151,12 @@ def planner_hub_kwargs(loader_kwargs):
 def planner_config_overrides(loader_kwargs):
     """Config fields the caller overrides on the load, which the planner has to size for.
 
-    The planner takes a name and rebuilds the repo's config, so an override that only
-    exists in the caller's kwargs is invisible to it. `max_position_embeddings` is the one
-    that changes weight sizes: raise it on an architecture with learned position
-    embeddings and the planned tensors are smaller than the ones materialized, so a map
-    that fitted on paper OOMs. `plan_device_map_for_pretrained` forwards its leftover
-    kwargs to `AutoConfig.from_pretrained`, which applies them the same way the load does.
+    The planner rebuilds the repo's config from a name, so an override living only in
+    kwargs is invisible to it. `max_position_embeddings` is the one that changes weight
+    sizes: raise it on learned position embeddings and the planned tensors come out
+    smaller than the materialized ones, so a map that fitted on paper OOMs.
+    `plan_device_map_for_pretrained` hands leftover kwargs to `AutoConfig.from_pretrained`,
+    which applies them the way the load does.
     """
     value = (loader_kwargs or {}).get("max_position_embeddings")
     return {} if value is None else {"max_position_embeddings": value}
@@ -167,10 +165,10 @@ def planner_config_overrides(loader_kwargs):
 def planner_kwargs_with_max_memory(planner_kwargs, loader_kwargs):
     """The caller's transformers `max_memory` has to reach the planner as well.
 
-    Once a plan is returned the load gets an explicit dict, and transformers only consults
-    `max_memory` when `device_map` is a string (`_get_device_map` gates the whole
-    `infer_auto_device_map` branch on `isinstance(device_map, str)`). So a budget that used
-    to bound placement would be silently dropped, and the plan could exceed their caps or
+    Once a plan is returned the load gets an explicit dict, and transformers consults
+    `max_memory` only for a string `device_map` (`_get_device_map` gates the whole
+    `infer_auto_device_map` branch on `isinstance(device_map, str)`). A budget that used to
+    bound placement would be dropped in silence, and the plan could exceed their caps or
     use a card they withheld. An explicit `device_map_planner_kwargs["max_memory"]` wins.
     """
     budget = (loader_kwargs or {}).get("max_memory")

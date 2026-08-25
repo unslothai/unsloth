@@ -337,8 +337,8 @@ def _embedding_dispatch_device(input_embeddings):
     return None if hook is None else getattr(hook, "execution_device", None)
 
 
-# Big in absolute terms and big on this card, because every lookup then crosses PCIe.
-# 2.5 GiB is 16% of a 16 GB T4 and worth moving, and 3% of an 80 GB card, where it is not.
+# Big in absolute terms and big on this card, since every lookup then crosses PCIe. 2.5 GiB
+# is 16% of a 16 GB T4 and worth moving, 3% of an 80 GB card and not.
 _OFFLOAD_EMBEDDING_MIN_BYTES = 2**30
 _OFFLOAD_EMBEDDING_MIN_FRACTION = 0.05
 
@@ -401,10 +401,9 @@ def _resolve_offload_embedding(model, offload_embedding):
     if _embedding_dispatch_device(in_embed) is not None:
         return _decline("this model is dispatched across devices, which overrides the offload.")
     if is_distributed():
-        # The offload leaves embed_tokens on the CPU while the rest of the rank stays on its
-        # CUDA device. Under full finetuning that parameter is trainable, and DDP wrapping
-        # with device_ids refuses a module whose trainable parameters span both, so the run
-        # dies before the first step.
+        # The offload leaves embed_tokens on the CPU while the rest of the rank stays on
+        # CUDA. Under full finetuning it is trainable, and DDP with device_ids refuses a
+        # module whose trainable parameters span both, so the run dies before step one.
         return _decline("a distributed launch cannot wrap a model split across CPU and GPU.")
     return _embedding_is_worth_offloading(in_embed) if automatic else True
 
@@ -963,9 +962,9 @@ class FastBaseModel:
         # so `auto_config` no longer describes the repo. Set by loader.py, and by the block
         # below on the direct-call path.
         text_only_decoder = False,
-        # True when `auto_config` came from the caller rather than the repo. Same reason it
-        # cannot be inferred here: FastModel pops `config` out of kwargs before this sees
-        # them, so by now it is indistinguishable from one we resolved ourselves.
+        # True when `auto_config` came from the caller. It cannot be inferred here:
+        # FastModel pops `config` out of kwargs before this sees them, so by now it looks
+        # exactly like one we resolved ourselves.
         auto_config_from_caller = False,
         **kwargs,
     ):
@@ -1242,16 +1241,9 @@ class FastBaseModel:
                 model_class,
                 planner_model_class(auto_config, trust_remote_code = trust_remote_code),
             )
-        # A config the caller built is the one the weights load against, but the planner
-        # takes a name and rebuilds the repo's own. Same class, different model: another
-        # `num_hidden_layers` or `vocab_size` and the map omits blocks or under-budgets
-        # weights, which the class comparison above cannot see. Only the caller knows
-        # whether their config still describes the repo, so do not guess.
-        # `resolve_model_class` reads `auto_model._model_mapping`, which a concrete
-        # `PreTrainedModel` subclass does not have, so it returns None and the comparison
-        # above reads "unknown" as "compatible". The planner then builds whatever the repo
-        # config selects while the load builds the caller's class, and a map for the wrong
-        # module tree omits parameters dispatch then refuses. Unknown is not compatible.
+        # The comparison above returns None for a concrete `PreTrainedModel` subclass:
+        # `resolve_model_class` reads `auto_model._model_mapping`, which only Auto classes
+        # have. Unknown is not compatible, so decline rather than plan the repo's class.
         if (
             _planner_skip_reason is None
             and model_class is None
@@ -1261,6 +1253,9 @@ class FastBaseModel:
                 "an explicit model class has no auto mapping, so the plan cannot be "
                 "checked against the class the load builds"
             )
+        # The weights load against the caller's config; the planner rebuilds the repo's from
+        # a name. Same class, another `num_hidden_layers` or `vocab_size`, and the map omits
+        # blocks or under-budgets weights. Only the caller knows, so do not guess.
         if _planner_skip_reason is None and (user_config is not None or auto_config_from_caller):
             _planner_skip_reason = (
                 "a caller-supplied config may not describe the repo the planner rebuilds"
