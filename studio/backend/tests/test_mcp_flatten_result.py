@@ -285,7 +285,7 @@ def test_server_text_still_wins_over_structured_content():
 
 
 def test_fastmcp_file_format_png_is_rendered():
-    # File(data = ..., format = "png") labels the blob "application/png".
+    # fastmcp File(data=..., format="png") labels the blob application/png
     flat = _flatten_result(_result(_blob_resource(mime = "application/png")))
     body, payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)
     assert body == "[1 image attached; displayed to the user]"
@@ -298,6 +298,12 @@ def test_application_image_subtypes_are_normalised():
         ("application/jpg", "image/jpeg"),
         ("application/webp", "image/webp"),
         ("application/GIF", "image/gif"),
+        ("application/bmp", "image/bmp"),
+        ("application/avif", "image/avif"),
+        ("application/tif", "image/tiff"),
+        ("application/tiff", "image/tiff"),
+        ("application/svg", "image/svg+xml"),
+        ("application/svg+xml", "image/svg+xml"),
     ):
         flat = _flatten_result(_result(_blob_resource(mime = mime)))
         payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)[1]
@@ -316,7 +322,7 @@ def test_image_content_mime_is_passed_through_unchanged():
 
 
 def test_mixed_case_image_mime_is_matched():
-    # Media type type/subtype are case-insensitive (RFC 9110 8.3.1).
+    # media type names are case-insensitive
     for mime in ("IMAGE/PNG", "Image/Png", "image/PNG"):
         flat = _flatten_result(_result(_blob_resource(mime = mime)))
         payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)[1]

@@ -1017,8 +1017,7 @@ def _block_text(block: Any) -> Optional[str]:
 
 
 def _block_link(block: Any) -> Optional[str]:
-    # Kept apart from _block_text: this line is the host's own filler, so it must
-    # not pass for server text and suppress the structured_content fallback.
+    # keep host-generated link text from suppressing structured_content
     uri = getattr(block, "uri", None)
     if uri and getattr(block, "type", None) == "resource_link":
         name = getattr(block, "name", None)
@@ -1026,10 +1025,7 @@ def _block_link(block: Any) -> Optional[str]:
     return None
 
 
-# FastMCP's File helper labels raw bytes f"application/{format}", so an image
-# handed to it as File(data = ..., format = "png") arrives as "application/png".
-# The frontend renders these through data:<mimeType>;base64, which no browser
-# draws for an application/* type, so the subtype is mapped back to a real one.
+# fastmcp File(data=..., format=...) labels payloads as application/<format>
 _IMAGE_SUBTYPES = {
     "png": "image/png",
     "jpeg": "image/jpeg",
@@ -1038,7 +1034,9 @@ _IMAGE_SUBTYPES = {
     "webp": "image/webp",
     "bmp": "image/bmp",
     "avif": "image/avif",
+    "tif": "image/tiff",
     "tiff": "image/tiff",
+    "svg": "image/svg+xml",
     "svg+xml": "image/svg+xml",
 }
 
@@ -1046,8 +1044,7 @@ _IMAGE_SUBTYPES = {
 def _image_mime(mime: Any) -> Optional[str]:
     if not isinstance(mime, str):
         return None
-    # Type and subtype are case-insensitive (RFC 9110 8.3.1), and the parameters
-    # are not part of what the data: URL needs, so both forms match on essence.
+    # media type names are case-insensitive; data urls need only the essence
     essence = mime.partition(";")[0].strip().lower()
     if essence.startswith("image/"):
         return essence
@@ -1056,8 +1053,7 @@ def _image_mime(mime: Any) -> Optional[str]:
 
 
 def _block_image(block: Any) -> Optional[tuple[str, str]]:
-    # An image arrives either as ImageContent (data/mimeType) or as an
-    # EmbeddedResource wrapping BlobResourceContents (resource.blob/mimeType).
+    # embedded resources keep binary data on resource.blob
     data = getattr(block, "data", None)
     mime = getattr(block, "mimeType", None)
     if not data:
