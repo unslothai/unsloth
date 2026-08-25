@@ -272,8 +272,7 @@ def _get_json(path: str, timeout: float = PROBE_TIMEOUT_S) -> tuple[int, dict | 
 
 
 def await_recovery(
-    window_s: float = RECOVERY_WINDOW_S,
-    spacing_s: float = RECOVERY_PROBE_SPACING_S,
+    window_s: float = RECOVERY_WINDOW_S, spacing_s: float = RECOVERY_PROBE_SPACING_S
 ) -> tuple[str, int, float]:
     """Watch the backend after sampling stops, until it answers or *window_s* elapses.
 
@@ -460,8 +459,10 @@ class BackendSurvivalPoller:
         # the last sample understates the one stall a reader most needs the size of, and
         # the whole point of warning rather than failing is that a human reads the number.
         longest = max(
-            ((end - start) + (final_wait_s if still_open else 0.0)
-             for start, end, still_open in spans),
+            (
+                (end - start) + (final_wait_s if still_open else 0.0)
+                for start, end, still_open in spans
+            ),
             default = 0.0,
         )
 

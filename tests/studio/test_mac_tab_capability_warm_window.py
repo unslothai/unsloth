@@ -416,7 +416,6 @@ def test_the_forced_verdict_check_is_wired_into_the_public_entry_point():
     assert "assert_row_never_greyed_while_unmeasured" in called.get("main", set())
 
 
-
 # --------------------------------------------------------------------------------
 # What the survival poller fails on, now that it no longer replays the watchdog.
 # --------------------------------------------------------------------------------
@@ -433,6 +432,7 @@ def _timeline(duration_s, stalls = ()):
     Probes are sequential and a timeout costs the whole budget before the next route is
     tried, which is what the real poller does.
     """
+
     def lifts_at(t):
         for start, end in stalls:
             if start <= t < end:
@@ -450,22 +450,32 @@ def _timeline(duration_s, stalls = ()):
             else:
                 took, kind = BUDGET_S, "timeout"
             now += took
-            samples.append({
-                "t": round(now, 3), "path": path, "kind": kind,
-                "status": 200 if kind == "ok" else 0,
-                "ms": round(took * 1000, 1), "inference_active": None,
-                "hardware_detecting": None, "torch_warm_in_progress": None,
-            })
+            samples.append(
+                {
+                    "t": round(now, 3),
+                    "path": path,
+                    "kind": kind,
+                    "status": 200 if kind == "ok" else 0,
+                    "ms": round(took * 1000, 1),
+                    "inference_active": None,
+                    "hardware_detecting": None,
+                    "torch_warm_in_progress": None,
+                }
+            )
         now += POLL_S
     return samples
 
 
-def _verdict(mod, samples, final_kind = "ok", final_status = 200, final_wait_s = 0.0):
+def _verdict(
+    mod,
+    samples,
+    final_kind = "ok",
+    final_status = 200,
+    final_wait_s = 0.0,
+):
     poller = mod.BackendSurvivalPoller()
     poller.samples = samples
-    poller.report(
-        final_kind = final_kind, final_status = final_status, final_wait_s = final_wait_s
-    )
+    poller.report(final_kind = final_kind, final_status = final_status, final_wait_s = final_wait_s)
     return list(mod._failed)
 
 
@@ -491,7 +501,9 @@ def test_a_backend_that_never_answers_again_fails(tmp_path, monkeypatch):
     watchdog arithmetic: the backend stopped answering and was still not answering when
     the run ended, confirmed by the final probe."""
     mod = _load(tmp_path, monkeypatch)
-    failed = _verdict(mod, _timeline(150, stalls = [(60, 9999)]), final_kind = "timeout", final_status = 0)
+    failed = _verdict(
+        mod, _timeline(150, stalls = [(60, 9999)]), final_kind = "timeout", final_status = 0
+    )
     assert len(failed) == 1, failed
     assert "never answered again" in failed[0], failed
 
@@ -551,10 +563,26 @@ def test_an_answer_from_either_route_closes_a_stall(tmp_path, monkeypatch):
     from either is proof the backend was serving and ends the span."""
     mod = _load(tmp_path, monkeypatch)
     samples = [
-        {"t": 10.0, "path": "/api/liveness", "kind": "timeout", "status": 0, "ms": 10000.0,
-         "inference_active": None, "hardware_detecting": None, "torch_warm_in_progress": None},
-        {"t": 10.1, "path": "/api/health", "kind": "ok", "status": 200, "ms": 5.0,
-         "inference_active": None, "hardware_detecting": None, "torch_warm_in_progress": None},
+        {
+            "t": 10.0,
+            "path": "/api/liveness",
+            "kind": "timeout",
+            "status": 0,
+            "ms": 10000.0,
+            "inference_active": None,
+            "hardware_detecting": None,
+            "torch_warm_in_progress": None,
+        },
+        {
+            "t": 10.1,
+            "path": "/api/health",
+            "kind": "ok",
+            "status": 200,
+            "ms": 5.0,
+            "inference_active": None,
+            "hardware_detecting": None,
+            "torch_warm_in_progress": None,
+        },
     ]
     spans = mod._stall_windows(samples)
     assert len(spans) == 1, spans
@@ -664,9 +692,12 @@ def test_the_post_run_watch_is_wired_into_the_public_entry_point():
     }
     assert "await_recovery" in called
     reports = [
-        sub for sub in ast.walk(main)
-        if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
-        and sub.func.attr == "report" and sub.keywords
+        sub
+        for sub in ast.walk(main)
+        if isinstance(sub, ast.Call)
+        and isinstance(sub.func, ast.Attribute)
+        and sub.func.attr == "report"
+        and sub.keywords
     ]
     assert reports, "main() no longer hands a post-run verdict to report()"
     passed = {kw.arg for call in reports for kw in call.keywords}
@@ -678,7 +709,11 @@ def test_the_post_run_watch_is_wired_into_the_public_entry_point():
 # --------------------------------------------------------------------------------
 
 
-def _serve(handler_body, trickle = False, huge = False):
+def _serve(
+    handler_body,
+    trickle = False,
+    huge = False,
+):
     """A one-shot HTTP server on a free port. Returns (base_url, shutdown)."""
     import http.server
     import threading
@@ -796,18 +831,23 @@ def test_the_wall_watchdog_stays_armed_through_recovery_and_reporting():
     tree = ast.parse(SCRIPT.read_text(encoding = "utf-8"))
     main = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "main")
     cancels = [
-        n.lineno for n in ast.walk(main)
-        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
-        and n.func.attr == "cancel"
+        n.lineno
+        for n in ast.walk(main)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "cancel"
     ]
     reports = [
-        n.lineno for n in ast.walk(main)
-        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
-        and n.func.attr == "report" and n.keywords
+        n.lineno
+        for n in ast.walk(main)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "report"
+        and n.keywords
     ]
     recoveries = [
-        n.lineno for n in ast.walk(main)
-        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+        n.lineno
+        for n in ast.walk(main)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
         and n.func.id == "await_recovery"
     ]
     assert cancels and reports and recoveries
