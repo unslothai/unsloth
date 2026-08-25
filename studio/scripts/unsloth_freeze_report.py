@@ -17,7 +17,11 @@ How the freeze is detected
 --------------------------
 Two independent loops poll the backend, and they have different owners:
 
-  /api/inference/monitor   the web interface itself; only runs while the interface is alive
+  the UI liveness polls    the web interface itself; only run while the interface is alive.
+                           Counted as a group (/api/inference/monitor, /api/auth/status and
+                           the three loaded-model status polls) because the backend logs
+                           them through one shared bucket and writes down whichever one
+                           arrived first, so no single path is present in every window.
   /api/liveness            a native watchdog in the app; keeps running even if the
                            interface is dead
 
@@ -47,14 +51,46 @@ from pathlib import Path
 HOME = Path.home()
 STUDIO = HOME / ".unsloth" / "studio"
 BACKEND_LOGS = STUDIO / "logs"
-MONITOR = re.compile(r"/api/inference/monitor")
+# The interface's heartbeat, and deliberately not `/api/inference/monitor` alone. The
+# backend collapses the whole UI liveness group into ONE shared 10s log bucket
+# (_LIVENESS_POLL_PATHS / _LIVENESS_DEDUP_KEY in studio/backend/loggers/handlers.py):
+# whichever member of the burst arrives first is written down with its real path and the
+# rest of that window is dropped. Counting one member therefore reads zero for long
+# stretches of a perfectly healthy run, which this script would report as FROZE. Counting
+# the bucket is what makes the count mean "the webview is still asking for things".
+#
+# The monitor poll is also conditional: api-monitor-overlay.tsx stands its loop down when
+# the panel is closed with automatic opening turned off. The loaded-model indicators
+# (images/video/stt status) keep polling every 5s for as long as the app is open, so the
+# bucket has a member that does not depend on a UI preference.
+#
+# None of these are called by the native shell, which only ever requests /api/liveness and
+# /api/health, so every hit here comes from the webview.
+MONITOR = re.compile(
+    r"/api/(?:inference/monitor|auth/status|inference/images/status"
+    r"|inference/video/status|inference/audio/stt/status)"
+)
 LIVENESS = re.compile(r"/api/liveness")
+# Printed by the desktop shell (main.rs) before anything else, through a stderr logger, so
+# it lands in the captured shell output. Distinguishes "the shell never started" from "the
+# shell started and its backend did not".
+SHELL_STARTED = re.compile(r"Unsloth desktop app starting")
+# `{reason}; set VAR=1 VAR2=1 for WebKitGTK compatibility`, the app's own record of the
+# renderer workaround it chose for itself.
+RENDERER_APPLIED = re.compile(r"set ((?:[A-Za-z_][A-Za-z_0-9]*=1\s*)+)for WebKitGTK compatibility")
 
 # Overridable so CI can exercise this script end to end in a couple of minutes. A reporter
 # should never need to set them: the defaults are what make a slow freeze visible.
 WARMUP = int(os.environ.get("UNSLOTH_FREEZE_WARMUP", 90))
 WINDOW = int(os.environ.get("UNSLOTH_FREEZE_WINDOW", 150))
-PORTS = (8888, 8890)
+POLL_EVERY = 15
+# Both counters flat for this long, with the app still running, is not a healthy run: the
+# backend stopped being recorded. Three poll intervals, so a single missed sample is not it.
+STALE_AFTER = 3 * POLL_EVERY
+# desktop_candidate_ports() in studio/src-tauri/src/desktop_backend_owner.rs: the shell
+# walks 8888..=8908 and takes the first free one, so checking two of them would miss a
+# leftover backend on any of the other nineteen and hand the next candidate an orphan.
+PORTS = tuple(range(8888, 8909))
 
 # Each entry is (label, extra environment, why it is being tried).
 CANDIDATES = [
@@ -77,19 +113,39 @@ CANDIDATES = [
 ]
 
 
-def _has_display(extra: dict) -> bool:
+CANDIDATE_VARS = tuple(sorted({k for _, extra, _ in CANDIDATES for k in extra}))
+
+
+def candidate_env(base: dict, extra: dict) -> dict:
+    """The environment for one candidate: the caller's, minus every candidate variable,
+    plus this candidate's own.
+
+    The subtraction is the point. These are exactly the variables the reporter has already
+    been asked to try by hand, so one of them is quite likely still exported in the shell
+    this script is run from. Overlaying on top of that leaves the control running with the
+    workaround still applied and every comparison in the report meaningless: an inherited
+    GDK_BACKEND=x11 puts all four launches through XWayland, and the report says the
+    control was fine.
+    """
+    env = {k: v for k, v in base.items() if k not in CANDIDATE_VARS}
+    env.update(extra)
+    return env
+
+
+def _has_display(env: dict) -> bool:
     """Is there somewhere for THIS candidate to draw?
 
     Candidate specific, because GDK_BACKEND=x11 needs an X DISPLAY in particular: on a
     Wayland-only session it has nowhere to go, and reporting that as a crash sends someone
-    hunting a bug that is not there.
+    hunting a bug that is not there. Reads the environment the candidate is actually
+    launched with, which is not the caller's once the candidate variables are stripped.
     """
-    backend = extra.get("GDK_BACKEND") or os.environ.get("GDK_BACKEND") or ""
+    backend = env.get("GDK_BACKEND") or ""
     if backend == "x11":
-        return bool(os.environ.get("DISPLAY"))
+        return bool(env.get("DISPLAY"))
     if backend == "wayland":
-        return bool(os.environ.get("WAYLAND_DISPLAY"))
-    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+        return bool(env.get("WAYLAND_DISPLAY"))
+    return bool(env.get("DISPLAY") or env.get("WAYLAND_DISPLAY"))
 
 
 def _span(seconds: int) -> str:
@@ -167,7 +223,7 @@ def host_facts() -> dict:
             ["nvidia-smi", "--query-gpu=name,driver_version", "--format=csv,noheader"]
         ),
         "nvidia_module": (
-            Path("/proc/driver/nvidia/version").read_text().strip()
+            Path("/proc/driver/nvidia/version").read_text(encoding = "utf-8").strip()
             if Path("/proc/driver/nvidia/version").exists()
             else "(absent)"
         ),
@@ -275,12 +331,29 @@ def backend_tail(before: dict) -> str:
     return "".join(out)
 
 
-def applied_env(pid: int) -> dict:
-    """What the app set on ITSELF, read from the live process.
+def renderer_applied(shell_out: str) -> dict:
+    """The renderer workaround the app chose FOR ITSELF, from the app's own log line.
 
-    Not from a log line: the app only logs a renderer decision when it applies one, so an
-    absent line and an absent workaround look identical in the log and do not here.
+    Not from /proc/<pid>/environ. That file is the environment as it was at execve and
+    nothing else: "modifications ... after this -- for example, by calling putenv(3), or by
+    directly modifying the environ(7) variable -- are not reflected in /proc/[pid]/environ"
+    (proc_pid_environ(5)). linux_webkit::configure_renderer() applies its choice with
+    std::env::set_var AFTER exec, so reading /proc could never see it: `applied_by_app`
+    came back empty on every run that applied a workaround, which reads in the report as
+    "the app applied nothing" and is exactly the wrong thing to tell someone chasing a
+    renderer bug. main.rs logs the decision instead, through a stderr logger, so it is in
+    the captured output.
     """
+    found = {}
+    for match in RENDERER_APPLIED.finditer(shell_out):
+        for assignment in match.group(1).split():
+            k, _, v = assignment.partition("=")
+            found[k] = v
+    return found
+
+
+def exec_env(pid: int) -> dict:
+    """The candidate variables the app was STARTED with, read from the live process."""
     try:
         raw = Path(f"/proc/{pid}/environ").read_bytes().decode("utf-8", "replace")
     except OSError:
@@ -291,6 +364,139 @@ def applied_env(pid: int) -> dict:
         if k.startswith("WEBKIT_") or k.startswith("__NV_") or k == "GDK_BACKEND":
             found[k] = v
     return found
+
+
+def _last_rise(samples: list, column: int) -> int | None:
+    """Elapsed time of the last sample at which that counter moved, or None if it never did."""
+    last = None
+    for i in range(1, len(samples)):
+        if samples[i][column] > samples[i - 1][column]:
+            last = samples[i][0]
+    return last
+
+
+def classify(
+    samples: list,
+    n_mon: int,
+    n_live: int,
+    exited,
+    ran_for: int,
+    interrupted: bool,
+    preflight: str,
+    shell_started: bool,
+    has_display: bool,
+    warmup: int = None,
+) -> str:
+    """One candidate's verdict. Pure, so the wrong ones can be caught by a test rather than
+    by a reporter following them down a false path."""
+    warmup = WARMUP if warmup is None else warmup
+
+    if interrupted:
+        # Ctrl-C is documented as "skips to the next candidate", so the samples are a
+        # truncated window, not a measurement. Judging them says OK for a run that was
+        # stopped while healthy and NO SIGNAL for one stopped during startup, and both of
+        # those go into the summary looking like findings.
+        return (
+            f"SKIPPED: interrupted after {ran_for}s, before the observation window "
+            f"finished, so this candidate was not measured"
+        )
+
+    if exited == 0 and ran_for <= 20:
+        # A clean, immediate exit is almost always the single-instance guard: another copy
+        # of Unsloth is already open, so this launch handed over and quit. Calling that
+        # "crashed" would be both wrong and alarming, and it is the likeliest thing to go
+        # wrong for someone running this on their own desktop.
+        return (
+            "SKIPPED: the app exited immediately and cleanly, which usually means "
+            "another copy of Unsloth is already running. Close it and re-run"
+        )
+    if exited == 0:
+        # Ran a while and then exited cleanly. Single instance handover is immediate, so
+        # this is not that; the likeliest cause is simply that the window was closed.
+        return (
+            f"ENDED EARLY: the app ran for {ran_for}s and then exited cleanly. If you "
+            f"closed the window, just re-run and leave it open"
+        )
+    if exited is not None and not has_display:
+        # Over plain SSH there is nothing to draw on. Calling that a crash starts a bug
+        # hunt for a bug that is not there.
+        return (
+            f"CANNOT RUN: the app exited (code {exited}) and there is no display to draw "
+            f"on. Run this from a desktop session, not over plain SSH"
+        )
+    if exited is not None:
+        return f"CRASHED: the app exited on its own (code {exited})"
+
+    if n_mon == 0 and n_live == 0:
+        # Do not guess the cause: the preflight line the app already printed says which
+        # of the two it is, and naming the wrong one sends the user off fixing nothing.
+        if not preflight and not shell_started:
+            reason = (
+                "the desktop shell never started. If you launched `unsloth studio`, that "
+                "is the command line version and not the app that freezes; re-run this "
+                "with the path to Unsloth Desktop"
+            )
+        elif "NotInstalled" in preflight:
+            reason = (
+                "Unsloth Studio itself is not installed, so there is no backend to "
+                "observe. Open the app once and let it finish installing, then re-run"
+            )
+        elif "AttachedReady" in preflight or "OwnedReady" in preflight:
+            reason = (
+                "the app attached to a backend that was already running, which nothing "
+                "is recording. Close every copy of Unsloth and re-run"
+            )
+        else:
+            reason = "the backend never started, so there was nothing to observe"
+        return f"NO SIGNAL: this run measured nothing, because {reason}"
+
+    if n_live == 0:
+        # The whole oracle is "watchdog alive, interface silent". Without the watchdog
+        # there is no second opinion, so a webview that polled at startup and then froze
+        # is indistinguishable here from one that never stopped. Say so instead of
+        # passing it.
+        return (
+            "NO SIGNAL: the native watchdog never polled, so there is no independent "
+            "signal to tell a frozen interface from a healthy one"
+        )
+    if n_mon == 0:
+        return "FROZE: the interface never polled at all while the app kept running"
+
+    # Did the interface stop polling partway through while the watchdog carried on? That is
+    # the reported symptom, and a total that looks healthy can still hide it.
+    #
+    # Only after the warmup boundary. On a cold launch the native watchdog is answering
+    # before the webview has finished loading, so the very first samples always show a
+    # still interface count and a rising watchdog count. Comparing those samples set
+    # `stalled_at` on the startup of a run that then went on to poll happily for four
+    # minutes, and no later evidence could clear it: every healthy candidate was reported
+    # FROZE at about the moment it finished starting up.
+    post = [s for s in samples if s[0] >= warmup]
+    for i in range(1, len(post)):
+        if post[i][1] == post[i - 1][1] and post[i][2] > post[i - 1][2]:
+            return (
+                f"FROZE: the interface stopped polling at about {post[i][0]}s "
+                f"while the watchdog kept going"
+            )
+
+    # Both loops stopped together while the shell stayed up: the backend went away, or its
+    # output stopped being recorded. Neither counter moving means neither can be compared,
+    # and the totals from earlier in the run are large enough that nothing above matches,
+    # so this used to fall through to OK and report a dead run as a healthy one.
+    end = samples[-1][0] if samples else 0
+    mon_rise, live_rise = _last_rise(samples, 1), _last_rise(samples, 2)
+    if len(samples) >= 4 and end >= warmup:
+        quiet_for = end - max(mon_rise or 0, live_rise or 0)
+        if quiet_for > STALE_AFTER:
+            return (
+                f"NO SIGNAL: nothing was recorded for the last {quiet_for}s of the run, "
+                f"neither from the interface nor from the watchdog, so the backend stopped "
+                f"answering or stopped being logged before the window ended"
+            )
+
+    if n_live >= 3 and n_mon * 3 < n_live:
+        return "SUSPECT: the interface polled far less than the watchdog"
+    return "OK: the interface kept polling for the whole run"
 
 
 def run_candidate(label, extra, why, cmd) -> dict:
@@ -304,7 +510,10 @@ def run_candidate(label, extra, why, cmd) -> dict:
             flush = True,
         )
 
-    env = {**os.environ, **extra}
+    env = candidate_env(dict(os.environ), extra)
+    cleared = sorted(k for k in CANDIDATE_VARS if k in os.environ and k not in extra)
+    if cleared:
+        print(f"    unset for this candidate: {', '.join(cleared)}", flush = True)
     before = backend_offsets()
     # To a FILE, never subprocess.PIPE. Nothing here reads the pipe while the app runs, so
     # once the app had written enough to fill the 64 KiB buffer it would block on its own
@@ -314,38 +523,42 @@ def run_candidate(label, extra, why, cmd) -> dict:
     proc = subprocess.Popen(
         cmd,
         env = env,
-        stdout = app_log.open("w"),
+        stdout = app_log.open("w", encoding = "utf-8", errors = "replace"),
         stderr = subprocess.STDOUT,
         start_new_session = True,
     )
-    started = time.time()
-    applied, samples, exited, ran_for = {}, [], None, 0
+    started = time.monotonic()
+    at_exec, samples, exited, ran_for = {}, [], None, 0
+    interrupted = False
 
     print(f"    launching, then watching for {_span(WARMUP + WINDOW)}.", flush = True)
     print("    Use the window normally while this runs.", flush = True)
     try:
-        while time.time() - started < WARMUP + WINDOW:
-            time.sleep(15)
+        while time.monotonic() - started < WARMUP + WINDOW:
+            time.sleep(POLL_EVERY)
             if proc.poll() is not None:
                 exited = proc.returncode
-                ran_for = round(time.time() - started)
+                ran_for = round(time.monotonic() - started)
                 print(
-                    f"    the app EXITED (code {exited}) after " f"{time.time() - started:.0f}s",
+                    f"    the app EXITED (code {exited}) after "
+                    f"{time.monotonic() - started:.0f}s",
                     flush = True,
                 )
                 break
-            if not applied:
-                applied = applied_env(proc.pid)
+            if not at_exec:
+                at_exec = exec_env(proc.pid)
             text = backend_tail(before)
             n_mon, n_live = len(MONITOR.findall(text)), len(LIVENESS.findall(text))
-            samples.append((round(time.time() - started), n_mon, n_live))
+            samples.append((round(time.monotonic() - started), n_mon, n_live))
             if len(samples) % 2 == 0:
                 print(
                     f"    t={samples[-1][0]:4}s  interface={n_mon:3}  watchdog={n_live:3}",
                     flush = True,
                 )
     except KeyboardInterrupt:
-        print("    interrupted; recording what was collected so far", flush = True)
+        interrupted = True
+        ran_for = round(time.monotonic() - started)
+        print("    interrupted; this candidate is recorded as skipped", flush = True)
     finally:
         alive = proc.poll() is None
         if alive:
@@ -361,81 +574,27 @@ def run_candidate(label, extra, why, cmd) -> dict:
             pass
 
     text = backend_tail(before)
-    shell_out = app_log.read_text(errors = "replace")
+    shell_out = app_log.read_text(encoding = "utf-8", errors = "replace")
     n_mon, n_live = len(MONITOR.findall(text)), len(LIVENESS.findall(text))
-
-    # Did the interface stop polling partway through while the watchdog carried on? That is
-    # the reported symptom, and a total that looks healthy can still hide it.
-    stalled_at = None
-    for i in range(1, len(samples)):
-        if samples[i][1] == samples[i - 1][1] and samples[i][2] > samples[i - 1][2]:
-            stalled_at = samples[i][0]
-            break
 
     pre_lines = [l for l in (text + shell_out).splitlines() if "desktop_preflight completed" in l]
     preflight = pre_lines[-1].strip() if pre_lines else ""
+    applied = renderer_applied(shell_out)
 
     if not ran_for:
         ran_for = samples[-1][0] if samples else 0
 
-    if exited == 0 and ran_for <= 20:
-        # A clean, immediate exit is almost always the single-instance guard: another copy
-        # of Unsloth is already open, so this launch handed over and quit. Calling that
-        # "crashed" would be both wrong and alarming, and it is the likeliest thing to go
-        # wrong for someone running this on their own desktop.
-        verdict = (
-            "SKIPPED: the app exited immediately and cleanly, which usually means "
-            "another copy of Unsloth is already running. Close it and re-run"
-        )
-    elif exited == 0:
-        # Ran a while and then exited cleanly. Single instance handover is immediate, so
-        # this is not that; the likeliest cause is simply that the window was closed.
-        verdict = (
-            f"ENDED EARLY: the app ran for {ran_for}s and then exited cleanly. If you "
-            f"closed the window, just re-run and leave it open"
-        )
-    elif exited is not None and not _has_display(extra):
-        # Over plain SSH there is nothing to draw on. Calling that a crash starts a bug
-        # hunt for a bug that is not there.
-        verdict = (
-            f"CANNOT RUN: the app exited (code {exited}) and there is no display to draw "
-            f"on. Run this from a desktop session, not over plain SSH"
-        )
-    elif exited is not None:
-        verdict = f"CRASHED: the app exited on its own (code {exited})"
-    elif n_mon == 0 and n_live == 0:
-        # Do not guess the cause: the preflight line the app already printed says which
-        # of the two it is, and naming the wrong one sends the user off fixing nothing.
-        if not preflight and not applied:
-            why = (
-                "the desktop shell never started. If you launched `unsloth studio`, that "
-                "is the command line version and not the app that freezes; re-run this "
-                "with the path to Unsloth Desktop"
-            )
-        elif "NotInstalled" in preflight:
-            why = (
-                "Unsloth Studio itself is not installed, so there is no backend to "
-                "observe. Open the app once and let it finish installing, then re-run"
-            )
-        elif "AttachedReady" in preflight or "OwnedReady" in preflight:
-            why = (
-                "the app attached to a backend that was already running, which nothing "
-                "is recording. Close every copy of Unsloth and re-run"
-            )
-        else:
-            why = "the backend never started, so there was nothing to observe"
-        verdict = f"NO SIGNAL: this run measured nothing, because {why}"
-    elif n_live > 0 and n_mon == 0:
-        verdict = "FROZE: the interface never polled at all while the app kept running"
-    elif stalled_at is not None:
-        verdict = (
-            f"FROZE: the interface stopped polling at about {stalled_at}s "
-            f"while the watchdog kept going"
-        )
-    elif n_live >= 3 and n_mon * 3 < n_live:
-        verdict = "SUSPECT: the interface polled far less than the watchdog"
-    else:
-        verdict = "OK: the interface kept polling for the whole run"
+    verdict = classify(
+        samples = samples,
+        n_mon = n_mon,
+        n_live = n_live,
+        exited = exited,
+        ran_for = ran_for,
+        interrupted = interrupted,
+        preflight = preflight,
+        shell_started = bool(SHELL_STARTED.search(shell_out)) or bool(applied),
+        has_display = _has_display(env),
+    )
 
     print(f"    VERDICT: {verdict}", flush = True)
     return {
@@ -445,12 +604,52 @@ def run_candidate(label, extra, why, cmd) -> dict:
         "verdict": verdict,
         "preflight": scrub(preflight) if preflight else "(not seen)",
         "applied_by_app": applied,
+        "env_at_exec": at_exec,
         "interface_polls": n_mon,
         "watchdog_polls": n_live,
         "exit_code": exited,
         "samples": samples,
         "backend_log_excerpt": scrub("\n".join(text.splitlines()[-40:])),
     }
+
+
+def resolve_command(cmd: list[str]) -> list[str] | None:
+    """The command as `subprocess.Popen` will resolve it, or None if it does not exist.
+
+    Popen uses `os.execvpe()`-like behaviour, so a first argument with no slash in it is
+    looked up on PATH and NOT in the current directory. `Unsloth.AppImage`, typed while
+    sitting in ~/Downloads, passes an `is_file()` check and then raises FileNotFoundError
+    at launch, which is the one place a plain mistake looks like a broken script. Anything
+    that names an existing file becomes an absolute path here so the two agree.
+    """
+    on_path = shutil.which(cmd[0])
+    if on_path and not Path(cmd[0]).is_file():
+        return [on_path] + cmd[1:]
+    if Path(cmd[0]).is_file():
+        return [str(Path(cmd[0]).resolve())] + cmd[1:]
+    if on_path:
+        return [on_path] + cmd[1:]
+    return None
+
+
+def confirm_stop_running_studio() -> bool:
+    """A backend is already answering before the first candidate. Ask before touching it.
+
+    `stop_leftover_backend()` cannot tell a backend orphaned by a previous run from the one
+    serving the Unsloth the reporter has open right now: both are Studio processes on a
+    Studio port. Running into it unasked SIGTERMs a live session, interrupting whatever it
+    was doing, to gather a report about a freeze. Printing a note and carrying on is not
+    consent, so require an answer, and refuse rather than guess when there is nobody to ask.
+    """
+    if os.environ.get("UNSLOTH_FREEZE_STOP_RUNNING") == "1":
+        return True
+    if not sys.stdin or not sys.stdin.isatty():
+        return False
+    try:
+        return input("Stop it and continue? [y/N] ").strip().lower() in ("y", "yes")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
 
 
 def main() -> int:
@@ -466,9 +665,11 @@ def main() -> int:
             "  python3 {} /usr/bin/unsloth-studio".format(Path(__file__).name)
         )
         return 2
-    if not shutil.which(cmd[0]) and not Path(cmd[0]).is_file():
+    asked_for = cmd[0]
+    cmd = resolve_command(cmd)
+    if cmd is None:
         print(
-            f"cannot find {cmd[0]!r} on PATH. Pass the command explicitly, for example:\n"
+            f"cannot find {asked_for!r} on PATH. Pass the command explicitly, for example:\n"
             f"  python3 {Path(__file__).name} ~/Applications/Unsloth-Desktop.AppImage"
         )
         return 2
@@ -483,9 +684,16 @@ def main() -> int:
     print("Use the app normally during each one. Ctrl-C skips to the next candidate.\n")
 
     if port_busy():
-        print("NOTE: something is already listening on the Studio port. Close any running")
-        print("Unsloth (including `unsloth studio` in another terminal) first, or the app")
-        print("will attach to it and this script will not be able to measure anything.\n")
+        print("Something is already listening on a Studio port. That is either Unsloth")
+        print("running right now, or a backend left behind by an earlier run, and this")
+        print("script cannot tell them apart: continuing STOPS it, which interrupts")
+        print("whatever that Unsloth is doing.\n")
+        print("Close any running Unsloth (including `unsloth studio` in another terminal)")
+        print("and start again, or answer below to stop it from here.\n")
+        if not confirm_stop_running_studio():
+            print("Nothing was stopped and no report was written.")
+            return 2
+        print()
 
     facts = host_facts()
     print(f"  session : {facts['session_type']}   desktop: {facts['desktop']}")
@@ -493,15 +701,26 @@ def main() -> int:
     print(f"  driver  : {facts['nvidia_driver'] or '(no nvidia-smi)'}")
 
     results = []
-    for label, extra, why in CANDIDATES:
-        try:
-            results.append(run_candidate(label, extra, why, cmd))
-        except KeyboardInterrupt:
-            print("\n  skipped by user", flush = True)
+    try:
+        for label, extra, why in CANDIDATES:
+            try:
+                results.append(run_candidate(label, extra, why, cmd))
+            except KeyboardInterrupt:
+                print("\n  skipped by user", flush = True)
+    finally:
+        # The last candidate's backend is cleaned up by the NEXT candidate, and there is no
+        # next one. Closing the app does not stop the backend it started, so without this
+        # the script exits leaving Studio quietly serving: the reporter's next real launch
+        # attaches to a backend nothing is recording, which this script's own docstring
+        # calls the worst possible state to be in, and a second run of it would refuse to
+        # start against a port it cannot explain.
+        print("\n  stopping any backend left behind by the last candidate", flush = True)
+        stop_leftover_backend()
 
     out = Path.cwd() / f"unsloth-freeze-report-{datetime.now():%Y%m%d-%H%M%S}.json"
     out.write_text(
-        json.dumps({"host": json.loads(scrub(json.dumps(facts))), "results": results}, indent = 2)
+        json.dumps({"host": json.loads(scrub(json.dumps(facts))), "results": results}, indent = 2),
+        encoding = "utf-8",
     )
 
     print("\n" + "=" * 60)
