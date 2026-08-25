@@ -742,6 +742,22 @@ export function SharedComposer({
   const thinkingActiveLook = isEffort
     ? reasoningLockedOn || (effectiveReasoningVisualEnabled && !reasoningDisabled)
     : reasoningLockedOn || (effectiveReasoningEnabled && !reasoningDisabled);
+  // Effort models keep the whole pill as the trigger: picking a level is the
+  // primary action there, and Off is one of the rows.
+  const splitThinkingPill =
+    supportsPreserveThinking &&
+    !isEffort &&
+    !reasoningLockedOn &&
+    !reasoningDisabled;
+  const toggleThinking = () => {
+    const next = !effectiveReasoningEnabled;
+    setReasoningEnabled(next);
+    applyQwenThinkingParams(next);
+    if (!next) setPreserveThinking(false);
+    if (isKimiExternal && next && toolsEnabled) {
+      setToolsEnabled(false, { persist: false });
+    }
+  };
   // Two-pill gating: Search lights up on a local tool runtime (supportsTools:
   // Code/python + local web_search) OR a provider-run server-side web_search
   // (supportsBuiltinWebSearch: OpenAI/Anthropic/OpenRouter/Kimi). Code lights
@@ -2434,33 +2450,67 @@ export function SharedComposer({
           {showReasoningControl ? (
             isEffort || supportsPreserveThinking ? (
               <DropdownMenu>
-                <DropdownMenuTrigger asChild={true}>
-                  <button
-                    type="button"
-                    disabled={reasoningDisabled}
-                    className="unsloth-thinking-pill"
-                    data-pill-label="Thinking settings"
-                    data-active={thinkingActiveLook ? "true" : "false"}
-                    aria-label={thinkEffortAriaLabel({
-                      modelLoaded,
-                      reasoningDisabled,
-                      reasoningEffort,
-                    })}
-                  >
-                    <BulbIcon className="size-[15.5px]" />
-                    {thinkingActiveLook ? (
-                      <span className="unsloth-thinking-label">
-                        {isEffort
-                          ? `Thinking · ${formatReasoningEffortLabel(
+                <div className="unsloth-thinking-split">
+                  {splitThinkingPill ? (
+                    <button
+                      type="button"
+                      className="unsloth-thinking-pill unsloth-thinking-split-toggle"
+                      data-pill-label="Thinking"
+                      data-active={thinkingActiveLook ? "true" : "false"}
+                      aria-label={thinkToggleAriaLabel({
+                        reasoningLockedOn,
+                        modelLoaded,
+                        reasoningDisabled,
+                        effectiveReasoningEnabled,
+                      })}
+                      onClick={toggleThinking}
+                    >
+                      <PillGlyph>
+                        <BulbIcon className="size-[15.5px]" />
+                      </PillGlyph>
+                      {thinkingActiveLook ? (
+                        <span className="unsloth-thinking-label">Thinking</span>
+                      ) : null}
+                    </button>
+                  ) : null}
+                  <DropdownMenuTrigger asChild={true}>
+                    <button
+                      type="button"
+                      disabled={reasoningDisabled}
+                      className="unsloth-thinking-pill"
+                      data-pill-label="Thinking settings"
+                      data-active={thinkingActiveLook ? "true" : "false"}
+                      aria-label={
+                        splitThinkingPill
+                          ? "Thinking settings"
+                          : thinkEffortAriaLabel({
+                              modelLoaded,
+                              reasoningDisabled,
                               reasoningEffort,
-                              externalSelection?.modelId,
-                            )}`
-                          : "Thinking"}
-                      </span>
-                    ) : null}
-                    <ArrowDownStandardIcon className="unsloth-thinking-caret size-[15px]" />
-                  </button>
-                </DropdownMenuTrigger>
+                            })
+                      }
+                    >
+                      {splitThinkingPill ? (
+                        <BulbIcon className="unsloth-thinking-split-icon size-[15.5px]" />
+                      ) : (
+                        <>
+                          <BulbIcon className="size-[15.5px]" />
+                          {thinkingActiveLook ? (
+                            <span className="unsloth-thinking-label">
+                              {isEffort
+                                ? `Thinking · ${formatReasoningEffortLabel(
+                                    reasoningEffort,
+                                    externalSelection?.modelId,
+                                  )}`
+                                : "Thinking"}
+                            </span>
+                          ) : null}
+                        </>
+                      )}
+                      <ArrowDownStandardIcon className="unsloth-thinking-caret size-[15px]" />
+                    </button>
+                  </DropdownMenuTrigger>
+                </div>
                 <DropdownMenuContent
                   side="top"
                   align="end"
