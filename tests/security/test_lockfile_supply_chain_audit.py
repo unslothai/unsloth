@@ -541,33 +541,55 @@ def test_audit_runs_before_npm_install_in_consumer_workflows():
     lockfiles via ``npm install`` / ``npm ci`` must run the
     lockfile_supply_chain_audit step BEFORE that install, otherwise a
     compromised lockfile's lifecycle scripts execute before the audit
-    can refuse the run. Static text check so a future edit cannot
-    silently reintroduce the asymmetric ordering."""
+    can refuse the run.
+
+    Parsed as YAML and checked per JOB, not per file. Reading the raw
+    text instead sees neither half of the guarantee: an install written
+    as a ``run: |`` block scalar is invisible, and a file-wide "first
+    audit offset" lets one job's audit vouch for another job's install.
+    Together those left this test green with the whole Windows audit
+    step of studio-tauri-smoke.yml deleted.
+    """
     import re
 
+    import yaml
+
+    # The Linux jobs call `python3`; the Windows and macOS jobs pin an
+    # interpreter with setup-python and call `python`. Same audit.
+    audit_re = re.compile(r"\bpython3?\s+scripts/lockfile_supply_chain_audit\.py\b")
+    install_re = re.compile(r"\bnpm\s+(?:install|ci)\b")
+
     workflows_dir = REPO_ROOT / ".github" / "workflows"
-    # Match `run:` lines invoking the audit / npm install. We look at
-    # ``run:`` lines specifically so the prose comment block above
-    # each step (which mentions both audit and `npm install`) does
-    # not bias the ordering check.
-    audit_re = re.compile(
-        r"^\s*run:\s*python3\s+scripts/lockfile_supply_chain_audit\.py", re.MULTILINE
-    )
-    install_re = re.compile(r"^\s*run:\s*(?:.*&&\s*)?npm\s+(?:install|ci)\b", re.MULTILINE)
     for wf_name in ("studio-tauri-smoke.yml", "release-desktop.yml"):
         wf = workflows_dir / wf_name
         assert wf.is_file(), f"missing workflow: {wf}"
-        text = wf.read_text(encoding = "utf-8")
-        audit_match = audit_re.search(text)
-        assert audit_match, (
-            f"{wf_name}: must invoke lockfile_supply_chain_audit.py "
-            f"via a ``run: python3 scripts/...`` line (none found)"
+        doc = yaml.safe_load(wf.read_text(encoding = "utf-8"))
+        checked = 0
+        for job_id, job in (doc.get("jobs") or {}).items():
+            if not isinstance(job, dict):
+                continue
+            # (step index, offset within that step) of the job's first
+            # audit, so an audit and an install sharing one step are
+            # still ordered against each other.
+            audited_at = None
+            for index, step in enumerate(job.get("steps") or []):
+                run = step.get("run") if isinstance(step, dict) else None
+                if not isinstance(run, str):
+                    continue
+                audit = audit_re.search(run)
+                if audit is not None and audited_at is None:
+                    audited_at = (index, audit.start())
+                install = install_re.search(run)
+                if install is None:
+                    continue
+                checked += 1
+                assert audited_at is not None and audited_at < (index, install.start()), (
+                    f"{wf_name}: job {job_id!r} reaches ``npm install`` / "
+                    f"``npm ci`` in step {index} with no lockfile audit before "
+                    f"it in that job; a compromised lockfile's lifecycle "
+                    f"scripts would execute before the audit can refuse it"
+                )
+        assert checked, (
+            f"{wf_name}: found no ``npm install`` / ``npm ci`` step at all, so "
+            f"this guard passed vacuously -- the workflow or the pattern drifted"
         )
-        for install_match in install_re.finditer(text):
-            assert audit_match.start() < install_match.start(), (
-                f"{wf_name}: lockfile audit (offset {audit_match.start()}) "
-                f"must come BEFORE every ``npm install`` / ``npm ci`` run "
-                f"line (offending offset {install_match.start()}); a "
-                f"compromised lockfile's lifecycle scripts would otherwise "
-                f"execute before the audit can refuse the lockfile"
-            )
