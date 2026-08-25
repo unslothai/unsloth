@@ -20061,6 +20061,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             upstream_stream_options["include_usage"] = True
             upstream_body["stream_options"] = upstream_stream_options
             from core.inference.llama_keepwarm import mark_response_failed
+
             client = httpx.AsyncClient(
                 timeout = _llama_streaming_generation_timeout(),
                 trust_env = False,
