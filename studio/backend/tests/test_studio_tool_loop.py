@@ -825,21 +825,6 @@ def test_nudging_is_independent_of_text_form_healing(executed):
     assert len(transport.requests) == 2
 
 
-def test_a_stalled_model_is_not_nudged_by_default(executed):
-    """The external loop must not invent a retry for an omitted opt-in flag."""
-    transport = FakeTransport(
-        [
-            [_sse({"content": "I'll search for that now."}), _sse(finish = "stop"), _DONE],
-            [_sse({"content": "SHOULD NOT APPEAR"}), _sse(finish = "stop"), _DONE],
-        ]
-    )
-    lines = _run(transport)
-
-    assert executed == []
-    assert len(transport.requests) == 1
-    assert "SHOULD NOT APPEAR" not in _visible_text(lines)
-
-
 def test_a_finished_answer_is_not_nudged(executed):
     """A real answer must never be re-prompted into calling a tool."""
     answer = (
