@@ -203,7 +203,28 @@ function SidebarProvider({
           } as React.CSSProperties
         }
         className={cn(
-          "group/sidebar-wrapper has-data-[variant=inset]:bg-sidebar flex min-h-svh w-full",
+          // `has-[>...]`, not `has-[...]`, and the combinator is the whole point.
+          //
+          // This wrapper is an ancestor of the chat thread, as the note on
+          // --sidebar-width above already says. A `:has()` whose argument is a
+          // DESCENDANT selector has to be re-evaluated whenever anything is
+          // inserted or removed anywhere in the subject's subtree, and
+          // re-evaluating it on an ancestor of the thread restyles the thread.
+          // Measured at the 500K rung, corpus 23cd2464, on a 357,843-element
+          // thread: appending one EMPTY span inside a message cost 17.5 and
+          // 18.6 ms in two concurrent arms with this rule in place, 8.7 ms with
+          // this rule alone deleted, and 0.10 ms with this rule and the one on
+          // chat-page.tsx deleted. Deleting the other eleven `:has()` rules
+          // that survived the bisect changed nothing (17.2 / 19.2 ms), and the
+          // same span appended to <body> costs 0.10 ms either way.
+          //
+          // The child combinator is not a weakening. `data-variant` is rendered
+          // on the root element of `Sidebar` below, and `Sidebar` is a direct
+          // child of this wrapper (AppSidebar returns it inside a Fragment,
+          // which is not a DOM node), so the two selectors match the same
+          // elements. What changes is that a mutation deep in the thread can no
+          // longer make Blink ask this question again.
+          "group/sidebar-wrapper has-[>[data-variant=inset]]:bg-sidebar flex min-h-svh w-full",
           className
         )}
         {...props}
