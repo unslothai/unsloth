@@ -412,6 +412,34 @@ def test_export_tracks_a_quoted_secret_when_its_value_contains_a_key_word(client
     assert "ordinary: kept" in exported
 
 
+def test_export_tracks_an_unindented_shell_secret_continuation(client):
+    first = "correct-horse"
+    second = "battery-staple"
+    path = _seed_server_log(f"PASSWORD={first}-\\\n{second}\nordinary: kept\n")
+
+    response = client.get("/api/settings/debug/logs/export")
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        exported = archive.read(f"server/{path.name}").decode("utf-8")
+    assert first not in exported
+    assert second not in exported
+    assert "ordinary: kept" in exported
+
+
+def test_export_uses_the_opening_quote_for_multiline_secret_state(client):
+    first = 'first "nickname'
+    second = 'second "alias'
+    third = "third-secret"
+    path = _seed_server_log(f"password: '{first}\n  {second}\n  {third}'\nordinary: kept\n")
+
+    response = client.get("/api/settings/debug/logs/export")
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        exported = archive.read(f"server/{path.name}").decode("utf-8")
+    assert first not in exported
+    assert second not in exported
+    assert third not in exported
+    assert "ordinary: kept" in exported
+
+
 def test_export_preserves_many_carriage_return_delimited_records(client):
     records = [f"progress {index:05d} " + "x" * 48 for index in range(20_000)]
     path = _seed_server_log("\r".join(records) + "\r")

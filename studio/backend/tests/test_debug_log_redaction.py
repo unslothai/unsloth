@@ -46,6 +46,9 @@ SECRETS = [
         "ghp_ABCDEFGHIJKLMNOPQRST0123",
     ),
     ("password: hunter2hunter2", "hunter2hunter2"),
+    ("password=1234", "1234"),
+    ("api_key=abc", "abc"),
+    ('api_key="xy"', "xy"),
     # "_" is a word character, so a \b before the key name never fires inside an
     # env-style name; all of these used to survive in the clear.
     ("OPENAI_API_KEY=opaquevalue123456", "opaquevalue123456"),
@@ -59,6 +62,8 @@ SECRETS = [
     # The key/value rule captures the scheme word as the "value", so the
     # credential after it was never looked at.
     ("Authorization: Basic dXNlcm5hbWU6c3VwZXJzZWNyZXQ=", "dXNlcm5hbWU6c3VwZXJzZWNyZXQ="),
+    ("Authorization: Basic dTpw", "dTpw"),
+    ("Authorization: Bearer xy", "xy"),
     ("headers={'authorization': 'Basic dXNlcjpwdw=='}", "dXNlcjpwdw=="),
     # Studio's UI session cookie gates these very endpoints.
     ("Cookie: unsloth_session=8f3c9d1ab77e4f0a9c2b3d4e", "8f3c9d1ab77e4f0a9c2b3d4e"),
@@ -147,6 +152,8 @@ QUOTED = [
     ),
     # An escaped quote inside the value does not end it early.
     ('password="corr\\"ect horse staple"', 'password="<redacted>"'),
+    ("password='first \"nickname\" last'", "password='<redacted>'"),
+    ("password=\"first 'nickname' last\"", 'password="<redacted>"'),
     # Quoting puts the scheme inside the value; it stays, the credential goes.
     ('password: "Basic dXNlcjpwdw=="', 'password: "Basic <redacted>"'),
 ]

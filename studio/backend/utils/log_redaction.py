@@ -100,20 +100,35 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 # password="correct horse battery staple" into password="<redacted> horse
 # battery staple", which reads as masked while leaking all but the first word.
 #
-# "[^\"'\\\n]|\\." rather than a lazy ".*?" so an escaped quote does not end the
-# value early; \n is excluded so an unterminated quote cannot run the mask past
-# its own line.
-_QUOTED_VALUE = r"(?:[^\"'\\\n]|\\.){6,}"
+# A backreference closes the same quote that opened the value. This lets a
+# single-quoted secret contain double quotes (and vice versa) without exposing
+# the suffix, while an escaped matching quote does not end the value early.
+_QUOTED_VALUE = r"(?:\\.|(?!(?P=quote))[^\\\n])*"
+_QUOTED_KV_RE = re.compile(
+    r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
+    r"(?P<sep>[\"']?\s*[:=]\s*)(?P<quote>[\"'])"
+    r"(?P<val>" + _QUOTED_VALUE + r")(?P=quote)"
+)
+_UNTERMINATED_QUOTED_KV_RE = re.compile(
+    r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
+    r"(?P<sep>[\"']?\s*[:=]\s*)(?P<quote>[\"'])"
+    r"(?P<val>" + _QUOTED_VALUE + r")(?=\r?$)",
+    re.MULTILINE,
+)
 _KV_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
-    r"(?P<sep>[\"']?\s*[:=]\s*(?P<q>[\"'])?)"
-    r"(?P<val>(?(q)" + _QUOTED_VALUE + r"|[^\"'\s,}\]]{6,}))"
+    r"(?P<sep>[\"']?\s*[:=]\s*)(?P<val>[^\"'\s,}\]]+)"
 )
-_FLAG_RE = re.compile(
+_QUOTED_FLAG_RE = re.compile(
     r"(?i)(?P<key>--(?:" + _SECRET_KEYS + r"))"
-    r"(?P<sep>\s+(?P<q>[\"'])?)"
-    r"(?P<val>(?(q)" + _QUOTED_VALUE + r"|[^\s\"']{6,}))"
+    r"(?P<sep>\s+)(?P<quote>[\"'])(?P<val>" + _QUOTED_VALUE + r")(?P=quote)"
 )
+_UNTERMINATED_QUOTED_FLAG_RE = re.compile(
+    r"(?i)(?P<key>--(?:" + _SECRET_KEYS + r"))"
+    r"(?P<sep>\s+)(?P<quote>[\"'])(?P<val>" + _QUOTED_VALUE + r")(?=\r?$)",
+    re.MULTILINE,
+)
+_FLAG_RE = re.compile(r"(?i)(?P<key>--(?:" + _SECRET_KEYS + r"))(?P<sep>\s+)(?P<val>[^\s\"']+)")
 
 # YAML and similar structured logs may put a credential value on the next
 # physical line. ``redact_log_text`` can mask that shape when it receives both
@@ -128,7 +143,7 @@ _CONTINUED_SECRET_RE = re.compile(
 _CONTINUED_COOKIE_RE = re.compile(r"(?i)^(?P<indent>[ \t]*)(?:set-)?cookie[\"']?\s*[:=]\s*$")
 _UNTERMINATED_QUOTED_SECRET_RE = re.compile(
     r"(?i)^(?P<indent>[ \t]*)" + _KEY_START + r"(?:" + _SECRET_KEYS + r")\b[\"']?\s*[:=]\s*"
-    r"(?:\"(?:\\.|[^\"\\])*|'(?:\\.|[^'\\])*)$"
+    r"(?:(?P<double>\")(?:\\.|[^\"\\])*|(?P<single>')(?:\\.|[^'\\])*)$"
 )
 _INLINE_PLAIN_SECRET_RE = re.compile(
     r"(?i)^(?P<indent>[ \t]*)"
@@ -170,9 +185,10 @@ _COOKIE_RE = re.compile(
     re.MULTILINE,
 )
 
-# Keys whose value is a secret even when it is all digits (a numeric password is
-# still a password); everywhere else a bare number is a count or an id.
-_NUMERIC_IS_STILL_SECRET = re.compile(r"(?i)pass(word|wd)?$|secret$")
+# Exact secret keys mask every non-empty value. Preserve only explicit null
+# sentinels, which communicate that no credential was configured.
+_NON_SECRET_SENTINELS = frozenset({"none", "null"})
+_YAML_BLOCK_MARKER_RE = re.compile(r"[|>](?:[1-9][+-]?|[+-][1-9]?|[+-])?")
 
 
 def _looks_like_credential(value: str) -> bool:
@@ -193,10 +209,8 @@ def _looks_like_credential(value: str) -> bool:
 
 
 def _redact_kv(match: re.Match[str]) -> str:
-    # Named groups: the quoted/unquoted branch adds a group, so positional
-    # numbering is not stable.
     value = match.group("val")
-    if value.isdigit() and not _NUMERIC_IS_STILL_SECRET.search(match.group("key")):
+    if value.lower() in _NON_SECRET_SENTINELS or _YAML_BLOCK_MARKER_RE.fullmatch(value):
         return match.group(0)
     # Quoting puts the scheme inside the value ('authorization': 'Basic abc').
     # Step over it rather than abandon the match: the rest is still the
@@ -209,9 +223,33 @@ def _redact_kv(match: re.Match[str]) -> str:
     return f"{match.group('key')}{match.group('sep')}{REDACTED}"
 
 
+def _redact_quoted_kv(match: re.Match[str]) -> str:
+    value = match.group("val")
+    if value.lower() in _NON_SECRET_SENTINELS:
+        return match.group(0)
+    scheme, sep, rest = value.partition(" ")
+    masked = (
+        f"{scheme}{sep}{REDACTED}"
+        if scheme.lower() in _SCHEMES and sep and rest.strip()
+        else REDACTED
+    )
+    quote = match.group("quote")
+    return f"{match.group('key')}{match.group('sep')}{quote}{masked}{quote}"
+
+
+def _redact_unterminated_quoted_kv(match: re.Match[str]) -> str:
+    quote = match.group("quote")
+    return f"{match.group('key')}{match.group('sep')}{quote}{REDACTED}"
+
+
 def _redact_shaped(match: re.Match[str]) -> str:
     if not _looks_like_credential(match.group(3)):
         return match.group(0)
+    return f"{match.group(1)}{match.group(2)}{REDACTED}"
+
+
+def _redact_authorization(match: re.Match[str]) -> str:
+    """An exact Authorization header names credential material unambiguously."""
     return f"{match.group(1)}{match.group(2)}{REDACTED}"
 
 
@@ -247,10 +285,14 @@ def redact_log_text(text: str) -> str:
         text = pattern.sub(replacement, text)
     # Before the key/value rules: _KV_RE captures "Basic" from "Authorization:
     # Basic dXNlcjpwdw==", masking the scheme and leaving the credential clear.
-    text = _AUTH_HEADER_RE.sub(_redact_shaped, text)
+    text = _AUTH_HEADER_RE.sub(_redact_authorization, text)
     text = _SCHEME_RE.sub(_redact_shaped, text)
     text = _COOKIE_RE.sub(_redact_cookie, text)
+    text = _QUOTED_KV_RE.sub(_redact_quoted_kv, text)
+    text = _UNTERMINATED_QUOTED_KV_RE.sub(_redact_unterminated_quoted_kv, text)
     text = _KV_RE.sub(_redact_kv, text)
+    text = _QUOTED_FLAG_RE.sub(_redact_quoted_kv, text)
+    text = _UNTERMINATED_QUOTED_FLAG_RE.sub(_redact_unterminated_quoted_kv, text)
     text = _FLAG_RE.sub(_redact_kv, text)
     try:
         from utils.native_path_leases import redact_native_paths
@@ -266,6 +308,7 @@ class StreamingLogRedactor:
     def __init__(self) -> None:
         self._plain_key_indent: int | None = None
         self._plain_has_value = False
+        self._plain_explicit_continuation = False
         self._block_key_indent: int | None = None
         self._block_value_indent: int | None = None
         self._cookie_key_indent: int | None = None
@@ -312,6 +355,11 @@ class StreamingLogRedactor:
         """Conservatively mask the continuation after a discarded sensitive record."""
         self._plain_key_indent = 0
         self._plain_has_value = False
+        self._plain_explicit_continuation = False
+
+    @staticmethod
+    def _ends_with_unescaped_backslash(text: str) -> bool:
+        return (len(text) - len(text.rstrip("\\"))) % 2 == 1
 
     @staticmethod
     def _context_view(text: str) -> str:
@@ -357,11 +405,18 @@ class StreamingLogRedactor:
             if indent > self._plain_key_indent:
                 self._plain_has_value = True
                 return self._masked_record(redacted)
+            if self._plain_explicit_continuation:
+                self._plain_explicit_continuation = self._ends_with_unescaped_backslash(physical)
+                if not self._plain_explicit_continuation:
+                    self._plain_key_indent = None
+                    self._plain_has_value = False
+                return self._masked_record(redacted)
             if not self._plain_has_value:
                 self._plain_key_indent = None
                 return self._masked_record(redacted)
             self._plain_key_indent = None
             self._plain_has_value = False
+            self._plain_explicit_continuation = False
 
         if self._cookie_key_indent is not None:
             if not redacted.strip():
@@ -378,13 +433,16 @@ class StreamingLogRedactor:
 
         quoted = _UNTERMINATED_QUOTED_SECRET_RE.search(physical_context)
         if quoted:
-            self._quoted_secret = '"' if '"' in physical_context[quoted.start() :] else "'"
+            self._quoted_secret = '"' if quoted.group("double") else "'"
             return self._masked_record(redacted)
 
         inline_plain = _INLINE_PLAIN_SECRET_RE.search(physical_context)
         if inline_plain and REDACTED in redacted:
             self._plain_key_indent = len(inline_plain.group("indent"))
             self._plain_has_value = True
+            self._plain_explicit_continuation = self._ends_with_unescaped_backslash(
+                physical_context
+            )
             return redacted
 
         continued = _CONTINUED_SECRET_RE.search(redacted_context)
@@ -401,6 +459,7 @@ class StreamingLogRedactor:
             else:
                 self._plain_key_indent = len(continued.group("indent"))
                 self._plain_has_value = False
+                self._plain_explicit_continuation = False
             return redacted
 
         cookie = _CONTINUED_COOKIE_RE.search(redacted_context)
