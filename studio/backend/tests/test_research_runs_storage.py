@@ -3972,3 +3972,40 @@ def test_research_stays_spent_after_a_completed_run(research_home):
     research_db.claim_next("worker-1")
     research_db.finish("run-1", "worker-1", "completed")
     assert research_db.research_spent("thread-1") is True
+
+
+def test_the_new_question_does_not_inherit_the_stopped_one_s_reasoning(research_home):
+    """get_reasoning_text joins every reasoning event at the run's current attempt.
+
+    The run row is reused, so without a new attempt the report written for the new question
+    opens with the thinking the user stopped.
+    """
+    _create()
+    research_db.append_event("run-1", "reasoning.updated", {"reasoningDelta": "about dog breeds"})
+    _cancel_run()
+
+    assert _rebind(_new_user_message()) is not None
+    research_db.append_event("run-1", "reasoning.updated", {"reasoningDelta": "about the AI Act"})
+
+    assert research_db.get_reasoning_text("run-1") == "about the AI Act"
+    # The stopped question's activity is still there to read, under its own attempt.
+    kept = [
+        event for event in research_db.list_events("run-1") if event["type"] == "reasoning.updated"
+    ]
+    assert len(kept) == 2
+    assert kept[0]["data"]["attempt"] != kept[1]["data"]["attempt"]
+
+
+def test_the_new_question_gets_its_own_retry_budget(research_home):
+    """Retries belong to the question, not to the run row the thread reuses forever."""
+    _create()
+    for _ in range(3):
+        _cancel_run()
+        research_db.retry("run-1")
+    _cancel_run()
+    with pytest.raises(research_db.ResearchConflictError):
+        research_db.retry("run-1")
+
+    assert _rebind(_new_user_message()) is not None
+    _cancel_run()
+    assert research_db.retry("run-1") == "planning"

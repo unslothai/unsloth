@@ -359,10 +359,16 @@ def rebind_cancelled(
             plan_revision = revision,
             created = now,
         )
+        # retry_count is the attempt epoch every event is stamped with, and the new question
+        # is a new attempt: without the bump its report would carry the stopped question's
+        # reasoning (get_reasoning_text joins every event at the run's current attempt) and its
+        # activity panel would fold the two questions together. The retry BUDGET is counted per
+        # question in retry(), so spending an epoch here does not spend a retry.
         conn.execute(
             "UPDATE research_runs SET user_message_id=?, assistant_message_id=?, "
             "status='planning', cancel_requested=0, plan_json=NULL, plan_hash=NULL, "
-            "plan_revision=?, error_message=NULL, report_text=NULL, started_at=NULL, "
+            "plan_revision=?, retry_count=retry_count + 1, error_message=NULL, "
+            "report_text=NULL, started_at=NULL, "
             "completed_at=NULL, lease_owner=NULL, lease_expires_at=NULL, config_json=?, "
             "updated_at=? WHERE id=?",
             (
@@ -781,7 +787,16 @@ def retry(run_id: str, max_retries: int = 3) -> str:
             raise KeyError(run_id)
         if row["status"] not in {"failed", "cancelled"}:
             raise ResearchConflictError("Only failed or cancelled runs can be retried")
-        if int(row["retry_count"]) >= max_retries:
+        # Counted per question, not per run row: a thread holds one run for its lifetime and
+        # re-points it at each new question, so a raw retry_count would hand a fresh question
+        # whatever the stopped one left over -- and nothing at all once three were spent.
+        spent = conn.execute(
+            "SELECT COUNT(*) FROM research_events WHERE run_id=? AND event_type='run.retried' "
+            "AND seq > COALESCE((SELECT MAX(seq) FROM research_events "
+            "WHERE run_id=? AND event_type='run.rebound'), 0)",
+            (run_id, run_id),
+        ).fetchone()[0]
+        if int(spent) >= max_retries:
             raise ResearchConflictError("Retry budget exhausted")
         claim = conn.execute(
             "SELECT owner_subject FROM research_thread_claims WHERE thread_id=?",
