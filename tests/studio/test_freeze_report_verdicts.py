@@ -401,6 +401,71 @@ def test_the_gate_and_the_cleanup_share_one_attribution_rule():
     assert "{pid}/exe" not in source
 
 
+def test_exactly_three_silent_intervals_is_already_stale():
+    """STALE_AFTER is three poll intervals, and the boundary belongs on the stale side.
+
+    A run whose counters last moved at 195s and ended at 240s has been silent for exactly
+    45s, which is the three intervals the constant is picked to name ("so a single missed
+    sample is not it"). The strict comparison let that exact case fall through to OK and
+    reported a backend that had stopped being recorded as a healthy run.
+    """
+    samples, mon, live = [], 0, 0
+    for t in range(15, 241, 15):
+        if t <= 195:
+            mon += 1
+            live += 1
+        samples.append((t, mon, live))
+    assert samples[-1][0] - 195 == freeze.STALE_AFTER
+    got = verdict(samples)
+    assert got.startswith("NO SIGNAL"), got
+    assert "45s" in got
+
+
+def test_a_non_executable_appimage_is_refused_with_the_command_that_fixes_it(
+    monkeypatch, tmp_path, capsys
+):
+    """An AppImage downloaded through a browser has no execute bit. Popen raises
+    PermissionError on it and nothing between run_candidate() and the candidate loop
+    catches it, so the run ended in a traceback with nothing measured and no report."""
+    app = tmp_path / "Unsloth-Desktop.AppImage"
+    app.write_text("#!/bin/sh\n")
+    app.chmod(0o644)
+    monkeypatch.setattr(freeze.sys, "argv", ["unsloth_freeze_report.py", str(app)])
+    monkeypatch.setattr(
+        freeze, "studio_backend_pids", lambda: pytest.fail("must not reach the port gate")
+    )
+    monkeypatch.chdir(tmp_path)
+    assert freeze.main() == 2
+    out = capsys.readouterr().out
+    assert str(app) in out
+    assert f"chmod +x {app}" in out
+    assert not list(tmp_path.glob("unsloth-freeze-report-*.json"))
+
+
+def test_discovery_prefers_an_appimage_that_can_actually_be_started(monkeypatch, tmp_path):
+    """Downloads/ is where a non-executable copy lands, and it is usually the newest, so
+    picking purely by mtime handed the launch a file that cannot run."""
+    (tmp_path / "Downloads").mkdir()
+    (tmp_path / "Applications").mkdir()
+    runnable = tmp_path / "Applications" / "Unsloth-Desktop.AppImage"
+    runnable.write_text("#!/bin/sh\n")
+    runnable.chmod(0o755)
+    downloaded = tmp_path / "Downloads" / "Unsloth-Desktop.AppImage"
+    downloaded.write_text("#!/bin/sh\n")
+    downloaded.chmod(0o644)
+    import os as _os
+    _os.utime(downloaded, (2_000_000_000, 2_000_000_000))
+    monkeypatch.setattr(freeze, "HOME", tmp_path)
+    monkeypatch.setattr(freeze.shutil, "which", lambda name: None)
+    if Path("/usr/bin/unsloth-studio").is_file() or Path("/opt/Unsloth/unsloth-studio").is_file():
+        pytest.skip("a system-wide Unsloth Desktop outranks the discovery being tested")
+    assert freeze.find_desktop_app() == [str(runnable)]
+    # With nothing runnable at all it still names the file, so the caller can say which one
+    # needs chmod rather than claiming Unsloth Desktop is not installed.
+    runnable.chmod(0o644)
+    assert freeze.find_desktop_app() == [str(downloaded)]
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
 

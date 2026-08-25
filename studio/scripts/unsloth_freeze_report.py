@@ -243,23 +243,35 @@ def find_desktop_app() -> list[str] | None:
     therefore measures a different program from the one that freezes, and every candidate
     comes back with nothing observed.
     """
-    for cand in (
-        shutil.which("unsloth-studio"),
-        "/usr/bin/unsloth-studio",
-        "/opt/Unsloth/unsloth-studio",
-    ):
-        if cand and Path(cand).is_file():
-            return [str(cand)]
     globs = [
         "Unsloth*.AppImage",
         "Applications/Unsloth*.AppImage",
         "Downloads/Unsloth*.AppImage",
         ".local/bin/Unsloth*.AppImage",
     ]
+    found = [
+        c
+        for c in (
+            shutil.which("unsloth-studio"),
+            "/usr/bin/unsloth-studio",
+            "/opt/Unsloth/unsloth-studio",
+        )
+        if c and Path(c).is_file()
+    ]
     hits = [q for g in globs for q in sorted(HOME.glob(g)) if q.is_file()]
-    if hits:
-        return [str(max(hits, key = lambda q: q.stat().st_mtime))]
-    return None
+    found += [str(q) for q in sorted(hits, key = lambda q: q.stat().st_mtime, reverse = True)]
+    if not found:
+        return None
+    # An AppImage arrives from the browser without the execute bit, and a downloaded one is
+    # the likeliest thing this glob picks up. Prefer a candidate that can actually be
+    # started; if none can, still return one, so the check in main() can name the file and
+    # the command that fixes it instead of leaving Popen to raise PermissionError out of
+    # the first candidate, before anything is measured and before a report is written.
+    return [next((c for c in found if is_executable(c)), found[0])]
+
+
+def is_executable(path) -> bool:
+    return os.access(str(path), os.X_OK)
 
 
 def sh(args, timeout = 20):
@@ -615,7 +627,11 @@ def classify(
     mon_rise, live_rise = _last_rise(samples, 1), _last_rise(samples, 2)
     if len(samples) >= 4 and end >= warmup:
         quiet_for = end - max(mon_rise or 0, live_rise or 0)
-        if quiet_for > STALE_AFTER:
+        # Inclusive: STALE_AFTER is three poll intervals, and a run whose counters last
+        # moved three intervals before the end has been silent for exactly that long. The
+        # strict comparison let the boundary case through to OK, which is the one case the
+        # constant was picked to name.
+        if quiet_for >= STALE_AFTER:
             return (
                 f"NO SIGNAL: nothing was recorded for the last {quiet_for}s of the run, "
                 f"neither from the interface nor from the watchdog, so the backend stopped "
@@ -803,6 +819,19 @@ def main() -> int:
         print(
             f"cannot find {asked_for!r} on PATH. Pass the command explicitly, for example:\n"
             f"  python3 {Path(__file__).name} ~/Applications/Unsloth-Desktop.AppImage"
+        )
+        return 2
+    # Checked here, not left to the launch. subprocess.Popen raises PermissionError, and
+    # nothing on the path from run_candidate() back up to the candidate loop catches it, so
+    # a browser-downloaded AppImage that never got its execute bit ended the whole run with
+    # a traceback on the first candidate: nothing measured, no report written, and the one
+    # line that says what to do about it absent.
+    if not is_executable(cmd[0]):
+        print(
+            f"{cmd[0]} is not executable, so it cannot be launched.\n\n"
+            "An AppImage downloaded through a browser arrives without the execute bit. "
+            "Set it and re-run:\n"
+            f"  chmod +x {cmd[0]}"
         )
         return 2
 
