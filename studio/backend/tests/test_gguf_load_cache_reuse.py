@@ -684,7 +684,11 @@ class TestLoadReusesCachedCopy:
         projector = snap.parent.parent / "mmproj-F16.gguf"
         projector.write_bytes(b"mmproj")
 
-        def _resolve_empty(*_a, outcome = None, **_k):
+        def _resolve_empty(
+            *_a,
+            outcome = None,
+            **_k,
+        ):
             if outcome is not None:
                 outcome["listed_live"] = True
                 outcome["listed"] = True
