@@ -52,10 +52,9 @@ export interface ChatNavigationState {
   resetAccountState: () => void;
   setSelectionActive: (active: boolean) => void;
   /**
-   * `rowIdByThreadId` groups the threads by the row they belong to, so a
-   * Compare row still counts once after it leaves the published lists. The
-   * lists only carry what is on screen, and a collapsed section takes its rows
-   * with it while their threads stay unread.
+   * `rowIdByThreadId` groups threads by their row, so a Compare row still
+   * counts once after a collapsed section takes it out of the published lists
+   * while its threads stay unread.
    */
   markThreadsUnread: (
     threadIds: string[],
@@ -284,12 +283,10 @@ export function countUnreadRows(state: ChatNavigationState): number {
     rows += 1;
     for (const id of own) listed.add(id);
   }
-  // Plus the unreads no row accounts for, one each: a chat archived or deleted
-  // while unread leaves its thread in the set with nothing to fold it into, and
-  // the wipe below clears those too.
-  // Grouped by the row each belongs to, so a Compare row hidden behind a
-  // collapsed section still counts once rather than once per pane. An id with
-  // no group recorded stands for itself.
+  // Plus the unreads no row accounts for: a chat archived while unread leaves
+  // its thread in the set, and the wipe clears those too. Grouped by row, so a
+  // hidden Compare row counts once rather than once per pane; an id with no
+  // group recorded stands for itself.
   const hidden = new Set<string>();
   for (const id of state.unreadThreadIds) {
     if (!listed.has(id)) hidden.add(state.unreadRowIds[id] ?? id);

@@ -993,8 +993,8 @@ export function AppSidebar() {
   );
   const pinnedIdSet = useMemo(() => new Set(pinnedIds), [pinnedIds]);
   // Which row every thread belongs to, listed or not. The published lists carry
-  // only what is on screen, so this is what lets an unread Compare row behind a
-  // collapsed section still be counted as one chat.
+  // only what is on screen, so this is what keeps an unread Compare row behind
+  // a collapsed section counting as one chat.
   const rowIdByThreadId = useMemo(() => {
     const map: Record<string, string> = {};
     for (const item of allChatItems) {
@@ -2698,11 +2698,10 @@ export function AppSidebar() {
   // covered would kill these chords on the mobile drawer, which unmounts.
   const sidebarCovered = () => {
     if (isSurfaceBackgrounded(SIDEBAR_SELECTOR)) return true;
-    // Mobile with the drawer closed: the sidebar is unmounted, so the check
-    // above has nothing to read and these chords would stay live under a
-    // dialog. The app root is always mounted and Radix aria-hides it for a
-    // modal's life. Only as a fallback, since an open drawer is itself a
-    // dialog that hides the root while the sidebar inside it is the foreground.
+    // With the mobile drawer closed the sidebar is unmounted, so the check
+    // above has nothing to read. The app root is always mounted and Radix
+    // aria-hides it for a modal's life. A fallback only: an open drawer is
+    // itself a dialog hiding the root, and the sidebar in it is the foreground.
     return (
       typeof document !== "undefined" &&
       document.querySelector(SIDEBAR_SELECTOR) === null &&
