@@ -45,9 +45,7 @@ def _copy_redacted(source: BinaryIO, destination: BinaryIO) -> None:
             while record and not record.endswith(b"\n"):
                 record = source.readline(EXPORT_READ_BYTES + 1)
                 omitted += len(record)
-            destination.write(
-                f"[oversized log record omitted: {omitted} bytes]\n".encode("ascii")
-            )
+            destination.write(f"[oversized log record omitted: {omitted} bytes]\n".encode("ascii"))
             continue
         text = record.decode("utf-8", errors = "replace")
         destination.write(redact_log_text(text).encode("utf-8"))

@@ -154,17 +154,10 @@ def test_export_contains_every_visible_source_and_masks_credentials(client):
 
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/zip"
-    assert response.headers["content-disposition"].startswith(
-        'attachment; filename="unsloth-logs-'
-    )
+    assert response.headers["content-disposition"].startswith('attachment; filename="unsloth-logs-')
     with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
-        assert set(archive.namelist()) == {
-            f"server/{server.name}",
-            f"llama-server/{llama.name}",
-        }
-        exported = "\n".join(
-            archive.read(name).decode("utf-8") for name in archive.namelist()
-        )
+        assert set(archive.namelist()) == {f"server/{server.name}", f"llama-server/{llama.name}"}
+        exported = "\n".join(archive.read(name).decode("utf-8") for name in archive.namelist())
     assert "server line" in exported
     assert "llama runner line" in exported
     assert secret not in exported

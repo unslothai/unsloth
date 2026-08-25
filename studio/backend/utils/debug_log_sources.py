@@ -137,9 +137,7 @@ def _digest(realpath: str) -> str:
     return hashlib.sha256(realpath.encode("utf-8", "surrogateescape")).hexdigest()[:_DIGEST_CHARS]
 
 
-def _family_files(
-    family: str, max_sources: Optional[int] = MAX_SOURCES_PER_FAMILY
-) -> list[Path]:
+def _family_files(family: str, max_sources: Optional[int] = MAX_SOURCES_PER_FAMILY) -> list[Path]:
     """Real, contained, regular files for one family, newest first."""
     subdir, pattern = FAMILIES[family]
     found: dict[str, tuple[Path, float]] = {}
@@ -200,9 +198,7 @@ def _is_current(family: str, path: Path, newest: Optional[Path]) -> bool:
     return newest is not None and path == newest
 
 
-def list_sources(
-    max_sources_per_family: Optional[int] = MAX_SOURCES_PER_FAMILY,
-) -> list[LogSource]:
+def list_sources(max_sources_per_family: Optional[int] = MAX_SOURCES_PER_FAMILY) -> list[LogSource]:
     sources: list[LogSource] = []
     for family in FAMILIES:
         files = _family_files(family, max_sources_per_family)
