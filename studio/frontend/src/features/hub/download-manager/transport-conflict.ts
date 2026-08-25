@@ -24,7 +24,7 @@ import {
 import { startJob } from "./poll-loop";
 import { currentRoute, showCallerToast } from "./start-toast";
 import { runtimeRegistry } from "./runtime-registry";
-import { getTransportMode } from "./transport-preference";
+import { resolveTransportMode } from "./transport-preference";
 import { ACTIVE_STATES, TRANSPORT_STATUS_TIMEOUT_MS } from "./download-manager-config";
 
 function reportConflictStartError(error: unknown): void {
@@ -155,7 +155,7 @@ export async function requestStart(
   // during; read after them it would name the page they moved to.
   const originRoute = currentRoute();
   return runWithPendingStartGuard(req, async () => {
-    let mode: TransportMode = getTransportMode();
+    let mode: TransportMode = await resolveTransportMode();
     try {
       mode = await effectiveTransportMode(mode);
     } catch (err) {

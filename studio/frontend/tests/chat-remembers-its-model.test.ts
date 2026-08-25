@@ -145,9 +145,17 @@ test("the conversation reserves the space the notice overlay takes", () => {
 
   // One declaration of the height, on the nearest ancestor of both, so the bar and
   // the padding cannot drift apart.
+  //
+  // `has-[>...]`, not `has-[...]`: the descendant form made every DOM change anywhere in the
+  // thread re-check this `:has()` on an ancestor of every message, and answering it walks the
+  // whole thread. Measured at the 500K rung on a 357,843-element thread, appending one empty span
+  // inside a message cost 17.5 / 18.6 ms with the descendant form and 0.10 ms once this rule and
+  // the sidebar wrapper's were both put in their child form. The notice is a direct child of the
+  // declaring element, so the two selectors match the same elements; that is asserted separately
+  // in `tests/thread-ancestor-has-scope.test.ts`, which is what keeps the child form honest.
   assert.match(
     page,
-    /has-\[\[data-chat-model-notice\]\]:\[--studio-chat-notice-height:2\.25rem\]/,
+    /has-\[>\[data-chat-model-notice\]\]:\[--studio-chat-notice-height:2\.25rem\]/,
   );
   // The notice claims the same variable rather than a padding of its own.
   assert.match(notice, /data-chat-model-notice=""/);

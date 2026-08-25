@@ -36,6 +36,9 @@ from .loader_utils import (
     _restore_dropped_fp8_scales,
     planner_class_mismatch_reason,
     planner_model_class,
+    planner_config_overrides,
+    planner_hub_kwargs,
+    planner_kwargs_with_max_memory,
     planner_quantization_kwargs,
     requested_device_map,
     resolve_unsloth_device_map,
@@ -2638,7 +2641,14 @@ class FastLlamaModel:
         # replaces the `lm_head` the planner named off the repo's config, so `dispatch_model`
         # refuses the map: "does not give any device for ... score.weight".
         _planner_skip_reason = None
-        if num_labels is not None:
+        # The weights load against `user_config`; the planner rebuilds the repo's from
+        # `model_name`. A changed `num_hidden_layers` or `vocab_size` then gets a map for a
+        # different model, which dispatches short or budgets short.
+        if user_config is not None:
+            _planner_skip_reason = (
+                "a caller-supplied config may not describe the repo the planner rebuilds"
+            )
+        if _planner_skip_reason is None and num_labels is not None:
             _planner_skip_reason = (
                 planner_class_mismatch_reason(
                     resolve_model_class(AutoModelForSequenceClassification, model_config),
@@ -2676,10 +2686,12 @@ class FastLlamaModel:
             requested_device_map(device_map),
             model_name,
             fast_inference = fast_inference,
-            planner_kwargs = device_map_planner_kwargs,
+            planner_kwargs = planner_kwargs_with_max_memory(device_map_planner_kwargs, kwargs),
             skip_reason = _planner_skip_reason,
+            **planner_config_overrides(kwargs),
             token = token,
             trust_remote_code = trust_remote_code,
+            **planner_hub_kwargs(kwargs),
             revision = revision,
             # The dtype the load gets, not the checkpoint's: `from_pretrained` overrides
             # config.json, and planning the wrong one mis-sizes weights 2x either way.

@@ -582,6 +582,29 @@ export const ptBR = {
         saveError:
           "Não foi possível atualizar a configuração de inicialização no login.",
       },
+      downloads: {
+        sectionTitle: "Downloads",
+        transport: "Transporte de download",
+        transportDescription:
+          "Como os arquivos de modelos e datasets chegam do Hugging Face. HTTPS continua de onde parou; Xet costuma ser mais rápido no primeiro download, mas reinicia o arquivo se você cancelar.",
+        transportHint:
+          "HTTPS é TLS comum: qualquer rede, proxy e VPN permite, uma transferência cancelada ou interrompida continua dos bytes já gravados e o uso de memória fica estável. O Xet busca blocos deduplicados, então um repositório que compartilha dados com outro que você já tem pode chegar muito mais rápido, mas ele exige hf_xet, usa mais RAM e um cancelamento descarta o arquivo em andamento. Auto decide por máquina: pesa a RAM e se o Xet tem travado aqui, e recorre ao HTTPS.",
+        https: "HTTPS",
+        xet: "Xet",
+        auto: "Auto",
+        httpsHint:
+          "TLS padrão. Continua após um cancelamento, funciona em qualquer rede, memória estável.",
+        transportDescriptionNoResume:
+          "Como os arquivos de modelos e conjuntos de dados são baixados do Hugging Face. Nesta instalação nenhum transporte pode retomar, então um download cancelado recomeça; o Xet costuma ser mais rápido no primeiro download.",
+        httpsHintNoResume:
+          "TLS padrão. Funciona em qualquer rede, uso de memória estável. Esta instalação não consegue retomar um download cancelado.",
+        xetHint:
+          "Transferência por blocos deduplicados. Costuma ser mais rápida num download novo, reinicia o arquivo se você cancelar, precisa de mais memória.",
+        autoHint:
+          "Escolhe por máquina e muda para HTTPS se o Xet travar ou falhar aqui.",
+        autoCurrently: "O Auto está usando {transport} nesta máquina.",
+        xetMissing: "O Xet está indisponível porque o hf_xet não está instalado.",
+      },
       uploads: {
         sectionTitle: "Uploads",
         maxUploadSize: "Limite de upload do dataset de treino",
@@ -1586,8 +1609,8 @@ export const ptBR = {
         "Este modelo no dispositivo não pode ser treinado.",
       reasonUnsupportedFormat:
         "Este formato de modelo não é compatível com treinamento.",
-      vramNeeds: "Precisa de ~{est} GB de VRAM (GPU: {total} GB)",
-      vramTight: "~{est} GB de VRAM (no limite de {total} GB)",
+      vramNeeds: "Precisa de ~{est} GB de VRAM (GPU: {total} GiB)",
+      vramTight: "~{est} GB de VRAM (no limite de {total} GiB)",
       vramApprox: "~{est} GB de VRAM",
       sourceModelsFolder: "Pasta de modelos",
       sourceHfCache: "Cache do HF",

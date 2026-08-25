@@ -188,6 +188,18 @@ IMATRIX_QUANTS = {
 }
 
 
+def _describe_exception(exc) -> str:
+    """A description that survives an exception with no message.
+
+    `f"{exc}"` is the EMPTY STRING when the args are empty, so
+    `f"Failed to save model: {exc}"` named nothing at all on a real Kaggle
+    Q8_0 export. Leading with the type keeps the class of failure visible.
+    """
+    text = str(exc).strip()
+    name = type(exc).__name__
+    return f"{name}: {text}" if text else name
+
+
 def has_curl():
     return shutil.which("curl") is not None
 
@@ -430,7 +442,10 @@ def _quantize_q2_k_l(
             error_details += f"\nSubprocess stdout:\n{e.stdout}"
         if hasattr(e, "stderr") and e.stderr:
             error_details += f"\nSubprocess stderr:\n{e.stderr}"
-        raise RuntimeError(f"Failed to quantize {input_gguf} to q2_k_l: {e}{error_details}")
+        raise RuntimeError(
+            f"Failed to quantize {input_gguf} to q2_k_l: "
+            f"{_describe_exception(e)}{error_details}"
+        ) from e
 
     output_path = Path(output_gguf)
     if not output_path.exists():
@@ -4747,7 +4762,10 @@ def unsloth_save_pretrained_gguf(
                 unsloth_generic_save(**arguments)
 
         except Exception as e:
-            raise RuntimeError(f"Failed to save/merge model: {e}{_offloaded_parameter_hint(self)}")
+            raise RuntimeError(
+                f"Failed to save/merge model: {_describe_exception(e)}"
+                f"{_offloaded_parameter_hint(self)}"
+            ) from e
     else:
         # Non-PEFT model: checkpoint files already exist; point save_to_gguf
         # at the original path instead of re-saving to a temp subdir.
@@ -4774,7 +4792,10 @@ def unsloth_save_pretrained_gguf(
                 if tokenizer is not None:
                     tokenizer.save_pretrained(save_directory)
             except Exception as e:
-                raise RuntimeError(f"Failed to save model: {e}{_offloaded_parameter_hint(self)}")
+                raise RuntimeError(
+                    f"Failed to save model: {_describe_exception(e)}"
+                    f"{_offloaded_parameter_hint(self)}"
+                ) from e
 
     if is_processor:
         tokenizer = tokenizer.tokenizer
@@ -4871,17 +4892,17 @@ def unsloth_save_pretrained_gguf(
                 f"about system memory rather than GPU memory or disk.\n"
                 f"Try a smaller quantization, a machine with more RAM, or "
                 f"convert from a saved 16bit checkpoint on a larger host.\n"
-                f"Error: {e}"
+                f"Error: {_describe_exception(e)}"
             ) from e
         if IS_KAGGLE_ENVIRONMENT and _gguf_failure_looks_like_disk(e, save_directory):
             raise RuntimeError(
                 f"Unsloth: GGUF conversion failed in Kaggle environment.\n"
                 f"This is likely due to the 20GB disk space limit.\n"
                 f"Try saving to /tmp directory or use a smaller model.\n"
-                f"Error: {e}"
+                f"Error: {_describe_exception(e)}"
             ) from e
         else:
-            raise RuntimeError(f"Unsloth: GGUF conversion failed: {e}") from e
+            raise RuntimeError(f"Unsloth: GGUF conversion failed: {_describe_exception(e)}") from e
 
     # Step 9: Create Ollama modelfile
     modelfile_location = None
@@ -5494,7 +5515,7 @@ def unsloth_push_to_hub_gguf(
                     shutil.rmtree(d)
                 except:
                     pass
-        raise RuntimeError(f"Failed to convert model to GGUF: {e}")
+        raise RuntimeError(f"Failed to convert model to GGUF: {_describe_exception(e)}") from e
 
     # Step 3: Upload to HuggingFace Hub
     print("Unsloth: Uploading GGUF to Huggingface Hub...")
@@ -5669,7 +5690,7 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
                 )
 
     except Exception as e:
-        raise RuntimeError(f"Failed to upload to Hugging Face Hub: {e}")
+        raise RuntimeError(f"Failed to upload to Hugging Face Hub: {_describe_exception(e)}") from e
 
     finally:
         # Clean up temporary directory
