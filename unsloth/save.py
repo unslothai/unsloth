@@ -4458,6 +4458,24 @@ def _preflight_gguf_disk(
     )
 
 
+
+def _describe_exception(exc) -> str:
+    """A description that survives an exception with no message.
+
+    `f"{exc}"` on an exception whose args are empty is the EMPTY STRING, so
+    `f"Failed to save model: {exc}"` renders as "Failed to save model: " and
+    the report names nothing at all. That is not hypothetical: it is what a
+    Kaggle Q8_0 export produced, and the run had to be repeated with a
+    traceback capture just to learn which call had failed.
+
+    Always leading with the type keeps the class of failure visible even when
+    the instance is silent.
+    """
+    text = str(exc).strip()
+    name = type(exc).__name__
+    return f"{name}: {text}" if text else name
+
+
 def _offloaded_parameter_hint(model):
     """Sentence to append when a save failed on offloaded (meta) parameters.
 
@@ -4747,7 +4765,10 @@ def unsloth_save_pretrained_gguf(
                 unsloth_generic_save(**arguments)
 
         except Exception as e:
-            raise RuntimeError(f"Failed to save/merge model: {e}{_offloaded_parameter_hint(self)}")
+            raise RuntimeError(
+                f"Failed to save/merge model: {_describe_exception(e)}"
+                f"{_offloaded_parameter_hint(self)}"
+            ) from e
     else:
         # Non-PEFT model: checkpoint files already exist; point save_to_gguf
         # at the original path instead of re-saving to a temp subdir.
@@ -4774,7 +4795,10 @@ def unsloth_save_pretrained_gguf(
                 if tokenizer is not None:
                     tokenizer.save_pretrained(save_directory)
             except Exception as e:
-                raise RuntimeError(f"Failed to save model: {e}{_offloaded_parameter_hint(self)}")
+                raise RuntimeError(
+                    f"Failed to save model: {_describe_exception(e)}"
+                    f"{_offloaded_parameter_hint(self)}"
+                ) from e
 
     if is_processor:
         tokenizer = tokenizer.tokenizer
@@ -5669,7 +5693,9 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
                 )
 
     except Exception as e:
-        raise RuntimeError(f"Failed to upload to Hugging Face Hub: {e}")
+        raise RuntimeError(
+            f"Failed to upload to Hugging Face Hub: {_describe_exception(e)}"
+        ) from e
 
     finally:
         # Clean up temporary directory

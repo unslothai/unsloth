@@ -649,9 +649,22 @@ class FastLanguageModel(FastLlamaModel):
         ):
             model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
         # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set
+        #
+        # SAY SO when the caller explicitly asked for a quantized load. This
+        # used to drop `load_in_4bit = True` in silence, and on a small card
+        # the consequence arrives much later as an out-of-memory failure
+        # during weight conversion whose message never mentions memory or
+        # quantization -- so the reader has no way back to this line.
         if model_name.lower().endswith("-bf16") and (
             load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
         ):
+            if load_in_4bit or load_in_8bit or load_in_fp8 != False:
+                print(
+                    f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so the "
+                    f"requested 4bit/8bit/fp8 loading is disabled and the model will "
+                    f"load in 16bit. Point at the 4bit repo instead if that is not "
+                    f"what you wanted -- a 16bit load needs far more VRAM."
+                )
             load_in_4bit = False
             load_in_8bit = False
             load_in_fp8 = False
@@ -830,9 +843,22 @@ class FastLanguageModel(FastLlamaModel):
             ):
                 model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
             # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set
+            #
+            # SAY SO when the caller explicitly asked for a quantized load. This
+            # used to drop `load_in_4bit = True` in silence, and on a small card
+            # the consequence arrives much later as an out-of-memory failure
+            # during weight conversion whose message never mentions memory or
+            # quantization -- so the reader has no way back to this line.
             if model_name.lower().endswith("-bf16") and (
                 load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
             ):
+                if load_in_4bit or load_in_8bit or load_in_fp8 != False:
+                    print(
+                        f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so the "
+                        f"requested 4bit/8bit/fp8 loading is disabled and the model will "
+                        f"load in 16bit. Point at the 4bit repo instead if that is not "
+                        f"what you wanted -- a 16bit load needs far more VRAM."
+                    )
                 load_in_4bit = False
                 load_in_8bit = False
                 load_in_fp8 = False
@@ -1422,9 +1448,22 @@ class FastModel(FastBaseModel):
         ):
             model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
         # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set
+        #
+        # SAY SO when the caller explicitly asked for a quantized load. This
+        # used to drop `load_in_4bit = True` in silence, and on a small card
+        # the consequence arrives much later as an out-of-memory failure
+        # during weight conversion whose message never mentions memory or
+        # quantization -- so the reader has no way back to this line.
         if model_name.lower().endswith("-bf16") and (
             load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
         ):
+            if load_in_4bit or load_in_8bit or load_in_fp8 != False:
+                print(
+                    f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so the "
+                    f"requested 4bit/8bit/fp8 loading is disabled and the model will "
+                    f"load in 16bit. Point at the 4bit repo instead if that is not "
+                    f"what you wanted -- a 16bit load needs far more VRAM."
+                )
             load_in_4bit = False
             load_in_8bit = False
             load_in_fp8 = False
@@ -1808,9 +1847,22 @@ class FastModel(FastBaseModel):
             ):
                 model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
             # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set
+            #
+            # SAY SO when the caller explicitly asked for a quantized load. This
+            # used to drop `load_in_4bit = True` in silence, and on a small card
+            # the consequence arrives much later as an out-of-memory failure
+            # during weight conversion whose message never mentions memory or
+            # quantization -- so the reader has no way back to this line.
             if model_name.lower().endswith("-bf16") and (
                 load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
             ):
+                if load_in_4bit or load_in_8bit or load_in_fp8 != False:
+                    print(
+                        f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so the "
+                        f"requested 4bit/8bit/fp8 loading is disabled and the model will "
+                        f"load in 16bit. Point at the 4bit repo instead if that is not "
+                        f"what you wanted -- a 16bit load needs far more VRAM."
+                    )
                 load_in_4bit = False
                 load_in_8bit = False
                 load_in_fp8 = False
