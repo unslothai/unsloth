@@ -505,11 +505,7 @@ def _spent_prompt_tokens(
     stats = (generation_stats_holder or {}).get("stats")
     usage = stats.get("usage") if isinstance(stats, dict) else None
     prompt_tokens = usage.get("prompt_tokens") if isinstance(usage, dict) else None
-    if (
-        isinstance(prompt_tokens, int)
-        and not isinstance(prompt_tokens, bool)
-        and prompt_tokens > 0
-    ):
+    if isinstance(prompt_tokens, int) and not isinstance(prompt_tokens, bool) and prompt_tokens > 0:
         added = _dense_message_tokens(conversation) - prompt_dense_tokens
         return prompt_tokens + max(0, added)
     return _dense_message_tokens(conversation) + _dense_message_tokens(tools or [])

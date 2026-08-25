@@ -116,9 +116,7 @@ def test_the_budget_charges_token_dense_text_at_its_real_rate():
             single_turn = _searching_model(1),
             messages = list(dense_messages),
             tools = tools,
-            execute_tool = lambda name, arguments, **kwargs: (
-                seen.update(kwargs) or "an earlier turn"
-            ),
+            execute_tool = lambda name, arguments, **kwargs: seen.update(kwargs) or "an earlier turn",
             cancel_event = threading.Event(),
             max_tool_iterations = 2,
             thread_id = "t-sf",
@@ -214,9 +212,7 @@ def _budget_after_a_preamble(preamble, reported, stats_holder):
                 {"role": "user", "content": "what was the code from earlier"},
             ],
             tools = [{"type": "function", "function": {"name": "search_conversation"}}],
-            execute_tool = lambda name, arguments, **kwargs: (
-                seen.update(kwargs) or "an earlier turn"
-            ),
+            execute_tool = lambda name, arguments, **kwargs: seen.update(kwargs) or "an earlier turn",
             cancel_event = threading.Event(),
             max_tool_iterations = 2,
             thread_id = "t-sf",
@@ -279,9 +275,7 @@ def test_the_budget_estimates_when_no_usage_was_reported():
             single_turn = _searching_model(1),
             messages = list(MESSAGES),
             tools = tools,
-            execute_tool = lambda name, arguments, **kwargs: (
-                seen.update(kwargs) or "an earlier turn"
-            ),
+            execute_tool = lambda name, arguments, **kwargs: seen.update(kwargs) or "an earlier turn",
             cancel_event = threading.Event(),
             max_tool_iterations = 2,
             thread_id = "t-sf",
