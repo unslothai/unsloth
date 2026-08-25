@@ -18650,9 +18650,7 @@ class LlamaCppBackend:
                                 disable_vision
                                 # The audio-only reprieve the scrub itself gives: that
                                 # projector survives the switch, so it is loaded.
-                                and not _mmproj_env_is_audio_only(
-                                    _fit_env.get("LLAMA_ARG_MMPROJ")
-                                )
+                                and not _mmproj_env_is_audio_only(_fit_env.get("LLAMA_ARG_MMPROJ"))
                             )
                         )
                         else (_fit_env.get("LLAMA_ARG_MMPROJ") or "").strip()
@@ -19737,8 +19735,10 @@ class LlamaCppBackend:
                 # toggle drops vetoes nothing.
                 _fit_load_mode_env_view = dict(_mem_env)
                 scrub_memory_env(_fit_load_mode_env_view)
-                if _fit_load_mode and not load_mode and memory_env_selects_load_mode(
-                    _fit_load_mode_env_view
+                if (
+                    _fit_load_mode
+                    and not load_mode
+                    and memory_env_selects_load_mode(_fit_load_mode_env_view)
                 ):
                     logger.info(
                         "Load mode: the environment already selects a loader mode; "

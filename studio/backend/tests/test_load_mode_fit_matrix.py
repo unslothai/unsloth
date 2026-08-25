@@ -1635,10 +1635,7 @@ def test_the_cpu_projector_retry_voids_the_fit_it_was_proved_against():
     weights, projector = 16 * GIB, 4 * GIB
 
     assert stub._fits_without_paging(weights + projector, rows) is True
-    assert (
-        stub._fits_without_paging(weights + projector, rows, host_only_bytes = projector)
-        is False
-    )
+    assert stub._fits_without_paging(weights + projector, rows, host_only_bytes = projector) is False
 
 
 def test_the_cpu_projector_retry_drops_the_fits_load_mode():
@@ -1788,4 +1785,6 @@ def test_the_fit_prices_a_projector_inherited_through_the_environment():
     )
     # Not charged where the child never sees it: the vision switch and the
     # paravirtual pin both scrub those vars out of the child environment.
-    assert "_fit_env_mmproj_scrubbed=bool(_pv_mmproj_unpinnableor_paravirtual_cpu_forced)" in compact
+    assert (
+        "_fit_env_mmproj_scrubbed=bool(_pv_mmproj_unpinnableor_paravirtual_cpu_forced)" in compact
+    )
