@@ -86,9 +86,9 @@ def test_the_payload_requests_q8_and_accepts_only_mxfp4():
     src = (PAYLOAD / "run_gptoss_t4.py").read_text(encoding = "utf-8")
     assert '"--gguf-quantization", default = "q8_0"' in src
     assert 'accept_quantizations = ("mxfp4",)' in src
-    assert 'default = "mxfp4"' not in src, (
-        "mxfp4 is not an accepted request value; unsloth rejects it before the conversion starts"
-    )
+    assert (
+        'default = "mxfp4"' not in src
+    ), "mxfp4 is not an accepted request value; unsloth rejects it before the conversion starts"
 
 
 def test_the_dataset_shape_and_the_text_field_cannot_both_be_set():
