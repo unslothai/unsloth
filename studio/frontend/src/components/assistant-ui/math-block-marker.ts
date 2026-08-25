@@ -1,0 +1,239 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+/*
+ * MARK THE BLOCK THAT HOLDS INLINE MATHS, so a stylesheet has something it can contain.
+ *
+ * WHY THIS EXISTS. On WebKitGTK, which is what Studio and Desktop render through on Linux,
+ * `RenderLayerScrollableArea::scrollTo` reaches
+ * `RenderLayer::recursiveUpdateLayerPositionsAfterScroll`, which recurses over every descendant
+ * RenderLayer once per scroll EVENT with no dirty-bit pruning and exactly one early out,
+ * `!m_hasVisibleDescendant && !m_hasVisibleContent`. `RenderBoxModelObject::requiresLayer()` is
+ * true for `isPositioned()`, and `isPositioned()` is `position != static`, so `position: relative`
+ * alone buys a layer. KaTeX sets `position: relative` on `.katex`, `.base` and `.vlist`, and
+ * `position: absolute` on `.katex-mathml` and `.vlist > span`. A 500K-character maths-bearing
+ * thread measures 21,713 positioned boxes, about 20,700 of them under KaTeX, and 287.6 ms of
+ * blocked main thread to move that scroller by ONE PIXEL.
+ *
+ * `content-visibility: auto` reaches that same early out for content the user cannot see: a
+ * skipped subtree is `isSkippedContent()` and `RenderLayer::computeHasVisibleContent()` returns
+ * false for it, so the walk stops at the skipped root instead of descending.
+ *
+ * WHY THE MATHS ROOT ITSELF IS NOT THE PLACE TO PUT IT. `content-visibility` needs SIZE
+ * CONTAINMENT to take effect, and size containment does not apply to a non-atomic inline-level box
+ * (css-contain-2 #containment-size; WebKit implements the check in
+ * `Style::ContainmentChecker::shouldApplySizeContainment`). Shipped `katex.css` gives `.katex` no
+ * `display`, so inline maths computes to `display: inline` and the declaration is silently inert
+ * on it. That was measured rather than reasoned about: a rule naming `.katex` had the engine act
+ * on 0 of 146 sampled inline roots. In the same corpus only about 4,919 of the positioned boxes
+ * under maths sit under DISPLAY maths against about 15,291 under INLINE maths, so a rule that can
+ * only reach display maths leaves three quarters of the cost behind, and measured as such: minus
+ * 27 percent on the mean and plus 13 percent on p50, under the bar either way.
+ *
+ * SO THE DECLARATION IS HOISTED TO THE BLOCK THAT CONTAINS THE MATHS. For inline maths that block
+ * is the paragraph, list item or heading it sits in, and nothing in CSS can select "an element
+ * that contains maths" except `:has()`, which is itself the measured owner of the 500K scroll cost
+ * on Chromium. So the renderer marks it, here.
+ *
+ * DISPLAY MATHS NEEDS NO MARKER and deliberately gets none. `remark-math` emits it as
+ * `<pre><code class="language-math math-display">`, `rehype-katex` replaces that whole `pre` with
+ * `<span class="katex-display">`, and `katex.css` gives that span `display: block`. It is already
+ * a block-level element with a stable class, so `index.css` names it directly. Marking it here
+ * would put a class on a node that is about to be thrown away.
+ *
+ * WHERE THIS RUNS, AND WHY IT IS NOT A `remarkPlugins` OR `rehypePlugins` PROP. Both were tried
+ * and both are wrong here:
+ *
+ *   - Passing `rehypePlugins` to `<Streamdown>` replaces its default list, and Streamdown only
+ *     installs the `allowedTags` sanitizer schema when that list is still the default one
+ *     (`rehypePlugins === defaultRehypePlugins`). Supplying our own would silently drop the
+ *     sanitize pass this renderer depends on. That is a security regression to buy a class name.
+ *   - Marking on the mdast side, through `data.hProperties`, lands the class BEFORE
+ *     `rehype-sanitize`, whose `defaultSchema` permits `className` on `a`, `code`, `h2`, `li`,
+ *     `ol`, `section` and `ul` and NOWHERE ELSE. A class on a `<p>` would be stripped, and
+ *     stripped silently, which is exactly the shape of a change that measures as doing nothing.
+ *
+ * So the marker is composed onto the MATHS plugin's own rehype pass, which Streamdown appends
+ * after `raw`, `sanitize` and `harden`. It is the only hook in this pipeline that runs on hast,
+ * after the sanitizer, without displacing anything.
+ *
+ * WHAT IT SEES THERE. The sanitizer strips `math-inline` and `math-display` for the same reason it
+ * would strip ours: `defaultSchema` allows only `['className', /^language-./]` on `code`. So by
+ * this point both kinds of maths carry `language-math` and nothing else, and inline is told from
+ * display exactly the way `rehype-katex` itself tells them apart one plugin later: display maths
+ * is a `code` whose parent is a `pre`.
+ *
+ * THE CLASS IS EMITTED WHETHER OR NOT THE FEATURE IS ON. It is inert without the stylesheet rule,
+ * and emitting it unconditionally is what lets a measurement compare a window with the feature on
+ * against a window with it off WITHOUT the two windows holding different DOM. An arm that mutates
+ * the DOM inside its own measured window is billing itself for someone else's work.
+ */
+
+interface HastProperties {
+  className?: unknown;
+  [key: string]: unknown;
+}
+
+interface HastNode {
+  type: string;
+  tagName?: string;
+  properties?: HastProperties;
+  children?: HastNode[];
+}
+
+/** The marker. Read by `index.css`, and by nothing else. */
+export const MATH_BLOCK_CLASS = "aui-math-block";
+
+/** What survives `rehype-sanitize` on a maths `code` element. See the header. */
+const MATH_CLASS = "language-math";
+
+/*
+ * Elements that can take size containment AND that a run of prose carrying inline maths can be
+ * sitting in. `pre` is absent because a `code.language-math` inside one is DISPLAY maths, which
+ * this module does not touch.
+ */
+const BLOCK_TAGS = new Set([
+  "p",
+  "div",
+  "li",
+  "blockquote",
+  "dd",
+  "figcaption",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+]);
+
+/*
+ * Size containment does NOT apply to internal table elements (css-contain-2 #containment-size), so
+ * a `td` or `th` cannot be the target, and neither can anything above it short of the whole table,
+ * which would be far too coarse a thing to collapse. Maths inside a table cell is therefore
+ * ABANDONED rather than hoisted past. Recorded as a known limit rather than hidden: the corpus
+ * this was measured on has no maths in tables.
+ */
+const UNCONTAINABLE_TAGS = new Set([
+  "td",
+  "th",
+  "table",
+  "thead",
+  "tbody",
+  "tfoot",
+  "tr",
+]);
+
+/*
+ * The same bound the measurement harness used when it walked the rendered DOM for the equivalent
+ * arm. Maths buried more than twelve elements deep inside inline wrappers is not a shape this
+ * renderer produces, and an unbounded walk over a malformed tree is worse than marking nothing.
+ */
+const MAX_HOPS = 12;
+
+const classListOf = (node: HastNode): string[] => {
+  const raw = node.properties?.className;
+  if (Array.isArray(raw)) return raw.map(String);
+  if (typeof raw === "string") return raw.split(/\s+/).filter(Boolean);
+  return [];
+};
+
+const addClass = (node: HastNode): void => {
+  const properties: HastProperties = node.properties ?? {};
+  node.properties = properties;
+  const current = classListOf(node);
+  if (current.includes(MATH_BLOCK_CLASS)) return;
+  properties.className = [...current, MATH_BLOCK_CLASS];
+};
+
+/** Inline maths is a maths `code` element whose parent is not a `pre`. Display maths is the rest. */
+const isInlineMath = (node: HastNode, parent: HastNode | undefined): boolean =>
+  node.type === "element" &&
+  node.tagName === "code" &&
+  classListOf(node).includes(MATH_CLASS) &&
+  parent?.tagName !== "pre";
+
+/**
+ * Walk up `stack` (outermost first) and mark the nearest element that can take containment.
+ *
+ * Returns the element marked, or `null` when there is nothing markable, which happens for maths
+ * inside a table cell, maths deeper than `MAX_HOPS` inside inline wrappers, and maths with no
+ * block ancestor at all.
+ */
+export const markNearestBlock = (stack: HastNode[]): HastNode | null => {
+  let hops = 0;
+  for (let i = stack.length - 1; i >= 0 && hops < MAX_HOPS; i -= 1, hops += 1) {
+    const candidate = stack[i];
+    const tagName = candidate.tagName ?? "";
+    if (UNCONTAINABLE_TAGS.has(tagName)) return null;
+    if (!BLOCK_TAGS.has(tagName)) continue;
+    /*
+     * Streamdown renders a list item with `[&>p]:inline`, so the paragraph a list item wraps its
+     * text in computes to `display: inline` and cannot take size containment. The list item can.
+     * This is the one place where the tag name alone gives the wrong answer, and
+     * `tests/math-block-marker.test.ts` reads that class out of the installed Streamdown build so
+     * the day Streamdown stops doing it, this stops being justified loudly rather than quietly.
+     */
+    if (tagName === "p" && i > 0 && stack[i - 1].tagName === "li") {
+      addClass(stack[i - 1]);
+      return stack[i - 1];
+    }
+    addClass(candidate);
+    return candidate;
+  }
+  return null;
+};
+
+/**
+ * Mark every block that holds inline maths. Returns how many blocks were marked, which is what
+ * makes the transform testable without a DOM and without a browser.
+ */
+export const markMathBlocks = (tree: HastNode): number => {
+  const stack: HastNode[] = [];
+  let marked = 0;
+
+  const visit = (node: HastNode, parent: HastNode | undefined): void => {
+    if (isInlineMath(node, parent)) {
+      // A maths root's own subtree holds nothing else of interest.
+      if (markNearestBlock(stack)) marked += 1;
+      return;
+    }
+    const children = node.children;
+    if (!children || children.length === 0) return;
+    const isElement = node.type === "element";
+    if (isElement) stack.push(node);
+    for (const child of children) visit(child, node);
+    if (isElement) stack.pop();
+  };
+
+  visit(tree, undefined);
+  return marked;
+};
+
+type Transformer = (tree: HastNode, file: unknown) => unknown;
+type Attacher = (
+  this: unknown,
+  ...options: unknown[]
+) => Transformer | undefined;
+
+/**
+ * Compose the marker in front of the maths renderer, preserving whatever options the maths plugin
+ * was configured with.
+ *
+ * Takes the `rehypePlugin` off a Streamdown maths plugin, which is either an attacher or an
+ * `[attacher, options]` tuple, and returns a single attacher that marks the tree and then hands it
+ * to the original. Returning ONE attacher matters: Streamdown appends this value to its rehype
+ * list as a single entry, where an array would be read as an `[attacher, options]` tuple.
+ */
+export const withMathBlockMarker = (mathRehypePlugin: unknown): Attacher => {
+  const [attacher, options] = (
+    Array.isArray(mathRehypePlugin) ? mathRehypePlugin : [mathRehypePlugin]
+  ) as [Attacher, unknown?];
+  return function markThenRenderMaths(this: unknown) {
+    const renderMaths = attacher.call(this, options);
+    return (tree: HastNode, file: unknown) => {
+      markMathBlocks(tree);
+      return renderMaths ? renderMaths(tree, file) : undefined;
+    };
+  };
+};

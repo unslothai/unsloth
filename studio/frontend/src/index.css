@@ -2565,6 +2565,72 @@ html[data-chat-font] .aui-root {
 	.aui-thread-root [data-streamdown="code-block"] [data-sd-animate] {
 		animation: none !important;
 	}
+
+	/* Off-screen maths costs a full RenderLayer walk on every scroll event.
+	 *
+	 * OFF BY DEFAULT. `main.tsx` sets this attribute only when
+	 * `resolveMathBlockMode` says "contain", and `SHIP_DEFAULT` in
+	 * `math-block-mode.ts` is "off", so an ordinary install never arms this rule
+	 * and moving that one line is the whole of turning it on. It is a rendering
+	 * change gated by configuration precisely so it can be measured and reverted
+	 * without a revert.
+	 *
+	 * THE MECHANISM. On WebKitGTK, which is what Studio and Desktop render
+	 * through on Linux, `RenderLayerScrollableArea::scrollTo` reaches
+	 * `RenderLayer::recursiveUpdateLayerPositionsAfterScroll`, which recurses
+	 * over every descendant RenderLayer once per scroll EVENT with no dirty-bit
+	 * pruning and exactly one early out,
+	 * `!m_hasVisibleDescendant && !m_hasVisibleContent`.
+	 * `RenderBoxModelObject::requiresLayer()` is true for `isPositioned()`, and
+	 * `isPositioned()` is `position != static`, so `position: relative` alone
+	 * buys a layer. KaTeX sets it on `.katex`, `.base` and `.vlist`, and
+	 * `position: absolute` on `.katex-mathml` and `.vlist > span`. A
+	 * 500K-character maths-bearing thread measures 21,713 positioned boxes, about
+	 * 20,700 of them under KaTeX, and 287.6 ms of blocked main thread to move the
+	 * scroller by ONE PIXEL, which is 3.2 fps.
+	 *
+	 * `content-visibility: auto` reaches that same early out for content the user
+	 * cannot see: a skipped subtree is `isSkippedContent()` and
+	 * `RenderLayer::computeHasVisibleContent()` returns false for it.
+	 *
+	 * WHY THE BLOCK AND NOT THE MATHS. `content-visibility` needs size
+	 * containment, and size containment does not apply to a non-atomic
+	 * inline-level box (css-contain-2 #containment-size; WebKit checks it in
+	 * `Style::ContainmentChecker::shouldApplySizeContainment`). Shipped
+	 * `katex.css` gives `.katex` no `display`, so inline maths is `display:
+	 * inline` and the declaration is inert on it: measured at 0 of 146 sampled
+	 * inline roots. Only about 4,919 of the positioned boxes under maths in that
+	 * corpus sit under DISPLAY maths against about 15,291 under INLINE maths, and
+	 * a `.katex-display`-only rule measured minus 27 percent on the mean and plus
+	 * 13 percent on p50, under the bar either way. `.aui-math-block` is the
+	 * paragraph, list item or heading that HOLDS the inline maths, marked by the
+	 * renderer in `math-block-marker.ts` because no CSS selector can ask that
+	 * question except `:has()`, which is itself the measured owner of the 500K
+	 * scroll cost on Chromium.
+	 *
+	 * THE PLACEHOLDER IS MEASURED, NOT GUESSED, AND IT IS A FALLBACK. The mean
+	 * rendered height of these blocks over the 500K corpus is 123px and over the
+	 * 100K corpus 117px; the mean rather than the median because the scrollHeight
+	 * error a placeholder introduces is the SUM of (placeholder minus actual) over
+	 * the blocks not yet rendered, and the mean is the value that makes that sum
+	 * zero. The `auto` keyword then makes the engine remember each block's real
+	 * size once it has been rendered, so 7.5rem only ever applies to a block the
+	 * user has not reached yet.
+	 *
+	 * WHAT IT COSTS. `content-visibility: auto` turns on layout AND PAINT
+	 * containment unconditionally, even while the element is being rendered, so a
+	 * marked block becomes a stacking context with its own painting origin and
+	 * KaTeX's absolutely positioned `.vlist > span` children can round to a
+	 * different device pixel. Measured: one device pixel, on vlist-built
+	 * sub-structures, with used heights identical to a tenth of a pixel and
+	 * nothing clipped or missing. That is a change to what is on screen, which is
+	 * why this ships off. */
+	html[data-math-block-containment="on"]
+		.aui-thread-root
+		:is(.aui-math-block, .katex-display) {
+		content-visibility: auto;
+		contain-intrinsic-size: auto 7.5rem;
+	}
 }
 
 /* No border line; same drop shadow as the composer (.unsloth-composer-surface).

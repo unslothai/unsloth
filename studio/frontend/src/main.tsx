@@ -6,6 +6,7 @@ import { createRoot } from "react-dom/client";
 
 import "./index.css";
 import { App } from "./app/app";
+import { applyMathBlockContainment } from "./components/assistant-ui/math-block-containment";
 import { fetchDeviceType } from "./config/env";
 import { initializeLocale } from "./i18n";
 import { isTauri } from "./lib/api-base";
@@ -27,6 +28,11 @@ const uaLower = navigator.userAgent.toLowerCase();
 if (uaLower.includes("linux") && !uaLower.includes("android")) {
   document.documentElement.classList.add("render-linux");
 }
+
+// Whether off-screen maths takes containment. Off by default, so this normally removes an
+// attribute that was never there. Before the first render, because the rule it arms is a
+// rendering rule and arming it late would relayout the first thread that mounts.
+applyMathBlockContainment();
 
 // Keep right-edge controls clear of overlay scrollbars.
 watchOverlayScrollbarGutter(window);
