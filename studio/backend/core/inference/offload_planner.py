@@ -203,11 +203,39 @@ def _kv_elem_bytes(quantised: bool) -> int:
     return 1 if quantised else 2
 
 
+def cache_bytes(
+    layout: ModelLayout,
+    n_ctx: int,
+    *,
+    kv_quantised: bool = False,
+    kv_bytes_floor: int = 0,
+) -> int:
+    """Attention cache to reserve, never below a caller-supplied measurement.
+
+    ``layout.kv_bytes`` is a plain f16 GQA product: heads times key+value width
+    times context. It has no cache-dtype, SWA, MLA, unified-stream, slot-padding
+    or flash-attention-padding term, so against a caller that has priced the real
+    cache it can land either side. Over is harmless -- the plan just reserves
+    more. UNDER is the dangerous direction: the deficit comes out too small, too
+    few blocks are spilled, and the launch path follows that with ``--fit off``,
+    so the server OOMs on a cache the caller had already sized correctly. MLA is
+    the worst case (a compressed K-only latent that this product models as a full
+    K+V pair), and it is exactly the huge-MoE shape this planner exists for.
+
+    Taking the maximum keeps the planner conservative in both directions without
+    a tolerance to tune. The floor is a measurement at the REQUESTED context, so
+    where a shrink rung re-prices at a smaller context it over-reserves; that is
+    the safe direction and at worst gives up a rung.
+    """
+    return max(layout.kv_bytes(n_ctx, _kv_elem_bytes(kv_quantised)), max(0, kv_bytes_floor))
+
+
 def resident_floor_bytes(
     layout: ModelLayout,
     n_ctx: int,
     *,
     kv_quantised: bool = False,
+    kv_bytes_floor: int = 0,
 ) -> int:
     """VRAM needed with EVERY spillable tensor already on the host.
 
@@ -220,7 +248,9 @@ def resident_floor_bytes(
         + layout.lm_head_bytes
         + layout.other_resident_bytes
         + layout.recurrent_bytes
-        + layout.kv_bytes(n_ctx, _kv_elem_bytes(kv_quantised))
+        + cache_bytes(
+            layout, n_ctx, kv_quantised = kv_quantised, kv_bytes_floor = kv_bytes_floor
+        )
     )
 
 
@@ -229,10 +259,16 @@ def all_resident_bytes(
     n_ctx: int,
     *,
     kv_quantised: bool = False,
+    kv_bytes_floor: int = 0,
 ) -> int:
     """VRAM needed with nothing spilled. token_embd is excluded: it is never
     GPU-resident (llama-model.cpp pins dev_input to the CPU unconditionally)."""
-    return resident_floor_bytes(layout, n_ctx, kv_quantised = kv_quantised) + layout.spillable_bytes
+    return (
+        resident_floor_bytes(
+            layout, n_ctx, kv_quantised = kv_quantised, kv_bytes_floor = kv_bytes_floor
+        )
+        + layout.spillable_bytes
+    )
 
 
 def max_context_for(
@@ -274,8 +310,14 @@ def plan_placement(
     requested_ctx: int,
     *,
     opts: Optional[PlanOptions] = None,
+    kv_bytes_floor: int = 0,
 ) -> Plan:
     """Decide the placement for one launch.
+
+    ``kv_bytes_floor`` is an attention-cache size the caller has already computed
+    byte-accurately for this launch. The planner never reserves less than it; see
+    :func:`cache_bytes` for why the layout's own f16 product is not enough on its
+    own. 0 (the default) keeps the pure-layout arithmetic.
 
     Ladder, cheapest first, measured on a dense 27B at 128K:
       rung 0  nothing spilled                    75.37 t/s
@@ -314,7 +356,7 @@ def plan_placement(
     # context may move.
     if (
         opts.context_policy is ContextPolicy.PREFER_RESIDENT
-        and all_resident_bytes(layout, n_ctx) > budget
+        and all_resident_bytes(layout, n_ctx, kv_bytes_floor = kv_bytes_floor) > budget
     ):
         shrunk = max_context_for(layout, vram_bytes_per_device, opts = opts)
         if shrunk >= opts.min_ctx:
@@ -332,7 +374,9 @@ def plan_placement(
             )
 
     for quantised in _kv_modes(opts):
-        plan = _plan_at(layout, opts, n_ctx, budget, host_ram_bytes, quantised)
+        plan = _plan_at(
+            layout, opts, n_ctx, budget, host_ram_bytes, quantised, kv_bytes_floor
+        )
         if plan is not None:
             return plan
 
@@ -349,11 +393,13 @@ def plan_placement(
             )
             shrunk = min(shrunk, n_ctx)
             if shrunk >= opts.min_ctx:
-                plan = _plan_at(layout, opts, shrunk, budget, host_ram_bytes, quantised)
+                plan = _plan_at(
+                    layout, opts, shrunk, budget, host_ram_bytes, quantised, kv_bytes_floor
+                )
                 if plan is not None:
                     return plan
 
-    floor = resident_floor_bytes(layout, n_ctx)
+    floor = resident_floor_bytes(layout, n_ctx, kv_bytes_floor = kv_bytes_floor)
     return Plan(
         changed = False,
         n_ctx = n_ctx,
@@ -380,9 +426,12 @@ def _plan_at(
     budget: int,
     host_ram_bytes: Optional[int],
     quantised: bool,
+    kv_bytes_floor: int = 0,
 ) -> Optional[Plan]:
     """One pass of the ladder at a fixed context and cache dtype."""
-    needed = all_resident_bytes(layout, n_ctx, kv_quantised = quantised)
+    needed = all_resident_bytes(
+        layout, n_ctx, kv_quantised = quantised, kv_bytes_floor = kv_bytes_floor
+    )
     if needed <= budget:
         return _finish(
             layout,
@@ -392,6 +441,7 @@ def _plan_at(
             False,
             host_ram_bytes,
             quantised = quantised,
+            kv_bytes_floor = kv_bytes_floor,
             reason = (
                 f"the whole load fits in VRAM ({needed / GIB:.2f} of "
                 f"{budget / GIB:.2f} GiB usable), so nothing is spilled"
@@ -409,6 +459,7 @@ def _plan_at(
             False,
             host_ram_bytes,
             quantised = quantised,
+            kv_bytes_floor = kv_bytes_floor,
             reason = (
                 f"spilled the FFN of {len(chosen)} of {len(layout.blocks)} blocks "
                 f"({freed / GIB:.2f} GiB) to cover a {deficit / GIB:.2f} GiB deficit, "
@@ -429,6 +480,7 @@ def _plan_at(
                 True,
                 host_ram_bytes,
                 quantised = quantised,
+                kv_bytes_floor = kv_bytes_floor,
                 reason = (
                     f"spilled every block's FFN ({freed / GIB:.2f} GiB) plus lm_head "
                     f"({layout.lm_head_bytes / GIB:.2f} GiB) to cover a "
@@ -447,6 +499,7 @@ def _finish(
     host_ram_bytes: Optional[int],
     *,
     quantised: bool = False,
+    kv_bytes_floor: int = 0,
     reason: str = "",
 ) -> Plan:
     """Assemble patterns, decide the load mode, and account for both sides."""
@@ -467,7 +520,12 @@ def _finish(
     # token_embd is host-resident on every launch, so it is host RAM this plan
     # has to be able to pay for even when nothing is spilled.
     host_bytes = layout.token_embd_bytes + spilled_bytes
-    vram_bytes = all_resident_bytes(layout, n_ctx, kv_quantised = quantised) - spilled_bytes
+    vram_bytes = (
+        all_resident_bytes(
+            layout, n_ctx, kv_quantised = quantised, kv_bytes_floor = kv_bytes_floor
+        )
+        - spilled_bytes
+    )
 
     # mmap costs 2 to 4.6x on host-resident weight reads, so turn it off -- but
     # only when host RAM can really hold the host side. Where it cannot, mmap is

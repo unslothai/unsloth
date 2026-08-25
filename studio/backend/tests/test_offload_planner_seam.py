@@ -17,7 +17,7 @@ import pytest
 
 from core.inference.llama_cpp import LlamaCppBackend
 from core.inference.offload_layout import LM_HEAD_PATTERN, BlockLayout, ModelLayout
-from core.inference.offload_planner import Plan, smart_offload_enabled
+from core.inference.offload_planner import Plan, plan_placement, smart_offload_enabled
 
 # The planner's own decision table is covered exhaustively in
 # test_offload_planner.py. What belongs HERE is the seam: whether the launch
@@ -251,11 +251,70 @@ def test_a_spill_host_ram_cannot_hold_abstains():
     assert got is None or got.load_mode_none is False
 
 
-def test_a_floor_that_does_not_fit_abstains():
+def test_a_floor_that_does_not_fit_emits_no_flags():
     """If attention plus the cache alone will not fit, no weight spill helps and
-    only -ngl (which evicts the cache) or a smaller context would."""
+    only -ngl (which evicts the cache) or a smaller context would.
+
+    Asserted on the FLAGS, not on the plan object. plan_placement reports that
+    case as Plan(changed=False, insufficient=True, ot_patterns=()), and a
+    dataclass instance is truthy, so a seam that tested the plan for truthiness
+    emitted -ngl -1 --fit off with nothing moved to the host: every layer pinned
+    to the GPU and the fitter switched off, on precisely the load the planner had
+    just said does not fit. Checking `insufficient` on the returned plan passes
+    either way and proves nothing.
+    """
     got = _plan(_Stub(), model_size = 30 * GIB, kv = 2 * GIB, free_mib = 4 * 1024)
-    assert got is None or got.insufficient or not got.spills_anything
+    assert got is not None
+    assert got.insufficient
+    assert LlamaCppBackend._spill_plan_flags_for(got) == []
+
+
+def test_an_abstaining_plan_emits_no_flags():
+    """Every plan_placement abstention returns a Plan, not None: incomplete
+    layout, unified-memory host, no creditable VRAM, no usable context. None of
+    them may reach the argv."""
+    for plan in (
+        plan_placement(ModelLayout(), [8 * GIB], 32 * GIB, 4096),
+        plan_placement(
+            ModelLayout(complete = True, n_ctx_train = 4096),
+            [0],
+            32 * GIB,
+            4096,
+        ),
+    ):
+        assert plan.spills_anything is False
+        assert LlamaCppBackend._spill_plan_flags_for(plan) == []
+
+
+def test_a_plan_that_already_fits_emits_no_flags():
+    """The planner disagreeing with Studio ("it fits after all") is not licence
+    to pin every layer and turn the fitter off."""
+    got = _plan(_Stub(), free_mib = 200 * 1024)
+    assert got is not None and not got.spills_anything
+    assert LlamaCppBackend._spill_plan_flags_for(got) == []
+
+
+def test_the_measured_cache_floors_the_planners_own_estimate():
+    """layout.kv_bytes is a bare f16 GQA product with no cache-dtype, SWA, MLA,
+    stream or padding term, so on an MLA or f32-cache load it lands under the
+    cache Studio already sized. Under is the dangerous direction: the deficit
+    comes out small, too few blocks spill, and --fit off follows the plan."""
+    stub = _Stub()
+    layout = stub._tensor_spill_layout("/models/stub.gguf")
+    unfloored = plan_placement(layout, [20 * GIB], 64 * GIB, 32768)
+    floored = plan_placement(
+        layout, [20 * GIB], 64 * GIB, 32768, kv_bytes_floor = 8 * GIB
+    )
+    assert len(floored.spilled_blocks) > len(unfloored.spilled_blocks)
+
+
+def test_the_seam_hands_the_planner_studios_cache_size():
+    """The byte-accurate number is computed at the call site and was previously
+    only tested for nonzero. A bigger measured cache has to buy more spill."""
+    small = _plan(_Stub(), kv = 2 * GIB, free_mib = 14 * 1024)
+    large = _plan(_Stub(), kv = 10 * GIB, free_mib = 14 * 1024)
+    assert small is not None and large is not None
+    assert len(large.spilled_blocks) > len(small.spilled_blocks)
 
 
 # --------------------------------------------------------------- the revocation
@@ -316,16 +375,33 @@ def _load_model_source() -> str:
 
 
 def test_the_abstain_branch_still_emits_exactly_fit_on():
-    """The negative half of the compatibility argument. When the planner declines
-    the arm must emit the same two tokens it emitted before this existed, so an
-    old install that upgrades sees a byte-identical command line."""
-    src = _load_model_source()
-    assert 'cmd.extend(["--fit", "on"])' in src
-    # And it is the ELSE of the plan check, not an unconditional emission.
-    idx = src.index("_planned_tensor_spill")
-    tail = src[idx : idx + 2000]
-    assert "else:" in tail
-    assert 'cmd.extend(["--fit", "on"])' in tail
+    """The negative half of the compatibility argument: when the planner
+    declines, the arm emits what it emitted before this existed.
+
+    This used to assert the SOURCE TEXT of the else branch, which is why it
+    passed while the abstain path was in fact emitting "-ngl -1 --fit off" --
+    Plan is a dataclass with no __bool__, so the truthiness check upstream fired
+    on abstained plans too. A source pin cannot see that. Driven through the
+    real flag builder instead, so the emptiness that routes control to the else
+    branch is what is actually asserted.
+    """
+    from core.inference.offload_planner import Plan
+
+    for reason in (
+        "layout or device inventory incomplete, leaving llama.cpp defaults",
+        "unified memory host, spilling frees no device memory",
+        "no creditable VRAM after per-device overhead",
+        "no usable context length",
+    ):
+        plan = Plan(reason = reason)
+        assert plan, "Plan is truthy, which is the trap this test exists for"
+        assert LlamaCppBackend._spill_plan_flags_for(plan) == [], reason
+
+    # Same for a plan that cannot place the load, and for one that needs nothing.
+    assert LlamaCppBackend._spill_plan_flags_for(
+        Plan(reason = "does not fit", insufficient = True)
+    ) == []
+    assert LlamaCppBackend._spill_plan_flags_for(None) == []
 
 
 def test_the_plan_disables_the_fitter_and_pins_every_layer_to_a_gpu():
@@ -338,9 +414,30 @@ def test_the_plan_disables_the_fitter_and_pins_every_layer_to_a_gpu():
 
     -ngl -1: keeps every layer assigned to a GPU, so dev_layer(il) is a GPU and
     the cache is allocated there (llama-kv-cache.cpp:215).
+
+    Driven through the real emitter rather than matched against the source text:
+    a formatter that rewraps the literal must not be able to fail this.
     """
-    src = _load_model_source()
-    assert '["-ngl", "-1", "--fit", "off", *_ot_tokens]' in src
+    got = _plan(_Stub(), free_mib = 12 * 1024)
+    assert got is not None and got.spills_anything
+    flags = LlamaCppBackend._spill_plan_flags_for(got)
+    assert flags[:4] == ["-ngl", "-1", "--fit", "off"]
+    assert flags.count("-ot") == len(got.ot_patterns) >= 1
+    assert all(tok.endswith("=CPU") for tok in flags[5::2])
+
+
+def test_a_spill_plan_startup_failure_can_revoke_the_plan():
+    """The spill arm leaves fully_gpu_offloaded False and runs under use_fit with
+    an explicit --fit on the argv, so BOTH existing crash recoveries are
+    unreachable from it. Without a third arm a slightly optimistic plan skips
+    straight to the terminal fallbacks instead of retrying the --fit on placement
+    it replaced. Reachability only: the revocation must be reachable from the
+    crash path, not just from the `label` guard at the top of the spawn."""
+    import inspect
+
+    body = inspect.getsource(LlamaCppBackend.load_model)
+    body = body[body.index("def _spawn_and_wait") :]
+    assert body.count("_drop_tensor_spill") >= 2
 
 
 def test_the_revocation_runs_only_on_retries():

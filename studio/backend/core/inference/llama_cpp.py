@@ -18516,23 +18516,12 @@ class LlamaCppBackend:
                         extra_args = extra_args,
                         env = os.environ,
                     )
-                    if _spill:
-                        # One flag per pattern: llama-server ACCUMULATES repeated
-                        # -ot (common/arg.cpp:2657 push_backs into the shared
-                        # override vector). Do not join with ";" -- that is
-                        # llama-bench's separator; llama-server splits on ",".
-                        _ot_tokens = [
-                            tok for pat in _spill.ot_patterns for tok in ("-ot", f"{pat}=CPU")
-                        ]
-                        # --fit off is REQUIRED here, not tidiness. The fitter
-                        # aborts only on an n_gpu_layers the USER set
-                        # (common/fit.cpp:377) and -1 is llama.cpp's own default
-                        # (llama-model.cpp:2453), so -ngl -1 does not hold it off:
-                        # left on, it would re-place layers on top of this plan and
-                        # put the cache back on the host. -ngl -1 keeps every layer
-                        # assigned to a GPU so the cache stays there; the -ot
-                        # patterns move only the named weights.
-                        self._spill_plan_flags = ["-ngl", "-1", "--fit", "off", *_ot_tokens]
+                    # NOT `if _spill:` -- Plan is a dataclass, so every instance is
+                    # truthy, including the ones plan_placement returns to say it
+                    # could not place this load at all.
+                    _spill_flags = self._spill_plan_flags_for(_spill)
+                    if _spill_flags:
+                        self._spill_plan_flags = _spill_flags
                         cmd.extend(self._spill_plan_flags)
                         logger.info(
                             "Tensor spill: %s (resident %.1f GB, host %.1f GB)",
@@ -19856,6 +19845,40 @@ class LlamaCppBackend:
                                 )
                                 env["LD_LIBRARY_PATH"] = _retry_ld
                                 _did_rocm_retry = True
+                                continue
+                        if (
+                            not _did_fit_retry
+                            and _startup_crashed
+                            and not _tensor_capability_crash
+                            and not _hip_rocr_mismatch
+                        ):
+                            # A spill-planned launch that crashed on startup. The
+                            # two recoveries below cannot reach it: the spill arm
+                            # leaves fully_gpu_offloaded False, and it runs under
+                            # use_fit=True with an explicit --fit on the command
+                            # line, so _fit_off_retry_eligible is False on both
+                            # counts. Without this the load skips straight to the
+                            # terminal/CPU fallbacks even though the --fit on
+                            # placement it replaced would have worked. The plan is
+                            # a prediction; a crash is that prediction being wrong
+                            # (a slightly optimistic estimate, fragmented VRAM, a
+                            # binary that rejects an override), so hand the
+                            # placement back to llama.cpp exactly as every other
+                            # retry site does. Self-gating: _drop_tensor_spill
+                            # returns run_cmd unchanged when no plan is present.
+                            _reverted = self._drop_tensor_spill(run_cmd, "startup failure")
+                            if _reverted != run_cmd:
+                                logger.warning(
+                                    "llama-server crashed during startup (exit code %s) "
+                                    "with a tensor-spill plan; the plan was optimistic, "
+                                    "retrying once with --fit on so llama.cpp can place "
+                                    "the model itself. Crash log: %s",
+                                    self._process.returncode,
+                                    self._llama_log_path,
+                                )
+                                run_cmd = _reverted
+                                self._memory_state = resolve_effective_memory_state(run_cmd, env)
+                                _did_fit_retry = True
                                 continue
                         if (
                             not _did_fit_retry
@@ -22612,7 +22635,51 @@ class LlamaCppBackend:
                 # host from being quoted a large host's numbers.
                 host = HostProfile(threads = os.cpu_count() or 1),
             ),
+            # The cache Studio already priced for THIS launch, byte-accurately:
+            # cache dtype, SWA windows, MLA latents, unified vs per-slot streams,
+            # cell padding and the flash-attention V padding all went into it.
+            # The planner's own layout.kv_bytes() is a bare f16 GQA product with
+            # none of those terms, so on an MLA or f32-cache load it comes out
+            # well UNDER the real cache and the plan under-spills. Passed as a
+            # floor rather than a replacement so the layout still wins where it
+            # is the more conservative of the two.
+            kv_bytes_floor = kv_cache_bytes,
         )
+
+    @staticmethod
+    def _spill_plan_flags_for(plan: "Optional[SpillPlan]") -> "list[str]":
+        """The argv tokens for ``plan``, or ``[]`` when it must not be emitted.
+
+        The emptiness test is the point. ``Plan`` is a dataclass with no
+        ``__bool__``/``__len__``, so EVERY instance is truthy -- including the
+        ones ``plan_placement`` returns to report that it could not place the
+        load (``insufficient``), that it abstained (incomplete layout, unified
+        memory, no creditable VRAM), or that the load already fits. Emitting for
+        those would append ``-ngl -1 --fit off`` with no tensor moved to the
+        host, i.e. pin every layer to the GPU and switch the fitter off on
+        exactly the loads the planner just said do not fit. Only a plan that
+        actually spills something earns the flags; everything else falls through
+        to ``--fit on``, which is what this arm did before the planner existed.
+
+        One flag per pattern: llama-server ACCUMULATES repeated ``-ot``
+        (common/arg.cpp:2657 push_backs into the shared override vector). Do not
+        join with ";" -- that is llama-bench's separator; llama-server splits an
+        ``-ot`` value on ",".
+
+        ``--fit off`` is REQUIRED, not tidiness. The fitter aborts only on an
+        n_gpu_layers the USER set (common/fit.cpp:377) and -1 is llama.cpp's own
+        default (llama-model.cpp:2453), so ``-ngl -1`` does not hold it off: left
+        on, it would re-place layers over this plan and put the cache back on the
+        host. ``-ngl -1`` keeps every layer assigned to a GPU so the cache stays
+        there (llama-kv-cache.cpp:215); the ``-ot`` patterns move only the named
+        weights.
+        """
+        if plan is None or not plan.spills_anything:
+            return []
+        tokens = [tok for pat in plan.ot_patterns for tok in ("-ot", f"{pat}=CPU")]
+        if not tokens:
+            return []
+        return ["-ngl", "-1", "--fit", "off", *tokens]
 
     def _drop_tensor_spill(self, run_cmd: "list[str]", why: str) -> "list[str]":
         """Take the spill plan back out of an argv and restore ``--fit on``.

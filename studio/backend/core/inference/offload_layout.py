@@ -126,6 +126,19 @@ def layout_from_gguf(path: str) -> ModelLayout:
 
 
 def _layout_from_reader(reader) -> ModelLayout:
+    # A split GGUF: llama.cpp reads split.count off the first shard and then
+    # resolves and loads every sibling (llama-model-loader.cpp:590-618), but
+    # GGUFReader memmaps the ONE path it was given and builds its tensor table
+    # from that file alone. Shard 1 still carries the model metadata, so without
+    # this the layout would look complete while holding a fraction of the
+    # tensors: resident and spillable are both undercounted, often by most of
+    # the model, and an undercounted total is an overstated fit. The planner
+    # would then emit too few -ot patterns (or none) and the launch path would
+    # follow them with --fit off, turning a model llama.cpp loads fine into a
+    # startup OOM. Abstain instead; the seam then reproduces --fit on exactly.
+    if int(_field(reader, "split.count") or 0) > 1:
+        return ModelLayout()
+
     arch = str(_field(reader, "general.architecture") or "")
     if not arch:
         return ModelLayout()

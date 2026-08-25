@@ -20,6 +20,7 @@ from core.inference.offload_layout import (
     LM_HEAD_PATTERN,
     BlockLayout,
     ModelLayout,
+    _layout_from_reader,
     layout_from_gguf,
     spill_pattern_for,
 )
@@ -528,6 +529,83 @@ def test_the_hybrid_cache_is_priced_on_attention_layers_only():
 @needs_gguf
 def test_a_bad_path_abstains_rather_than_raising():
     assert layout_from_gguf("/nonexistent/model.gguf").complete is False
+
+
+class _StubField:
+    def __init__(self, value):
+        self._value = value
+
+    def contents(self):
+        return self._value
+
+
+class _StubTensor:
+    def __init__(self, name, n_bytes):
+        self.name = name
+        self.n_bytes = n_bytes
+
+
+class _StubReader:
+    """The handful of attributes ``_layout_from_reader`` touches."""
+
+    def __init__(self, fields, tensors):
+        self.fields = {k: _StubField(v) for k, v in fields.items()}
+        self.tensors = tensors
+
+
+def _shard_fields(**extra):
+    base = {
+        "general.architecture": "llama",
+        "llama.block_count": 64,
+        "llama.attention.head_count_kv": 8,
+        "llama.attention.head_count": 64,
+        "llama.embedding_length": 8192,
+        "llama.attention.key_length": 128,
+        "llama.attention.value_length": 128,
+        "llama.context_length": 262144,
+    }
+    base.update(extra)
+    return base
+
+
+def _shard_tensors(indices):
+    out = []
+    for i in indices:
+        out.append(_StubTensor(f"blk.{i}.ffn_up.weight", GIB // 8))
+        out.append(_StubTensor(f"blk.{i}.attn_q.weight", MIB * 32))
+    return out
+
+
+def test_a_single_file_gguf_is_still_read():
+    """The guard below must not catch an ordinary one-file model."""
+    layout = _layout_from_reader(
+        _StubReader(_shard_fields(), _shard_tensors(range(64)))
+    )
+    assert layout.complete
+    assert len(layout.blocks) == 64
+
+
+def test_a_split_gguf_abstains_instead_of_planning_on_one_shard():
+    """GGUFReader memmaps the ONE path it is given, but llama.cpp reads
+    split.count off the first shard and loads every sibling
+    (llama-model-loader.cpp:590-618). Shard 1 carries the model metadata, so
+    without the guard the layout looks complete while holding a fraction of the
+    tensors. Undercounting the model is the OPTIMISTIC direction: the plan claims
+    a fit that is not there, emits too few -ot patterns, and the launch path
+    follows it with --fit off."""
+    partial = _StubReader(
+        _shard_fields(**{"split.count": 4}), _shard_tensors(range(16))
+    )
+    assert _layout_from_reader(partial).complete is False
+
+    # And the undercount it is guarding against is real, not theoretical: the
+    # same shard read as if it were the whole model reports a quarter of the
+    # blocks and a quarter of the spillable bytes.
+    whole = _layout_from_reader(_StubReader(_shard_fields(), _shard_tensors(range(64))))
+    as_if_whole = _layout_from_reader(
+        _StubReader(_shard_fields(), _shard_tensors(range(16)))
+    )
+    assert as_if_whole.spillable_bytes * 4 == whole.spillable_bytes
 
 
 # ------------------------------------------------- host profile and cost integration
