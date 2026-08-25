@@ -763,7 +763,10 @@ def test_the_download_plan_asks_the_engine_that_will_load_the_pick(cached_gguf, 
 
     assert mas.missing_download_bytes(arb.DIFFUSION, pick) == 7
     assert [model_path for model_path, _kwargs in asked] == [pick.model_path]
-    assert asked[0][1]["allow_device_probe"] is False
+    # Only the oversized-memory verdict is suppressed. The probe stays on, because the
+    # byte count has to be taken over the same file list the load will fetch.
+    assert asked[0][1]["memory_verdict"] is False
+    assert "allow_device_probe" not in asked[0][1]
 
 
 def test_two_bpw_builds_of_one_quant_are_not_confused(two_bpw, enabled, backend, loads):

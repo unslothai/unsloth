@@ -2696,6 +2696,7 @@ class DiffusionBackend:
         hf_token: Optional[str] = None,
         text_encoder_quant: Optional[str] = None,
         allow_device_probe: bool = True,
+        memory_verdict: bool = True,
         **load_kwargs: Any,
     ) -> dict[str, Any]:
         """The repos + exact files this pick needs, so the Hub download manager can fetch
@@ -2713,7 +2714,13 @@ class DiffusionBackend:
         inline, outside the manager's progress and disk preflight.
 
         ``allow_device_probe=False`` skips device-dependent precision planning and the memory
-        verdict while training owns the GPU."""
+        verdict while training owns the GPU. It is not free: resolving the hosted pre-cast
+        encoder and the DiT prequant needs a target, so clearing it also changes WHICH FILES
+        the plan counts -- an fp8 pick stages the dense encoder instead, and a GGUF pick stops
+        widening to the dense transformer shards. ``memory_verdict=False`` suppresses only the
+        oversized-unified-memory refusal, for callers that want today's file scope and no
+        verdict; the two are separate because a caller that merely dislikes the verdict must
+        not silently get a different file list."""
         fam = detect_family_for_pick(repo_id, gguf_filename, family_override)
         kind = resolve_model_kind(gguf_filename, model_kind)
         if kind == "pipeline":
@@ -2954,7 +2961,7 @@ class DiffusionBackend:
             # A companion of the checkpoint, never the selected model itself.
             prequant_repo, prequant_file, prequant_size = dit_prequant
             add_missing_entry(prequant_repo, [prequant_file], {prequant_file: prequant_size})
-        if incompatible is None and allow_device_probe:
+        if incompatible is None and allow_device_probe and memory_verdict:
             incompatible = self.declared_footprint_shortfall(
                 fam,
                 repo_id,
