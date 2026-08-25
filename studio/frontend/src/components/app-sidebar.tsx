@@ -2675,7 +2675,14 @@ export function AppSidebar() {
       last?.id === id && Date.now() - last.at < SELECTION_ACTION_GRACE_MS
     );
   };
+  // A project selection is not a chat selection. None of the three chords
+  // below is on its context menu, so with only projects selected they stand
+  // aside rather than falling through to the open chat while the sidebar
+  // visibly points somewhere else. Delete already behaves this way.
+  const projectsOnlySelected = () =>
+    selectionCount === 0 && projectSelectionCount > 0;
   useShortcut("archiveChat", () => {
+    if (projectsOnlySelected()) return;
     if (selectionCount > 0) {
       actOnSelection("archiveChat", () => void archiveSelected());
       return;
@@ -2684,6 +2691,7 @@ export function AppSidebar() {
     withActiveChat((item) => void handleArchiveThread(item));
   });
   useShortcut("markChatUnread", () => {
+    if (projectsOnlySelected()) return;
     if (selectionCount > 0) {
       actOnSelection("markChatUnread", markSelectedUnread);
       return;
@@ -2692,6 +2700,7 @@ export function AppSidebar() {
     withActiveChat((item) => markThreadsUnread(getSidebarItemThreadIds(item)));
   });
   useShortcut("togglePinChat", () => {
+    if (projectsOnlySelected()) return;
     if (selectionCount > 0) {
       actOnSelection("togglePinChat", () => pinSelected(!allSelectedPinned));
       return;

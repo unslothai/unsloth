@@ -1914,3 +1914,29 @@ test("the sidebar item lists are built once per change, not per render", async (
     );
   }
 });
+
+// Ctrl/Cmd-clicking a project row selects it without selecting any chat. The
+// chat-only chords used to read that as "no selection" and act on the open
+// chat, so Archive archived a chat the user had not pointed at.
+test("the chat-only chords stand aside for a project selection", async () => {
+  const sidebar = await readFile(
+    new URL("../src/components/app-sidebar.tsx", import.meta.url),
+    "utf8",
+  );
+  for (const id of ["archiveChat", "markChatUnread", "togglePinChat"]) {
+    const at = sidebar.indexOf(`useShortcut("${id}", () => {`);
+    assert.notEqual(at, -1, `${id} is gone`);
+    const body = sidebar.slice(at, sidebar.indexOf("\n  });", at));
+    const stand = body.indexOf("projectsOnlySelected()");
+    assert.notEqual(stand, -1, `${id} acts on the open chat under a project selection`);
+    assert.ok(
+      stand < body.indexOf("withActiveChat("),
+      `${id} checks the project selection too late`,
+    );
+  }
+  // Only when no chat is selected: a mixed selection still has chats to act on.
+  assert.match(
+    sidebar,
+    /const projectsOnlySelected = \(\) =>\n\s*selectionCount === 0 && projectSelectionCount > 0;/,
+  );
+});
