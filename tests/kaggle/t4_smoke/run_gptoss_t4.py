@@ -671,9 +671,13 @@ def _placement_failures(placement: dict | None) -> list[str]:
                 if not (deliberate and p.get("name") == embed.get("weight_name"))
             ]
             if unexplained or not (placement.get("off_gpu_parameters") or []):
-                named = ", ".join(
-                    f"{p.get('name')} ({p.get('numel')} on {p.get('device')})" for p in unexplained
-                ) or "the walk recorded no names"
+                named = (
+                    ", ".join(
+                        f"{p.get('name')} ({p.get('numel')} on {p.get('device')})"
+                        for p in unexplained
+                    )
+                    or "the walk recorded no names"
+                )
                 failures.append(
                     f"parameters are off the GPU: {elsewhere} [{named}] (all devices: "
                     f"{counts}), and unsloth's deliberate embedding offload does not "

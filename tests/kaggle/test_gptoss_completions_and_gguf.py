@@ -210,7 +210,6 @@ def test_the_deliberate_embedding_offload_is_not_a_failure():
     cannot tell an optimisation from a spill.
     """
     from run_gptoss_t4 import _placement_failures  # noqa: PLC0415
-
     assert _placement_failures(_placement_record()) == []
 
 
@@ -244,8 +243,7 @@ def test_a_second_tensor_off_the_card_is_still_a_failure():
     # printed after it as context, which is what makes the verdict readable.
     listed = failures[0].split("[", 1)[1].split("]", 1)[0]
     assert "model.embed_tokens.weight" not in listed, (
-        "the list must name what is unexplained, not re-report the tensor that "
-        "is accounted for"
+        "the list must name what is unexplained, not re-report the tensor that is accounted for"
     )
 
 
