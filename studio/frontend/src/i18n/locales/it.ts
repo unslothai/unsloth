@@ -232,15 +232,15 @@ export const it = {
         },
         archiveChat: {
           label: "Archivia chat",
-          description: "Archivia la chat corrente",
+          description: "Archivia le chat selezionate, o quella corrente",
         },
         markChatUnread: {
           label: "Segna come non letta",
-          description: "Segna la chat corrente come non letta",
+          description: "Segna come non lette le chat selezionate, o quella corrente",
         },
         togglePinChat: {
           label: "Fissa/sblocca",
-          description: "Fissa o sblocca la chat corrente",
+          description: "Fissa o sblocca le chat selezionate, o quella corrente",
         },
         selectAllChats: {
           label: "Seleziona tutte le chat",

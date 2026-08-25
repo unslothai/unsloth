@@ -264,15 +264,15 @@ export const en = {
         },
         archiveChat: {
           label: "Archive chat",
-          description: "Archive the current chat",
+          description: "Archive the selected chats, or the current one",
         },
         markChatUnread: {
           label: "Mark as unread",
-          description: "Mark the current chat as unread",
+          description: "Mark the selected chats unread, or the current one",
         },
         togglePinChat: {
           label: "Toggle pin",
-          description: "Pin or unpin the current chat",
+          description: "Pin or unpin the selected chats, or the current one",
         },
         selectAllChats: {
           label: "Select all chats",
@@ -280,7 +280,7 @@ export const en = {
         },
         clearChatSelection: {
           label: "Clear selection",
-          description: "Drop the selected chats. Escape clears them too",
+          description: "Deselect the selected chats. Escape does too",
         },
         deleteSelectedChats: {
           label: "Delete selected chats",

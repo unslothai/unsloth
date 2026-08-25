@@ -266,15 +266,15 @@ export const ja = {
         },
         archiveChat: {
           label: "チャットをアーカイブ",
-          description: "現在のチャットをアーカイブします",
+          description: "選択中のチャット、なければ現在のチャットをアーカイブします",
         },
         markChatUnread: {
           label: "未読にする",
-          description: "現在のチャットを未読にします",
+          description: "選択中のチャット、なければ現在のチャットを未読にします",
         },
         togglePinChat: {
           label: "ピン留めの切り替え",
-          description: "現在のチャットをピン留め、または解除します",
+          description: "選択中のチャット、なければ現在のチャットをピン留め、または解除します",
         },
         selectAllChats: {
           label: "すべてのチャットを選択",

@@ -267,15 +267,15 @@ export const es = {
         },
         archiveChat: {
           label: "Archivar chat",
-          description: "Archivar el chat actual",
+          description: "Archivar los chats seleccionados o el chat actual",
         },
         markChatUnread: {
           label: "Marcar como no leído",
-          description: "Marcar el chat actual como no leído",
+          description: "Marcar como no leídos los chats seleccionados o el chat actual",
         },
         togglePinChat: {
           label: "Alternar fijado",
-          description: "Fijar o desfijar el chat actual",
+          description: "Fijar o desfijar los chats seleccionados o el chat actual",
         },
         selectAllChats: {
           label: "Seleccionar todos los chats",
@@ -283,7 +283,7 @@ export const es = {
         },
         clearChatSelection: {
           label: "Borrar selección",
-          description: "Descartar los chats seleccionados. Escape también los borra",
+          description: "Anular la selección de los chats. Escape también la anula",
         },
         deleteSelectedChats: {
           label: "Eliminar los chats seleccionados",

@@ -925,9 +925,15 @@ test("every locale overlay carries the shortcut strings", async () => {
       );
     }
     for (const def of SHORTCUT_DEFS) {
-      assert.ok(
-        subtree.includes(`${def.id}: {`),
-        `${locale} is missing settings.keyboardShortcuts.actions.${def.id}`,
+      // Both halves: a row with a label and no description renders an empty
+      // second line rather than falling back to English.
+      const row = new RegExp(
+        `\\n        ${def.id}: \\{\\n          label: "[^"]+",\\n          description: "[^"]+",\\n        \\},`,
+      );
+      assert.match(
+        subtree,
+        row,
+        `${locale} is missing a label or description for settings.keyboardShortcuts.actions.${def.id}`,
       );
     }
   }
@@ -1760,6 +1766,52 @@ test("a selection does not outlive the rows it was made on", async () => {
     sidebar,
     /if \(anchor && !renderedChatIds\.has\(anchor\.id\)\) \{\n\s*selectionAnchorRef\.current = null;/,
   );
+});
+
+// Acting on a selection clears it, so the same chord pressed again reads
+// selectionCount as 0. Without a latch it archives the open chat, which was
+// never selected, and says nothing about it.
+test("a selection chord does not fall through to the open chat", async () => {
+  const sidebar = await readFile(
+    new URL("../src/components/app-sidebar.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(sidebar, /const SELECTION_ACTION_GRACE_MS = \d+;/);
+  for (const id of ["archiveChat", "markChatUnread", "togglePinChat"]) {
+    const body = sidebar.slice(
+      sidebar.indexOf(`useShortcut("${id}"`),
+      sidebar.indexOf("\n  });", sidebar.indexOf(`useShortcut("${id}"`)),
+    );
+    assert.match(body, /actOnSelection\(/, `${id} does not stamp the latch`);
+    assert.match(
+      body,
+      /if \(followsSelectionAction\(\)\) return;[\s\S]*withActiveChat\(/,
+      `${id} reaches the open chat without checking the latch`,
+    );
+  }
+  // deleteSelectedChats needs none of this: it has no open-chat branch.
+  const del = sidebar.slice(
+    sidebar.indexOf('useShortcut("deleteSelectedChats"'),
+    sidebar.indexOf("\n  });", sidebar.indexOf('useShortcut("deleteSelectedChats"')),
+  );
+  assert.doesNotMatch(del, /withActiveChat\(/);
+});
+
+// The only action with no menu item anywhere and no undo, so a silent wipe
+// leaves the user nothing to tell it apart from a dead key.
+test("clearing every unread says what it cleared", async () => {
+  const sidebar = await readFile(
+    new URL("../src/components/app-sidebar.tsx", import.meta.url),
+    "utf8",
+  );
+  const body = sidebar.slice(
+    sidebar.indexOf('useShortcut("clearAllUnreads"'),
+    sidebar.indexOf("\n  });", sidebar.indexOf('useShortcut("clearAllUnreads"')),
+  );
+  // Counted before the wipe, or the toast reports zero every time.
+  assert.match(body, /const cleared = state\.unreadThreadIds\.size;[\s\S]*state\.clearAllUnreads\(\)/);
+  assert.match(body, /if \(cleared === 0\) \{\n\s*toast\.info\(/);
+  assert.match(body, /toast\.success\(/);
 });
 
 // Two parked requests must count as two, or both cards claim Enter and mount

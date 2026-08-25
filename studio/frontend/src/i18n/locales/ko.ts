@@ -264,15 +264,15 @@ export const ko = {
         },
         archiveChat: {
           label: "채팅 보관",
-          description: "현재 채팅을 보관합니다",
+          description: "선택한 채팅을, 없으면 현재 채팅을 보관합니다",
         },
         markChatUnread: {
           label: "읽지 않음으로 표시",
-          description: "현재 채팅을 읽지 않음으로 표시합니다",
+          description: "선택한 채팅을, 없으면 현재 채팅을 읽지 않음으로 표시합니다",
         },
         togglePinChat: {
           label: "고정 전환",
-          description: "현재 채팅을 고정하거나 해제합니다",
+          description: "선택한 채팅을, 없으면 현재 채팅을 고정하거나 해제합니다",
         },
         selectAllChats: {
           label: "모든 채팅 선택",

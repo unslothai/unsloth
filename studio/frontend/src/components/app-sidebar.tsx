@@ -575,6 +575,8 @@ const WORKFLOW_UNAVAILABLE = "The loaded model cannot do this";
 // pays off after the user has repaired an install. A re-read outstanding longer than the stall
 // window is given up on rather than latching the poll off: the backend it is waiting on is the
 // one case this has to recover from.
+/** How long a selection chord keeps a repeat press off the open chat. */
+const SELECTION_ACTION_GRACE_MS = 750;
 const VERDICT_UNKNOWN_POLL_MS = 3000;
 const SELF_HEAL_POLL_MS = 15000;
 const VERDICT_POLL_STALL_MS = 30000;
@@ -2635,26 +2637,38 @@ export function AppSidebar() {
     openChatItemById(pick(useChatNavigationStore.getState()));
 
   // With rows selected these act on the selection, matching the context menu;
-  // otherwise on the open chat.
+  // otherwise on the open chat. Acting on a selection clears it, so without
+  // this latch a second press would land on the open chat, which the user
+  // never selected.
+  const selectionActedAtRef = useRef(0);
+  const actOnSelection = (fn: () => void) => {
+    selectionActedAtRef.current = Date.now();
+    fn();
+  };
+  const followsSelectionAction = () =>
+    Date.now() - selectionActedAtRef.current < SELECTION_ACTION_GRACE_MS;
   useShortcut("archiveChat", () => {
     if (selectionCount > 0) {
-      void archiveSelected();
+      actOnSelection(() => void archiveSelected());
       return;
     }
+    if (followsSelectionAction()) return;
     withActiveChat((item) => void handleArchiveThread(item));
   });
   useShortcut("markChatUnread", () => {
     if (selectionCount > 0) {
-      markSelectedUnread();
+      actOnSelection(markSelectedUnread);
       return;
     }
+    if (followsSelectionAction()) return;
     withActiveChat((item) => markThreadsUnread(getSidebarItemThreadIds(item)));
   });
   useShortcut("togglePinChat", () => {
     if (selectionCount > 0) {
-      pinSelected(!allSelectedPinned);
+      actOnSelection(() => pinSelected(!allSelectedPinned));
       return;
     }
+    if (followsSelectionAction()) return;
     withActiveChat((item) => togglePinnedChat(item.id));
   });
   useShortcut("selectAllChats", selectAllChats);
@@ -2698,9 +2712,17 @@ export function AppSidebar() {
   useShortcut("nextChatNeedingAttention", () =>
     goToChat(nextAttentionChatItem),
   );
-  useShortcut("clearAllUnreads", () =>
-    useChatNavigationStore.getState().clearAllUnreads(),
-  );
+  // No undo and no menu item anywhere, so it says what it did.
+  useShortcut("clearAllUnreads", () => {
+    const state = useChatNavigationStore.getState();
+    const cleared = state.unreadThreadIds.size;
+    if (cleared === 0) {
+      toast.info("No unread chats");
+      return;
+    }
+    state.clearAllUnreads();
+    toast.success(`Cleared ${cleared} unread ${cleared === 1 ? "chat" : "chats"}`);
+  });
 
   // The six slots register as <Shortcut> elements: a loop of hooks would
   // break the rules of hooks.

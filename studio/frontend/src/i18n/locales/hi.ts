@@ -267,15 +267,15 @@ export const hi = {
         },
         archiveChat: {
           label: "चैट संग्रहित करें",
-          description: "मौजूदा चैट संग्रहित करें",
+          description: "चुनी गई चैट संग्रहित करें, या मौजूदा चैट",
         },
         markChatUnread: {
           label: "अपठित के रूप में चिह्नित करें",
-          description: "मौजूदा चैट को अपठित चिह्नित करें",
+          description: "चुनी गई चैट को अपठित चिह्नित करें, या मौजूदा चैट",
         },
         togglePinChat: {
           label: "पिन टॉगल करें",
-          description: "मौजूदा चैट पिन करें या हटाएँ",
+          description: "चुनी गई चैट पिन या अनपिन करें, या मौजूदा चैट",
         },
         selectAllChats: {
           label: "सभी चैट चुनें",
@@ -283,7 +283,7 @@ export const hi = {
         },
         clearChatSelection: {
           label: "चयन हटाएँ",
-          description: "चुनी गई चैट हटा दें। Escape से भी चयन हटता है",
+          description: "चुनी गई चैट का चयन हटाएँ। Escape से भी चयन हटता है",
         },
         deleteSelectedChats: {
           label: "चुनी गई चैट हटाएँ",

@@ -266,15 +266,15 @@ export const ru = {
         },
         archiveChat: {
           label: "Архивировать чат",
-          description: "Архивировать текущий чат",
+          description: "Архивировать выбранные чаты или текущий чат",
         },
         markChatUnread: {
           label: "Отметить как непрочитанный",
-          description: "Отметить текущий чат как непрочитанный",
+          description: "Отметить выбранные чаты или текущий чат как непрочитанные",
         },
         togglePinChat: {
           label: "Закрепить или открепить",
-          description: "Закрепить или открепить текущий чат",
+          description: "Закрепить или открепить выбранные чаты или текущий чат",
         },
         selectAllChats: {
           label: "Выбрать все чаты",
@@ -282,7 +282,7 @@ export const ru = {
         },
         clearChatSelection: {
           label: "Снять выделение",
-          description: "Сбросить выбранные чаты. Escape тоже снимает выделение",
+          description: "Снять выделение с выбранных чатов. Escape тоже снимает выделение",
         },
         deleteSelectedChats: {
           label: "Удалить выбранные чаты",

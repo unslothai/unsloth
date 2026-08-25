@@ -268,15 +268,15 @@ export const de = {
         },
         archiveChat: {
           label: "Chat archivieren",
-          description: "Den aktuellen Chat archivieren",
+          description: "Die ausgewählten Chats archivieren, sonst den aktuellen",
         },
         markChatUnread: {
           label: "Als ungelesen markieren",
-          description: "Den aktuellen Chat als ungelesen markieren",
+          description: "Die ausgewählten Chats als ungelesen markieren, sonst den aktuellen",
         },
         togglePinChat: {
           label: "Anheften umschalten",
-          description: "Den aktuellen Chat anheften oder lösen",
+          description: "Die ausgewählten Chats anheften oder lösen, sonst den aktuellen",
         },
         selectAllChats: {
           label: "Alle Chats auswählen",

@@ -262,15 +262,15 @@ export const zhCN = {
         },
         archiveChat: {
           label: "归档聊天",
-          description: "归档当前聊天",
+          description: "归档已选聊天，没有则归档当前聊天",
         },
         markChatUnread: {
           label: "标记为未读",
-          description: "将当前聊天标记为未读",
+          description: "将已选聊天标记为未读，没有则标记当前聊天",
         },
         togglePinChat: {
           label: "切换置顶",
-          description: "置顶或取消置顶当前聊天",
+          description: "置顶或取消置顶已选聊天，没有则操作当前聊天",
         },
         selectAllChats: {
           label: "选择全部对话",
@@ -278,7 +278,7 @@ export const zhCN = {
         },
         clearChatSelection: {
           label: "清除选择",
-          description: "取消已选对话。按 Esc 同样可以清除",
+          description: "取消选择已选对话。按 Esc 同样可以取消选择",
         },
         deleteSelectedChats: {
           label: "删除所选对话",

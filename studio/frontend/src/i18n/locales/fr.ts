@@ -268,15 +268,15 @@ export const fr = {
         },
         archiveChat: {
           label: "Archiver la discussion",
-          description: "Archiver la discussion en cours",
+          description: "Archiver les discussions sélectionnées, sinon celle en cours",
         },
         markChatUnread: {
           label: "Marquer comme non lu",
-          description: "Marquer la discussion en cours comme non lue",
+          description: "Marquer comme non lues les discussions sélectionnées, sinon celle en cours",
         },
         togglePinChat: {
           label: "Épingler/désépingler",
-          description: "Épingler ou désépingler la discussion en cours",
+          description: "Épingler ou désépingler les discussions sélectionnées, sinon celle en cours",
         },
         selectAllChats: {
           label: "Tout sélectionner",
@@ -284,7 +284,7 @@ export const fr = {
         },
         clearChatSelection: {
           label: "Effacer la sélection",
-          description: "Abandonner les chats sélectionnés. Échap les efface aussi",
+          description: "Désélectionner les chats sélectionnés. Échap le fait aussi",
         },
         deleteSelectedChats: {
           label: "Supprimer les chats sélectionnés",
