@@ -2416,12 +2416,22 @@ def append_assistant_turn(
     model just added are one turn, so they are merged: appending would instead give two
     consecutive assistant messages and break role alternation. Self-limiting, since
     after a tool result the conversation no longer ends with a plain assistant turn.
+
+    The merge is over the resumed turn, not a replacement of it. Assigning the new
+    message into the slot would drop every key the partial carried that the
+    continuation does not repeat, and ``extra_content`` is exactly such a key: it
+    is the namespaced envelope a translator reads back (``google`` for Gemini's
+    thought signatures and native parts, plus ``anthropic`` and
+    ``openai_codex_reasoning``). Gemini pins the text part's signature back on
+    from that field alone, so a resumed turn replayed without it is rejected.
     """
     # Same acceptance rule as the prompt boundary, so a partial sent as text parts merges too.
     prev_text = trailing_assistant_text(conversation) if continue_final_message else None
     if prev_text is not None and isinstance(assistant_msg.get("content"), str):
-        assistant_msg["content"] = f"{prev_text}{assistant_msg['content']}"
-        conversation[-1] = assistant_msg
+        # Copy rather than mutate: the caller owns assistant_msg and may still read it.
+        merged_msg = {**conversation[-1], **assistant_msg}
+        merged_msg["content"] = f"{prev_text}{assistant_msg['content']}"
+        conversation[-1] = merged_msg
         return
     conversation.append(assistant_msg)
 
