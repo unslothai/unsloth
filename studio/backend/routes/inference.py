@@ -4021,12 +4021,14 @@ def _roster_scopes(rag_scope: dict) -> list[str]:
 
 
 def _roster_name(raw: object) -> str:
-    """Collapse whitespace and cap length: linked-folder names are raw relative paths,
-    so a newline would otherwise forge lines in the system prompt."""
+    """Collapse whitespace, cap length, escape the quote: linked-folder names are raw
+    relative paths off disk, so a newline would forge lines in the system prompt and a
+    bare quote would close the one this list wraps the name in, leaving the rest of the
+    name reading as prose the model was told."""
     name = _re.sub(r"\s+", " ", str(raw or "")).strip()
     if len(name) > _RAG_ROSTER_MAX_NAME_CHARS:
         name = name[:_RAG_ROSTER_MAX_NAME_CHARS] + "..."
-    return name
+    return name.replace('"', '\\"')
 
 
 def _read_roster(rag_scope: dict) -> tuple[list[str], int]:
