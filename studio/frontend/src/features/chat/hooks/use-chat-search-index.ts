@@ -319,6 +319,11 @@ export function publishChatSearchBuild(
   } else {
     cachedIndexEpoch = getAuthSessionEpoch();
     cachedIndex = null;
+    // An incomplete build cannot preserve a previous empty answer: partial rows already
+    // disprove it, while no rows only mean the history could not be read. A positive partial
+    // answer is safe and keeps the next open from starting compact again.
+    if (build.items.length > 0) rememberChatSearchHasRows(true);
+    else forgetChatSearchHasRows();
   }
   return build.items;
 }
@@ -490,6 +495,10 @@ export function useChatSearchIndex(enabled: boolean): {
       if (debounceTimer !== null) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
         debounceTimer = null;
+        // The structural deadline has now been honored. Stream events arriving while this
+        // rebuild runs should return to quiet-window coalescing instead of forcing another
+        // rebuild every debounce interval for the rest of the generation.
+        structuralRebuildPending = false;
         if (!cancelled) run();
       }, SEARCH_REBUILD_DEBOUNCE_MS);
     };

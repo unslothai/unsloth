@@ -5,13 +5,14 @@ let threads: unknown[] = [];
 let messagesByThread = new Map<string, unknown[]>();
 let batchFails = false;
 let messageReadsFail = false;
+let messageReadFailures = new Set<string>();
 
 export function listStoredChatThreads(): Promise<unknown[]> {
   return Promise.resolve(threads);
 }
 
 export function listStoredChatMessages(threadId: string): Promise<unknown[]> {
-  if (messageReadsFail) {
+  if (messageReadsFail || messageReadFailures.has(threadId)) {
     return Promise.reject(new Error("message read failed"));
   }
   return Promise.resolve(messagesByThread.get(threadId) ?? []);
@@ -29,11 +30,13 @@ export function configureChatSearchHistoryStub(options: {
   messagesByThread?: Map<string, unknown[]>;
   batchFails?: boolean;
   messageReadsFail?: boolean;
+  messageReadFailures?: Set<string>;
 }): void {
   threads = options.threads ?? [];
   messagesByThread = options.messagesByThread ?? new Map();
   batchFails = options.batchFails ?? false;
   messageReadsFail = options.messageReadsFail ?? false;
+  messageReadFailures = options.messageReadFailures ?? new Set();
 }
 
 export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";

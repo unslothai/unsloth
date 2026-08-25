@@ -379,12 +379,18 @@ test("stream chunks do not postpone an already scheduled structural rebuild", ()
     false,
     "a stream chunk must keep the structural rebuild's original deadline",
   );
+  assert.equal(
+    shouldPostponeSearchRebuild(false, stream),
+    true,
+    "once that deadline fires, later chunks return to quiet-window coalescing",
+  );
 });
 
 test("failed message reads are not persisted as a completed empty history", async () => {
   store.clear();
   setAuthSessionEpochForTest(0);
-  writeCachedIndex(null);
+  writeCachedIndex([]);
+  assert.equal(chatSearchIndexHasRows(), false);
   configureChatSearchHistoryStub({
     threads: [
       {
@@ -406,6 +412,58 @@ test("failed message reads are not persisted as a completed empty history", asyn
     chatSearchIndexHasRows(),
     null,
     "a transient total read failure is unknown, not a known-empty history",
+  );
+  configureChatSearchHistoryStub({});
+});
+
+test("partial builds replace a stale empty hint with a rows answer", async () => {
+  store.clear();
+  setAuthSessionEpochForTest(0);
+  writeCachedIndex([]);
+  assert.equal(chatSearchIndexHasRows(), false);
+  configureChatSearchHistoryStub({
+    threads: [
+      {
+        id: "readable-thread",
+        title: "Visible history",
+        modelType: "text",
+        archived: false,
+        createdAt: 2,
+      },
+      {
+        id: "unreadable-thread",
+        title: "Unreadable history",
+        modelType: "text",
+        archived: false,
+        createdAt: 1,
+      },
+    ],
+    messagesByThread: new Map([
+      [
+        "readable-thread",
+        [
+          {
+            id: "readable-message",
+            threadId: "readable-thread",
+            role: "user",
+            content: [{ type: "text", text: "Recovered row" }],
+            createdAt: 2,
+          },
+        ],
+      ],
+    ]),
+    batchFails: true,
+    messageReadFailures: new Set(["unreadable-thread"]),
+  });
+
+  const build = await buildChatSearchIndex();
+  assert.equal(build.complete, false);
+  assert.equal(build.items.length, 1);
+  publishChatSearchBuild(build);
+  assert.equal(
+    chatSearchIndexHasRows(),
+    true,
+    "visible partial rows disprove the older completed-empty hint",
   );
   configureChatSearchHistoryStub({});
 });
