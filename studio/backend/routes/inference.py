@@ -7380,9 +7380,11 @@ def _gguf_runtime_bytes(
                 ctx = resolve_requested_ctx(llama_extra_args, max_seq_length or 0)
             except Exception:
                 ctx = max_seq_length or 0
-            ctx = ctx or (
-                0 if _extras_ask_for_native_ctx else _inherited_ctx_size()
-            ) or (probe._context_length or 0)
+            ctx = (
+                ctx
+                or (0 if _extras_ask_for_native_ctx else _inherited_ctx_size())
+                or (probe._context_length or 0)
+            )
         else:
             ctx = (
                 max(max_seq_length or 0, ctx_override)

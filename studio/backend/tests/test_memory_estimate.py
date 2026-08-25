@@ -2487,7 +2487,7 @@ class TestAnInheritedContextIsPriced:
     def test_an_explicit_zero_asks_for_native_and_beats_the_environment(
         self, wide, monkeypatch, flag
     ):
-        """"-c 0" REQUESTS the native context; it is not the absence of a request.
+        """ "-c 0" REQUESTS the native context; it is not the absence of a request.
 
         llama.cpp parses the environment before argv, so the explicit zero wins at the
         child. Folding it in with "nothing was set" let an inherited 4k answer for a
