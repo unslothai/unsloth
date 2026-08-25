@@ -462,16 +462,28 @@ def test_the_per_device_check_passes_when_the_shares_really_fit():
     tight = _ALL_SPILL_VRAM // 2
     assert (
         _per_device_shortfall(
-            layout, _NO_OVERHEAD, 4096, spilled, False, [tight, tight],
-            quantised = False, kv_bytes_floor = 0,
+            layout,
+            _NO_OVERHEAD,
+            4096,
+            spilled,
+            False,
+            [tight, tight],
+            quantised = False,
+            kv_bytes_floor = 0,
         )
         is not None
     )
     roomy = _ALL_SPILL_VRAM
     assert (
         _per_device_shortfall(
-            layout, _NO_OVERHEAD, 4096, spilled, False, [roomy, roomy],
-            quantised = False, kv_bytes_floor = 0,
+            layout,
+            _NO_OVERHEAD,
+            4096,
+            spilled,
+            False,
+            [roomy, roomy],
+            quantised = False,
+            kv_bytes_floor = 0,
         )
         is None
     )

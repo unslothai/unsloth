@@ -486,9 +486,7 @@ def _device_slots(n_slots: int, vram_bytes_per_device: Sequence[int]) -> list[li
     for row in range(n_slots):
         fraction = row / n_slots
         # std::upper_bound: first cumulative strictly greater than fraction.
-        device = next(
-            (i for i, c in enumerate(cumulative) if c > fraction), len(weights) - 1
-        )
+        device = next((i for i, c in enumerate(cumulative) if c > fraction), len(weights) - 1)
         slots[device].append(row)
     return slots
 
@@ -537,9 +535,7 @@ def _per_device_shortfall(
     cache = cache_bytes(layout, n_ctx, kv_quantised = quantised, kv_bytes_floor = kv_bytes_floor)
     kv_per_layer = cache // layout.n_layers if layout.n_layers else 0
     by_index = {b.index: b for b in layout.blocks}
-    output_row_bytes = layout.other_resident_bytes + (
-        0 if spill_lm_head else layout.lm_head_bytes
-    )
+    output_row_bytes = layout.other_resident_bytes + (0 if spill_lm_head else layout.lm_head_bytes)
 
     slots = _device_slots(n_slots, vram_bytes_per_device)
     for device, rows in enumerate(slots):
