@@ -664,6 +664,7 @@ def _helpers():
             in (
                 "planner_kwargs_with_max_memory",
                 "planner_hub_kwargs",
+                "planner_config_overrides",
                 "_get_effective_local_files_only",
                 "_env_says_offline",
             )
@@ -733,6 +734,9 @@ def test_every_leaf_planner_call_forwards_the_budget_and_the_hub(name):
         assert (
             "planner_hub_kwargs" in rendered
         ), f"{name}:{node.lineno} plans without the caller's cache_dir/local_files_only"
+        assert (
+            "planner_config_overrides" in rendered
+        ), f"{name}:{node.lineno} plans without the caller's config overrides"
         return
     raise AssertionError(f"no resolve_unsloth_device_map call in {name}")
 
@@ -851,3 +855,67 @@ def test_the_diffusion_leaf_plans_with_the_locality_the_load_uses():
         ), f"diffusion.py:{node.lineno} plans without the locality the load resolved"
         return
     raise AssertionError("no resolve_unsloth_device_map call in diffusion.py")
+
+
+def test_a_code_revision_reaches_the_planner():
+    """`trust_remote_code` makes resolving the model class a second Hub lookup, and the
+    planner honours `code_revision` for it. The load already gets it through kwargs, so
+    leaving it out plans one revision of the remote code and loads another."""
+    ns = _helpers()
+    assert ns["planner_hub_kwargs"]({"code_revision": "abc123"}) == {"code_revision": "abc123"}
+    assert "code_revision" not in ns["planner_hub_kwargs"]({})
+    assert ns["planner_hub_kwargs"]({"code_revision": None}) == {}
+
+
+def test_a_max_position_embeddings_override_reaches_the_planner():
+    """The planner rebuilds the repo config from a name, so an override that lives only in
+    the caller's kwargs never reaches it. Raising it on an architecture with learned
+    position embeddings makes the planned tensors smaller than the materialized ones, and
+    a map that fitted on paper OOMs."""
+    ns = _helpers()
+    assert ns["planner_config_overrides"]({"max_position_embeddings": 8192}) == {
+        "max_position_embeddings": 8192,
+    }
+    assert ns["planner_config_overrides"]({}) == {}
+    assert ns["planner_config_overrides"](None) == {}
+    assert ns["planner_config_overrides"]({"max_position_embeddings": None}) == {}
+
+
+def test_the_diffusion_leaf_plans_with_the_code_revision_too():
+    """Same reason as its locality: this leaf builds the helper's input itself, so a key
+    added to the helper does not reach it unless it is named here."""
+    source = open(os.path.join(MODELS, "diffusion.py"), encoding = "utf-8").read()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "planner_hub_kwargs":
+            assert "code_revision" in ast.unparse(node), (
+                "the diffusion leaf plans against a different revision of the remote code"
+            )
+            return
+    raise AssertionError("no planner_hub_kwargs call in diffusion.py")
+
+
+def test_an_unresolvable_explicit_model_class_declines_planning():
+    """`resolve_model_class` reads `auto_model._model_mapping`, which a concrete
+    `PreTrainedModel` subclass does not have, so it returns None and
+    `planner_class_mismatch_reason` reads unknown as compatible. The planner would then
+    build whatever the repo config selects while the load builds the caller's class."""
+    vision = open(os.path.join(MODELS, "vision.py"), encoding = "utf-8").read()
+    assert 'getattr(auto_model, "_model_mapping", None) is None' in vision
+    assert "an explicit model class has no auto mapping" in vision
+
+    # Ahead of the class comparison it backstops, or that one returns None and the
+    # caller-config branch below claims the slot with the wrong reason.
+    veto = vision.index("an explicit model class has no auto mapping")
+    caller = vision.index("a caller-supplied config may not describe the repo the planner")
+    assert veto < caller, "the unresolvable-class veto never gets to run"
+
+
+def test_an_auto_class_still_plans():
+    """The veto is keyed on the absence of `_model_mapping`, which every Auto class has,
+    so a remote-code checkpoint whose config simply is not in the mapping keeps its plan.
+    Declining on `model_class is None` alone would have turned planning off for those."""
+    import ast as _ast
+    vision = open(os.path.join(MODELS, "vision.py"), encoding = "utf-8").read()
+    idx = vision.index("an explicit model class has no auto mapping")
+    guard = vision[vision.rindex("if (", 0, idx):idx]
+    assert "_model_mapping" in guard, "the veto is not keyed on the class being concrete"

@@ -46,6 +46,7 @@ from ._utils import *
 from .loader_utils import (
     DEFAULT_DEVICE_MAP,
     OFFLOAD_EMBEDDING_AUTO,
+    planner_config_overrides,
     planner_hub_kwargs,
     planner_kwargs_with_max_memory,
     _exclude_rope_inv_freq_from_ddp,
@@ -1246,6 +1247,20 @@ class FastBaseModel:
         # `num_hidden_layers` or `vocab_size` and the map omits blocks or under-budgets
         # weights, which the class comparison above cannot see. Only the caller knows
         # whether their config still describes the repo, so do not guess.
+        # `resolve_model_class` reads `auto_model._model_mapping`, which a concrete
+        # `PreTrainedModel` subclass does not have, so it returns None and the comparison
+        # above reads "unknown" as "compatible". The planner then builds whatever the repo
+        # config selects while the load builds the caller's class, and a map for the wrong
+        # module tree omits parameters dispatch then refuses. Unknown is not compatible.
+        if (
+            _planner_skip_reason is None
+            and model_class is None
+            and getattr(auto_model, "_model_mapping", None) is None
+        ):
+            _planner_skip_reason = (
+                "an explicit model class has no auto mapping, so the plan cannot be "
+                "checked against the class the load builds"
+            )
         if _planner_skip_reason is None and (user_config is not None or auto_config_from_caller):
             _planner_skip_reason = (
                 "a caller-supplied config may not describe the repo the planner rebuilds"
@@ -1261,6 +1276,7 @@ class FastBaseModel:
             full_finetuning = full_finetuning,
             planner_kwargs = planner_kwargs_with_max_memory(device_map_planner_kwargs, kwargs),
             skip_reason = _planner_skip_reason,
+            **planner_config_overrides(kwargs),
             token = token,
             trust_remote_code = trust_remote_code,
             **planner_hub_kwargs(kwargs),

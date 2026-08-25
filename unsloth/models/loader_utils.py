@@ -141,7 +141,27 @@ def planner_hub_kwargs(loader_kwargs):
         hub["cache_dir"] = loader_kwargs["cache_dir"]
     if _get_effective_local_files_only(loader_kwargs):
         hub["local_files_only"] = True
+    # Resolving a remote model class is a second Hub lookup, and the planner honours
+    # `code_revision` for it (`_HUB_KWARGS` in unsloth_zoo's `device_map_planner`). Left
+    # out, the plan is built from whatever code the default revision holds while the load
+    # builds the caller's, so the map can name a module tree the model does not have.
+    if loader_kwargs.get("code_revision") is not None:
+        hub["code_revision"] = loader_kwargs["code_revision"]
     return hub
+
+
+def planner_config_overrides(loader_kwargs):
+    """Config fields the caller overrides on the load, which the planner has to size for.
+
+    The planner takes a name and rebuilds the repo's config, so an override that only
+    exists in the caller's kwargs is invisible to it. `max_position_embeddings` is the one
+    that changes weight sizes: raise it on an architecture with learned position
+    embeddings and the planned tensors are smaller than the ones materialized, so a map
+    that fitted on paper OOMs. `plan_device_map_for_pretrained` forwards its leftover
+    kwargs to `AutoConfig.from_pretrained`, which applies them the same way the load does.
+    """
+    value = (loader_kwargs or {}).get("max_position_embeddings")
+    return {} if value is None else {"max_position_embeddings": value}
 
 
 def planner_kwargs_with_max_memory(planner_kwargs, loader_kwargs):
