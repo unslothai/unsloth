@@ -60,6 +60,7 @@ import {
   releasePreStreamRunForThreadIds,
   releasePreStreamRunReservation,
 } from "../utils/pre-stream-run-reservation";
+import { readThreadCreationClaim } from "../utils/chat-thread-creation-claim";
 import {
   consumeQueuedChatRunSettings,
   snapshotQueuedChatRunSettings,
@@ -3879,8 +3880,18 @@ export function createOpenAIStreamAdapter(
       // Before the first await: hydration and a model load both run ahead of the
       // first resolveProjectId, and a send survives navigation. Only consulted
       // while the thread's own row is still missing.
-      const composerProjectIdAtSend =
-        useChatRuntimeStore.getState().activeProjectId ?? null;
+      //
+      // ...which for a fresh send is exactly the window this has to be right in, and the store
+      // is no longer a safe reading of it: send() awaits document extraction, and initialize()
+      // does not await its row write, so the user may be in another project by now and the run
+      // would take its instructions, RAG sources and sandbox from one the message was never
+      // sent to. A stamp OF null still wins -- a send from outside any project.
+      const creationClaim = unstable_threadId
+        ? readThreadCreationClaim(unstable_threadId)
+        : undefined;
+      const composerProjectIdAtSend = creationClaim
+        ? creationClaim.projectId
+        : (useChatRuntimeStore.getState().activeProjectId ?? null);
       await useChatRuntimeStore.getState().hydratePersistedSettings();
       // After the hydrate, not before: the backend reads some settings out of
       // SQLite at call time rather than taking them from the request -- Search
@@ -5585,10 +5596,10 @@ export function createOpenAIStreamAdapter(
                     // emitting structured tool_calls, so the external loop heals
                     // like the local one. Omitting this left the backend on its
                     // process default, which is not what the user set in Settings.
-                    // nudge_tool_calls is deliberately absent: it is the
-                    // non-streaming client-tool passthrough retry, which this
-                    // streaming server-side loop does not perform.
                     auto_heal_tool_calls: runtime.autoHealToolCalls,
+                    // Keep the external server-side loop under the same user
+                    // setting as the local inference paths.
+                    nudge_tool_calls: runtime.nudgeToolCalls,
                     // This branch runs the tools here, so say so by name:
                     // enabled_tools ["web_search"] is byte-identical to what an
                     // older bundle sent meaning hosted search, so without this

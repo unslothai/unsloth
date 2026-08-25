@@ -49,6 +49,32 @@ ZERO_OK_KEYS = frozenset(
         # an ordinal like every other name on this list, and rejecting it made `--report` fail
         # on any payload that carried parity rows at all.
         "i",
+        # ── the visible-region capture, whose zeros are all true statements ──
+        #
+        # NOT the whole `visible` subtree, deliberately. Exempting a subtree here once already
+        # defeated a test that required a zero-length `chars` inside `parity` to stay a loud
+        # failure, and the same argument applies with more force to this one: a visible message
+        # whose signature is zero characters long is a broken capture and must stay loud. Only the
+        # counters are named, and each is a fact rather than a measurement:
+        #   unmounted_at_capture: 0  every message the viewport showed was still mounted
+        #   mounted_ever_visible: 0  a windowed arm had unmounted them all again, which the
+        #                            analysis reports as NOT COMPARABLE rather than as agreement
+        #   ever_visible_count: 0    the scan observed nothing, which the positive control in
+        #                            compare_visible refuses; it is not scored anywhere
+        # ── the SSE wire's integrity counters, whose zeros are the good outcome ──
+        #
+        # Again the scalars and not the `wire` subtree. "No frame failed to parse" and "no
+        # unterminated frame was left buffered" are the statements that make the character count
+        # trustworthy, and a run where they are zero is the run whose denominator can be scored.
+        # `wireChars` itself is NOT on this list: a zero there means nothing was ever counted and
+        # must stay loud.
+        "wire_parse_failures",
+        "wire_pending_chars",
+        "wire_parse_failures_in_window",
+        "wire_pending_chars_at_close",
+        "ever_visible_count",
+        "mounted_ever_visible",
+        "unmounted_at_capture",
         "rung_index",
         "arm_index",
         "window_index",
@@ -109,6 +135,12 @@ EXEMPT_SUBTREE_KEYS = frozenset(
         "env",
         "identity",
         "header",
+        # The comparability key's own section. `fields` is the identity block the key is hashed
+        # over -- `instrument_level`, `stream_tail_chars`, `corpus_dollars` -- every one of which
+        # is a true statement about how the run was configured rather than a measurement of the
+        # app, and every one of which is legitimately 0. Same rule as `identity` and `config`
+        # directly above.
+        "comparability",
         "footer",
         "record_counts",
         "histogram",
@@ -125,6 +157,13 @@ EXEMPT_SUBTREE_KEYS = frozenset(
         "streamed_census",
         "seeded_census",
         "expect",
+        # The readiness gate's verdict and the completeness probe's, both written once per cell by
+        # the session layer. Same rule as a census: `from_bottom: 0` is a true statement that the
+        # viewport is exactly at the bottom, `waited_ms: 0` is a thread that was ready on the
+        # first sample, and neither is a measurement of the app. Nothing here is scored; what the
+        # gate produces for the report is a `gate` row, which carries a boolean.
+        "readiness",
+        "completeness",
         "notes",
         "scene",
         "cell",

@@ -140,6 +140,8 @@ from .video_minimax_h3 import (
     H3_ANCHOR_LAST,
     H3_CANVAS_MAX_PIXELS,
     H3_CANVAS_SHORT_EDGE,
+    H3_REF_IMAGE_SOURCE_MAX_PIXELS,
+    H3_REF_IMAGE_SOURCE_MAX_SIDE,
     H3_REF_SIZE_MATCH,
     H3_TASK_REFERENCES,
     fit_h3_keyframe,
@@ -548,6 +550,21 @@ class _VideoLoadState:
     # preflight has to know, because that turns its floor from a max into a sum.
     h3_denoiser_pinned: bool = False
     resolved: Optional[dict] = None
+
+
+@dataclass(frozen = True)
+class _VideoResolvedInputs:
+    """CPU-side request inputs resolved against one exact resident pipeline state."""
+
+    state: _VideoLoadState
+    first_frame: Any
+    last_frame: Any
+    width: int
+    height: int
+    conditioning: str
+    references: Any
+    flow_shift: Optional[float]
+    audio_flow_shift: Optional[float]
 
 
 @dataclass
@@ -4955,54 +4972,63 @@ class VideoBackend:
         sentinels the route maps to 409.
         """
         cancel = threading.Event()
-        # Snapshot load state before decoding outside the backend lock.
-        with self._lock:
-            if self._state is None:
-                raise RuntimeError(VIDEO_NOT_LOADED_MSG)
-            if self._generate_job_active:
-                raise RuntimeError(VIDEO_GENERATION_BUSY_MSG)
-            family = self._state.family
-            task = self._state.h3_task
-            engine = self._state.engine
-        # Validate conditioning before creating the asynchronous job so request errors return 400.
-        _, _, canvas_w, canvas_h, _ = self._resolve_keyframes(
-            family, task, first_frame, last_frame, width, height
-        )
-        self._resolve_references(
-            family,
-            task,
-            engine,
-            reference_images,
-            reference_videos,
-            reference_audios,
-            reference_image_size,
-            canvas_w,
-            canvas_h,
-        )
-        self._resolve_flow_shifts(family, engine, flow_shift, audio_flow_shift)
-        with self._lock:
-            if self._state is None:
-                raise RuntimeError(VIDEO_NOT_LOADED_MSG)
-            if self._generate_job_active:
-                raise RuntimeError(VIDEO_GENERATION_BUSY_MSG)
-            # Under the SAME lock that reserves the state this job will run against. A load
-            # commits its new state here too, so judging the shape from a separate earlier read
-            # could accept a size for the family being replaced and then denoise it with the new
-            # one, or reject a size the new family supports. getattr, so a state carrying no
-            # family degrades to the old snapping rather than raising.
-            fam = getattr(self._state, "family", None)
-            if fam is not None:
-                validate_video_request_shape(fam, width = width, height = height, num_frames = num_frames)
-            self._generate_job_active = True
-            # Register BEFORE the worker starts so a cancel/unload in the spawn window still stops the run.
-            self._active_generate_cancel = cancel
-            self._gen = {
-                "active": True,
-                "phase": "queued",
-                "step": 0,
-                "total": 0,
-                "eta_seconds": None,
-            }
+        while True:
+            # Resolve outside the lock, then retry if the resident state changed.
+            with self._lock:
+                state = self._state
+                if state is None:
+                    raise RuntimeError(VIDEO_NOT_LOADED_MSG)
+                if self._generate_job_active:
+                    raise RuntimeError(VIDEO_GENERATION_BUSY_MSG)
+            first_pil, last_pil, canvas_w, canvas_h, conditioning = self._resolve_keyframes(
+                state.family, state.h3_task, first_frame, last_frame, width, height
+            )
+            references = self._resolve_references(
+                state.family,
+                state.h3_task,
+                state.engine,
+                reference_images,
+                reference_videos,
+                reference_audios,
+                reference_image_size,
+                canvas_w,
+                canvas_h,
+            )
+            shift, audio_shift = self._resolve_flow_shifts(
+                state.family, state.engine, flow_shift, audio_flow_shift
+            )
+            if references:
+                conditioning = h3_conditioning_mode(has_references = True)
+            resolved_inputs = _VideoResolvedInputs(
+                state = state,
+                first_frame = first_pil,
+                last_frame = last_pil,
+                width = canvas_w,
+                height = canvas_h,
+                conditioning = conditioning,
+                references = references,
+                flow_shift = shift,
+                audio_flow_shift = audio_shift,
+            )
+            with self._lock:
+                if self._state is not state:
+                    continue
+                if self._generate_job_active:
+                    raise RuntimeError(VIDEO_GENERATION_BUSY_MSG)
+                validate_video_request_shape(
+                    state.family, width = width, height = height, num_frames = num_frames
+                )
+                self._generate_job_active = True
+                # Register before the worker starts so cancellation covers the spawn window.
+                self._active_generate_cancel = cancel
+                self._gen = {
+                    "active": True,
+                    "phase": "queued",
+                    "step": 0,
+                    "total": 0,
+                    "eta_seconds": None,
+                }
+                break
         threading.Thread(
             target = self._run_generate,
             kwargs = dict(
@@ -5016,14 +5042,7 @@ class VideoBackend:
                 guidance = guidance,
                 guidance_2 = guidance_2,
                 seed = seed,
-                first_frame = first_frame,
-                last_frame = last_frame,
-                reference_images = reference_images,
-                reference_videos = reference_videos,
-                reference_audios = reference_audios,
-                reference_image_size = reference_image_size,
-                flow_shift = flow_shift,
-                audio_flow_shift = audio_flow_shift,
+                _resolved_inputs = resolved_inputs,
                 cancel_event = cancel,
             ),
             daemon = True,
@@ -5159,6 +5178,7 @@ class VideoBackend:
         flow_shift: Optional[float] = None,
         audio_flow_shift: Optional[float] = None,
         cancel_event: Optional[threading.Event] = None,
+        _resolved_inputs: Optional[_VideoResolvedInputs] = None,
     ) -> dict[str, Any]:
         # begin_generate passes its already-registered event; a direct call makes its own.
         cancel = cancel_event if cancel_event is not None else threading.Event()
@@ -5170,6 +5190,8 @@ class VideoBackend:
                 state = self._state
                 if state is None:
                     raise RuntimeError(VIDEO_NOT_LOADED_MSG)
+                if _resolved_inputs is not None and _resolved_inputs.state is not state:
+                    raise RuntimeError(VIDEO_CANCELLED_MSG)
                 self._active_generate_cancel = cancel
             # Bound below, once the request is resolved. None means the failure beat the
             # resolution, and there is nothing truthful to report.
@@ -5181,22 +5203,35 @@ class VideoBackend:
                 # the pipeline sits on the selected one.
                 self._state_device_target(state)
                 fam = state.family
-                first_pil, last_pil, width, height, conditioning = self._resolve_keyframes(
-                    fam, state.h3_task, first_frame, last_frame, width, height
-                )
-                references = self._resolve_references(
-                    fam,
-                    state.h3_task,
-                    state.engine,
-                    reference_images,
-                    reference_videos,
-                    reference_audios,
-                    reference_image_size,
-                    width,
-                    height,
-                )
-                if references:
-                    conditioning = h3_conditioning_mode(has_references = True)
+                if _resolved_inputs is None:
+                    first_pil, last_pil, width, height, conditioning = self._resolve_keyframes(
+                        fam, state.h3_task, first_frame, last_frame, width, height
+                    )
+                    references = self._resolve_references(
+                        fam,
+                        state.h3_task,
+                        state.engine,
+                        reference_images,
+                        reference_videos,
+                        reference_audios,
+                        reference_image_size,
+                        width,
+                        height,
+                    )
+                    if references:
+                        conditioning = h3_conditioning_mode(has_references = True)
+                    shift, audio_shift = self._resolve_flow_shifts(
+                        fam, state.engine, flow_shift, audio_flow_shift
+                    )
+                else:
+                    first_pil = _resolved_inputs.first_frame
+                    last_pil = _resolved_inputs.last_frame
+                    width = _resolved_inputs.width
+                    height = _resolved_inputs.height
+                    conditioning = _resolved_inputs.conditioning
+                    references = _resolved_inputs.references
+                    shift = _resolved_inputs.flow_shift
+                    audio_shift = _resolved_inputs.audio_flow_shift
                 frames = snap_num_frames(fam, num_frames or fam.default_num_frames)
                 out_fps = (
                     fam.default_fps if fam.name == "minimax-h3" else int(fps or fam.default_fps)
@@ -5231,10 +5266,6 @@ class VideoBackend:
                 if not fam.supports_cfg:
                     guidance = float(fam.default_guidance)
                     negative_prompt = None
-                shift, audio_shift = self._resolve_flow_shifts(
-                    fam, state.engine, flow_shift, audio_flow_shift
-                )
-
                 if state.engine == "sd_cpp":
                     return self._generate_h3_native(
                         state = state,
@@ -5649,6 +5680,7 @@ class VideoBackend:
             MiniMaxH3References,
             decode_h3_reference_audio,
             decode_h3_reference_video,
+            validate_h3_reference_trim,
         )
 
         images = list(reference_images or [])
@@ -5669,7 +5701,12 @@ class VideoBackend:
 
         fitted_images = tuple(
             fit_h3_reference_image(
-                decode_b64_image(item, mode = "RGB"),
+                decode_b64_image(
+                    item,
+                    mode = "RGB",
+                    max_side = H3_REF_IMAGE_SOURCE_MAX_SIDE,
+                    max_pixels = H3_REF_IMAGE_SOURCE_MAX_PIXELS,
+                ),
                 width = width,
                 height = height,
                 policy = policy,
@@ -5679,10 +5716,26 @@ class VideoBackend:
         decoded_videos = []
         for item in videos:
             blob = _decode_b64_media(item.get("video") if isinstance(item, dict) else item)
-            frames, waveform, sample_rate = decode_h3_reference_video(blob)
+            trim_start = item.get("trim_start_seconds") if isinstance(item, dict) else None
+            trim_end = item.get("trim_end_seconds") if isinstance(item, dict) else None
             override = item.get("audio") if isinstance(item, dict) else None
+            frames, waveform, sample_rate = decode_h3_reference_video(
+                blob,
+                trim_start_seconds = trim_start,
+                trim_end_seconds = trim_end,
+                decode_audio = not bool(override),
+            )
             if override:
-                waveform, sample_rate = decode_h3_reference_audio(_decode_b64_media(override))
+                # A replacement soundtrack is a separate upload on its own timeline: it starts
+                # at its own zero and runs the clip's length. The video's coordinates dropped
+                # its first trim_start seconds and refused anything shorter. Only the embedded
+                # track shares the video's timeline.
+                clip = validate_h3_reference_trim(trim_start, trim_end)
+                waveform, sample_rate = decode_h3_reference_audio(
+                    _decode_b64_media(override),
+                    trim_start_seconds = None if clip is None else 0.0,
+                    trim_end_seconds = None if clip is None else clip[1] - clip[0],
+                )
             decoded_videos.append((frames, waveform, sample_rate))
         if engine == "sd_cpp":
             soundtrack_gap = False

@@ -411,6 +411,16 @@ export const ar = {
           "يستخدم النموذج الصوتي المُحمَّل (مثل Orpheus)",
         engineSystem: "أصوات النظام",
         engineStudio: "تحميل نموذج TTS",
+        engineCustom: "نقطة نهاية مخصصة",
+        engineCustomDescription:
+          "خادم TTS متوافق مع OpenAI من اتصالاتك (مثل Kokoro)",
+        connectionLabel: "الاتصال",
+        connectionDescription:
+          "أضف خادمًا متوافقًا مع OpenAI من علامة تبويب الاتصالات",
+        connectionPlaceholder: "اختر اتصالًا",
+        customModelLabel: "النموذج",
+        customVoiceDescription:
+          "اسم الصوت الذي تتوقعه نقطة النهاية؛ القيمة الافتراضية alloy",
         modelLabel: "نموذج TTS",
         modelDescription:
           "حمّل نموذجًا صوتيًا من محدّد النماذج (مثل Orpheus TTS)",
@@ -850,6 +860,8 @@ export const ar = {
         title: "أجهزة GPU",
         ggufInference: "استدلال GGUF",
         unavailable: "غير متاح",
+        detecting: "جارٍ البحث عن وحدات GPU...",
+        unreadable: "تعذّرت قراءة عتاد هذا الخادم.",
         noGpu: "لم يُكتشف أي GPU مرئي. تُعرض موارد CPU فقط أعلاه.",
         unknownDevice: "GPU غير معروف",
         deviceWithIndex: "GPU {index}",
@@ -1090,7 +1102,7 @@ export const ar = {
         exportChat: "تصدير المحادثة",
       },
       pastedTextThreshold: "ضغط النصوص الملصقة الطويلة",
-      pastedTextThresholdDescription: "النص الملصق الأطول من هذا الحد يصبح مرفق \u200e.txt بدلاً من ملء مربع الرسالة.",
+      pastedTextThresholdDescription: "النص الملصق الأطول من هذا الحد يصبح مرفق \u200e.txt بدلاً من ملء مربع الرسالة. اضغط {shortcut} للصق في مربع الرسالة على أي حال.",
       pastedTextThresholdOff: "إيقاف",
       showResponseModel: "إظهار نموذج الاستجابة",
       showResponseModelDescription:

@@ -25,6 +25,7 @@ import pytest
 from core.inference.llama_cpp import (
     GgufLoadIntent,
     LlamaCppBackend,
+    _AUTO_OFFLOAD_CTX,
     _resolved_mmproj_offload,
 )
 from models.inference import InferenceStatusResponse, LoadResponse
@@ -670,7 +671,11 @@ def test_a_user_demanding_gpu_offload_still_pays_for_it(tmp_path):
 
     cmd = _launch(backend, gguf, extra_args = ["--mmproj-offload"])["cmd"]
 
-    assert cmd[cmd.index("-c") + 1] == "4096"
+    # Charging the projector leaves nothing that fits, so this lands on the Auto
+    # offload fallback. The value is that constant, not a literal: the point of the
+    # assertion is that the context shrank to pay for the projector, and pinning the
+    # number here only records which release the test was written in.
+    assert cmd[cmd.index("-c") + 1] == str(_AUTO_OFFLOAD_CTX)
 
 
 def test_the_last_placement_spelling_is_what_gets_budgeted(tmp_path):
@@ -1549,7 +1554,10 @@ def test_both_cpu_recovery_call_sites_pass_the_vision_state(tmp_path):
     assert source.count("disable_vision = disable_vision,") == calls
 
 
-def test_a_tensor_load_downgraded_to_layer_split_still_gives_the_projector_up(tmp_path):
+@pytest.mark.parametrize("cache_type_kv", [None, "q8_0"])
+def test_a_tensor_load_downgraded_to_layer_split_still_gives_the_projector_up(
+    tmp_path, cache_type_kv
+):
     """The corner the probe's TP exclusion used to leave at main's behaviour.
 
     Tensor parallelism is requested, so the probe withholds its answer: layer-split
@@ -1559,12 +1567,15 @@ def test_a_tensor_load_downgraded_to_layer_split_still_gives_the_projector_up(tm
     downgrade is final the load is layer split, the probe's answer applies, and the
     projector goes to the CPU instead of the model spilling layers around it.
 
+    Both cache types, because the downgrade leaves the requested one alone: the probe
+    prices the cache that actually loads, so the verdict holds for either.
+
     Two cards too small to pool the 6 GiB model with its 1 GiB projector, but large
     enough to hold the model alone once the encoder moves.
     """
     backend, gguf = _backend(tmp_path, memory = [(0, 4_400, 8_192), (1, 4_400, 8_192)])
 
-    cmd = _launch(backend, gguf, tensor_parallel = True)["cmd"]
+    cmd = _launch(backend, gguf, tensor_parallel = True, cache_type_kv = cache_type_kv)["cmd"]
 
     # Reachable ONLY through the deferred application: with tensor_parallel requested
     # the probe never applies its verdict at the probe site.
@@ -1592,27 +1603,11 @@ def test_a_surviving_tensor_load_keeps_its_projector(tmp_path):
     assert "--no-mmproj-offload" not in cmd
 
 
-def test_a_dropped_quantized_cache_holds_the_deferred_pin_back(tmp_path):
-    """The verdict was measured against the f16 cache the tensor attempt ran with.
-
-    _restore_after_tensor_downgrade puts the quantized cache back before layer
-    placement, so the footprint the verdict priced is heavier than the one that
-    actually loads. Acting on it would pin a projector that fits and buy an 8.8x
-    image encode for nothing, which is the outcome this probe exists to avoid.
-    """
-    backend, gguf = _backend(tmp_path, memory = [(0, 4_400, 8_192), (1, 4_400, 8_192)])
-
-    cmd = _launch(backend, gguf, tensor_parallel = True, cache_type_kv = "q8_0")["cmd"]
-
-    assert "--mmproj" in cmd
-    assert "--no-mmproj-offload" not in cmd
-
-
 def test_a_gpu_drafter_holds_the_deferred_pin_back(tmp_path):
-    """The drafter-drop probe carries the same tensor exclusion this one did, so it
-    has not run either. The documented order is projector first and drafter second;
-    pinning without being able to re-ask the second half pays the encoder cost and
-    still reaches --fit on."""
+    """The drafter-drop probe is gated off under tensor parallelism, so it has not
+    run. The documented order is projector first and drafter second; pinning without
+    being able to re-ask the second half pays the encoder cost and still reaches
+    --fit on."""
     backend, gguf = _drafter_backend(tmp_path, [(0, 4_400, 8_192), (1, 4_400, 8_192)])
 
     cmd = _launch(
