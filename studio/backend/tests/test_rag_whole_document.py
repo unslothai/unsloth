@@ -281,6 +281,44 @@ def test_build_rag_autoinject_large_model_auto_falls_back_over_budget(rag_conn, 
     assert _injected_text(result) == "TOPK_LARGE_MODEL_FALLBACK"
 
 
+def test_build_rag_autoinject_fallback_is_thread_first_and_budgeted(rag_conn, monkeypatch):
+    monkeypatch.setattr(tool, "whole_document_context", lambda **kw: None)
+    calls = []
+
+    def fake_search(**kw):
+        calls.append(kw)
+        if kw.get("scope_thread_id"):
+            if kw.get("scope_project_id") or kw.get("min_dense_score") is not None:
+                return None
+            sources = [
+                {"citationId": i, "filename": "thread.txt", "text": "x" * 1600}
+                for i in range(1, kw["top_k"] + 1)
+            ]
+        else:
+            sources = [{"citationId": 1, "filename": "project.txt", "text": "project"}]
+        return tool.render_sources(sources), sources
+
+    monkeypatch.setattr(tool, "search_for_autoinject", fake_search)
+    result = inf_tools.build_rag_autoinject(
+        _convo("summarize the attached document"),
+        {
+            "thread_id": "t1",
+            "project_id": "p1",
+            "autoinject": False,
+            "context_length": 2200,
+            "response_headroom": 1024,
+        },
+    )
+
+    injected = _injected_text(result)
+    assert "x" * 1600 in injected and "project" in injected
+    assert [(c.get("scope_thread_id"), c.get("scope_project_id")) for c in calls] == [
+        ("t1", None), ("t1", None), ("t1", None), (None, "p1")
+    ]
+    assert [c["top_k"] for c in calls[:3]] == [4, 2, 1]
+    assert calls[0]["min_dense_score"] is None
+
+
 def test_build_rag_autoinject_context_budget_falls_back(rag_conn, monkeypatch):
     # Runtime context can be smaller than RAG_WHOLE_DOC_MAX_TOKENS; cap whole-doc to
     # the active context and fall back to retrieval when it would overflow.
@@ -290,7 +328,7 @@ def test_build_rag_autoinject_context_budget_falls_back(rag_conn, monkeypatch):
     sentinel = ("TOPK_CONTEXT_FALLBACK", [{"citationId": 1, "filename": "small.pdf", "text": "x"}])
     monkeypatch.setattr(tool, "search_for_autoinject", lambda **kw: sentinel)
     result = inf_tools.build_rag_autoinject(
-        _convo(), {"thread_id": "t1", "context_length": 1200, "whole_doc": True}
+        _convo(), {"thread_id": "t1", "context_length": 1800, "whole_doc": True}
     )
     assert result is not None
     assert _injected_text(result) == "TOPK_CONTEXT_FALLBACK"

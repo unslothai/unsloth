@@ -10936,6 +10936,7 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     lean_k = _autoinject_top_k()
     sidebar_k = _opt_int(rag_scope.get("default_top_k"))
     top_k = min(sidebar_k, lean_k) if sidebar_k is not None else lean_k
+    budget: int | None = None
 
     # Whole-document mode: a thread-attached file under budget is injected in
     # full. A KB selection is exclusive so whole-doc never preempts it; project
@@ -10944,11 +10945,7 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     if whole_doc_requested:
         try:
             budget = _whole_doc_budget(rag_scope, conversation)
-
-            whole = whole_document_context(
-                scope_thread_id = thread_id,
-                max_tokens = budget,
-            )
+            whole = whole_document_context(scope_thread_id = thread_id, max_tokens = budget)
         except Exception as exc:  # noqa: BLE001
             logger.warning("RAG whole-document context failed: %s", exc)
             whole = None
@@ -10975,26 +10972,58 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
                         text = merged_text
             logger.info("RAG auto-inject: whole-document context (%d chunk(s))", len(sources))
 
-    # Thread attachments request grounding independently of the model-size Auto
-    # gate. If whole-document context is unavailable or over budget, retrieve
-    # top-K even when Auto resolved to false for a larger model. Explicit Off
-    # sets whole_doc=False, so it still exits above without retrieval.
+    def retrieve(*, max_tokens = None, **scope):
+        if max_tokens is not None and max_tokens <= 0:
+            return None
+        attempt = top_k
+        while True:
+            found = search_for_autoinject(query = query, top_k = attempt, **scope)
+            if not found or max_tokens is None or max(1, len(found[0]) // 4) <= max_tokens:
+                return found
+            if attempt <= 1:
+                return None
+            attempt = max(1, attempt // 2)
+
+    # An oversized thread attachment is mandatory grounding: search it alone,
+    # without the optional-autoinject relevance floor, then add project context
+    # only if the combined result still fits.
     if text is None and (enabled or whole_doc_requested):
         try:
-            found = search_for_autoinject(
-                query = query,
-                scope_kb_id = rag_scope.get("kb_id"),
-                scope_thread_id = rag_scope.get("thread_id"),
-                scope_project_id = rag_scope.get("project_id"),
-                top_k = top_k,
-                min_dense_score = floor,
-                **_scope_retrieval_kwargs(rag_scope),
-            )
+            if whole_doc_requested:
+                found = retrieve(
+                    max_tokens = budget,
+                    scope_thread_id = thread_id,
+                    min_dense_score = floor if enabled else None,
+                    **_scope_retrieval_kwargs(rag_scope),
+                )
+                project_id = rag_scope.get("project_id")
+                if project_id:
+                    proj = retrieve(
+                        max_tokens = budget,
+                        scope_project_id = project_id,
+                        min_dense_score = floor,
+                        **_scope_retrieval_kwargs(rag_scope),
+                    )
+                    if found and proj:
+                        merged = found[1] + proj[1]
+                        merged_text = render_sources(merged)
+                        if max(1, len(merged_text) // 4) <= budget:
+                            found = merged_text, merged
+                    elif proj:
+                        found = proj
+            else:
+                found = retrieve(
+                    scope_kb_id = rag_scope.get("kb_id"),
+                    scope_thread_id = thread_id,
+                    scope_project_id = rag_scope.get("project_id"),
+                    min_dense_score = floor,
+                    **_scope_retrieval_kwargs(rag_scope),
+                )
         except Exception as exc:  # noqa: BLE001
             logger.warning("RAG auto-inject retrieval failed: %s", exc)
             return None
         if not found:
-            logger.info("RAG auto-inject: no passage >= %.2f; skipping", floor)
+            logger.info("RAG auto-inject: no matching passage; skipping")
             return None
         text, sources = found
     if text is None:
