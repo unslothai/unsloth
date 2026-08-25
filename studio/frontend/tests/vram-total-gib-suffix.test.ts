@@ -4,17 +4,11 @@
 /**
  * `memoryTotalGb` is binary, so its label must say GiB.
  *
- * The backend builds it as `props.total_memory / 1024**3`
- * (utils/hardware/hardware.py) and subtracts no budget, reserve or headroom, so
- * the number is GiB whatever the name suggests. Four renderers printed it with a
- * `GB` suffix, which made a 48 GB card read as "45 GB" in the model information
- * sidebar and was reported as broken VRAM detection (issue #9551). 45 GiB is
- * 48.3 GB, so the number was right the whole time.
- *
- * The field name cannot be changed without churning the API, so the suffix is
- * pinned here instead: it is one word, it reads like a typo fix, and it came
- * back on a fourth surface (the video GPU picker) after the first three were
- * spotted.
+ * The backend builds it as `props.total_memory / 1024**3` and subtracts no
+ * budget or reserve, so a 48 GB card printed "45 GB" and was reported as broken
+ * VRAM detection (#9551). The field name cannot change without churning the
+ * API, so the suffix is pinned here: it reads like a typo fix, and it kept
+ * turning up on surfaces the previous pass had missed.
  */
 
 import assert from "node:assert/strict";
@@ -33,7 +27,6 @@ const RENDERERS = [
   "features/settings/tabs/about-tab.tsx",
 ];
 
-// A template chunk that interpolates a binary total and then names a unit.
 // `[^`$]*` keeps the match inside one literal segment, so an unrelated "GB"
 // later in the file cannot be paired with an earlier total.
 const SUFFIXED = /\$\{[^}]*(?:memoryTotalGb|vramTotalGb|systemRamTotalGb)[^}]*\}[^`$]*?\b(GiB|GB)\b/g;
@@ -63,16 +56,14 @@ test("VRAM and RAM totals are labelled GiB, not GB", () => {
   );
 });
 
-// The other two renderers format through a helper, so the suffix is one literal
-// in the helper and the unit choice moves to the call site instead.
+// These format through a helper, so the unit choice moves to the call site.
 const HELPER_RENDERERS = [
   "components/floating-monitor.tsx",
   "features/settings/tabs/resources-tab.tsx",
 ];
 
-// The training picker's tooltip names the unit in the translation, not at the
-// render site, so the suffix has to be pinned once per locale. `{est}` stays
-// decimal GB: estimateLoadingVram divides by 1e9, so the two really do differ.
+// The training picker names its unit in the translation, so pin it per locale.
+// `{est}` stays decimal GB: estimateLoadingVram divides by 1e9.
 const LOCALES = new URL("../src/i18n/locales/", import.meta.url);
 // Binary first: GiB has to win the alternation before GB can match its tail.
 const UNIT = /\{total\}\s*(GiB|Gio|ГиБ|GB|Go|ГБ)/;
@@ -104,7 +95,7 @@ test("helper-formatted totals pick the GiB helper, not the disk one", () => {
     assert.ok(helper, `${relative}: no formatGiB helper`);
     assert.match(helper[0], /`.*GiB`/, `${relative}: formatGiB does not suffix GiB`);
 
-    // formatGb is decimal and exists for disk only, so no memory value may reach it.
+    // formatGb is the decimal disk one, so no memory value may reach it.
     for (const call of source.matchAll(/(?<!function )formatGb\(([^)]*)\)/g)) {
       assert.match(call[1], /disk/i, `${relative}: ${call[0]} formats memory as decimal GB`);
     }
