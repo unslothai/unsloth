@@ -669,9 +669,7 @@ class TestLoadReusesCachedCopy:
 
         (snap / "mmproj-F16-00002-of-00002.gguf").write_bytes(b"replacement")
 
-        assert (
-            LlamaCppBackend._gguf_load_source_identity(str(snap / MAIN), str(first)) != before
-        )
+        assert LlamaCppBackend._gguf_load_source_identity(str(snap / MAIN), str(first)) != before
 
     def test_companion_cancelled_before_scanning_cached_projectors(self, hf_cache):
         backend = LlamaCppBackend()

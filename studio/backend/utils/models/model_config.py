@@ -2707,7 +2707,9 @@ def _hf_cache_repo_root_mmproj(repo_id: str) -> Optional[str]:
                 if not complete:
                     continue
                 by_metadata = is_mmproj_by_metadata(read_gguf_general_metadata(str(candidate)))
-                if not (by_metadata is True or (by_metadata is None and _is_mmproj(candidate.name))):
+                if not (
+                    by_metadata is True or (by_metadata is None and _is_mmproj(candidate.name))
+                ):
                     continue
                 size = sum(shard.stat().st_size for shard in shards)
                 if largest is None or size > largest[0]:
