@@ -342,6 +342,89 @@ def test_a_cross_site_page_cannot_reach_keyless_without_sending_origin():
         ) is True
 
 
+def test_a_real_credential_authenticates_under_every_scope_and_transport(monkeypatch):
+    """The setting adds an admission path. It must never take one away.
+
+    A working key or session has to keep authenticating exactly as before, on
+    every scope and on every transport -- including the ones keyless itself is
+    refused on, since a usable bearer is resolved before any scope or transport
+    check runs. It also has to authenticate *as itself*: a keyless scheme would
+    hand an existing API client the keyless tool restriction it never had.
+    """
+    import lan_access
+
+    seed_user()
+    raw_key, row = storage.create_api_key(
+        username = storage.DEFAULT_ADMIN_USERNAME, name = "always-on", expires_at = None,
+    )
+    _s, _h, jwt_secret, _m = storage.get_user_and_secret(storage.DEFAULT_ADMIN_USERNAME)
+    session = jwt.encode(
+        {"sub": storage.DEFAULT_ADMIN_USERNAME,
+         "exp": datetime.now(timezone.utc) + timedelta(minutes = 30)},
+        jwt_secret, algorithm = "HS256",
+    )
+
+    transports = {
+        "loopback": dict(server = ("127.0.0.1", 8000), client = ("127.0.0.1", 51000),
+                         state = app_state()),
+        "private_lan": dict(server = ("192.168.1.24", 8888), client = ("192.168.1.90", 51000),
+                            state = app_state(bind_host = "0.0.0.0")),
+        "public": dict(server = ("64.227.100.5", 8000), client = ("8.8.8.8", 51000),
+                       state = app_state(bind_host = "64.227.100.5")),
+        "tunnel": dict(server = ("127.0.0.1", 8000), client = ("127.0.0.1", 51000),
+                       state = app_state(cloudflare_url = "https://x.trycloudflare.com")),
+        "colab": dict(server = ("127.0.0.1", 8000), client = ("127.0.0.1", 51000),
+                      state = app_state(remote_access_is_colab = True)),
+        "secure": dict(server = ("127.0.0.1", 8000), client = ("127.0.0.1", 51000),
+                       state = app_state(secure = True)),
+        "browser_origin": dict(server = ("127.0.0.1", 8000), client = ("127.0.0.1", 51000),
+                               state = app_state(), headers = {"Origin": "https://evil.example"}),
+        "browser_cross_site": dict(server = ("127.0.0.1", 8000), client = ("127.0.0.1", 51000),
+                                   state = app_state(),
+                                   headers = {"Sec-Fetch-Site": "cross-site"}),
+    }
+
+    for scope_name in ("off", "inference", "full"):
+        set_keyless_api_access(scope_name)
+        for label, transport in transports.items():
+            # via monkeypatch, so the stub cannot outlive this test: it is a module
+            # global, and test_lan_access_settings.py reads the real one
+            monkeypatch.setattr(
+                lan_access, "lan_listener_status",
+                lambda t = transport: {
+                    "running": True, "port": t["server"][1],
+                    "addresses": [t["server"][0]], "error": None},
+            )
+            for credential_name, token in (("api_key", raw_key), ("session", session)):
+                headers = dict(transport.get("headers") or {})
+                headers["Authorization"] = f"Bearer {token}"
+                request = request_for(
+                    server = transport["server"], client = transport["client"],
+                    state = transport["state"], headers = headers,
+                )
+                credentials = resolve(request)
+                assert credentials.scheme not in (KEYLESS_SCHEME, KEYLESS_FALLBACK_SCHEME), (
+                    f"{credential_name} was downgraded to keyless on {label}/{scope_name}"
+                )
+                assert asyncio.run(get_current_subject(credentials)) == \
+                    storage.DEFAULT_ADMIN_USERNAME, (
+                        f"{credential_name} stopped working on {label}/{scope_name}"
+                    )
+
+    # and the credentials that must NOT work still do not, at the widest scope
+    set_keyless_api_access("full")
+    storage.revoke_api_key(storage.DEFAULT_ADMIN_USERNAME, row["id"])
+    expired, _row = storage.create_api_key(
+        username = storage.DEFAULT_ADMIN_USERNAME, name = "expired",
+        expires_at = (datetime.now(timezone.utc) - timedelta(days = 1)).isoformat(),
+    )
+    for dead in (raw_key, expired):
+        with pytest.raises(HTTPException):
+            asyncio.run(get_current_subject(
+                resolve(request_for(headers = {"Authorization": f"Bearer {dead}"}))
+            ))
+
+
 # ── the reported race, pinned deterministically ──────────────────────────────
 
 def test_revoking_a_key_after_the_admission_snapshot_never_yields_the_admin():
