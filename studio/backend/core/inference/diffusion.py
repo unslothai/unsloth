@@ -2714,13 +2714,11 @@ class DiffusionBackend:
         inline, outside the manager's progress and disk preflight.
 
         ``allow_device_probe=False`` skips device-dependent precision planning and the memory
-        verdict while training owns the GPU. It is not free: resolving the hosted pre-cast
-        encoder and the DiT prequant needs a target, so clearing it also changes WHICH FILES
-        the plan counts -- an fp8 pick stages the dense encoder instead, and a GGUF pick stops
-        widening to the dense transformer shards. ``memory_verdict=False`` suppresses only the
-        oversized-unified-memory refusal, for callers that want today's file scope and no
-        verdict; the two are separate because a caller that merely dislikes the verdict must
-        not silently get a different file list."""
+        verdict while training owns the GPU. It is not free: the pre-cast encoder and the DiT
+        prequant need a target to resolve, so clearing it also changes WHICH FILES the plan
+        counts. ``memory_verdict=False`` suppresses only the oversized-unified-memory refusal,
+        so a caller that merely dislikes the verdict does not silently get a different file
+        list."""
         fam = detect_family_for_pick(repo_id, gguf_filename, family_override)
         kind = resolve_model_kind(gguf_filename, model_kind)
         if kind == "pipeline":

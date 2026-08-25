@@ -1,19 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Where the pre-download guard from issue #9130 is allowed to speak, and what it does
-when the Hub answers badly.
+"""Where the pre-download guard from issue #9130 is allowed to speak, and what it does when
+the Hub answers badly.
 
-test_diffusion_predownload_memory_guard.py drives the guard with a DeviceMemory built by
-hand, which proves the arithmetic but assumes the classification. These cases drive the
-REAL ``snapshot_device_memory`` with a faked driver instead, once per platform and vendor,
-so the claim that discrete VRAM and plain CPU are untouched is tested rather than asserted.
-The refusal only ever applies where CPU offload cannot help, and every other machine has to
-keep loading exactly what it loads today.
+test_diffusion_predownload_memory_guard.py hand-builds a DeviceMemory, which proves the
+arithmetic but assumes the classification. These drive the REAL ``snapshot_device_memory``
+over a faked driver, once per platform and vendor, so "discrete VRAM and plain CPU are
+untouched" is tested rather than asserted.
 
-The second half does the same for the one new network read on the load path: whatever
-model_index.json comes back as, staging must fall back to the old best-effort listing
-rather than refuse a load or raise out of the loader.
+The second half covers the one new network read: however model_index.json comes back,
+staging must fall back to the old best-effort listing rather than refuse or raise.
 """
 
 from __future__ import annotations

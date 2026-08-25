@@ -100,8 +100,8 @@ def te_prequant_budget_scale(
 # Bases whose text-encoder weights are VERIFIED byte-identical (every shard LFS sha256 compared on 2026-07-18), so one hosted artifact serves them all. The validator accepts a base_model_id from the same group; anything else keeps the strict refusal.
 _TE_EQUIVALENT_BASES: tuple[frozenset[str], ...] = (
     # Qwen2.5-VL-7B text encoder: 4 shards, 16,584,414,544 bytes, identical sha256 set. Qwen-Image-2512
-    # re-verified on 2026-08-25: it republishes the same four shards, so the fp8 pick that this base
-    # gate would otherwise refuse pulls 16.6 GB of dense encoder the load never opens.
+    # republishes the same four shards (re-verified 2026-08-25); refusing it here would pull 16.6 GB
+    # of dense encoder the load never opens.
     frozenset(
         {
             "qwen/qwen-image",
@@ -110,7 +110,7 @@ _TE_EQUIVALENT_BASES: tuple[frozenset[str], ...] = (
         }
     ),
     # Qwen3-4B text encoder: 1 shard, 8,875,715,136 bytes, identical sha256 across the Krea-2 pair
-    # (compared 2026-08-25); only their transformers differ, as with Z-Image below.
+    # (compared 2026-08-25); only their transformers differ, as with Z-Image.
     frozenset(
         {
             "krea/krea-2-turbo",

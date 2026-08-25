@@ -86,11 +86,9 @@ _BASE_RESIDENT_FACTORS: dict = {
     "tongyi-mai/z-image": (1.0, 1.0),
     "alpha-vllm/lumina-image-2.0": (2.0, 2.0),
     "ideogram-ai/ideogram-4-fp8": (0.5, 0.5),
-    # SDXL stores its DEFAULT variant fp32 throughout -- unet, both text encoders and the vae, every
-    # tensor F32 (headers read 2026-08-25); the fp16 twins are the ones the loader skips. At 1:1 the
-    # 12.9 GB repo prices as 12.9 GB resident against a 6.5 GB bf16 load, which refuses a pipeline
-    # that fits on any 16 GB pool. The denoiser here is ``unet/`` rather than ``transformer/``, so it
-    # lands in the companion bucket: both factors have to carry the same halving.
+    # SDXL's default variant is fp32 throughout (headers read 2026-08-25); the loader skips the
+    # fp16 twins. At 1:1 its 12.9 GB prices against a 6.5 GB bf16 load and refuses on any 16 GB
+    # pool. Its denoiser is ``unet/``, so it lands in the companion bucket: both factors halve.
     "stabilityai/stable-diffusion-xl-base-1.0": (2.0, 2.0),
     "stabilityai/sdxl-turbo": (2.0, 2.0),
 }

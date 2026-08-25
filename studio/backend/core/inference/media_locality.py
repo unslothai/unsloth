@@ -506,11 +506,10 @@ def missing_download_bytes(
                 model_kind = target.model_kind,
                 gpu_ordinal = ordinal,
                 hf_token = hf_token,
-                # Only the verdict, not the probe. This asks "is this pick already on disk",
-                # so it has to count the SAME files the load will fetch: clearing the probe
-                # drops the pre-cast encoder resolution and the GGUF dense-transformer
-                # widening, and a byte count taken against a different file list is exactly
-                # the "fully downloaded" answer this exists to avoid getting wrong.
+                # Only the verdict, not the probe: this asks whether the pick is already on
+                # disk, so it must count the SAME files the load will fetch. Clearing the probe
+                # drops the pre-cast encoder and the GGUF dense-transformer widening, which is
+                # how a "fully downloaded" answer goes wrong.
                 memory_verdict = False,
             )
             or {}
