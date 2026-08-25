@@ -91,10 +91,10 @@ FORCED_PENDING_S = float(os.environ.get("STUDIO_MAC_FORCED_PENDING_S", "15"))
 # The watchdog's own numbers, from studio/src-tauri/src/commands.rs. A survival assertion
 # here has to be written against these, or it reports a backend the launcher would have
 # kept as one it would have killed.
-PROBE_TIMEOUT_S = 10.0            # HEALTH_PROBE_TIMEOUT
-WATCHDOG_INTERVAL_S = 15.0        # HEALTH_WATCHDOG_INTERVAL
-WATCHDOG_MAX_FAILURES = 3         # HEALTH_WATCHDOG_MAX_FAILURES
-WATCHDOG_MAX_FAILURES_BUSY = 12   # HEALTH_WATCHDOG_MAX_FAILURES_BUSY
+PROBE_TIMEOUT_S = 10.0  # HEALTH_PROBE_TIMEOUT
+WATCHDOG_INTERVAL_S = 15.0  # HEALTH_WATCHDOG_INTERVAL
+WATCHDOG_MAX_FAILURES = 3  # HEALTH_WATCHDOG_MAX_FAILURES
+WATCHDOG_MAX_FAILURES_BUSY = 12  # HEALTH_WATCHDOG_MAX_FAILURES_BUSY
 WATCHDOG_CONFIRM_TIMEOUT_S = 30.0  # HEALTH_CONFIRM_PROBE_TIMEOUT
 
 LIVENESS_PATH = "/api/liveness"
@@ -222,10 +222,7 @@ def _answers_in(samples, start: float, end: float) -> list[dict]:
 
 def _covered(samples, start: float, end: float) -> bool:
     """Whether any probe overlapped the window, i.e. whether the tick can be judged."""
-    return any(
-        (s["t"] - s["ms"] / 1000.0) <= end and s["t"] >= start
-        for s in samples
-    )
+    return any((s["t"] - s["ms"] / 1000.0) <= end and s["t"] >= start for s in samples)
 
 
 def watchdog_replay(samples: list[dict]) -> dict | None:
@@ -296,15 +293,23 @@ def watchdog_replay(samples: list[dict]) -> dict | None:
                 tick += WATCHDOG_INTERVAL_S
                 continue
             return {
-                "killed": True, "at": round(tick, 1), "strikes": consecutive,
-                "budget": budget, "worst_run": worst_run,
-                "ticks_judged": ticks_judged, "ticks_missed": ticks_missed,
+                "killed": True,
+                "at": round(tick, 1),
+                "strikes": consecutive,
+                "budget": budget,
+                "worst_run": worst_run,
+                "ticks_judged": ticks_judged,
+                "ticks_missed": ticks_missed,
             }
         tick += WATCHDOG_INTERVAL_S
     return {
-        "killed": False, "at": None, "strikes": consecutive,
+        "killed": False,
+        "at": None,
+        "strikes": consecutive,
         "budget": WATCHDOG_MAX_FAILURES_BUSY if generating else WATCHDOG_MAX_FAILURES,
-        "worst_run": worst_run, "ticks_judged": ticks_judged, "ticks_missed": ticks_missed,
+        "worst_run": worst_run,
+        "ticks_judged": ticks_judged,
+        "ticks_missed": ticks_missed,
     }
 
 

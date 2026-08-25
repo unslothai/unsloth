@@ -415,7 +415,6 @@ def test_the_forced_verdict_check_is_wired_into_the_public_entry_point():
     assert "assert_row_never_greyed_while_unmeasured" in called.get("main", set())
 
 
-
 # --------------------------------------------------------------------------------
 # The survival verdict has to match the watchdog that decides a backend's fate.
 # --------------------------------------------------------------------------------
@@ -424,7 +423,11 @@ POLL_S = 5.0
 BUDGET_S = 10.0
 
 
-def _timeline(duration_s, stalls = (), generating_from = None):
+def _timeline(
+    duration_s,
+    stalls = (),
+    generating_from = None,
+):
     """Simulate the poller against a backend that answers nothing during *stalls*.
 
     Each stall is a (start, end) window in seconds. A probe issued inside one answers
@@ -433,6 +436,7 @@ def _timeline(duration_s, stalls = (), generating_from = None):
     tried, which is what the real poller does and what makes its cadence drift away from
     the watchdog's fixed 15s one.
     """
+
     def lifts_at(t):
         for start, end in stalls:
             if start <= t < end:
@@ -453,12 +457,18 @@ def _timeline(duration_s, stalls = (), generating_from = None):
             active = None
             if kind == "ok" and path == "/api/liveness":
                 active = generating_from is not None and now >= generating_from
-            samples.append({
-                "t": round(now, 3), "path": path, "kind": kind,
-                "status": 200 if kind == "ok" else 0,
-                "ms": round(took * 1000, 1), "inference_active": active,
-                "hardware_detecting": None, "torch_warm_in_progress": None,
-            })
+            samples.append(
+                {
+                    "t": round(now, 3),
+                    "path": path,
+                    "kind": kind,
+                    "status": 200 if kind == "ok" else 0,
+                    "ms": round(took * 1000, 1),
+                    "inference_active": active,
+                    "hardware_detecting": None,
+                    "torch_warm_in_progress": None,
+                }
+            )
         now += POLL_S
     return samples
 
