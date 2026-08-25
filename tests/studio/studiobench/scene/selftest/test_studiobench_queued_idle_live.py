@@ -611,3 +611,125 @@ def test_the_queued_idle_arm_against_a_settled_one_is_still_refused(page):
         treat["queued_idle"],
     )
     assert P.compare(base, treat)["verdict"] == P.NOT_COMPARABLE
+
+
+# ── the style probe walks the run-state control too ──────────────────
+#
+# `report` now collects the style verdict BEFORE it buckets a structural refusal, because the
+# computed-style probe is an independent reading and the refusal is not about it. That makes the
+# probe's own reading of the composer swap visible for the first time, and the probe walks
+# `button[aria-label="Send message"]` and `button[aria-label="Stop generating"]` as SEPARATE
+# selectors whose names go into its signature. So the pairs the refusals above exist to withhold
+# arrived at the advisory line instead.
+
+
+def _capture_html_raw(page, html: str) -> dict:
+    """`_capture_html`, keeping `styles.sig` so a test can say WHY the digest moved."""
+    page.set_content(html)
+    page.add_script_tag(content = _DOM_JS.read_text(encoding = "utf-8"))
+    page.add_script_tag(content = _PARITY_JS.read_text(encoding = "utf-8"))
+    got = page.evaluate("() => window.__sb.parity.capture({ raw: true })")
+    assert got.get("parity_attempted") is True, got
+    return got
+
+
+def _style_values(cap: dict) -> list[str]:
+    """The probe's readings with the selector NAMES dropped: just the three properties, in order."""
+    return [
+        entry.split(":", 1)[1]
+        for entry in cap["styles"]["sig"].split(";")
+        if ":" in entry
+    ]
+
+
+def test_the_style_probe_does_not_report_a_control_swap_as_a_css_regression(page):
+    """THE ADVISORY THAT WAS NOT ABOUT CSS.
+
+    One arm still generating, the other settled: the structural pair is refused as run-state
+    timing, and the style probe walks `Stop generating` on one side and `Send message` on the
+    other. Its signature carries the selector that matched, so the digest moves while `display`,
+    `visibility` and `pointer-events` are IDENTICAL on every element -- asserted here rather than
+    asserted about, off the raw signature.
+    """
+    settled = _capture_html_raw(page, _page(tail = "same", **_finished()))
+    writing = _capture_html_raw(page, _page(tail = "same", **_writing()))
+    # Same number of elements, same three properties on all of them, different digest.
+    assert settled["styles"]["elements"] == writing["styles"]["elements"]
+    assert _style_values(settled) == _style_values(writing), (
+        _style_values(settled),
+        _style_values(writing),
+    )
+    assert settled["styles"]["digest"] != writing["styles"]["digest"]
+    # ...and the run state says why, off the run state rather than off the composer.
+    assert settled["streaming"] is False and writing["streaming"] is True
+    verdict, reason = P.compare_styles(settled, writing)
+    assert verdict == P.NOT_COMPARABLE, (verdict, reason)
+    assert "run-state controls" in reason, reason
+    assert P.compare(settled, writing)["style_verdict"] == P.NOT_COMPARABLE
+
+
+@pytest.mark.parametrize("control", [_QUEUE_BUTTON_IDLE, _STOP_QUEUED_BUTTON])
+def test_a_queue_control_missing_from_the_selector_list_is_not_a_css_regression(page, control):
+    """The other flavour, and it does not even reach the digest.
+
+    Neither queue control is in `STYLE_SELECTORS`, so a queued arm matches one element FEWER than
+    a settled one and the probe reports "a different number of elements" -- over a page whose CSS
+    is byte-identical. Both the undispatched wait and the dispatched one.
+    """
+    settled = _capture_html_raw(page, _page(tail = "same", **_finished()))
+    queued = _capture_html_raw(
+        page,
+        _page(tail = "same", **dict(QUEUED_IDLE, control = control, queue_stack = False)),
+    )
+    assert settled["styles"]["elements"] != queued["styles"]["elements"]
+    assert bool(settled["queued_idle"]) != bool(queued["queued_idle"]) or (
+        settled["streaming"] != queued["streaming"]
+    )
+    assert P.compare_styles(settled, queued)[0] == P.NOT_COMPARABLE
+    assert P.compare(settled, queued)["style_verdict"] == P.NOT_COMPARABLE
+
+
+def test_a_real_style_regression_between_two_arms_in_one_run_state_is_still_reported(page):
+    """THE COVERAGE THIS MUST NOT COST. Same control on both arms, and the treatment hides the
+    viewport from CSS alone -- no structural trace whatever, which is the only thing this probe
+    exists to see."""
+    base = _capture_html_raw(page, _page(tail = "same", **_finished()))
+    treat = _capture_html_raw(
+        page,
+        "<style>.aui-thread-viewport { visibility: hidden }</style>"
+        + _page(tail = "same", **_finished()),
+    )
+    assert base["digest"] == treat["digest"], "the difference must be CSS only"
+    assert _style_values(base) != _style_values(treat)
+    verdict, reason = P.compare_styles(base, treat)
+    assert verdict == P.DIFFER, (verdict, reason)
+
+
+def test_a_composer_that_lost_its_control_is_still_a_style_finding(page):
+    """AND THE SUPPRESSION IS NOT KEYED ON THE COMPOSER TOKEN ALONE. The treatment simply has no
+    Send button: the token differs, the probe matches one element fewer, and the run state agrees
+    on both independent readings -- so this is a rendering regression and it is reported."""
+    base = _capture_html_raw(page, _page(tail = "same", **_finished()))
+    treat = _capture_html_raw(
+        page,
+        _page(tail = "same", **dict(_finished(), control = _NO_CONTROL)),
+    )
+    assert base["composer_control"] == "Send message" and treat["composer_control"] == ""
+    assert P._run_state_disagrees(base, treat) is False
+    verdict, reason = P.compare_styles(base, treat)
+    assert verdict == P.DIFFER, (verdict, reason)
+    assert "different number of elements" in reason
+
+
+def test_what_the_style_elision_gives_up(page):
+    """Pinned rather than left for a later reader: on a pair that DOES straddle the control swap,
+    a genuine CSS regression elsewhere goes with it. The probe reads ONE aggregate digest over
+    every matched element, so the swap cannot be separated from anything else inside it. The
+    verdict is a refusal and not a MATCH, so nothing here reads as a pass."""
+    settled = _capture_html_raw(page, _page(tail = "same", **_finished()))
+    writing_and_broken = _capture_html_raw(
+        page,
+        "<style>.aui-thread-viewport { visibility: hidden }</style>"
+        + _page(tail = "same", **_writing()),
+    )
+    assert P.compare_styles(settled, writing_and_broken)[0] == P.NOT_COMPARABLE

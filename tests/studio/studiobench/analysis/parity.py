@@ -430,6 +430,40 @@ def compare_styles(base: dict, treat: dict) -> tuple[str, str]:
             "selector list is written against Studio's markup and does not survive a rename; "
             "this is a probe that needs fixing, not two arms that agree"
         )
+    # THE RUN-STATE CONTROL IS IN THE SELECTOR LIST, so this reading straddles the same composer
+    # swap the structural refusals below are about, and it has to be elided for the same reason.
+    # `STYLE_SELECTORS` (scene/parity.js) names `button[aria-label="Send message"]` and
+    # `button[aria-label="Stop generating"]`, and the signature carries the SELECTOR THAT MATCHED
+    # (`parts.push(sel + "#" + n)`) -- so an arm still generating and a settled arm walk two
+    # different entries for the one composer button. Measured on two byte-identical fixture threads
+    # differing only in that control: Send against Stop holds all three properties at
+    # `inline-block` / `visible` / `auto` on both arms and still moves the digest, and Send against
+    # either queue control -- neither of which is in the selector list at all -- moves the element
+    # COUNT from 7 to 6. Both come back DIFFER over identical CSS, and `sweep/ui_parity.report`
+    # prints that as a style-regression advisory for precisely the ordinary cross-stream-state
+    # timing the refusals exist to withhold.
+    #
+    # THE SAME CORROBORATION THE SCAFFOLD SUPPRESSION REQUIRES, and for the same reason: a
+    # differing `composer_control` alone is what a treatment that DROPS or renames the control
+    # produces, and that is a rendering regression this probe should still report. `streaming` and
+    # `queued_idle` are read off the thread's run state rather than off the composer, so they are
+    # evidence the composer cannot manufacture.
+    #
+    # NOT_COMPARABLE AND NOT MATCH. The probe reads ONE aggregate digest over up to `STYLE_CAP`
+    # elements, so a genuine CSS difference elsewhere on the page is inside the same number and
+    # cannot be separated from the swap here. This withholds the reading; it does not pass it.
+    if (
+        bs.get("elements") != ts.get("elements") or bs.get("digest") != ts.get("digest")
+    ) and (generation_disagrees(base, treat) and _run_state_disagrees(base, treat)):
+        return NOT_COMPARABLE, (
+            "the two arms rendered different composer run-state controls "
+            f"({base.get('composer_control')!r} against {treat.get('composer_control')!r}) and the "
+            "run state itself says why, so the style probe walked a different selector for that "
+            "one button -- its signature carries the selector that matched. The difference is the "
+            "control swap and not a stylesheet change. The digest is ONE aggregate over every "
+            "matched element, so a real CSS difference elsewhere cannot be separated from it here; "
+            "this is a reading withheld, not a pass"
+        )
     if bs.get("elements") != ts.get("elements"):
         return DIFFER, (
             f"the probe matched a different number of elements "
