@@ -1790,11 +1790,6 @@ def detect_mmproj_file(
         for f in _iter_gguf_files(d):
             if accept is not None and not accept(str(f)):
                 continue
-            # A split projector is usable only whole: llama-server resolves the siblings
-            # from this path's directory. Dropped here rather than after ranking, or half
-            # a set shadows a complete one. Same rule the drafter scan applies.
-            if _GGUF_SPLIT_FILE_RE.match(f.name) and not _drafter_split_is_complete(f):
-                continue
             try:
                 resolved = f.resolve()
                 # Interrupted download: llama-server can't open it and it must not shadow a real projector.
@@ -1808,6 +1803,12 @@ def detect_mmproj_file(
             meta = read_gguf_general_metadata(str(resolved))
             by_meta = is_mmproj_by_metadata(meta)
             if by_meta is True or (by_meta is None and _is_mmproj(f.name)):
+                # A split projector is usable only whole: llama-server resolves the
+                # siblings from this path's directory. Asked after classification and
+                # before ranking, so half a set cannot shadow a complete one and an
+                # N-shard weight is not rescanned once per shard.
+                if _GGUF_SPLIT_FILE_RE.match(f.name) and not _drafter_split_is_complete(f):
+                    continue
                 seen_resolved.add(resolved)
                 # A split set has to keep its shard names: llama-server resolves the
                 # siblings from the path it is handed, and an HF blob target has none.
@@ -2644,9 +2645,10 @@ def _hf_repo_root_companion_dirs(repo_dir: Path) -> list[Path]:
 
     The walk climbs ``snapshots/<sha>`` -> ``snapshots`` -> ``models--<repo>`` and
     ``_iter_gguf_files`` is not recursive, so those two containers are all the
-    widening adds. One definition, or the row says no vision for a file the load opens.
+    widening adds. Nearest first, so a caller taking the first hit names what the load
+    reaches first. One definition, or the row says no vision for a file the load opens.
     """
-    return [repo_dir, repo_dir / "snapshots"]
+    return [repo_dir / "snapshots", repo_dir]
 
 
 def _hf_repo_root_mmproj(repo_dir: Path) -> Optional[str]:

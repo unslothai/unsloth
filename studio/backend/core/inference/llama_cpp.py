@@ -11896,17 +11896,20 @@ class LlamaCppBackend:
                     return resolved
             except OSError:
                 return resolved
+            # And on to the fallback: a zero-byte cache entry is not the dropped fetch
+            # the listing gate below protects, since the next Apply resolves the same
+            # empty file rather than healing it.
             logger.info("Ignoring an empty mmproj resolved for %s: %s", hf_repo, resolved)
+        elif outcome.get("listed_live") is True:
+            # "The repo publishes none" and "the fetch dropped" both come back None, and
+            # only the first is what this fallback is for: launching a hand-added file in
+            # place of the repo's own is worse than the retry the next Apply gets. Only
+            # the live listing answers that. An unanswered one (offline, a hub job
+            # holding the fetch) is not the same claim, and there the local file is all
+            # there is.
+            return None
         if not near_path or cancel_event.is_set():
             return None
-        # "The repo publishes none" and "the fetch dropped" both come back None, and only
-        # the first is what this fallback is for: launching a hand-added file in place of
-        # the repo's own is worse than the retry the next Apply gets. Only the live
-        # listing answers that. An unanswered one (offline, a hub job holding the fetch)
-        # is not the same claim, and there the local file is all there is.
-        if outcome.get("listed_live") is True:
-            return None
-
         from utils.models.model_config import _detect_local_mmproj
 
         # Discovery drops an incomplete split set and hands back shard 1 of a complete

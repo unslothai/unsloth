@@ -673,6 +673,28 @@ class TestLoadReusesCachedCopy:
 
         assert out == str(projector)
 
+    def test_an_empty_published_projector_still_reaches_the_repo_root(self, hf_cache):
+        """The repo names one and the fetch resolves a zero-byte cache entry. That is
+        not the dropped fetch the listing gate protects: the next Apply resolves the
+        same empty file, so the hand-added one is the only projector there is."""
+        backend = LlamaCppBackend()
+        snap = _build_cache(hf_cache, REPO, {MAIN: 4})
+        empty = snap.parent.parent / "published-mmproj.gguf"
+        empty.write_bytes(b"")
+        projector = snap.parent.parent / "mmproj-F16.gguf"
+        projector.write_bytes(b"mmproj")
+
+        def _resolve_empty(*_a, outcome = None, **_k):
+            if outcome is not None:
+                outcome["listed_live"] = True
+                outcome["listed"] = True
+            return str(empty)
+
+        with patch.object(backend, "_download_companion_gguf", _resolve_empty):
+            out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN))
+
+        assert out == str(projector)
+
     def test_an_unanswered_listing_still_reaches_the_repo_root(self, hf_cache):
         """Offline the listing says nothing at all, and the hand-added file is all
         there is; that is not the same claim as a repo that publishes one."""

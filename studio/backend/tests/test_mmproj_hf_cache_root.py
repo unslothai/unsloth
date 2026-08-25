@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from utils.models.model_config import (  # noqa: E402
     ModelConfig,
     _detect_local_mmproj,
+    _hf_repo_root_mmproj,
     _local_gguf_companion_search_root,
     detect_mmproj_file,
 )
@@ -161,9 +162,10 @@ def test_inventory_does_not_rescan_each_variant_without_a_projector(tmp_path, mo
 
     monkeypatch.setattr("utils.models.model_config.detect_mmproj_file", traced_detect)
 
-    # The two directories the widening adds, once for the snapshot, not once per variant.
+    # The two directories the widening adds, nearest first, once for the snapshot
+    # rather than once per variant.
     assert snapshot_has_gguf_projector(weight.parent) is False
-    assert calls == [str(repo), str(weight.parent.parent)]
+    assert calls == [str(weight.parent.parent), str(repo)]
 
 
 def test_the_snapshots_own_projector_is_not_shadowed_by_the_repo_root(tmp_path):
@@ -297,6 +299,53 @@ def test_an_upper_cased_cache_dir_is_still_an_hf_layout(tmp_path):
 
     assert _local_gguf_companion_search_root(str(snapshot), str(weight)) == str(repo)
     assert _detect_local_mmproj(str(snapshot), str(weight)) == str(projector.resolve())
+
+
+def test_a_sharded_weight_is_not_rescanned_once_per_shard(tmp_path):
+    """The whole-set question is asked of projector candidates, not of every GGUF in the
+    directory. Asking it first made one lookup on an N-shard model do O(N^2) directory
+    work, which the model list then repeats per variant."""
+    _, weight = _hf_repo(tmp_path)
+    shards = 24
+    for index in range(1, shards + 1):
+        _gguf_with_general(
+            weight.parent / f"big-model-{index:05d}-of-{shards:05d}.gguf",
+            {"general.name": "Model", "general.architecture": "qwen3vl"},
+        )
+    projector = _gguf_with_general(
+        weight.parent / "mmproj-F16.gguf",
+        {"general.type": "mmproj", "general.architecture": "qwen3vl"},
+    )
+
+    scans = []
+    import utils.models.model_config as mc
+
+    real = mc.colocated_split_shards
+    try:
+        mc.colocated_split_shards = lambda path: (scans.append(path), real(path))[1]
+        found = _detect_local_mmproj(str(weight.parent), str(weight))
+    finally:
+        mc.colocated_split_shards = real
+
+    assert found == str(projector.resolve())
+    # The projector is not a split name, so nothing in this directory needs the walk.
+    assert scans == [], f"{len(scans)} whole-set scans for {shards} shards"
+
+
+def test_the_preflight_and_the_load_agree_on_the_nearer_projector(tmp_path):
+    """Both upper containers hold one. The load reaches snapshots/ first, so the
+    preflight the guard reads has to name that file and not the repo dir's."""
+    repo, weight = _hf_repo(tmp_path)
+    nearer = _gguf_with_general(
+        weight.parent.parent / "mmproj-F16.gguf",
+        {"general.type": "mmproj", "general.architecture": "qwen3vl"},
+    )
+    _gguf_with_general(
+        repo / "mmproj-Q8.gguf",
+        {"general.type": "mmproj", "general.architecture": "qwen3vl"},
+    )
+
+    assert _hf_repo_root_mmproj(repo) == str(nearer.resolve())
 
 
 def test_a_sibling_repo_s_projector_stays_invisible(tmp_path):
