@@ -89,7 +89,17 @@ export function resolveMemoryCapacityGb(input: MemoryCapacityInput): {
   return {
     gpuCapacityGb,
     totalCapacityGb: singleMemoryPool
-      ? gpuCapacityGb
+      ? input.unifiedMemory
+        // Apple reports the one pool as the GPU budget already.
+        ? gpuCapacityGb
+        // A Vulkan iGPU's budget is a CAPPED view of system RAM, so RAM must not be
+        // added to it -- but it must not replace it either. The pool's real size is
+        // the RAM, and taking the capped figure as the machine's whole capacity
+        // called a 20 GB CPU-offloaded load impossible on a 91 GiB host because the
+        // iGPU was allowed 12. The larger of the two is the pool; on a mixed
+        // inventory that under-counts a discrete card sitting beside it, which is
+        // the side that refuses a load rather than admitting one that cannot run.
+        : Math.max(gpuCapacityGb, input.systemRamTotalGb)
       : gpuCapacityGb + input.systemRamTotalGb,
     singleMemoryPool,
   };

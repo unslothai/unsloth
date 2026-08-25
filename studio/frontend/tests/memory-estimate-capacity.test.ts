@@ -37,28 +37,64 @@ test("a pin on the discrete card keeps system RAM as a pool beside it", () => {
   assert.equal(capacity.singleMemoryPool, false);
 });
 
-test("a pin on the iGPU does not offer its own RAM twice", () => {
-  // Its 12 GB IS system RAM, already capped. Adding the 96 GB on top would count the
-  // same bytes again and call an oversized load a fit.
+test("a pin on the iGPU does not offer its own RAM twice, nor throw the rest away", () => {
+  // Its 12 GB IS system RAM, already capped, so the 96 GB must not be ADDED on top --
+  // that counts the same bytes twice and calls an oversized load a fit.
+  //
+  // It must not REPLACE it either, which is what this asserted before: the machine
+  // genuinely has 96 GB, and capping its total at the iGPU's 12 GB allowance called a
+  // 20 GB CPU-offloaded load impossible on a host with 76 GB to spare.
   const capacity = resolveMemoryCapacityGb({ ...HOST, pinnedDevices: [IGPU] });
   assert.equal(capacity.gpuCapacityGb, 12);
-  assert.equal(capacity.totalCapacityGb, 12);
+  assert.equal(capacity.totalCapacityGb, 96);
   assert.equal(capacity.singleMemoryPool, true);
 });
 
 test("pinning both counts the shared pool once and adds no RAM on top", () => {
+  // 96, not 96 + 16: the discrete card's own memory is not added beside a pool it is
+  // not part of. That under-counts the dGPU, which refuses a load rather than
+  // admitting one that cannot run, and is the direction to be wrong in.
   const capacity = resolveMemoryCapacityGb({
     ...HOST,
     pinnedDevices: [DGPU, IGPU, IGPU],
   });
   assert.equal(capacity.gpuCapacityGb, 28);
-  assert.equal(capacity.totalCapacityGb, 28);
+  assert.equal(capacity.totalCapacityGb, 96);
 });
 
 test("with no pin the host answers, and it says shared", () => {
+  // Same correction as the iGPU pin: shared means RAM is not added on top, not that
+  // the machine shrinks to the iGPU's allowance.
   const capacity = resolveMemoryCapacityGb({ ...HOST, pinnedDevices: [] });
   assert.equal(capacity.gpuCapacityGb, 28);
-  assert.equal(capacity.totalCapacityGb, 28);
+  assert.equal(capacity.totalCapacityGb, 96);
+});
+
+test("a shared pool smaller than the GPU budget keeps the GPU budget", () => {
+  // The guard against the correction going the other way: whatever the RAM figure is,
+  // the pool is never reported as less than what the GPU is already allowed.
+  const capacity = resolveMemoryCapacityGb({
+    hostGpuTotalGb: 32,
+    hostSharesSystemRam: true,
+    systemRamTotalGb: 8,
+    unifiedMemory: false,
+    pinnedDevices: [],
+  });
+  assert.equal(capacity.totalCapacityGb, 32);
+});
+
+test("Apple's unified pool is still reported as the GPU budget alone", () => {
+  // Unified memory is not the capped-view case: the GPU budget already IS the pool,
+  // so the max() above must not start preferring a separately reported RAM figure.
+  const capacity = resolveMemoryCapacityGb({
+    hostGpuTotalGb: 36,
+    hostSharesSystemRam: false,
+    systemRamTotalGb: 36,
+    unifiedMemory: true,
+    pinnedDevices: [],
+  });
+  assert.equal(capacity.totalCapacityGb, 36);
+  assert.equal(capacity.singleMemoryPool, true);
 });
 
 test("a plain multi-GPU host adds its RAM whether or not a card is pinned", () => {

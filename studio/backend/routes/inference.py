@@ -7294,6 +7294,25 @@ class _GgufRuntimeBytes(NamedTuple):
 _GGUF_RUNTIME_UNKNOWN = _GgufRuntimeBytes(0, 0, False, 0, None, 1)
 
 
+def _inherited_ctx_size() -> int:
+    """A positive inherited ``LLAMA_ARG_CTX_SIZE``, or 0.
+
+    The launch keeps one: it drops the inherited context only when it is ZERO and the
+    auto-layers path needs --fit to run, and says so outright -- "a positive inherited
+    context stays the legitimate way to set one". So with no -c anywhere and no panel
+    value, the child runs at the environment's length, not the header's native one.
+    Falling straight through to native priced a 4k load at 262k, which is the KV cache
+    off by two orders of magnitude in the direction that refuses the load.
+    """
+    raw = (os.environ.get("LLAMA_ARG_CTX_SIZE") or "").strip()
+    if not raw:
+        return 0
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 0
+
+
 def _gguf_runtime_bytes(
     gguf_path: str,
     max_seq_length: int,
@@ -7354,9 +7373,13 @@ def _gguf_runtime_bytes(
                 ctx = resolve_requested_ctx(llama_extra_args, max_seq_length or 0)
             except Exception:
                 ctx = max_seq_length or 0
-            ctx = ctx or (probe._context_length or 0)
+            ctx = ctx or _inherited_ctx_size() or (probe._context_length or 0)
         else:
-            ctx = max(max_seq_length or 0, ctx_override) or (probe._context_length or 0)
+            ctx = (
+                max(max_seq_length or 0, ctx_override)
+                or _inherited_ctx_size()
+                or (probe._context_length or 0)
+            )
         if ctx <= 0:
             return unknown
         slots = max(1, n_parallel or 1)
@@ -8114,7 +8137,7 @@ def _gguf_offloaded_layer_fraction(
     # whatever -ngl says, which is why the loader's own residency gate asks this first.
     # Read through the same predicate, and with the env twin the child inherits, so the
     # panel and the launch cannot disagree about where the weights land.
-    if _device_selection_is_cpu(extras, os.environ):
+    if _device_selection_is_cpu(extras, os.environ) or _estimate_host_has_no_gpu():
         return 0.0
 
     try:
@@ -8498,6 +8521,23 @@ def _charged_drafter_path(
         if LlamaCppBackend._get_gguf_size_bytes(str(candidate)) == drafter_bytes:
             return str(candidate), kind
     return None
+
+
+def _estimate_host_has_no_gpu() -> bool:
+    """Whether this machine has POSITIVELY been shown to have no inference GPU.
+
+    Only from a probe that ran and came back empty. A snapshot nothing has filled yet
+    is not evidence of absence, and neither is the CUDA count -- it is zero on every
+    Vulkan and ROCm-via-Vulkan host, which have plenty of GPU. So the unprobed case
+    falls through to the placement the estimate made before, and only a real empty
+    inventory moves the weights to host RAM.
+
+    Without this an Auto load on a CPU-only Linux or Windows box read as fully
+    GPU-resident, so the row showed a multi-gigabyte GPU figure against a capacity of
+    zero. macOS is unaffected either way: unified memory shows one pool.
+    """
+    devices = _cached_inference_devices()
+    return devices is not None and len(devices) == 0
 
 
 def _cached_inference_devices() -> Optional[list[tuple[int, int, int]]]:
@@ -8908,8 +8948,14 @@ def _gguf_memory_breakdown(
     embedded_mtp = bool(
         not charged_drafter
         and _canonicalize_spec_mode(speculative_type) not in _SPEC_MODES_WITHOUT_A_DRAFTER
-        and not _extra_args_draft_offloaded_to_cpu(extras)
     )
+    if embedded_mtp and _extra_args_draft_offloaded_to_cpu(extras):
+        # --spec-draft-ngl 0 or a CPU draft device MOVES the head, it does not switch
+        # speculation off, so the allocation is still made -- in host RAM. Gating the
+        # sizing on the pin dropped it from the total as well, which is the direction
+        # that turns a multi-gigabyte load into a fit. The pin belongs here, on where
+        # the bytes sit, and nowhere else.
+        drafter_on_gpu = False
     if charged_drafter or embedded_mtp:
         drafter_path, drafter_kind = charged_drafter or (None, "mtp")
         probe = _probe_backend()
@@ -9028,8 +9074,9 @@ def _gguf_memory_breakdown(
     # to host RAM along with the file.
     if not host_companion_bytes:
         gpu_bytes += projector_runtime_bytes
-    if _device_selection_is_cpu(extras, os.environ):
-        # Nothing is on a GPU because the process was given none. Applied here rather
+    if _device_selection_is_cpu(extras, os.environ) or _estimate_host_has_no_gpu():
+        # Nothing is on a GPU because the process was given none, or because this
+        # machine has none. Applied here rather
         # than only through the layer fraction because a companion does not follow
         # --gpu-layers: a drafter and a projector are placed by their own flags, and
         # neither of those can name a device that this selection has removed.
@@ -12544,17 +12591,38 @@ def _cached_estimate_config(
         return _ESTIMATE_NOT_ON_DISK
     from core.inference.llama_cpp import _hf_offline_if_unreachable_for
 
+    def _resolve():
+        return ModelConfig.from_identifier(
+            model_id = model_identifier,
+            hf_token = hf_token,
+            gguf_variant = gguf_variant,
+            drafter_accept = _native_drafter_accept if native_grant_backed else None,
+        )
+
+    # Offline FIRST, not only when the Hub is unreachable. The gate above has already
+    # established the repo is on this disk, and everything below prices local files, so
+    # the identification needs nothing from the network -- but from_identifier still
+    # runs detect_gguf_model_remote and list_gguf_variants, an hf_model_info each. On a
+    # route the panel fires on every settings change, that is two Hub round trips per
+    # cache miss and a rate limit waiting to happen, for an answer already on disk.
+    #
+    # The reachable path stays as the fallback rather than being removed: a cached repo
+    # whose resolution genuinely needs remote metadata would otherwise go from a slow
+    # answer to none at all, and a slow right answer beats a fast blank row.
+    config = None
     try:
-        with _hf_offline_if_unreachable_for(model_identifier):
-            config = ModelConfig.from_identifier(
-                model_id = model_identifier,
-                hf_token = hf_token,
-                gguf_variant = gguf_variant,
-                drafter_accept = _native_drafter_accept if native_grant_backed else None,
-            )
+        from utils.utils import force_hf_offline
+        with force_hf_offline():
+            config = _resolve()
     except Exception as exc:
-        logger.debug("Memory estimate could not resolve %s: %s", model_identifier, exc)
-        return None
+        logger.debug("Offline resolve of %s did not answer, retrying online: %s", model_identifier, exc)
+    if config is None:
+        try:
+            with _hf_offline_if_unreachable_for(model_identifier):
+                config = _resolve()
+        except Exception as exc:
+            logger.debug("Memory estimate could not resolve %s: %s", model_identifier, exc)
+            return None
     if config is None:
         return None
     # Same lock, same reason as the files cache: see the note at its eviction.

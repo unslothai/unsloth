@@ -2360,3 +2360,179 @@ class TestAnEmbeddedMtpHeadIsPriced:
         priced = ri._gguf_memory_breakdown(config, plain, n_ctx = 131072)
         assert priced is not None
         assert priced.drafter_runtime_bytes == 0
+
+    def test_a_cpu_pinned_head_keeps_its_bytes_in_the_total(self, nextn_model):
+        """--spec-draft-ngl 0 moves the head to host RAM; it does not switch it off.
+
+        The allocation is still made, so it belongs in the total. Gating the sizing on
+        the pin dropped it from BOTH figures, which is the direction that turns a
+        multi-gigabyte load into a fit.
+        """
+        gguf, config = nextn_model
+        for pin in (["--spec-draft-ngl", "0"], ["--spec-draft-device", "cpu"]):
+            pinned = ri._gguf_memory_breakdown(
+                config, gguf, n_ctx = 131072, llama_extra_args = pin
+            )
+            assert pinned is not None, pin
+            assert pinned.drafter_runtime_bytes > 0, pin
+            # In host RAM, so it is in the total and out of the GPU share.
+            assert pinned.drafter_runtime_gpu_bytes == 0, pin
+
+
+class TestACpuOnlyHostShowsNoGpuFootprint:
+    """An Auto load on a machine with no GPU runs in host RAM, and must read that way.
+
+    CPU placement was detected only from an explicit --device or its env twin, so a
+    plain Auto request on a CPU-only Linux or Windows box was priced fully GPU-resident
+    -- a multi-gigabyte GPU figure against a capacity of zero.
+
+    The evidence has to be a probe that RAN. An unfilled snapshot is not absence, and
+    the CUDA count is zero on every Vulkan host, so neither may move the weights.
+    """
+
+    @pytest.fixture
+    def priced(self, tmp_path):
+        gguf = _write_gguf(tmp_path, "qwen3", {**_GQA_FIELDS, "context_length": 262144})
+        return gguf, SimpleNamespace(
+            identifier = "local/cpu", gguf_file = gguf, is_gguf = True, gguf_variant = None,
+            gguf_mmproj_file = None, gguf_mtp_file = None,
+            gguf_dspark_file = None, gguf_dflash_file = None,
+        )
+
+    def test_a_probed_empty_inventory_puts_everything_in_host_ram(self, priced, monkeypatch):
+        gguf, config = priced
+        monkeypatch.setattr(ri, "_cached_inference_devices", lambda: [])
+        out = ri._gguf_memory_breakdown(config, gguf, n_ctx = 32768)
+        assert out is not None
+        assert out.gpu_bytes == 0
+        # Still a real load, just not on a card.
+        assert out.total_bytes > 0
+        assert out.kv_on_gpu is False
+
+    def test_an_unprobed_snapshot_is_not_evidence_of_absence(self, priced, monkeypatch):
+        gguf, config = priced
+        monkeypatch.setattr(ri, "_cached_inference_devices", lambda: None)
+        out = ri._gguf_memory_breakdown(config, gguf, n_ctx = 32768)
+        assert out is not None
+        assert out.gpu_bytes > 0
+
+    def test_a_probed_inventory_with_a_card_is_unaffected(self, priced, monkeypatch):
+        gguf, config = priced
+        monkeypatch.setattr(ri, "_cached_inference_devices", lambda: [(0, 0, 0)])
+        out = ri._gguf_memory_breakdown(config, gguf, n_ctx = 32768)
+        assert out is not None
+        assert out.gpu_bytes > 0
+
+
+class TestAnInheritedContextIsPriced:
+    """``LLAMA_ARG_CTX_SIZE`` is what the child runs at when nothing else sets a length.
+
+    The launch drops an inherited context only when it is ZERO and the auto-layers path
+    needs --fit to run; a positive one is left alone as a legitimate way to set the
+    length. The estimate fell straight through to the header's native context, so a 4k
+    environment on a 262k model priced the KV cache 64x too large and refused loads that
+    run comfortably.
+    """
+
+    @pytest.fixture
+    def wide(self, tmp_path):
+        gguf = _write_gguf(tmp_path, "qwen3", {**_GQA_FIELDS, "context_length": 262144})
+        return gguf, SimpleNamespace(
+            identifier = "local/wide", gguf_file = gguf, is_gguf = True, gguf_variant = None,
+            gguf_mmproj_file = None, gguf_mtp_file = None,
+            gguf_dspark_file = None, gguf_dflash_file = None,
+        )
+
+    def test_the_environment_length_is_priced_when_nothing_else_sets_one(self, wide, monkeypatch):
+        gguf, config = wide
+        monkeypatch.setenv("LLAMA_ARG_CTX_SIZE", "4096")
+        out = ri._gguf_memory_breakdown(config, gguf, n_ctx = 0)
+        assert out is not None
+        assert out.n_ctx == 4096
+
+    def test_the_native_context_is_still_the_last_resort(self, wide, monkeypatch):
+        gguf, config = wide
+        monkeypatch.delenv("LLAMA_ARG_CTX_SIZE", raising = False)
+        out = ri._gguf_memory_breakdown(config, gguf, n_ctx = 0)
+        assert out is not None
+        assert out.n_ctx == 262144
+
+    @pytest.mark.parametrize("value", ["0", "", "not-a-number", "-5"])
+    def test_a_useless_environment_value_falls_through(self, wide, monkeypatch, value):
+        """Zero is the one the launch itself drops, and the rest are not lengths."""
+        gguf, config = wide
+        monkeypatch.setenv("LLAMA_ARG_CTX_SIZE", value)
+        out = ri._gguf_memory_breakdown(config, gguf, n_ctx = 0)
+        assert out is not None
+        assert out.n_ctx == 262144
+
+    def test_an_explicit_panel_length_still_wins(self, wide, monkeypatch):
+        gguf, config = wide
+        monkeypatch.setenv("LLAMA_ARG_CTX_SIZE", "4096")
+        out = ri._gguf_memory_breakdown(config, gguf, n_ctx = 8192)
+        assert out is not None
+        assert out.n_ctx == 8192
+
+
+class TestTheResolutionTriesOfflineFirst:
+    """A repo already on this disk is priced without asking the Hub.
+
+    The on-disk gate has established the files are here and everything downstream reads
+    local files, but `from_identifier` still ran `detect_gguf_model_remote` and
+    `list_gguf_variants`, an `hf_model_info` each. On a route the panel fires on every
+    settings change that is two Hub round trips per cache miss.
+    """
+
+    def test_the_first_attempt_runs_under_forced_offline(self, tmp_path, monkeypatch):
+        gguf = _write_gguf(tmp_path, "qwen3", _GQA_FIELDS)
+        seen = []
+
+        import contextlib
+
+        @contextlib.contextmanager
+        def _forced():
+            seen.append("offline")
+            yield True
+
+        monkeypatch.setattr(ri, "_estimate_target_is_on_this_disk", lambda ident: True)
+        monkeypatch.setitem(
+            __import__("sys").modules, "utils.utils",
+            SimpleNamespace(force_hf_offline = _forced),
+        )
+        cfg = SimpleNamespace(identifier = "org/cached", gguf_file = gguf, is_gguf = True)
+        monkeypatch.setattr(ri.ModelConfig, "from_identifier", staticmethod(lambda **kw: cfg))
+        ri._estimate_config_cache.clear()
+        out = ri._cached_estimate_config("org/cached", None, None, False)
+        assert out is cfg
+        assert seen == ["offline"], "the offline window was not entered"
+
+    def test_an_offline_failure_falls_back_rather_than_blanking_the_row(
+        self, tmp_path, monkeypatch
+    ):
+        """A slow right answer beats a fast blank row."""
+        gguf = _write_gguf(tmp_path, "qwen3", _GQA_FIELDS)
+        calls = []
+        cfg = SimpleNamespace(identifier = "org/cached", gguf_file = gguf, is_gguf = True)
+
+        def _from_identifier(**kw):
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("needs the hub")
+            return cfg
+
+        import contextlib
+
+        @contextlib.contextmanager
+        def _forced():
+            yield True
+
+        monkeypatch.setattr(ri, "_estimate_target_is_on_this_disk", lambda ident: True)
+        monkeypatch.setitem(
+            __import__("sys").modules, "utils.utils",
+            SimpleNamespace(force_hf_offline = _forced),
+        )
+        monkeypatch.setattr(ri.ModelConfig, "from_identifier", staticmethod(_from_identifier))
+        ri._estimate_config_cache.clear()
+        out = ri._cached_estimate_config("org/cached", None, None, False)
+        assert out is cfg
+        assert len(calls) == 2, "the online retry did not run"
