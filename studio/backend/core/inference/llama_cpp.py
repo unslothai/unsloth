@@ -12984,6 +12984,21 @@ class LlamaCppBackend:
             logger.debug(f"Could not size mmproj {launch_mmproj_path}: {e}")
             return 0
 
+    def _inherited_mmproj_soft_overhead(self, mmproj_bytes: int, *, on_host: bool) -> int:
+        """Runtime buffer allowance for a projector that arrived only through the env.
+
+        The resolved projector gets this term in the fit's ``soft_overhead``, but that
+        one is gated on ``effective_is_vision``, itself gated on ``launch_mmproj_path``,
+        so a ``LLAMA_ARG_MMPROJ`` projector is charged its file size and nothing for the
+        ~1.3x the encoder really allocates. Understating the footprint is the direction
+        that claims a fit which is not there.
+
+        VRAM arm only: on the host arm the resolved projector is priced raw too.
+        """
+        if mmproj_bytes <= 0 or on_host:
+            return 0
+        return int(mmproj_bytes * (self._MMPROJ_VRAM_SAFETY - 1.0))
+
     def _resolve_launch_mtp_path(
         self,
         *,
@@ -18912,6 +18927,10 @@ class LlamaCppBackend:
                         _fit_model_size = None
                     elif _fit_model_size and not _fit_env_mmproj_on_host:
                         _fit_model_size += _fit_env_mmproj_bytes
+                    _fit_soft_overhead = _soft_overhead + self._inherited_mmproj_soft_overhead(
+                        _fit_env_mmproj_bytes,
+                        on_host = _fit_env_mmproj_on_host,
+                    )
                     _fit_load_mode = self._fit_derived_load_mode(
                         model_size = _fit_model_size,
                         mmproj_pinned_bytes = _mmproj_pinned_bytes
@@ -18964,7 +18983,7 @@ class LlamaCppBackend:
                         pipeline_overhead_bytes = (
                             max(0, _fit_devices - 1) * _pipeline_overhead_bytes
                         ),
-                        soft_overhead = _soft_overhead,
+                        soft_overhead = _fit_soft_overhead,
                         gpus = gpus,
                         gpu_indices = gpu_indices,
                         shared_gpu_ids = _shared_gpu_ids,

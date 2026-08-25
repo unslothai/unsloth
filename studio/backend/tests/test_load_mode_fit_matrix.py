@@ -1828,6 +1828,70 @@ def test_the_fit_prices_a_projector_inherited_through_the_environment():
     )
 
 
+def _allowance(mmproj_bytes, *, on_host):
+    """The projector allowance, resolved at call time.
+
+    Bound here rather than in a class body so a missing method fails the tests that
+    rely on it instead of erroring out the whole module at import.
+    """
+    stub = SimpleNamespace(_MMPROJ_VRAM_SAFETY = LlamaCppBackend._MMPROJ_VRAM_SAFETY)
+    return LlamaCppBackend._inherited_mmproj_soft_overhead(stub, mmproj_bytes, on_host = on_host)
+
+
+def test_an_inherited_projector_carries_the_same_safety_allowance_as_a_resolved_one():
+    """The resolved projector's allowance rides in _soft_overhead, which is gated on
+    effective_is_vision -> launch_mmproj_path, so an env-only projector was charged its
+    file size and nothing for the buffers the encoder really allocates.
+
+    Same formula as the three resolved call sites, read off the constant so moving it
+    moves both together.
+    """
+    projector = 8 * GIB
+    expected = int(projector * (LlamaCppBackend._MMPROJ_VRAM_SAFETY - 1.0))
+
+    assert _allowance(projector, on_host = False) == expected
+    assert expected > 0
+    # Host arm: the resolved projector is priced raw there too, so no allowance.
+    assert _allowance(projector, on_host = True) == 0
+    # Nothing inherited, nothing to charge.
+    assert _allowance(0, on_host = False) == 0
+
+
+def test_the_projector_allowance_flips_a_fit_that_only_looked_like_one(monkeypatch):
+    """22 GiB of weights-plus-projector into a 24 GiB card looks like a fit while the
+    8 GiB projector is charged raw. With the allowance the real footprint is 25.2 GiB,
+    which does not fit, and understating it is the direction that hands the load a
+    loader that cannot page. Host RAM is deliberately too small to cover the gap.
+    """
+    projector = 8 * GIB
+    footprint = 22 * GIB
+    allowance = _allowance(projector, on_host = False)
+
+    assert _mode("linux", "nvidia_discrete", footprint, 512, monkeypatch) == FIT_MODE
+    assert (
+        _mode(
+            "linux",
+            "nvidia_discrete",
+            footprint,
+            512,
+            monkeypatch,
+            soft_overhead = allowance,
+        )
+        is None
+    )
+
+
+def test_the_launch_wires_the_projector_allowance_into_the_fit():
+    """Reachability only: driving load_model this far needs a real GPU probe."""
+    import inspect
+
+    from core.inference.llama_cpp import LlamaCppBackend as B
+
+    compact = "".join(inspect.getsource(B.load_model).split())
+    assert "_inherited_mmproj_soft_overhead" in compact
+    assert "soft_overhead=_fit_soft_overhead" in compact
+
+
 # ------------------------- round 8: adapter sidecars the extras pass through
 
 
