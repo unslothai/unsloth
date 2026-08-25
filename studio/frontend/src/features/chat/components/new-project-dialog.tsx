@@ -161,7 +161,7 @@ export function NewProjectDialog({
         close();
       }}
     >
-      <DialogContent className="corner-squircle dialog-soft-surface gap-5 sm:max-w-lg">
+      <DialogContent className="corner-squircle dialog-soft-surface min-w-0 gap-5 sm:max-w-xl">
         <DialogHeader>
           <DialogTitle className="text-ui-21">{title}</DialogTitle>
         </DialogHeader>
@@ -194,7 +194,7 @@ export function NewProjectDialog({
         </div>
         {isTauri && nativePathLeasesSupported ? (
           <div className="space-y-2 rounded-[16px] border border-border bg-muted/20 p-3 dark:border-transparent dark:bg-white/[0.04]">
-            <div className="flex items-center justify-between gap-3">
+            <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="min-w-0">
                 <p className="text-sm font-medium text-foreground">
                   Working directory
@@ -203,7 +203,7 @@ export function NewProjectDialog({
                   {workspace?.path ?? "Unsloth managed folder"}
                 </p>
               </div>
-              <div className="flex shrink-0 gap-2">
+              <div className="flex flex-wrap gap-2 sm:shrink-0 sm:justify-end">
                 {workspace ? (
                   <Button
                     type="button"
