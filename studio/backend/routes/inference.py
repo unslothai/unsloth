@@ -3997,17 +3997,23 @@ _ROSTER_PREDICATE = (
     "AND (d.linked_folder_id IS NULL OR EXISTS "
     "(SELECT 1 FROM linked_folder_files ff WHERE ff.document_id = d.id))"
 )
-# Grouped, not a plain LIMIT: a scope holding the same filename many times would
-# otherwise spend the whole limit on one name and silently drop the documents behind
-# it, with nothing left over to say more exist. Distinct here also makes the count
-# below its exact continuation.
+# Grouped by the name as WRITTEN, via _roster_name registered as a SQLite function, not
+# by the raw filename: a scope holding one name many times would otherwise spend the
+# whole limit on it and silently drop the documents behind it, with nothing left over to
+# say more exist. Grouping on the raw column only narrows that -- deep linked-folder
+# paths sharing the first _RAG_ROSTER_MAX_NAME_CHARS, or names differing only in a run of
+# whitespace, are distinct rows that become one line. One definition of a name for the
+# list, the limit and the count is the only version with no gap between them. It costs a
+# call per row of the scope, against a query that already sorts every one of them.
 _ROSTER_NAMES_SQL = (
-    f"SELECT d.filename FROM documents d WHERE d.scope = ? AND {_ROSTER_PREDICATE} "
-    "GROUP BY d.filename ORDER BY MAX(d.created_at) DESC, MIN(d.id) LIMIT ?"
+    f"SELECT roster_name(d.filename) AS name FROM documents d "
+    f"WHERE d.scope = ? AND {_ROSTER_PREDICATE} "
+    "GROUP BY name HAVING name <> '' "
+    "ORDER BY MAX(d.created_at) DESC, MIN(d.id) LIMIT ?"
 )
 _ROSTER_COUNT_SQL = (
-    "SELECT COUNT(DISTINCT d.filename) FROM documents d "
-    "WHERE d.scope IN ({scopes}) AND " + _ROSTER_PREDICATE
+    "SELECT COUNT(DISTINCT roster_name(d.filename)) FROM documents d "
+    "WHERE d.scope IN ({scopes}) AND roster_name(d.filename) <> '' AND " + _ROSTER_PREDICATE
 )
 
 
@@ -4047,13 +4053,16 @@ def _read_roster(rag_scope: dict) -> tuple[list[str], int]:
         return [], 0
     conn = rag_db.get_metadata_connection()
     try:
+        conn.create_function("roster_name", 1, _roster_name, deterministic = True)
         names: list[str] = []
         seen: set[str] = set()
         for scope in scopes:
             rows = conn.execute(_ROSTER_NAMES_SQL, (scope, _RAG_ROSTER_MAX_NAMES + 1))
             for row in rows:
-                name = _roster_name(row["filename"])
-                if name and name not in seen:
+                # Already the written form: the query grouped on it, so re-deriving it
+                # here is what let the two disagree.
+                name = row["name"]
+                if name not in seen:
                     seen.add(name)
                     names.append(name)
         if len(names) <= _RAG_ROSTER_MAX_NAMES:

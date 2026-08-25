@@ -178,6 +178,27 @@ def test_roster_limit_counts_distinct_names(rag_conn):
         assert f'"older{i}.pdf"' in out
 
 
+def test_roster_limit_counts_names_as_written(rag_conn):
+    """Distinct rows can still be one line: a linked folder's paths share their first
+    _RAG_ROSTER_MAX_NAME_CHARS, and names can differ only by a run of whitespace. Both
+    must collapse before the limit, or the documents behind them go unmentioned."""
+    from routes import inference
+
+    for i in range(5):
+        _doc(rag_conn, "project_p1", f"old{i}", f"older{i}.pdf")
+    deep = "research/2026/quarterly/" + "nested/" * 14
+    assert len(deep) > inference._RAG_ROSTER_MAX_NAME_CHARS
+    for i in range(inference._RAG_ROSTER_MAX_NAMES + 1):
+        _doc(rag_conn, "project_p1", f"deep{i}", f"{deep}report-{i:03d}.pdf")
+    for i in range(inference._RAG_ROSTER_MAX_NAMES + 1):
+        _doc(rag_conn, "project_p1", f"ws{i}", "notes" + " " * (i + 1) + "final.pdf")
+    out = _nudge({"project_id": "p1"})
+    for i in range(5):
+        assert f'"older{i}.pdf"' in out
+    assert '"notes final.pdf"' in out
+    assert out.count("...") == 1
+
+
 def test_no_documents_leaves_nudge_unchanged(rag_conn):
     from routes import inference
 
