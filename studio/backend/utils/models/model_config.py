@@ -2681,27 +2681,32 @@ def _detect_local_mmproj(
     return None
 
 
-def _hf_cache_repo_root_mmproj(repo_id: str) -> Optional[str]:
-    """A hand-added projector at ``models--<repo>/`` (#9286), or None.
+def _hf_cache_repo_root_mmproj_bound_bytes(repo_id: str) -> int:
+    """Upper bound on a hand-added projector at ``models--<repo>/`` (#9286), or 0.
 
     For the window where no quant of the repo verifies yet, so there is no weight to
-    pair against. Without this a repo that publishes no projector skips companion
-    resolution on the first Apply and attaches the projector only on a second one, and
-    the training guard charges nothing for a file the launch will make resident.
+    pair against and no file to name. Without it a repo that publishes no projector
+    skips companion resolution on the first Apply and attaches the projector only on a
+    second one, and the training guard charges nothing for what the launch makes
+    resident.
 
-    The LARGEST qualifying candidate, because pairing needs the weight: whichever one
-    the load settles on afterwards is no bigger than this, and an under-charged guard
-    is what admits a chat load over VRAM a training run needs.
+    A BOUND rather than a selection, deliberately: pairing decides which candidate the
+    load opens, and its modality decides whether the Vision switch suppresses it, so
+    naming one file here would let the caller answer either question from a guess. The
+    largest qualifying candidate across every case variant of the cache dir is an
+    answer that cannot be too small, and the guard charges it whatever the switch says,
+    exactly as it charges an unread remote projector.
     """
+    bound = 0
     try:
         from utils.hf_cache_settings import get_hf_cache_paths
+
         target = f"models--{repo_id.replace('/', '--')}".lower()
+        # Case drift can leave several dirs for one repo, as _cached_hf_snapshot_file
+        # already allows for; the bound has to cover whichever the load resolves into.
         for repo_dir in Path(get_hf_cache_paths().hub_cache).iterdir():
             if not repo_dir.is_dir() or repo_dir.name.lower() != target:
                 continue
-            if detect_mmproj_file(str(repo_dir)) is None:
-                return None
-            largest: Optional[tuple[int, str]] = None
             for candidate in _iter_gguf_files(repo_dir):
                 shards, complete = colocated_split_shards(candidate)
                 if not complete:
@@ -2711,14 +2716,11 @@ def _hf_cache_repo_root_mmproj(repo_id: str) -> Optional[str]:
                     by_metadata is True or (by_metadata is None and _is_mmproj(candidate.name))
                 ):
                     continue
-                size = sum(shard.stat().st_size for shard in shards)
-                if largest is None or size > largest[0]:
-                    largest = (size, _drafter_launch_path(candidate))
-            return largest[1] if largest is not None else None
+                bound = max(bound, sum(shard.stat().st_size for shard in shards))
     except Exception as exc:
         # A cache-path lookup must never be what fails a config resolve.
         logger.debug(f"Could not check the HF cache repo root of {repo_id} for a projector: {exc}")
-    return None
+    return bound
 
 
 def _snapshot_selection_key(snapshot: Path) -> tuple[float, str]:
@@ -3805,10 +3807,13 @@ class ModelConfig:
     # ``sizes`` covers that file and every shard beside it.
     gguf_verified: Optional[tuple[str, str, str, tuple[tuple[str, int], ...]]] = None
     gguf_mmproj_file: Optional[str] = None  # Full path to the mmproj .gguf file (vision projection)
-    # A hand-added projector a REMOTE (-hf) load will attach at launch. Sized by the
-    # training guard and read by nothing else: the loader resolves its own projector
-    # beside the weight it downloads, so this is never handed to llama-server.
+    # A hand-added projector a REMOTE (-hf) load will attach at launch, resolved
+    # against the cached weight. Read by the training guard and the GPU-ownership
+    # predicate; never handed to llama-server, which resolves its own beside the
+    # weight it downloads. ``bound_bytes`` stands in before any quant is cached: a
+    # size ceiling with no file named, since pairing has not happened yet.
     gguf_local_mmproj_file: Optional[str] = None
+    gguf_local_mmproj_bound_bytes: int = 0
     gguf_mtp_file: Optional[str] = None  # Full path to the separate MTP drafter (local mode)
     gguf_dspark_file: Optional[str] = None  # Full path to a DSpark sidecar (local mode)
     gguf_dflash_file: Optional[str] = None  # Full path to a DFlash sidecar (local mode)
@@ -4126,13 +4131,16 @@ class ModelConfig:
                 # Pair it against the weight once one is cached; before that, presence
                 # is enough to make the load resolve companions beside what it downloads.
                 local_mmproj: Optional[str] = None
+                local_mmproj_bound_bytes = 0
                 if not has_vision:
-                    local_mmproj = (
-                        _detect_local_mmproj(verified_file, verified_file)
-                        if verified_file
-                        else _hf_cache_repo_root_mmproj(identifier)
-                    )
-                    has_vision = local_mmproj is not None
+                    if verified_file:
+                        local_mmproj = _detect_local_mmproj(verified_file, verified_file)
+                        has_vision = local_mmproj is not None
+                    else:
+                        local_mmproj_bound_bytes = _hf_cache_repo_root_mmproj_bound_bytes(
+                            identifier
+                        )
+                        has_vision = local_mmproj_bound_bytes > 0
 
                 display_name = f"{identifier.split('/')[-1]} ({variant})"
                 logger.info(
@@ -4151,6 +4159,7 @@ class ModelConfig:
                     gguf_file = None,
                     gguf_verified = verified_gguf,
                     gguf_local_mmproj_file = local_mmproj,
+                    gguf_local_mmproj_bound_bytes = local_mmproj_bound_bytes,
                     gguf_hf_repo = identifier,
                     gguf_variant = variant,
                 )

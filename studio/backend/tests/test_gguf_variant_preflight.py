@@ -213,20 +213,33 @@ def test_a_repo_root_projector_counts_before_the_quant_verifies(
 
     config = ModelConfig.from_identifier(REPO, gguf_variant = "Q8_0")
 
+    projector = repo_root / "mmproj-F16.gguf"
     assert config.gguf_verified is None
     assert config.is_vision is True
-    # Carried too, or the training guard charges nothing for a file the launch
-    # attaches right after the weight lands.
-    assert config.gguf_local_mmproj_file == str(repo_root / "mmproj-F16.gguf")
+    # A ceiling, not a selection: nothing has paired, so no file is named and the
+    # guard still charges something for what the launch attaches once the weight lands.
+    assert config.gguf_local_mmproj_file is None
+    assert config.gguf_local_mmproj_bound_bytes == projector.stat().st_size
 
-    # Nothing can pair yet, so the bound is the largest candidate rather than
-    # whichever one the directory listing happened to name first.
-    larger = repo_root / "model-mmproj-BF16-00001-of-00002.gguf"
-    larger.write_bytes(b"mmproj shard one")
-    (repo_root / "model-mmproj-BF16-00002-of-00002.gguf").write_bytes(b"mmproj shard two")
+    # The largest candidate, split shards summed, not whichever one iterdir named first.
+    first = repo_root / "model-mmproj-BF16-00001-of-00002.gguf"
+    second = repo_root / "model-mmproj-BF16-00002-of-00002.gguf"
+    first.write_bytes(b"mmproj shard one")
+    second.write_bytes(b"mmproj shard two")
 
-    assert ModelConfig.from_identifier(REPO, gguf_variant = "Q8_0").gguf_local_mmproj_file == str(
-        larger
+    assert ModelConfig.from_identifier(
+        REPO, gguf_variant = "Q8_0"
+    ).gguf_local_mmproj_bound_bytes == first.stat().st_size + second.stat().st_size
+
+    # And across a case-variant copy of the same repo dir.
+    other = hub_cache / f"models--{REPO.replace('/', '--')}".upper()
+    other.mkdir()
+    biggest = other / "mmproj-Q8.gguf"
+    biggest.write_bytes(b"mmproj in a case variant of the same repo dir")
+
+    assert (
+        ModelConfig.from_identifier(REPO, gguf_variant = "Q8_0").gguf_local_mmproj_bound_bytes
+        == biggest.stat().st_size
     )
 
 
