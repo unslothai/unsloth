@@ -15,6 +15,7 @@ import {
   displayPointToSource,
   moveCropRect,
   rasterizeReferenceImageCrop,
+  referenceCropExportSize,
   referenceImageDataUrlError,
   referenceImageDataUrls,
   stageReferenceImage,
@@ -226,4 +227,60 @@ test("Cancel closes without invoking Apply while Apply performs both actions", (
   actions.apply("crop", crop);
   assert.deepEqual(applied, [{ dataUrl: "crop", crop }]);
   assert.deepEqual(openChanges, [false, false]);
+});
+
+test("a crop larger than the model can use is exported at a size it can", () => {
+  // H3 never sees more than a 2048px short edge, so a full-resolution export spends request
+  // budget and encode time on pixels fit_h3_reference_image discards. Measured in real
+  // engines, a lossless PNG of an ordinary 12MP phone photo serialized to about 52 MiB and a
+  // 24MP one to 36-105 MiB, all past the 32 MiB field cap this same module enforces.
+  assert.deepEqual(referenceCropExportSize({ width: 5712, height: 4284 }), {
+    width: 2730,
+    height: 2048,
+  });
+  assert.deepEqual(referenceCropExportSize({ width: 4032, height: 3024 }), {
+    width: 2730,
+    height: 2048,
+  });
+  // The long edge is capped too, so an extreme aspect cannot keep a huge dimension just
+  // because its short edge already fits.
+  assert.deepEqual(referenceCropExportSize({ width: 8192, height: 2000 }), {
+    width: 4096,
+    height: 1000,
+  });
+  // Anything already within the bounds is untouched, including both exact edges.
+  assert.deepEqual(referenceCropExportSize({ width: 40, height: 50 }), {
+    width: 40,
+    height: 50,
+  });
+  assert.deepEqual(referenceCropExportSize({ width: 4096, height: 2048 }), {
+    width: 4096,
+    height: 2048,
+  });
+});
+
+test("the raster is drawn at the reduced size, from the full selected source rect", () => {
+  const source = {} as CanvasImageSource;
+  const calls: unknown[][] = [];
+  const canvas: CropRasterCanvas = {
+    width: 0,
+    height: 0,
+    getContext: () => ({
+      drawImage: (...args: unknown[]) => calls.push(args),
+    }),
+    toDataURL: () => "data:image/png;base64,BIG",
+  };
+
+  rasterizeReferenceImageCrop(
+    source,
+    { x: 100, y: 200, width: 5712, height: 4284 },
+    { width: 6000, height: 4500 },
+    () => canvas,
+  );
+
+  assert.equal(canvas.width, 2730);
+  assert.equal(canvas.height, 2048);
+  // Source rectangle unchanged, destination reduced: no pixels are cropped away by the
+  // downscale, and the stored crop stays in original source pixels for the editor to restore.
+  assert.deepEqual(calls, [[source, 100, 200, 5712, 4284, 0, 0, 2730, 2048]]);
 });

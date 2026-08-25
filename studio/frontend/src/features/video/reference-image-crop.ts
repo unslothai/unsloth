@@ -45,6 +45,17 @@ export interface CropRasterCanvas {
 // Keep this aligned with VideoGenerateRequest.reference_images in models/inference.py.
 export const MAX_REFERENCE_IMAGE_DATA_URL_LENGTH = 32 * 1024 * 1024;
 
+// Bounds for the exported crop. H3 never sees more than a 2048px short edge -- that is
+// H3_REF_IMAGE_SHORT_EDGE, the "max" policy's own limit, and the "match" policy fits to the
+// generation area, which is far smaller -- so exporting a crop at full source resolution
+// spends request budget and encode time on pixels fit_h3_reference_image immediately throws
+// away. Left unbounded, a lossless PNG of an ordinary 12MP phone photo serializes to about
+// 52 MiB of base64 and a 24MP one to 36-105 MiB depending on detail, all past the 32 MiB
+// field cap, and the synchronous encode blocks the page for seconds. The long edge is capped
+// as well so an extreme aspect ratio cannot keep a huge dimension while its short edge fits.
+export const MAX_REFERENCE_CROP_SHORT_EDGE = 2048;
+export const MAX_REFERENCE_CROP_LONG_EDGE = 4096;
+
 function finite(value: number): number {
   return Number.isFinite(value) ? value : 0;
 }
@@ -185,6 +196,22 @@ export function createReferenceImageEditorActions(callbacks: {
   };
 }
 
+/** The exported size for a crop: its own size, reduced to what the model can use. */
+export function referenceCropExportSize(crop: ImageSize): ImageSize {
+  const longest = Math.max(crop.width, crop.height);
+  const shortest = Math.min(crop.width, crop.height);
+  const scale = Math.min(
+    1,
+    MAX_REFERENCE_CROP_SHORT_EDGE / Math.max(1, shortest),
+    MAX_REFERENCE_CROP_LONG_EDGE / Math.max(1, longest),
+  );
+  if (scale >= 1) return { width: crop.width, height: crop.height };
+  return {
+    width: Math.max(1, Math.floor(crop.width * scale)),
+    height: Math.max(1, Math.floor(crop.height * scale)),
+  };
+}
+
 /** Rasterize exactly one bounded source rectangle without enlarging it. */
 export function rasterizeReferenceImageCrop(
   source: CanvasImageSource,
@@ -196,9 +223,10 @@ export function rasterizeReferenceImageCrop(
   if (crop.width < 1 || crop.height < 1) {
     throw new Error("Select an area at least one pixel wide and high.");
   }
+  const output = referenceCropExportSize(crop);
   const canvas = createCanvas();
-  canvas.width = crop.width;
-  canvas.height = crop.height;
+  canvas.width = output.width;
+  canvas.height = output.height;
   const context = canvas.getContext("2d");
   if (!context)
     throw new Error("This browser could not start the crop canvas.");
@@ -210,8 +238,8 @@ export function rasterizeReferenceImageCrop(
     crop.height,
     0,
     0,
-    crop.width,
-    crop.height,
+    output.width,
+    output.height,
   );
   const dataUrl = canvas.toDataURL("image/png");
   if (!dataUrl.startsWith("data:image/png;base64,")) {
