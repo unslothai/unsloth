@@ -2448,9 +2448,9 @@ def test_an_unwired_note_says_what_is_unknown_or_what_replaced_it():
                 f"retirement nobody can trace is a deletion with extra steps"
             )
             continue
-        assert "STILL UNKNOWN" in note, (
-            f"{name} note says neither what is open nor what replaced it"
-        )
+        assert (
+            "STILL UNKNOWN" in note
+        ), f"{name} note says neither what is open nor what replaced it"
 
 
 def test_grpo_stays_unwired_while_the_illegal_memory_access_is_open():
@@ -4459,9 +4459,9 @@ def test_frontier_is_retired_in_favour_of_the_leg_that_supersedes_it():
         "frontier is in neither KERNELS nor UNWIRED, which is what a leg "
         "dropped by accident looks like"
     )
-    assert "SUPERSEDED" in UNWIRED["frontier"], (
-        "the note must say it was replaced, not that it is broken"
-    )
+    assert (
+        "SUPERSEDED" in UNWIRED["frontier"]
+    ), "the note must say it was replaced, not that it is broken"
     assert "vision_fla_compile" in UNWIRED["frontier"], "and by what"
     # And the leg it names is really carrying the load.
     assert "vision_fla_compile" in {name for kernel in KERNELS for name in kernel}
@@ -4469,6 +4469,8 @@ def test_frontier_is_retired_in_favour_of_the_leg_that_supersedes_it():
     # There is still exactly ONE kernel, which is the half of the old
     # assertion that was never about frontier.
     assert len(KERNELS) == 1, KERNELS
+
+
 def test_the_pinned_kaggle_client_carries_the_calls_this_workflow_makes():
     """The pin is load bearing, and 1.7.4.5 could not do the job at all.
 
