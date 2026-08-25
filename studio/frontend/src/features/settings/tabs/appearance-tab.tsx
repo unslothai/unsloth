@@ -65,70 +65,13 @@ export function AppearanceTab() {
         </p>
       </header>
 
-      <SettingsSection title={t("settings.appearance.theme.title")}>
-        <SettingsRow
-          label={t("settings.appearance.theme.label")}
-          description={t("settings.appearance.theme.description")}
-        >
-          <ThemeSegmented />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.appearance.palette.label")}
-          description={t("settings.appearance.palette.description")}
-          className="flex-col items-stretch gap-3"
-        >
-          <PaletteCards />
-        </SettingsRow>
-      </SettingsSection>
-
-      <SettingsSection
-        title={t(
-          resolved === "light"
-            ? "settings.appearance.custom.colors.lightGroup"
-            : "settings.appearance.custom.colors.darkGroup",
-        )}
-      >
-        <SettingsRow label={t("settings.appearance.custom.colors.accent")}>
-          <ActiveColorControl
-            colorKey="accent"
-            label={t("settings.appearance.custom.colors.accent")}
-          />
-        </SettingsRow>
-        <SettingsRow label={t("settings.appearance.custom.colors.background")}>
-          <ActiveColorControl
-            colorKey="background"
-            label={t("settings.appearance.custom.colors.background")}
-          />
-        </SettingsRow>
-        <SettingsRow label={t("settings.appearance.custom.colors.foreground")}>
-          <ActiveColorControl
-            colorKey="foreground"
-            label={t("settings.appearance.custom.colors.foreground")}
-          />
-        </SettingsRow>
-        <SettingsGroupDivider />
+      <SettingsSection title={t("settings.appearance.custom.preferencesTitle")}>
         <SettingsRow label={t("settings.appearance.custom.uiFont.label")}>
           <UiFontRow />
-        </SettingsRow>
-        <SettingsRow label={t("settings.appearance.custom.headingFont.label")}>
-          <HeadingFontRow />
-        </SettingsRow>
-        <SettingsRow label={t("settings.appearance.custom.chatFont.label")}>
-          <ChatFontRow />
         </SettingsRow>
         <SettingsRow label={t("settings.appearance.custom.codeFont.label")}>
           <CodeFontRow />
         </SettingsRow>
-        <SettingsGroupDivider />
-        <SettingsRow
-          label={t("settings.appearance.custom.contrast.label")}
-          description={t("settings.appearance.custom.contrast.description")}
-        >
-          <ContrastSliderRow />
-        </SettingsRow>
-      </SettingsSection>
-
-      <SettingsSection title={t("settings.appearance.custom.preferencesTitle")}>
         {isTauri && (
           <SettingsRow
             label={t("settings.appearance.custom.interfaceScale.label")}
@@ -180,6 +123,63 @@ export function AppearanceTab() {
           )}
         >
           <Switch checked={pinned} onCheckedChange={setPinned} />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.appearance.theme.title")}>
+        <SettingsRow
+          label={t("settings.appearance.theme.label")}
+          description={t("settings.appearance.theme.description")}
+        >
+          <ThemeSegmented />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.appearance.palette.label")}
+          description={t("settings.appearance.palette.description")}
+          className="flex-col items-stretch gap-3"
+        >
+          <PaletteCards />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection
+        title={t(
+          resolved === "light"
+            ? "settings.appearance.custom.colors.lightGroup"
+            : "settings.appearance.custom.colors.darkGroup",
+        )}
+      >
+        <SettingsRow label={t("settings.appearance.custom.colors.accent")}>
+          <ActiveColorControl
+            colorKey="accent"
+            label={t("settings.appearance.custom.colors.accent")}
+          />
+        </SettingsRow>
+        <SettingsRow label={t("settings.appearance.custom.colors.background")}>
+          <ActiveColorControl
+            colorKey="background"
+            label={t("settings.appearance.custom.colors.background")}
+          />
+        </SettingsRow>
+        <SettingsRow label={t("settings.appearance.custom.colors.foreground")}>
+          <ActiveColorControl
+            colorKey="foreground"
+            label={t("settings.appearance.custom.colors.foreground")}
+          />
+        </SettingsRow>
+        <SettingsGroupDivider />
+        <SettingsRow label={t("settings.appearance.custom.headingFont.label")}>
+          <HeadingFontRow />
+        </SettingsRow>
+        <SettingsRow label={t("settings.appearance.custom.chatFont.label")}>
+          <ChatFontRow />
+        </SettingsRow>
+        <SettingsGroupDivider />
+        <SettingsRow
+          label={t("settings.appearance.custom.contrast.label")}
+          description={t("settings.appearance.custom.contrast.description")}
+        >
+          <ContrastSliderRow />
         </SettingsRow>
       </SettingsSection>
 
