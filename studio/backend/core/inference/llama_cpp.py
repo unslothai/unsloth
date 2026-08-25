@@ -4199,6 +4199,38 @@ def _emitted_n_batch(n_batch: Optional[int], n_parallel: int) -> Optional[int]:
     return max(int(n_batch), max(2, int(n_parallel or 1)))
 
 
+def _extra_args_n_parallel(
+    extra_args: Optional[Iterable[str]],
+    env: Optional[Mapping[str, str]] = None,
+) -> Optional[int]:
+    """Serving slots a pass-through overrides to, or None when nothing does.
+
+    Same precedence as the launched command line: extras are appended last
+    (llama_cpp.py emits Studio's --parallel first), and llama.cpp is last-wins,
+    so an extras value beats both the emitted flag and the env. 0 is rejected at
+    parse time on the server path, so it is not a value anyone gets.
+    """
+    source_env = os.environ if env is None else env
+    found: Optional[int] = None
+    raw = source_env.get("LLAMA_ARG_N_PARALLEL")
+    if raw:
+        try:
+            found = int(str(raw).strip())
+        except (TypeError, ValueError):
+            pass
+    args = [str(a) for a in extra_args] if extra_args else []
+    for i, arg in enumerate(args):
+        name, _, inline = arg.partition("=")
+        if name not in ("-np", "--parallel"):
+            continue
+        value = inline if inline else (args[i + 1] if i + 1 < len(args) else "")
+        try:
+            found = int(value.strip())
+        except (TypeError, ValueError):
+            continue
+    return found
+
+
 def _extra_args_n_ubatch(
     extra_args: Optional[Iterable[str]],
     env: Optional[Mapping[str, str]] = None,
@@ -18197,6 +18229,12 @@ class LlamaCppBackend:
                         # instead of the whole FFN.
                         "model_path": model_path,
                         "n_ctx": effective_ctx,
+                        # The slot count the KV and recurrent state above were
+                        # PRICED at. A pass-through --parallel is appended after
+                        # Studio's own and wins, and both caches scale with it,
+                        # so the planner has to be able to tell that the number
+                        # it was handed is no longer the number that will run.
+                        "n_parallel": int(n_parallel or 1),
                         # An iGPU or APU reports host RAM as VRAM. Crediting it and
                         # then "spilling" into the same pool would count one memory
                         # twice, which is the bug class this whole review has been
@@ -22673,6 +22711,23 @@ class LlamaCppBackend:
             or not _kv_offload_from_args(extra_args, env = source_env)
         ):
             logger.debug("Tensor spill: declined, pass-through arguments own the placement")
+            return None
+
+        # Slots are not placement, but they are SIZING, and the numbers handed
+        # over were priced at Studio's own --parallel. A pass-through is appended
+        # after it and llama.cpp is last-wins, so a larger one grows both the
+        # attention cache and the recurrent state under a deficit computed for
+        # the smaller count: too few blocks spilled, then pinned with --fit off.
+        # Only larger matters; a smaller value leaves the plan over-reserved,
+        # which is the safe direction.
+        priced_parallel = int(inputs.get("n_parallel") or 1)
+        override_parallel = _extra_args_n_parallel(extra_args, source_env)
+        if override_parallel is not None and override_parallel > priced_parallel:
+            logger.debug(
+                "Tensor spill: declined, --parallel %d overrides the %d slots this was priced at",
+                override_parallel,
+                priced_parallel,
+            )
             return None
 
         model_size = int(inputs.get("model_size") or 0)

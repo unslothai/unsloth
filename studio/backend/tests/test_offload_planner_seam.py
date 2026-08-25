@@ -109,6 +109,7 @@ def _inputs(
     mtp = None,
     shared = None,
     gpus = None,
+    n_parallel = 1,
     compute_flat = 0,
     ctx_compute = 0,
 ):
@@ -124,6 +125,7 @@ def _inputs(
         "soft_overhead": 0,
         "model_path": "/models/stub.gguf",
         "n_ctx": 32768,
+        "n_parallel": n_parallel,
         "shared_gpu_ids": set() if shared is None else set(shared),
         **({} if mtp is None else {"mtp_will_engage": mtp}),
     }
@@ -779,3 +781,21 @@ def test_a_pinned_draft_device_declines_the_plan():
     assert _plan(stub, extra_args = ["--spec-draft-device", "cpu"]) is not None
     assert _plan(stub, extra_args = ["--spec-draft-device", "none"]) is not None
     assert _plan(stub) is not None
+
+
+def test_a_pass_through_parallel_that_grows_the_cache_declines_the_plan():
+    """Slots are sizing, not placement. Studio's --parallel is emitted first and
+    the extras are appended after it, so a larger pass-through wins at the child
+    while the deficit here was priced for the smaller count -- too few blocks
+    spilled, then pinned with --fit off. A SMALLER one only over-reserves, which
+    is safe, so it must not cost a plan."""
+    stub = _Stub()
+    assert _plan(stub, n_parallel = 1, extra_args = ["--parallel", "8"]) is None
+    assert _plan(stub, n_parallel = 1, extra_args = ["-np", "4"]) is None
+    assert _plan(stub, n_parallel = 1, extra_args = ["--parallel=8"]) is None
+    assert _plan(stub, n_parallel = 8, extra_args = ["--parallel", "8"]) is not None
+    assert _plan(stub, n_parallel = 8, extra_args = ["--parallel", "2"]) is not None
+    assert _plan(stub, n_parallel = 1, env = {"LLAMA_ARG_N_PARALLEL": "8"}) is None
+    # Last wins, exactly as llama.cpp parses it.
+    assert _plan(stub, n_parallel = 4, extra_args = ["--parallel", "8", "-np", "2"]) is not None
+    assert _plan(stub, n_parallel = 1) is not None
