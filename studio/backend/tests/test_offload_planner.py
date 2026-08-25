@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import re
+from dataclasses import replace
 
 import pytest
 
@@ -26,6 +27,8 @@ from core.inference.offload_layout import (
 )
 from core.inference.offload_cost_model import HostProfile
 from core.inference.offload_planner import (
+    _device_slots,
+    _per_device_shortfall,
     ContextPolicy,
     Plan,
     PlanOptions,
@@ -396,16 +399,82 @@ def test_a_partial_spill_across_two_gpus_abstains():
     assert two_cards.changed is False
 
 
-def test_a_full_spill_across_two_gpus_still_plans():
-    """The abstain above is scoped to PARTIAL spills. When every spillable block
-    goes, what each device still holds is its layer share, and the split hands
-    out layers in proportion to the same free memory the budget was built from,
-    so the pooled test tracks the per-device one."""
+def test_a_full_spill_is_checked_per_device_not_assumed():
+    """A full spill used to be waved through on the theory that "every device
+    keeps its layer share". It does keep its ROW share -- llama.cpp splits rows
+    in proportion to free VRAM (llama-model.cpp:1439-1457) -- but rows are
+    integers and bytes are not: 65 rows over two equal cards is 33/32, so at a
+    budget sized to the pooled total device 0 is over by half a row's worth. The
+    pooled arithmetic says it fits, the per-device check says it does not, and
+    abstaining hands the load to --fit on, which is per-device aware.
+
+    The identical pooled budget on ONE card has no split to be uneven about and
+    still plans, which is what makes this about the SPLIT and not the budget.
+    """
     layout = _layout_from_reader(_StubReader(_shard_fields(), _shard_tensors(range(64))))
     half = _ALL_SPILL_VRAM // 2
     plan = plan_placement(layout, [half, half], 256 * GIB, 4096, opts = _NO_OVERHEAD)
-    assert len(plan.spilled_blocks) == len(layout.blocks)
-    assert plan.changed is True
+    assert plan.changed is False
+    assert plan.spilled_blocks == ()
+    assert "device 0" in plan.reason
+
+    one = plan_placement(layout, [_ALL_SPILL_VRAM], 256 * GIB, 4096, opts = _NO_OVERHEAD)
+    assert len(one.spilled_blocks) == len(layout.blocks)
+
+
+def test_a_full_spill_abstains_when_the_cache_layout_is_unknown():
+    """A hybrid keeps a recurrent state on some layers only, and the layout does
+    not record WHICH -- so there is no per-row byte model to validate against.
+    Abstain rather than guess uniform. Again scoped to the multi-device split:
+    the same layout on one card is unaffected."""
+    layout = _layout_from_reader(_StubReader(_shard_fields(), _shard_tensors(range(64))))
+    hybrid = replace(layout, recurrent_bytes = 8 * MIB)
+    half = _ALL_SPILL_VRAM // 2
+    plan = plan_placement(hybrid, [half, half], 256 * GIB, 4096, opts = _NO_OVERHEAD)
+    assert plan.changed is False
+    assert "recurrent state" in plan.reason
+
+    one = plan_placement(hybrid, [_ALL_SPILL_VRAM], 256 * GIB, 4096, opts = _NO_OVERHEAD)
+    assert len(one.spilled_blocks) == len(layout.blocks)
+
+
+def test_the_row_split_matches_llama_cpp():
+    """_device_slots is a transcription of llama-model.cpp:1439-1457, so pin the
+    two properties that matter: contiguous ranges, and sizes in proportion to
+    free VRAM with the remainder landing on the EARLIER device."""
+    assert [len(r) for r in _device_slots(65, [8 * GIB, 8 * GIB])] == [33, 32]
+    assert [len(r) for r in _device_slots(65, [24 * GIB, 8 * GIB])] == [49, 16]
+    assert [len(r) for r in _device_slots(65, [8 * GIB, 8 * GIB, 8 * GIB])] == [22, 22, 21]
+    # Contiguous, in device order, covering every row exactly once.
+    rows = _device_slots(65, [24 * GIB, 8 * GIB])
+    assert rows[0] == list(range(0, 49)) and rows[1] == list(range(49, 65))
+    # One device takes everything, and a zero-sized pool does not divide by zero.
+    assert _device_slots(65, [8 * GIB]) == [list(range(65))]
+    assert _device_slots(4, [0, 0]) == [[0, 1, 2, 3], []]
+
+
+def test_the_per_device_check_passes_when_the_shares_really_fit():
+    """The check must not be a disguised "never plan on two GPUs". Cards sized so
+    that each one's row share fits with room to spare return None -- no abstain
+    reason -- for the same full spill the tight case rejects."""
+    layout = _layout_from_reader(_StubReader(_shard_fields(), _shard_tensors(range(64))))
+    spilled = {b.index for b in layout.blocks}
+    tight = _ALL_SPILL_VRAM // 2
+    assert (
+        _per_device_shortfall(
+            layout, _NO_OVERHEAD, 4096, spilled, False, [tight, tight],
+            quantised = False, kv_bytes_floor = 0,
+        )
+        is not None
+    )
+    roomy = _ALL_SPILL_VRAM
+    assert (
+        _per_device_shortfall(
+            layout, _NO_OVERHEAD, 4096, spilled, False, [roomy, roomy],
+            quantised = False, kv_bytes_floor = 0,
+        )
+        is None
+    )
 
 
 def test_multi_gpu_credit_sums():
