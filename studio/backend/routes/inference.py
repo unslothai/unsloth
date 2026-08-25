@@ -4968,7 +4968,8 @@ def _should_validate_before_switch() -> bool:
 
 
 def _loaded_slot_ident() -> Optional[str]:
-    active = getattr(get_inference_backend(), "active_model_name", None)
+    backend = _peek_inference_backend()
+    active = getattr(backend, "active_model_name", None) if backend is not None else None
     if active:
         return str(active)
     llama_backend = get_llama_cpp_backend()
@@ -5052,14 +5053,18 @@ async def load_model_for_preview(
                 same_target = loaded is not None and _preview_same_checkpoint(
                     loaded, request.model_path
                 )
-                preview_resident = loaded is not None and _is_preview_resident(loaded)
-                if loaded is not None and not same_target and not preview_resident:
+
+                def _refuse_studio_owned_model() -> None:
+                    if loaded is None or same_target or _is_preview_resident(loaded):
+                        return
                     untrack_current_request(scope)
                     raise HTTPException(
                         status_code = 503,
                         detail = "Studio already has a different model loaded. Unload it before using this preview.",
                         headers = {"Retry-After": "10"},
                     )
+
+                _refuse_studio_owned_model()
                 # For a real load (not a same-target borrow) mark the swap in progress BEFORE
                 # the admitted-count check below so the two are atomic against a concurrent
                 # non-preview request: preview_swapped_since_entry() keys on the live
@@ -5088,6 +5093,8 @@ async def load_model_for_preview(
                         detail = "The preview model is busy. Please try again shortly.",
                         headers = {"Retry-After": "10"},
                     )
+                # recheck after the admitted count because another loop may have claimed the slot.
+                _refuse_studio_owned_model()
                 if same_target:
                     # The resident model already serves this exact checkpoint, so
                     # borrow it as-is instead of reloading with bare preview settings
@@ -5104,7 +5111,12 @@ async def load_model_for_preview(
                 # eviction keys on (a CPU-only image/video load releases its claim and evicts
                 # nothing, so it never refuses a preview for free). Only the real-load path is
                 # gated: a same-target borrow returns above without acquiring anything.
-                from core.inference.gpu_arbiter import DIFFUSION, VIDEO, current_owner
+                from core.inference.gpu_arbiter import (
+                    DIFFUSION,
+                    VIDEO,
+                    GpuOwnerBusyError,
+                    current_owner,
+                )
 
                 if current_owner() in (DIFFUSION, VIDEO):
                     untrack_current_request(scope)
@@ -5141,8 +5153,19 @@ async def load_model_for_preview(
                             action = "Loading a model",
                             cancel = cancel,
                         ),
+                        allow_gpu_owner_eviction = False,
                     )
                     loaded_ok = True
+                except GpuOwnerBusyError as exc:
+                    untrack_current_request(scope)
+                    raise HTTPException(
+                        status_code = 503,
+                        detail = (
+                            "Studio is using the GPU for image or video generation. "
+                            "Unload that model before using this preview."
+                        ),
+                        headers = {"Retry-After": "10"},
+                    ) from exc
                 finally:
                     # Base ownership on what is actually resident now: the load can make
                     # this preview's checkpoint resident and then raise while assembling
@@ -6334,6 +6357,7 @@ async def _load_model_impl(
     *,
     current_request_counted: bool = False,
     on_reload_confirmed = None,
+    allow_gpu_owner_eviction: bool = True,
 ):
     from core.inference.llama_cpp import LlamaServerNotFoundError
 
@@ -6702,10 +6726,12 @@ async def _load_model_impl(
             )
         )
         if chat_load_needs_gpu:
+            gpu_acquire_kwargs = {} if allow_gpu_owner_eviction else {"allow_evict": False}
             await asyncio.to_thread(
                 acquire_for,
                 CHAT,
                 lambda: gguf_load_stack.enter_context(chat_load_in_flight()),
+                **gpu_acquire_kwargs,
             )
         else:
             # The marker still goes up (the download-manager handshake reads it, and it keeps this load cancellable). A stale CHAT claim is dropped AFTER the load.

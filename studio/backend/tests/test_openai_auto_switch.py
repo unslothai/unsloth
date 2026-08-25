@@ -16,6 +16,7 @@ from fastapi import HTTPException
 
 import routes.inference as inference_route
 from models.inference import LoadRequest
+from core.inference import llama_keepwarm
 from core.inference import local_model_resolver as resolver
 from utils import openai_auto_switch_settings as settings
 
@@ -28,8 +29,12 @@ def _clean_resolver_index():
     can publish its fixture's scan and, inside the TTL, hand it to the next test.
     """
     resolver.invalidate_index()
+    with llama_keepwarm._lock:
+        llama_keepwarm._admitted_inference = 0
     yield
     resolver.invalidate_index()
+    with llama_keepwarm._lock:
+        llama_keepwarm._admitted_inference = 0
 
 
 class _FakeBackend:

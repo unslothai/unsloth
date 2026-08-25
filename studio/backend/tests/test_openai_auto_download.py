@@ -15,6 +15,7 @@ import pytest
 from fastapi import HTTPException
 
 import routes.inference as inference_route
+from core.inference import llama_keepwarm
 from core.inference import openai_auto_download as auto_dl
 from core.inference.local_model_resolver import warm_index_soon as _real_warm_index_soon
 from utils import openai_auto_switch_settings as settings
@@ -66,10 +67,14 @@ def _clean_slot():
     from core.inference import local_model_resolver
 
     auto_dl.reset_for_tests()
+    with llama_keepwarm._lock:
+        llama_keepwarm._admitted_inference = 0
     # The hook warms the index in the background; drop it so a scan never leaks between tests.
     local_model_resolver.invalidate_index()
     yield
     auto_dl.reset_for_tests()
+    with llama_keepwarm._lock:
+        llama_keepwarm._admitted_inference = 0
     local_model_resolver.invalidate_index()
 
 

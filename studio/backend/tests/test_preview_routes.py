@@ -15,6 +15,7 @@ import asyncio
 import json
 from pathlib import Path
 import sys
+import threading
 import types as _types
 
 import pytest
@@ -517,6 +518,15 @@ from core.inference import llama_keepwarm
 from models.inference import LoadRequest
 
 
+@pytest.fixture(autouse = True)
+def reset_admitted_inference():
+    with llama_keepwarm._lock:
+        llama_keepwarm._admitted_inference = 0
+    yield
+    with llama_keepwarm._lock:
+        llama_keepwarm._admitted_inference = 0
+
+
 @pytest.fixture
 def slot_state():
     def _reset():
@@ -530,10 +540,11 @@ def slot_state():
 
 @pytest.fixture
 def fake_slot(slot_state, monkeypatch):
-    state = {"ident": None, "loads": []}
+    state = {"ident": None, "loads": [], "load_kwargs": []}
 
     async def _fake_impl(load_req, fastapi_request, subject, **kwargs):
         state["loads"].append(load_req.model_path)
+        state["load_kwargs"].append(kwargs)
         if state.get("fail_load"):
             # Mirror a load that tears the old model down, then fails.
             state["ident"] = None
@@ -680,6 +691,7 @@ def test_preview_load_allowed_when_gpu_is_free_or_chat_owned(fake_slot, monkeypa
         )
     )
     assert fake_slot["loads"] == ["/outputs/run/ckpt-a", "/outputs/run/ckpt-b"]
+    assert all(kwargs["allow_gpu_owner_eviction"] is False for kwargs in fake_slot["load_kwargs"])
     # Same-checkpoint borrow with an image pipeline resident: no load, so no eviction.
     monkeypatch.setattr(gpu_arbiter, "current_owner", lambda: gpu_arbiter.DIFFUSION)
     asyncio.run(
@@ -688,6 +700,32 @@ def test_preview_load_allowed_when_gpu_is_free_or_chat_owned(fake_slot, monkeypa
         )
     )
     assert fake_slot["loads"] == ["/outputs/run/ckpt-a", "/outputs/run/ckpt-b"]
+
+
+def test_preview_maps_atomic_gpu_refusal_to_503(fake_slot, monkeypatch):
+    from core.inference import gpu_arbiter
+
+    monkeypatch.setattr(gpu_arbiter, "current_owner", lambda: None)
+
+    async def _lose_gpu_ownership(*args, **kwargs):
+        assert kwargs["allow_gpu_owner_eviction"] is False
+        raise gpu_arbiter.GpuOwnerBusyError(gpu_arbiter.DIFFUSION)
+
+    monkeypatch.setattr(inference, "_load_model_impl", _lose_gpu_ownership)
+
+    async def _run():
+        with pytest.raises(HTTPException) as excinfo:
+            await inference.load_model_for_preview(
+                LoadRequest(model_path = "/outputs/run/ckpt-a"),
+                SimpleNamespace(scope = {"path": "/p/a/v1/chat/completions"}),
+                "admin",
+            )
+        return excinfo.value
+
+    exc = asyncio.run(_run())
+    assert exc.status_code == 503
+    assert "image or video" in exc.detail
+    assert inference._get_preview_resident() is None
 
 
 def test_preview_swap_refused_while_studio_traffic_in_flight(fake_slot):
@@ -1981,6 +2019,32 @@ def test_preview_swap_marked_before_admitted_check():
     begin = src.index("note_preview_swap_begin()")
     check = src.index("other_admitted_inference_count()")
     assert begin < check, "swap marker must be set before the admitted-count busy check"
+
+
+def test_preview_rechecks_ownership_after_admitted_count(fake_slot, monkeypatch):
+    fake_slot["ident"] = "/outputs/run/ckpt-a"
+    inference._set_preview_resident("/outputs/run/ckpt-a")
+
+    def _finish_studio_request() -> int:
+        thread = threading.Thread(target = inference._set_preview_resident, args = (None,))
+        thread.start()
+        thread.join()
+        return 0
+
+    monkeypatch.setattr(llama_keepwarm, "other_admitted_inference_count", _finish_studio_request)
+
+    async def _run():
+        with pytest.raises(HTTPException) as excinfo:
+            await inference.load_model_for_preview(
+                LoadRequest(model_path = "/outputs/run/ckpt-b"),
+                SimpleNamespace(scope = {"path": "/p/b/v1/chat/completions"}),
+                "admin",
+            )
+        return excinfo.value
+
+    exc = asyncio.run(_run())
+    assert exc.status_code == 503
+    assert fake_slot["loads"] == []
 
 
 def test_preview_swap_marker_skipped_for_same_target_borrow():
