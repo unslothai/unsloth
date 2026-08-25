@@ -38,6 +38,7 @@ import routes.mcp_servers as mcp_routes
 import routes.providers as provider_routes
 from auth.authentication import (
     authenticated_via_api_key,
+    authenticated_without_credential,
     get_current_credential,
     get_current_subject,
     get_current_subject_allow_password_change,
@@ -155,6 +156,7 @@ def _drive(monkeypatch, case: _Case):
     app.dependency_overrides[get_current_subject] = lambda: "u"
     app.dependency_overrides[get_current_subject_allow_password_change] = lambda: "u"
     app.dependency_overrides[authenticated_via_api_key] = lambda: False
+    app.dependency_overrides[authenticated_without_credential] = lambda: False
     app.dependency_overrides[get_current_credential] = lambda: ("u", None)
 
     loop_threads: list[int] = []

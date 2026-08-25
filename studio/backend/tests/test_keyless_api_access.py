@@ -194,10 +194,18 @@ def test_public_browser_and_private_lan_boundaries(monkeypatch):
         lan_access_launch_addresses = ("192.168.1.24",),
     )) == "private_lan"
 
-    monkeypatch.setattr(host_policy, "_remote_connector_active", True)
     monkeypatch.setattr(lan_access, "lan_listener_status",
                         lambda: {"running": True, "port": 8888,
                                  "addresses": ["192.168.1.24"]})
+    monkeypatch.setattr(host_policy, "_lan_connector_active", True)
+    assert access_exposure(app_state()) == "private_lan"
+    monkeypatch.setattr(lan_access, "lan_listener_status",
+                        lambda: {"addresses": ["100.64.0.10"]})
+    assert access_exposure(app_state()) == "network"
+    monkeypatch.setattr(lan_access, "lan_listener_status",
+                        lambda: {"running": True, "port": 8888,
+                                 "addresses": ["192.168.1.24"]})
+    monkeypatch.setattr(host_policy, "_remote_connector_active", True)
     lan_request = request_for(method = "GET", path = "/v1/models",
                               server = ("192.168.1.24", 8888), client = ("192.168.1.90", 54321))
     assert keyless_request_allowed(lan_request)
@@ -310,7 +318,8 @@ def test_protected_side_effect_guards_remain_wired():
     from routes import auth, inference
 
     auth_source = inspect.getsource(auth)
-    assert auth_source.count("_require_a_credential_of_its_own(") >= 5
+    assert auth_source.count("_require_a_credential_of_its_own(") >= 6
+    assert "_require_a_credential_of_its_own" in inspect.getsource(auth.change_password)
     assert all(
         "request_admitted_without_credential" in inspect.getsource(handler)
         for handler in (inference._maybe_auto_switch_model, inference.openai_chat_completions)

@@ -631,6 +631,7 @@ async def change_password(
     request: Request,
     current_subject: str = Depends(get_current_subject_allow_password_change),
     is_desktop: bool = Depends(authenticated_via_desktop_jwt),
+    _own_credential: None = Depends(_require_a_credential_of_its_own("Changing passwords")),
 ) -> Token:
     """Allow the authenticated user to replace the default password."""
     record = storage.get_user_and_secret(current_subject)
