@@ -4897,14 +4897,14 @@ def unsloth_save_pretrained_gguf(
                 f"about system memory rather than GPU memory or disk.\n"
                 f"Try a smaller quantization, a machine with more RAM, or "
                 f"convert from a saved 16bit checkpoint on a larger host.\n"
-                f"Error: {e}"
+                f"Error: {_describe_exception(e)}"
             ) from e
         if IS_KAGGLE_ENVIRONMENT and _gguf_failure_looks_like_disk(e, save_directory):
             raise RuntimeError(
                 f"Unsloth: GGUF conversion failed in Kaggle environment.\n"
                 f"This is likely due to the 20GB disk space limit.\n"
                 f"Try saving to /tmp directory or use a smaller model.\n"
-                f"Error: {e}"
+                f"Error: {_describe_exception(e)}"
             ) from e
         else:
             raise RuntimeError(f"Unsloth: GGUF conversion failed: {_describe_exception(e)}") from e

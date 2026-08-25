@@ -152,7 +152,12 @@ def test_the_real_error_survives_either_way():
     assert (
         window.count("from e") >= 2
     ), "the original exception must be chained so the traceback survives"
-    assert "GGUF conversion failed: {e}" in window
+    # `{e}` renders nothing when the exception carries no args, so the
+    # formatter that always leads with the type is equally acceptable here.
+    assert (
+        "GGUF conversion failed: {e}" in window
+        or "GGUF conversion failed: {_describe_exception(e)}" in window
+    )
 
 
 if __name__ == "__main__":
