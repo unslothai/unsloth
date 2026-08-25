@@ -2620,6 +2620,8 @@ def run_server(
         app.state.server_url = f"http://{_url_host(_direct_host)}:{port}"
     else:
         app.state.server_url = None
+    # raw bind address: the keyless exposure warning must tell loopback from a wildcard bind
+    app.state.bind_host = host
     app.state.secure = secure
     app.state.llama_parallel_slots = llama_parallel_slots
 

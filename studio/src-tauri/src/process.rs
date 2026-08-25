@@ -4438,6 +4438,50 @@ mod backend_log_line_tests {
     }
 }
 
+/// The same corpus the backend checks itself against.
+///
+/// Two implementations of "a successful access record", in two languages and two
+/// processes: the backend decides whether to emit the line at all, and the shell decides
+/// whether to mirror it into `tauri.log`. They can drift, and the CRLF handling in the
+/// progress-frame collapsers already did drift once. Reading one file from both sides
+/// turns a change to the rule on either side red on the other.
+#[cfg(test)]
+mod shared_access_log_fixture_tests {
+    use super::*;
+
+    #[test]
+    fn every_shared_case_agrees_with_the_desktop_filter() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../backend/tests/fixtures/access_log_records.json");
+        let raw = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read the shared fixture at {path:?}: {e}"));
+        let fixture: serde_json::Value =
+            serde_json::from_str(&raw).expect("the shared fixture is not valid JSON");
+        let cases = fixture["cases"]
+            .as_array()
+            .expect("the shared fixture has no `cases` array");
+        assert!(!cases.is_empty(), "the shared fixture is empty, so this test proves nothing");
+
+        for case in cases {
+            let name = case["name"].as_str().unwrap_or("<unnamed>");
+            let line = case["line"].as_str().unwrap_or_else(|| {
+                panic!("case {name:?} has no `line`");
+            });
+            let keep = case["keep"]
+                .as_bool()
+                .unwrap_or_else(|| panic!("case {name:?} has no boolean `keep`"));
+            // keep=false means the line IS a successful access record, which is exactly
+            // when the filter returns true and the line drops to debug.
+            assert_eq!(
+                is_backend_access_log_line(line),
+                !keep,
+                "case {name:?}: {}",
+                case["why"].as_str().unwrap_or("no rationale recorded")
+            );
+        }
+    }
+}
+
 // A login-started desktop on Windows inherits C:\Windows\system32 (issue #8510),
 // and so did every CLI child, where the Python CLI refuses to run. These pin the
 // replacement directory and that each command carries it.

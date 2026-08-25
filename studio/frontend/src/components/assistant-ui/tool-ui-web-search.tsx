@@ -14,6 +14,7 @@ import { stringifyToolResult } from "@/lib/strip-ansi";
 import { memo, useEffect, useState } from "react";
 import { SearchImageThumb } from "./search-image";
 import { Source, SourceIcon, SourceTitle } from "./sources";
+import { toolArgText } from "./tool-arg-text";
 import {
   ToolFallbackContent,
   ToolFallbackRoot,
@@ -89,13 +90,13 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
 }) => {
   // Coerced, like image_queries below: a local model routinely emits a number or an
   // object here, and .trim() on one crashes the card that was meant to show the call.
-  const query = String((args as { query?: unknown })?.query ?? "");
-  const url = String((args as { url?: unknown })?.url ?? "").trim();
+  const query = toolArgText((args as { query?: unknown })?.query);
+  const url = toolArgText((args as { url?: unknown })?.url).trim();
   const isUrlFetch = !!url;
   const rawImageQueries = (args as { image_queries?: unknown })?.image_queries;
   const imageQueries = Array.isArray(rawImageQueries)
     ? rawImageQueries
-        .map((q) => String(q).trim())
+        .map((q) => toolArgText(q).trim())
         .filter(Boolean)
         .slice(0, 5)
     : [];
