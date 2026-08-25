@@ -304,7 +304,15 @@ def test_largest_first_minimises_overshoot():
     # Need ~50 MiB freed: the 50 MiB block alone should do it.
     floor = resident_floor_bytes(layout, 4096)
     budget = floor + layout.spillable_bytes - 40 * MIB + 1 * GIB  # +overhead
-    plan = plan_placement(layout, [budget], 64 * GIB, 4096, opts = PlanOptions(overhead_bytes_per_device = GIB, ))
+    plan = plan_placement(
+        layout,
+        [budget],
+        64 * GIB,
+        4096,
+        opts = PlanOptions(
+            overhead_bytes_per_device = GIB,
+        ),
+    )
     spilled = sum(b.spillable_bytes for b in layout.blocks if b.index in plan.spilled_blocks)
     assert spilled == 50 * MIB, "should take the 50 MiB block, not a bigger one"
 
@@ -362,7 +370,12 @@ def test_every_device_pays_the_fixed_overhead():
 
 def test_multi_gpu_credit_sums():
     layout = q2_layout()
-    assert plan_placement(layout, [6 * GIB, 6 * GIB], 64 * GIB, 8192, opts = FIXED_OVERHEAD_OPTS).spilled_blocks == ()
+    assert (
+        plan_placement(
+            layout, [6 * GIB, 6 * GIB], 64 * GIB, 8192, opts = FIXED_OVERHEAD_OPTS
+        ).spilled_blocks
+        == ()
+    )
 
 
 # --------------------------------------------------------------- context policy
@@ -460,7 +473,9 @@ def test_f16_is_preferred_when_it_fits_even_with_quant_allowed():
     [(8, 20), (10, 52), (12, 84), (16, 148), (20, 212)],
 )
 def test_q4_ffn_spilled_context_ladder(budget_gib, expected_k):
-    got = max_context_for(q4_layout(), [budget_gib * GIB], spill_all_ffn = True, opts = FIXED_OVERHEAD_OPTS)
+    got = max_context_for(
+        q4_layout(), [budget_gib * GIB], spill_all_ffn = True, opts = FIXED_OVERHEAD_OPTS
+    )
     assert expected_k * 1024 <= got < (expected_k + 1) * 1024, got
 
 
@@ -475,7 +490,9 @@ FIXED_OVERHEAD_OPTS = PlanOptions(overhead_bytes_per_device = GIB)
 
 @pytest.mark.parametrize("budget_gib,expected_k", [(6, 25), (8, 57), (12, 121), (20, 249)])
 def test_q2_ffn_spilled_context_ladder(budget_gib, expected_k):
-    got = max_context_for(q2_layout(), [budget_gib * GIB], spill_all_ffn = True, opts = FIXED_OVERHEAD_OPTS)
+    got = max_context_for(
+        q2_layout(), [budget_gib * GIB], spill_all_ffn = True, opts = FIXED_OVERHEAD_OPTS
+    )
     assert expected_k * 1024 <= got < (expected_k + 1) * 1024, got
 
 
@@ -494,7 +511,11 @@ def test_the_ladder_never_regresses_as_vram_grows():
     """More VRAM must never mean more spill."""
     layout = q4_layout()
     counts = [
-        len(plan_placement(layout, [g * GIB], 64 * GIB, 32768, opts = FIXED_OVERHEAD_OPTS).spilled_blocks)
+        len(
+            plan_placement(
+                layout, [g * GIB], 64 * GIB, 32768, opts = FIXED_OVERHEAD_OPTS
+            ).spilled_blocks
+        )
         for g in (8, 10, 12, 14, 16, 18, 20, 22, 24)
     ]
     assert counts == sorted(counts, reverse = True), counts
@@ -653,8 +674,20 @@ def test_a_small_host_is_predicted_to_suffer_more_for_the_same_spill():
     batch >= 32, and decode is batch 1), so the penalty tracks core count. A
     desktop must not be told a server's story."""
     layout, vram, ram, ctx = _dense_q4(), [8 * GIB], 64 * GIB, 32768
-    big = plan_placement(layout, vram, ram, ctx, opts = PlanOptions(overhead_bytes_per_device = GIB, host = HostProfile(threads = 192)))
-    small = plan_placement(layout, vram, ram, ctx, opts = PlanOptions(overhead_bytes_per_device = GIB, host = HostProfile(threads = 8)))
+    big = plan_placement(
+        layout,
+        vram,
+        ram,
+        ctx,
+        opts = PlanOptions(overhead_bytes_per_device = GIB, host = HostProfile(threads = 192)),
+    )
+    small = plan_placement(
+        layout,
+        vram,
+        ram,
+        ctx,
+        opts = PlanOptions(overhead_bytes_per_device = GIB, host = HostProfile(threads = 8)),
+    )
     assert big.spilled_blocks == small.spilled_blocks, "same placement, different host"
     assert small.predicted_gen_penalty_ms > big.predicted_gen_penalty_ms * 2
 
