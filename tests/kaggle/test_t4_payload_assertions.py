@@ -2361,9 +2361,9 @@ def test_the_text_leg_gguf_export_does_not_land_in_the_artifact_directory():
     hid it.
     """
     src = _smoke_source()
-    call = src[src.index("gguf_export_record = export_gguf("):]
+    call = src[src.index("gguf_export_record = export_gguf(") :]
     call = call[: call.index(")")]
     assert "tempfile.mkdtemp" in call, "the export writes into the artifact directory"
-    assert "args.outdir" not in call, (
-        "args.outdir is /kaggle/working, which is 21 GB and is collected"
-    )
+    assert (
+        "args.outdir" not in call
+    ), "args.outdir is /kaggle/working, which is 21 GB and is collected"

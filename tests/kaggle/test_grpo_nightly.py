@@ -77,9 +77,9 @@ def test_the_nightly_leg_is_NOT_in_the_per_pr_set():
     """The whole point. If grpo were also wired into KERNELS the 44% crash rate
     would be back in front of every PR and the nightly would be redundant."""
     wired = {name for kernel in legs.KERNELS for name in kernel}
-    assert "grpo" not in wired, (
-        "grpo is in the per-PR set, so the nightly is pointless and every PR carries a 44% red"
-    )
+    assert (
+        "grpo" not in wired
+    ), "grpo is in the per-PR set, so the nightly is pointless and every PR carries a 44% red"
 
 
 def test_a_leg_list_replaces_all_kernels_rather_than_filtering_after_it():
