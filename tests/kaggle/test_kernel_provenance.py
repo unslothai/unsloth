@@ -124,3 +124,28 @@ def test_the_payload_passes_the_capability_the_fingerprint_records():
     """Asserted from the source: the wiring is where the two spellings meet."""
     src = (PAYLOAD / "run_t4_smoke.py").read_text(encoding = "utf-8")
     assert 'capability = str(env.get("gpu_capability"' in src
+
+
+def test_the_payload_never_calls_a_tokenizer_positionally():
+    """A vision model's tokenizer IS a processor.
+
+    `ProcessorMixin.__call__` is `(self, images=None, text=None, videos=None,
+    ...)`, so a positional list of prompts is taken as IMAGES and transformers
+    tries to fetch each string as an image URL. That is not hypothetical: it
+    killed the Latest_compile leg on gemma-4-E2B-it after the model had already
+    loaded and trained, on kernel unsloth-probe-latestcompile-r2-62b54d.
+
+    `text` is also the first parameter of a plain tokenizer, so the keyword is
+    correct everywhere and this is not a vision special case.
+    """
+    import re
+
+    src = (PAYLOAD / "run_t4_smoke.py").read_text(encoding = "utf-8")
+    offenders = []
+    for match in re.finditer(r"tokenizer\(\s*(?!text\s*=)(?!\))([^)\n]*)", src):
+        arg = match.group(1).strip()
+        # Keyword-only calls are fine; a bare `tokenizer(` opening a keyword
+        # list is what the negative lookahead already allowed through.
+        if arg and not arg.split(",")[0].strip().endswith("=") and "=" not in arg.split(",")[0]:
+            offenders.append(match.group(0))
+    assert offenders == [], f"positional tokenizer calls: {offenders}"

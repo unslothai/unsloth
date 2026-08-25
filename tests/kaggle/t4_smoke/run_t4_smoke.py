@@ -416,7 +416,16 @@ def train_once(args, run_index: int) -> dict:
     # function of the weights alone.
     FastLanguageModel.for_inference(model)
     prompt = PROMPT_TEMPLATE.format(question = rows[0]["question"])
-    inputs = tokenizer([prompt], return_tensors = "pt").to(model.device)
+    # `text = ` and not positional, and this cost a leg. A vision model's
+    # tokenizer IS a processor, whose signature is
+    # `__call__(self, images=None, text=None, videos=None, ...)` -- so a
+    # positional list is taken as IMAGES and transformers tries to fetch the
+    # prompt strings as image URLs. Measured on kernel
+    # unsloth-probe-latestcompile-r2-62b54d with gemma-4-E2B-it:
+    #   transformers/image_processing_backends.py, in fetch_images
+    # `text` is the first parameter of a plain tokenizer too, so the keyword is
+    # correct for both and is not a special case for vision.
+    inputs = tokenizer(text = [prompt], return_tensors = "pt").to(model.device)
     t0 = time.time()
     with torch.inference_mode():
         out = model.generate(
@@ -656,7 +665,9 @@ def batched_generation(model, tokenizer, prompts, *, max_new_tokens) -> dict:
         tokenizer.pad_token = tokenizer.eos_token
 
     def _gen(batch: list) -> list:
-        enc = tokenizer(batch, return_tensors = "pt", padding = True).to(model.device)
+        # Keyword for the same reason as the single-prompt path above: a
+        # processor reads a positional list as images.
+        enc = tokenizer(text = batch, return_tensors = "pt", padding = True).to(model.device)
         with torch.inference_mode():
             out = model.generate(
                 **enc,
@@ -682,7 +693,7 @@ def batched_generation(model, tokenizer, prompts, *, max_new_tokens) -> dict:
         width = enc["input_ids"].shape[1]
         return [tokenizer.decode(row[width:], skip_special_tokens = True) for row in out]
 
-    lengths = [len(tokenizer(p)["input_ids"]) for p in prompts]
+    lengths = [len(tokenizer(text = p)["input_ids"]) for p in prompts]
     singles = [_gen([p])[0] for p in prompts]
     result = {
         "prompt_token_lengths": lengths,
