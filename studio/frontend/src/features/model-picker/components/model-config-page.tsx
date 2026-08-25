@@ -76,6 +76,10 @@ import {
 } from "@/components/ui/popover";
 import { Input } from "@/components/ui/input";
 import { DownloadProgressBar } from "@/features/hub/download-manager/download-progress-bar";
+import {
+  DOWNLOAD_KIND,
+  subscribeJobListeners,
+} from "@/features/hub/download-manager";
 import { useRepoDownload } from "@/features/hub/download-manager/use-repo-download";
 import { TransportConflictDialog } from "@/features/hub/catalog/transport-conflict-dialog";
 import { formatBytes } from "@/features/hub/lib/format";
@@ -1352,11 +1356,8 @@ const MLX_DRAFT_SEARCH_SEPARATOR = /\s+/;
 
 function MlxDraftCheckpointDownload({
   candidate,
-  onDownloaded,
 }: {
   candidate: MlxSpeculativeCandidate;
-  /** Re-ask what is available: nothing else moves a candidate out of not-downloaded. */
-  onDownloaded: () => void;
 }) {
   const [failed, setFailed] = useState(false);
   // The existing manager, not a second downloader, so it keeps running if this closes.
@@ -1365,7 +1366,7 @@ function MlxDraftCheckpointDownload({
     repoId: candidate.repo_id,
     activeVariant: null,
     autoAdopt: true,
-    onComplete: onDownloaded,
+    // Completion is watched by useMlxDraftDownloadRefresh, which outlives this row.
     onError: () => setFailed(true),
   });
   const downloading = job.progress !== null && job.progress.variant === null;
@@ -1435,14 +1436,12 @@ function MlxDraftModelSetting({
   selected,
   resolved,
   update,
-  onDownloaded,
 }: {
   candidates: readonly MlxSpeculativeCandidate[];
   selected: MlxSpeculativeCandidate | null;
   /** What this request would actually draft with, which a pin can fail to name. */
   resolved: MlxSpeculativeCandidate | null;
   update: (patch: Partial<PerModelConfig>) => void;
-  onDownloaded: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -1562,11 +1561,7 @@ function MlxDraftModelSetting({
       {/* Keyed by repository, so a failure reported for one is not still on screen
           under the next. */}
       {shown && fetchable ? (
-        <MlxDraftCheckpointDownload
-          key={shown.repo_id}
-          candidate={shown}
-          onDownloaded={onDownloaded}
-        />
+        <MlxDraftCheckpointDownload key={shown.repo_id} candidate={shown} />
       ) : null}
     </>
   );
@@ -1681,7 +1676,6 @@ function MlxSpeculativeSetting({
           )}
           resolved={resolved}
           update={update}
-          onDownloaded={onRetry}
         />
       ) : null}
       {/* Auto carries its own depth per method, chosen with the drafter, so there is no
@@ -2472,6 +2466,44 @@ function useMlxSpeculativeOptions(
   };
 }
 
+/**
+ * Re-ask what is available when a drafter this page offered finishes downloading.
+ *
+ * The download row lives under Advanced settings and unmounts when they collapse, while the
+ * transfer keeps running; remounting does not recover the completion, because the adopt probe
+ * takes over running jobs only. Held here so the candidate stops reading "Not downloaded"
+ * whatever the panel is showing when the bytes land.
+ */
+function useMlxDraftDownloadRefresh(
+  options: MlxSpeculativeOptions | null,
+  refresh: () => void,
+): void {
+  const pending = (options?.candidates ?? [])
+    .filter((candidate) => !candidate.downloaded)
+    .map((candidate) => candidate.repo_id)
+    .sort()
+    .join("\n");
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the joined ids are the identity of the set, so resubscribing on the array itself would churn every render
+  useEffect(() => {
+    if (!pending) {
+      return;
+    }
+    const unsubscribes = pending
+      .split("\n")
+      .map((repoId) =>
+        subscribeJobListeners(DOWNLOAD_KIND.MODEL, repoId, {
+          onComplete: () => refresh(),
+        }),
+      );
+    return () => {
+      for (const unsubscribe of unsubscribes) {
+        unsubscribe();
+      }
+    };
+  }, [pending, refresh]);
+}
+
 export function ModelConfigPage({
   target,
   onBack,
@@ -2591,6 +2623,7 @@ export function ModelConfigPage({
     servedByMlx,
     hfToken,
   );
+  useMlxDraftDownloadRefresh(mlxSpeculative.options, mlxSpeculative.retry);
   const loadedMlxSpeculativeMode = useChatRuntimeStore(
     (s) => s.loadedMlxSpeculativeMode,
   );

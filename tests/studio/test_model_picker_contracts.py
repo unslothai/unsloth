@@ -461,6 +461,36 @@ def test_the_drafter_probe_asks_about_the_snapshot_the_pick_loads():
     assert "target.id" in call, call
 
 
+def test_a_drafter_download_is_watched_from_outside_the_collapsible():
+    """A listener held by the download row stops existing the moment Advanced settings collapse,
+    while the transfer keeps running. Remounting does not recover it: the adopt probe takes over
+    running jobs only, never finished ones."""
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    flat = " ".join(page.split())
+    # Watched from the page body, not the row.
+    assert "useMlxDraftDownloadRefresh(mlxSpeculative.options, mlxSpeculative.retry)" in flat
+    assert flat.index("useMlxDraftDownloadRefresh(mlxSpeculative.options") < flat.index(
+        "{showAdvanced && ( <MlxAdvancedSettings"
+    ), "the refresh moved inside the collapsible it exists to outlive"
+    # The row keeps its progress bar but no longer owns completion.
+    row = page[page.index("function MlxDraftCheckpointDownload(") :]
+    row = row[: row.index("\nfunction ")]
+    assert "onComplete" not in row, row
+    # A hook that only reads the candidates satisfies every check above while the download
+    # still lands unnoticed.
+    hook = flat[flat.index("function useMlxDraftDownloadRefresh(") :]
+    hook = hook[: hook.index("export function ModelConfigPage(")]
+    assert "subscribeJobListeners(DOWNLOAD_KIND.MODEL, repoId, {" in hook, hook
+    assert "onComplete: () => refresh()" in hook, hook
+    # Every candidate not here yet, one subscription each: a single call over the joined ids
+    # watches a repository named nothing.
+    assert "!candidate.downloaded" in hook, hook
+    assert '.split("\\n") .map((repoId) =>' in hook, hook
+    # Nothing between the filter and the subscriptions may narrow the set again.
+    assert ".slice(" not in hook, hook
+    assert ".at(" not in hook and "[0]" not in hook, hook
+
+
 def test_the_picker_offers_every_pairing_the_backend_defers():
     """A deferred reason is not a refusal -- the backend declines to judge until the load
     supplies the target's own files, then settles it. Drop one from the picker's set and the
