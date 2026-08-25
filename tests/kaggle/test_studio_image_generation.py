@@ -187,7 +187,7 @@ def test_a_load_that_never_finishes_fails_rather_than_generating_anyway():
     src = ast.get_source_segment(SRC, func) or ""
     marker = "never reported loaded within"
     assert marker in src
-    after = src[src.index(marker):]
+    after = src[src.index(marker) :]
     assert "return self.record" in after.split("/api/inference/images/generate")[0], (
         "the deadline branch does not return, so it generates against a model "
         "that was never loaded"

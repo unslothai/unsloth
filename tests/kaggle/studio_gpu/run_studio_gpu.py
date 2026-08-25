@@ -1806,9 +1806,7 @@ class Payload:
             detail["load_status_body"] = {
                 k: status.get(k) for k in ("loaded", "repo_id", "family", "device", "model_kind")
             }
-            detail["load_progress"] = {
-                k: progress.get(k) for k in ("phase", "fraction", "error")
-            }
+            detail["load_progress"] = {k: progress.get(k) for k in ("phase", "fraction", "error")}
             if not status.get("loaded"):
                 failures.append(
                     f"the diffusion model never reported loaded within "
