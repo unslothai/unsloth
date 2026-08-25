@@ -55,13 +55,21 @@ def _copy_redacted(source: BinaryIO, destination: BinaryIO, max_bytes: int) -> N
     omitted = 0
     scan_tail = b""
     sensitive_context = False
+    omitted_quote: str | None = None
+    omitted_quote_escaped = False
 
     def write_piece(piece: bytes, *, terminated: bool) -> None:
-        nonlocal omitted, scan_tail, sensitive_context
+        nonlocal omitted, scan_tail, sensitive_context, omitted_quote, omitted_quote_escaped
         if omitted:
             omitted += len(piece)
             scan = (scan_tail + piece).decode("utf-8", errors = "replace")
             sensitive_context |= redactor.omitted_record_chunk_has_sensitive_context(scan)
+            quote_scan = piece.decode("utf-8", errors = "replace") if omitted_quote else scan
+            omitted_quote, omitted_quote_escaped = redactor.omitted_record_quote_state(
+                quote_scan,
+                omitted_quote,
+                omitted_quote_escaped,
+            )
             scan_tail = (scan_tail + piece)[-OMITTED_CONTEXT_BYTES:]
         else:
             record.extend(piece)
@@ -69,14 +77,18 @@ def _copy_redacted(source: BinaryIO, destination: BinaryIO, max_bytes: int) -> N
                 omitted = len(record)
                 scan = bytes(record).decode("utf-8", errors = "replace")
                 sensitive_context = redactor.omitted_record_chunk_has_sensitive_context(scan)
+                omitted_quote, omitted_quote_escaped = redactor.omitted_record_quote_state(
+                    scan,
+                    None,
+                )
                 scan_tail = bytes(record[-OMITTED_CONTEXT_BYTES:])
                 record.clear()
 
         if not terminated:
             return
         if omitted:
-            if sensitive_context:
-                redactor.mark_omitted_sensitive_record()
+            if sensitive_context or omitted_quote is not None:
+                redactor.mark_omitted_sensitive_record(omitted_quote)
             destination.write(f"[oversized log record omitted: {omitted} bytes]\n".encode("ascii"))
         elif record:
             text = bytes(record).decode("utf-8", errors = "replace")
@@ -85,6 +97,8 @@ def _copy_redacted(source: BinaryIO, destination: BinaryIO, max_bytes: int) -> N
         omitted = 0
         scan_tail = b""
         sensitive_context = False
+        omitted_quote = None
+        omitted_quote_escaped = False
 
     while remaining:
         chunk = source.read(min(EXPORT_CHUNK_BYTES, remaining))

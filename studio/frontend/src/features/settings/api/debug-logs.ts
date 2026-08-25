@@ -155,7 +155,7 @@ export async function exportDebugLogs(): Promise<void> {
   await downloadFile(await response.blob(), filename, "application/zip");
 }
 
-export async function openDebugLogsFolder(): Promise<void> {
+export async function openDebugLogsFolder(realpath: string | null): Promise<void> {
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("open_logs_dir");
+  await invoke("open_logs_dir", { path: realpath });
 }

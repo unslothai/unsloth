@@ -399,6 +399,23 @@ def test_export_keeps_repeated_continuation_state_after_an_oversized_record(clie
     assert "ordinary: kept" in exported
 
 
+def test_export_keeps_quoted_state_after_an_oversized_record(client):
+    from utils.debug_log_export import EXPORT_READ_BYTES
+
+    second = "second-secret-part"
+    third = "third-secret-part"
+    path = _seed_server_log(
+        'password="' + "x" * EXPORT_READ_BYTES + f'\n{second}\n{third}"\nordinary: kept\n'
+    )
+
+    response = client.get("/api/settings/debug/logs/export")
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        exported = archive.read(f"server/{path.name}").decode("utf-8")
+    assert second not in exported
+    assert third not in exported
+    assert "ordinary: kept" in exported
+
+
 @pytest.mark.parametrize(
     "body",
     [
@@ -473,6 +490,19 @@ def test_export_tracks_folded_cookie_pairs_after_an_inline_fragment(client):
     first = "first-session-secret"
     second = "second-refresh-secret"
     path = _seed_server_log(f"Cookie: session={first};\n  refresh={second}\nordinary: kept\n")
+
+    response = client.get("/api/settings/debug/logs/export")
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        exported = archive.read(f"server/{path.name}").decode("utf-8")
+    assert first not in exported
+    assert second not in exported
+    assert "ordinary: kept" in exported
+
+
+def test_export_tracks_a_folded_cookie_value_continuation(client):
+    first = "correct-horse"
+    second = "battery-staple"
+    path = _seed_server_log(f"Cookie: session={first}-\n  {second}\nordinary: kept\n")
 
     response = client.get("/api/settings/debug/logs/export")
     with zipfile.ZipFile(io.BytesIO(response.content)) as archive:

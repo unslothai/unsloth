@@ -311,7 +311,7 @@ export function DebuggingTab() {
   const onOpenFolder = useCallback(async () => {
     setOpeningFolder(true);
     try {
-      await openDebugLogsFolder();
+      await openDebugLogsFolder(realpath);
     } catch (error) {
       toast.error(t("settings.debugging.openFolderError"), {
         description: error instanceof Error ? error.message : String(error),
@@ -319,7 +319,7 @@ export function DebuggingTab() {
     } finally {
       setOpeningFolder(false);
     }
-  }, [t]);
+  }, [realpath, t]);
 
   return (
     <div className="flex flex-col gap-5">

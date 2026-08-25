@@ -163,6 +163,15 @@ _INLINE_PLAIN_SECRET_RE = re.compile(
 _OMITTED_CONTEXT_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?:(?:" + _SECRET_KEYS + r")|(?:set-)?cookie)\b[\"']?\s*[:=]"
 )
+_OMITTED_QUOTED_START_RE = re.compile(
+    r"(?i)(?:"
+    + _KEY_START
+    + r"(?:"
+    + _SECRET_KEYS
+    + r")\b[\"']?\s*[:=]\s*|--(?:"
+    + _SECRET_KEYS
+    + r")\s+)(?P<quote>[\"'])"
+)
 
 # An Authorization value, whatever the scheme. The key/value rule cannot reach
 # it: for "Authorization: Basic dXNlcjpwdw==" the value it captures is "Basic",
@@ -371,11 +380,45 @@ class StreamingLogRedactor:
     def omitted_record_chunk_has_sensitive_context(text: str) -> bool:
         return _OMITTED_CONTEXT_RE.search(text) is not None
 
-    def mark_omitted_sensitive_record(self) -> None:
+    def mark_omitted_sensitive_record(self, quoted_secret: str | None = None) -> None:
         """Conservatively mask the continuation after a discarded sensitive record."""
+        if quoted_secret is not None:
+            self._quoted_secret = quoted_secret
+            return
         self._plain_key_indent = 0
         self._plain_has_value = False
         self._plain_explicit_continuation = False
+
+    @staticmethod
+    def omitted_record_quote_state(
+        text: str,
+        quote: str | None,
+        escaped: bool = False,
+    ) -> tuple[str | None, bool]:
+        """Track only quote structure while an oversized record is discarded."""
+        index = 0
+        while index < len(text):
+            if quote is None:
+                start = _OMITTED_QUOTED_START_RE.search(text, index)
+                if start is None:
+                    return None, False
+                quote = start.group("quote")
+                escaped = False
+                index = start.end()
+                continue
+
+            char = text[index]
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif quote == "'" and text[index : index + 2] == "''":
+                index += 2
+                continue
+            elif char == quote:
+                quote = None
+            index += 1
+        return quote, escaped
 
     @staticmethod
     def _ends_with_unescaped_backslash(text: str) -> bool:
@@ -501,5 +544,5 @@ class StreamingLogRedactor:
         inline_cookie = _INLINE_COOKIE_RE.search(physical_context)
         if inline_cookie and _COOKIE_PAIR_RE.match(inline_cookie.group("value").lstrip("'\"")):
             self._cookie_key_indent = len(inline_cookie.group("indent"))
-            self._cookie_has_value = False
+            self._cookie_has_value = True
         return redacted
