@@ -1,0 +1,356 @@
+name: Restore and QA Codex agent workspace
+
+on:
+  push:
+    branches:
+      - feat/codex-agent-workspace
+    paths:
+      - .github/workflows/restore-and-qa-codex-agent-workspace.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  statuses: write
+  actions: read
+
+concurrency:
+  group: restore-and-qa-codex-agent-workspace
+  cancel-in-progress: false
+
+env:
+  FEATURE_BRANCH: feat/codex-agent-workspace
+  OLD_FEATURE_BASE: 96a0900f4dd888871b5b5abf1d038e5c7c17b5df
+  HISTORY_ARTIFACT_ID: "9568040718"
+
+jobs:
+  restore:
+    name: Restore real source on current upstream main
+    runs-on: ubuntu-latest
+    outputs:
+      final_sha: ${{ steps.publish.outputs.final_sha }}
+      changed_tests: ${{ steps.publish.outputs.changed_tests }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download preserved branch history
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --location \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${HISTORY_ARTIFACT_ID}/zip" \
+            --output /tmp/history-artifact.zip
+          mkdir -p /tmp/history-artifact
+          unzip -q /tmp/history-artifact.zip -d /tmp/history-artifact
+          BUNDLE="$(find /tmp/history-artifact -type f -name '*.bundle' -print -quit)"
+          test -n "$BUNDLE"
+          git bundle verify "$BUNDLE"
+          git clone "$BUNDLE" /tmp/old-feature
+          printf '%s\n' "$BUNDLE" > /tmp/history-bundle-path
+
+      - name: Rebase the recovered implementation onto current upstream main
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config user.name "PhilipJohnBasile"
+          git config user.email "1419847+PhilipJohnBasile@users.noreply.github.com"
+
+          OLD_HEAD="$(git -C /tmp/old-feature rev-parse "refs/heads/${FEATURE_BRANCH}" 2>/dev/null || git -C /tmp/old-feature rev-parse "refs/remotes/origin/${FEATURE_BRANCH}" 2>/dev/null || true)"
+          if [ -z "$OLD_HEAD" ]; then
+            OLD_HEAD="$(git -C /tmp/old-feature for-each-ref --sort=-committerdate --format='%(objectname)' refs/heads refs/remotes | head -n1)"
+          fi
+          test -n "$OLD_HEAD"
+          git -C /tmp/old-feature cat-file -e "${OLD_FEATURE_BASE}^{commit}"
+
+          git remote add upstream https://github.com/unslothai/unsloth.git 2>/dev/null || true
+          git fetch --no-tags upstream main
+          UPSTREAM_HEAD="$(git rev-parse upstream/main)"
+
+          git -C /tmp/old-feature diff --binary "${OLD_FEATURE_BASE}" "${OLD_HEAD}" -- . \
+            ':(exclude).github/codex-build/**' \
+            ':(exclude).github/workflows/export-codex-agent-workspace.yml' \
+            ':(exclude).github/workflows/bootstrap-project-folder-workspaces.yml' \
+            ':(exclude).github/workflows/restore-and-qa-codex-agent-workspace.yml' \
+            > /tmp/feature.patch
+          test -s /tmp/feature.patch
+
+          git reset --hard "$UPSTREAM_HEAD"
+          git clean -fdx
+          git apply --3way /tmp/feature.patch
+          rm -rf .github/codex-build
+          rm -f .github/workflows/export-codex-agent-workspace.yml
+          rm -f .github/workflows/bootstrap-project-folder-workspaces.yml
+          rm -f .github/workflows/restore-and-qa-codex-agent-workspace.yml
+
+          # Daniel requested real application source, not generated payloads.
+          test "$(git diff --name-only "$UPSTREAM_HEAD" -- studio/backend | wc -l)" -gt 0
+          test "$(git diff --name-only "$UPSTREAM_HEAD" -- studio/frontend | wc -l)" -gt 0
+          test "$(git diff --name-only "$UPSTREAM_HEAD" -- studio/src-tauri | wc -l)" -gt 0
+          test ! -e .github/codex-build
+          test ! -e .github/workflows/export-codex-agent-workspace.yml
+          test ! -e .github/workflows/bootstrap-project-folder-workspaces.yml
+          test ! -e .github/workflows/restore-and-qa-codex-agent-workspace.yml
+          if git diff --name-only "$UPSTREAM_HEAD" | grep -E '(^|/)(part-[0-9]|gz-[0-9]|codex-build)' ; then
+            echo "Generated payloads remain in the feature diff" >&2
+            exit 1
+          fi
+
+          # Require each advertised layer to have executable source or tests.
+          grep -R -q --exclude='*.md' --exclude-dir=node_modules 'workspaceKind\|workspace_kind' studio/backend studio/frontend studio/src-tauri
+          grep -R -q --exclude='*.md' --exclude-dir=node_modules '/goal\|GoalStatus\|goal_status' studio/backend studio/frontend
+          grep -R -q --exclude='*.md' --exclude-dir=node_modules 'AGENTS.md' studio/backend studio/frontend
+          grep -R -q --exclude='*.md' --exclude-dir=node_modules 'verification' studio/backend studio/frontend
+          grep -R -q --exclude='*.md' --exclude-dir=node_modules 'worktree' studio/backend studio/frontend
+          grep -R -q --exclude='*.md' --exclude-dir=node_modules 'background' studio/backend studio/frontend
+
+          git diff --check
+          git add -A
+          git commit -m "feat(studio): add Codex-style agent workspaces"
+          FINAL_SHA="$(git rev-parse HEAD)"
+          git push --force-with-lease origin "HEAD:${FEATURE_BRANCH}"
+
+          CHANGED_TESTS="$(git diff --name-only "$UPSTREAM_HEAD" "$FINAL_SHA" -- 'studio/backend/tests/test_*.py' | tr '\n' ' ')"
+          echo "final_sha=$FINAL_SHA" >> "$GITHUB_OUTPUT"
+          echo "changed_tests=$CHANGED_TESTS" >> "$GITHUB_OUTPUT"
+          printf 'FINAL_SHA=%s\nUPSTREAM_HEAD=%s\nOLD_HEAD=%s\n' "$FINAL_SHA" "$UPSTREAM_HEAD" "$OLD_HEAD" | tee /tmp/restore-summary.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: restore-summary
+          path: /tmp/restore-summary.txt
+          retention-days: 7
+
+  source-audit:
+    name: Source and security audit
+    needs: restore
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.restore.outputs.final_sha }}
+          fetch-depth: 0
+      - name: Audit final source tree
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/unslothai/unsloth.git 2>/dev/null || true
+          git fetch --no-tags upstream main
+          git diff --check upstream/main...HEAD
+          test ! -e .github/codex-build
+          test ! -e .github/workflows/export-codex-agent-workspace.yml
+          test ! -e .github/workflows/bootstrap-project-folder-workspaces.yml
+          test ! -e .github/workflows/restore-and-qa-codex-agent-workspace.yml
+          test "$(git diff --name-only upstream/main...HEAD -- studio/backend | wc -l)" -gt 0
+          test "$(git diff --name-only upstream/main...HEAD -- studio/frontend | wc -l)" -gt 0
+          test "$(git diff --name-only upstream/main...HEAD -- studio/src-tauri | wc -l)" -gt 0
+          if git diff --name-only upstream/main...HEAD | grep -E '(^|/)(part-[0-9]|gz-[0-9]|codex-build)' ; then exit 1; fi
+          if git grep -nE '(-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})' -- ':!*.lock' ':!*.md'; then
+            echo "Potential secret material found" >&2
+            exit 1
+          fi
+          git diff --stat upstream/main...HEAD
+
+  backend:
+    name: Backend matrix and lifecycle tests
+    needs: restore
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.restore.outputs.final_sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            studio/backend/requirements*.txt
+            pyproject.toml
+      - name: Install focused test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest pytest-asyncio fastapi 'pydantic>=2' httpx platformdirs psutil python-multipart pathspec rich
+      - name: Compile changed backend source
+        run: |
+          python - <<'PY'
+          import pathlib, py_compile, subprocess
+          changed = subprocess.check_output([
+              'git','diff','--name-only','HEAD^','HEAD','--','studio/backend/**/*.py'
+          ], text=True).splitlines()
+          files = [pathlib.Path(p) for p in changed if pathlib.Path(p).is_file()]
+          for path in files:
+              py_compile.compile(str(path), doraise=True)
+          print(f'compiled {len(files)} changed Python files')
+          PY
+      - name: Run changed and adjacent backend tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}/studio/backend
+        run: |
+          set -euo pipefail
+          mapfile -t changed < <(git diff --name-only HEAD^ HEAD -- 'studio/backend/tests/test_*.py' | sort -u)
+          adjacent=(
+            studio/backend/tests/test_project_workspace_location.py
+            studio/backend/tests/test_chat_history_storage.py
+            studio/backend/tests/test_sandbox_files_and_storage_roots.py
+            studio/backend/tests/test_permission_mode.py
+          )
+          tests=()
+          for file in "${changed[@]}" "${adjacent[@]}"; do
+            [ -f "$file" ] || continue
+            case " ${tests[*]} " in *" $file "*) ;; *) tests+=("$file");; esac
+          done
+          test "${#tests[@]}" -gt 0
+          printf '%s\n' "${tests[@]}"
+          pytest -q "${tests[@]}" --junitxml=/tmp/backend-junit.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backend-junit
+          path: /tmp/backend-junit.xml
+          if-no-files-found: ignore
+          retention-days: 7
+
+  frontend:
+    name: Frontend harness, goal, and UX tests
+    needs: restore
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.restore.outputs.final_sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+          cache: npm
+          cache-dependency-path: studio/frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: studio/frontend
+        run: npm ci
+      - name: Run complete frontend test suite
+        working-directory: studio/frontend
+        run: npm test
+      - name: Typecheck
+        working-directory: studio/frontend
+        run: npm run typecheck
+      - name: Strict localization parity
+        working-directory: studio/frontend
+        run: npm run i18n:check:strict
+      - name: Biome on changed frontend files
+        working-directory: studio/frontend
+        run: |
+          mapfile -t files < <(git diff --name-only HEAD^ HEAD -- 'studio/frontend/src/**/*.ts' 'studio/frontend/src/**/*.tsx' 'studio/frontend/tests/**/*.ts' | sed 's#^studio/frontend/##')
+          if [ "${#files[@]}" -gt 0 ]; then npx biome check "${files[@]}"; fi
+
+  platform-python:
+    name: Platform behavior (${{ matrix.os }})
+    needs: restore
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ['3.12']
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.restore.outputs.final_sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install focused test dependencies
+        run: python -m pip install pytest pytest-asyncio fastapi "pydantic>=2" httpx platformdirs psutil python-multipart pathspec rich
+      - name: Run workspace, path identity, goal, instructions, plans, Git, and task tests
+        shell: bash
+        env:
+          PYTHONPATH: ${{ github.workspace }}/studio/backend
+        run: |
+          set -euo pipefail
+          mapfile -t candidates < <(find studio/backend/tests -maxdepth 1 -type f -name 'test_*.py' | grep -Ei '(workspace|project|goal|agent|instruction|repository|discover|verify|verification|git|plan|background|task|worktree|review|platform|path)' | sort || true)
+          test "${#candidates[@]}" -gt 0
+          pytest -q "${candidates[@]}" --junitxml="/tmp/platform-${RUNNER_OS}.xml"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: platform-${{ runner.os }}-junit
+          path: /tmp/platform-${{ runner.os }}.xml
+          if-no-files-found: ignore
+          retention-days: 7
+
+  rust-native:
+    name: Native folder grants (${{ matrix.os }})
+    needs: restore
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.restore.outputs.final_sha }}
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Linux Tauri build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
+      - name: Rust formatting
+        run: cargo fmt --manifest-path studio/src-tauri/Cargo.toml -- --check
+      - name: Native path and lease tests
+        run: cargo test --manifest-path studio/src-tauri/Cargo.toml native_path --lib
+
+  full-gate:
+    name: Full Codex workspace QA gate
+    if: always()
+    needs: [restore, source-audit, backend, frontend, platform-python, rust-native]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every matrix leg
+        env:
+          RESTORE: ${{ needs.restore.result }}
+          SOURCE: ${{ needs.source-audit.result }}
+          BACKEND: ${{ needs.backend.result }}
+          FRONTEND: ${{ needs.frontend.result }}
+          PLATFORM: ${{ needs.platform-python.result }}
+          RUST: ${{ needs.rust-native.result }}
+        run: |
+          set -euo pipefail
+          printf 'restore=%s\nsource=%s\nbackend=%s\nfrontend=%s\nplatform=%s\nrust=%s\n' "$RESTORE" "$SOURCE" "$BACKEND" "$FRONTEND" "$PLATFORM" "$RUST" | tee /tmp/codex-agent-workspace-qa.txt
+          test "$RESTORE" = success
+          test "$SOURCE" = success
+          test "$BACKEND" = success
+          test "$FRONTEND" = success
+          test "$PLATFORM" = success
+          test "$RUST" = success
+      - name: Publish success status on the final feature commit
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FINAL_SHA: ${{ needs.restore.outputs.final_sha }}
+        run: |
+          curl --fail --request POST \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${FINAL_SHA}" \
+            --data "{\"state\":\"success\",\"context\":\"codex-agent-workspace/full-matrix-qa\",\"description\":\"Backend, frontend, native, and 3-OS workspace matrix passed\",\"target_url\":\"https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}\"}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: full-matrix-gate
+          path: /tmp/codex-agent-workspace-qa.txt
+          if-no-files-found: ignore
+          retention-days: 14
