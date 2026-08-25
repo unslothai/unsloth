@@ -397,9 +397,6 @@ function useExampleModelName(keylessOnly: boolean): string | null {
   const [catalog, setCatalog] = useState<OpenAIModel[] | null>(null);
   // A downloaded but unloaded model is only runnable when switching is on.
   const [autoSwitch, setAutoSwitch] = useState(false);
-  // Idle-unload on its own (UNSLOTH_MODEL_IDLE_TTL, switching off) reloads exactly
-  // what it freed: the stored checkpoint only, never an arbitrary catalog entry.
-  const [idleReload, setIdleReload] = useState(false);
   const usableCheckpoint =
     !!checkpoint &&
     !checkpoint.startsWith("external::") &&
@@ -418,15 +415,14 @@ function useExampleModelName(keylessOnly: boolean): string | null {
       void Promise.all([
         listOpenAIModels().catch(() => null),
         loadOpenAIAutoSwitchSettings()
-          .then((s) => [s.enabled, s.idleUnloadActive] as const)
+          .then((s) => s.enabled)
           .catch(() => null),
       ])
         .then(([models, settings]) => {
           if (cancelled) return true;
           if (models !== null) setCatalog(models);
           if (settings !== null) {
-            setAutoSwitch(settings[0]);
-            setIdleReload(settings[1]);
+            setAutoSwitch(settings);
           }
           // Resident only slows the polling; it never stops it.
           // biome-ignore lint/complexity/useOptionalChain: keep the explicit failed-refresh branch
@@ -468,7 +464,7 @@ function useExampleModelName(keylessOnly: boolean): string | null {
     const entry = catalog?.find((m) => sameBaseModelId(m.id, checkpoint ?? ""));
     const backed =
       (!keylessOnly && catalog === null) ||
-      (!!entry && (entry.loaded || (!keylessOnly && autoSwitch) || idleReload));
+      (!!entry && (entry.loaded || (!keylessOnly && autoSwitch)));
     if (usableCheckpoint && checkpoint && backed) {
       if (checkpoint.includes(":")) {
         return checkpoint;
@@ -485,7 +481,6 @@ function useExampleModelName(keylessOnly: boolean): string | null {
     catalog,
     checkpoint,
     ggufVariant,
-    idleReload,
     keylessOnly,
     usableCheckpoint,
   ]);
@@ -753,13 +748,9 @@ export function UsageExamples({
   const toolsKey =
     apiKey ||
     (keylessBase && keylessTools ? KEYLESS_KEY_PLACEHOLDER : KEY_PLACEHOLDER);
-  // The agent reaches past /v1 and uses tools: both localhost full scope and the
-  // separate tool grant are required before its example can use a dummy bearer.
+  // agent tools are client-side schemas sent through the admitted inference routes.
   const agentKey =
-    apiKey ||
-    (keylessBase && keylessScope === "full" && keylessTools
-      ? KEYLESS_KEY_PLACEHOLDER
-      : KEY_PLACEHOLDER);
+    apiKey || (keylessBase ? KEYLESS_KEY_PLACEHOLDER : KEY_PLACEHOLDER);
 
   // Null model: nothing is servable, so there is no snippet worth copying.
   const snippets = useMemo(
