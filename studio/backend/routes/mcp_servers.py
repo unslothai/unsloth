@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from auth.authentication import (
     authenticated_via_api_key,
     get_current_subject,
+    request_admitted_without_credential,
     require_ui_session_for_local_commands,
 )
 from core.inference.mcp_client import (
@@ -52,6 +53,7 @@ router = APIRouter()
 # Annotated, not a Depends default: these routes are also called directly by the
 # tests, where a Depends object is truthy and would read as "API key".
 ViaApiKey = Annotated[bool, Depends(authenticated_via_api_key)]
+WithoutCredential = Annotated[bool, Depends(request_admitted_without_credential)]
 
 
 def _looks_like_command(value: str) -> bool:
@@ -116,12 +118,12 @@ def _normalize_headers(headers: dict[str, str] | None) -> dict[str, str] | None:
     return out or None
 
 
-def _row_to_response(row: dict) -> McpServerResponse:
+def _row_to_response(row: dict, *, include_headers: bool = True) -> McpServerResponse:
     return McpServerResponse(
         id = row["id"],
         display_name = row["display_name"],
         url = row["url"],
-        headers = parse_server_headers(row) or {},
+        headers = (parse_server_headers(row) or {}) if include_headers else {},
         is_enabled = bool(row["is_enabled"]),
         use_oauth = bool(row.get("use_oauth")),
         created_at = row["created_at"],
@@ -132,15 +134,17 @@ def _row_to_response(row: dict) -> McpServerResponse:
 # FastAPI offloads sync reads; mutations stay on-loop to preserve atomic sequences.
 @router.get("/", response_model = list[McpServerResponse])
 def list_mcp_servers(
-    current_subject: str = Depends(get_current_subject), via_api_key: ViaApiKey = False
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: ViaApiKey = False,
+    no_credential: WithoutCredential = False,
 ):
     rows = mcp_servers_db.list_servers()
-    if via_api_key:
+    if via_api_key or no_credential:
         # Drop the row, not just its fields: `url` is the argv (carries
         # credentials), `headers` is the subprocess env, and a blanked url would
         # round-trip into update as a bogus command.
         rows = [row for row in rows if not is_stdio(row["url"])]
-    return [_row_to_response(row) for row in rows]
+    return [_row_to_response(row, include_headers = not no_credential) for row in rows]
 
 
 @router.post("/", response_model = McpServerResponse, status_code = 201)
@@ -207,6 +211,7 @@ async def update_mcp_server(
     payload: McpServerUpdate,
     current_subject: str = Depends(get_current_subject),
     via_api_key: ViaApiKey = False,
+    no_credential: WithoutCredential = False,
 ):
     old = mcp_servers_db.get_server(server_id)
     if not old:
@@ -257,7 +262,7 @@ async def update_mcp_server(
         # Narrow to this row's env: another server row sharing the command but
         # with a different env keeps its live sessions.
         await asyncio.to_thread(close_stdio_sessions, old["url"], parse_server_headers(old))
-    return _row_to_response(mcp_servers_db.get_server(server_id))
+    return _row_to_response(mcp_servers_db.get_server(server_id), include_headers = not no_credential)
 
 
 @router.delete("/{server_id}", status_code = 204)

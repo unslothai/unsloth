@@ -3843,6 +3843,21 @@ class AudioSpeechRequest(BaseModel):
         "wav", description = "Output container. Only 'wav' is supported."
     )
     speed: Optional[float] = Field(None, description = "Speech rate (accepted, unused).")
+    provider_id: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Saved connection ID. When set, synthesis is proxied to that "
+        "provider's /audio/speech and model/voice/speed are forwarded as sent.",
+    )
+    provider_base_url: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Browser-snapshotted connection base URL. Required with a "
+        "legacy encrypted_api_key so an edit cannot route that key to another endpoint.",
+    )
+    encrypted_api_key: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Per-request key for a browser still holding a legacy "
+        "provider key, used when the connection has none saved server side.",
+    )
 
     @field_validator("response_format", mode = "before")
     @classmethod
@@ -4019,6 +4034,18 @@ class VideoReferenceVideo(BaseModel):
         description = "Base64/data-URL soundtrack for THIS video. Omitted takes the track "
         "embedded in the file, if it has one; sent explicitly it replaces it.",
     )
+    trim_start_seconds: Optional[float] = Field(
+        None, ge = 0.0, description = "Inclusive start of an explicit video trim, in seconds."
+    )
+    trim_end_seconds: Optional[float] = Field(
+        None, gt = 0.0, description = "Exclusive end of an explicit video trim, in seconds."
+    )
+
+    @model_validator(mode = "after")
+    def _trim_is_a_complete_h3_interval(self) -> "VideoReferenceVideo":
+        from core.inference.video_minimax_h3 import validate_h3_reference_trim
+        validate_h3_reference_trim(self.trim_start_seconds, self.trim_end_seconds)
+        return self
 
 
 class VideoGenerateRequest(BaseModel):

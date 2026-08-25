@@ -1387,6 +1387,7 @@ try:
         _kv_unified_from_args,
         _metal_device_is_paravirtual,
         _planned_main_cache_types,
+        _planned_scratch_cache_type,
         _swa_full_from_args_or_env,
         detect_reasoning_flags,
         paravirtual_normalized_request,
@@ -1441,6 +1442,7 @@ except ImportError:
         _kv_unified_from_args,
         _metal_device_is_paravirtual,
         _planned_main_cache_types,
+        _planned_scratch_cache_type,
         _swa_full_from_args_or_env,
         detect_reasoning_flags,
         paravirtual_normalized_request,
@@ -2550,8 +2552,16 @@ def _request_api_key_token(request: Any) -> Optional[str]:
 
 
 def _request_has_api_key(request: Any) -> bool:
-    """Whether the request used any API key rather than an interactive session JWT."""
-    return _request_api_key_token(request) is not None
+    """Whether the request used any API key rather than an interactive session JWT.
+
+    A keyless caller counts too: it sends no session either, so the saved-credential
+    rules that hold back an sk-unsloth key must hold it back the same way.
+    """
+    if _request_api_key_token(request) is not None:
+        return True
+    from auth.authentication import admitted_without_session
+
+    return admitted_without_session(request)
 
 
 def _request_is_internal_workflow(request: Any) -> bool:
@@ -2615,7 +2625,9 @@ def _request_used_api_key(request: Any) -> bool:
     # _request_is_internal_workflow where a Studio workflow needs its own connection.
     token = _request_api_key_token(request)
     if token is None:
-        return False
+        # keyless traffic is someone using Unsloth as an API server too
+        from auth.authentication import admitted_without_session
+        return admitted_without_session(request)
     try:
         return not auth_storage.is_internal_api_key(token)
     except Exception:
@@ -2804,20 +2816,23 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
 async def _authenticate_header_or_query(request: Request, token: Optional[str]) -> str:
     """Resolve the bearer token from the Authorization header or the ``?token=``
     query param (needed for <img src> / <iframe>, which can't send custom
-    headers), validate it, and return the subject. Raises 401 when absent."""
+    headers), validate it, and return the subject. Raises 401 when absent.
+
+    Routed through ``credentials_for_token`` so a scope that covers this path serves it
+    without a key, the way the routes behind ``security`` already do."""
     auth_header = request.headers.get("authorization")
     if auth_header and auth_header.lower().startswith("bearer "):
         jwt_token = auth_header[7:]
-    elif token:
-        jwt_token = token
     else:
+        jwt_token = token or None
+    from auth.authentication import credentials_for_token
+
+    creds = await credentials_for_token(request, jwt_token)
+    if creds is None:
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = "Missing authentication token",
         )
-    from fastapi.security import HTTPAuthorizationCredentials
-
-    creds = HTTPAuthorizationCredentials(scheme = "Bearer", credentials = jwt_token)
     return await get_current_subject(creds)
 
 
@@ -6651,7 +6666,19 @@ async def _maybe_auto_switch_model(
         warm_index_soon()
         return
 
+    from auth.authentication import request_admitted_without_credential
+
+    keyless_caller = request_admitted_without_credential(fastapi_request)
+    # the keyless dialog offers the loaded model, so a stranger swaps or fetches nothing
+    if auto_switch_on and keyless_caller:
+        auto_switch_on = False
+        if not idle_unload_is_configured():
+            await _reject_unservable_model(requested_model, fastapi_request)
+            return
+
     async def _resolve_and_switch() -> None:
+        from core.inference.openai_auto_download import looks_like_quant, split_model_ref
+
         # Off the loop: a cold-cache rebuild walks several model dirs + HF caches.
         # With auto-switch off (or an omitted-model reload-only request), skip the
         # resolve so only the reload-stash path runs and no name is ever matched.
@@ -6696,6 +6723,19 @@ async def _maybe_auto_switch_model(
             else:  # pre-3-tuple stash: fall back to the path as the override key
                 target_id, variant = last
                 override_id = target_id
+            # A credential-less caller may restore only the model it explicitly
+            # named (or the reload-only sentinel used when the model is omitted).
+            # Check before loading so an unrelated name cannot trigger an expensive
+            # stash restore and only then receive the normal mismatch response.
+            if keyless_caller and not reload_only:
+                requested_base, requested_variant = split_model_ref(requested_model)
+                if not _matches_any(
+                    requested_base, (target_id, override_id, public_model_id(target_id))
+                ) or (
+                    looks_like_quant(requested_variant)
+                    and (not variant or requested_variant.lower() != variant.lower())
+                ):
+                    return
         else:
             # load_path is a concrete local path (never the bare repo id), so /load
             # takes the local branch and cannot trigger a download. override_id is the
@@ -6704,8 +6744,6 @@ async def _maybe_auto_switch_model(
         backend = get_llama_cpp_backend()
         # A bare model id (no :VARIANT) is satisfied by any loaded quant of that
         # repo, so it never reloads a different local quant that already serves it.
-        from core.inference.openai_auto_download import looks_like_quant, split_model_ref
-
         # A tag that names no quant (":latest", ":8b") means the repo, as
         # _loaded_satisfies and the resolver read it. Treating it as a quant tears down
         # a serving Q8 to load the preferred Q4 for a request either satisfies.
@@ -7255,26 +7293,12 @@ def _estimate_gguf_kv_gb(
         if ctx <= 0:
             return 0.0
         slots = max(1, n_parallel or 1)
-        planned_cache_types = _planned_main_cache_types(
-            cache_type_kv,
-            llama_extra_args,
-        )
-        if tensor_parallel and any(
-            cache_type not in LlamaCppBackend._TENSOR_PARALLEL_KV_TYPES
-            for cache_type in planned_cache_types
-        ):
-            # Tensor mode strips quantized axes, but a layer fallback restores
-            # the original settings. Size for the larger successful outcome.
-            tensor_cache_types = _planned_main_cache_types(None, None)
-            cache_type_for_budget = max(
-                (*planned_cache_types, *tensor_cache_types, "f16"),
-                key = _kv_bytes_per_elem,
-            )
-        else:
-            cache_type_for_budget = max(
-                planned_cache_types,
-                key = _kv_bytes_per_elem,
-            )
+        planned_cache_types = _planned_main_cache_types(cache_type_kv, llama_extra_args)
+        # KV bytes take the heavier axis (conservative for storage); the dequant
+        # scratch takes the lighter one, because any quantized axis allocates it and
+        # the heavier scalar hides a paired q4_0 behind an f16.
+        cache_type_for_budget = max(planned_cache_types, key = _kv_bytes_per_elem)
+        cache_type_for_scratch = _planned_scratch_cache_type(cache_type_kv, llama_extra_args)
         # the loader raises --batch-size to max(slots, 2) before launch, and llama.cpp
         # caps the micro-batch against it, so budget from the emitted value. Diffusion
         # takes neither flag, and SWA metadata prices the KV against the micro-batch,
@@ -7369,7 +7393,7 @@ def _estimate_gguf_kv_gb(
             # mirrors _plan_tensor_parallel: per-device buffer and ctx growth on every device
             compute = devices * (
                 _flat_buffer(True)
-                + probe._compute_buffer_ctx_bytes(ctx, effective_ubatch, cache_type_for_budget)
+                + probe._compute_buffer_ctx_bytes(ctx, effective_ubatch, cache_type_for_scratch)
             )
         else:
             # mirrors the layer fit: flat buffer once, then per extra device, ctx growth per
@@ -7386,7 +7410,7 @@ def _estimate_gguf_kv_gb(
                 * probe._compute_buffer_ctx_bytes(
                     ctx,
                     effective_ubatch,
-                    cache_type_for_budget,
+                    cache_type_for_scratch,
                     layer_split = devices > 1 and not pipeline_parallel_off,
                 )
             )
@@ -12318,6 +12342,109 @@ async def generate_audio(
     )
 
 
+async def _external_tts_speech(body: AudioSpeechRequest, request: Request) -> Response:
+    """Proxy CreateSpeech to a saved connection, so read-aloud skips the local model slot."""
+    provider_id = (body.provider_id or "").strip()
+    external_model = (body.model or "").strip()
+    external_voice = (body.voice or "").strip()
+    if not provider_id:
+        raise HTTPException(status_code = 400, detail = "provider_id cannot be empty.")
+    if not external_model:
+        raise HTTPException(
+            status_code = 400, detail = "model is required when using an external TTS connection."
+        )
+    if not external_voice:
+        raise HTTPException(
+            status_code = 400, detail = "voice is required when using an external TTS connection."
+        )
+
+    config = await asyncio.to_thread(providers_db.get_provider, provider_id)
+    if config is None:
+        raise HTTPException(status_code = 404, detail = f"Provider config not found: {provider_id}")
+    if not config["is_enabled"]:
+        raise HTTPException(
+            status_code = 400, detail = f"Provider '{config['display_name']}' is disabled."
+        )
+    base_url = config["base_url"] or get_base_url(config["provider_type"])
+    if not base_url:
+        raise HTTPException(status_code = 400, detail = "The connection has no base URL.")
+    # Validate the destination before decrypting the key: a refused target sees no credential.
+    try:
+        base_url = validate_provider_base_url(base_url)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from None
+    async with provider_config_guard(provider_id):
+        current = await asyncio.to_thread(providers_db.get_provider, provider_id)
+        routing_fields = ("provider_type", "base_url", "is_enabled")
+        if current is None or any(
+            current.get(field) != config.get(field) for field in routing_fields
+        ):
+            raise HTTPException(
+                status_code = 409,
+                detail = "Provider changed while the request was starting; retry.",
+            )
+        if body.encrypted_api_key and body.provider_base_url != current.get("base_url"):
+            # The browser encrypted a legacy key for the connection it rendered. A
+            # same-id edit may have replaced both its destination and saved key while
+            # encryption yielded; never attach that captured key to the new endpoint.
+            raise HTTPException(
+                status_code = 409,
+                detail = "Provider changed while the request was starting; retry.",
+            )
+        api_key = await asyncio.to_thread(
+            resolve_provider_api_key_or_400,
+            provider_id,
+            body.encrypted_api_key,
+            allow_saved_key = not _request_has_api_key(request),
+            prefer_saved_key = True,
+        )
+        # The guard coordinates this process, while Studio can also be edited by
+        # another backend process. Provider updates write routing metadata before
+        # the replacement secret, so a final row check prevents an old URL from
+        # being paired with the newly written key.
+        latest = await asyncio.to_thread(providers_db.get_provider, provider_id)
+        if latest is None or any(
+            latest.get(field) != current.get(field) for field in routing_fields
+        ):
+            raise HTTPException(
+                status_code = 409,
+                detail = "Provider changed while the request was starting; retry.",
+            )
+    client = ExternalProviderClient(
+        provider_type = config["provider_type"],
+        base_url = base_url,
+        api_key = api_key,
+    )
+    # FastAPI does not cancel a non-streaming handler on disconnect, so stopping
+    # read-aloud would leave the paid synthesis running. Same pair as transcription.
+    speech_task = asyncio.create_task(
+        client.create_speech(
+            text = body.input,
+            model = external_model,
+            voice = external_voice,
+            response_format = (body.response_format or "wav").strip().lower(),
+            speed = body.speed,
+        )
+    )
+    disconnect_watcher = asyncio.create_task(
+        _await_disconnect_then_cancel_task(request, speech_task)
+    )
+    try:
+        audio_bytes, media_type = await speech_task
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code = 502,
+            detail = (
+                f"TTS endpoint returned HTTP {exc.response.status_code}: {exc.response.text[:300]}"
+            ),
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code = 502, detail = f"Could not reach the TTS endpoint: {exc}")
+    finally:
+        await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
+    return Response(content = audio_bytes, media_type = media_type)
+
+
 # openai-compatible speech api: the router's dual mount also answers /v1/audio/speech
 @router.post("/audio/speech")
 async def openai_audio_speech(
@@ -12327,9 +12454,26 @@ async def openai_audio_speech(
 ) -> Response:
     """OpenAI-compatible text-to-speech (POST /v1/audio/speech).
 
-    ``model`` is informational (the loaded audio model is used); ``voice`` and ``speed``
-    are ignored. Only WAV exists, so another ``response_format`` is a 400 rather than a
-    silent container mismatch."""
+    With ``provider_id`` the request is proxied to that connection, forwarding
+    model/voice/speed. Otherwise the loaded model is used: ``model`` is informational,
+    ``voice``/``speed`` ignored, and only WAV exists, so another ``response_format`` is
+    a 400 rather than a silent container mismatch."""
+    if body.provider_id:
+        # This branch never touches the local GGUF. Drop it before any monitor or
+        # upstream await so slow external speech cannot block a local swap/training
+        # start or reset the local model's idle timer.
+        from core.inference.llama_keepwarm import untrack_current_request
+        untrack_current_request(request.scope)
+        # A saved TTS connection is still media traffic through this server,
+        # just like the proxied STT path below. Keep it visible in the monitor
+        # and close the row consistently on upstream failure or cancellation.
+        async with _monitored_media_request(
+            request,
+            model = public_model_id(body.model) or body.model,
+            prompt = body.input,
+            subject = current_subject,
+        ):
+            return await _external_tts_speech(body, request)
     fmt = (body.response_format or "wav").strip().lower()
     if fmt != "wav":
         raise HTTPException(
@@ -14964,6 +15108,14 @@ async def openai_chat_completions(
     # ── External provider routing ────────────────────────────────
     # encrypted_api_key is optional -- local providers (llama.cpp / vLLM / Ollama) may run without auth.
     if payload.provider_id or payload.provider_type:
+        from auth.authentication import request_admitted_without_credential
+
+        # caller-chosen egress from this host, which is not the loaded model on offer
+        if request_admitted_without_credential(request):
+            raise HTTPException(
+                status_code = 403,
+                detail = "External providers can only be used from the Unsloth UI or with an API key.",
+            )
         # External provider: this request won't touch the local GGUF, so drop it
         # from the keep-warm count or its in-flight stream would falsely block a
         # concurrent local model switch from proceeding.
@@ -27084,6 +27236,17 @@ async def openai_image_generations(
                 "Streaming image generation is not supported.", status = 400, param = "stream"
             ),
         )
+    if body.response_format != "b64_json":
+        from auth.authentication import request_admitted_without_credential
+        if request_admitted_without_credential(request):
+            raise HTTPException(
+                status_code = 403,
+                detail = openai_error_body(
+                    "URL image responses require an API key. Use response_format='b64_json' for keyless access.",
+                    status = 403,
+                    param = "response_format",
+                ),
+            )
     try:
         width, height = _parse_openai_image_size(body.size)
     except ValueError as exc:
