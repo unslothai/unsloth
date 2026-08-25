@@ -4458,7 +4458,6 @@ def _preflight_gguf_disk(
     )
 
 
-
 def _describe_exception(exc) -> str:
     """A description that survives an exception with no message.
 
@@ -5693,9 +5692,7 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
                 )
 
     except Exception as e:
-        raise RuntimeError(
-            f"Failed to upload to Hugging Face Hub: {_describe_exception(e)}"
-        ) from e
+        raise RuntimeError(f"Failed to upload to Hugging Face Hub: {_describe_exception(e)}") from e
 
     finally:
         # Clean up temporary directory
