@@ -826,9 +826,22 @@ test("mirrors Temporary Chat privacy and lets history completion retire chat she
     runtimeProviderSource,
     /!reloadReadyThreadId \|\| loadedThreadId === reloadReadyThreadId/,
   );
+  // The rejection arm is a .then(onFulfilled, onRejected) pair since #8908, which needs
+  // both outcomes: that PR retires the switch's claim on either. What this guards is
+  // unchanged -- a failed switchToThread still releases the retained shell -- and the
+  // call must stay AHEAD of that PR's staleness guard, since a superseded attempt is
+  // still an attempt that ended and the shell would otherwise wait for ever.
   assert.match(
     runtimeProviderSource,
-    /switchToThread\(threadId\)[\s\S]*?\.catch\(\(\) => \{[\s\S]*?onSwitchFailed\?\.\(\)/,
+    /switchToThread\(threadId\)[\s\S]*?\.then\([\s\S]*?onSwitchFailed\?\.\(\)/,
+  );
+  const rejectionArm = runtimeProviderSource.slice(
+    runtimeProviderSource.indexOf("onSwitchFailed?.()"),
+  );
+  assert.ok(
+    rejectionArm.indexOf("onSwitchFailed?.()") <
+      rejectionArm.indexOf("attempt !== attemptAtStart"),
+    "onSwitchFailed must fire before the staleness guard can return early",
   );
   assert.match(
     runtimeProviderSource,

@@ -95,10 +95,20 @@ def test_during_generation_slots_actually_fall_during_generation():
 
 
 def test_stop_opens_only_after_the_tail_has_drained():
-    """Stop owns its own turn now; opening it mid-stream would truncate the measured reply."""
+    """Stop owns its own turn now; opening it mid-stream would truncate the measured reply.
+
+    HELD TO THE DECLARED CEILING RATHER THAN TO THE CURRENT CORPUS. This used to take the worst
+    drain the frozen corpus happened to produce, which made a scene's packing a function of the
+    corpus contents: the 1M rung streamed recycled text while the manifest was sized at exactly
+    the top rung's seeded target, the observed worst came in low, and the fast film sat at 18.2 s
+    against a real ceiling of 18.25 s without anything failing. Re-freezing the corpus moved the
+    observed number and the film that had been out of bounds all along was the thing that broke.
+    `STREAM_TAIL_CHARS` is the bound the plans are actually held to, one test above, so it is the
+    bound a schedule has to clear -- and it does not move when the corpus is re-frozen.
+    """
     from studiobench.scene.schedule import SCENES
 
-    worst = max(p.streamed_chars for p in _plans().values()) / FIELD_CHARS_PER_SEC
+    worst = STREAM_TAIL_CHARS / FIELD_CHARS_PER_SEC
     for name, scene in SCENES.items():
         stop = [s for s in scene.slots if s.action == "stop_generation"]
         assert stop, name
@@ -155,7 +165,24 @@ def test_settled_actions_open_after_the_follow_up_drains():
         last_send = None
         for slot in sorted(scene.slots, key = lambda s: s.t_start_ms):
             if slot.action == "send_turn":
-                last_send = slot.t_start_ms
+                # THE LATEST THE SEND CAN FIRE, not the earliest. The drain starts when the send
+                # actually happens, and a send slot is a WINDOW: the action may legitimately begin
+                # anywhere inside its own budget, which is precisely what it does when the slot
+                # before it overran and pushed it.
+                #
+                # Measured from the start instead, this check reported 1,538 ms of margin on the
+                # fast film where 38 ms existed, and CI then failed the way the arithmetic says it
+                # must: `reasoning_toggle` overran its 3,500 ms budget by 934 ms, `send_turn` was
+                # pushed 1,373 ms late but stayed inside its 1,500 ms budget so nothing recorded a
+                # miss, the send-to-menu gap collapsed from a nominal 5,300 ms to an actual
+                # 3,691 ms, and `message_menu` found a reply still streaming and recorded NOT RUN.
+                # Every slot was individually within budget and the film was still unrunnable.
+                #
+                # This is the same defect the rest of this branch is about, in the check rather
+                # than in the instrument: a quantity computed at a moment whose meaning is not the
+                # one the reader assumes. A margin measured from the earliest possible send is not
+                # a margin.
+                last_send = slot.t_start_ms + slot.budget_ms
             elif slot.action in SETTLED_ACTIONS and last_send is not None:
                 # The slot's WINDOW, not its start. A slot may legitimately open a little before
                 # the follow-up finishes and wait inside its own budget -- the quick film opens

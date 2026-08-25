@@ -417,6 +417,16 @@ export const ru = {
           "Использует загруженную аудиомодель (например, Orpheus)",
         engineSystem: "Системные голоса",
         engineStudio: "Загрузить модель TTS",
+        engineCustom: "Пользовательский эндпоинт",
+        engineCustomDescription:
+          "OpenAI-совместимый TTS-сервер из ваших подключений (например, Kokoro)",
+        connectionLabel: "Подключение",
+        connectionDescription:
+          "Добавьте OpenAI-совместимый сервер на вкладке «Подключения»",
+        connectionPlaceholder: "Выберите подключение",
+        customModelLabel: "Модель",
+        customVoiceDescription:
+          "Имя голоса, которое ожидает эндпоинт; по умолчанию alloy",
         modelLabel: "Модель TTS",
         modelDescription:
           "Загрузите аудиомодель из списка моделей (например, Orpheus TTS)",
@@ -855,6 +865,8 @@ export const ru = {
         title: "Устройства GPU",
         ggufInference: "Инференс GGUF",
         unavailable: "недоступно",
+        detecting: "Поиск GPU...",
+        unreadable: "Не удалось прочитать оборудование этого сервера.",
         noGpu:
           "Доступные GPU не обнаружены. Выше показаны ресурсы только для CPU.",
         unknownDevice: "Неизвестный GPU",
@@ -1102,7 +1114,7 @@ export const ru = {
         exportChat: "Экспортировать чат",
       },
       pastedTextThreshold: "Сворачивать длинные вставки",
-      pastedTextThresholdDescription: "Вставленный текст длиннее этого значения станет вложением .txt вместо заполнения поля сообщения.",
+      pastedTextThresholdDescription: "Вставленный текст длиннее этого значения станет вложением .txt вместо заполнения поля сообщения. Нажмите {shortcut}, чтобы всё равно вставить в поле сообщения.",
       pastedTextThresholdOff: "Выкл.",
       showResponseModel: "Показывать модель в ответах",
       showResponseModelDescription:

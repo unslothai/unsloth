@@ -262,8 +262,14 @@ jobs:
             --out outputs/studiobench-ci
 
       # THE GATE. Exits non-zero unless every scheduled action reports ran=true
-      # with no missed slot, and refuses a payload with no cell rows rather than
-      # passing over it vacuously.
+      # with no missed slot and a passing expect_ok, and refuses a payload with no
+      # cell rows rather than passing over it vacuously.
+      #
+      # expect_ok is in that list because ran is not did-what-it-claimed: an action
+      # whose own assertion failed keeps its timings, and the report already drops
+      # them as "must not be quoted". If the gate did not read it, a selector
+      # regression that fails every cell's assertion would leave this job green with
+      # the surface no longer functional, since --report exits 0 after excluding it.
       #
       # `image_upload` is excused, and it is the only one. It reports NOT RUN on
       # every cell of every 100K run measured, always with the same evidence: the
@@ -274,15 +280,26 @@ jobs:
       # test, which is the only thing this flag is for. Every name here is a hole in
       # the gate and this one is documented so it can be closed rather than inherited.
       #
-      # If this step fails with `missed its slot` rather than NOT RUN, that is the
-      # runner failing to keep up with a fixed-duration film, not a defect in the
-      # code under test. The film is built so a slow machine misses a slot instead of
-      # quietly taking a different path through a shorter session.
+      # `--allow-slot-misses` is the OTHER category, and it is not a hole in the same
+      # sense. The scene is a fixed-duration film on the wall clock, so a machine too
+      # slow to reach a slot records the miss and the film rolls on BY DESIGN, rather
+      # than quietly taking a different path through a shorter session. A two-core
+      # shared runner does that: `message_menu` at the 32000ms slot was reached at
+      # 32901ms and 33043ms on two consecutive runs, about a second past its 800ms
+      # budget, reproducibly. Failing on it would make this gate a speed test of the
+      # runner instead of a check that every action is reachable.
+      #
+      # 2, against 18 scheduled actions, because one is what this runner actually
+      # misses and the second is headroom. It is deliberately not larger: a run that
+      # misses a third of its film has not exercised the film. The step still PRINTS
+      # every miss and says the payload is not quotable, which is the point. Numbers
+      # are taken on a quiet machine at the default of 0, never from here.
       - name: Every scheduled action ran
         run: |
           python -m tests.studio.studiobench \
             --assert-liveness outputs/studiobench-ci/payload.jsonl \
-            --allow-not-run image_upload
+            --allow-not-run image_upload \
+            --allow-slot-misses 2
 
       # The step the documentation tells a reader to run, which until now CI never ran. That is
       # exactly why the payload validator could reject the first parity message row, an ordinal
@@ -305,7 +322,7 @@ jobs:
       # debugging this job wants and the last thing a step log preserves.
       - name: Upload the payload and the Studio log
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: studiobench-ci-payload
           path: |

@@ -226,6 +226,153 @@ def test_harness_bias_is_printed_and_never_subtracted():
     assert "NOT subtracted" in summary
 
 
+# ── a cell that failed an invalidating gate is INCOMPLETE, not absent ──────────
+
+
+def _gated_cell_rows(
+    gate_name,
+    passed,
+    *,
+    session = "s1",
+):
+    """One rung, one cell that completed its film, and that cell's own verdict on itself."""
+    return [
+        {
+            "row_type": "cell",
+            "cell_id": "r100K.base.rep0",
+            "session_id": session,
+            "target_tokens": 100_000,
+            "completed": True,
+            "cell": {"arm": "base", "rep": 0},
+        },
+        {
+            "row_type": "gate",
+            "name": gate_name,
+            "passed": passed,
+            "cell_id": "r100K.base.rep0",
+            "session_id": session,
+            "detail": {"reason": "12 of 18 ordinals never mounted"},
+        },
+    ]
+
+
+def test_a_cell_that_lost_its_thread_is_scored_incomplete_rather_than_green():
+    """REGRESSION. The ladder is ABSOLUTE: there is no second arm to contradict a cheap cell.
+
+    `thread_complete` is advisory where it is emitted, so the cell reaches the report
+    `completed=True` with a full set of timings that are cheaper for exactly the wrong reason, and
+    the rung was scored against fixed anchors and came out green and fast.
+    """
+    from studiobench.report.build import _completion_by_rung
+
+    got = _completion_by_rung(_gated_cell_rows("thread_complete", False))
+    complete, reason = got[100_000]
+    assert complete is False, got
+    assert "thread_complete" in (reason or ""), got
+
+
+def test_a_cell_that_stopped_following_the_stream_is_incomplete_too():
+    from studiobench.report.build import _completion_by_rung
+    got = _completion_by_rung(_gated_cell_rows("follows_the_stream", False))
+    assert got[100_000][0] is False, got
+
+
+def test_a_gate_that_only_qualifies_one_column_leaves_the_rung_alone():
+    """`timer_clamp` failing nulls `busy_pct` and leaves every other column standing. Reading it as
+    fatal here would zero a rung over a missing idle floor, most often on a loaded machine."""
+    from studiobench.report.build import _completion_by_rung
+
+    got = _completion_by_rung(_gated_cell_rows("timer_clamp", False))
+    assert got[100_000] == (True, None), got
+
+
+def test_a_passing_gate_leaves_the_rung_complete():
+    from studiobench.report.build import _completion_by_rung
+    got = _completion_by_rung(_gated_cell_rows("thread_complete", True))
+    assert got[100_000] == (True, None), got
+
+
+def test_a_retry_that_passed_is_not_marked_incomplete_by_the_dead_attempt():
+    """`latest_attempt_rows` runs before this and drops the superseded cell, action and window
+    rows -- but a gate is none of those, and `--resume` reuses the cell id."""
+    from studiobench.report.build import _completion_by_rung
+    from studiobench.scoring.from_payload import latest_attempt_rows
+
+    rows = [
+        {
+            "row_type": "cell",
+            "cell_id": "r100K.base.rep0",
+            "session_id": "s-old",
+            "target_tokens": 100_000,
+            "completed": False,
+            "cell": {"arm": "base", "rep": 0},
+        },
+        {
+            "row_type": "gate",
+            "name": "thread_complete",
+            "passed": False,
+            "cell_id": "r100K.base.rep0",
+            "session_id": "s-old",
+            "detail": {"reason": "lost the middle"},
+        },
+    ] + _gated_cell_rows("thread_complete", True, session = "s-new")
+
+    got = _completion_by_rung(latest_attempt_rows(rows))
+    assert got[100_000] == (True, None), got
+
+
+def test_the_floor_table_drops_a_gate_failed_cell():
+    """The other scorer that admits a cell on `completed` alone. It builds the floor a result is
+    then judged against, and scores the result too."""
+    from studiobench.sweep.floor_table import cell_metrics
+
+    rows = _gated_cell_rows("thread_complete", False) + [
+        {
+            "row_type": "action",
+            "cell_id": "r100K.base.rep0",
+            "session_id": "s1",
+            "action": "keystroke",
+            "ran": True,
+            "expect_ok": True,
+            "timings": {"p95_ms": 50.0},
+        }
+    ]
+    assert cell_metrics(rows) == {}
+    ok = [r for r in rows if r.get("row_type") != "gate"]
+    assert "r100K.base.rep0" in cell_metrics(ok)
+
+
+def test_an_absent_sampler_is_not_read_as_a_cell_that_lost_the_stream():
+    """REGRESSION. `_read_follow` returns `{"follow_attempted": False}` when the page-side sampler
+    is not installed, and the gate then reports `passed: False` because `pinned` is None.
+
+    That is an absent instrument, not a film that went wrong. Read as fatal it marked EVERY cell of
+    every run unusable anywhere the sampler is missing, which is a far larger blast radius than the
+    defect being closed, and it zeroed the ladder for a reason that says nothing about the build.
+    """
+    from studiobench.report.build import _completion_by_rung
+
+    rows = _gated_cell_rows("follows_the_stream", False)
+    rows[1]["detail"] = {
+        "follow_attempted": False,
+        "reason": "the follow sampler is not installed",
+    }
+    assert _completion_by_rung(rows)[100_000] == (True, None), rows
+
+
+def test_a_measured_stream_follow_failure_is_still_fatal():
+    """The positive control for the test above: the sampler ran and the thread fell behind."""
+    from studiobench.report.build import _completion_by_rung
+
+    rows = _gated_cell_rows("follows_the_stream", False)
+    rows[1]["detail"] = {
+        "follow_attempted": True,
+        "pinned_fraction": 0.42,
+        "reason": "the thread fell behind for 58% of the streaming phase",
+    }
+    assert _completion_by_rung(rows)[100_000][0] is False, rows
+
+
 def test_a_bounded_ratio_is_marked_rather_than_printed_as_a_measurement():
     """An arm under its instrument floor contributes the floor, so the ratio understates the true
     magnitude. Printed bare it invites `4900% worse` being quoted as a measurement; the marker
@@ -261,3 +408,29 @@ def test_an_ordinary_ratio_is_still_printed_bare():
 
     assert "1.200" in rendered
     assert ">=" not in rendered and "<=" not in rendered
+
+
+def test_a_missing_viewport_is_not_waived_as_an_absent_instrument():
+    """REGRESSION. `probe_attempted: False` has two producers and only one is an absent instrument.
+
+    `window.__sb.dom is not installed` is the harness not being loaded. `no thread viewport` is the
+    ARM missing the surface the film measures, and waiving it let a real defect ride the instrument
+    allowance -- a cell with no scroller was admitted, scrolled nothing, and was scored.
+    """
+    from studiobench.report.build import _completion_by_rung
+
+    rows = _gated_cell_rows("thread_complete", False)
+    rows[1]["detail"] = {"probe_attempted": False, "reason": "no thread viewport"}
+    assert _completion_by_rung(rows)[100_000][0] is False, rows
+
+
+def test_an_uninstalled_dom_helper_is_still_waived():
+    """The positive control: the harness itself not being loaded is not a finding about the build."""
+    from studiobench.report.build import _completion_by_rung
+
+    rows = _gated_cell_rows("thread_complete", False)
+    rows[1]["detail"] = {
+        "probe_attempted": False,
+        "reason": "window.__sb.dom is not installed",
+    }
+    assert _completion_by_rung(rows)[100_000] == (True, None), rows

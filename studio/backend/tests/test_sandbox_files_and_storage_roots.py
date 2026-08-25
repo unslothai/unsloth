@@ -746,7 +746,8 @@ def test_a_symlinked_session_cannot_serve_files_outside_the_sandbox(tmp_path, mo
 
 def test_the_executor_leaves_nothing_in_the_sandbox(tmp_path, monkeypatch):
     """Its scratch script lives outside the sandbox, so a chat whose tools only
-    printed is still an empty folder and removable without the opt-in."""
+    printed holds just our bookkeeping and the empty TMPDIR dir, and is
+    removable without the opt-in."""
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
 
     from core.inference import tools
@@ -754,10 +755,36 @@ def test_the_executor_leaves_nothing_in_the_sandbox(tmp_path, monkeypatch):
     tools._workdirs.clear()
     workdir = Path(tools.get_sandbox_workdir("__LOCALID_scratch"))
     tools._python_exec("print('hi')", session_id = "__LOCALID_scratch")
-    assert [p.name for p in workdir.iterdir()] == [tools._SANDBOX_MARKER]
+    assert sorted(p.name for p in workdir.iterdir()) == [
+        tools._SANDBOX_MARKER,
+        tools._SANDBOX_TEMP_DIRNAME,
+    ]
+    assert list((workdir / tools._SANDBOX_TEMP_DIRNAME).iterdir()) == []
 
     assert tools.remove_session_sandbox("__LOCALID_scratch") is True
     assert not workdir.exists()
+
+
+def test_a_file_under_the_scratch_dir_is_listed_and_blocks_removal(tmp_path, monkeypatch):
+    """On Windows the scratch dir is what /tmp resolves to, so /tmp/report.csv
+    lands here and has to keep its listing and its delete prompt."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+    from routes import inference
+
+    tools._workdirs.clear()
+    session = "__LOCALID_scratch3"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    scratch = Path(tools._sandbox_temp_dir(str(workdir)))
+    (scratch / "report.csv").write_text("x")
+
+    assert inference._sandbox_listing_names(str(workdir)) == [
+        f"{tools._SANDBOX_TEMP_DIRNAME}/report.csv"
+    ]
+    assert tools.session_sandbox_has_files(session) is True
+    assert tools.remove_session_sandbox(session) is False
+    assert (scratch / "report.csv").is_file()
 
 
 def test_a_real_file_still_blocks_removal(tmp_path, monkeypatch):
@@ -773,6 +800,62 @@ def test_a_real_file_still_blocks_removal(tmp_path, monkeypatch):
 
     assert tools.remove_session_sandbox("__LOCALID_keepit") is False
     assert (workdir / "sales.csv").is_file()
+
+
+def test_the_download_route_serves_the_full_depth_under_the_scratch_dir(tmp_path, monkeypatch):
+    """The card and the route enforce the same segment cap, so the route has to
+    discount the scratch container exactly as the snapshot walk does."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from fastapi import HTTPException
+
+    from core.inference import tools
+    from routes.inference import _contained_sandbox_path
+
+    tools._workdirs.clear()
+    session = "__LOCALID_depth1"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    scratch = Path(tools._sandbox_temp_dir(str(workdir)))
+    (scratch / "a/b/c").mkdir(parents = True)
+    (scratch / "a/b/c/result.csv").write_bytes(b"x")
+
+    _, path = _contained_sandbox_path(session, f"{tools._SANDBOX_TEMP_DIRNAME}/a/b/c/result.csv")
+    assert Path(path) == scratch / "a/b/c/result.csv"
+    with pytest.raises(HTTPException):
+        _contained_sandbox_path(session, f"{tools._SANDBOX_TEMP_DIRNAME}/a/b/c/d/toodeep.csv")
+
+
+def test_only_the_real_scratch_dir_skips_a_path_segment(tmp_path, monkeypatch):
+    """The walks read the stored spelling off os.walk and never follow links, so
+    the discount is the resolved directory's, not the name's. A model-made link
+    would otherwise serve a file neither walk lists, as a wrong-case entry does
+    on NTFS or APFS."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from fastapi import HTTPException
+
+    from core.inference import tools
+    from routes import inference
+
+    tools._workdirs.clear()
+    session = "__LOCALID_depth2"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    (workdir / "out/a/b/c").mkdir(parents = True)
+    (workdir / "out/a/b/c/deep.csv").write_bytes(b"x")
+    (workdir / "out/a/b/shallow.csv").write_bytes(b"x")
+    try:
+        (workdir / tools._SANDBOX_TEMP_DIRNAME).symlink_to(
+            workdir / "out", target_is_directory = True
+        )
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable (Windows without developer mode)")
+
+    name = tools._SANDBOX_TEMP_DIRNAME
+    assert f"{name}/a/b/c/deep.csv" not in inference._sandbox_listing_names(str(workdir))
+    with pytest.raises(HTTPException):
+        inference._contained_sandbox_path(session, f"{name}/a/b/c/deep.csv")
+    # Only the extra segment is withdrawn; four still resolve through the link.
+    inference._contained_sandbox_path(session, f"{name}/a/b/shallow.csv")
 
 
 def test_the_listing_drops_a_directory_the_route_would_refuse(tmp_path, monkeypatch):
@@ -1233,7 +1316,9 @@ def test_a_user_python_file_is_never_executor_scratch(tmp_path, monkeypatch):
     workdir = Path(tools.get_sandbox_workdir(session))
     # The executor left nothing of its own behind.
     assert sorted(
-        p.name for p in workdir.iterdir() if p.name not in tools._INTERNAL_SANDBOX_FILES
+        p.name
+        for p in workdir.iterdir()
+        if p.name not in tools._INTERNAL_SANDBOX_FILES and p.name != tools._SANDBOX_TEMP_DIRNAME
     ) == ["studio_exec_results.py"]
     assert inference._sandbox_listing_names(str(workdir)) == ["studio_exec_results.py"]
     # And a delete without the opt-in will not quietly take it.
@@ -1324,7 +1409,9 @@ def test_the_scratch_script_is_never_reported_as_a_file(tmp_path, monkeypatch):
     workdir = Path(tools.get_sandbox_workdir(session))
     # Only the user's file is left; the executor cleaned up after itself.
     assert sorted(
-        p.name for p in workdir.iterdir() if p.name not in tools._INTERNAL_SANDBOX_FILES
+        p.name
+        for p in workdir.iterdir()
+        if p.name not in tools._INTERNAL_SANDBOX_FILES and p.name != tools._SANDBOX_TEMP_DIRNAME
     ) == ["studio_exec_results.py"]
     assert json.loads(files) == [{"name": "studio_exec_results.py", "size": 5}]
 

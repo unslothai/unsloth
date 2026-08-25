@@ -412,6 +412,15 @@ export const ko = {
         engineStudioDescription: "로드된 오디오 모델을 사용합니다(예: Orpheus)",
         engineSystem: "시스템 음성",
         engineStudio: "TTS 모델 로드",
+        engineCustom: "사용자 지정 엔드포인트",
+        engineCustomDescription:
+          "연결에 저장된 OpenAI 호환 TTS 서버 (예: Kokoro)",
+        connectionLabel: "연결",
+        connectionDescription:
+          "OpenAI 호환 서버는 연결 탭에서 추가할 수 있습니다",
+        connectionPlaceholder: "연결 선택",
+        customModelLabel: "모델",
+        customVoiceDescription: "엔드포인트가 기대하는 음성 이름 (기본값: alloy)",
         modelLabel: "TTS 모델",
         modelDescription:
           "모델 선택기에서 오디오 모델을 로드하세요(예: Orpheus TTS)",
@@ -848,6 +857,8 @@ export const ko = {
         title: "GPU 장치",
         ggufInference: "GGUF 추론",
         unavailable: "사용할 수 없음",
+        detecting: "GPU를 확인하는 중...",
+        unreadable: "이 서버의 하드웨어를 읽을 수 없습니다.",
         noGpu: "인식되는 GPU가 없습니다. 위에는 CPU 관련 리소스만 표시됩니다.",
         unknownDevice: "알 수 없는 GPU",
         deviceWithIndex: "GPU {index}",
@@ -1089,7 +1100,7 @@ export const ko = {
         exportChat: "채팅 내보내기",
       },
       pastedTextThreshold: "긴 붙여넣기 압축",
-      pastedTextThresholdDescription: "이 길이를 초과한 붙여넣기 텍스트는 입력창을 채우는 대신 .txt 첨부 파일이 됩니다.",
+      pastedTextThresholdDescription: "이 길이를 초과한 붙여넣기 텍스트는 입력창을 채우는 대신 .txt 첨부 파일이 됩니다. {shortcut} 를 누르면 그래도 입력창에 붙여넣습니다.",
       pastedTextThresholdOff: "끄기",
       showResponseModel: "응답 모델 표시",
       showResponseModelDescription:
