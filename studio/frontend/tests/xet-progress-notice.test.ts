@@ -106,26 +106,50 @@ test("a storage that refuses writes still advances the count", () => {
   assert.equal(store.get(XET_NOTICE_STORAGE_KEY), undefined);
 });
 
-test("the copy says it is running and where to switch", () => {
-  // The reassurance is the point of the toast, so it leads.
-  assert.match(XET_NOTICE_TITLE, /still running/);
-  assert.match(XET_NOTICE_DESCRIPTION, /actively downloading/);
-  // The control is the transport toggle in Model Hub, labelled HTTP.
-  assert.match(
-    XET_NOTICE_DESCRIPTION,
-    /'Model Hub' and switch transport to HTTP/,
-  );
+test("the copy reassures, in plain words", () => {
+  // The reassurance is the whole point of the toast, so it leads and it is the
+  // only thing here. Explaining chunking, out-of-order writes and batched
+  // commits is what made the first version 330 characters.
+  assert.match(XET_NOTICE_TITLE, /running/);
+  assert.match(XET_NOTICE_DESCRIPTION, /Nothing is stuck/);
 });
 
-test("the closing advice renders as its own paragraph", () => {
-  // A blank line needs pre-line, and the per-toast class replaces the
-  // Toaster's rather than merging.
-  assert.match(XET_NOTICE_DESCRIPTION, /\n\nFor smoother progress/);
-  assert.match(XET_NOTICE_DESCRIPTION_CLASS, /whitespace-pre-line/);
+test("the copy stays short enough to clear the hub toolbar", () => {
+  // This test IS the #9293 revert, written down.
+  //
+  // The first version of this notice ran 62 characters of title and 330 of
+  // description. Sonner rendered that 235px tall in the top-right corner,
+  // which is where the Model hub keeps its own toolbar, so while the toast
+  // was up the capability filter, the sort dropdown, the Models and Datasets
+  // tabs and the repo action icons were underneath it. Hit testing each
+  // control's own centre point put 4 to 6 of them inside the toast, meaning
+  // unclickable, three times per install at 8s each.
+  //
+  // The budgets below are not guesses. At 149 characters the toast measured
+  // 114.5px tall, bottom edge y=126.5, against a filter row whose centre is
+  // y=127: clickable by half a pixel, which would not have survived a longer
+  // translation or a zoom level. At 101 it ends near y=100 and does not reach
+  // the row at all. So 110 is the real ceiling, not the point where it starts
+  // to break. Nothing else enforces this, and the failure is invisible to unit
+  // tests and to a screenshot taken at the wrong viewport, which is exactly how
+  // it shipped the first time.
+  assert.ok(
+    XET_NOTICE_TITLE.length <= 32,
+    `title is ${XET_NOTICE_TITLE.length} chars, budget 32`,
+  );
+  assert.ok(
+    XET_NOTICE_DESCRIPTION.length <= 110,
+    `description is ${XET_NOTICE_DESCRIPTION.length} chars, budget 110`,
+  );
+  // A newline costs a whole line and brings back the pre-line class the first
+  // version needed. One paragraph only.
+  assert.ok(!XET_NOTICE_DESCRIPTION.includes("\n"));
   assert.match(XET_NOTICE_DESCRIPTION_CLASS, /text-muted-foreground/);
 });
 
 test("it stays up longer than the Toaster default", () => {
-  // The copy does not fit in the 5s every other toast gets.
+  // Shorter than the first version, but still two sentences a user has to
+  // notice while looking at a progress bar, and it appears at most 3 times
+  // ever. 5s is enough to miss entirely.
   assert.ok(XET_NOTICE_DURATION_MS > 5000);
 });

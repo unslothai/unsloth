@@ -41,6 +41,8 @@ export interface PersistedChatSettings {
   preserveThinking?: boolean;
   collapseHtmlArtifacts?: boolean;
   allowArtifactNetworkAccess?: boolean;
+  /** web_search also returns image results the model can place inline. */
+  searchImages?: boolean;
   autoHealToolCalls?: boolean;
   nudgeToolCalls?: boolean;
   maxToolCallsPerMessage?: number;
@@ -52,6 +54,7 @@ export interface PersistedChatSettings {
   webFetchToolsEnabled?: boolean;
   deepResearchEnabled?: boolean;
   researchWebsitePolicy?: ResearchWebsitePolicy;
+  researchModelTimeoutSeconds?: number;
   artifactsEnabled?: boolean;
   showCanvasMenuItem?: boolean;
   mcpEnabledForChat?: boolean;

@@ -11,7 +11,10 @@ activated. Expects `pip` and `python` on PATH to point at the venv.
 
 from __future__ import annotations
 
+import ast
+import functools
 import glob
+import importlib
 import importlib.util
 import json
 import os
@@ -26,9 +29,12 @@ import textwrap
 import urllib.request
 from pathlib import Path
 
-_BACKEND_DIR = Path(__file__).resolve().parent / "backend"
-if str(_BACKEND_DIR) not in sys.path:
-    sys.path.insert(1, str(_BACKEND_DIR))
+_STUDIO_DIR = Path(__file__).resolve().parent
+_BACKEND_DIR = _STUDIO_DIR / "backend"
+for _dir in (_BACKEND_DIR, _STUDIO_DIR):
+    # -P / PYTHONSAFEPATH drops the script directory, so do not rely on sys.path[0].
+    if str(_dir) not in sys.path:
+        sys.path.insert(1, str(_dir))
 
 # setup.sh/setup.ps1 invoke this by path, so its directory is sys.path[0].
 import install_manifest  # noqa: E402
@@ -328,6 +334,10 @@ _TORCH_RUNTIME_PROBE: "tuple[bool, bool, str | None, str, str] | None" = None
 # an atexit handler or a CUDA teardown notice can arrive after it, so "the last non-empty
 # line" is not reliably ours; "the last line starting with this" is.
 _TORCH_PROBE_MARKER = "UNSLOTH_TORCH_PROBE|"
+
+# Prefix on the --amd-torch-needs-dependency-pass decision line: five states share exit 1,
+# so a caller (CI above all) needs to read WHICH input decided. setup.sh discards the stream.
+_AMD_FASTPATH_DECISION_MARKER = "UNSLOTH_AMD_FASTPATH|"
 
 
 def _invalidate_torch_runtime_probe() -> None:
@@ -2012,9 +2022,13 @@ def _clear_confirmed_hsa_spoof(physical_gfx: str) -> None:
     )
 
 
+# First-set-wins order, as _pick_visible_index documents below.
+_VISIBLE_DEVICE_MASKS = ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+
+
 def _first_set_visible_mask() -> "str | None":
     """Name of the visible-device variable in force, first-set-wins, or None."""
-    for _env in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+    for _env in _VISIBLE_DEVICE_MASKS:
         if os.environ.get(_env) is not None:
             return _env
     return None
@@ -2951,6 +2965,66 @@ def _ensure_cpu_torch() -> None:
     )
 
 
+def _amd_torch_needs_dependency_pass() -> bool:
+    """Return True when setup must run the dependency pass to repair non-ROCm torch.
+
+    Scope is the wheel family, not the ROCm family: any ROCm marker keeps the fast path
+    even when the repair would reroute it. Fails closed on an uncertain host or torch,
+    and never installs.
+    """
+    if NO_TORCH or not IS_LINUX:
+        return False
+    # ROCm wheels are published for Linux x86_64 only.
+    if platform.machine().lower() not in {"x86_64", "amd64"}:
+        return False
+    # install.sh's resolved backend is authoritative, exactly as it is for the repair.
+    if _TORCH_BACKEND in ("cuda", "cpu", "xpu"):
+        return False
+    # A ROCm pin bypasses hardware detection; any other pin owns its repair path.
+    if _explicit_rocm_torch_index_url() is None:
+        if _explicit_torch_index_url() is not None:
+            return False
+        if _has_usable_nvidia_gpu():
+            return False
+        # ROCr filters beneath HIP, so a hidden layer either side leaves no target to
+        # classify. CUDA_VISIBLE_DEVICES is the HIP alias, read only when HIP is unset.
+        _hip_mask = (
+            "HIP_VISIBLE_DEVICES" if "HIP_VISIBLE_DEVICES" in os.environ else "CUDA_VISIBLE_DEVICES"
+        )
+        if any(
+            (os.environ.get(_mask) or "").strip() in ("", "-1")
+            for _mask in ("ROCR_VISIBLE_DEVICES", _hip_mask)
+            if _mask in os.environ
+        ):
+            return False
+        # Match the repair's two host signals: a visible GPU or an inferred/named arch.
+        _inferred_gfx = _infer_linux_amd_gfx_arch()
+        _rocm_visible = _has_rocm_gpu()
+        if not _rocm_visible and not _inferred_gfx:
+            return False
+        # Probe and runtime mask indexing can disagree on mixed-arch hosts.
+        if len(set(_detect_amd_gfx_codes())) > 1:
+            return False
+        # The inferred per-arch repair can run without a readable ROCm version.
+        _inferred_arm = (
+            bool(_inferred_gfx)
+            and bool((os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip() or not _rocm_visible)
+            and _amd_arch_index_url(_inferred_gfx) is not None
+        )
+        if not _inferred_arm:
+            # Other repair arms need a readable version with a published wheel family.
+            _ver = _detect_rocm_version()
+            if _ver is None or _generic_pytorch_rocm_tag(_ver) is None:
+                return False
+
+    _ran, _importable, _version, _hip, _cuda = _probe_torch_runtime()
+    # An unreadable torch is not evidence that its wheel family is wrong.
+    if not (_ran and _importable) or not _version:
+        return False
+    # The +rocm tag covers builds that omit torch.version.hip.
+    return not (_hip or "rocm" in _version.lower())
+
+
 def _ensure_rocm_torch() -> None:
     """Reinstall torch with ROCm wheels when the venv received CPU-only torch.
 
@@ -3312,14 +3386,7 @@ def _ensure_rocm_torch() -> None:
             index_url = _override_idx
             tag = _torch_index_leaf(index_url)
         else:
-            tag = next(
-                (
-                    t
-                    for (maj, mn), t in sorted(_ROCM_TORCH_INDEX.items(), reverse = True)
-                    if ver >= (maj, mn)
-                ),
-                None,
-            )
+            tag = _generic_pytorch_rocm_tag(ver)
         if tag is None:
             _safe_print(
                 f"   No PyTorch wheel for ROCm {ver[0]}.{ver[1]} -- skipping torch reinstall"
@@ -4005,6 +4072,566 @@ def _shared_base_requirements() -> Path | None:
     return None
 
 
+def _overlay_local_core_package(
+    name: str,
+    local_repo: str,
+    *,
+    strict: bool = True,
+) -> bool:
+    """Install one core package from the source selected by --local.
+
+    strict=False reports a failed install instead of exiting, which the metadata
+    repair needs: by the time it installs, it has already removed the records it
+    is replacing, so it has to say so rather than die mid-way.
+    """
+    canonical = re.sub(r"[-_.]+", "-", name).lower()
+    if canonical == "unsloth":
+        step_label = f"overlaying local repo (editable): {local_repo}"
+        install_label = "Overlaying local repo (editable)"
+        args = ("-e", local_repo)
+    elif canonical == "unsloth-zoo":
+        step_label = "overlaying unsloth-zoo from git main"
+        install_label = "Overlaying unsloth-zoo from git main"
+        args = ("--force-reinstall", "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo")
+    else:
+        return False
+    _step(_LABEL, step_label)
+    if not strict:
+        return pip_install_try(install_label, "--no-cache-dir", "--no-deps", *args, constrain = False)
+    pip_install(install_label, "--no-cache-dir", "--no-deps", *args, constrain = False)
+    return True
+
+
+def _overlay_local_core_packages(local_repo: str) -> None:
+    for name in ("unsloth", "unsloth-zoo"):
+        _overlay_local_core_package(name, local_repo)
+
+
+def _run_ok(label: str, cmd: list) -> bool:
+    """run() without the exit: the metadata repair has to unwind, not die."""
+    if VERBOSE:
+        _step(_LABEL, f"{label}...", _dim)
+    result = subprocess.run(
+        cmd,
+        stdout = subprocess.PIPE,
+        stderr = subprocess.STDOUT,
+        env = _install_env_for_cmd(cmd),
+        **_windows_hidden_subprocess_kwargs(),
+    )
+    if result.returncode != 0 and result.stdout:
+        _safe_print(_redact_install_output(result.stdout))
+    return result.returncode == 0
+
+
+def _is_overlayable_core_package(name: str) -> bool:
+    """Whether _overlay_local_core_package knows a source for this name."""
+    return re.sub(r"[-_.]+", "-", name).lower() in ("unsloth", "unsloth-zoo")
+
+
+def _overlay_source_spec(name: str, local_repo: str) -> str:
+    """What pip would be asked to build for this overlay.
+
+    unsloth-zoo comes from git, so an overlay is a network fetch just as much as
+    an index install is: it has to be staged before anything is uninstalled.
+    """
+    canonical = re.sub(r"[-_.]+", "-", name).lower()
+    if canonical == "unsloth":
+        return local_repo
+    if canonical == "unsloth-zoo":
+        return "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
+    return ""
+
+
+def _rewrite_minimal_metadata(path: str, name: str) -> bool:
+    """Replace an unparseable METADATA with the least pip needs to uninstall by RECORD.
+
+    Returns False when there is no RECORD to uninstall from, the one case that has
+    to fail closed: without it neither pip nor this installer knows which files
+    belong to the package, and laying a replacement over them would leave whatever
+    the new release no longer ships behind, still importable. The version is taken
+    from the directory name, where importlib's own fallback reads it from when
+    METADATA cannot be parsed.
+    """
+    # invalid_metadata_paths() hands back Path objects, so normalise before the
+    # string work below.
+    path = os.fspath(path)
+    if not os.path.isfile(os.path.join(path, "RECORD")):
+        return False
+    stem = os.path.basename(path.rstrip(os.sep)).removesuffix(".dist-info")
+    _package, separator, version = stem.rpartition("-")
+    if not separator or not version:
+        return False
+    try:
+        with open(os.path.join(path, "METADATA"), "w", encoding = "utf-8") as handle:
+            handle.write(f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n")
+    except OSError:
+        return False
+    return True
+
+
+class _QuarantinedMetadata:
+    """Invalid metadata directories moved aside, restorable until committed.
+
+    pip cannot parse an unreadable record: a non-UTF-8 METADATA makes pip list,
+    show and uninstall raise for the whole environment, so it has to be out of
+    the way before pip runs at all. Deleting it outright is not an option
+    either, because staging the replacement can still fail and a package whose
+    only record was deleted is left with files and no install at all.
+    """
+
+    def __init__(self) -> None:
+        self._holding = ""
+        self._moved: list = []
+        self._copied: list = []
+
+    def _holding_dir(self) -> str:
+        if not self._holding:
+            self._holding = tempfile.mkdtemp(prefix = "unsloth_metadata_quarantine_")
+        return self._holding
+
+    def back_up(self, path) -> bool:
+        """Keep a copy of a file that is about to be rewritten in place.
+
+        The rewrite has to happen before staging, and staging can still fail. Without
+        this the original is gone and what remains is a synthetic record that parses:
+        the next run would see one readable record, decide nothing is wrong, and never
+        attempt the payload repair that is still owed.
+
+        An absent METADATA is nothing to back up rather than a failure. Recording it
+        as absent still lets the rewrite proceed, so pip can uninstall that record by
+        its RECORD; restore() then deletes the synthetic file instead of reinstating
+        one that never existed.
+        """
+        path = os.fspath(path)
+        if not os.path.exists(path):
+            self._copied.append((path, None))
+            return True
+        target = os.path.join(self._holding_dir(), f"copy_{len(self._copied)}")
+        try:
+            shutil.copy2(path, target)
+        except OSError:
+            return False
+        self._copied.append((path, target))
+        return True
+
+    def take(self, paths) -> bool:
+        for path in paths:
+            target = os.path.join(
+                self._holding_dir(), f"{len(self._moved)}_{os.path.basename(path)}"
+            )
+            try:
+                shutil.move(os.fspath(path), target)
+            except OSError:
+                return False
+            self._moved.append((os.fspath(path), target))
+        return True
+
+    def forget_copies(self) -> None:
+        """Drop the backed-up METADATA copies, keeping the moved directories.
+
+        Called once a staged reinstall has put the package back: the wheel's own
+        metadata is authoritative, so copying the original over it would re-break the
+        package the rollback just repaired, and deleting it (where the original was
+        absent) would strip a record pip just wrote. The moved entries stay, because a
+        record pip cannot consume still has to go back as found.
+        """
+        self._copied.clear()
+
+    def restore(self) -> None:
+        while self._moved:
+            original, target = self._moved.pop()
+            try:
+                shutil.move(target, original)
+            except OSError:
+                pass
+        while self._copied:
+            original, target = self._copied.pop()
+            try:
+                if target is None:
+                    os.remove(original)
+                else:
+                    shutil.copy2(target, original)
+            except OSError:
+                pass
+        self.discard()
+
+    def discard(self) -> None:
+        if self._holding:
+            shutil.rmtree(self._holding, ignore_errors = True)
+            self._holding = ""
+        self._moved.clear()
+        self._copied.clear()
+
+
+def _restore_from_staged(
+    name: str,
+    staged: str,
+    removed_any: bool,
+    quarantine: "_QuarantinedMetadata | None" = None,
+) -> None:
+    """Put the payload back when the uninstall loop stops part way through.
+
+    An earlier successful uninstall has already deleted the package tree, so
+    returning here without this leaves a surviving dist-info claiming an
+    installed core package whose files are gone.
+    """
+    if not (removed_any and staged):
+        return
+    if pip_install_try(
+        f"Restoring {name} after an incomplete metadata repair",
+        "--no-cache-dir",
+        "--no-deps",
+        "--force-reinstall",
+        "--no-index",
+        "--find-links",
+        staged,
+        name,
+        # pip, not uv: the wheel is already built and sitting in staged, and uv would
+        # reject the unpinned name under UV_REQUIRE_HASHES with the package records
+        # already gone. Routing through pip also earns the PIP_REQUIRE_HASHES relaxation.
+        force_pip = True,
+    ):
+        # The wheel just wrote its own valid metadata at the same path the rewritten
+        # record occupied, so the unwinding below must not put the original back over
+        # it. See _QuarantinedMetadata.forget_copies.
+        if quarantine is not None:
+            quarantine.forget_copies()
+        _safe_print(_red(f"   restored {name} from the staged replacement"), file = sys.stderr)
+    else:
+        _safe_print(
+            _red(f"   {name} is no longer installed. Re-run the installer to restore it."),
+            file = sys.stderr,
+        )
+
+
+def _requirement_args(requirement: str, staging: str) -> "list[str]":
+    """How to hand pip the requirement, as a file when it carries hashes.
+
+    pip only accepts --hash entries from a requirements file, and the hashes are what
+    stop it accepting a different artifact of the same version from a source uv never
+    considered. The file lives in the staging directory, so it is removed with it.
+    """
+    if "--hash=" not in requirement:
+        return [requirement]
+    path = os.path.join(staging, "requirement.txt")
+    with open(path, "w", encoding = "utf-8") as handle:
+        handle.write(requirement + "\n")
+    return ["-r", path]
+
+
+def _stage_replacement(name: str):
+    """Build the wheel that will replace a package, before it is removed.
+
+    Returns a directory to install from, or None when the package cannot be
+    obtained, which must abort the repair while the existing install is still
+    intact.
+
+    pip wheel, not pip download: a source-only index leaves an sdist, and the
+    install that follows runs --no-index, so its isolated build could not fetch
+    setuptools and the package would stay uninstalled. Building here, while the
+    index is still reachable, keeps that install offline-safe. pip and not uv
+    because uv has no `wheel` subcommand, so uv's own index variables and upload
+    cutoff have to be handed across explicitly to keep the provenance and the
+    reproducibility policy the other installs run under.
+    """
+    requirement, overrides, build_options = name, {}, []
+    offline_local = USE_UV and _uv_is_offline() and _is_local_source(name)
+    if offline_local:
+        # The checkout needs no network, but pip's isolated build fetches the build
+        # backend, which UV_OFFLINE does not reach: measured, an isolated build with no
+        # index fails at "installing build dependencies", and this repo pins those
+        # exactly. Build against the interpreter's own backend and forbid the index, so
+        # no-network means no network. An unimportable backend fails the build and
+        # leaves the installation intact.
+        build_options = ["--no-build-isolation"]
+        overrides = {"PIP_NO_INDEX": "1"}
+    if USE_UV and _uv_is_offline() and not _is_local_source(name):
+        # A checkout on disk needs no network, so offline has nothing to say about it.
+        _safe_print(
+            _red(
+                "   UV_OFFLINE is set and pip has no offline mode, so repairing "
+                f"{name} would have to reach the network; leaving the install alone."
+            ),
+            file = sys.stderr,
+        )
+        return None
+    if USE_UV and not _is_direct_reference(name):
+        # A direct reference is its own provenance, so it is staged as written.
+        plan = _uv_staging_plan(name)
+        if plan is None:
+            _safe_print(
+                _red(
+                    f"   uv could not resolve a replacement for {name}, so its source "
+                    "cannot be preserved; leaving the install alone."
+                ),
+                file = sys.stderr,
+            )
+            return None
+        requirement, overrides, build_options = plan
+    cutoff_args = _uv_upload_cutoff_args()
+    if cutoff_args is None:
+        _safe_print(
+            _red(
+                "   UV_EXCLUDE_NEWER is set but this pip is too old to honour it "
+                "(needs 25.3 for --uploaded-prior-to); leaving the install alone."
+            ),
+            file = sys.stderr,
+        )
+        return None
+    staging = tempfile.mkdtemp(prefix = "unsloth_metadata_repair_")
+    cmd = [
+        sys.executable,
+        "-m",
+        "pip",
+        "wheel",
+        "--no-deps",
+        *cutoff_args,
+        *build_options,
+        "--wheel-dir",
+        staging,
+        *_requirement_args(requirement, staging),
+    ]
+    env = _install_env_for_cmd(cmd)
+    if overrides:
+        env = dict(env if env is not None else os.environ)
+        env.update(overrides)
+        # Written into the staging directory, so it is removed with it.
+        env["PIP_CONFIG_FILE"] = _pip_config_without_sources(staging)
+    result = subprocess.run(
+        cmd,
+        stdout = subprocess.PIPE,
+        stderr = subprocess.STDOUT,
+        env = env,
+        **_windows_hidden_subprocess_kwargs(),
+    )
+    if result.returncode == 0 and glob.glob(os.path.join(staging, "*.whl")):
+        return staging
+    if VERBOSE and result.stdout:
+        _safe_print(_redact_install_output(result.stdout))
+    shutil.rmtree(staging, ignore_errors = True)
+    return None
+
+
+def _repair_duplicate_core_metadata(
+    package_names: "tuple[str, ...]",
+    *,
+    local_repo: str = "",
+    ci_source_overlay: str = "",
+) -> bool:
+    """Reinstall managed core packages whose metadata has more than one record.
+
+    Remove invalid records directly because pip cannot parse them, then repeat a
+    dependency-free uninstall until no valid record remains, because pip's
+    force-reinstall only uninstalls the one record its finder selects. The
+    requested source can then be installed without asking a resolver to replace
+    the existing torch build. The normal dependency pass still follows.
+
+    The replacement is fetched BEFORE anything is removed: the uninstall loop
+    deletes every record it finds, so an index unreachable at that moment
+    (offline, a private package name, a mirror outage) would otherwise leave the
+    venv with no unsloth at all and no way back.
+    """
+    duplicates: list[tuple[str, int]] = []
+    seen: set[str] = set()
+    for name in package_names:
+        canonical = re.sub(r"[-_.]+", "-", name).lower()
+        if canonical in seen:
+            continue
+        seen.add(canonical)
+        versions = install_manifest.installed_versions(name)
+        record_count = len(versions)
+        # A sole `~` backup counts as one readable version, so metadata_conflict()
+        # cannot see it, yet pip and importlib both skip the directory and the real
+        # tree is usually renamed away with it. Repair it like any other duplicate.
+        if install_manifest.metadata_conflict(
+            versions
+        ) or install_manifest.pip_backup_metadata_paths(name):
+            duplicates.append((name, record_count))
+
+    repaired: list[str] = []
+    staging_dirs: list[str] = []
+    # One quarantine per package, discarded as soon as that package is back in place.
+    # Sharing one would, on a later package's failure, restore the first package's stale
+    # record over the install that replaced it: the conflict returns, and its old RECORD
+    # then describes a payload that is gone.
+    quarantine = _QuarantinedMetadata()
+    succeeded = False
+    try:
+        for name, record_count in duplicates:
+            quarantine = _QuarantinedMetadata()
+            _step(_LABEL, f"duplicate metadata for {name} detected; reinstalling it", _dim)
+            invalid_paths = install_manifest.invalid_metadata_paths(name)
+            # Give pip a parseable METADATA beside every intact RECORD so it can
+            # uninstall them normally, removing exactly the files they list.
+            # Quarantining one instead drops its RECORD, so the uninstall loop removes
+            # only what the readable records claim and a module existing solely in the
+            # older release stays on disk and importable while the repair reports success.
+            unrewritable = [
+                path
+                for path in invalid_paths
+                if not (
+                    quarantine.back_up(os.path.join(path, "METADATA"))
+                    and _rewrite_minimal_metadata(path, name)
+                )
+            ]
+            # Every record has to end up uninstallable by pip, or nothing is touched.
+            # Quarantining one instead only hides it: pip removes just the readable
+            # records, the quarantine is discarded once the reinstall succeeds, and
+            # whatever the quarantined release owned alone stays on disk and
+            # importable while the repair reports success and deletes the directory
+            # that was the evidence. Waiting for record_count to reach zero missed
+            # every case where another record survives. Refusing leaves the tree as
+            # found, so a later run can still see the conflict.
+            if unrewritable:
+                _safe_print(
+                    _red(
+                        f"   the metadata for {name} at "
+                        + ", ".join(os.path.basename(os.fspath(p)) for p in unrewritable)
+                        + " cannot be read or rewritten, so the files that release owned "
+                        "cannot be identified. Recreate the environment to repair it."
+                    ),
+                    file = sys.stderr,
+                )
+                return False
+            # pip skips its own abandoned backup ("Ignoring invalid distribution
+            # ~nsloth") while its METADATA still names the project, so the record
+            # counts here but no uninstall by name can consume it. Left in place the
+            # loop below cannot converge and the repair fails on every future run,
+            # which is the loop this whole path exists to end. Quarantined, not
+            # deleted: staging can still fail.
+            backups = install_manifest.pip_backup_metadata_paths(name)
+            if backups and not quarantine.take(backups):
+                _safe_print(
+                    _red(f"   could not move pip's leftover backup for {name} aside"),
+                    file = sys.stderr,
+                )
+                return False
+            if invalid_paths or backups:
+                importlib.invalidate_caches()
+                record_count = len(install_manifest.installed_versions(name))
+            # A backup names a payload pip has already renamed away, so once it is
+            # aside there is nothing for a replacement to be laid over: a fresh
+            # install is exactly right, and refusing here would abort the installer
+            # on the one state it can trivially fix.
+            if invalid_paths and not record_count:
+                # Nothing is left for pip to uninstall, so the replacement would be
+                # laid over a payload no record describes.
+                _safe_print(
+                    _red(
+                        f"   no usable metadata record is left for {name}, so its "
+                        "files cannot be removed safely. Recreate the environment "
+                        "to repair it."
+                    ),
+                    file = sys.stderr,
+                )
+                return False
+
+            canonical = re.sub(r"[-_.]+", "-", name).lower()
+            source_repo = local_repo or (ci_source_overlay if canonical == "unsloth" else "")
+            # A local or git source installs from a path or URL, so there is
+            # nothing to stage; anything else comes off an index, which has to
+            # be proven reachable while the current install is still intact.
+            overlaid = bool(source_repo) and _is_overlayable_core_package(name)
+            # Stage whichever source will be installed, overlay included: an
+            # overlay is a git fetch or a build, either of which can fail after
+            # the uninstall loop has already removed every record.
+            staged = _stage_replacement(
+                _overlay_source_spec(name, source_repo) if overlaid else name
+            )
+            if staged is None:
+                _safe_print(
+                    _red(
+                        f"   could not fetch a replacement for {name}; leaving "
+                        "the existing install in place"
+                    ),
+                    file = sys.stderr,
+                )
+                return False
+            staging_dirs.append(staged)
+
+            removed_any = False
+            while record_count:
+                if not _run_ok(
+                    f"Removing an installed metadata record for {name}",
+                    [sys.executable, "-m", "pip", "uninstall", "-y", name],
+                ):
+                    _safe_print(
+                        _red(f"   could not uninstall a metadata record for {name}"),
+                        file = sys.stderr,
+                    )
+                    _restore_from_staged(name, staged, removed_any, quarantine)
+                    return False
+                importlib.invalidate_caches()
+                remaining = len(install_manifest.installed_versions(name))
+                if remaining >= record_count:
+                    _safe_print(
+                        _red(f"   could not remove every metadata record for {name}"),
+                        file = sys.stderr,
+                    )
+                    _restore_from_staged(name, staged, removed_any, quarantine)
+                    return False
+                removed_any = True
+                record_count = remaining
+
+            # Installer handoffs may already have applied a local or CI source.
+            # Restore that provenance now that no ambiguous record remains.
+            restored = overlaid and _overlay_local_core_package(name, source_repo, strict = False)
+            if not restored:
+                # The overlay install is preferred because it keeps the editable
+                # or git provenance, but the staged wheel was built from that
+                # same source, so falling back to it never substitutes a release.
+                restored = pip_install_try(
+                    f"Repairing duplicate metadata for {name}",
+                    "--no-cache-dir",
+                    "--no-deps",
+                    "--force-reinstall",
+                    "--no-index",
+                    "--find-links",
+                    staged,
+                    name,
+                    # As _restore_from_staged: pip, so a uv hash policy cannot reject the
+                    # already-built wheel once every record has been removed.
+                    force_pip = True,
+                )
+            if not restored:
+                _safe_print(
+                    _red(
+                        f"   could not reinstall {name} after removing its duplicate "
+                        "metadata; it is no longer installed. Re-run the installer "
+                        "to restore it."
+                    ),
+                    file = sys.stderr,
+                )
+                return False
+            repaired.append(name)
+            # This package is back in place, so its old records must never return.
+            quarantine.discard()
+
+        importlib.invalidate_caches()
+        unresolved = [
+            name for name in repaired if not install_manifest.installed_version_probe(name)[0]
+        ]
+        if unresolved:
+            _safe_print(
+                _red(
+                    "   package metadata is inconsistent after reinstall: " + ", ".join(unresolved)
+                ),
+                file = sys.stderr,
+            )
+            return False
+        succeeded = True
+        return True
+    finally:
+        for staging in staging_dirs:
+            shutil.rmtree(staging, ignore_errors = True)
+        # Anything short of a completed repair puts the quarantined records back,
+        # so a failure leaves the environment as it was found.
+        if succeeded:
+            quarantine.discard()
+        else:
+            quarantine.restore()
+
+
 def _translate_pip_args_for_uv(args: tuple[str, ...]) -> list[str]:
     """Translate pip flags to their uv equivalents."""
     translated: list[str] = []
@@ -4117,18 +4744,306 @@ _PM_POLICY_ENV_VARS = (
 def _relaxed_pip_policy_env(cmd: "list[str]") -> "dict[str, str]":
     """Overrides that stop a hardened user pip config failing the installer's own pip.
 
-    Empty for anything that is not a `pip install` / `pip download` this module drives,
-    every `uv` command included, so the "non-pinned installs inherit the caller env
-    unchanged" contract holds on a machine with no hostile pip config.
+    Empty for anything that is not a `pip install` / `pip download` / `pip wheel` this
+    module drives, every `uv` command included, so the "non-pinned installs inherit the
+    caller env unchanged" contract holds on a machine with no hostile pip config.
+    `wheel` is in that set because the duplicate-metadata repair stages its replacement
+    with `pip wheel`, where require-hashes applies exactly as it does to install: an
+    unpinned name is rejected before anything is built, so the repair would abort on a
+    hardened machine and leave the conflict it exists to remove.
 
     `require-hashes = true` makes pip reject any requirement without a --hash, which is
     every requirements file we ship; that is what took the pip FALLBACK down in #8530
     once uv had failed. pip applies env vars AFTER config files, so PIP_REQUIRE_HASHES=0
     overrides it while pip.conf's index-url, trusted-host, cert and proxy stay in force.
     """
-    if cmd[:1] == ["uv"] or not any(arg in ("install", "download") for arg in cmd):
+    if cmd[:1] == ["uv"] or not any(arg in ("install", "download", "wheel") for arg in cmd):
         return {}
     return {"PIP_REQUIRE_HASHES": "0"}
+
+
+def _uv_is_offline() -> bool:
+    """True when uv has been told not to touch the network."""
+    return os.environ.get("UV_OFFLINE", "").strip().lower() not in ("", "0", "false")
+
+
+def _uv_staging_plan(name: str) -> "tuple[str, dict[str, str]] | None":
+    """Ask uv which release and which index it would use, and reproduce that with pip.
+
+    Returns (requirement, pip env overrides), or None when uv could not resolve it.
+
+    Staging has to run pip, because uv has no `wheel` subcommand. Translating uv's index
+    configuration out of the environment cannot be made correct: uv also discovers
+    uv.toml, pyproject.toml [tool.uv] and a user config, honours UV_CONFIG_FILE, applies
+    an implicit PyPI default, and resolves under an index-strategy pip has no equivalent
+    for. Any of those missed means the repair can uninstall a private build and reinstall
+    the public package of the same name.
+
+    So uv is asked instead. `uv pip compile --emit-index-annotation` reports the exact
+    index each package resolved from, under uv's own discovery, priority, strategy and
+    upload cutoff, and pip is pointed at that one index with that one version. An
+    unreachable higher-priority index fails the compile rather than falling through to a
+    public fallback, which is the behaviour first-index exists to give.
+    """
+    cmd = [
+        "uv",
+        "pip",
+        "compile",
+        "--no-deps",
+        "--python",
+        sys.executable,
+        "--emit-index-url",
+        "--emit-find-links",
+        "--emit-index-annotation",
+        "--emit-build-options",
+        "--generate-hashes",
+        "-",
+    ]
+    try:
+        result = subprocess.run(
+            cmd,
+            input = name.encode(),
+            stdout = subprocess.PIPE,
+            stderr = subprocess.PIPE,
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        if VERBOSE and result.stderr:
+            _safe_print(_redact_install_output(result.stderr))
+        return None
+    requirement, origin = "", ""
+    hashes: list[str] = []
+    emitted: list[str] = []
+    find_links: list[str] = []
+    build_options: list[str] = []
+    canonical = _canonical_package_name(name)
+    for raw in (result.stdout or b"").decode("utf-8", "replace").splitlines():
+        line = raw.strip()
+        if line.startswith(("--index-url ", "--extra-index-url ")):
+            emitted.append(line.split(" ", 1)[1].strip())
+        elif line.startswith("--find-links "):
+            find_links.append(line.split(" ", 1)[1].strip())
+        elif line.startswith("--hash="):
+            hashes.append(line.rstrip("\\").strip())
+        elif line.startswith(("--no-binary ", "--only-binary ")):
+            # uv's artifact policy, which pip reads none of. Without it the repair can
+            # download a wheel under a no-binary rule or build an sdist under an
+            # only-binary one, changing the artifact type mid-repair.
+            option, _, value = line.partition(" ")
+            build_options.extend((option, value.strip()))
+        elif line.startswith("# from "):
+            # Names the index this package came from, the one to reproduce, but is not
+            # usable as written: measured on uv 0.10.7 the annotation drops userinfo
+            # while the emitted index lines keep it, so it is matched back to the
+            # emitted URL. A private index would answer 401 otherwise.
+            origin = line[len("# from ") :].strip() or origin
+        elif line and not line.startswith(("#", "-")):
+            # uv continues a hashed pin onto the following lines with a backslash.
+            pinned = line.split(";", 1)[0].rstrip("\\").strip()
+            if _canonical_package_name(_requirement_name(pinned)) == canonical:
+                requirement = pinned
+    if not requirement:
+        return None
+    # Replaying uv's answer means replacing pip's candidate sources, not adding to them.
+    # An inherited PIP_NO_INDEX would block the index uv picked, and an inherited
+    # extra index or find-links directory could satisfy the same version from a source
+    # uv never looked at, which is the provenance swap this whole path exists to stop.
+    # Empty rather than deleted: measured on pip 26.2, an empty value reads as unset.
+    overrides = {
+        "PIP_EXTRA_INDEX_URL": "",
+        "PIP_NO_INDEX": "",
+        "PIP_FIND_LINKS": " ".join(find_links),
+    }
+    index_url = _credentialed_index(origin, emitted)
+    if index_url:
+        overrides["PIP_INDEX_URL"] = index_url
+    elif find_links:
+        # uv resolved this from a flat source with no index in play, which is what a
+        # configured no-index looks like on the way out: it emits the find-links entry
+        # and no index line at all. Leaving PIP_NO_INDEX cleared would hand pip back
+        # the default PyPI and let it stage the same name and version from a source uv
+        # was told to exclude.
+        overrides["PIP_NO_INDEX"] = "1"
+    # Measured on uv 0.10.7: --emit-build-options surfaces the policy from uv.toml but
+    # NOT the environment-variable spelling of it, so that half is translated by hand.
+    # Only where pip has no setting of its own, which it reads natively.
+    # UV_KEYRING_PROVIDER is the same translation: uv reaches an authenticated index
+    # through the keyring CLI, and carrying only the URL leaves pip unable to fetch
+    # what uv just resolved. uv's two values (disabled, subprocess) are both valid pip
+    # values. Only the environment spelling is reachable here; a uv.toml
+    # keyring-provider is not emitted, so that half cannot be replayed.
+    for uv_name, pip_name in (
+        ("UV_NO_BINARY", "PIP_NO_BINARY"),
+        ("UV_ONLY_BINARY", "PIP_ONLY_BINARY"),
+        ("UV_KEYRING_PROVIDER", "PIP_KEYRING_PROVIDER"),
+    ):
+        value = os.environ.get(uv_name, "").strip()
+        if value and not os.environ.get(pip_name):
+            overrides[pip_name] = value
+    if hashes:
+        # The hashes are what make this safe rather than merely careful. Measured: pip
+        # verifies them even with PIP_REQUIRE_HASHES=0, and neither PIP_CONFIG_FILE nor
+        # --isolated suppresses a site pip.conf, so pip may still consult a source uv
+        # never considered. It can no longer accept a different artifact from one.
+        requirement = " \\\n    ".join([requirement, *hashes])
+    return requirement, overrides, build_options
+
+
+_PIP_SOURCE_CONFIG_KEYS = ("index-url", "extra-index-url", "find-links", "no-index")
+
+
+def _pip_config_without_sources(directory: str) -> str:
+    """Write pip's own configuration back minus the candidate sources.
+
+    The environment overrides above cannot do this alone. Measured on pip 26.2: with
+    `extra-index-url` in pip.conf, an empty PIP_EXTRA_INDEX_URL does NOT suppress it,
+    so the config has to go for this one command, or uv's chosen index is only one
+    candidate among the user's.
+
+    Dropping it wholesale would take proxy, cert, client-cert and trusted-host with it,
+    and those are how a private index is reached, so uv would resolve and pip would then
+    fail to fetch. Everything except the four source keys is written back instead.
+    `pip config list` is asked rather than the files located, so global, user and site
+    are merged in pip's own order; `:env:` entries are skipped as they come from the
+    environment, handled above.
+    """
+    path = os.path.join(directory, "pip.conf")
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "config", "list"],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except OSError:
+        result = None
+    sections: dict[str, list[tuple[str, str]]] = {}
+    if result is not None and result.returncode == 0:
+        for line in (result.stdout or b"").decode("utf-8", "replace").splitlines():
+            name, separator, raw = line.partition("=")
+            if not separator or name.startswith(":env:"):
+                continue
+            section, _, option = name.strip().rpartition(".")
+            if not section or option in _PIP_SOURCE_CONFIG_KEYS:
+                continue
+            try:
+                value = ast.literal_eval(raw.strip())
+            except (ValueError, SyntaxError):
+                continue
+            # pip renders a multi-value setting as one newline separated string; an
+            # indented continuation is how it is spelled back into a config file.
+            sections.setdefault(section, []).append((option, str(value).replace("\n", "\n    ")))
+    with open(path, "w", encoding = "utf-8") as handle:
+        for section, options in sections.items():
+            handle.write(f"[{section}]\n")
+            for option, value in options:
+                handle.write(
+                    f"{option} ={value}\n" if value.startswith("\n") else f"{option} = {value}\n"
+                )
+    return path
+
+
+def _requirement_name(requirement: str) -> str:
+    """The distribution name from a pin or a PEP 508 direct reference.
+
+    An override can redirect a package to a path, a repository or a URL, and uv then
+    emits `name @ reference` rather than `name==version`. Treating the whole line as
+    the name left the requirement empty and aborted every repair under that policy.
+    """
+    head = requirement.split("==", 1)[0]
+    return head.split("@", 1)[0].strip()
+
+
+def _canonical_package_name(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).strip().lower()
+
+
+def _strip_userinfo(url: str) -> str:
+    """The URL without any `user:password@`, which is how uv writes an annotation."""
+    scheme, separator, rest = url.partition("://")
+    if not separator:
+        return url
+    authority, slash, tail = rest.partition("/")
+    _credentials, at_sign, host = authority.rpartition("@")
+    return f"{scheme}://{host}{slash}{tail}" if at_sign else url
+
+
+def _credentialed_index(origin: str, emitted: "list[str]") -> str:
+    """The emitted index matching the annotated origin, credentials intact.
+
+    uv emits every index it was configured with, credentials and all, but strips
+    userinfo from the `# from` annotation that says which one answered. Taking the
+    annotation at face value hands pip an unauthenticated URL for a private index,
+    which answers 401 and aborts the repair. Matching is on the credential-free form
+    of each emitted URL, so an authenticated extra index is recovered too.
+    """
+    if origin:
+        target = _strip_userinfo(origin).rstrip("/")
+        matches = [url for url in emitted if _strip_userinfo(url).rstrip("/") == target]
+        # One index can be emitted both with and without credentials; the whole point
+        # here is the credentialed form, so it wins over a bare match on the same URL.
+        for url in matches:
+            if _strip_userinfo(url) != url:
+                return url
+        if matches:
+            return matches[0]
+    # The origin is not one of the emitted indexes, so it is a find-links source --
+    # uv annotates those with a file:// or directory URL. That belongs in
+    # PIP_FIND_LINKS, which is already set from the emitted find-links lines, and
+    # must not displace the real index: an sdist picked out of a flat directory still
+    # needs the index for its build backend.
+    return emitted[0] if emitted else ""
+
+
+def _is_local_source(requirement: str) -> bool:
+    """True when the replacement is already on disk, so no network is needed."""
+    return os.path.exists(requirement)
+
+
+def _is_direct_reference(requirement: str) -> bool:
+    """True when the requirement already names the source to build from.
+
+    The overlay paths hand staging a git URL or a local checkout rather than a bare
+    name, and such a requirement carries its own provenance: no index was consulted
+    to choose it, so there is nothing for uv to have decided and nothing to preserve.
+    Asking uv to resolve it would also compare a bare spec against uv's output, which
+    appends the resolved commit and so could never match.
+    """
+    return "://" in requirement or _is_local_source(requirement)
+
+
+def _uv_upload_cutoff_args() -> "list[str] | None":
+    """pip arguments carrying UV_EXCLUDE_NEWER, or None when it cannot be honoured.
+
+    uv's --exclude-newer limits candidates by upload time, and staging runs pip, which
+    ignores the variable and would stage a release the user's policy excludes. pip's
+    --uploaded-prior-to is the same filter and takes the same date spellings, but it only
+    exists from pip 25.3. Refusing to stage is the correct answer on an older pip: the
+    repair then aborts with the installation still intact, rather than quietly installing
+    a wheel the cutoff forbids.
+    """
+    cutoff = os.environ.get("UV_EXCLUDE_NEWER", "").strip()
+    if not cutoff:
+        return []
+    if not _pip_supports_upload_cutoff():
+        return None
+    return ["--uploaded-prior-to", cutoff]
+
+
+@functools.lru_cache(maxsize = 1)
+def _pip_supports_upload_cutoff() -> bool:
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "wheel", "--help"],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except OSError:
+        return False
+    return b"--uploaded-prior-to" in (result.stdout or b"")
 
 
 def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
@@ -4389,6 +5304,8 @@ def install_python_stack() -> int:
     package_name = os.environ.get("STUDIO_PACKAGE_NAME", "unsloth")
     # --local overlays a local repo checkout after updating deps.
     local_repo = os.environ.get("STUDIO_LOCAL_REPO", "")
+    # Clean-machine CI overlays only unsloth, not the full local source pair.
+    ci_source_overlay = os.environ.get("UNSLOTH_CI_SOURCE_OVERLAY", "")
     # +1 for the anyio repair check (step 8b), +1 for the diffusers pin (step 11b, every platform)
     base_total = 12 if IS_WINDOWS else 13
     if IS_MACOS:
@@ -4463,6 +5380,16 @@ def install_python_stack() -> int:
                 [sys.executable, "-m", "pip", "install", "--upgrade", "pip"],
             )
 
+    # A superseded dist-info makes version() and every RECORD consumer choose
+    # an arbitrary package version. Repair it before any fast package operation,
+    # including installer handoffs that set skip_base after their own upgrade.
+    if not _repair_duplicate_core_metadata(
+        (package_name, "unsloth-zoo"),
+        local_repo = local_repo,
+        ci_source_overlay = ci_source_overlay,
+    ):
+        return 1
+
     # macOS arm64: install MLX stack at latest (UV_OVERRIDE relaxes the
     # mlx-vlm / mlx-lm transformers pin -- set at module load).
     if IS_MAC_ARM and not skip_base:
@@ -4492,6 +5419,12 @@ def install_python_stack() -> int:
         # No-torch update path: install unsloth + unsloth-zoo, then runtime deps,
         # both with --no-deps (PyPI metadata declares torch a hard dep; avoid it).
         _progress("base packages (no torch)")
+        desktop_min_ver = os.environ.get("UNSLOTH_DESKTOP_BACKEND_VERSION", "").strip()
+        unsloth_spec = (
+            f"{package_name}>={desktop_min_ver}"
+            if (desktop_min_ver and package_name == "unsloth")
+            else package_name
+        )
         pip_install(
             f"Updating {package_name} + unsloth-zoo (no-torch mode)",
             "--no-cache-dir",
@@ -4500,7 +5433,7 @@ def install_python_stack() -> int:
             package_name,
             "--upgrade-package",
             "unsloth-zoo",
-            package_name,
+            unsloth_spec,
             "unsloth-zoo",
         )
         # Resolve pydantic WITH deps so pip pins pydantic-core to the exact version
@@ -4518,24 +5451,7 @@ def install_python_stack() -> int:
             req = REQ_ROOT / "no-torch-runtime.txt",
         )
         if local_repo:
-            _step(_LABEL, f"overlaying local repo (editable): {local_repo}")
-            pip_install(
-                "Overlaying local repo (editable)",
-                "--no-cache-dir",
-                "--no-deps",
-                "-e",
-                local_repo,
-                constrain = False,
-            )
-            _step(_LABEL, "overlaying unsloth-zoo from git main")
-            pip_install(
-                "Overlaying unsloth-zoo from git main",
-                "--no-cache-dir",
-                "--no-deps",
-                "--force-reinstall",
-                "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo",
-                constrain = False,
-            )
+            _overlay_local_core_packages(local_repo)
     elif local_repo:
         # Local dev install: update the released core packages, then overlay the
         # checkout as an editable install (--no-deps so torch is not re-resolved).
@@ -4550,24 +5466,7 @@ def install_python_stack() -> int:
             "unsloth",
             "unsloth-zoo",
         )
-        _step(_LABEL, f"overlaying local repo (editable): {local_repo}")
-        pip_install(
-            "Overlaying local repo (editable)",
-            "--no-cache-dir",
-            "--no-deps",
-            "-e",
-            local_repo,
-            constrain = False,
-        )
-        _step(_LABEL, "overlaying unsloth-zoo from git main")
-        pip_install(
-            "Overlaying unsloth-zoo from git main",
-            "--no-cache-dir",
-            "--no-deps",
-            "--force-reinstall",
-            "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo",
-            constrain = False,
-        )
+        _overlay_local_core_packages(local_repo)
     elif package_name != "unsloth":
         # Custom package name (for testing): install directly.
         _progress("base packages")
@@ -4581,6 +5480,12 @@ def install_python_stack() -> int:
         # torch/CUDA installs. Torch is pre-installed by install.sh/setup.ps1;
         # --upgrade-package targets only base pkgs.
         _progress("base packages")
+        desktop_min_ver = os.environ.get("UNSLOTH_DESKTOP_BACKEND_VERSION", "").strip()
+        unsloth_spec = (
+            f"{package_name}>={desktop_min_ver}"
+            if (desktop_min_ver and package_name == "unsloth")
+            else package_name
+        )
         pip_install(
             "Updating core packages",
             "--no-cache-dir",
@@ -4588,7 +5493,7 @@ def install_python_stack() -> int:
             "unsloth",
             "--upgrade-package",
             "unsloth-zoo",
-            "unsloth",
+            unsloth_spec,
             "unsloth-zoo",
         )
 
@@ -4843,6 +5748,19 @@ def install_python_stack() -> int:
         **_windows_hidden_subprocess_kwargs(),
     )
 
+    # 14b. Repair again before the manifest is written. The pass above runs
+    # before the core packages are installed, so an upgrade that itself leaves a
+    # superseded record behind -- the exact state this repair exists for -- would
+    # otherwise survive it. write_manifest would then record a null version and
+    # the installer would report success while every later check rejects the
+    # environment. A no-op when nothing is ambiguous.
+    if not _repair_duplicate_core_metadata(
+        (package_name, "unsloth-zoo"),
+        local_repo = local_repo,
+        ci_source_overlay = ci_source_overlay,
+    ):
+        return 1
+
     # 15. Record success. Written last so an earlier kill leaves none. Exiting 0
     # without it reports a finished install every later check calls unfinished.
     if (
@@ -4881,4 +5799,22 @@ def install_python_stack() -> int:
 
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--amd-torch-needs-dependency-pass"]:
+        # Exit 0 forces the dependency pass; exit 1 keeps the fast path.
+        _needs_pass = _amd_torch_needs_dependency_pass()
+        # Exit 1 covers five states (no-torch venv, resolved non-ROCm backend, non-ROCm pin,
+        # absent or masked AMD host, unreadable torch), so a CI failure here would otherwise
+        # report a bare `assert 1 == 0` with both streams empty. setup.sh discards both
+        # streams, so this costs the installer nothing. _TORCH_RUNTIME_PROBE is read, not
+        # called, so no subprocess is added: None means an earlier gate answered first.
+        _safe_print(
+            f"{_AMD_FASTPATH_DECISION_MARKER}needs_pass={_needs_pass} no_torch={NO_TORCH} "
+            f"is_linux={IS_LINUX} machine={platform.machine()!r} backend={_TORCH_BACKEND!r} "
+            f"probe={_TORCH_RUNTIME_PROBE!r}"
+        )
+        sys.exit(0 if _needs_pass else 1)
+    if any(_arg.startswith("-") for _arg in sys.argv[1:]):
+        # Never let a malformed probe call fall through into a multi-gigabyte install.
+        _safe_print(f"Unknown argument: {' '.join(sys.argv[1:])}")
+        sys.exit(2)
     sys.exit(install_python_stack())

@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, mock_open, patch, PropertyMock
 
 import pytest
+from unsloth_pwsh_runner import run_pwsh
 
 
 # ── Load modules under test ──────────────────────────────────────────────────
@@ -4354,7 +4355,11 @@ $adapters = @(
 ($adapters | Where-Object { ($null -eq $_.ConfigManagerErrorCode) -or (
     $_.ConfigManagerErrorCode -eq 0) }).Name
 """
-        out = subprocess.run(
+        # run_pwsh, not subprocess.run: this asserts the WMI adapter filter is valid
+        # PowerShell, so an interpreter that died before parsing it would be recorded as
+        # the filter expression itself being malformed.
+        # See tests/_shared/unsloth_pwsh_runner.py.
+        out = run_pwsh(
             ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
             check = True,
             capture_output = True,
@@ -4500,7 +4505,11 @@ foreach ($v in @('$script:ShadowingIntegratedGfx', '$archFamilyMap')) {
         merged = {k: v for k, v in os.environ.items() if not k.endswith("_VISIBLE_DEVICES")}
         merged["SETUP_PS1"] = str(PACKAGE_ROOT / "studio" / "setup.ps1")
         merged.update(env or {})
-        out = subprocess.run(
+        # run_pwsh, not subprocess.run: every Resolve-ShadowingGfxPick case goes through
+        # here, and a crashed interpreter returns no stdout at all, which the callers would
+        # read as the shadowing pick returning the wrong gfx arch.
+        # See tests/_shared/unsloth_pwsh_runner.py.
+        out = run_pwsh(
             ["pwsh", "-NoProfile", "-NonInteractive", "-Command", self._HARNESS + body],
             check = True,
             capture_output = True,
@@ -4577,7 +4586,10 @@ foreach ($v in @('$script:ShadowingIntegratedGfx', '$archFamilyMap')) {
         )
         merged = {k: v for k, v in os.environ.items() if not k.endswith("_VISIBLE_DEVICES")}
         merged["SETUP_PS1"] = str(PACKAGE_ROOT / "studio" / "setup.ps1")
-        out = subprocess.run(
+        # run_pwsh, not subprocess.run: the advisory text is collected from this run's
+        # stdout, so a pwsh that aborted at startup would look like substep never naming
+        # the real HIP_VISIBLE_DEVICES index. See tests/_shared/unsloth_pwsh_runner.py.
+        out = run_pwsh(
             ["pwsh", "-NoProfile", "-NonInteractive", "-Command", harness + body],
             check = True,
             capture_output = True,
@@ -6631,7 +6643,10 @@ class TestRocmGfxForwarding:
         )
         assert line is not None, "$HelperReleaseRepo selection not found in setup.ps1"
         harness = f"{line}\nWrite-Output $HelperReleaseRepo"
-        result = subprocess.run(
+        # run_pwsh, not subprocess.run: the returncode assertion just below treats a
+        # non-zero exit as $HelperReleaseRepo failing to resolve, and a signal-killed pwsh
+        # would be blamed the same way. See tests/_shared/unsloth_pwsh_runner.py.
+        result = run_pwsh(
             [pwsh, "-NoProfile", "-Command", harness],
             capture_output = True,
             text = True,

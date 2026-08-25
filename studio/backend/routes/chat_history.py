@@ -29,6 +29,10 @@ from storage.studio_db import (
     ProjectWorkspaceError,
     build_chat_history_export,
     clear_chat_history,
+    clear_chat_history_with_replay_status,
+    mark_clear_operation_caches_cleared,
+    record_clear_operation_reap_scope,
+    unreaped_clear_operation_image_ids,
     count_chat_threads,
     count_forks_for_message,
     delete_chat_attachment,
@@ -80,7 +84,9 @@ class ChatRagKnowledgeBaseSource(BaseModel):
 class ChatThreadSettings(BaseModel):
     """The chat settings captured per thread; a thread storing none uses the global ones."""
 
-    model_config = ConfigDict(extra = "forbid")
+    # allow_inf_nan as in ChatInferenceSettings: json.loads and pydantic both take
+    # a bare NaN, which is then stored as a token no strict reader can parse back.
+    model_config = ConfigDict(extra = "forbid", allow_inf_nan = False)
 
     reasoningEnabled: Optional[bool] = None
     reasoningEffort: Optional[
@@ -107,6 +113,18 @@ class ChatThreadSettings(BaseModel):
     ragTopK: Optional[int] = Field(default = None, ge = 1, le = 50)
     ragAutoInject: Optional[Literal["auto", "on", "off"]] = None
     ragAutoInjectMinScore: Optional[float] = Field(default = None, ge = 0, le = 1)
+    # The sampling params a chat runs with. Ranges match the sliders that set them.
+    temperature: Optional[float] = Field(default = None, ge = 0, le = 2)
+    topP: Optional[float] = Field(default = None, ge = 0, le = 1)
+    # -1 disables top-k, matching ChatCompletionRequest and the default.yaml fallback.
+    topK: Optional[int] = Field(default = None, ge = -1, le = 100)
+    minP: Optional[float] = Field(default = None, ge = 0, le = 1)
+    repetitionPenalty: Optional[float] = Field(default = None, ge = 1, le = 2)
+    presencePenalty: Optional[float] = Field(default = None, ge = 0, le = 2)
+    # Not length-capped, like the installation-wide copy: truncating here would
+    # silently change what the chat runs with.
+    systemPrompt: Optional[str] = None
+    systemVariables: Optional[str] = None
 
 
 class ChatThread(BaseModel):
@@ -414,6 +432,8 @@ class ChatSettingsPayload(BaseModel):
     preserveThinking: Optional[bool] = None
     collapseHtmlArtifacts: Optional[bool] = None
     allowArtifactNetworkAccess: Optional[bool] = None
+    # Read by the web_search tool at call time, so it lives with the install, not one browser.
+    searchImages: Optional[bool] = None
     autoHealToolCalls: Optional[bool] = None
     nudgeToolCalls: Optional[bool] = None
     maxToolCallsPerMessage: Optional[int] = Field(default = None, ge = 1)
@@ -429,6 +449,9 @@ class ChatSettingsPayload(BaseModel):
     webFetchToolsEnabled: Optional[bool] = None
     deepResearchEnabled: Optional[bool] = None
     researchWebsitePolicy: Optional[ChatResearchWebsitePolicy] = None
+    # Seconds per Deep Research model request; zero leaves the total wall clock off. Bounded
+    # like the run route so a value it would reject cannot be persisted and replayed.
+    researchModelTimeoutSeconds: Optional[int] = Field(default = None, ge = 0, le = 365 * 24 * 3600)
     artifactsEnabled: Optional[bool] = None
     showCanvasMenuItem: Optional[bool] = None
     mcpEnabledForChat: Optional[bool] = None
@@ -454,6 +477,24 @@ class ChatSettingsPayload(BaseModel):
     expandQuantizations: Optional[bool] = None
     showAllQuantizations: Optional[bool] = None
     fitOnDeviceOnly: Optional[bool] = None
+
+    @field_validator("researchModelTimeoutSeconds", mode = "before")
+    @classmethod
+    def _not_a_boolean(cls, value: Any) -> Any:
+        # bool subclasses int, so False coerces to the 0 sentinel and would persist as
+        # unlimited for every later run. The run route rejects booleans for the same reason.
+        if isinstance(value, bool):
+            raise ValueError("researchModelTimeoutSeconds must be an integer, not a boolean")
+        return value
+
+    @field_validator("researchModelTimeoutSeconds")
+    @classmethod
+    def _run_route_accepts_it(cls, value: Optional[int]) -> Optional[int]:
+        # The run route takes 0 (unlimited) or at least 10, so a persisted 1..9 would hydrate
+        # and then 400 every later run with nothing pointing at this setting.
+        if value is not None and 0 < value < 10:
+            raise ValueError("researchModelTimeoutSeconds must be 0 (unlimited) or at least 10")
+        return value
 
 
 class ChatSettingsResponse(BaseModel):
@@ -672,6 +713,8 @@ async def delete_threads(
 ):
     from starlette.concurrency import run_in_threadpool
 
+    # Before the rows go, so a thread id that comes back in the gap is cut here.
+    cutoff = _archive_cutoff()
     deleted_research_run_ids = await run_in_threadpool(delete_chat_threads, payload.ids)
     _cancel_research_runs(request, deleted_research_run_ids)
     _cancel_active_generations(payload.ids)
@@ -680,7 +723,41 @@ async def delete_threads(
     # In a worker: right after an upgrade this also runs the legacy move, and a
     # cross-filesystem copy on the event loop stops every other request.
     removed, kept = await _remove_sandboxes(payload.ids, payload.delete_files)
+    # Archived turns are keyed by thread id and unreferenced once the thread is gone, so
+    # drop them rather than leaking a scope per deleted chat.
+    await run_in_threadpool(_remove_conversation_archives, payload.ids, cutoff = cutoff)
     return {"status": "deleted", "sandboxes_removed": removed, "sandboxes_kept": kept}
+
+
+def _archive_cutoff() -> str:
+    """The instant a delete was accepted, as an ISO-8601 UTC string. See below."""
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _remove_conversation_archives(thread_ids, *, cutoff: "str | None" = None) -> None:
+    """Drop each deleted thread's archived turns. Never raises."""
+    try:
+        from core.rag import conversation_archive
+    except Exception:
+        return
+    for thread_id in thread_ids or []:
+        # As next to the sandbox removal: the rows went first and the sandbox pass ran in
+        # between, so another tab can have recreated this id and already be archiving
+        # turns under it. That chat is alive, and its memory is not this delete's to take
+        # -- but the conversation the user DID delete is, and skipping the scope kept it
+        # too, recallable under the live id with nothing left to sweep it. So cut at the
+        # instant the delete was accepted instead of skipping: everything archived before
+        # it belongs to the deleted conversation, everything after to the new one.
+        recreated = get_chat_thread(str(thread_id)) is not None
+        if recreated and not cutoff:
+            continue
+        try:
+            conversation_archive.delete_for_thread(
+                str(thread_id), created_before = cutoff if recreated else None
+            )
+        except Exception:
+            logger.warning("Could not remove the conversation archive for %s", thread_id)
 
 
 async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[str]]":
@@ -973,6 +1050,7 @@ async def delete_project(
     # Rows first, files last: a member chat can still be running a tool in the
     # workspace, and its cwd disappearing mid-call either kills the call or
     # leaves what it writes next in a directory no project owns.
+    cutoff = _archive_cutoff()
     try:
         project = await run_in_threadpool(
             lambda: delete_chat_project(project_id, delete_files = False)
@@ -1006,6 +1084,8 @@ async def delete_project(
     # By run id: the rows are gone by now, so there is nothing left to look up.
     _cancel_research_runs(request, list(project.get("activeResearchRunIds") or []))
     _cancel_active_generations(member_ids)
+    # The project's chats go with it, so their archives have to as well.
+    await run_in_threadpool(_remove_conversation_archives, member_ids, cutoff = cutoff)
     if project.get("sandboxPath"):
         from core.inference.tools import (
             finish_workspace_delete_when_idle,
@@ -1263,6 +1343,7 @@ async def clear_history(
 ):
     from starlette.concurrency import run_in_threadpool
 
+    cutoff = _archive_cutoff()
     # Admission is already closed in the frontend. Include its pending and legacy ids in the
     # transaction's fence so a delayed POST cannot recreate a chat after this returns.
     thread_ids = (
@@ -1271,20 +1352,55 @@ async def clear_history(
         else [thread["id"] for thread in await run_in_threadpool(list_chat_threads)]
     )
 
-    def _clear_rows() -> tuple[list[str], list[str]]:
+    def _clear_rows() -> tuple[list[str], list[str], bool, Optional[set]]:
+        """The clear, and the image snapshot the reap will be bounded to.
+
+        Both in ONE threadpool call, so there is no await between them. Split across two,
+        the event loop can run another request in the gap: a chat created there survives
+        the transaction, but its images register before the snapshot and the reap takes
+        them, leaving its cards 404ing out of thumbnail_bytes.
+
+        Narrowed, NOT closed, and the difference is worth stating. Another worker thread can
+        still register between the commit and the read a few instructions later, and only one
+        thing would truly close that: holding ``_registry_lock`` across the transaction. That
+        lock is what every image registration in the process takes, and this transaction is a
+        BEGIN IMMEDIATE that waits out contention for seconds, so paying for it means stalling
+        every search in every chat for the length of a clear. The window bought back is a few
+        instructions wide and its cost is one chat's thumbnails re-fetching. Not worth it.
+        """
+        from core.inference.search_images import snapshot_and_fence_registrations
+
         if payload is None:
             cleared, cleared_runs = clear_chat_history()
-        else:
-            cleared, cleared_runs = clear_chat_history(
-                payload.ids,
-                operation_id = payload.operationId,
+            return cleared, cleared_runs, False, snapshot_and_fence_registrations()
+        # Answered by the transaction itself. Read separately beforehand it is a guess:
+        # a concurrent retry of the same operation id sees the same unrecorded ledger,
+        # and the one BEGIN IMMEDIATE puts second replays while still believing it
+        # cleared. `replayed` here is whichever the transaction actually did.
+        cleared, cleared_runs, replayed = clear_chat_history_with_replay_status(
+            payload.ids,
+            operation_id = payload.operationId,
+        )
+        if replayed:
+            # A replay takes no snapshot of its own -- the chats created since the original
+            # clear are not its to reap. It may still have to FINISH that clear's reap,
+            # though, if the process died between the commit and the cleanup.
+            return (
+                cleared,
+                cleared_runs,
+                True,
+                unreaped_clear_operation_image_ids(payload.operationId),
             )
-        return cleared, cleared_runs
+        snapshot = snapshot_and_fence_registrations()
+        # Recorded before the reap runs, so a crash in the seconds of cleanup that follow
+        # leaves a retry able to finish exactly this set and nothing wider.
+        record_clear_operation_reap_scope(payload.operationId, snapshot)
+        return cleared, cleared_runs, False, snapshot
 
     # The clear reports what it deleted, which is what gets cleaned up: a thread
     # added between the listing above and the delete is gone too, and its
     # sandbox would otherwise be stranded.
-    cleared, cleared_runs = await run_in_threadpool(_clear_rows)
+    cleared, cleared_runs, replayed, reapable_image_ids = await run_in_threadpool(_clear_rows)
     # A chat started between the listing and the transaction is in `cleared`
     # but was never cancelled, and a generation still running would dispatch a
     # tool and rebuild the sandbox this call is about to remove.
@@ -1295,11 +1411,39 @@ async def clear_history(
         _cancel_active_generations(late)
     # By id: the rows went with the threads, so nothing can look them up now.
     _cancel_research_runs(request, cleared_runs)
+    # Same archive cleanup as DELETE /threads. Without it "Clear all chats" leaves every
+    # conversation searchable in rag.db, and a reused thread id reads the old archive.
+    await run_in_threadpool(
+        _remove_conversation_archives, list(dict.fromkeys(thread_ids + cleared)), cutoff = cutoff
+    )
     # "Clear all chats" is the common bulk delete, so it has to clean up the
     # same folders DELETE /threads does; otherwise every sandbox is stranded.
     # delete_files matches DELETE /threads: off by default, since the files are
     # the user's, but a caller clearing everything can ask for them too.
     removed, kept = await _remove_sandboxes(list(dict.fromkeys(thread_ids + cleared)), delete_files)
+    # Search thumbnails are keyed by id, not thread, so this is the one place they
+    # can be reaped; they reveal what was searched for. Runs for both _clear_rows
+    # branches -- each calls clear_chat_history(), which drops every thread -- so this
+    # is NOT gated on `payload is None`, which the frontend never sends and which
+    # therefore meant the reap never ran.
+    #
+    # A REPLAY must not reap the registry wholesale: the transaction above deliberately keeps
+    # chats created since the original clear, and this registry is global, so wiping it takes
+    # the images of a chat this call is not deleting and leaves its cards 404ing out of
+    # thumbnail_bytes. Ordinarily it has nothing to do -- the request that recorded the
+    # operation reaps them, and Starlette does not cancel a handler when the client hangs up,
+    # so the attempt this retry replaces still runs to here.
+    #
+    # The exception is a process that DIED in between. The operation is recorded and the
+    # thumbnails of every deleted chat are still on disk, saying what was searched for, and
+    # only a replay is left to notice. `reapable_image_ids` is then the original clear's own
+    # snapshot, read back off the ledger, so finishing its reap is bounded to exactly what it
+    # was responsible for and cannot reach a newer chat's images.
+    if not replayed or reapable_image_ids:
+        from core.inference.search_images import clear_cache
+        await run_in_threadpool(clear_cache, reapable_image_ids)
+        if payload is not None:
+            await run_in_threadpool(mark_clear_operation_caches_cleared, payload.operationId)
     return {
         "status": "deleted",
         "deletedThreadIds": cleared,

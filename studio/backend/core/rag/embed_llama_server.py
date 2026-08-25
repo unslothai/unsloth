@@ -34,6 +34,7 @@ from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid
 
 from . import config
+from utils.paths.path_utils import is_appledouble_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +109,7 @@ class LlamaServerBackend:
         # makes it stale, forcing a re-resolve + respawn (see _ensure_ready).
         self._model_repo: str | None = None
         self._binary: str | None = None
+        self._binary_path_revision: int | None = None
         # Sticky after an auto GPU start fails: later spawns stay on CPU.
         self._force_cpu = False
         # Pooled client (full URLs per request survive a respawn); trust_env=False skips HTTP(S)_PROXY.
@@ -124,7 +126,9 @@ class LlamaServerBackend:
         if self._binary is not None:
             return self._binary
         from core.inference.llama_cpp import LlamaCppBackend
+        from utils.llama_cpp_path_settings import custom_llama_cpp_path_revision
 
+        path_revision = custom_llama_cpp_path_revision()
         binary = LlamaCppBackend._find_llama_server_binary()
         if not binary:
             raise RuntimeError(
@@ -137,6 +141,7 @@ class LlamaServerBackend:
         binary = _resolve_entrypoint(binary)
         self._assert_embedding_support(binary)
         self._binary = binary
+        self._binary_path_revision = path_revision
         return binary
 
     @staticmethod
@@ -191,13 +196,16 @@ class LlamaServerBackend:
         """A custom model may be a local .gguf file or a directory holding one;
         resolve it without the hub. None when the value is not a local path."""
         p = Path(model).expanduser()
+
         if p.is_file() and p.suffix.lower() == ".gguf":
-            return str(p)
+            return None if is_appledouble_metadata(p) else str(p)
         if p.is_dir():
             files = [
                 f
                 for f in p.iterdir()
-                if f.suffix.lower() == ".gguf" and "mmproj" not in f.name.lower()
+                if f.suffix.lower() == ".gguf"
+                and "mmproj" not in f.name.lower()
+                and not is_appledouble_metadata(f)
             ]
             if not files:
                 raise RuntimeError(f"no .gguf file found in local model dir {model!r}")
@@ -288,7 +296,12 @@ class LlamaServerBackend:
         try:
             # Not a "*.gguf" glob: that is case-sensitive, and quant-per-directory layouts
             # put the file a level down, both of which the hub listing handles.
-            files = [p for p in snapshot.rglob("*") if p.is_file()]
+
+            # A complete family of sidecars is servable by every test below -- whole, quant
+            # matched, opens as a file -- so the retry that drops a torn real set lands on it.
+            files = [
+                p for p in snapshot.rglob("*") if p.is_file() and not is_appledouble_metadata(p)
+            ]
         except OSError:
             return None
         # llama-server opens sibling shards implicitly, so a split set is servable only when
@@ -650,7 +663,12 @@ class LlamaServerBackend:
     def _current(self) -> bool:
         """Alive AND serving the effective repo (a Settings model change makes a
         live server stale)."""
-        return self._process_alive() and self._model_repo == config.effective_gguf_repo()
+        from utils.llama_cpp_path_settings import custom_llama_cpp_path_revision
+        return (
+            self._process_alive()
+            and self._model_repo == config.effective_gguf_repo()
+            and self._binary_path_revision == custom_llama_cpp_path_revision()
+        )
 
     def _ensure_ready(self) -> None:
         """Guarantee a live server on the effective model, (re)spawning if needed.
@@ -662,6 +680,11 @@ class LlamaServerBackend:
             if self._current():
                 return
             self._kill_process()
+            from utils.llama_cpp_path_settings import custom_llama_cpp_path_revision
+
+            if self._binary_path_revision != custom_llama_cpp_path_revision():
+                self._binary = None
+                self._binary_path_revision = None
             self._spawn()
 
     def _restart(self) -> None:

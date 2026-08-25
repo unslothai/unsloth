@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useRef } from "react";
 import { Delete02Icon, FlimSlateIcon, MusicNote01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
@@ -11,6 +11,11 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import {
+  CHAT_AUDIO_DROP_ACCEPT,
+  CHAT_VIDEO_DROP_ACCEPT,
+} from "@/features/native-intents/drop-paths";
+import { useNativeFileDrop } from "@/features/native-intents";
 import { cn } from "@/lib/utils";
 import { toast } from "@/lib/toast";
 
@@ -39,7 +44,6 @@ export function ReferenceMediaPicker({
   compact?: boolean;
 }) {
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const [dragging, setDragging] = useState(false);
 
   const readFile = useCallback(
     (file: File | undefined | null) => {
@@ -52,6 +56,14 @@ export function ReferenceMediaPicker({
     [kind, onChange],
   );
 
+  // Tauri suppresses the webview's own drop events, so the handlers below never
+  // fire on the desktop app; this claims the OS drop for the button (#9036).
+  const { ref: dropRef, dragging, dragHandlers } = useNativeFileDrop({
+    onFiles: (files) => readFile(files[0]),
+    accept: kind === "video" ? CHAT_VIDEO_DROP_ACCEPT : CHAT_AUDIO_DROP_ACCEPT,
+    multiple: false,
+  });
+
   const icon = kind === "video" ? FlimSlateIcon : MusicNote01Icon;
 
   if (value) {
@@ -63,7 +75,14 @@ export function ReferenceMediaPicker({
         )}
       >
         <HugeiconsIcon icon={icon} className="size-3.5 shrink-0 text-muted-foreground" />
-        <span className="min-w-0 flex-1 truncate text-ui-11 text-foreground">{value.name}</span>
+        {/* The file input is early-returned past in this branch, so the
+            type=file redaction never sees it: mark the name itself. */}
+        <span
+          data-reload-snapshot-sensitive
+          className="min-w-0 flex-1 truncate text-ui-11 text-foreground"
+        >
+          {value.name}
+        </span>
         <Tooltip>
           <TooltipTrigger asChild={true}>
             <Button
@@ -89,17 +108,9 @@ export function ReferenceMediaPicker({
   return (
     <button
       type="button"
+      ref={dropRef}
       onClick={() => inputRef.current?.click()}
-      onDragOver={(e) => {
-        e.preventDefault();
-        setDragging(true);
-      }}
-      onDragLeave={() => setDragging(false)}
-      onDrop={(e) => {
-        e.preventDefault();
-        setDragging(false);
-        readFile(e.dataTransfer.files?.[0]);
-      }}
+      {...dragHandlers}
       className={cn(
         "flex w-full items-center justify-center gap-1.5 rounded-[10px] border border-dashed text-ui-11 transition-colors",
         compact ? "h-8" : "h-11",
