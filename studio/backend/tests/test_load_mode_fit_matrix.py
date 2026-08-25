@@ -1524,6 +1524,7 @@ def test_a_tensor_split_charges_the_replicated_compute_buffer():
 def test_the_tensor_rate_really_exceeds_the_layer_one():
     """The under-charge the fix closes is not a rounding difference: at one slot
     the layer figure drops the vocab-width output buffer entirely."""
+
     class _Dims:
         # is_embedding_gguf is a read-only property on the real backend.
         _vocab_size = 151936
@@ -1584,11 +1585,7 @@ def test_the_replicated_buffer_can_decide_the_fit(monkeypatch):
 )
 def test_a_partial_draft_offload_is_recognised(extras, env, n_draft_layers, expected):
     from core.inference.llama_cpp import _draft_is_split_across_host
-
-    assert (
-        _draft_is_split_across_host(extras, env or {}, n_draft_layers = n_draft_layers)
-        is expected
-    )
+    assert _draft_is_split_across_host(extras, env or {}, n_draft_layers = n_draft_layers) is expected
 
 
 def test_a_partial_draft_offload_leaves_the_drafter_unsized():
@@ -1605,11 +1602,17 @@ def test_a_partial_draft_offload_leaves_the_drafter_unsized():
     from core.inference.llama_cpp import LlamaCppBackend as B
 
     compact = "".join(inspect.getsource(B.load_model).split())
-    assert "_draft_split_across_host=bool(_mtp_draft_for_budgetand_draft_is_split_across_host(" in compact
+    assert (
+        "_draft_split_across_host=bool(_mtp_draft_for_budgetand_draft_is_split_across_host("
+        in compact
+    )
     # The same effective views the other overrides are classified on.
     assert "_draft_is_split_across_host(_fit_extras,_fit_env," in compact
     # Scoped by the drafter's own block count, off the backend the KV sizing above
     # already cached, so -ngld at or above it is not treated as a split.
-    assert 'n_draft_layers=getattr(self._draft_backend_for(_mtp_draft_for_budget),"_n_layers",None,)' in compact
+    assert (
+        'n_draft_layers=getattr(self._draft_backend_for(_mtp_draft_for_budget),"_n_layers",None,)'
+        in compact
+    )
     # And it lands on the abstain, not on a term.
     assert "or_draft_split_across_host" in compact

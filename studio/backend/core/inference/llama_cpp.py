@@ -8994,9 +8994,7 @@ class LlamaCppBackend:
             # it would forfeit a fit that is really there, so re-ask per row -- the
             # same scoping _amd_apu_wants_unified_memory documents (PHYSICAL ids, so
             # a dGPU on a mixed host is not treated as unified-memory).
-            shared |= {
-                idx for idx, _free in rows if self._amd_apu_wants_unified_memory([idx])
-            }
+            shared |= {idx for idx, _free in rows if self._amd_apu_wants_unified_memory([idx])}
         # --no-kv-offload puts the WHOLE cache in host RAM, whatever the layer
         # placement says: llama-kv-cache.cpp defaults every layer's buffer type to
         # ggml_backend_cpu_buffer_type() and only upgrades it to the layer's device
