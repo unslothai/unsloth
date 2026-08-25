@@ -108,12 +108,10 @@ BUSY_SECONDS = 5 * 60
 #
 #   /api/settings/remote-access  360 lines per idle half hour  -> fixed by #8763
 #   /api/liveness                120 lines per idle half hour  -> fixed by #8763
-KNOWN_UNCLASSIFIED_POLLS: frozenset[str] = frozenset(
-    {
-        "/api/settings/remote-access",
-        "/api/liveness",
-    }
-)
+# Empty, and worth keeping empty. #8763 gave both former entries a heartbeat class, and the
+# closure test fails on a stale entry as loudly as on a missing one, so this cannot quietly
+# become a place to park a chatty endpoint.
+KNOWN_UNCLASSIFIED_POLLS: frozenset[str] = frozenset()
 
 # The envelopes. These are what catch a NEW chatty endpoint: a path can satisfy its own
 # class formula perfectly and still push the total up, which is exactly what happened to
@@ -123,13 +121,19 @@ KNOWN_UNCLASSIFIED_POLLS: frozenset[str] = frozenset(
 # It is not a knob to turn because a test went red. The class formulas tell you whether the
 # suppression rules are being honoured; these tell you whether the result is acceptable.
 #
-# Set from the measured behaviour of this revision (idle 1380, busy 239) plus room for a
-# genuinely new endpoint, NOT from an aspiration. Two of the three biggest idle
-# contributors are known and being fixed: /api/settings/remote-access at 360 lines and
-# /api/liveness at 120 are both moved to heartbeat classes by #8763, which should take idle
-# to roughly 930. RATCHET THESE DOWN when that lands; an envelope left at the old number
-# after the fix is an envelope that has stopped guarding anything.
-STEADY_IDLE_LINE_ENVELOPE = 1450
+# Set from the measured behaviour of this revision plus room for a genuinely new endpoint,
+# NOT from an aspiration.
+#
+# Ratcheted once already. Before #8763 idle measured 1380 and the envelope was 1450; the
+# note here predicted the fix would take idle to roughly 930. It did not: idle now measures
+# 1110. The prediction assumed /api/settings/remote-access would stop contributing, but a
+# 10s heartbeat against a 5s poll still emits half of them, 180 lines over 30 minutes,
+# which is now the joint-largest contributor. Left at 1450 the envelope would have had 340
+# lines of slack, which is room for a whole new chatty endpoint to arrive unnoticed.
+#
+# Re-measure and ratchet again whenever a suppression rule changes. An envelope carrying
+# the old number after a fix has stopped guarding anything.
+STEADY_IDLE_LINE_ENVELOPE = 1170
 BUSY_LINE_ENVELOPE = 260
 
 # One-shot requests the app makes once on startup. Present so the boot window is not

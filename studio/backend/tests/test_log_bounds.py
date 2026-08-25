@@ -36,7 +36,10 @@ _PROCESS_RS = _STUDIO / "src-tauri" / "src" / "process.rs"
 #
 #   llama-server / diffusion-server: one file per model load ATTEMPT. 319 files going back
 #   two months were found on one machine. Retention arrives with #8763.
-KNOWN_UNBOUNDED_FAMILIES = frozenset({"llama-server", "diffusion-server"})
+# Empty since #8763 gave the two sidecar families keep-newest-N retention. The staleness
+# check below fails on an entry that no longer describes reality, so this list cannot
+# outlive the problem it records.
+KNOWN_UNBOUNDED_FAMILIES: frozenset[str] = frozenset()
 
 # Families the desktop shell owns. Bounded in Rust (rotation), not by a Python pruner.
 _DESKTOP_FAMILIES = frozenset(
