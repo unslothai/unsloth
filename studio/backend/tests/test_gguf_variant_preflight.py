@@ -227,9 +227,10 @@ def test_a_repo_root_projector_counts_before_the_quant_verifies(
     first.write_bytes(b"mmproj shard one")
     second.write_bytes(b"mmproj shard two")
 
-    assert ModelConfig.from_identifier(
-        REPO, gguf_variant = "Q8_0"
-    ).gguf_local_mmproj_bound_bytes == first.stat().st_size + second.stat().st_size
+    assert (
+        ModelConfig.from_identifier(REPO, gguf_variant = "Q8_0").gguf_local_mmproj_bound_bytes
+        == first.stat().st_size + second.stat().st_size
+    )
 
     # And across a case-variant copy of the same repo dir.
     other = hub_cache / f"models--{REPO.replace('/', '--')}".upper()

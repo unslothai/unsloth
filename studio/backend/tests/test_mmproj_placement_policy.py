@@ -882,7 +882,14 @@ def test_an_unpaired_projector_bound_is_charged_whatever_the_switch_says(tmp_pat
     way is what the guard already does with an unread remote projector."""
     seen = {}
 
-    def fake_companions(repo, *, hf_token, include_mmproj, local_mmproj_bytes = 0, **kw):
+    def fake_companions(
+        repo,
+        *,
+        hf_token,
+        include_mmproj,
+        local_mmproj_bytes = 0,
+        **kw,
+    ):
         seen["local_mmproj_bytes"] = local_mmproj_bytes
         return max(int(local_mmproj_bytes), 0)
 

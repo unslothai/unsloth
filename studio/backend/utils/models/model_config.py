@@ -2700,7 +2700,6 @@ def _hf_cache_repo_root_mmproj_bound_bytes(repo_id: str) -> int:
     bound = 0
     try:
         from utils.hf_cache_settings import get_hf_cache_paths
-
         target = f"models--{repo_id.replace('/', '--')}".lower()
         # Case drift can leave several dirs for one repo, as _cached_hf_snapshot_file
         # already allows for; the bound has to cover whichever the load resolves into.
