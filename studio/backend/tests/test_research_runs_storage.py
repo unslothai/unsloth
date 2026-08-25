@@ -4009,3 +4009,54 @@ def test_the_new_question_gets_its_own_retry_budget(research_home):
     assert _rebind(_new_user_message()) is not None
     _cancel_run()
     assert research_db.retry("run-1") == "planning"
+
+
+def test_a_stopped_worker_does_not_stamp_cancelled_on_the_next_question(research_home, monkeypatch):
+    """The worker finishes a stop, then writes its reply. The user can ask in between.
+
+    Both replies are resolved by the same reused run id, so without the attempt guard the new
+    question's placeholder is written "Research cancelled." and stays that way.
+    """
+    from core import research_runs as worker
+
+    _create()
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    research_db.request_cancel("run-1")
+    claimed = research_db.claim_next(supervisor.worker_id)
+
+    async def cancelled_plan(run):
+        raise worker.RunCancelled()
+
+    # The window: the run reaches "cancelled", the user asks the next question, and only then
+    # does the worker get round to writing its reply.
+    real_get_run = research_db.get_run
+
+    def racing_get_run(run_id, *args, **kwargs):
+        if research_db.get_run.calls == 0:
+            research_db.get_run.calls += 1
+            # No placeholder written by hand: rebind_cancelled creates and binds it, exactly
+            # as the endpoint does for the next armed question.
+            research_db.rebind_cancelled(
+                thread_id = "thread-1",
+                owner_subject = "alice",
+                user_message_id = _new_user_message(),
+                assistant_message_id = "assistant-2",
+                config = dict(real_get_run("run-1")["config"]),
+            )
+        return real_get_run(run_id, *args, **kwargs)
+
+    racing_get_run.calls = 0
+    monkeypatch.setattr(supervisor, "_plan", cancelled_plan)
+    monkeypatch.setattr(research_db, "get_run", racing_get_run)
+    research_db.get_run.calls = 0
+    asyncio.run(supervisor._process(claimed))
+
+    # real_get_run, not the patched name: undoing the patch here would also undo the fixture's
+    # UNSLOTH_STUDIO_HOME and read a different database.
+    rebound = real_get_run("run-1")
+    assert racing_get_run.calls == 1
+    assert rebound["status"] == "planning"
+    assert rebound["assistantMessageId"] == "assistant-2"
+    new_reply = studio_db.get_chat_message("thread-1", "assistant-2")
+    assert (new_reply["metadata"] or {}).get("researchStatus") != "cancelled"
+    assert "Research cancelled." not in json.dumps(new_reply["content"])

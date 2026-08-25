@@ -742,6 +742,22 @@ def _research_step_failed(web_result: str, rag_sources: list[dict]) -> bool:
     return is_tool_error(web_result) or web_result.strip() in EMPTY_SEARCH_RESULTS
 
 
+def _run_moved_on(fresh: dict | None, attempt: int) -> bool:
+    """Whether the run this worker was running has since been re-pointed at a newer question.
+
+    A thread reuses its one run row for its lifetime, so between committing a terminal status
+    and writing the terminal reply the user can stop the run and ask something else: the row
+    is reset, its assistant binding moves, and the reply below -- resolved by run id -- would
+    stamp "Research cancelled." and researchStatus cancelled onto the NEW question's
+    placeholder, where it stays until that question reaches its own terminal write.
+
+    retryCount is the attempt epoch, which rebind_cancelled advances for exactly this reason.
+    """
+    if not fresh:
+        return True
+    return int(fresh.get("retryCount") or 0) != attempt
+
+
 def _update_assistant(
     run: dict,
     text: str,
@@ -1586,6 +1602,9 @@ class ResearchSupervisor:
             logger.debug("research.phase_event_failed run_id=%s", run_id, exc_info = True)
 
     async def _process(self, run: dict) -> None:
+        # The attempt this worker claimed. Everything it writes after a terminal status is
+        # only its to write while the run is still on that attempt.
+        attempt = int(run.get("retryCount") or 0)
         cancel_event = self._cancel_event(run["id"])
         if await asyncio.to_thread(db.is_cancel_requested, run["id"]):
             cancel_event.set()
@@ -1601,7 +1620,7 @@ class ResearchSupervisor:
                 db.finish, run["id"], self.worker_id, "cancelled"
             )
             fresh = await asyncio.to_thread(db.get_run, run["id"])
-            if actual_status == "cancelled" and fresh:
+            if actual_status == "cancelled" and not _run_moved_on(fresh, attempt):
                 await asyncio.to_thread(
                     _update_assistant, fresh, "Research cancelled.", "cancelled"
                 )
@@ -1609,14 +1628,14 @@ class ResearchSupervisor:
             logger.warning("research.lease_lost run_id=%s", run["id"])
             actual_status = await self._finish_after_lease_loss(run["id"])
             fresh = await asyncio.to_thread(db.get_run, run["id"])
-            if actual_status == "cancelled" and fresh:
+            if actual_status == "cancelled" and not _run_moved_on(fresh, attempt):
                 await asyncio.to_thread(
                     _update_assistant,
                     fresh,
                     "Research cancelled.",
                     "cancelled",
                 )
-            elif actual_status == "failed" and fresh:
+            elif actual_status == "failed" and not _run_moved_on(fresh, attempt):
                 await asyncio.to_thread(
                     _update_assistant,
                     fresh,
@@ -1635,11 +1654,11 @@ class ResearchSupervisor:
             if actual_status is None:
                 actual_status = await self._finish_after_lease_loss(run["id"])
             fresh = await asyncio.to_thread(db.get_run, run["id"])
-            if actual_status == "cancelled" and fresh:
+            if actual_status == "cancelled" and not _run_moved_on(fresh, attempt):
                 await asyncio.to_thread(
                     _update_assistant, fresh, "Research cancelled.", "cancelled"
                 )
-            elif actual_status == "failed" and fresh:
+            elif actual_status == "failed" and not _run_moved_on(fresh, attempt):
                 await asyncio.to_thread(
                     _update_assistant, fresh, f"Research failed: {error}", "failed"
                 )
@@ -1758,6 +1777,8 @@ class ResearchSupervisor:
         if not fresh or not fresh.get("plan"):
             raise ValueError("Approved plan is missing")
         run = fresh
+        # The attempt this pass belongs to, kept because ``run`` is re-read below.
+        research_attempt = int(run.get("retryCount") or 0)
         budgets = run["config"]["budgets"]
         max_steps = int(budgets["maxSteps"])
         max_sources = int(budgets["maxSources"])
@@ -2461,5 +2482,5 @@ class ResearchSupervisor:
         if actual_status is None:
             raise LeaseLost()
         run = await asyncio.to_thread(db.get_run, run["id"])
-        if actual_status == "cancelled" and run:
+        if actual_status == "cancelled" and not _run_moved_on(run, research_attempt):
             await asyncio.to_thread(_update_assistant, run, "Research cancelled.", "cancelled")
