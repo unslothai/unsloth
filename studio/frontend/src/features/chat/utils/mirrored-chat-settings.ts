@@ -18,6 +18,7 @@ const MIRRORED_BOOLEAN_KEYS = [
   "deepResearchEnabled",
   "artifactsEnabled",
   "showCanvasMenuItem",
+  "searchImages",
   "mcpEnabledForChat",
   "confirmToolCalls",
   "ragOcrScanned",
@@ -38,14 +39,27 @@ const MIRRORED_ENUM_VALUES = {
   Record<keyof PersistedChatSettings, readonly string[]>
 >;
 
+// One year, the ceiling ChatSettingsPayload and the run route both enforce. A larger value
+// would be dropped from the patch and then 400 the run, so it is bounded where it is set.
+export const MAX_RESEARCH_MODEL_TIMEOUT_SECONDS = 365 * 24 * 3600;
+// 0 is the unlimited sentinel, not a very short budget, so it sits below the run route's
+// finite floor. A stored 1..9 would 400 every run.
+export const MIN_FINITE_RESEARCH_MODEL_TIMEOUT_SECONDS = 10;
+
 // Bounds match the ge/le the backend payload enforces on the same fields.
 const MIRRORED_NUMBER_BOUNDS = {
   ragTopK: { min: 1, max: 50, integer: true },
   ragAutoInjectMinScore: { min: 0, max: 1, integer: false },
+  researchModelTimeoutSeconds: {
+    min: 0,
+    minPositive: MIN_FINITE_RESEARCH_MODEL_TIMEOUT_SECONDS,
+    max: MAX_RESEARCH_MODEL_TIMEOUT_SECONDS,
+    integer: true,
+  },
 } as const satisfies Partial<
   Record<
     keyof PersistedChatSettings,
-    { min: number; max: number; integer: boolean }
+    { min: number; minPositive?: number; max: number; integer: boolean }
   >
 >;
 
@@ -108,10 +122,19 @@ export function sanitizeRagSource(
 
 export function sanitizeBoundedNumber(
   value: unknown,
-  { min, max, integer }: { min: number; max: number; integer: boolean },
+  {
+    min,
+    minPositive,
+    max,
+    integer,
+  }: { min: number; minPositive?: number; max: number; integer: boolean },
 ): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
   if (integer && !Number.isInteger(value)) return undefined;
+  // A sentinel below the floor stays legal; anything between the two is not.
+  if (minPositive !== undefined && value > min && value < minPositive) {
+    return undefined;
+  }
   return value >= min && value <= max ? value : undefined;
 }
 

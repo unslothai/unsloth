@@ -1459,7 +1459,7 @@ def test_research_budget_defaults_support_long_runs():
     )
 
 
-def test_research_budget_ceilings_allow_depth_but_remain_bounded():
+def test_research_budget_limits_allow_unlimited_model_requests():
     from fastapi import HTTPException
     from routes.research_runs import CreateResearchRun, _sanitize_config
 
@@ -1470,13 +1470,26 @@ def test_research_budget_ceilings_allow_depth_but_remain_bounded():
         budgets = {
             "maxSteps": 30,
             "maxSources": 100,
-            "modelTimeoutSeconds": 3600,
+            "modelTimeoutSeconds": 7200,
             "toolTimeoutSeconds": 600,
             "firstOutputTimeoutSeconds": 3600,
         },
     )
     assert _sanitize_config(payload, {"modelId": "local-model"})["budgets"] == payload.budgets
 
+    payload.budgets["modelTimeoutSeconds"] = 0
+    assert _sanitize_config(payload, {"modelId": "local-model"})["budgets"] == payload.budgets
+
+    # The ceiling reads back in the 400, and the sentinel is the only sub-floor value allowed.
+    for rejected in (10**310, 9, -1):
+        payload.budgets["modelTimeoutSeconds"] = rejected
+        with pytest.raises(
+            HTTPException,
+            match = "modelTimeoutSeconds must be 0 \\(unlimited\\) or between 10 and 31536000",
+        ):
+            _sanitize_config(payload, {"modelId": "local-model"})
+
+    payload.budgets["modelTimeoutSeconds"] = 7200
     payload.budgets["maxSteps"] = 31
     with pytest.raises(HTTPException, match = "maxSteps must be between 1 and 30"):
         _sanitize_config(payload, {"modelId": "local-model"})

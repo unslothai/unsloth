@@ -59,7 +59,11 @@ import { notifyChatHistoryUpdated } from "../api/chat-api";
 import { toolResultModelText } from "../api/chat-adapter";
 import { usePlusMenuPrefsStore } from "../stores/plus-menu-prefs-store";
 import type { ThreadRecord, MessageRecord } from "../types";
-import { createConversationMarkdownExporter } from "../utils/conversation-markdown-export";
+import {
+  buildNamedConversationsMarkdown,
+  createConversationMarkdownBuilder,
+  createConversationMarkdownExporter,
+} from "../utils/conversation-markdown-export";
 import { parseCsv } from "../utils/csv-parse";
 import { unwrapPastedTextContent } from "../utils/pasted-text.ts";
 import {
@@ -68,6 +72,7 @@ import {
   renderConversationBlocks,
 } from "../utils/conversation-markdown";
 import { planChatItemSources } from "../utils/project-source-plan";
+import { stripSearchImageTokens } from "../search-images/search-images.ts";
 import { saveMarkdownAsProjectSource } from "@/features/rag";
 
 function newId(): string {
@@ -449,6 +454,13 @@ export async function exportConversationCsv(threadId: string): Promise<void> {
   );
 }
 
+/** Same markdown the download produces, for the "Copy as Markdown" shortcut. */
+export const buildConversationMarkdownForThread =
+  createConversationMarkdownBuilder({
+    loadMessages: loadConversationMessages,
+    renderMessage: messageToMarkdown,
+  });
+
 export const exportConversationMarkdown = createConversationMarkdownExporter({
   loadMessages: loadConversationMessages,
   renderMessage: messageToMarkdown,
@@ -475,7 +487,9 @@ async function saveConversationAsProjectSource(
   const markdown = buildConversationMarkdown(
     messages.map((msg) => ({
       role: String(msg.role ?? ""),
-      content: messageToMarkdown(msg),
+      // As the markdown exporter does: a project source is retrieved back into
+      // context, so the renderer's tokens must not be saved as prose.
+      content: stripSearchImageTokens(messageToMarkdown(msg)),
     })),
   );
   if (!markdown) {
@@ -511,6 +525,27 @@ export async function saveChatItemAsProjectSource(
   else if (saved > 1) {
     toast.success(`Saved ${saved} chats to project sources.`);
   }
+}
+
+/**
+ * A sidebar row as one markdown document, for the "Copy as Markdown" shortcut.
+ * The halves of a compare pair are named the way saving them to project sources
+ * names them, after their models: the two arrive in whichever order they last
+ * answered in, so position alone would label them wrong.
+ */
+export async function buildChatItemMarkdown(item: {
+  id: string;
+  title: string;
+  type: string;
+}): Promise<string> {
+  const plans = planChatItemSources(
+    item,
+    item.type === "single" ? [] : await listStoredChatThreads({ pairId: item.id }),
+  );
+  return buildNamedConversationsMarkdown(
+    plans,
+    buildConversationMarkdownForThread,
+  );
 }
 
 export type ConvExportFormat = "jsonl-raw" | "csv" | "sharegpt";

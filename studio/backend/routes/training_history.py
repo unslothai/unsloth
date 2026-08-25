@@ -15,7 +15,7 @@ from typing import Literal, Optional, Union
 from fastapi import APIRouter, Depends, HTTPException, Query
 from loggers import get_logger
 
-from auth.authentication import get_current_subject
+from auth.authentication import authenticated_without_credential, get_current_subject
 from core.training.resume import artifacts_present, can_resume_run
 from models import (
     TrainingRunDeleteResponse,
@@ -282,10 +282,11 @@ async def list_training_runs(
     limit: int = Query(50, ge = 1, le = 200),
     offset: int = Query(0, ge = 0),
     current_subject: str = Depends(get_current_subject),
+    no_credential: bool = Depends(authenticated_without_credential),
 ):
     """List training runs, newest first."""
     result = list_runs(limit = limit, offset = offset)
-    sharing_on = get_preview_sharing_enabled()
+    sharing_on = get_preview_sharing_enabled() and not no_credential
     runs = await asyncio.to_thread(
         _summaries_from_rows,
         result["runs"],
@@ -298,7 +299,11 @@ async def list_training_runs(
 
 
 @router.get("/runs/{run_id}", response_model = TrainingRunDetailResponse)
-async def get_training_run_detail(run_id: str, current_subject: str = Depends(get_current_subject)):
+async def get_training_run_detail(
+    run_id: str,
+    current_subject: str = Depends(get_current_subject),
+    no_credential: bool = Depends(authenticated_without_credential),
+):
     """Get a single training run with full config and metrics."""
     run = get_run(run_id)
     if run is None:
@@ -315,7 +320,7 @@ async def get_training_run_detail(run_id: str, current_subject: str = Depends(ge
     summary = await asyncio.to_thread(
         _summary_from_row,
         run,
-        get_preview_sharing_enabled(),
+        get_preview_sharing_enabled() and not no_credential,
     )
     return TrainingRunDetailResponse(
         run = summary,
@@ -329,6 +334,7 @@ async def update_training_run(
     run_id: str,
     payload: TrainingRunUpdateRequest,
     current_subject: str = Depends(get_current_subject),
+    no_credential: bool = Depends(authenticated_without_credential),
 ):
     """Update mutable fields on a training run (currently only display_name)."""
     run = get_run(run_id)
@@ -347,7 +353,7 @@ async def update_training_run(
     return await asyncio.to_thread(
         _summary_from_row,
         refreshed,
-        get_preview_sharing_enabled(),
+        get_preview_sharing_enabled() and not no_credential,
     )
 
 
