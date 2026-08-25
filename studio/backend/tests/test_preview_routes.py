@@ -1386,6 +1386,33 @@ def test_failed_stream_response_does_not_claim_slot(slot_state):
     _reset_keepwarm_counters()
 
 
+def test_cancelled_json_response_does_not_claim_slot(slot_state):
+    # An explicit /inference/cancel can return a partial HTTP 200 JSON body. All three
+    # non-tool JSON drains must flag that response before the keep-warm middleware sees
+    # its clean terminal frame, or it would convert the preview-owned slot to Studio-owned.
+    import inspect
+    import threading
+
+    src = inspect.getsource(inference.openai_chat_completions)
+    assert src.count("_mark_cancelled_json_response_failed(request, cancel_event)") == 3
+
+    _reset_keepwarm_counters()
+    inference._set_preview_resident("/outputs/run/ckpt")
+
+    async def _app(scope, receive, send):
+        cancelled = threading.Event()
+        cancelled.set()
+        inference._mark_cancelled_json_response_failed(
+            _types.SimpleNamespace(scope = scope), cancelled
+        )
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}", "more_body": False})
+
+    _run_middleware(_app, "/v1/chat/completions")
+    assert inference._is_preview_resident("/outputs/run/ckpt")
+    _reset_keepwarm_counters()
+
+
 def test_disconnect_before_terminal_frame_does_not_claim_slot(slot_state):
     # Codex P2 (round 26): a client disconnect after the 200 headers raises before the terminal
     # body frame (an OSError _SameTaskStreamingResponse converts to a CancelledError, whose

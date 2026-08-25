@@ -2319,6 +2319,14 @@ async def _preheader_cancelled(cancel_event = None, request: Optional[Request] =
     return False
 
 
+def _mark_cancelled_json_response_failed(request: Request, cancel_event: threading.Event) -> None:
+    """Keep a partial JSON response from claiming a preview-owned resident model."""
+    if cancel_event.is_set():
+        from core.inference.llama_keepwarm import mark_response_failed
+
+        mark_response_failed(getattr(request, "scope", None))
+
+
 async def _wait_preheader_cancel(cancel_event = None, request: Optional[Request] = None) -> None:
     while not await _preheader_cancelled(cancel_event, request):
         await asyncio.sleep(0.05)
@@ -16099,6 +16107,7 @@ async def openai_chat_completions(
                 _audio_json_finish = (
                     "stop" if cancel_event.is_set() else _stats_finish_reason(_audio_json_stats)
                 )
+                _mark_cancelled_json_response_failed(request, cancel_event)
                 if isinstance(_audio_json_stats, dict):
                     _monitor_usage(
                         monitor_id,
@@ -17902,6 +17911,8 @@ async def openai_chat_completions(
                     _context_truncation,
                 ) = await asyncio.shield(drain_task)
 
+                _mark_cancelled_json_response_failed(request, cancel_event)
+
                 response = ChatCompletion(
                     id = completion_id,
                     created = created,
@@ -19162,6 +19173,7 @@ async def openai_chat_completions(
                         # the nudge rebuilds a longer prompt for some choices.
                         _prompt_details = _choice_usage.get("prompt_tokens_details")
                     _sum_completion += _choice_usage.get("completion_tokens") or 0
+            _mark_cancelled_json_response_failed(request, cancel_event)
             _msg, _finish = _monitor_replies[-1], _choices[-1].finish_reason
 
             # Built once, so what the monitor is told below is this same object and
