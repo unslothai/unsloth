@@ -334,6 +334,26 @@ def bind_current_process_to_parent_lifetime() -> None:
         pass
 
 
+def allow_child_processes() -> None:
+    """Allow the current multiprocessing worker to spawn children (#9094).
+
+    Children inherit the cleared flag, since `Process.__init__` copies `_config`.
+    A grandchild that does not pass `daemon =` itself is therefore non-daemonic,
+    and `_exit_function` joins those unconditionally and without a timeout, so it
+    would hold the worker's exit open forever. Everything a worker reaches today
+    passes `daemon = True`; keep it that way.
+    """
+    try:
+        from multiprocessing import process as multiprocessing_process
+
+        # This config is child-local; the parent's Process handle stays daemonic.
+        config = getattr(multiprocessing_process.current_process(), "_config", None)
+        if isinstance(config, dict):
+            config["daemon"] = False
+    except Exception:
+        pass
+
+
 def compose_preexec(
     existing: Optional[Callable[[], None]], owner_pid: Optional[int] = None
 ) -> Optional[Callable[[], None]]:

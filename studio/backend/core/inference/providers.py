@@ -20,8 +20,8 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     "openai_codex": {
         "display_name": "ChatGPT / Codex subscription",
         "base_url": "https://chatgpt.com/backend-api",
+        # Only seeds the picker; /codex/models is the truth once connected.
         "default_models": [
-            "gpt-5.3-codex-spark",
             "gpt-5.4",
             "gpt-5.4-mini",
             "gpt-5.5",
@@ -30,7 +30,6 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             "gpt-5.6-terra",
         ],
         "model_capabilities": {
-            "gpt-5.3-codex-spark": {"vision": False, "studio_tools": True},
             "gpt-5.4": {"vision": True, "studio_tools": True},
             "gpt-5.4-mini": {"vision": True, "studio_tools": True},
             "gpt-5.5": {"vision": True, "studio_tools": True},

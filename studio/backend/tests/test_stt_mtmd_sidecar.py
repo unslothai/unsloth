@@ -224,6 +224,27 @@ def test_a_switch_to_a_missing_model_keeps_the_working_one(spawned, monkeypatch)
     sidecar.unload()
 
 
+def test_path_save_restarts_warm_mtmd_server(spawned, monkeypatch):
+    from utils import llama_cpp_path_settings
+
+    made, _, _ = spawned
+    sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
+    monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
+    sidecar.load("qwen3-asr-0.6b")
+    monkeypatch.setattr(
+        llama_cpp_path_settings,
+        "_path_revision",
+        llama_cpp_path_settings.custom_llama_cpp_path_revision() + 1,
+    )
+
+    sidecar.load("qwen3-asr-0.6b")
+
+    assert len(made) == 2
+    assert made[0].poll() is not None
+    assert sidecar.loaded_model == "qwen3-asr-0.6b"
+    sidecar.unload()
+
+
 def test_a_model_switch_never_kills_a_running_transcription(spawned, monkeypatch):
     made, _, _ = spawned
     sidecar = MtmdSttSidecar(keep_alive_seconds = 0)

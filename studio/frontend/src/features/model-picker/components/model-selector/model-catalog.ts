@@ -271,14 +271,21 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     artifacts: [bf16Pipeline("Alpha-VLLM/Lumina-Image-2.0", 11, { totalParams: 2609769152 })],
   },
   {
-    // 17B dual-stream 2K-native DiT with a Qwen2.5-VL encoder; the mirror guider components load natively on diffusers 0.39. ~50 GB bf16-resident, so consumer GPUs route to the QuantStack GGUF.
+    // 17B dual-stream 2K-native DiT with a Qwen2.5-VL encoder; the mirror guider components load natively on diffusers 0.39.
+    // bf16 only: this used to carry gguf("QuantStack/HunyuanImage-2.1-GGUF") as the consumer route, and that repo was
+    // unpublished (404 to an authed request, 401 anonymous). An entry the Hub cannot serve is worse than no entry, because
+    // it renders as a one-click download that fails partway through, which is the exact case model-catalog-network-check
+    // exists to find. QuantStack itself is alive and still ships its other GGUF repos, so this is one model withdrawn
+    // rather than a publisher going away. No vetted replacement: unsloth has an FP8 mirror but no GGUF, and the
+    // third-party HunyuanImage GGUF repos on the Hub are a different lineage (calcuis ships "lite" variants), so picking
+    // one is a decision about which weights users download and not a CI fix.
+    // At 24 GB the bf16 still fits the 61.6 GB budget, so the group stays visible; it is the quant ladder that is gone.
     canonicalId: "hunyuanvideo-community/HunyuanImage-2.1-Diffusers",
     displayName: "HunyuanImage 2.1",
     description: "Text-to-image",
     scope: "image",
     artifacts: [
       bf16Pipeline("hunyuanvideo-community/HunyuanImage-2.1-Diffusers", 50, { totalParams: 17425795520 }),
-      gguf("QuantStack/HunyuanImage-2.1-GGUF"),
     ],
   },
   {

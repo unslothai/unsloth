@@ -27,6 +27,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional
+from utils.paths.path_utils import drop_appledouble_metadata
 
 # Spawn (not fork): a fresh interpreter so parent CUDA/torch state never leaks into the trainer.
 _CTX = mp.get_context("spawn")
@@ -209,7 +210,10 @@ def list_diffusion_runs(limit: int = 20) -> list[dict]:
     """Summaries of persisted diffusion runs, newest first. The heavy per-run payload
     (metric logs, config) stays in the file; fetch it via ``get_diffusion_run``."""
     try:
-        files = sorted(_runs_dir().glob("*.json"), key = lambda p: p.stat().st_mtime, reverse = True)
+        # Sliced by limit below, so a companion per run would halve the history window.
+        files = drop_appledouble_metadata(
+            sorted(_runs_dir().glob("*.json"), key = lambda p: p.stat().st_mtime, reverse = True)
+        )
     except Exception:  # noqa: BLE001 -- unreadable dir -> no history
         return []
     out: list[dict] = []
