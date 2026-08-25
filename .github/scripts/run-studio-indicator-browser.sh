@@ -94,6 +94,10 @@ else
   unset STUDIO_PLAYWRIGHT_CHANNEL || true
 fi
 
-python tests/studio/playwright_loaded_models_indicator.py
+# Which suite to drive against the server this script just booted. Defaulted, so every
+# existing caller keeps its current behaviour; overridden by the declared-polls step,
+# which needs the same authenticated backend and would otherwise duplicate all of the
+# boot, password-rotation and teardown logic above.
+python "${STUDIO_PW_SUITE:-tests/studio/playwright_loaded_models_indicator.py}"
 # Only after a clean return; see the permission script's comment.
 suite_done=1

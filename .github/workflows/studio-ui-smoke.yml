@@ -1107,6 +1107,28 @@ jobs:
           done
           exit "$rc"
 
+      # The log budget in studio/backend/tests/log_budget compares two BACKEND files with
+      # each other: the suppression sets in loggers/handlers.py and the poll cadences in
+      # session.py. A pull request that adds a polling call site in the frontend edits
+      # neither, so it passes, and the new endpoint logs every hit on a 300 ms window.
+      # Only a browser can see that a timer started, whatever it was implemented with.
+      #
+      # Reuses the boot/rotate/teardown script above with its own port and home, for the
+      # same reason the three engines get one each: a shared home races on the bootstrap
+      # password. Chromium only -- this counts requests, and request counts do not vary by
+      # engine the way layout does.
+      - name: Every polled path is declared in the log budget
+        env:
+          STUDIO_PW_SUITE: tests/studio/playwright_declared_polls.py
+        run: |
+          mkdir -p logs
+          installed_home="${UNSLOTH_STUDIO_HOME:-$HOME/.unsloth/studio}"
+          home="${{ github.workspace }}/.studio-declared-polls"
+          mkdir -p "$home"
+          ln -sfn "$installed_home/unsloth_studio" "$home/unsloth_studio"
+          UNSLOTH_STUDIO_HOME="$home" \
+            bash .github/scripts/run-studio-indicator-browser.sh 18902 chromium
+
       - name: Upload Playwright artifacts
         # Always, so a green run's screenshots stay reviewable: this suite is
         # about what the card LOOKS like, and it can pass while it looks wrong.
