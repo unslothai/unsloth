@@ -44,7 +44,7 @@ import {
   useGpuDevices,
   useInferenceGpuInfo,
 } from "@/hooks/use-gpu-info";
-import { resolveMemoryCapacityGb } from "@/hooks/gpu-vram";
+import { resolveMemoryCapacityGb, usableFreeVramGb } from "@/hooks/gpu-vram";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
 import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
@@ -1009,6 +1009,7 @@ function MemoryEstimateRow({
   totalCapacityGb,
   systemRamCapacityGb,
   freeGpuCapacityGb,
+  usableSystemRamGb,
   isUnifiedMemory,
   singleMemoryPool,
   expanded,
@@ -1027,6 +1028,9 @@ function MemoryEstimateRow({
   /** VRAM free on the usable cards right now. Warns only: see the note at the call
    *  site for why this may not refuse a load. 0 when nothing was probed. */
   freeGpuCapacityGb: number;
+  /** Host RAM the machine can hand out right now, less the reserve the loader keeps.
+   *  Warns only, for the same reason the free-VRAM figure does. 0 when unknown. */
+  usableSystemRamGb: number;
   isUnifiedMemory: boolean;
   /** GPU and host draw on the same memory, so an offloaded byte is not a freed one. */
   singleMemoryPool: boolean;
@@ -1043,6 +1047,25 @@ function MemoryEstimateRow({
   // resident model's VRAM comes back when this load replaces it.
   const freeGpuFit = classifyMemoryFit(estimate.gpuBytes, freeGpuCapacityGb);
   const gpuPressured = freeGpuFit === "exceeds" || freeGpuFit === "tight";
+  // Same question for the other pool. _host_offload_shortfall_message refuses a load
+  // whose offloaded weights exceed psutil's AVAILABLE memory less a reserve, not the
+  // machine's physical total, so a 70 GB host share read as fitting a 128 GB box with
+  // 32 GB free. Warns rather than refuses for the same reason as the GPU figure: the
+  // resident model's own pages come back when this load replaces it.
+  const hostShareBytes = Math.max(0, estimate.totalBytes - estimate.gpuBytes);
+  // One pool means the WHOLE load draws on that RAM, so the pressure question is
+  // asked of the total there rather than of a host share that has no separate
+  // meaning. This is also the closest the row can honestly get to Apple's Metal
+  // budget: that budget is 85% of the smaller of MLX's recommended working set and
+  // what is available right now, and the second term is the one that moves. The
+  // static working-set ceiling stays unmodelled, because resolving it needs an
+  // `import mlx.core` that can abort the process, which does not belong on a path
+  // the panel drives on every settings change.
+  const usableHostFit = classifyMemoryFit(
+    singleMemoryPool ? estimate.totalBytes : hostShareBytes,
+    usableSystemRamGb,
+  );
+  const hostPressured = usableHostFit === "exceeds" || usableHostFit === "tight";
   const gpuFit =
     rawGpuFit === "fits" && gpuPressured ? "tight" : rawGpuFit;
   // The host share has to fit in host RAM on its own. Unused VRAM cannot hold bytes
@@ -1052,10 +1075,7 @@ function MemoryEstimateRow({
   // describes exactly.
   const hostShareFit = singleMemoryPool
     ? "unknown"
-    : classifyMemoryFit(
-        Math.max(0, estimate.totalBytes - estimate.gpuBytes),
-        systemRamCapacityGb,
-      );
+    : classifyMemoryFit(hostShareBytes, systemRamCapacityGb);
   const totalFit = worseMemoryFit(
     classifyMemoryFit(estimate.totalBytes, totalCapacityGb),
     hostShareFit,
@@ -1133,12 +1153,19 @@ function MemoryEstimateRow({
                     tone: "warn",
                     text: "More than this GPU holds. Layers will spill to system RAM, or the context will be fitted down to what fits.",
                   }
-                : rawGpuFit === "fits" && gpuPressured
+                : hostPressured
                   ? {
                       tone: "muted",
-                      text: "This fits the card, but something is using it right now. If that memory is not the model being replaced, layers will spill or the context will be fitted down.",
+                      text: singleMemoryPool
+                        ? "This fits the machine, but not what is free right now. If that memory is not the model being replaced, the context will be fitted down or the load refused."
+                        : "The part of this load that runs from system RAM fits the machine, but not what is free right now. If that memory is not the model being replaced, the load will be refused.",
                     }
-                  : null;
+                  : rawGpuFit === "fits" && gpuPressured
+                    ? {
+                        tone: "muted",
+                        text: "This fits the card, but something is using it right now. If that memory is not the model being replaced, layers will spill or the context will be fitted down.",
+                      }
+                    : null;
   return (
     <div className="space-y-2">
       <div className={ROW_CLASS}>
@@ -2897,23 +2924,6 @@ export function ModelConfigPage({
   // claim per GPU, so the verdict has to be measured against the capped figure or the
   // row contradicts the control directly above it. Subscribed as well as read once:
   // dragging that slider must re-classify without a remount.
-  // What is free RIGHT NOW on the cards this load may use. _select_gpus admits on
-  // free-minus-reserve, not on the cards' totals, so a training run or another process
-  // holding VRAM changes what will actually happen to this load.
-  //
-  // Used to WARN, never to refuse. The bytes a pending load reclaims -- the resident
-  // chat model's own, which Studio unloads first -- cannot be attributed per device
-  // from here, so raw free memory would call a reload of the loaded model impossible.
-  // Capping the free-based verdict at "tight" is honest under both readings: either
-  // something else really is holding the card, or it is about to be given back.
-  const memoryFreeGpuCapacityGb = useMemo(() => {
-    const pinned =
-      pinnedGpuIds && pinnedGpuIds.length > 0
-        ? gpuDevices.filter((device) => pinnedGpuIds.includes(device.index))
-        : gpuDevices;
-    const free = pinned.reduce((sum, device) => sum + (device.memoryFreeGb || 0), 0);
-    return free > 0 ? free : 0;
-  }, [gpuDevices, pinnedGpuIds]);
   const [memoryVramBudgetFraction, setMemoryVramBudgetFraction] = useState(1);
   useEffect(() => {
     let cancelled = false;
@@ -2930,6 +2940,34 @@ export function ModelConfigPage({
       unsubscribe();
     };
   }, []);
+  // What is free RIGHT NOW on the cards this load may use. _select_gpus admits on
+  // free-minus-reserve, not on the cards' totals, so a training run or another process
+  // holding VRAM changes what will actually happen to this load.
+  //
+  // Used to WARN, never to refuse. The bytes a pending load reclaims -- the resident
+  // chat model's own, which Studio unloads first -- cannot be attributed per device
+  // from here, so raw free memory would call a reload of the loaded model impossible.
+  // Capping the free-based verdict at "tight" is honest under both readings: either
+  // something else really is holding the card, or it is about to be given back.
+  const memoryFreeGpuCapacityGb = useMemo(() => {
+    const pinned =
+      pinnedGpuIds && pinnedGpuIds.length > 0
+        ? gpuDevices.filter((device) => pinnedGpuIds.includes(device.index))
+        : gpuDevices;
+    // Per device, and by the loader's absolute-reserve rule rather than a
+    // multiplication: the budget is subtracted from the card, not applied to what
+    // happens to be free, and the two agree only on an idle one.
+    return pinned.reduce(
+      (sum, device) =>
+        sum +
+        usableFreeVramGb(
+          device.memoryFreeGb || 0,
+          device.memoryTotalGb || 0,
+          memoryVramBudgetFraction,
+        ),
+      0,
+    );
+  }, [gpuDevices, pinnedGpuIds, memoryVramBudgetFraction]);
   const {
     gpuCapacityGb: memoryGpuCapacityGb,
     totalCapacityGb: memoryTotalCapacityGb,
@@ -3172,7 +3210,13 @@ export function ModelConfigPage({
               gpuCapacityGb={memoryGpuCapacityGb}
               totalCapacityGb={memoryTotalCapacityGb}
               systemRamCapacityGb={inferenceGpu.systemRamTotalGb}
-              freeGpuCapacityGb={memoryFreeGpuCapacityGb * memoryVramBudgetFraction}
+              freeGpuCapacityGb={memoryFreeGpuCapacityGb}
+              usableSystemRamGb={Math.max(
+                0,
+                // _HOST_RAM_HEADROOM_MIB: the 2 GiB the loader keeps for the rest of
+                // the system before it will admit an offloaded load.
+                (inferenceGpu.systemRamAvailableGb || 0) - 2,
+              )}
               isUnifiedMemory={isUnifiedMemory}
               singleMemoryPool={singleMemoryPool}
               expanded={memoryBreakdownOpen}

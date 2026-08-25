@@ -7361,9 +7361,16 @@ def _gguf_runtime_bytes(
         if not probe._can_estimate_kv():
             return unknown
         try:
-            ctx_override = parse_ctx_override(llama_extra_args) or 0
+            _raw_ctx_override = parse_ctx_override(llama_extra_args)
         except Exception:
-            ctx_override = 0  # malformed extras are rejected upstream; fall back
+            _raw_ctx_override = None  # malformed extras are rejected upstream; fall back
+        ctx_override = _raw_ctx_override or 0
+        # An explicit "-c 0" is a REQUEST for the native context, not the absence of
+        # one, and llama.cpp reads argv after the environment so the zero wins at the
+        # child. Folding the two together let an inherited LLAMA_ARG_CTX_SIZE=4096
+        # answer for a launch that opens at the header's 262k, which is the KV cache
+        # understated by two orders of magnitude in the direction that says "fits".
+        _extras_ask_for_native_ctx = _raw_ctx_override == 0
         if ctx_last_wins:
             # What the launch runs, through load_model's own resolver: the extras
             # value wins whichever way it moves. The maximum below is the coexistence
@@ -7373,11 +7380,13 @@ def _gguf_runtime_bytes(
                 ctx = resolve_requested_ctx(llama_extra_args, max_seq_length or 0)
             except Exception:
                 ctx = max_seq_length or 0
-            ctx = ctx or _inherited_ctx_size() or (probe._context_length or 0)
+            ctx = ctx or (
+                0 if _extras_ask_for_native_ctx else _inherited_ctx_size()
+            ) or (probe._context_length or 0)
         else:
             ctx = (
                 max(max_seq_length or 0, ctx_override)
-                or _inherited_ctx_size()
+                or (0 if _extras_ask_for_native_ctx else _inherited_ctx_size())
                 or (probe._context_length or 0)
             )
         if ctx <= 0:

@@ -151,3 +151,36 @@ export function resolveGpuVramUsedGb(
   const aggregate = gpu?.vram_used_gb_aggregate;
   return Number.isFinite(aggregate) ? (aggregate as number) : null;
 }
+
+/** The loader's default VRAM fraction (`_CTX_FIT_VRAM_FRACTION`). */
+const DEFAULT_VRAM_FRACTION = 0.97;
+/** The loader's floor reserve (`_VRAM_FLOOR_RESERVE_MIB`), in GB. */
+const VRAM_FLOOR_RESERVE_GB = 512 / 1024;
+
+/**
+ * Free VRAM a load may actually claim on one card, by the loader's own rule.
+ *
+ * `_vram_usable_mib` subtracts an ABSOLUTE reserve from what is free -- it does not
+ * scale free memory by the fraction. The two agree only on an idle card. On a 24 GB
+ * card with 10 GB free at an 80% budget the loader offers 5.2 GB while a
+ * multiplication says 8, so a 7 GB load looked comfortable and will be fitted down.
+ *
+ * The floor keeps the budget monotonic: capped at the default's own reserve so that
+ * nudging the slider up never hands back less, which a flat 512 MiB would do on any
+ * card under about 17 GB.
+ */
+export function usableFreeVramGb(
+  freeGb: number,
+  totalGb: number,
+  fraction: number,
+): number {
+  const frac = fraction > 0 && fraction <= 1 ? fraction : 1;
+  if (!(totalGb > 0)) {
+    // No total to take a percentage of; the free reading is the only scale there is,
+    // and the loader falls back the same way.
+    return Math.max(0, freeGb * frac);
+  }
+  const floor = Math.min(VRAM_FLOOR_RESERVE_GB, (1 - DEFAULT_VRAM_FRACTION) * totalGb);
+  const reserve = Math.max((1 - frac) * totalGb, floor);
+  return Math.max(0, freeGb - reserve);
+}

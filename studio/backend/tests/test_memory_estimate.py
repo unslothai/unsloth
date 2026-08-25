@@ -2483,6 +2483,29 @@ class TestAnInheritedContextIsPriced:
         assert out is not None
         assert out.n_ctx == 262144
 
+    @pytest.mark.parametrize("flag", [["-c", "0"], ["--ctx-size", "0"], ["--ctx-size=0"]])
+    def test_an_explicit_zero_asks_for_native_and_beats_the_environment(
+        self, wide, monkeypatch, flag
+    ):
+        """"-c 0" REQUESTS the native context; it is not the absence of a request.
+
+        llama.cpp parses the environment before argv, so the explicit zero wins at the
+        child. Folding it in with "nothing was set" let an inherited 4k answer for a
+        launch that opens at the header's 262k -- the KV cache understated 64x, in the
+        direction that says "fits".
+        """
+        gguf, config = wide
+        monkeypatch.setenv("LLAMA_ARG_CTX_SIZE", "4096")
+        out = ri._gguf_memory_breakdown(config, gguf, n_ctx = 0, llama_extra_args = flag)
+        assert out is not None
+        assert out.n_ctx == 262144, flag
+
+    def test_without_that_zero_the_environment_still_answers(self, wide, monkeypatch):
+        """The guard against over-correcting: only an explicit zero bypasses it."""
+        gguf, config = wide
+        monkeypatch.setenv("LLAMA_ARG_CTX_SIZE", "4096")
+        assert ri._gguf_memory_breakdown(config, gguf, n_ctx = 0).n_ctx == 4096
+
     def test_an_explicit_panel_length_still_wins(self, wide, monkeypatch):
         gguf, config = wide
         monkeypatch.setenv("LLAMA_ARG_CTX_SIZE", "4096")

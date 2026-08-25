@@ -10,7 +10,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { resolveMemoryCapacityGb } from "../src/hooks/gpu-vram.ts";
+import { resolveMemoryCapacityGb, usableFreeVramGb } from "../src/hooks/gpu-vram.ts";
 
 // The inventory in studio/backend/tests/test_system_vulkan_gpu_info.py: an RX 9070 XT
 // with its own 16 GB, and an 8060S iGPU whose 91 GiB raw total is reported as the
@@ -190,4 +190,33 @@ test("an absent or nonsensical budget leaves the capacity alone", () => {
   assert.equal(resolveMemoryCapacityGb({ ...base, gpuBudgetFraction: 0 }).gpuCapacityGb, 24);
   assert.equal(resolveMemoryCapacityGb({ ...base, gpuBudgetFraction: 1.5 }).gpuCapacityGb, 24);
   assert.equal(resolveMemoryCapacityGb({ ...base, gpuBudgetFraction: -1 }).gpuCapacityGb, 24);
+});
+
+// The loader subtracts an ABSOLUTE reserve from what is free; it does not scale free
+// memory by the fraction. The two agree only on an idle card, and the gap is what
+// decides whether a busy-card warning appears at all.
+test("the budget is an absolute reserve, not a multiplier, on a busy card", () => {
+  // _select_gpus' own example: 24 GB card, 10 GB free, 80% budget.
+  // free - (1 - 0.8) * 24 = 10 - 4.8 = 5.2, where a multiplication says 8.
+  assert.ok(Math.abs(usableFreeVramGb(10, 24, 0.8) - 5.2) < 1e-9);
+});
+
+test("an idle card is where the two rules agree", () => {
+  assert.ok(Math.abs(usableFreeVramGb(24, 24, 0.8) - 19.2) < 1e-9);
+});
+
+test("the floor keeps the budget monotonic on a small card", () => {
+  // Capped at the default's own reserve, so nudging the slider up never hands back
+  // less. A flat 512 MiB would do exactly that on any card under about 17 GB.
+  const atDefault = usableFreeVramGb(8, 8, 0.97);
+  const justAbove = usableFreeVramGb(8, 8, 0.971);
+  assert.ok(justAbove >= atDefault);
+});
+
+test("a probe with no total falls back to the fraction, as the loader does", () => {
+  assert.ok(Math.abs(usableFreeVramGb(10, 0, 0.8) - 8) < 1e-9);
+});
+
+test("the usable figure never goes negative", () => {
+  assert.equal(usableFreeVramGb(0.1, 24, 0.5), 0);
 });
