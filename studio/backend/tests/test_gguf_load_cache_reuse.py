@@ -15,7 +15,6 @@ import sys
 import threading
 import types as _types
 from contextlib import contextmanager, nullcontext
-from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -81,7 +80,6 @@ from huggingface_hub import constants as hf_constants
 from core.inference.llama_cpp import (
     GgufLoadIntent,
     LlamaCppBackend,
-    _companion_snapshot_sibling,
     cached_gguf_for_load,
     gguf_load_in_flight,
     hf_gguf_load_in_flight,
@@ -552,28 +550,8 @@ class TestLoadReusesCachedCopy:
 
         assert out == str(snap / "mmproj-F16.gguf")
 
-    def test_snapshot_split_projector_requires_nonempty_shards(self, hf_cache):
-        snap = _build_cache(
-            hf_cache,
-            REPO,
-            {
-                MAIN: 4,
-                "mmproj-F16-00001-of-00002.gguf": 2,
-                "mmproj-F16-00002-of-00002.gguf": 0,
-            },
-        )
-
-        def pick_first(names):
-            return next(name for name in names if "00001-of-00002" in name)
-
-        assert _companion_snapshot_sibling(str(snap / MAIN), pick_first) is None
-
-        (snap / "mmproj-F16-00002-of-00002.gguf").write_bytes(b"mmproj")
-        assert _companion_snapshot_sibling(str(snap / MAIN), pick_first) == str(
-            snap / "mmproj-F16-00001-of-00002.gguf"
-        )
-
     def test_companion_reuses_a_projector_at_the_hf_repo_root(self, hf_cache):
+        """A repo that publishes none falls back to a hand-added one (#9286)."""
         backend = LlamaCppBackend()
         snap = _build_cache(hf_cache, REPO, {MAIN: 4})
         projector = snap.parent.parent / "mmproj-F16.gguf"
@@ -584,17 +562,16 @@ class TestLoadReusesCachedCopy:
 
         assert out == str(projector)
 
-    def test_companion_prefers_f16_among_compatible_repo_root_projectors(self, hf_cache):
+    def test_a_published_projector_still_wins_over_the_repo_root(self, hf_cache):
+        """The fallback runs last, so a repo that ships one resolves as it did before."""
         backend = LlamaCppBackend()
         snap = _build_cache(hf_cache, REPO, {MAIN: 4})
-        repo_root = snap.parent.parent
-        preferred = repo_root / "mmproj-F16.gguf"
-        preferred.write_bytes(b"mmproj")
-        (repo_root / "gemma-test-mmproj-BF16.gguf").write_bytes(b"mmproj")
+        (snap.parent.parent / "mmproj-F16.gguf").write_bytes(b"mmproj")
 
-        out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN))
+        with patch.object(backend, "_download_companion_gguf", return_value = "/remote/image.gguf"):
+            out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN))
 
-        assert out == str(preferred)
+        assert out == "/remote/image.gguf"
 
     def test_companion_cancelled_before_scanning_cached_projectors(self, hf_cache):
         backend = LlamaCppBackend()
@@ -613,65 +590,6 @@ class TestLoadReusesCachedCopy:
             )
 
         assert out is None
-
-    def test_incomplete_repo_root_projector_is_not_reused(self, hf_cache):
-        backend = LlamaCppBackend()
-        snap = _build_cache(hf_cache, REPO, {MAIN: 4})
-        incomplete = snap.parent.parent / "mmproj-F16-00001-of-00002.gguf"
-        incomplete.write_bytes(b"mmproj")
-
-        with patch.object(backend, "_download_companion_gguf", return_value = None):
-            out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN))
-
-        assert out is None
-
-    def test_audio_only_repo_root_projector_does_not_shadow_remote_vision(self, hf_cache):
-        backend = LlamaCppBackend()
-        snap = _build_cache(hf_cache, REPO, {MAIN: 4})
-        (snap.parent.parent / "mmproj-F16.gguf").write_bytes(b"audio")
-
-        with (
-            patch("utils.models.gguf_metadata.mmproj_accepts_image", return_value = False),
-            patch.object(backend, "_download_companion_gguf", return_value = "/remote/image.gguf"),
-        ):
-            out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN))
-
-        assert out == "/remote/image.gguf"
-
-    def test_audio_only_repo_root_projector_survives_vision_off(self, hf_cache):
-        backend = LlamaCppBackend()
-        snap = _build_cache(hf_cache, REPO, {MAIN: 4, "mmproj-F16.gguf": 4})
-        projector = snap.parent.parent / "mmproj-BF16.gguf"
-        projector.write_bytes(b"audio")
-
-        with (
-            patch(
-                "utils.models.gguf_metadata.mmproj_accepts_image",
-                side_effect = lambda path: "BF16" not in Path(path).name,
-            ),
-            patch.object(backend, "_download_companion_gguf", return_value = "/remote/image.gguf"),
-        ):
-            out = backend._download_mmproj(
-                hf_repo = REPO,
-                near_path = str(snap / MAIN),
-                vision_disabled = True,
-            )
-
-        assert out == str(projector)
-
-    def test_audio_only_repo_root_projector_is_the_offline_fallback(self, hf_cache):
-        backend = LlamaCppBackend()
-        snap = _build_cache(hf_cache, REPO, {MAIN: 4})
-        projector = snap.parent.parent / "mmproj-F16.gguf"
-        projector.write_bytes(b"audio")
-
-        with (
-            patch("utils.models.gguf_metadata.mmproj_accepts_image", return_value = False),
-            patch.object(backend, "_download_companion_gguf", return_value = None),
-        ):
-            out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN))
-
-        assert out == str(projector)
 
     def test_companion_finds_snapshot_through_hf_symlink(self, hf_cache):
         backend = LlamaCppBackend()
@@ -744,12 +662,12 @@ class TestCachedGgufForLoadProbe:
 
         assert cached_gguf_for_load(REPO, VARIANT) is None
 
-    def test_required_mmproj_uses_the_loads_repo_root_search(self, hf_cache):
+    def test_required_mmproj_must_share_main_snapshot(self, hf_cache):
         snap = _build_cache(hf_cache, REPO, {MAIN: 4})
         assert cached_gguf_for_load(REPO, VARIANT) == str(snap / MAIN)
         assert cached_gguf_for_load(REPO, VARIANT, require_mmproj = True) is None
 
-        (snap.parent.parent / "mmproj-F16.gguf").write_bytes(b"mmproj")
+        (snap / "mmproj-F16.gguf").write_bytes(b"mmproj")
         assert cached_gguf_for_load(REPO, VARIANT, require_mmproj = True) == str(snap / MAIN)
 
     def test_required_mmproj_scans_past_newer_main_only_snapshot(self, hf_cache):
@@ -782,8 +700,6 @@ class TestLoadHubDownloadExclusion:
             gguf_hf_repo = REPO,
             gguf_variant = VARIANT,
             gguf_verified = verified,
-            gguf_mmproj_file = "/cached/mmproj.gguf",
-            gguf_mmproj_root_identity = (("root projector",),),
             is_vision = False,
         )
 
@@ -801,8 +717,6 @@ class TestLoadHubDownloadExclusion:
         )
 
         assert intent.verified_gguf == verified
-        assert intent.mmproj_path is None
-        assert intent.mmproj_cache_identity == (("root projector",),)
 
     def test_resident_local_directory_intent_uses_variant_until_path_is_resolved(self):
         from models.inference import LoadRequest
@@ -837,7 +751,7 @@ class TestLoadHubDownloadExclusion:
         assert intent.gguf_path is None
         assert intent.hf_variant == "Q8_0"
 
-    def test_resident_local_gguf_reuse_precedes_model_metadata_resolution(self):
+    def test_resident_gguf_reuse_precedes_model_metadata_resolution(self):
         from models.inference import LoadRequest
 
         route = _load_route_module(
@@ -845,18 +759,16 @@ class TestLoadHubDownloadExclusion:
             "routes/inference.py",
         )
         response = object()
-        model_identifier = "/models/local-quants"
         backend = SimpleNamespace(
             is_loaded = True,
-            model_identifier = model_identifier,
-            hf_repo = None,
+            model_identifier = REPO,
             adopt_load_intent_if_matched = lambda _intent: True,
             _audio_probed = True,
             # The reuse fast path consults this before asserting CHAT ownership; a real
             # LlamaCppBackend exposes it as a property, so the double has to carry it too.
             holds_no_vram = False,
         )
-        request = LoadRequest(model_path = model_identifier, gguf_variant = VARIANT)
+        request = LoadRequest(model_path = REPO, gguf_variant = VARIANT)
 
         with (
             _reuse_route(route, backend, response),
@@ -875,43 +787,7 @@ class TestLoadHubDownloadExclusion:
 
         assert result is response
 
-    def test_remote_source_match_revalidates_the_projector_identity(self, tmp_path):
-        model = tmp_path / "model.gguf"
-        projector = tmp_path / "mmproj-00001-of-00002.gguf"
-        projector_2 = tmp_path / "mmproj-00002-of-00002.gguf"
-        model.write_bytes(b"model")
-        projector.write_bytes(b"old projector")
-        projector_2.write_bytes(b"old second shard")
-        backend = LlamaCppBackend()
-        backend._process = object()
-        backend._healthy = True
-        backend._model_identifier = REPO
-        backend._hf_variant = VARIANT
-        backend._gguf_path = str(model)
-        backend._gguf_load_identity = backend._gguf_load_source_identity(str(model), str(projector))
-        backend._remote_mmproj_identity = (("old root projector",),)
-
-        intent = GgufLoadIntent(
-            model_identifier = REPO,
-            hf_repo = REPO,
-            hf_variant = VARIANT,
-            mmproj_cache_identity = (("old root projector",),),
-        )
-        assert backend.matches_load_source(intent) is True
-
-        old_identity = backend._gguf_load_source_identity(str(model), str(projector))
-        projector_2.write_bytes(b"replacement second shard")
-
-        assert backend._gguf_load_source_identity(str(model), str(projector)) != old_identity
-        assert (
-            backend.matches_load_source(
-                replace(intent, mmproj_cache_identity = (("replacement root projector",),))
-            )
-            is False
-        )
-        assert backend.matches_load_source(replace(intent, mmproj_cache_identity = ())) is False
-
-    def test_remote_post_config_reuse_preserves_resolved_display_name(self):
+    def test_post_config_reuse_preserves_resolved_display_name(self):
         from models.inference import LoadRequest
 
         route = _load_route_module(
@@ -923,7 +799,6 @@ class TestLoadHubDownloadExclusion:
         backend = SimpleNamespace(
             is_loaded = True,
             model_identifier = REPO,
-            hf_repo = REPO,
             gguf_path = None,
             matches_load_source = lambda _intent: True,
             adopt_load_intent_if_matched = lambda _intent: True,
@@ -938,7 +813,7 @@ class TestLoadHubDownloadExclusion:
             is_gguf = True,
             is_lora = False,
             is_vision = False,
-            gguf_hf_repo = REPO,
+            gguf_hf_repo = None,
         )
 
         with (
@@ -957,7 +832,7 @@ class TestLoadHubDownloadExclusion:
             patch.object(route, "_resolve_gguf_load_intent", return_value = intent),
             patch.object(route, "_loaded_is_local_model", return_value = False),
         ):
-            result = _run_route_load(route, LoadRequest(model_path = REPO, gguf_variant = VARIANT))
+            result = _run_route_load(route, LoadRequest(model_path = REPO))
 
         assert result is response
         assert response_mock.call_args.args[1] == "already_loaded"

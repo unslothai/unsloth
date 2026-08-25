@@ -1406,21 +1406,24 @@ def snapshot_has_gguf_projector(snapshot: Optional[Path]) -> bool:
     try:
         snapshot_path = Path(snapshot)
         variants, has_snapshot_projector = list_local_gguf_variants(str(snapshot_path))
+        if has_snapshot_projector:
+            return True
         if not variants:
             return False
 
+        # Widened only where the loader widens: an HF cache checkout, where the search
+        # root is the enclosing models--*/ dir rather than the snapshot itself.
         first_weight = snapshot_path / variants[0].filename
-        first_search_root = _local_gguf_companion_search_root(str(first_weight), str(first_weight))
-        if not has_snapshot_projector:
-            if Path(first_search_root).resolve() == snapshot_path.resolve():
-                return False
-            if detect_mmproj_file(first_search_root) is None:
-                return False
+        repo_root = _local_gguf_companion_search_root(str(first_weight), str(first_weight))
+        if Path(repo_root).resolve() == snapshot_path.resolve():
+            return False
+        # One presence check for the whole snapshot before pairing each variant against it.
+        if detect_mmproj_file(repo_root) is None:
+            return False
 
         for variant in variants:
             weight = snapshot_path / variant.filename
-            search_root = _local_gguf_companion_search_root(str(weight), str(weight))
-            projector = detect_mmproj_file(str(weight), search_root = search_root)
+            projector = detect_mmproj_file(str(weight), search_root = repo_root)
             if projector is not None and mmproj_accepts_image(projector):
                 return True
         return False

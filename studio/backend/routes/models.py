@@ -3939,6 +3939,18 @@ def _repo_has_mmproj(repo_info) -> bool:
     )
 
 
+def _repo_root_has_mmproj(repo_info) -> bool:
+    """True if a projector sits at the models--<repo> dir itself, where a user
+    dropping one in by hand puts it (#9286). Not part of any revision, so
+    _repo_has_mmproj cannot see it."""
+    from utils.models.model_config import detect_mmproj_file
+
+    try:
+        return detect_mmproj_file(str(repo_info.repo_path)) is not None
+    except Exception:
+        return False
+
+
 def _cached_gguf_row_has_vision(repo_info, load_id: Optional[str]) -> bool:
     """Whether the copy this row loads ships a projector.
 
@@ -3949,6 +3961,11 @@ def _cached_gguf_row_has_vision(repo_info, load_id: Optional[str]) -> bool:
     """
     if load_id:
         return _snapshot_has_gguf_projector(load_id)
+    # No projector in any revision AND none hand-added at the repo root means none to
+    # reach, and saves a cache walk. The root check is one listdir of a dir that normally
+    # holds only blobs/, refs/ and snapshots/.
+    if not _repo_has_mmproj(repo_info) and not _repo_root_has_mmproj(repo_info):
+        return False
     try:
         from hub.utils.gguf import iter_snapshots_preferring_whole, list_local_gguf_variants
 

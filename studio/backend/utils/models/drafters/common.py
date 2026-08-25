@@ -97,9 +97,15 @@ def _drafter_launch_path(candidate: Path) -> str:
 
 
 def _drafter_split_is_complete(candidate: Path) -> bool:
-    """False unless every shard exists and is nonempty."""
-    from utils.models.model_config import _complete_nonempty_gguf_shards
-    return bool(_complete_nonempty_gguf_shards(candidate))
+    """False for a partial split set, which would fail llama-server's draft
+    startup and disable speculation entirely; skip it so a complete copy wins."""
+    from utils.models.model_config import colocated_split_shards
+
+    try:
+        _, complete = colocated_split_shards(candidate)
+    except OSError:
+        return False
+    return complete
 
 
 def _drafter_total_size(candidate: Path) -> int:
