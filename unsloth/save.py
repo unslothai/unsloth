@@ -4478,7 +4478,6 @@ def _preflight_gguf_disk(
     )
 
 
-
 def _offloaded_parameter_hint(model):
     """Sentence to append when a save failed on offloaded (meta) parameters.
 
@@ -4908,9 +4907,7 @@ def unsloth_save_pretrained_gguf(
                 f"Error: {e}"
             ) from e
         else:
-            raise RuntimeError(
-                f"Unsloth: GGUF conversion failed: {_describe_exception(e)}"
-            ) from e
+            raise RuntimeError(f"Unsloth: GGUF conversion failed: {_describe_exception(e)}") from e
 
     # Step 9: Create Ollama modelfile
     modelfile_location = None
@@ -5523,9 +5520,7 @@ def unsloth_push_to_hub_gguf(
                     shutil.rmtree(d)
                 except:
                     pass
-        raise RuntimeError(
-            f"Failed to convert model to GGUF: {_describe_exception(e)}"
-        ) from e
+        raise RuntimeError(f"Failed to convert model to GGUF: {_describe_exception(e)}") from e
 
     # Step 3: Upload to HuggingFace Hub
     print("Unsloth: Uploading GGUF to Huggingface Hub...")
