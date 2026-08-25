@@ -2454,8 +2454,9 @@ QUANT_LAYOUTS = [
 
 
 @pytest.mark.parametrize("files,expected", QUANT_LAYOUTS)
-def test_quant_labels_read_the_layouts_the_hub_actually_writes(monkeypatch, tmp_path, files,
-                                                               expected):
+def test_quant_labels_read_the_layouts_the_hub_actually_writes(
+    monkeypatch, tmp_path, files, expected
+):
     from unsloth_cli import _model_catalog as cat
 
     monkeypatch.syspath_prepend(str(_REPO_ROOT / "studio" / "backend"))

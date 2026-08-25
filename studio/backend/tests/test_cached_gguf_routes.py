@@ -6857,5 +6857,4 @@ def test_a_name_that_moved_out_of_routes_models_still_resolves_there(name):
 def test_the_video_page_probe_resolves_the_helper_it_imports():
     """The exact import that broke, asserted at its own call site."""
     from routes.models import _video_family_buildable
-
     assert callable(_video_family_buildable)
