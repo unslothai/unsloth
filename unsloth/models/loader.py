@@ -654,16 +654,20 @@ class FastLanguageModel(FastLlamaModel):
         if model_name.lower().endswith("-bf16") and (
             load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
         ):
-            # Only the plain flags are dropped; a user quantization_config stays
-            # in **kwargs and still quantizes, so stay quiet in that case.
-            if (load_in_4bit or load_in_8bit or load_in_fp8 != False) and kwargs.get(
-                "quantization_config", None
-            ) is None:
+            # A user quantization_config stays in **kwargs and still quantizes.
+            # `load_in_4bit` defaults to True, so a set flag is not proof of a
+            # request; an explicit `load_in_16bit` IS one, for exactly this load.
+            if (
+                not load_in_16bit
+                and (load_in_4bit or load_in_8bit or load_in_fp8 != False)
+                and kwargs.get("quantization_config", None) is None
+            ):
                 print(
-                    f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so the "
-                    f"requested 4bit/8bit/fp8 loading is disabled and the model will "
-                    f"load in 16bit. Point at the 4bit repo instead if that is not "
-                    f"what you wanted -- a 16bit load needs far more VRAM."
+                    f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so "
+                    f"4bit/8bit/fp8 loading is disabled and the model will "
+                    f"load in 16bit, which needs far more VRAM. Unsloth loads "
+                    f"4bit by default; point at the 4bit repo instead if you "
+                    f"wanted that."
                 )
             load_in_4bit = False
             load_in_8bit = False
@@ -848,16 +852,20 @@ class FastLanguageModel(FastLlamaModel):
             if model_name.lower().endswith("-bf16") and (
                 load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
             ):
-                # Only the plain flags are dropped; a user quantization_config
-                # stays in **kwargs and still quantizes, so stay quiet then.
-                if (load_in_4bit or load_in_8bit or load_in_fp8 != False) and kwargs.get(
-                    "quantization_config", None
-                ) is None:
+                # A user quantization_config stays in **kwargs and still quantizes.
+                # `load_in_4bit` defaults to True, so a set flag is not proof of a
+                # request; an explicit `load_in_16bit` IS one, for exactly this load.
+                if (
+                    not load_in_16bit
+                    and (load_in_4bit or load_in_8bit or load_in_fp8 != False)
+                    and kwargs.get("quantization_config", None) is None
+                ):
                     print(
-                        f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so the "
-                        f"requested 4bit/8bit/fp8 loading is disabled and the model will "
-                        f"load in 16bit. Point at the 4bit repo instead if that is not "
-                        f"what you wanted -- a 16bit load needs far more VRAM."
+                        f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so "
+                        f"4bit/8bit/fp8 loading is disabled and the model will "
+                        f"load in 16bit, which needs far more VRAM. Unsloth loads "
+                        f"4bit by default; point at the 4bit repo instead if you "
+                        f"wanted that."
                     )
                 load_in_4bit = False
                 load_in_8bit = False
@@ -1453,16 +1461,20 @@ class FastModel(FastBaseModel):
         if model_name.lower().endswith("-bf16") and (
             load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
         ):
-            # Only the plain flags are dropped; a user quantization_config stays
-            # in **kwargs and still quantizes, so stay quiet in that case.
-            if (load_in_4bit or load_in_8bit or load_in_fp8 != False) and kwargs.get(
-                "quantization_config", None
-            ) is None:
+            # A user quantization_config stays in **kwargs and still quantizes.
+            # `load_in_4bit` defaults to True, so a set flag is not proof of a
+            # request; an explicit `load_in_16bit` IS one, for exactly this load.
+            if (
+                not load_in_16bit
+                and (load_in_4bit or load_in_8bit or load_in_fp8 != False)
+                and kwargs.get("quantization_config", None) is None
+            ):
                 print(
-                    f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so the "
-                    f"requested 4bit/8bit/fp8 loading is disabled and the model will "
-                    f"load in 16bit. Point at the 4bit repo instead if that is not "
-                    f"what you wanted -- a 16bit load needs far more VRAM."
+                    f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so "
+                    f"4bit/8bit/fp8 loading is disabled and the model will "
+                    f"load in 16bit, which needs far more VRAM. Unsloth loads "
+                    f"4bit by default; point at the 4bit repo instead if you "
+                    f"wanted that."
                 )
             load_in_4bit = False
             load_in_8bit = False
@@ -1852,16 +1864,20 @@ class FastModel(FastBaseModel):
             if model_name.lower().endswith("-bf16") and (
                 load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
             ):
-                # Only the plain flags are dropped; a user quantization_config
-                # stays in **kwargs and still quantizes, so stay quiet then.
-                if (load_in_4bit or load_in_8bit or load_in_fp8 != False) and kwargs.get(
-                    "quantization_config", None
-                ) is None:
+                # A user quantization_config stays in **kwargs and still quantizes.
+                # `load_in_4bit` defaults to True, so a set flag is not proof of a
+                # request; an explicit `load_in_16bit` IS one, for exactly this load.
+                if (
+                    not load_in_16bit
+                    and (load_in_4bit or load_in_8bit or load_in_fp8 != False)
+                    and kwargs.get("quantization_config", None) is None
+                ):
                     print(
-                        f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so the "
-                        f"requested 4bit/8bit/fp8 loading is disabled and the model will "
-                        f"load in 16bit. Point at the 4bit repo instead if that is not "
-                        f"what you wanted -- a 16bit load needs far more VRAM."
+                        f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so "
+                        f"4bit/8bit/fp8 loading is disabled and the model will "
+                        f"load in 16bit, which needs far more VRAM. Unsloth loads "
+                        f"4bit by default; point at the 4bit repo instead if you "
+                        f"wanted that."
                     )
                 load_in_4bit = False
                 load_in_8bit = False
