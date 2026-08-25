@@ -643,6 +643,8 @@ def _scan_active_cached_drafter_configs(root: Path) -> Optional[_DrafterRows]:
 # stays selectable. Changes Studio does make bump the scan epoch, and are seen by the first
 # lookup that starts after the bump.
 _DRAFTER_SCAN_MAX_AGE_SECONDS = 15.0
+# A floor, raised by callers that traverse: a cap below the number of roots evicts the entries
+# the traversal is still walking towards, and every request rescans every cache.
 _DRAFTER_SCANS_KEPT = 8
 # (cache root, scan epoch) -> when that scan finished, and the drafters it found
 _drafter_scans: dict[tuple[str, int], tuple[float, _DrafterRows]] = {}
@@ -658,7 +660,11 @@ def _serve_kept_scan(key: tuple[str, int]) -> _DrafterRows:
     return held[1]
 
 
-def _cached_active_drafter_configs(root: str, epoch: int) -> _DrafterRows:
+def _cached_active_drafter_configs(
+    root: str,
+    epoch: int,
+    keep: int = 0,
+) -> _DrafterRows:
     key = (root, epoch)
     started = time.monotonic()
     with _drafter_scans_lock:
@@ -685,21 +691,25 @@ def _cached_active_drafter_configs(root: str, epoch: int) -> _DrafterRows:
         # arrive already expired.
         _drafter_scans.pop(key, None)
         _drafter_scans[key] = (finished, rows)
-        while len(_drafter_scans) > _DRAFTER_SCANS_KEPT:
+        while len(_drafter_scans) > max(_DRAFTER_SCANS_KEPT, keep):
             del _drafter_scans[next(iter(_drafter_scans))]
     return rows
 
 
-def _active_cached_drafter_configs() -> Iterator[tuple[str, dict[str, Any], Path, int]]:
+def _cached_drafter_configs() -> Iterator[tuple[str, dict[str, Any], Path, int]]:
+    """Every cache Studio knows, active first, so a target left in a previously configured one
+    still finds the drafters beside it."""
     try:
         from hub.utils.inventory_scan import hf_cache_scans_epoch
-        from utils.hf_cache_settings import get_hf_cache_paths
-
-        root = get_hf_cache_paths().hub_cache
         epoch = hf_cache_scans_epoch()
     except Exception:
         return iter(())
-    return iter(_cached_active_drafter_configs(str(root), epoch))
+    roots = _known_hf_cache_roots()
+    # Two epochs' worth, so one turning over mid-traversal does not evict the roots behind it.
+    keep = len(roots) * 2
+    return iter(
+        [row for root in roots for row in _cached_active_drafter_configs(str(root), epoch, keep)]
+    )
 
 
 def _mlx_memory_budget() -> Optional[int]:
@@ -1266,7 +1276,7 @@ def _fitting_cached_revision(
     which is what can otherwise expire mid-request and scan the cache twice.
     """
     if revisions is None:
-        revisions = tuple(_active_cached_drafter_configs())
+        revisions = tuple(_cached_drafter_configs())
     for cached_repo_id, config, snapshot, _size in revisions:
         if cached_repo_id.casefold() != repo_id.casefold():
             continue
@@ -2144,7 +2154,7 @@ def _recommended_candidate_rows(target_id, target_config, caps, enabled, native_
 def _cached_candidate_rows(target_id, target_config, caps, enabled):
     """One row per snapshot directory, so the merge — not this source — picks the revision."""
     target_bytes = _snapshot_weight_bytes(target_id)
-    for repo_id, draft_config, snapshot, weight_bytes in _active_cached_drafter_configs():
+    for repo_id, draft_config, snapshot, weight_bytes in _cached_drafter_configs():
         method = _drafter_method(draft_config)
         if method is None:
             continue
@@ -2483,7 +2493,7 @@ def resolve_mlx_speculative_request(
     # would refuse, whatever the list said when it was built.
     precision = {}
     rankable = [row for row in downloaded if row["loadable"] and row is not builtin]
-    revisions = tuple(_active_cached_drafter_configs()) if rankable else ()
+    revisions = tuple(_cached_drafter_configs()) if rankable else ()
     for row in rankable:
         config, snapshot = _fitting_cached_revision(
             row["repo_id"], target_id, target_config, row["method"], revisions

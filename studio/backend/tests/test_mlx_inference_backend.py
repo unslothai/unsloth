@@ -4364,7 +4364,7 @@ def test_a_drafters_width_orders_it_without_ruling_any_out(monkeypatch, tmp_path
 
     # A repository with no revision that fits is not in the cache for this target at all.
     cached = [("org/other", {"quantization": top}, _Path("/nowhere"), 0)]
-    monkeypatch.setattr(spec, "_active_cached_drafter_configs", lambda: iter(cached))
+    monkeypatch.setattr(spec, "_cached_drafter_configs", lambda: iter(cached))
     assert spec._fitting_cached_revision("org/A", "org/t", {"model_type": "x"}, "mtp") == (
         None, None
     )
@@ -4523,7 +4523,7 @@ def test_auto_ranks_the_revision_a_load_would_take(monkeypatch, revisions, expec
 
     cached = [(repo, _declare(bits, fits), _Path("/nowhere"), 0)
               for repo, bits, fits in revisions]
-    monkeypatch.setattr(spec, "_active_cached_drafter_configs", lambda: iter(cached))
+    monkeypatch.setattr(spec, "_cached_drafter_configs", lambda: iter(cached))
     monkeypatch.setattr(spec, "_drafter_method", lambda _c: "mtp")
     monkeypatch.setattr(spec, "_dynamic_candidate_config_matches",
                         lambda _m, _t, _tc, config, *a: config.get("fits", True))
@@ -4744,7 +4744,7 @@ def test_the_loader_takes_the_revision_the_ranking_measured(monkeypatch):
         ("org/A", {"quantization": {"bits": 8}, "fits": False}, _Path("/wrong"), 0),
         ("org/A", {"quantization": {"bits": 4}, "fits": True}, _Path("/right"), 0),
     ]
-    monkeypatch.setattr(spec, "_active_cached_drafter_configs", lambda: iter(cached))
+    monkeypatch.setattr(spec, "_cached_drafter_configs", lambda: iter(cached))
     monkeypatch.setattr(spec, "_drafter_method", lambda _c: "mtp")
     monkeypatch.setattr(spec, "_dynamic_candidate_config_matches",
                         lambda _m, _t, _tc, config, *a: config.get("fits", True))
@@ -5151,6 +5151,65 @@ def test_mlx_speculative_options_never_publishes_a_local_path(monkeypatch, targe
     assert options["experimental"] is True and options["candidates"] == []
 
 
+def test_more_caches_than_the_memo_keeps_are_still_scanned_once_each(tmp_path, monkeypatch):
+    """Studio keeps sixteen previous cache homes plus the active and default ones, and a memo
+    smaller than that evicts the entries the traversal is still walking towards."""
+    from core.inference import mlx_speculative as spec
+
+    roots = []
+    for index in range(20):
+        root = tmp_path / f"hub{index:02d}"
+        root.mkdir()
+        roots.append(root)
+    monkeypatch.setattr(spec, "_known_hf_cache_roots", lambda: roots)
+    monkeypatch.setattr("hub.utils.inventory_scan.hf_cache_scans_epoch", lambda: 7)
+    scanned = []
+    monkeypatch.setattr(
+        spec, "_scan_active_cached_drafter_configs", lambda root: scanned.append(root) or ()
+    )
+
+    list(spec._cached_drafter_configs())
+    assert len(scanned) == len(roots)
+    # Every root answered from its own kept scan, so nothing is walked twice.
+    list(spec._cached_drafter_configs())
+    assert len(scanned) == len(roots)
+
+
+def test_a_drafter_in_a_previously_configured_cache_is_still_discovered(tmp_path, monkeypatch):
+    """A target left in a cache Studio used to point at keeps its provenance, so the drafters
+    beside it have to be found too. The active cache is read first, so its revision wins."""
+    # The scan resolves each drafter's architecture through the installed runtime.
+    pytest.importorskip("mlx_vlm")
+    from core.inference import mlx_speculative as spec
+
+    active, previous = tmp_path / "active" / "hub", tmp_path / "previous" / "hub"
+
+    def _drafter(root, owner, name, layers):
+        snapshot = root / f"models--{owner}--{name}" / "snapshots" / f"rev{layers}"
+        snapshot.mkdir(parents = True)
+        (snapshot / "config.json").write_text(
+            json.dumps({"model_type": "qwen3", "dflash_config": {"num_layers": layers}}),
+            encoding = "utf-8",
+        )
+        (snapshot / "model.safetensors").write_bytes(b"\0" * 32)
+        return snapshot
+
+    _drafter(active, "z-lab", "Shared", 6)
+    _drafter(previous, "z-lab", "Shared", 7)
+    _drafter(previous, "z-lab", "OnlyThere", 8)
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.known_hf_hub_caches", lambda: [active, previous]
+    )
+    monkeypatch.setattr("hub.utils.inventory_scan.hf_cache_scans_epoch", lambda: 1)
+
+    rows = list(spec._cached_drafter_configs())
+    found = [repo_id for repo_id, _config, _snapshot, _size in rows]
+    assert "z-lab/OnlyThere" in found
+    # Active first, so the repository cached in both resolves to the active revision.
+    shared = next(row for row in rows if row[0] == "z-lab/Shared")
+    assert shared[2].parent.parent.parent == active
+
+
 def test_a_snapshot_in_a_previously_configured_cache_still_names_its_repository(
     tmp_path, monkeypatch
 ):
@@ -5250,7 +5309,7 @@ def test_the_options_endpoint_reports_the_drafters_the_sources_found(monkeypatch
     draft = {"model_type": "gemma4_assistant", "backbone_hidden_size": 64, "vocab_size": 100}
     monkeypatch.setattr(spec, "_read_config", lambda _t: _MTP_TARGET)
     monkeypatch.setattr(
-        spec, "_active_cached_drafter_configs",
+        spec, "_cached_drafter_configs",
         lambda: iter([("org/Drafter", draft, Path("/nowhere"), 2048)]),
     )
     monkeypatch.setattr(spec, "_token_id_map", lambda _t: _TOKENS)
@@ -5657,7 +5716,7 @@ def test_a_matched_drafter_reports_why_it_cannot_run(
 
     caps = {"common": True, "methods": {"mtp": runtime_ready}, "reason": caps_reason}
     monkeypatch.setattr(
-        spec, "_active_cached_drafter_configs",
+        spec, "_cached_drafter_configs",
         lambda: iter([("org/drafter", {
             "model_type": "gemma4_assistant",
             **({"quantization_config": {"quant_method": quant_method, "bits": 4}}
@@ -5825,7 +5884,7 @@ def test_a_target_whose_weights_are_not_here_defers_the_memory_verdict(monkeypat
 
     monkeypatch.setattr(
         spec,
-        "_active_cached_drafter_configs",
+        "_cached_drafter_configs",
         lambda: iter([("org/drafter", {"model_type": "gemma4_assistant"}, Path("/nowhere"), 1)]),
     )
     monkeypatch.setattr(spec, "_drafter_method", lambda _c: "mtp")
