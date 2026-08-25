@@ -8705,7 +8705,9 @@ def _build_default_spec_draft_n_max(extras: Optional[list[str]] = None) -> int:
 
 
 def _estimate_spec_mode_terms(
-    drafter_kind: str, extras: list[str], studio_emits_mtp: bool = False
+    drafter_kind: str,
+    extras: list[str],
+    studio_emits_mtp: bool = False,
 ) -> tuple[bool, bool]:
     """Which target-side terms this speculative mode allocates.
 
@@ -9021,8 +9023,7 @@ def _gguf_memory_breakdown(
     probe = _probe_backend()
     probe._read_gguf_metadata(gguf_path)
     embedded_mtp = bool(
-        not charged_drafter
-        and _embedded_mtp_engages(probe, config, speculative_type, extras)
+        not charged_drafter and _embedded_mtp_engages(probe, config, speculative_type, extras)
     )
     if embedded_mtp and _extra_args_draft_offloaded_to_cpu(extras):
         # --spec-draft-ngl 0 or a CPU draft device MOVES the head, it does not switch

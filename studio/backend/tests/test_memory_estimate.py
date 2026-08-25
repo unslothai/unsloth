@@ -2568,15 +2568,21 @@ class TestTheEmbeddedHeadIsChargedOnlyWhenItEngages:
 
     def _config(self, gguf, identifier):
         return SimpleNamespace(
-            identifier = identifier, gguf_file = gguf, is_gguf = True, gguf_variant = None,
-            gguf_mmproj_file = None, gguf_mtp_file = None,
-            gguf_dspark_file = None, gguf_dflash_file = None,
+            identifier = identifier,
+            gguf_file = gguf,
+            is_gguf = True,
+            gguf_variant = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
         )
 
     @pytest.fixture
     def head(self, tmp_path):
         return _write_gguf(
-            tmp_path, "qwen3",
+            tmp_path,
+            "qwen3",
             {**_GQA_FIELDS, "context_length": 262144, "nextn_predict_layers": 2},
             name = "head.gguf",
         )
@@ -2606,7 +2612,9 @@ class TestTheEmbeddedHeadIsChargedOnlyWhenItEngages:
     def test_extras_owning_the_spec_block_are_left_alone(self, head):
         """Studio emits no spec block of its own once --spec-type is in the extras."""
         out = ri._gguf_memory_breakdown(
-            self._config(head, "org/Qwen3-8B"), head, n_ctx = 131072,
+            self._config(head, "org/Qwen3-8B"),
+            head,
+            n_ctx = 131072,
             llama_extra_args = ["--spec-type", "ngram-mod"],
         )
         assert out.drafter_runtime_bytes == 0
