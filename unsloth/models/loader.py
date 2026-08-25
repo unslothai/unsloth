@@ -37,6 +37,7 @@ from transformers import AutoConfig
 from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
 from .loader_utils import (
+    DEFAULT_DEVICE_MAP,
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
     _offline_quantize_to_fp8,
@@ -432,7 +433,7 @@ class FastLanguageModel(FastLlamaModel):
         load_in_16bit = False,  # 16bit LoRA
         full_finetuning = False,
         token = None,
-        device_map = "sequential",
+        device_map = DEFAULT_DEVICE_MAP,
         # Planner hints for device_map = "unsloth"; see resolve_unsloth_device_map.
         device_map_planner_kwargs = None,
         rope_scaling = None,
@@ -1199,7 +1200,7 @@ class FastModel(FastBaseModel):
         load_in_16bit = False,  # 16bit LoRA
         full_finetuning = False,
         token = None,
-        device_map = "sequential",
+        device_map = DEFAULT_DEVICE_MAP,
         # Planner hints for device_map = "unsloth"; see resolve_unsloth_device_map.
         device_map_planner_kwargs = None,
         rope_scaling = None,  # [TODO] No effect

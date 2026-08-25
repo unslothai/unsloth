@@ -133,11 +133,17 @@ def test_sentence_transformer_never_hands_the_sentinel_to_sentence_transformers(
 def test_sentence_transformer_decline_survives_the_env_var():
     """The decline has to outlive the re-entry into `FastModel.from_pretrained`.
 
-    The sentinel is spent on our own `device_map`, but the resulting "sequential" goes to
-    `FastModel.from_pretrained`, which runs `requested_device_map` again -- so
-    `UNSLOTH_AUTO_DEVICE_MAP=1` upgrades it back to "unsloth" and plans a split map while
-    the `st_device` blocks still read "sequential" and pull that model onto one card.
-    Without the pin, the env var makes the decline a no-op.
+    The sentinel is spent on our own `device_map`, but the resulting value goes to
+    `FastModel.from_pretrained`, which runs `requested_device_map` again. If what it
+    receives is still the marked default, the env var upgrades it back to "unsloth" and
+    plans a split map while the `st_device` blocks read "sequential" and pull that model
+    onto one card.
+
+    The guard is that the nested call is handed a plain `str`, which carries no marker and
+    so cannot be re-upgraded. Asserted as the absence of the process-wide pin too: pinning
+    `os.environ` around the call worked, but `os.environ` is shared, so it also reached
+    unrelated loads on other threads and two overlapping sentence loads could restore it
+    out of order.
     """
     source = _source("sentence_transformer.py")
     tree = ast.parse(source)
@@ -153,16 +159,14 @@ def test_sentence_transformer_decline_survives_the_env_var():
         for node in ast.walk(function)
     ), "the decline reads device_map raw, so UNSLOTH_AUTO_DEVICE_MAP=1 walks past it"
 
-    # And the switch must be pinned off across the FastModel load, or FastModel re-upgrades.
-    pins = [
+    strips = [
         node
         for node in ast.walk(function)
         if isinstance(node, ast.Assign)
-        and isinstance(node.targets[0], ast.Subscript)
-        and ast.unparse(node.targets[0]) == "os.environ['UNSLOTH_AUTO_DEVICE_MAP']"
-        and getattr(node.value, "value", None) == "0"
+        and any(getattr(t, "id", None) == "device_map" for t in node.targets)
+        and ast.unparse(node.value) == "str(device_map)"
     ]
-    assert pins, "UNSLOTH_AUTO_DEVICE_MAP is not pinned off across FastModel.from_pretrained"
+    assert strips, "the nested load still gets the marked default, which it will re-upgrade"
 
     fastmodel_call = min(
         node.lineno
@@ -170,14 +174,9 @@ def test_sentence_transformer_decline_survives_the_env_var():
         if isinstance(node, ast.Call) and ast.unparse(node.func) == "FastModel.from_pretrained"
     )
     assert (
-        min(node.lineno for node in pins) < fastmodel_call
-    ), "the pin lands after FastModel has already planned"
+        min(node.lineno for node in strips) < fastmodel_call
+    ), "the marker is stripped after FastModel has already planned"
 
-    # The pin is restored, so one embedding load does not disable planning process-wide.
-    restores = [
-        node
-        for node in ast.walk(function)
-        if isinstance(node, ast.Try)
-        and any("UNSLOTH_AUTO_DEVICE_MAP" in ast.unparse(stmt) for stmt in node.finalbody)
-    ]
-    assert restores, "UNSLOTH_AUTO_DEVICE_MAP is never restored"
+    assert "os.environ['UNSLOTH_AUTO_DEVICE_MAP']" not in ast.unparse(function), (
+        "the process-wide pin is back; every other thread sees it"
+    )

@@ -44,6 +44,7 @@ from ._utils import (
 )
 from ._utils import *
 from .loader_utils import (
+    DEFAULT_DEVICE_MAP,
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
     _restore_dropped_fp8_scales,
@@ -895,7 +896,7 @@ class FastBaseModel:
         load_in_16bit = False,
         full_finetuning = False,
         token = None,
-        device_map = "sequential",
+        device_map = DEFAULT_DEVICE_MAP,
         # Planner hints for device_map = "unsloth"; see resolve_unsloth_device_map.
         device_map_planner_kwargs = None,
         trust_remote_code = False,

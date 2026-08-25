@@ -129,7 +129,12 @@ def _load_diffusion_config(
             cd["vision_config"]["model_type"] = "diffusion_gemma4_vision"
         from transformers import DiffusionGemma4Config
 
-        return DiffusionGemma4Config.from_dict(cd)
+        aliased = DiffusionGemma4Config.from_dict(cd)
+        # Only this object knows the rewrite happened; the checkpoint on disk still says
+        # `diffusion_gemma`, so anything that rebuilds the config from `model_name` gets the
+        # AutoConfig failure we just caught. The device-map planner is exactly that.
+        aliased._unsloth_legacy_alias = True
+        return aliased
 
 
 class FastDiffusionModel:
@@ -231,10 +236,21 @@ class FastDiffusionModel:
 
         # Same leaf-level resolution as llama.py and vision.py: an unresolved "unsloth"
         # becomes torch.device("unsloth") in transformers and raises instead of loading.
+        #
+        # A legacy `diffusion_gemma` checkpoint only loads because the config above catches
+        # AutoConfig's unknown-model error and rewrites the type in memory. The planner
+        # takes a name, not a config, and rebuilds from the checkpoint, so it hits that same
+        # error and reports it as a planning failure. Say what actually happened instead.
         device_map = resolve_unsloth_device_map(
             requested_device_map(device_map),
             model_name,
             full_finetuning = full_finetuning,
+            skip_reason = (
+                "this checkpoint declares the legacy `diffusion_gemma` type, which only "
+                "loads through an in-memory rewrite the planner cannot see"
+                if getattr(config, "_unsloth_legacy_alias", False)
+                else None
+            ),
             planner_kwargs = device_map_planner_kwargs,
             token = token,
             trust_remote_code = trust_remote_code,

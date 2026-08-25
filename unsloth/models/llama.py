@@ -30,6 +30,7 @@ from ._utils import (
     resolve_model_class,
 )
 from .loader_utils import (
+    DEFAULT_DEVICE_MAP,
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
     _restore_dropped_fp8_scales,
@@ -2348,7 +2349,7 @@ class FastLlamaModel:
         dtype = None,
         load_in_4bit = True,
         token = None,
-        device_map = "sequential",
+        device_map = DEFAULT_DEVICE_MAP,
         # Planner hints for device_map = "unsloth"; see resolve_unsloth_device_map.
         device_map_planner_kwargs = None,
         rope_scaling = None,

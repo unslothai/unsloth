@@ -15,7 +15,7 @@
 import logging
 
 from .loader import FastModel, DISABLE_SDPA_MODEL_NAMES
-from .loader_utils import UNSLOTH_DEVICE_MAP, requested_device_map
+from .loader_utils import DEFAULT_DEVICE_MAP, UNSLOTH_DEVICE_MAP, requested_device_map
 from ._utils import (
     SUPPORTS_BFLOAT16,
     resolve_model_class,
@@ -1467,7 +1467,7 @@ class FastSentenceTransformer(FastModel):
         load_in_16bit = True,  # Changed default: 16-bit is optimal for encoders
         full_finetuning = False,
         token = None,
-        device_map = "sequential",
+        device_map = DEFAULT_DEVICE_MAP,
         rope_scaling = None,
         fix_tokenizer = True,
         trust_remote_code = False,
@@ -1848,15 +1848,18 @@ class FastSentenceTransformer(FastModel):
         if _st_cache_dir is not None and "cache_dir" not in kwargs:
             kwargs["cache_dir"] = _st_cache_dir
 
-        # The decline above only spends the sentinel on our copy: FastModel re-reads
-        # UNSLOTH_AUTO_DEVICE_MAP and upgrades the "sequential" we hand it back to
-        # "unsloth", splitting the model across cards while `st_device` below still says
-        # "sequential" and SentenceTransformer pulls it onto one. Pin the switch off.
-        # Set inside the try so the finally always restores it: the patch helpers above
-        # can raise, and a leaked "0" would disable the opt-in for the whole process.
-        old_auto_device_map = os.environ.get("UNSLOTH_AUTO_DEVICE_MAP")
+        # The decline above only spends the sentinel on our copy. Hand the nested load a
+        # plain `str`, not the marked default: FastModel would read that marker as "nobody
+        # chose this" and re-upgrade it under UNSLOTH_AUTO_DEVICE_MAP, splitting the model
+        # across cards while `st_device` below still says "sequential" and
+        # SentenceTransformer pulls it back onto one.
+        #
+        # A plain value rather than pinning the env var around the call: os.environ is
+        # process-wide, so that pin also reached unrelated loads on other threads, and two
+        # overlapping sentence loads could restore it out of order and leave the switch in
+        # whichever state finished last.
+        device_map = str(device_map)
         try:
-            os.environ["UNSLOTH_AUTO_DEVICE_MAP"] = "0"
             model, tokenizer = FastModel.from_pretrained(
                 model_name = model_name,
                 max_seq_length = max_seq_length,
@@ -1886,10 +1889,6 @@ class FastSentenceTransformer(FastModel):
             )
         finally:
             os.environ["UNSLOTH_WARN_UNINITIALIZED"] = old_environ
-            if old_auto_device_map is None:
-                os.environ.pop("UNSLOTH_AUTO_DEVICE_MAP", None)
-            else:
-                os.environ["UNSLOTH_AUTO_DEVICE_MAP"] = old_auto_device_map
 
         from sentence_transformers import SentenceTransformer
 

@@ -410,9 +410,12 @@ def _loader_device_map_helpers():
                 "resolve_unsloth_device_map",
             ):
                 exec(_ast.get_source_segment(source, node), namespace)
+            elif isinstance(node, _ast.ClassDef) and node.name == "_DefaultDeviceMap":
+                exec(_ast.get_source_segment(source, node), namespace)
             elif (
                 isinstance(node, _ast.Assign)
-                and getattr(node.targets[0], "id", None) == "UNSLOTH_DEVICE_MAP"
+                and getattr(node.targets[0], "id", None)
+                in ("UNSLOTH_DEVICE_MAP", "DEFAULT_DEVICE_MAP")
             ):
                 exec(_ast.get_source_segment(source, node), namespace)
         # No planner installed: the fallback is what a decline looks like from here.

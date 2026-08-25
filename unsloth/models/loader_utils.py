@@ -109,11 +109,35 @@ def prepare_device_map():
 UNSLOTH_DEVICE_MAP = "unsloth"
 
 
-def requested_device_map(device_map):
-    """`UNSLOTH_AUTO_DEVICE_MAP=1` opts in without touching any call site. Only
-    "sequential" is upgraded: a dict, "auto" or "balanced" is a placement the caller chose.
+class _DefaultDeviceMap(str):
+    """`"sequential"`, marked as the value nobody asked for.
+
+    The env opt-in upgrades the default and must leave a placement the caller chose alone,
+    but both arrive as the string `"sequential"` and a plain comparison cannot tell them
+    apart. Carrying the distinction in the type keeps it: this is a `str` that equals,
+    formats, hashes and serialises exactly like `"sequential"`, so every consumer downstream
+    (transformers included) sees no difference, while `is DEFAULT_DEVICE_MAP` still answers
+    "the signature put this here".
+
+    A sentinel object would have shown up in `inspect.signature` and in the docs as
+    something other than `"sequential"`, which is the one thing the default must not change.
     """
-    if device_map == "sequential" and os.environ.get("UNSLOTH_AUTO_DEVICE_MAP", "0") == "1":
+
+    __slots__ = ()
+
+
+DEFAULT_DEVICE_MAP = _DefaultDeviceMap("sequential")
+
+
+def requested_device_map(device_map):
+    """`UNSLOTH_AUTO_DEVICE_MAP=1` opts in without touching any call site.
+
+    Only the untouched default is upgraded. A dict, "auto", "balanced" -- or "sequential"
+    typed out by the caller -- is a placement someone chose, and an operator-wide env var is
+    not entitled to overrule it: accelerate's greedy sequential fill is a different
+    execution model from a head-aware split, and a caller who asked for it by name gets it.
+    """
+    if device_map is DEFAULT_DEVICE_MAP and os.environ.get("UNSLOTH_AUTO_DEVICE_MAP", "0") == "1":
         return UNSLOTH_DEVICE_MAP
     return device_map
 
@@ -188,6 +212,22 @@ def planner_class_mismatch_reason(loaded_class, planned_class):
     return f"the load builds {loaded_class.__name__}, not the planned {planned_class.__name__}"
 
 
+def _as_bytes(size):
+    """A `max_memory` budget in bytes, or None if it cannot be read as one.
+
+    accelerate takes `"10GiB"` as readily as an int and owns the spelling rules (GiB/MiB/KiB
+    binary, GB/MB/KB decimal, a lowercase trailing `b` meaning bits), so its own parser is
+    the one that agrees with the load. None on anything unreadable, which leaves the
+    measured free memory in place rather than dropping a device out of the budget.
+    """
+    try:
+        from accelerate.utils.modeling import convert_file_size_to_int
+
+        return convert_file_size_to_int(size)
+    except Exception:
+        return None
+
+
 def resolve_unsloth_device_map(
     device_map,
     model_name,
@@ -253,9 +293,27 @@ def resolve_unsloth_device_map(
         max_memory = {index: torch.cuda.mem_get_info(index)[0] for index in range(device_count)}
     except Exception as error:
         return _fallback(f"free memory could not be read ({error})")
+
+    # `max_memory` is a named parameter of the planner, so leaving a caller's copy in
+    # `planner_kwargs` makes this call raise `TypeError: got multiple values for keyword
+    # argument 'max_memory'` -- which the handler below would turn into a silent
+    # "sequential", losing both the cap they asked for and the plan. Take theirs per device
+    # and keep it under what is actually free: a caller reserving room for another workload
+    # knows something we cannot measure, but they cannot conjure memory the card has not
+    # got, and planning above free is how a plan OOMs on dispatch.
+    planner_kwargs = dict(planner_kwargs or {})
+    requested_memory = planner_kwargs.pop("max_memory", None)
+    if requested_memory is not None:
+        for device, budget in dict(requested_memory).items():
+            budget = _as_bytes(budget)
+            if budget is None:
+                continue
+            measured = max_memory.get(device)
+            max_memory[device] = budget if measured is None else min(measured, budget)
+
     try:
         plan = plan_device_map_for_pretrained(
-            model_name, max_memory = max_memory, **(planner_kwargs or {}), **config_kwargs
+            model_name, max_memory = max_memory, **planner_kwargs, **config_kwargs
         )
     except Exception as error:
         if type(error).__name__ == "DeviceMapInfeasible":

@@ -148,9 +148,12 @@ def _build(
             "resolve_unsloth_device_map",
         ):
             exec(ast.get_source_segment(_SRC, node), ns)
+        elif isinstance(node, ast.ClassDef) and node.name == "_DefaultDeviceMap":
+            exec(ast.get_source_segment(_SRC, node), ns)
         elif (
             isinstance(node, ast.Assign)
-            and getattr(node.targets[0], "id", None) == "UNSLOTH_DEVICE_MAP"
+            and getattr(node.targets[0], "id", None)
+            in ("UNSLOTH_DEVICE_MAP", "DEFAULT_DEVICE_MAP")
         ):
             exec(ast.get_source_segment(_SRC, node), ns)
 
@@ -272,13 +275,15 @@ def test_the_env_var_opts_in_on_1_and_nothing_else(
     host, accelerator, device_type, devices, value, monkeypatch
 ):
     """`UNSLOTH_AUTO_DEVICE_MAP` is an operator switch, so a half-set one must be off, not
-    ambiguous. Only the literal "1" upgrades, on every host."""
+    ambiguous. Only the literal "1" upgrades, on every host -- and only the default, never
+    the same string handed over by a caller who meant it."""
     monkeypatch.setenv("UNSLOTH_AUTO_DEVICE_MAP", value)
     planner = _Recorder(plan = _Plan())
     ns = _build(device_type = device_type, devices = devices, distributed = False, planner = planner)
-    requested = ns["requested_device_map"]("sequential")
+    requested = ns["requested_device_map"](ns["DEFAULT_DEVICE_MAP"])
     assert requested == ("unsloth" if value == "1" else "sequential")
     assert ns["resolve_unsloth_device_map"](requested, "unsloth/Qwen3-0.6B") != "unsloth"
+    assert ns["requested_device_map"]("sequential") == "sequential"
 
 
 @pytest.mark.parametrize("host", HOSTS, ids = _HOST_IDS, indirect = True)

@@ -67,9 +67,12 @@ def _load(
             "planner_class_mismatch_reason",
         ):
             exec(ast.get_source_segment(_SRC, node), ns)
+        elif isinstance(node, ast.ClassDef) and node.name == "_DefaultDeviceMap":
+            exec(ast.get_source_segment(_SRC, node), ns)
         elif (
             isinstance(node, ast.Assign)
-            and getattr(node.targets[0], "id", None) == "UNSLOTH_DEVICE_MAP"
+            and getattr(node.targets[0], "id", None)
+            in ("UNSLOTH_DEVICE_MAP", "DEFAULT_DEVICE_MAP")
         ):
             exec(ast.get_source_segment(_SRC, node), ns)
 
@@ -122,15 +125,20 @@ def test_an_explicit_dict_is_returned_untouched():
 
 def test_the_env_var_only_upgrades_the_default(monkeypatch):
     """UNSLOTH_AUTO_DEVICE_MAP is an operator switch, not a licence to override a
-    placement the caller chose. "auto" and a dict must survive it."""
+    placement the caller chose. "auto" and a dict must survive it.
+
+    So must a "sequential" the caller typed out, which is why the default carries a marker:
+    the two are the same string, and the switch is only entitled to the one nobody chose.
+    """
     ns = _load()
     monkeypatch.setenv("UNSLOTH_AUTO_DEVICE_MAP", "1")
-    assert ns["requested_device_map"]("sequential") == "unsloth"
+    assert ns["requested_device_map"](ns["DEFAULT_DEVICE_MAP"]) == "unsloth"
+    assert ns["requested_device_map"]("sequential") == "sequential"
     assert ns["requested_device_map"]("auto") == "auto"
     assert ns["requested_device_map"]("balanced") == "balanced"
     assert ns["requested_device_map"]({"": 0}) == {"": 0}
     monkeypatch.delenv("UNSLOTH_AUTO_DEVICE_MAP")
-    assert ns["requested_device_map"]("sequential") == "sequential"
+    assert ns["requested_device_map"](ns["DEFAULT_DEVICE_MAP"]) == "sequential"
 
 
 # ------------------------------------------------------- where planning cannot apply
