@@ -25795,10 +25795,9 @@ class LlamaCppBackend:
                                 **kwargs,
                             )
 
-                        # A raising tool is the tool's failure, not the answer's.
                         # Without this the handler below re-raises and a bad
-                        # argument kills the generation; the other two loops
-                        # hand the message back and let the model recover.
+                        # argument kills the whole answer. A raising tool is the
+                        # tool's failure; the other two loops hand it back.
                         try:
                             result = yield from stream_tool_execution(
                                 _invoke_tool,

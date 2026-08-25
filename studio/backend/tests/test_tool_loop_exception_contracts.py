@@ -77,7 +77,6 @@ def test_a_raising_local_tool_does_not_kill_the_gguf_answer(monkeypatch, tool_na
     assert len(ends) == 1, f"expected exactly one tool_end, got {ends}"
     assert REAL_ERROR in ends[0]["result"], ends[0]["result"]
     assert ends[0]["result"].startswith("Error: tool raised an exception:")
-    # The bogus string is what the bug produced; it must be gone.
     assert "Unknown tool" not in ends[0]["result"]
 
     content = "".join(e.get("text", "") for e in events if e.get("type") == "content")
@@ -254,7 +253,6 @@ def test_a_repeated_failing_call_stays_bounded(monkeypatch):
     assert len(executed_ends) == len(executions), [e["result"] for e in ends]
     assert "limit was reached" in ends[-1]["result"], ends[-1]["result"]
     assert not any("Unknown tool" in e["result"] for e in ends)
-    # And it terminated: the transport still has scripted turns left over.
     assert transport.turns, "the loop consumed every scripted turn instead of stopping"
 
 

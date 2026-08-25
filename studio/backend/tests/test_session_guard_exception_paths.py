@@ -123,7 +123,6 @@ def test_a_nested_guard_deletes_only_at_the_outer_exit(removals):
     with tools._session_in_flight("nested"):
         with tools._session_in_flight("nested"):
             assert tools._active_sessions[key] == 2
-        # Inner exit must not delete: the outer call is still using the folder.
         assert removals == [], "the inner exit deleted a sandbox still in use"
         assert tools._active_sessions[key] == 1
     assert removals == ["nested"]
@@ -259,7 +258,6 @@ def test_one_failing_delete_does_not_silently_drop_the_others(monkeypatch):
         "b",
         "c",
     ], "the batch now completes past a failure -- update this test and say so"
-    # Whatever the policy, nothing may be left queued or marked as removing.
     assert_idle("after a partially failed batch")
 
 
