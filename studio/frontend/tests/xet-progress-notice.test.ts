@@ -108,24 +108,43 @@ test("a storage that refuses writes still advances the count", () => {
 
 test("the copy says it is running and where to switch", () => {
   // The reassurance is the point of the toast, so it leads.
-  assert.match(XET_NOTICE_TITLE, /still running/);
-  assert.match(XET_NOTICE_DESCRIPTION, /actively downloading/);
+  assert.match(XET_NOTICE_TITLE, /running/);
+  assert.match(XET_NOTICE_DESCRIPTION, /Nothing is stuck/);
   // The control is the transport toggle in Model Hub, labelled HTTP.
-  assert.match(
-    XET_NOTICE_DESCRIPTION,
-    /'Model Hub' and switch transport to HTTP/,
-  );
+  assert.match(XET_NOTICE_DESCRIPTION, /HTTP in Model Hub/);
 });
 
-test("the closing advice renders as its own paragraph", () => {
-  // A blank line needs pre-line, and the per-toast class replaces the
-  // Toaster's rather than merging.
-  assert.match(XET_NOTICE_DESCRIPTION, /\n\nFor smoother progress/);
-  assert.match(XET_NOTICE_DESCRIPTION_CLASS, /whitespace-pre-line/);
+test("the copy stays short enough to clear the hub toolbar", () => {
+  // This test IS the #9293 revert, written down.
+  //
+  // The first version of this notice ran 62 characters of title and 330 of
+  // description. Sonner rendered that 235px tall in the top-right corner,
+  // which is where the Model hub keeps its own toolbar, so while the toast
+  // was up the capability filter, the sort dropdown, the Models and Datasets
+  // tabs and the repo action icons were underneath it. Hit testing each
+  // control's own centre point put 4 to 6 of them inside the toast, meaning
+  // unclickable, three times per install at 8s each. The toast has to end
+  // above the filter row, which is about 158px, so title plus roughly two
+  // lines. Nothing else enforces that, and the failure is invisible in unit
+  // tests and in a screenshot taken at the wrong viewport, so the budget is
+  // asserted here where a future edit to the copy has to see it.
+  assert.ok(
+    XET_NOTICE_TITLE.length <= 32,
+    `title is ${XET_NOTICE_TITLE.length} chars, budget 32`,
+  );
+  assert.ok(
+    XET_NOTICE_DESCRIPTION.length <= 170,
+    `description is ${XET_NOTICE_DESCRIPTION.length} chars, budget 170`,
+  );
+  // A newline costs a whole line and brings back the pre-line class the first
+  // version needed. One paragraph only.
+  assert.ok(!XET_NOTICE_DESCRIPTION.includes("\n"));
   assert.match(XET_NOTICE_DESCRIPTION_CLASS, /text-muted-foreground/);
 });
 
 test("it stays up longer than the Toaster default", () => {
-  // The copy does not fit in the 5s every other toast gets.
+  // Shorter than the first version, but still two sentences a user has to
+  // notice while looking at a progress bar, and it appears at most 3 times
+  // ever. 5s is enough to miss entirely.
   assert.ok(XET_NOTICE_DURATION_MS > 5000);
 });

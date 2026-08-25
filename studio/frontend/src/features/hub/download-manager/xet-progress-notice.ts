@@ -17,14 +17,21 @@ export const XET_NOTICE_STORAGE_KEY = "unsloth.studio.xetNoticeCount";
 // Longer than the Toaster's 5s default, like the explanatory toasts in chat.
 export const XET_NOTICE_DURATION_MS = 8000;
 
-export const XET_NOTICE_TITLE =
-  "Download progress may appear slow, but the download is still running.";
+// Kept SHORT on purpose, and this is a correctness constraint rather than a
+// style preference. The first version of this notice ran 62 characters of
+// title and 330 of description, which sonner rendered 235px tall in the
+// top-right corner. That is where the Model hub keeps its own toolbar, so for
+// the 8s the toast was up it sat on top of the capability filter, the sort
+// dropdown, the Models and Datasets tabs and the repo action icons: measured
+// by hit testing each control's own centre point, 4 to 6 of them resolved into
+// the toast and could not be clicked. That is what got #9159 reverted in
+// #9293. The toast has to end above the filter row to block nothing, which
+// means roughly 158px, so title plus about two lines of description. Adding a
+// sentence here is not free: re-measure before you do.
+export const XET_NOTICE_TITLE = "Download is running";
 export const XET_NOTICE_DESCRIPTION =
-  "Hugging Face Xet enables faster downloads by fetching model data as parallel chunks. Because chunks are written out of order and committed in batches, the progress indicator may appear stuck or update unevenly even while data is actively downloading.\n\nFor smoother progress updates, go to 'Model Hub' and switch transport to HTTP.";
-// The blank line needs pre-line. Per-toast classNames replace the Toaster's
-// description class instead of merging, so repeat it.
-export const XET_NOTICE_DESCRIPTION_CLASS =
-  "!text-muted-foreground whitespace-pre-line";
+  "Xet sends the file in small pieces, so the bar can sit at 0% and then jump to done. Nothing is stuck. Want a steady bar? Switch to HTTP in Model Hub.";
+export const XET_NOTICE_DESCRIPTION_CLASS = "!text-muted-foreground";
 
 // Carries the count when the write fails (private mode, quota), which would
 // otherwise repeat the toast on every download.
