@@ -2636,9 +2636,8 @@ def _is_hf_snapshots_container(directory: Path) -> bool:
     read the markers literally would refuse to widen inside a directory the weight
     was resolved out of.
     """
-    return (
-        directory.name.casefold() == "snapshots"
-        and directory.parent.name.casefold().startswith("models--")
+    return directory.name.casefold() == "snapshots" and directory.parent.name.casefold().startswith(
+        "models--"
     )
 
 
