@@ -9486,6 +9486,7 @@ def _edit_file(
         change_at = max(before.find(old), 0),
     )
 
+
 WEB_SEARCH_TOOL = {
     "type": "function",
     "function": {
@@ -9568,6 +9569,7 @@ def web_search_tool_with_images() -> dict:
         "description": "Specific things to fetch one picture each for, named exactly as in your answer.",
     }
     return tool
+
 
 def _build_sandbox_paths_note() -> str:
     """Platform and working-directory note, on BOTH tool descriptions.

@@ -499,7 +499,6 @@ class ToolLoopController:
         arguments = coerced.arguments
         if tool_name == "web_search":
             from core.inference.tools import canonicalize_web_search_arguments
-
             arguments = canonicalize_web_search_arguments(arguments)
         key = canonical_tool_call_key(tool_name, arguments)
         mcp = mcp_display_parts(tool_name)

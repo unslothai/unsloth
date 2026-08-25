@@ -358,9 +358,10 @@ def test_web_search_empty_arguments_are_a_recoverable_error(monkeypatch, argumen
     assert result == tools.WEB_SEARCH_EMPTY_ARGS_ERROR
     assert "Retry web_search" in result
     assert is_tool_error(result) is True
-    assert "Never call web_search with empty arguments" in tools.WEB_SEARCH_TOOL["function"][
-        "description"
-    ]
+    assert (
+        "Never call web_search with empty arguments"
+        in tools.WEB_SEARCH_TOOL["function"]["description"]
+    )
 
 
 def test_web_search_heals_query_aliases(monkeypatch):
@@ -370,7 +371,11 @@ def test_web_search_heals_query_aliases(monkeypatch):
         def __init__(self, **_kwargs):
             pass
 
-        def text(self, query, max_results = 5):
+        def text(
+            self,
+            query,
+            max_results = 5,
+        ):
             queries.append(query)
             return [{"title": "T", "href": "https://example.com/1", "body": "B"}]
 
@@ -411,7 +416,11 @@ def test_web_search_query_mode_still_searches(monkeypatch):
         def __init__(self, **_kwargs):
             pass
 
-        def text(self, query, max_results = 5):
+        def text(
+            self,
+            query,
+            max_results = 5,
+        ):
             return [{"title": "Hit", "href": "https://arxiv.org/abs/1", "body": "Ok"}]
 
     monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = FakeDDGS))

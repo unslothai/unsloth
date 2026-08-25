@@ -175,9 +175,7 @@ def test_web_search_alias_args_share_the_duplicate_key():
     assert first.status_text == "Searching: unsloth"
     controller.record_result(first, "ok")
 
-    duplicate = controller.prepare_call(
-        _call("web_search", {"query": "unsloth"}, "call_b")
-    )
+    duplicate = controller.prepare_call(_call("web_search", {"query": "unsloth"}, "call_b"))
     assert duplicate.action == "duplicate"
     assert duplicate.key == first.key
     assert not duplicate.should_execute
