@@ -215,6 +215,9 @@ def test_a_repo_root_projector_counts_before_the_quant_verifies(
 
     assert config.gguf_verified is None
     assert config.is_vision is True
+    # Carried too, or the training guard charges nothing for a file the launch
+    # attaches right after the weight lands.
+    assert config.gguf_local_mmproj_file == str((repo_root / "mmproj-F16.gguf").resolve())
 
 
 def test_every_shard_of_a_verified_cached_copy_is_measured(

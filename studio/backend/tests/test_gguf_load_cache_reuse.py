@@ -588,6 +588,25 @@ class TestLoadReusesCachedCopy:
             # Complete, and llama-server is handed shard 1 whichever shard ranked first.
             assert backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN)) == str(first)
 
+    def test_a_zero_byte_sibling_shard_is_not_a_complete_projector(self, hf_cache):
+        """An interrupted copy leaves the name in place at zero bytes. The set is what
+        llama-server opens, so one empty shard disqualifies every member of it."""
+        backend = LlamaCppBackend()
+        snap = _build_cache(hf_cache, REPO, {MAIN: 4})
+        repo_root = snap.parent.parent
+        first = repo_root / "mmproj-F16-00001-of-00002.gguf"
+        first.write_bytes(b"mmproj")
+        second = repo_root / "mmproj-F16-00002-of-00002.gguf"
+        second.write_bytes(b"")
+
+        with patch.object(backend, "_download_companion_gguf", return_value = None):
+            assert backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN)) is None
+
+            second.write_bytes(b"mmproj")
+            assert backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN)) == str(
+                first
+            )
+
     def test_an_incomplete_split_projector_does_not_shadow_a_complete_one(self, hf_cache):
         """Dropped during discovery, so a whole set still gets its turn at ranking."""
         backend = LlamaCppBackend()

@@ -2681,24 +2681,25 @@ def _detect_local_mmproj(
     return None
 
 
-def _hf_cache_repo_root_has_mmproj(repo_id: str) -> bool:
-    """Whether ``models--<repo>/`` holds a hand-added projector (#9286).
+def _hf_cache_repo_root_mmproj(repo_id: str) -> Optional[str]:
+    """A hand-added projector at ``models--<repo>/`` (#9286), or None.
 
-    Presence only, for the window where no quant of the repo verifies yet: the load
-    pairs the file against the weight it downloads. Without this, a repo that
-    publishes no projector skips companion resolution on the first Apply, and the
-    projector attaches only on a second one.
+    For the window where no quant of the repo verifies yet, so there is no weight to
+    pair against: this is the candidate discovery names, and the load pairs it against
+    what it downloads. Without it a repo that publishes no projector skips companion
+    resolution on the first Apply and attaches the projector only on a second one, and
+    the training guard charges nothing for a file the launch will make resident.
     """
     try:
         from utils.hf_cache_settings import get_hf_cache_paths
         target = f"models--{repo_id.replace('/', '--')}".lower()
         for repo_dir in Path(get_hf_cache_paths().hub_cache).iterdir():
             if repo_dir.is_dir() and repo_dir.name.lower() == target:
-                return detect_mmproj_file(str(repo_dir)) is not None
+                return detect_mmproj_file(str(repo_dir))
     except Exception as exc:
         # A cache-path lookup must never be what fails a config resolve.
         logger.debug(f"Could not check the HF cache repo root of {repo_id} for a projector: {exc}")
-    return False
+    return None
 
 
 def _snapshot_selection_key(snapshot: Path) -> tuple[float, str]:
@@ -4107,11 +4108,12 @@ class ModelConfig:
                 # is enough to make the load resolve companions beside what it downloads.
                 local_mmproj: Optional[str] = None
                 if not has_vision:
-                    if verified_file:
-                        local_mmproj = _detect_local_mmproj(verified_file, verified_file)
-                        has_vision = local_mmproj is not None
-                    else:
-                        has_vision = _hf_cache_repo_root_has_mmproj(identifier)
+                    local_mmproj = (
+                        _detect_local_mmproj(verified_file, verified_file)
+                        if verified_file
+                        else _hf_cache_repo_root_mmproj(identifier)
+                    )
+                    has_vision = local_mmproj is not None
 
                 display_name = f"{identifier.split('/')[-1]} ({variant})"
                 logger.info(
