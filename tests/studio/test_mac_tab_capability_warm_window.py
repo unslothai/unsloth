@@ -415,6 +415,7 @@ def test_the_forced_verdict_check_is_wired_into_the_public_entry_point():
     assert "assert_row_never_greyed_while_unmeasured" in called.get("main", set())
 
 
+
 # --------------------------------------------------------------------------------
 # What the survival poller fails on, now that it no longer replays the watchdog.
 # --------------------------------------------------------------------------------
@@ -431,7 +432,6 @@ def _timeline(duration_s, stalls = ()):
     Probes are sequential and a timeout costs the whole budget before the next route is
     tried, which is what the real poller does.
     """
-
     def lifts_at(t):
         for start, end in stalls:
             if start <= t < end:
@@ -449,28 +449,17 @@ def _timeline(duration_s, stalls = ()):
             else:
                 took, kind = BUDGET_S, "timeout"
             now += took
-            samples.append(
-                {
-                    "t": round(now, 3),
-                    "path": path,
-                    "kind": kind,
-                    "status": 200 if kind == "ok" else 0,
-                    "ms": round(took * 1000, 1),
-                    "inference_active": None,
-                    "hardware_detecting": None,
-                    "torch_warm_in_progress": None,
-                }
-            )
+            samples.append({
+                "t": round(now, 3), "path": path, "kind": kind,
+                "status": 200 if kind == "ok" else 0,
+                "ms": round(took * 1000, 1), "inference_active": None,
+                "hardware_detecting": None, "torch_warm_in_progress": None,
+            })
         now += POLL_S
     return samples
 
 
-def _verdict(
-    mod,
-    samples,
-    final_kind = "ok",
-    final_status = 200,
-):
+def _verdict(mod, samples, final_kind = "ok", final_status = 200):
     poller = mod.BackendSurvivalPoller()
     poller.samples = samples
     poller.report(final_kind = final_kind, final_status = final_status)
@@ -499,9 +488,7 @@ def test_a_backend_that_never_answers_again_fails(tmp_path, monkeypatch):
     watchdog arithmetic: the backend stopped answering and was still not answering when
     the run ended, confirmed by the final probe."""
     mod = _load(tmp_path, monkeypatch)
-    failed = _verdict(
-        mod, _timeline(150, stalls = [(60, 9999)]), final_kind = "timeout", final_status = 0
-    )
+    failed = _verdict(mod, _timeline(150, stalls = [(60, 9999)]), final_kind = "timeout", final_status = 0)
     assert len(failed) == 1, failed
     assert "never answered again" in failed[0], failed
 
@@ -517,11 +504,11 @@ def test_a_trailing_stall_the_final_probe_clears_is_not_a_failure(tmp_path, monk
 
 
 def test_a_dead_backend_with_no_samples_still_fails(tmp_path, monkeypatch):
-    """The final probe is load-bearing on its own, not only as a tie-breaker."""
+    """The post-run watch is load-bearing on its own, not only as a tie-breaker."""
     mod = _load(tmp_path, monkeypatch)
     failed = _verdict(mod, _timeline(60), final_kind = "refused", final_status = 0)
     assert len(failed) == 1, failed
-    assert "not alive at the end" in failed[0], failed
+    assert "port is gone" in failed[0], failed
 
 
 def test_a_refused_connection_fails_on_the_first_one(tmp_path, monkeypatch):
@@ -561,26 +548,10 @@ def test_an_answer_from_either_route_closes_a_stall(tmp_path, monkeypatch):
     from either is proof the backend was serving and ends the span."""
     mod = _load(tmp_path, monkeypatch)
     samples = [
-        {
-            "t": 10.0,
-            "path": "/api/liveness",
-            "kind": "timeout",
-            "status": 0,
-            "ms": 10000.0,
-            "inference_active": None,
-            "hardware_detecting": None,
-            "torch_warm_in_progress": None,
-        },
-        {
-            "t": 10.1,
-            "path": "/api/health",
-            "kind": "ok",
-            "status": 200,
-            "ms": 5.0,
-            "inference_active": None,
-            "hardware_detecting": None,
-            "torch_warm_in_progress": None,
-        },
+        {"t": 10.0, "path": "/api/liveness", "kind": "timeout", "status": 0, "ms": 10000.0,
+         "inference_active": None, "hardware_detecting": None, "torch_warm_in_progress": None},
+        {"t": 10.1, "path": "/api/health", "kind": "ok", "status": 200, "ms": 5.0,
+         "inference_active": None, "hardware_detecting": None, "torch_warm_in_progress": None},
     ]
     spans = mod._stall_windows(samples)
     assert len(spans) == 1, spans
@@ -604,3 +575,95 @@ def test_the_watchdog_replay_is_gone():
     source = SCRIPT.read_text(encoding = "utf-8")
     for gone in ("watchdog_replay", "WATCHDOG_MAX_FAILURES", "WATCHDOG_INTERVAL_S"):
         assert f"def {gone}" not in source and f"\n{gone} =" not in source, gone
+
+
+# --------------------------------------------------------------------------------
+# The post-run watch, which is what stops the window boundary deciding the verdict.
+# --------------------------------------------------------------------------------
+
+
+def _scripted_probes(mod, kinds):
+    """Point _get_json at a scripted sequence of outcomes; the last one repeats."""
+    seq = list(kinds)
+    calls = []
+
+    def fake(path, timeout = 10.0):
+        kind = seq.pop(0) if len(seq) > 1 else seq[0]
+        calls.append(path)
+        return (200 if kind == "ok" else (503 if kind == "http" else 0)), None, kind
+
+    mod._get_json = fake
+    return calls
+
+
+def test_the_watch_keeps_probing_until_the_backend_answers(tmp_path, monkeypatch):
+    """A stall straddling the end of sampling is not a dead backend. One probe cannot
+    tell the difference, so the watch keeps asking until something comes back."""
+    mod = _load(tmp_path, monkeypatch)
+    calls = _scripted_probes(mod, ["timeout", "timeout", "ok"])
+    kind, status, _ = mod.await_recovery(window_s = 30.0)
+    assert (kind, status) == ("ok", 200)
+    assert len(calls) == 3, calls
+
+
+def test_the_watch_gives_up_and_reports_a_timeout(tmp_path, monkeypatch):
+    """Bounded, so a genuinely dead backend still fails. It answers none of these
+    probes either, which is why extending the observation cannot rescue a real death."""
+    mod = _load(tmp_path, monkeypatch)
+    calls = _scripted_probes(mod, ["timeout"])
+    kind, _, _ = mod.await_recovery(window_s = 0.05)
+    assert kind == "timeout"
+    assert len(calls) >= 1, calls
+
+
+def test_a_refused_port_does_not_get_the_recovery_window(tmp_path, monkeypatch):
+    """Only a stall is worth waiting on. A refused port is already decided, so it fails
+    at once rather than costing the run 90 seconds to reach the same answer."""
+    mod = _load(tmp_path, monkeypatch)
+    calls = _scripted_probes(mod, ["refused"])
+    # Small but non-zero on purpose. A build that stopped returning early would spend it
+    # and rack up probes, so this fails on the call count in a moment rather than hanging
+    # the suite for as long as the real window lasts.
+    kind, _, _ = mod.await_recovery(window_s = 2.0)
+    assert kind == "refused"
+    assert len(calls) == 1, f"spent the window instead of returning at once: {len(calls)} probes"
+
+
+def test_an_answered_non_200_does_not_get_the_recovery_window(tmp_path, monkeypatch):
+    """Also already decided: the backend answered, so waiting adds nothing."""
+    mod = _load(tmp_path, monkeypatch)
+    calls = _scripted_probes(mod, ["http"])
+    kind, status, _ = mod.await_recovery(window_s = 2.0)
+    assert (kind, status) == ("http", 503)
+    assert len(calls) == 1, f"spent the window instead of returning at once: {len(calls)} probes"
+
+
+def test_the_recovery_window_clears_the_stalls_actually_seen():
+    """Sized from evidence, not from a round number. Run 32862298967 produced stalls of
+    10.03s, 25.1s, 27.75s and 33.2s on one runner, so the window has to clear 33.2s with
+    room to spare or it decides "never ended" about stalls this job has already seen."""
+    longest_observed_s = 33.2
+    assert _module_constant("RECOVERY_WINDOW_S") > 2 * longest_observed_s
+
+
+def test_the_post_run_watch_is_wired_into_the_public_entry_point():
+    """report() is driven with an injected verdict everywhere above, so nothing there
+    would notice main() dropping the watch and going back to a single probe."""
+    import ast
+
+    tree = ast.parse(SCRIPT.read_text(encoding = "utf-8"))
+    main = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "main")
+    called = {
+        sub.func.id
+        for sub in ast.walk(main)
+        if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
+    }
+    assert "await_recovery" in called
+    reports = [
+        sub for sub in ast.walk(main)
+        if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
+        and sub.func.attr == "report" and sub.keywords
+    ]
+    assert reports, "main() no longer hands a post-run verdict to report()"
+    passed = {kw.arg for call in reports for kw in call.keywords}
+    assert {"final_kind", "final_wait_s"} <= passed, passed

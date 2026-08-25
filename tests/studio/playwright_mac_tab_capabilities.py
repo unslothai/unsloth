@@ -37,6 +37,12 @@ Covers the two field failures from Unsloth Desktop 0.1.524-beta on Apple Silicon
    a backend that stops answering and never comes back, a non-200 answer, or a
    refused port.
 
+   "Never comes back" is decided by await_recovery, which keeps watching after
+   sampling stops rather than letting one probe settle it. Sampling ends at an
+   arbitrary moment, so a stall straddling that boundary would otherwise fail a
+   run where the same stall a minute earlier only warned, which is this file's
+   own flake moved to the edge of the window instead of removed.
+
 Runs against a live Studio; drives the real UI. Env contract matches the other
 scripts here: BASE_URL, STUDIO_OLD_PW, PW_ART_DIR.
 """
@@ -86,6 +92,21 @@ FORCED_PENDING_S = float(os.environ.get("STUDIO_MAC_FORCED_PENDING_S", "15"))
 # as long as the launcher's does before calling it a miss. It is the only watchdog number
 # this file needs; see BackendSurvivalPoller.report for why it does not mirror the rest.
 PROBE_TIMEOUT_S = 10.0
+# How long to keep watching after sampling stops before calling a stall terminal.
+#
+# Sized from the stalls actually observed on this job rather than from a round number. In
+# run 32862298967 one macOS runner produced four of them, at 10.03s, 25.1s, 27.75s and
+# 33.2s, so a window that decides "this one never ended" has to comfortably clear 33.2s.
+# 90s is a little under three times that.
+#
+# This EXTENDS OBSERVATION; it is not a retry. A retry re-asks a question that already has
+# an answer and hopes for a better one, which is how a flaky test hides a real failure. The
+# question here has no answer yet: a probe that timed out says only that nothing came back
+# within its budget, and the run ended at an arbitrary point that may fall mid-stall. A
+# backend that is genuinely dead answers none of these probes either, so the window costs
+# these seconds only on a run that was already going to fail, and it cannot turn a real
+# death into a pass.
+RECOVERY_WINDOW_S = 90.0
 
 LIVENESS_PATH = "/api/liveness"
 HEALTH_PATH = "/api/health"
@@ -205,6 +226,30 @@ def _get_json(path: str, timeout: float = PROBE_TIMEOUT_S) -> tuple[int, dict | 
         return 0, None, _transport_kind(exc)
 
 
+def await_recovery(window_s: float = RECOVERY_WINDOW_S) -> tuple[str, int, float]:
+    """Watch the backend after sampling stops, until it answers or *window_s* elapses.
+
+    Returns the last probe's (kind, status, seconds spent watching).
+
+    Only a stall is worth waiting on, so this returns the moment a probe brings back
+    anything decisive: an answer of any status settles whether the process is alive, and
+    a refused port is already death. Neither gets the window.
+
+    Without this the verdict turned on one probe taken at whatever moment the UI drive
+    happened to finish, which put the arbitrary end of the survival window in charge of
+    the result. A 25s stall in the middle of the run warned and passed while the same
+    stall straddling the boundary failed, which is the flake this file was changed to
+    remove, moved to the edge rather than fixed.
+    """
+    began = time.monotonic()
+    while True:
+        status, _, kind = _get_json(LIVENESS_PATH)
+        if kind != "timeout":
+            return kind, status, round(time.monotonic() - began, 1)
+        if time.monotonic() - began >= window_s:
+            return kind, status, round(time.monotonic() - began, 1)
+
+
 def _stall_windows(samples: list[dict]) -> list[tuple[float, float, bool]]:
     """Spans where no probe answered, merged across both routes.
 
@@ -283,12 +328,14 @@ class BackendSurvivalPoller:
         self,
         final_kind: str = "ok",
         final_status: int = 200,
+        final_wait_s: float = 0.0,
     ) -> None:
         """Write the samples out and decide whether the backend survived.
 
-        *final_kind* is the outcome of one last probe taken after sampling stopped. It is
-        what separates a stall that happened to be in progress when the run ended from a
-        backend that is genuinely gone, so it is passed in rather than re-probed here.
+        *final_kind* is what await_recovery saw once sampling stopped, and *final_wait_s*
+        is how long it watched for. Together they separate a stall that happened to be in
+        progress when the run ended from a backend that is genuinely gone, which is not a
+        distinction the samples alone can make: they stop at an arbitrary moment.
         """
         (ART / "survival_samples.json").write_text(
             json.dumps(self.samples, indent = 1),
@@ -355,18 +402,30 @@ class BackendSurvivalPoller:
         terminal = next((sp for sp in spans if sp[2]), None)
         longest = max((end - start for start, end, _ in spans), default = 0.0)
 
-        if final_kind != "ok":
+        if final_kind == "refused":
+            fail(
+                f"{LIVENESS_PATH} was refused after the run ({final_wait_s}s of watching); "
+                "the port is gone, so the backend did not survive the window"
+            )
+        elif final_kind == "http":
+            fail(
+                f"{LIVENESS_PATH} answered {final_status} after the run; the backend is up "
+                "but reporting itself unhealthy"
+            )
+        elif final_kind == "timeout":
+            # Nothing came back for the whole recovery window. A stall that was going to
+            # end had every one of those seconds to end in.
             if terminal is not None:
                 fail(
                     f"the backend stopped answering at t={round(terminal[0], 1)}s and never "
-                    f"answered again ({round(terminal[1] - terminal[0], 1)}s of silence to the "
-                    f"end of sampling), and the final {LIVENESS_PATH} probe came back "
-                    f"'{final_kind}'. It did not survive the window."
+                    f"answered again: {round(terminal[1] - terminal[0], 1)}s of silence to the "
+                    f"end of sampling, then {final_wait_s}s more of watching afterwards with "
+                    "no answer. It did not survive the window."
                 )
             else:
                 fail(
-                    f"backend was not alive at the end of the run ({LIVENESS_PATH} -> "
-                    f"{final_kind}, {final_status})"
+                    f"backend answered nothing for {final_wait_s}s after the run "
+                    f"({LIVENESS_PATH} kept timing out), so it did not survive the window"
                 )
         elif spans:
             # It came back, so the launcher would have kept it on any budget and this run
@@ -795,10 +854,12 @@ def main() -> int:
     watchdog.cancel()
     poller.finish()
 
-    # Taken after sampling stopped and handed to report(), which needs it to tell a stall
-    # that was still in progress at the end of the run from a backend that never came back.
-    status, _, kind = _get_json(LIVENESS_PATH)
-    poller.report(final_kind = kind, final_status = status)
+    # Watched after sampling stopped and handed to report(), which needs it to tell a
+    # stall still in progress at the end of the run from a backend that never came back.
+    step(f"watching up to {RECOVERY_WINDOW_S:.0f}s more for the backend to answer")
+    kind, status, waited = await_recovery()
+    info(f"post-run {LIVENESS_PATH}: {kind} after {waited}s of watching")
+    poller.report(final_kind = kind, final_status = status, final_wait_s = waited)
 
     if _failed:
         print(f"[mac-tabs] {len(_failed)} FAILURE(S)", flush = True)
