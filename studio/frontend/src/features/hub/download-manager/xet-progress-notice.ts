@@ -29,8 +29,16 @@ export const XET_NOTICE_DURATION_MS = 8000;
 // means roughly 158px, so title plus about two lines of description. Adding a
 // sentence here is not free: re-measure before you do.
 export const XET_NOTICE_TITLE = "Download is running";
+// The "switch to HTTP in Model Hub" advice from the first version is gone on
+// purpose. Measured, it cost two rendered lines and put the toast's bottom edge
+// at y=126.5 with the hub filter row's centre at y=127: a 0.5px margin, which
+// is not a margin. Any font, zoom level or translation longer than the English
+// would have pushed it back over and re-broken the toolbar. Without it the
+// toast ends around y=100 and stops intersecting the row at all. The transport
+// control is two clicks away and discoverable; a toast that eats the toolbar is
+// not worth the shortcut.
 export const XET_NOTICE_DESCRIPTION =
-  "Xet sends the file in small pieces, so the bar can sit at 0% and then jump to done. Nothing is stuck. Want a steady bar? Switch to HTTP in Model Hub.";
+  "Xet sends the file in small pieces, so the bar can sit at 0% and then jump to done. Nothing is stuck.";
 export const XET_NOTICE_DESCRIPTION_CLASS = "!text-muted-foreground";
 
 // Carries the count when the write fails (private mode, quota), which would
