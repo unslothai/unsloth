@@ -764,7 +764,6 @@ async def lifespan(app: FastAPI):
     # both the monitor sink and the shared serialized writer. The final owner
     # drains accepted receipts off the event loop before stopping the worker.
     _api_monitor.release_terminal_callback(_api_usage_callback_lease)
-    await asyncio.to_thread(_release_api_usage_writer, _api_usage_writer_lease)
 
     # Before any shutdown await: a warm finishing during one would still read the lifespan as current.
     _stop_post_warm_thread()
@@ -775,6 +774,8 @@ async def lifespan(app: FastAPI):
     _invalidate_detection = getattr(_hw_module, "invalidate_detection", None)
     if _invalidate_detection is not None:
         _invalidate_detection()
+
+    await asyncio.to_thread(_release_api_usage_writer, _api_usage_writer_lease)
 
     from core.inference.openai_codex_auth import shutdown_flows
 
