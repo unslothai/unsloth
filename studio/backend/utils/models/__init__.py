@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Model and LoRA configuration handling
-"""
+"""Model and LoRA configuration handling."""
 
 from .model_config import (
     ModelConfig,
@@ -11,6 +9,7 @@ from .model_config import (
     is_vision_model,
     is_embedding_model,
     detect_audio_type,
+    detect_audio_type_checked,
     is_audio_input_type,
     VALID_AUDIO_TYPES,
     scan_trained_models,
@@ -18,6 +17,7 @@ from .model_config import (
     get_base_model_from_checkpoint,
     load_model_defaults,
     get_base_model_from_lora,
+    get_base_model_from_lora_identifier,
     load_model_config,
     list_gguf_variants,
     extract_model_size_b,
@@ -34,6 +34,7 @@ __all__ = [
     "is_vision_model",
     "is_embedding_model",
     "detect_audio_type",
+    "detect_audio_type_checked",
     "is_audio_input_type",
     "VALID_AUDIO_TYPES",
     "scan_trained_models",
@@ -42,6 +43,7 @@ __all__ = [
     "get_base_model_from_checkpoint",
     "load_model_defaults",
     "get_base_model_from_lora",
+    "get_base_model_from_lora_identifier",
     "load_model_config",
     "list_gguf_variants",
     "extract_model_size_b",

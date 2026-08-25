@@ -5,7 +5,30 @@ import { getAuthToken } from "@/features/auth";
 import { apiUrl, isTauri } from "@/lib/api-base";
 import { useCallback, useEffect, useState } from "react";
 
+// Checked once per launch only (no polling), to avoid background load. A
+// re-check happens naturally the next time the user reopens the app.
 const WEB_UPDATE_CHECK_DELAY_MS = 5000;
+
+// End-to-end override, absent in every real browser.
+//
+// The banner layout suite boots a fresh page for each case it measures, and every one of
+// those boots waits out this timer before the card it is there to measure exists at all.
+// At 33 boots that is over two and a half minutes of a five minute step spent waiting for
+// a delay whose entire purpose is to keep a network call off the critical path at launch,
+// which is not a property that suite is testing.
+//
+// Read at mount rather than at module load, so a test can set it from an init script and
+// so a bundle that is never driven by one behaves exactly as before: the global is
+// undefined, and the constant above stands. Deliberately not an env var, which would bake
+// the shortened delay into whatever build read it.
+const E2E_DELAY_GLOBAL = "__unslothE2EWebUpdateDelayMs";
+
+function overriddenDelayMs(): number | null {
+  if (typeof window === "undefined") return null;
+  const raw = (window as unknown as Record<string, unknown>)[E2E_DELAY_GLOBAL];
+  const value = typeof raw === "number" ? raw : Number.NaN;
+  return Number.isFinite(value) && value >= 0 ? value : null;
+}
 const DISMISS_PREFIX = "unsloth_web_update_dismissed";
 const CAN_SHOW_KEY = "can_show_web_notification";
 const UPDATE_AVAILABLE_KEY = "update_available";
@@ -119,25 +142,25 @@ export function useWebUpdateCheck({
 
   useEffect(() => {
     if (isTauri || !enabled || !getAuthToken()) {
-      const clearTimer = window.setTimeout(() => setStatus(null), 0);
-      return () => window.clearTimeout(clearTimer);
+      setStatus(null);
+      return;
     }
 
     let canceled = false;
+    // One check per launch, 5s after load. No polling: the next re-check is
+    // simply the next time the user opens the app.
     const timer = window.setTimeout(() => {
       fetchDisplayableUpdateStatus()
-        .then((nextStatus) => {
-          if (canceled) {
-            return;
+        .then((next) => {
+          if (!canceled && next && !isDismissed(next)) {
+            setStatus(next);
           }
-          setStatus(nextStatus && !isDismissed(nextStatus) ? nextStatus : null);
         })
-        .catch(() => {
-          if (!canceled) {
-            setStatus(null);
-          }
-        });
-    }, delayMs);
+        .catch(() => {});
+      // The override wins over the caller's delayMs as well as over the constant: the
+      // only caller that passes one is a unit test asserting the timer's behaviour, and
+      // it does not set the global.
+    }, overriddenDelayMs() ?? delayMs);
 
     return () => {
       canceled = true;
@@ -145,6 +168,7 @@ export function useWebUpdateCheck({
     };
   }, [delayMs, enabled]);
 
+  // X: silence this version for good (persists across launches).
   const dismiss = useCallback(() => {
     setStatus((current) => {
       if (current) {
@@ -154,5 +178,12 @@ export function useWebUpdateCheck({
     });
   }, []);
 
-  return { status: enabled && !isTauri ? status : null, dismiss };
+  // "Remind me later" / post-copy: hide without persisting a dismissal, so the
+  // banner returns on the next launch if the install is still behind. Copying
+  // the command is not the same as having updated.
+  const snooze = useCallback(() => {
+    setStatus(null);
+  }, []);
+
+  return { status: enabled && !isTauri ? status : null, dismiss, snooze };
 }

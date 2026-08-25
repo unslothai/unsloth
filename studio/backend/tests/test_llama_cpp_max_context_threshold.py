@@ -3,22 +3,25 @@
 
 """Tests for the ``max_context_length`` warning-threshold semantics.
 
-``/api/inference/status.max_context_length`` is what the ctx slider in
-the chat settings sheet reads to decide when to render the "Exceeds
-estimated VRAM capacity. The model may use system RAM." warning:
+The ctx slider in the chat settings sheet reads
+``/api/inference/status.max_context_length`` to decide when to render the
+"Exceeds estimated VRAM capacity. The model may use system RAM." warning:
 
     ctxDisplayValue > ggufMaxContextLength → show warning
 
-For models whose weights fit on some GPU subset, the warning threshold
-is the largest ctx that fits fully in VRAM (the binary-search cap from
-``_fit_context_to_vram``). For models whose weights exceed 90% of every
-GPU subset's free memory, the warning must fire as soon as the user
-drags above the 4096 spec default (otherwise a user loading e.g.
-MiniMax-M2.7 on a 97 GB GPU sees a slider up to 196608 with no
-indication that any value above 4096 will trigger ``--fit on`` and
-degrade performance).
+When weights fit on some GPU subset, the threshold is the largest ctx that
+fits fully in VRAM (the binary-search cap from ``_fit_context_to_vram``).
+When weights exceed 90% of every GPU subset's free memory, the warning must
+fire as soon as the user drags above what Auto itself selects (otherwise
+loading e.g. MiniMax-M2.7 on a 97 GB GPU shows a slider up to 196608 with no
+hint that any larger value triggers ``--fit on`` and degrades performance).
 
-These tests pin both cases. No GPU probing, no subprocess, no GGUF I/O.
+The threshold therefore tracks ``_AUTO_OFFLOAD_CTX`` and is not a literal.
+Anchoring it below that constant is worse than having no warning: Auto's own
+context then exceeds the ceiling Auto published, so every load in this branch
+warns about itself while advising the user to leave it on Auto.
+
+These tests pin both cases. No GPU probing, subprocess, or GGUF I/O.
 Cross-platform: Linux, macOS, Windows, WSL.
 """
 
@@ -30,10 +33,8 @@ from pathlib import Path
 
 import pytest
 
-# ---------------------------------------------------------------------------
-# Stub heavy / unavailable external dependencies before importing the
-# module under test.  Same pattern as test_kv_cache_estimation.py.
-# ---------------------------------------------------------------------------
+# Stub heavy / unavailable deps before importing the module under test.
+# Same pattern as test_kv_cache_estimation.py.
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
@@ -76,14 +77,24 @@ _httpx_stub.Client = type(
         "__exit__": lambda self, *a: None,
     },
 )
-sys.modules.setdefault("httpx", _httpx_stub)
+# Only when the real library is absent. sys.modules holds what has been IMPORTED, not
+# what is installed, so setdefault does not defer to a real httpx that nothing in this
+# process has touched yet: the stub wins and shadows it for the whole session. This stub
+# has no Response, and starlette.testclient reads httpx.Response at import, so every
+# module collected afterwards that reaches fastapi.testclient or routes.inference dies.
+try:
+    import httpx  # noqa: F401
+except ImportError:
+    sys.modules.setdefault("httpx", _httpx_stub)
 
-from core.inference.llama_cpp import LlamaCppBackend
+from core.inference.llama_cpp import (
+    _AUTO_OFFLOAD_CTX,
+    _CTX_FIT_VRAM_FRACTION,
+    LlamaCppBackend,
+)
 
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 GIB = 1024**3
 
@@ -109,10 +120,14 @@ def _make_backend(native_ctx = 131072):
     return inst
 
 
-def _compute_max_available_ctx(native_ctx, model_gib, gpus, kv_per_token_bytes = 325_000):
-    """Run the ceiling-probe block from load_model and return the final
-    ``max_available_ctx`` value the backend would assign to
-    ``_max_context_length``.
+def _compute_max_available_ctx(
+    native_ctx,
+    model_gib,
+    gpus,
+    kv_per_token_bytes = 325_000,
+):
+    """Run load_model's ceiling-probe block and return the final
+    ``max_available_ctx`` the backend would assign to ``_max_context_length``.
     """
     inst = _make_backend(native_ctx = native_ctx)
     model_size = int(model_gib * GIB)
@@ -142,24 +157,22 @@ def _compute_max_available_ctx(native_ctx, model_gib, gpus, kv_per_token_bytes =
         )
         kv = inst._estimate_kv_cache_bytes(capped, cache_type_kv)
         total_mib = (model_size + kv) / (1024 * 1024)
-        if total_mib <= pool_mib * 0.90:
+        if total_mib <= pool_mib * _CTX_FIT_VRAM_FRACTION:
             best_cap = max(best_cap, capped)
     if best_cap > 0:
         max_available_ctx = best_cap
     else:
-        max_available_ctx = min(4096, native_ctx_for_cap)
+        max_available_ctx = min(_AUTO_OFFLOAD_CTX, native_ctx_for_cap)
 
     return max_available_ctx
 
 
-# ---------------------------------------------------------------------------
 # Weights exceed every GPU subset's VRAM  (MiniMax-M2.7-like)
-# ---------------------------------------------------------------------------
 
 
 class TestMaxContextLengthForWeightsExceedVRAM:
-    """The UI ``max_context_length`` threshold must fall back to 4096 so
-    the warning fires as soon as the user drags above the spec default.
+    """UI ``max_context_length`` must fall back to the Auto offload context so
+    the warning fires as soon as the user drags above what Auto selects.
     """
 
     def test_minimax_like(self):
@@ -169,7 +182,7 @@ class TestMaxContextLengthForWeightsExceedVRAM:
             model_gib = 131,
             gpus = [(0, 97_000)],
         )
-        assert got == 4096
+        assert got == _AUTO_OFFLOAD_CTX
 
     def test_multi_gpu_all_subsets_fail(self):
         """400 GB weights across a 4x80 GB pool (320 GB total, still too small)."""
@@ -178,11 +191,11 @@ class TestMaxContextLengthForWeightsExceedVRAM:
             model_gib = 400,
             gpus = [(0, 80_000), (1, 80_000), (2, 80_000), (3, 80_000)],
         )
-        assert got == 4096
+        assert got == _AUTO_OFFLOAD_CTX
 
     def test_native_below_fallback_is_preserved(self):
-        """If the model's native ctx is itself smaller than 4096, do not
-        advertise a larger value than the model supports."""
+        """If native ctx is itself below the fallback, don't advertise a larger
+        value than the model supports."""
         got = _compute_max_available_ctx(
             native_ctx = 2048,
             model_gib = 200,
@@ -191,9 +204,7 @@ class TestMaxContextLengthForWeightsExceedVRAM:
         assert got == 2048
 
 
-# ---------------------------------------------------------------------------
 # Fittable models (regression guard)
-# ---------------------------------------------------------------------------
 
 
 class TestMaxContextLengthForFittableModels:
@@ -207,7 +218,7 @@ class TestMaxContextLengthForFittableModels:
             gpus = [(0, 24_000)],
             kv_per_token_bytes = 8192,
         )
-        assert got > 4096
+        assert got > _AUTO_OFFLOAD_CTX
         assert got <= 131072
 
     def test_medium_model_multi_gpu(self):
@@ -218,7 +229,7 @@ class TestMaxContextLengthForFittableModels:
             gpus = [(0, 40_000), (1, 40_000)],
             kv_per_token_bytes = 8192,
         )
-        assert got > 4096
+        assert got > _AUTO_OFFLOAD_CTX
 
     def test_tiny_model_on_huge_gpu_near_native(self):
         """2 GB model, 80 GB GPU, negligible KV: should approach native."""
@@ -231,9 +242,7 @@ class TestMaxContextLengthForFittableModels:
         assert got >= 131072 - 256  # rounded to 256 boundary
 
 
-# ---------------------------------------------------------------------------
 # Property plumbing
-# ---------------------------------------------------------------------------
 
 
 class TestMaxContextLengthProperty:

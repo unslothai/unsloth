@@ -90,6 +90,22 @@ def test_update_run_whitespace_clears_display_name(monkeypatch: pytest.MonkeyPat
     assert result.display_name is None
 
 
+def test_get_run_detail_includes_preview_fields(monkeypatch: pytest.MonkeyPatch):
+    # Regression: detail/update must pass the sharing flag into _preview_fields, else a 500 TypeError.
+    monkeypatch.setattr(training_history, "get_run", lambda run_id: dict(BASE_RUN))
+    monkeypatch.setattr(training_history, "get_run_metrics", lambda run_id: {})
+    monkeypatch.setattr(training_history, "can_resume_run", lambda run: False)
+    monkeypatch.setattr(training_history, "get_preview_sharing_enabled", lambda: True)
+
+    detail = asyncio.run(
+        training_history.get_training_run_detail("run-1", current_subject = "test-user")
+    )
+
+    assert detail.run.id == "run-1"
+    # Not a previewable dir, so no signed ref - but the field is built without error.
+    assert detail.run.preview_sig is None
+
+
 def test_update_run_rejects_unknown_fields():
     with pytest.raises(ValidationError):
         TrainingRunUpdateRequest.model_validate({"unknown": "value"})
@@ -98,3 +114,25 @@ def test_update_run_rejects_unknown_fields():
 def test_update_run_rejects_overlong_display_name():
     with pytest.raises(ValidationError):
         TrainingRunUpdateRequest.model_validate({"display_name": "x" * 121})
+
+
+def test_sanitize_db_config_strips_subject_and_secrets():
+    # config_json is returned to any authenticated user, so never persist the owner's subject or secrets.
+    from core.training.training import _sanitize_db_config
+
+    db = _sanitize_db_config(
+        {
+            "model_name": "unsloth/test-model",
+            "subject": "alice@example.com",
+            "hf_token": "hf_secret",
+            "wandb_token": "wb_secret",
+            "resume_model_load_mode": "runtime_4bit",
+            "require_validated_model_snapshot": True,
+            "lora_r": 16,
+        }
+    )
+    assert "subject" not in db
+    assert "hf_token" not in db and "wandb_token" not in db
+    assert "resume_model_load_mode" not in db
+    assert "require_validated_model_snapshot" not in db
+    assert db["model_name"] == "unsloth/test-model" and db["lora_r"] == 16

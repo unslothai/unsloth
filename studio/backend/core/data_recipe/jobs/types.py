@@ -90,9 +90,8 @@ class Job:
     progress_columns_total: int | None = None
     source_progress_estimated_total: int | None = None
     completed_columns: list[str] = field(default_factory = list)
-    # Id of the internal sk-unsloth-* API key minted for a local-model
-    # workflow. Revoked when the job terminates so the key's live window
-    # matches the run rather than its 24h TTL.
+    # Id of the internal sk-unsloth-* API key minted for a local-model workflow.
+    # Revoked when the job ends so the key's window matches the run, not its 24h TTL.
     internal_api_key_id: int | None = None
     _current_usage_model: str | None = None
     _in_usage_summary: bool = False

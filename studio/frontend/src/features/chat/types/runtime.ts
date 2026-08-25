@@ -11,10 +11,23 @@ export interface InferenceParams {
   maxSeqLength: number;
   maxTokens: number;
   systemPrompt: string;
+  systemVariables: string;
   checkpoint: string;
   /** Allow loading models with custom code (e.g. NVIDIA Nemotron). Only enable for repos you trust. */
   trustRemoteCode?: boolean;
+  /**
+   * Anthropic fast-mode toggle. Opus 4.6 / 4.7 only; higher OTPS at 6x Opus
+   * pricing. Default false.
+   * https://platform.claude.com/docs/en/build-with-claude/fast-mode
+   */
+  fastMode?: boolean;
 }
+
+/** The params that survive a reload. `checkpoint` names the model rather than
+ * being one of its settings, so it is not one of them. */
+export type PersistedInferenceParams = Partial<
+  Omit<InferenceParams, "checkpoint">
+>;
 
 export const DEFAULT_INFERENCE_PARAMS: InferenceParams = {
   temperature: 0.6,
@@ -26,8 +39,10 @@ export const DEFAULT_INFERENCE_PARAMS: InferenceParams = {
   maxSeqLength: 4096,
   maxTokens: 8192,
   systemPrompt: "",
+  systemVariables: "",
   checkpoint: "",
   trustRemoteCode: false,
+  fastMode: false,
 };
 
 export interface ChatModelSummary {
@@ -37,9 +52,13 @@ export interface ChatModelSummary {
   isVision: boolean;
   isLora: boolean;
   isGguf?: boolean;
+  isMlx?: boolean;
   isAudio?: boolean;
   audioType?: string | null;
   hasAudioInput?: boolean;
+  /** llama-server takes video for this model: mmproj video support, a build
+   * with video enabled, and ffmpeg installed. */
+  hasVideoInput?: boolean;
 }
 
 export interface ChatLoraSummary {
@@ -49,4 +68,6 @@ export interface ChatLoraSummary {
   updatedAt?: number;
   source?: "training" | "exported";
   exportType?: "lora" | "merged" | "gguf";
+  /** Codec when the checkpoint fine-tunes an audio model, else null. */
+  audioType?: string | null;
 }

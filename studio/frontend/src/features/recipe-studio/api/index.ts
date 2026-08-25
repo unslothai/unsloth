@@ -2,7 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
-import { formatFastApiDetail, readFastApiError } from "@/lib/format-fastapi-error";
+import {
+  formatFastApiDetail,
+  readFastApiError,
+} from "@/lib/format-fastapi-error";
+import { openStreamResponse } from "@/lib/open-stream-response";
 
 const DEFAULT_BASE = "/api/data-recipe";
 
@@ -212,8 +216,10 @@ async function parseErrorResponse(response: Response): Promise<string> {
     // formatFastApiDetail returns null when it cannot flatten the value.
     const formatted = formatFastApiDetail(parsed.detail);
     if (formatted) return formatted;
-    if (typeof parsed.message === "string" && parsed.message) return parsed.message;
-    if (typeof parsed.raw_detail === "string" && parsed.raw_detail) return parsed.raw_detail;
+    if (typeof parsed.message === "string" && parsed.message)
+      return parsed.message;
+    if (typeof parsed.raw_detail === "string" && parsed.raw_detail)
+      return parsed.raw_detail;
     return text;
   } catch {
     return text;
@@ -374,13 +380,10 @@ export async function streamRecipeJobEvents(options: {
     query = `?after=${options.lastEventId}`;
   }
 
-  const response = await authFetch(
+  const response = await openStreamResponse(
+    authFetch,
     `${DATA_DESIGNER_API_BASE}/jobs/${options.jobId}/events${query}`,
-    {
-      method: "GET",
-      headers,
-      signal: options.signal,
-    },
+    { headers, signal: options.signal },
   );
   if (!response.ok) {
     throw new Error(await parseErrorResponse(response));
@@ -395,28 +398,37 @@ export async function streamRecipeJobEvents(options: {
   const decoder = new TextDecoder();
   let buffer = "";
 
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) {
-      break;
-    }
-    buffer += decoder.decode(value, { stream: true });
-    let separatorIndex = buffer.search(/\r?\n\r?\n/);
-    while (separatorIndex >= 0) {
-      const rawEvent = buffer.slice(0, separatorIndex);
-      const separatorLength = buffer[separatorIndex] === "\r" ? 4 : 2;
-      buffer = buffer.slice(separatorIndex + separatorLength);
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        break;
+      }
+      buffer += decoder.decode(value, { stream: true });
+      let separatorIndex = buffer.search(/\r?\n\r?\n/);
+      while (separatorIndex >= 0) {
+        const rawEvent = buffer.slice(0, separatorIndex);
+        const separatorLength = buffer[separatorIndex] === "\r" ? 4 : 2;
+        buffer = buffer.slice(separatorIndex + separatorLength);
 
-      if (rawEvent.startsWith("retry:")) {
+        if (rawEvent.startsWith("retry:")) {
+          separatorIndex = buffer.search(/\r?\n\r?\n/);
+          continue;
+        }
+
+        const parsed = parseJobEvent(rawEvent);
+        if (parsed) {
+          options.onEvent(parsed);
+        }
         separatorIndex = buffer.search(/\r?\n\r?\n/);
-        continue;
       }
-
-      const parsed = parseJobEvent(rawEvent);
-      if (parsed) {
-        options.onEvent(parsed);
-      }
-      separatorIndex = buffer.search(/\r?\n\r?\n/);
+    }
+  } finally {
+    // Release the stream lock now instead of leaking the reader until GC.
+    try {
+      await reader.cancel();
+    } catch {
+      // already closed
     }
   }
 }
@@ -433,18 +445,25 @@ type UnstructuredFileUploadResponse = {
   error?: string;
 };
 
+/** A desktop drop, redeemed server-side: Tauri hands the webview a path, never
+ * a File, so the bytes never cross the bridge. */
+export interface NativeUnstructuredUpload {
+  nativePathLease: string;
+  name: string;
+  size: number;
+}
+
+export type UnstructuredUploadSource = File | NativeUnstructuredUpload;
+
 export async function uploadUnstructuredFile(
-  file: File,
+  file: UnstructuredUploadSource,
   blockId: string,
   signal?: AbortSignal,
-  existingFileIds?: string[],
 ): Promise<UnstructuredFileUploadResponse> {
   const formData = new FormData();
-  formData.append("file", file);
+  if (file instanceof File) formData.append("file", file);
+  else formData.append("nativePathLease", file.nativePathLease);
   formData.append("block_id", blockId);
-  if (existingFileIds?.length) {
-    formData.append("existing_file_ids", existingFileIds.join(","));
-  }
 
   const res = await authFetch(
     `${DATA_DESIGNER_API_BASE}/seed/upload-unstructured-file`,
@@ -482,5 +501,15 @@ export async function removeUnstructuredFile(
   );
   if (!res.ok && res.status !== 404) {
     throw new Error("Failed to remove file");
+  }
+}
+
+export async function removeUnstructuredBlock(blockId: string): Promise<void> {
+  const res = await authFetch(
+    `${DATA_DESIGNER_API_BASE}/seed/unstructured-block/${encodeURIComponent(blockId)}`,
+    { method: "DELETE" },
+  );
+  if (!res.ok && res.status !== 404) {
+    throw new Error("Failed to remove uploaded files");
   }
 }
