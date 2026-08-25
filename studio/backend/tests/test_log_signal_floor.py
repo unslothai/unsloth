@@ -46,9 +46,7 @@ def _drive(
     middleware = LoggingMiddleware(replay._app_returning(200))
 
     for request in requests:
-        middleware.app = replay._app_returning(
-            request.status, request.duration_ms, clock
-        )
+        middleware.app = replay._app_returning(request.status, request.duration_ms, clock)
         scope = {
             "type": "http",
             "path": request.path,
@@ -290,21 +288,22 @@ class TestSlowSuccessIsNotYetSignal:
 
     SLOW_MS = 30_000.0
 
-    def _slow_lines(self, monkeypatch, path, count = 6):
+    def _slow_lines(
+        self,
+        monkeypatch,
+        path,
+        count = 6,
+    ):
         capture = _drive(
             monkeypatch,
-            [
-                replay.Request("GET", path, 200, duration_ms = self.SLOW_MS)
-                for _ in range(count)
-            ],
+            [replay.Request("GET", path, 200, duration_ms = self.SLOW_MS) for _ in range(count)],
             gap_s = 0.0,
         )
         return capture.records_for(path)
 
     def test_a_slow_success_on_a_silent_path_writes_nothing(self, monkeypatch):
         silent = sorted(
-            p for p in session.ALL_POLLS
-            if policy.classify(hmod, p) == policy.QUIET_SUCCESS
+            p for p in session.ALL_POLLS if policy.classify(hmod, p) == policy.QUIET_SUCCESS
         )
         assert silent, "no quiet-success paths configured; this guard would be vacuous"
         path = silent[0]
