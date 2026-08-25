@@ -420,18 +420,27 @@ def test_the_forced_verdict_check_is_wired_into_the_public_entry_point():
 # --------------------------------------------------------------------------------
 
 
-def _samples(rounds, kind_at = None, kind = "timeout"):
+def _samples(
+    rounds,
+    kind_at = None,
+    kind = "timeout",
+):
     """One sample per route per round, the shape BackendSurvivalPoller records."""
     out = []
     for i in range(rounds):
         k = kind if (kind_at and i in kind_at) else "ok"
         for path in ("/api/liveness", "/api/health"):
-            out.append({
-                "t": float(i * 5), "path": path, "kind": k,
-                "status": 0 if k in ("timeout", "refused") else (503 if k == "http" else 200),
-                "ms": 10005.0 if k == "timeout" else 4.0,
-                "hardware_detecting": None, "torch_warm_in_progress": None,
-            })
+            out.append(
+                {
+                    "t": float(i * 5),
+                    "path": path,
+                    "kind": k,
+                    "status": 0 if k in ("timeout", "refused") else (503 if k == "http" else 200),
+                    "ms": 10005.0 if k == "timeout" else 4.0,
+                    "hardware_detecting": None,
+                    "torch_warm_in_progress": None,
+                }
+            )
     return out
 
 
