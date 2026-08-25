@@ -15154,8 +15154,9 @@ async def openai_chat_completions(
     current_subject: str = Depends(get_current_subject),
 ):
     from auth.authentication import request_admitted_without_credential
-
-    if (payload.provider_id or payload.provider_type) and request_admitted_without_credential(request):
+    if (payload.provider_id or payload.provider_type) and request_admitted_without_credential(
+        request
+    ):
         raise HTTPException(
             status_code = 403,
             detail = "External providers can only be used from the Unsloth UI or with an API key.",
