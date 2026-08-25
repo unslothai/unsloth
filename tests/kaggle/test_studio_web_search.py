@@ -196,6 +196,6 @@ def test_the_verdict_counts_web_search_and_not_any_tool():
     )
     source = ast.unparse(verdict.value)
     assert "'executions'" in source
-    assert "any_tool_executions" not in source, (
-        "the verdict counts any tool at all, so the python tool satisfies the web-search claim"
-    )
+    assert (
+        "any_tool_executions" not in source
+    ), "the verdict counts any tool at all, so the python tool satisfies the web-search claim"

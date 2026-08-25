@@ -59,7 +59,9 @@ def _body(name: str = "assert_tabs") -> str:
 
 
 def _mounted_prefixes() -> set[str]:
-    return set(re.findall(r'include_router\([^)]*prefix\s*=\s*"([^"]+)"', MAIN.read_text(encoding = "utf-8")))
+    return set(
+        re.findall(r'include_router\([^)]*prefix\s*=\s*"([^"]+)"', MAIN.read_text(encoding = "utf-8"))
+    )
 
 
 def _declared_get_paths() -> set[str]:
