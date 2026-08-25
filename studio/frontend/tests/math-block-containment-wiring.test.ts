@@ -59,30 +59,50 @@ test("the chat renderer does NOT pass a rehypePlugins prop", () => {
 });
 
 test("the stylesheet rule names the class, the attribute and both declarations", () => {
-  const rule = INDEX_CSS.slice(
-    INDEX_CSS.indexOf(`html[${MATH_BLOCK_CONTAINMENT_ATTRIBUTE}=`),
-  ).slice(0, 400);
-  assert.ok(rule.length > 0, "PRECONDITION: the gated rule is present at all");
-
-  assert.ok(
-    rule.includes(
-      `html[${MATH_BLOCK_CONTAINMENT_ATTRIBUTE}="${MATH_BLOCK_CONTAINMENT_ON}"]`,
-    ),
-    "the rule is gated on the attribute the resolver sets",
+  const gate = `html[${MATH_BLOCK_CONTAINMENT_ATTRIBUTE}="${MATH_BLOCK_CONTAINMENT_ON}"]`;
+  const rules = INDEX_CSS.split(gate)
+    .slice(1)
+    .map((part) => part.slice(0, 220));
+  assert.equal(
+    rules.length,
+    2,
+    "PRECONDITION: two gated rules, one per population, because their heights differ 3x",
   );
-  assert.ok(rule.includes(".aui-thread-root"), "scoped to the chat thread");
-  assert.ok(rule.includes(`.${MATH_BLOCK_CLASS}`), "names the marker class");
+
+  const [marked, display] = rules;
+  for (const rule of rules) {
+    assert.ok(rule.includes(".aui-thread-root"), "scoped to the chat thread");
+    assert.ok(
+      rule.includes("content-visibility: auto"),
+      "the declaration under test",
+    );
+  }
+
+  assert.ok(marked.includes(`.${MATH_BLOCK_CLASS}`), "names the marker class");
   assert.ok(
-    rule.includes(".katex-display"),
+    display.includes(".katex-display"),
     "names display maths, which needs no marker",
   );
+
+  /*
+   * THE TWO PLACEHOLDERS ARE DIFFERENT, AND THAT IS THE POINT. A marked block is a PARAGRAPH of
+   * prose holding a formula and measured a 138.04px mean; a display formula is one line of maths
+   * and measured 49.13px. One shared value was tried and was 18px short on every paragraph and
+   * 71px too tall on every formula, which queued up under a first-time scroller as a 3,995px
+   * scrollbar excursion. If these two ever become equal again, that regression is back.
+   */
   assert.ok(
-    rule.includes("content-visibility: auto"),
-    "the declaration under test",
+    marked.includes("contain-intrinsic-size: auto 8.5rem"),
+    "the paragraph placeholder, near the measured 138px mean",
   );
   assert.ok(
-    rule.includes("contain-intrinsic-size: auto 7.5rem"),
-    "the placeholder, with the `auto` keyword so a rendered block remembers its real size",
+    display.includes("contain-intrinsic-size: auto 3rem"),
+    "the formula placeholder, near the measured 49px mean",
+  );
+  assert.notEqual(
+    marked.match(/contain-intrinsic-size: auto [\d.]+rem/)?.[0],
+    display.match(/contain-intrinsic-size: auto [\d.]+rem/)?.[0],
+    "one shared placeholder is the thing this pair replaced",
   );
 });
 
@@ -95,18 +115,19 @@ test("the rule is armed by nothing except that attribute", () => {
     "the code-block flicker rule is still there",
   );
 
-  // A second, ungated copy of `auto` would turn the flag into decoration.
-  const occurrences = INDEX_CSS.split("content-visibility: auto;").length - 1;
+  // Two gated copies of `auto`, one per population. A third, ungated one would turn the flag
+  // into decoration.
+  const declarations = INDEX_CSS.split("content-visibility: auto;").length - 1;
   assert.equal(
-    occurrences,
-    1,
-    "exactly one `content-visibility: auto` declaration in the whole stylesheet",
+    declarations,
+    2,
+    "exactly two `content-visibility: auto` declarations in the whole stylesheet",
   );
   const gateAt = INDEX_CSS.indexOf(`html[${MATH_BLOCK_CONTAINMENT_ATTRIBUTE}=`);
-  const declarationAt = INDEX_CSS.indexOf("content-visibility: auto;");
+  assert.ok(gateAt >= 0, "PRECONDITION: the gate is present");
   assert.ok(
-    gateAt >= 0 && declarationAt > gateAt,
-    "and it sits inside the gated rule",
+    INDEX_CSS.indexOf("content-visibility: auto;") > gateAt,
+    "and the first of them sits after the gate",
   );
 });
 
