@@ -422,8 +422,7 @@ def train_once(args, run_index: int) -> dict:
     # because a batch of equal-length prompts pads nothing and would report a
     # green left-padding check that never padded.
     batch_prompts = [
-        PROMPT_TEMPLATE.format(question = row["question"])
-        for row in rows[: max(BATCH_SIZES)]
+        PROMPT_TEMPLATE.format(question = row["question"]) for row in rows[: max(BATCH_SIZES)]
     ]
     while len(batch_prompts) < max(BATCH_SIZES):
         # The canary dataset is small. Pad the LIST (not the tensors) by
@@ -433,11 +432,15 @@ def train_once(args, run_index: int) -> dict:
         batch_prompts.append(
             PROMPT_TEMPLATE.format(
                 question = " ".join(["please"] * (idx % 5 + 1))
-                + " " + rows[idx % len(rows)]["question"]
+                + " "
+                + rows[idx % len(rows)]["question"]
             )
         )
     batched = batched_generation(
-        model, tokenizer, batch_prompts, max_new_tokens = args.max_new_tokens,
+        model,
+        tokenizer,
+        batch_prompts,
+        max_new_tokens = args.max_new_tokens,
     )
     _log(f"batched generation: {json.dumps({k: v for k, v in batched.items() if k != 'batched'})}")
 
