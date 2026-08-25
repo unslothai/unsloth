@@ -605,6 +605,16 @@ export const ru = {
           "Использует загруженную аудиомодель (например, Orpheus)",
         engineSystem: "Системные голоса",
         engineStudio: "Загрузить модель TTS",
+        engineCustom: "Пользовательский эндпоинт",
+        engineCustomDescription:
+          "OpenAI-совместимый TTS-сервер из ваших подключений (например, Kokoro)",
+        connectionLabel: "Подключение",
+        connectionDescription:
+          "Добавьте OpenAI-совместимый сервер на вкладке «Подключения»",
+        connectionPlaceholder: "Выберите подключение",
+        customModelLabel: "Модель",
+        customVoiceDescription:
+          "Имя голоса, которое ожидает эндпоинт; по умолчанию alloy",
         modelLabel: "Модель TTS",
         modelDescription:
           "Загрузите аудиомодель из списка моделей (например, Orpheus TTS)",

@@ -65,6 +65,15 @@ import type {
   Terminal,
 } from "./download-manager-types";
 import {
+  XET_NOTICE_DESCRIPTION,
+  XET_NOTICE_DESCRIPTION_CLASS,
+  XET_NOTICE_DURATION_MS,
+  XET_NOTICE_TITLE,
+  reserveXetNotice,
+  shouldShowXetNotice,
+  xetNoticesShown,
+} from "./xet-progress-notice";
+import {
   getState,
   hasActiveRepoPeer,
   isCurrent,
@@ -725,6 +734,29 @@ export async function startJob(
     }
     const started = transportAfterStart(mode, result.transport);
     if (started !== activeTransport) patchJob(key, { transport: started });
+    // Explain the 0%-then-done shape of a Xet transfer, for the first few only.
+    if (
+      shouldShowXetNotice({
+        kind: req.kind,
+        transport: started,
+        attached: result.attached === true,
+        // A cancel can land while this start is in flight, and the reissue
+        // above is the giveaway. Do not promise a download that is stopping.
+        live: result.state === "running" && !rt.cancelRequested,
+        shown: xetNoticesShown(),
+      })
+    ) {
+      // Reserving is async (a cross-tab lock), and nothing below waits on a
+      // toast, so let the download get on with it.
+      void reserveXetNotice().then((reserved) => {
+        if (!reserved) return;
+        toast.info(XET_NOTICE_TITLE, {
+          description: XET_NOTICE_DESCRIPTION,
+          duration: XET_NOTICE_DURATION_MS,
+          classNames: { description: XET_NOTICE_DESCRIPTION_CLASS },
+        });
+      });
+    }
     // An adopted job can already have fallen back from Xet to HTTP, which
     // keeps its original cancel marker and so its stop control.
     if (isResolvedTransport(result.cancel_transport)) {

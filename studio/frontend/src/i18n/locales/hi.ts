@@ -605,6 +605,15 @@ export const hi = {
           "लोड किए गए ऑडियो मॉडल का उपयोग करता है (जैसे Orpheus)",
         engineSystem: "सिस्टम की आवाज़ें",
         engineStudio: "TTS मॉडल लोड करें",
+        engineCustom: "कस्टम एंडपॉइंट",
+        engineCustomDescription:
+          "आपके कनेक्शनों में से एक OpenAI-संगत TTS सर्वर (जैसे Kokoro)",
+        connectionLabel: "कनेक्शन",
+        connectionDescription: "कनेक्शन टैब में OpenAI-संगत सर्वर जोड़ें",
+        connectionPlaceholder: "कनेक्शन चुनें",
+        customModelLabel: "मॉडल",
+        customVoiceDescription:
+          "एंडपॉइंट द्वारा अपेक्षित वॉइस नाम; डिफ़ॉल्ट alloy है",
         modelLabel: "TTS मॉडल",
         modelDescription:
           "मॉडल सिलेक्टर से एक ऑडियो मॉडल लोड करें (जैसे Orpheus TTS)",

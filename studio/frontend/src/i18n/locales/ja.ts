@@ -604,6 +604,15 @@ export const ja = {
           "読み込み済みの音声モデルを使用します (例: Orpheus)",
         engineSystem: "システムの音声",
         engineStudio: "TTS モデルを読み込む",
+        engineCustom: "カスタムエンドポイント",
+        engineCustomDescription:
+          "接続に登録した OpenAI 互換の TTS サーバー（例: Kokoro）",
+        connectionLabel: "接続",
+        connectionDescription:
+          "OpenAI 互換サーバーは「接続」タブで追加できます",
+        connectionPlaceholder: "接続を選択",
+        customModelLabel: "モデル",
+        customVoiceDescription: "エンドポイントが期待する音声名（デフォルトは alloy）",
         modelLabel: "TTS モデル",
         modelDescription:
           "モデルセレクターから音声モデルを読み込んでください (例: Orpheus TTS)",

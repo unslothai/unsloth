@@ -599,6 +599,16 @@ export const ar = {
           "يستخدم النموذج الصوتي المُحمَّل (مثل Orpheus)",
         engineSystem: "أصوات النظام",
         engineStudio: "تحميل نموذج TTS",
+        engineCustom: "نقطة نهاية مخصصة",
+        engineCustomDescription:
+          "خادم TTS متوافق مع OpenAI من اتصالاتك (مثل Kokoro)",
+        connectionLabel: "الاتصال",
+        connectionDescription:
+          "أضف خادمًا متوافقًا مع OpenAI من علامة تبويب الاتصالات",
+        connectionPlaceholder: "اختر اتصالًا",
+        customModelLabel: "النموذج",
+        customVoiceDescription:
+          "اسم الصوت الذي تتوقعه نقطة النهاية؛ القيمة الافتراضية alloy",
         modelLabel: "نموذج TTS",
         modelDescription:
           "حمّل نموذجًا صوتيًا من محدّد النماذج (مثل Orpheus TTS)",

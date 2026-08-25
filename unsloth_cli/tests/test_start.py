@@ -1771,6 +1771,141 @@ def test_resolved_launch_command_accepts_extensionless_node_target(monkeypatch, 
     ]
 
 
+def test_resolved_launch_command_prefers_cmd_sibling_of_extensionless_shim(monkeypatch, tmp_path):
+    # which() can resolve the extensionless POSIX shim ahead of its .cmd sibling;
+    # CreateProcess rejects the former with WinError 193 (#9167).
+    _simulate_windows(monkeypatch)
+    posix_shim = tmp_path / "fake-agent"
+    posix_shim.write_text("#!/bin/sh\n", encoding = "utf-8")
+    cmd = tmp_path / "fake-agent.cmd"
+    target = tmp_path / "node_modules" / "fake-agent" / "index.js"
+    target.parent.mkdir(parents = True)
+    target.write_text("#!/usr/bin/env node\n", encoding = "utf-8")
+    cmd.write_bytes(_npm_node_cmd_shim(r"node_modules\fake-agent\index.js").encode())
+    monkeypatch.setattr(start.shutil, "which", lambda name: r"C:\Program Files\nodejs\node.exe")
+
+    assert start._resolved_launch_command(str(posix_shim), ["--flag"]) == [
+        r"C:\Program Files\nodejs\node.exe",
+        str(target),
+        "--flag",
+    ]
+
+
+def test_resolved_launch_command_keeps_extensionless_shim_without_sibling(monkeypatch, tmp_path):
+    # Nothing to substitute, so the path passes through unchanged.
+    _simulate_windows(monkeypatch)
+    executable = tmp_path / "fake-agent"
+    executable.write_text("#!/bin/sh\n", encoding = "utf-8")
+
+    assert start._resolved_launch_command(str(executable), ["--flag"]) == [
+        str(executable),
+        "--flag",
+    ]
+
+
+def test_prefer_cmd_sibling_leaves_an_unreadable_resolution_alone(monkeypatch, tmp_path):
+    # A directory, an unreadable file, or a delete between resolve and open must
+    # fall through instead of raising out of the launch path.
+    _simulate_windows(monkeypatch)
+    executable = tmp_path / "fake-agent"
+    executable.mkdir()
+    (tmp_path / "fake-agent.cmd").write_text("@ECHO off\n", encoding = "utf-8")
+
+    assert start._resolved_launch_command(str(executable), ["--flag"]) == [
+        str(executable),
+        "--flag",
+    ]
+
+
+def test_prefer_cmd_sibling_is_none_safe_and_posix_noop(monkeypatch, tmp_path):
+    assert start._prefer_windows_cmd_sibling(None) is None
+    # Pin os.name instead of relying on the host: on a Windows runner the rescue
+    # would fire and this would assert the opposite of what it means to check.
+    monkeypatch.setattr(start.os, "name", "posix")
+    shim = tmp_path / "fake-agent"
+    shim.write_text("#!/bin/sh\n", encoding = "utf-8")
+    (tmp_path / "fake-agent.cmd").write_text("@ECHO off\n", encoding = "utf-8")
+    assert start._prefer_windows_cmd_sibling(str(shim)) == str(shim)
+
+
+def test_resolved_launch_command_rescues_uppercase_cmd_sibling(monkeypatch, tmp_path):
+    # #9167's pnpm dir holds pi.CMD. A case-sensitive volume needs the .CMD probe;
+    # a case-insensitive one answers the earlier .cmd probe with the same file, so
+    # compare identity rather than spelling or this passes only on Linux.
+    _simulate_windows(monkeypatch)
+    posix_shim = tmp_path / "fake-agent"
+    posix_shim.write_text("#!/bin/sh\n", encoding = "utf-8")
+    cmd = tmp_path / "fake-agent.CMD"
+    cmd.write_text("@ECHO off\ncustom-wrapper %*\n", encoding = "utf-8")
+
+    resolved = start._resolved_launch_command(str(posix_shim), ["--flag"])
+    assert resolved[1:] == ["--flag"]
+    assert os.path.samefile(resolved[0], str(cmd))
+
+
+def test_which_with_install_dirs_applies_the_cmd_sibling_preference(monkeypatch, tmp_path):
+    # The version probes spawn this result directly, bypassing
+    # _resolved_launch_command, so the rescue must happen here too.
+    _simulate_windows(monkeypatch)
+    posix_shim = tmp_path / "fake-agent"
+    posix_shim.write_text("#!/bin/sh\n", encoding = "utf-8")
+    cmd = tmp_path / "fake-agent.cmd"
+    cmd.write_text("@ECHO off\n", encoding = "utf-8")
+    monkeypatch.setattr(start, "_augment_path_with_install_dirs", lambda: None)
+    monkeypatch.setattr(start.shutil, "which", lambda name: str(posix_shim))
+
+    assert start._which_with_install_dirs("fake-agent") == str(cmd)
+
+
+def test_resolved_launch_command_rescues_dotted_bin_name_shim(monkeypatch, tmp_path):
+    # cmd-shim appends .cmd to the whole bin name, so "foo.bar" pairs with
+    # "foo.bar.cmd" and still needs the sibling preference.
+    _simulate_windows(monkeypatch)
+    posix_shim = tmp_path / "fake.agent"
+    posix_shim.write_text("#!/bin/sh\n", encoding = "utf-8")
+    cmd = tmp_path / "fake.agent.cmd"
+    target = tmp_path / "node_modules" / "fake-agent" / "index.js"
+    target.parent.mkdir(parents = True)
+    target.write_text("#!/usr/bin/env node\n", encoding = "utf-8")
+    cmd.write_bytes(_npm_node_cmd_shim(r"node_modules\fake-agent\index.js").encode())
+    monkeypatch.setattr(start.shutil, "which", lambda name: r"C:\Program Files\nodejs\node.exe")
+
+    assert start._resolved_launch_command(str(posix_shim), ["--flag"]) == [
+        r"C:\Program Files\nodejs\node.exe",
+        str(target),
+        "--flag",
+    ]
+
+
+def test_resolved_launch_command_keeps_extensionless_pe_binary_over_stale_sibling(
+    monkeypatch, tmp_path
+):
+    # CreateProcess runs a PE regardless of its name, so a real executable keeps
+    # priority over a stale .cmd; only shebang files are treated as shims.
+    _simulate_windows(monkeypatch)
+    executable = tmp_path / "fake-agent"
+    executable.write_bytes(b"MZ\x90\x00")
+    stale = tmp_path / "fake-agent.cmd"
+    stale.write_text("@ECHO off\nold-wrapper %*\n", encoding = "utf-8")
+
+    assert start._resolved_launch_command(str(executable), ["--flag"]) == [
+        str(executable),
+        "--flag",
+    ]
+
+
+def test_resolved_launch_command_falls_through_to_non_npm_cmd_sibling(monkeypatch, tmp_path):
+    # A non-npm .cmd sibling is still what cmd.exe would have picked, so it is
+    # returned as-is.
+    _simulate_windows(monkeypatch)
+    posix_shim = tmp_path / "fake-agent"
+    posix_shim.write_text("#!/bin/sh\n", encoding = "utf-8")
+    cmd = tmp_path / "fake-agent.cmd"
+    cmd.write_text("@ECHO off\ncustom-wrapper %*\n", encoding = "utf-8")
+
+    assert start._resolved_launch_command(str(posix_shim), ["--flag"]) == [str(cmd), "--flag"]
+
+
 def test_launch_windows_npm_shim_preserves_shebang_args_and_environment(monkeypatch, tmp_path):
     _simulate_windows(monkeypatch)
     cmd = tmp_path / "fake-agent.cmd"

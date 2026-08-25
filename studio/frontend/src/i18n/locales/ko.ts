@@ -600,6 +600,15 @@ export const ko = {
         engineStudioDescription: "로드된 오디오 모델을 사용합니다(예: Orpheus)",
         engineSystem: "시스템 음성",
         engineStudio: "TTS 모델 로드",
+        engineCustom: "사용자 지정 엔드포인트",
+        engineCustomDescription:
+          "연결에 저장된 OpenAI 호환 TTS 서버 (예: Kokoro)",
+        connectionLabel: "연결",
+        connectionDescription:
+          "OpenAI 호환 서버는 연결 탭에서 추가할 수 있습니다",
+        connectionPlaceholder: "연결 선택",
+        customModelLabel: "모델",
+        customVoiceDescription: "엔드포인트가 기대하는 음성 이름 (기본값: alloy)",
         modelLabel: "TTS 모델",
         modelDescription:
           "모델 선택기에서 오디오 모델을 로드하세요(예: Orpheus TTS)",
