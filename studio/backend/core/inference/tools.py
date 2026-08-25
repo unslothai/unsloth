@@ -8805,12 +8805,22 @@ def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
         return False
 
 
+WEB_SEARCH_EMPTY_ARGS_ERROR = (
+    "Error: web_search requires a non-empty 'query' or 'url'. "
+    "Retry web_search with a query based on the user's request."
+)
+# Local models often emit q/search_query instead of query, or uri/href instead of url.
+_WEB_SEARCH_QUERY_ALIASES = ("query", "q", "search_query", "search", "text")
+_WEB_SEARCH_URL_ALIASES = ("url", "uri", "href", "link")
+
 WEB_SEARCH_TOOL = {
     "type": "function",
     "function": {
         "name": "web_search",
         "description": (
             "Search the web and fetch page content. Returns snippets for all results. "
+            "Provide either a non-empty `query` to search the web or a non-empty `url` "
+            "to fetch a page. Never call web_search with empty arguments. "
             "Use the url parameter to fetch full page text from a specific URL."
         ),
         "parameters": {
@@ -8829,6 +8839,29 @@ WEB_SEARCH_TOOL = {
         },
     },
 }
+
+
+def _first_nonempty_arg(arguments: dict, keys: tuple[str, ...]) -> str:
+    """First non-empty string among ``keys`` in a tool-call argument object."""
+    for key in keys:
+        if key not in arguments:
+            continue
+        value = arguments.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def _resolve_web_search_args(arguments) -> tuple[str, str]:
+    """Return ``(query, url)``, healing common aliases from local models."""
+    args = arguments if isinstance(arguments, dict) else {}
+    return (
+        _first_nonempty_arg(args, _WEB_SEARCH_QUERY_ALIASES),
+        _first_nonempty_arg(args, _WEB_SEARCH_URL_ALIASES),
+    )
 
 
 def _build_sandbox_paths_note() -> str:
@@ -9238,9 +9271,12 @@ def execute_tool(
             config_check = _config_current,
         )
     if name == "web_search":
+        query, url = _resolve_web_search_args(arguments)
+        if not query and not url:
+            return WEB_SEARCH_EMPTY_ARGS_ERROR
         return _web_search(
-            arguments.get("query", ""),
-            url = arguments.get("url"),
+            query,
+            url = url or None,
             timeout = effective_timeout,
             cancel_event = cancel_event,
             website_policy = website_policy,
@@ -10553,7 +10589,7 @@ def _web_search(
         )
 
     if not query or not query.strip():
-        return "No query provided."
+        return WEB_SEARCH_EMPTY_ARGS_ERROR
     # A disconnect sets cancel_event; DDGS.text() is blocking and cannot be
     # interrupted mid-flight, so gate on either side: skip an already-cancelled
     # request, and discard results that land after the client has gone.
