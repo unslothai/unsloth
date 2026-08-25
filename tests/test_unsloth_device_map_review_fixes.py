@@ -73,7 +73,7 @@ def _build(
             or (
                 isinstance(node, ast.Assign)
                 and getattr(node.targets[0], "id", None)
-                in ("UNSLOTH_DEVICE_MAP", "DEFAULT_DEVICE_MAP")
+                in ("UNSLOTH_DEVICE_MAP", "DEFAULT_DEVICE_MAP", "_SIZE_UNITS")
             )
         )
         if keep:
@@ -206,6 +206,51 @@ def test_the_cap_is_read_the_way_accelerate_reads_it(written, expected):
         planner_kwargs = {"max_memory": {0: written}},
     )
     assert planner.calls[0][1]["max_memory"][0] == min(expected, 8 * 2**30)
+
+
+def test_the_cap_is_read_without_needing_accelerate_importable():
+    """Reading the budget through `accelerate.utils.modeling.convert_file_size_to_int` made
+    the cap conditional on an import that runs while placement is still being decided: on an
+    install without accelerate, or one that moves the symbol, every budget came back
+    unreadable and the caller's cap was dropped in silence. Found by the cross-platform run,
+    whose runners carry pytest and the Studio requirements but no accelerate."""
+    import builtins
+
+    as_bytes = _build()["_as_bytes"]
+    real_import = builtins.__import__
+
+    def no_accelerate(name, *args, **kwargs):
+        if name.split(".")[0] == "accelerate":
+            raise ImportError("No module named 'accelerate'")
+        return real_import(name, *args, **kwargs)
+
+    builtins.__import__ = no_accelerate
+    try:
+        assert as_bytes("4GiB") == 4 * 2**30
+        assert as_bytes(4 * 2**30) == 4 * 2**30
+    finally:
+        builtins.__import__ = real_import
+
+
+@pytest.mark.parametrize(
+    "written",
+    [
+        0, 1, 4 * 2**30, "0GiB", "4GiB", "2MiB", "512KiB", "1.5GiB", "0.5MiB",
+        "4gib", "4GIB", "4Gib", "10GB", "10gb", "10Gb", "8MB", "8Mb", "900KB", "900Kb",
+        "1.5GB", ".5GB", "1e3MB", "not a size", "", "GiB", "-4GiB", -1, "4 GiB", "4GiBs",
+        "4G", "4B", "4", None, 3.5, (), {"0": 1},
+    ],
+)
+def test_the_local_size_parser_agrees_with_accelerate(written):
+    """The rules are reproduced rather than imported, so something has to hold the copy in
+    step with the original wherever the original is in fact installed. accelerate raises on
+    what it cannot read and we return None, which is the same answer to the one caller."""
+    accelerate_modeling = pytest.importorskip("accelerate.utils.modeling")
+    try:
+        theirs = accelerate_modeling.convert_file_size_to_int(written)
+    except Exception:
+        theirs = None
+    assert _build()["_as_bytes"](written) == theirs
 
 
 def test_an_unreadable_cap_leaves_the_measured_value_rather_than_dropping_the_device():

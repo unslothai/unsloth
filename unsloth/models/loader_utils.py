@@ -212,19 +212,41 @@ def planner_class_mismatch_reason(loaded_class, planned_class):
     return f"the load builds {loaded_class.__name__}, not the planned {planned_class.__name__}"
 
 
+# accelerate's `max_memory` spellings, in the order it tries them: GiB/MiB/KiB are binary,
+# GB/MB/KB are decimal, and a lowercase trailing `b` on a decimal unit means bits, not bytes.
+_SIZE_UNITS = (("GIB", 2**30, False), ("MIB", 2**20, False), ("KIB", 2**10, False),
+               ("GB", 10**9, True), ("MB", 10**6, True), ("KB", 10**3, True))
+
 def _as_bytes(size):
     """A `max_memory` budget in bytes, or None if it cannot be read as one.
 
-    accelerate takes `"10GiB"` as readily as an int and owns the spelling rules (GiB/MiB/KiB
-    binary, GB/MB/KB decimal, a lowercase trailing `b` meaning bits), so its own parser is
-    the one that agrees with the load. None on anything unreadable, which leaves the
-    measured free memory in place rather than dropping a device out of the budget.
+    accelerate takes `"10GiB"` as readily as an int, so a caller writes here what the load
+    itself would have taken, and the rules above are reproduced rather than imported: this
+    runs while deciding placement, before anything has established that accelerate is
+    installed and exports the parser under the name it used to. An ImportError there would
+    read every budget as unparseable and drop the caller's cap without a word, which is the
+    silent loss this whole path exists to avoid. `test_the_local_size_parser_agrees_with_
+    accelerate` holds the two in step wherever accelerate is in fact present.
+
+    None on anything unreadable, which leaves the measured free memory in place rather than
+    dropping a device out of the budget entirely. A bool is unreadable here where accelerate
+    would take it as its int value: `{0: True}` is a typo, and a one byte budget on a card
+    reads as "unusable" to the planner.
     """
-    try:
-        from accelerate.utils.modeling import convert_file_size_to_int
-        return convert_file_size_to_int(size)
-    except Exception:
-        return None
+    if isinstance(size, bool): return None
+    if isinstance(size, int): return size if size >= 0 else None
+    if not isinstance(size, str): return None
+    upper = size.upper()
+    for unit, scale, has_bit_form in _SIZE_UNITS:
+        if not upper.endswith(unit): continue
+        try:
+            amount = int(float(size[:-len(unit)]) * scale)
+        except ValueError:
+            return None
+        # Bits, if they spelled the unit "Gb" rather than "GB". Binary units have no such form.
+        if has_bit_form and size.endswith("b"): amount //= 8
+        return amount if amount >= 0 else None
+    return None
 
 
 def resolve_unsloth_device_map(

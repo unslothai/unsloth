@@ -65,6 +65,7 @@ def _load(
             "resolve_unsloth_device_map",
             "planner_quantization_kwargs",
             "planner_class_mismatch_reason",
+            "_as_bytes",
         ):
             exec(ast.get_source_segment(_SRC, node), ns)
         elif isinstance(node, ast.ClassDef) and node.name == "_DefaultDeviceMap":
@@ -72,6 +73,7 @@ def _load(
         elif isinstance(node, ast.Assign) and getattr(node.targets[0], "id", None) in (
             "UNSLOTH_DEVICE_MAP",
             "DEFAULT_DEVICE_MAP",
+            "_SIZE_UNITS",
         ):
             exec(ast.get_source_segment(_SRC, node), ns)
 

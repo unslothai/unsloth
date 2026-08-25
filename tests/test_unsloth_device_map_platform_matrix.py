@@ -146,6 +146,7 @@ def _build(
         if isinstance(node, ast.FunctionDef) and node.name in (
             "requested_device_map",
             "resolve_unsloth_device_map",
+            "_as_bytes",
         ):
             exec(ast.get_source_segment(_SRC, node), ns)
         elif isinstance(node, ast.ClassDef) and node.name == "_DefaultDeviceMap":
@@ -153,6 +154,7 @@ def _build(
         elif isinstance(node, ast.Assign) and getattr(node.targets[0], "id", None) in (
             "UNSLOTH_DEVICE_MAP",
             "DEFAULT_DEVICE_MAP",
+            "_SIZE_UNITS",
         ):
             exec(ast.get_source_segment(_SRC, node), ns)
 
