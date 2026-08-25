@@ -2688,7 +2688,6 @@ def _hf_cache_repo_root_mmproj(repo_id: str) -> Optional[str]:
     """
     try:
         from utils.hf_cache_settings import get_hf_cache_paths
-
         target = f"models--{repo_id.replace('/', '--')}".lower()
         for repo_dir in Path(get_hf_cache_paths().hub_cache).iterdir():
             if not repo_dir.is_dir() or repo_dir.name.lower() != target:
