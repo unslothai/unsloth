@@ -1751,7 +1751,17 @@ class TestSpeculativeModeTerms:
         assert ri._estimate_spec_mode_terms("mtp", []) == (True, True)
         assert ri._estimate_spec_mode_terms("dspark", []) == (False, True)
         assert ri._estimate_spec_mode_terms("dflash", []) == (False, True)
+        # A bare --model-draft on a target Studio does not recognise as MTP really is
+        # draft-simple, llama.cpp's default, and allocates neither.
         assert ri._estimate_spec_mode_terms("extras", []) == (False, False)
+        # But on a target Studio DOES recognise, it still emits --spec-type draft-mtp
+        # and the extras path merely last-wins as the drafter, so the duplicated MLA
+        # context and the rollback state are both really allocated.
+        assert ri._estimate_spec_mode_terms("extras", [], studio_emits_mtp = True) == (True, True)
+        # A --spec-type in the extras still owns the answer outright either way.
+        assert ri._estimate_spec_mode_terms(
+            "extras", ["--spec-type", "draft-simple"], studio_emits_mtp = True
+        ) == (False, False)
         assert ri._estimate_spec_mode_terms("extras", ["--spec-type", "draft-simple"]) == (
             False,
             False,
@@ -2546,3 +2556,57 @@ class TestTheResolutionTriesOfflineFirst:
         out = ri._cached_estimate_config("org/cached", None, None, False)
         assert out is cfg
         assert len(calls) == 2, "the online retry did not run"
+
+
+class TestTheEmbeddedHeadIsChargedOnlyWhenItEngages:
+    """Every no-MTP outcome ``_build_speculative_flags`` has, asked of the estimate.
+
+    An embedded head has no file, so nothing about it is visible in the weights and an
+    over-charge is invisible too: it just makes the row read several GB high and can
+    refuse a load that runs. These are the launches that allocate no head at all.
+    """
+
+    def _config(self, gguf, identifier):
+        return SimpleNamespace(
+            identifier = identifier, gguf_file = gguf, is_gguf = True, gguf_variant = None,
+            gguf_mmproj_file = None, gguf_mtp_file = None,
+            gguf_dspark_file = None, gguf_dflash_file = None,
+        )
+
+    @pytest.fixture
+    def head(self, tmp_path):
+        return _write_gguf(
+            tmp_path, "qwen3",
+            {**_GQA_FIELDS, "context_length": 262144, "nextn_predict_layers": 2},
+            name = "head.gguf",
+        )
+
+    def test_a_sub_3b_head_is_dropped_by_auto(self, head):
+        """Auto falls back to ngram-mod there, because MTP regresses below 3B."""
+        big = ri._gguf_memory_breakdown(self._config(head, "org/Qwen3-8B"), head, n_ctx = 131072)
+        small = ri._gguf_memory_breakdown(self._config(head, "org/Qwen3-1.7B"), head, n_ctx = 131072)
+        assert big.drafter_runtime_bytes > 0
+        assert small.drafter_runtime_bytes == 0
+
+    def test_forcing_mtp_overrides_the_size_drop(self, head):
+        """The drop is Auto's judgement; an explicit request is not overruled."""
+        forced = ri._gguf_memory_breakdown(
+            self._config(head, "org/Qwen3-1.7B"), head, n_ctx = 131072, speculative_type = "mtp"
+        )
+        assert forced.drafter_runtime_bytes > 0
+
+    @pytest.mark.parametrize("mode", ["dspark", "dflash"])
+    def test_a_sidecar_mode_never_charges_the_embedded_head(self, head, mode):
+        """Those either open their own sidecar, charged as a file, or --spec-default."""
+        out = ri._gguf_memory_breakdown(
+            self._config(head, "org/Qwen3-8B"), head, n_ctx = 131072, speculative_type = mode
+        )
+        assert out.drafter_runtime_bytes == 0
+
+    def test_extras_owning_the_spec_block_are_left_alone(self, head):
+        """Studio emits no spec block of its own once --spec-type is in the extras."""
+        out = ri._gguf_memory_breakdown(
+            self._config(head, "org/Qwen3-8B"), head, n_ctx = 131072,
+            llama_extra_args = ["--spec-type", "ngram-mod"],
+        )
+        assert out.drafter_runtime_bytes == 0

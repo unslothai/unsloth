@@ -2789,13 +2789,23 @@ export function ModelConfigPage({
           nCtx: resolveEstimateContext(
             runtimeConfig.customContextLength ?? null,
             activeLoadedContext,
+            // resolveFitMaxSeqLength's own guard: on this shape --fit owns the
+            // context, so the resident length is not what Load would send.
+            target.isGguf === true &&
+              runtimeConfig.gpuMemoryMode === "manual" &&
+              (runtimeConfig.gpuLayers ?? GPU_LAYERS_AUTO) < 0,
           ),
           cacheTypeKv: runtimeConfig.kvCacheDtype,
           nParallel: runtimeConfig.nParallel,
           nBatch: runtimeConfig.nBatch,
           nUbatch: runtimeConfig.nUbatch,
           ctxCheckpoints: runtimeConfig.ctxCheckpoints ?? null,
-          speculativeType: runtimeConfig.speculativeType,
+          // The same substitution applyPerModelConfigToRuntime makes at load: a model
+          // with no per-model override sends null, which the backend reads as Auto,
+          // while the selector has been showing the global fallback all along. With
+          // the global set to Off and an 11 GB DSpark sidecar in the repo, the row
+          // charged the sidecar for a load that disables it.
+          speculativeType: runtimeConfig.speculativeType ?? speculativeFallback ?? null,
           specDraftNMax: runtimeConfig.specDraftNMax,
           specDraftCacheType: runtimeConfig.specDraftCacheDtype ?? null,
           tensorParallel: runtimeConfig.tensorParallel,

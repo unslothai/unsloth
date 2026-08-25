@@ -27,7 +27,15 @@
 export function resolveEstimateContext(
   customContextLength: number | null,
   activeLoadedContext: number | null,
+  fitOwnsContextSizing = false,
 ): number {
+  if (fitOwnsContextSizing) {
+    // Manual memory mode with GPU Layers on Auto hands sizing to llama.cpp --fit, and
+    // `resolveFitMaxSeqLength` sends a positive pin or 0 -- never the resident length.
+    // Falling back to what is loaded RIGHT NOW priced the old fit after a change that
+    // moves it (a KV dtype, a batch size), which is precisely when the two diverge.
+    return customContextLength && customContextLength > 0 ? customContextLength : 0;
+  }
   return customContextLength ?? activeLoadedContext ?? 0;
 }
 

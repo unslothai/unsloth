@@ -8704,7 +8704,9 @@ def _build_default_spec_draft_n_max(extras: Optional[list[str]] = None) -> int:
         return LlamaCppBackend._UNKNOWN_SPEC_DRAFT_N_MAX
 
 
-def _estimate_spec_mode_terms(drafter_kind: str, extras: list[str]) -> tuple[bool, bool]:
+def _estimate_spec_mode_terms(
+    drafter_kind: str, extras: list[str], studio_emits_mtp: bool = False
+) -> tuple[bool, bool]:
     """Which target-side terms this speculative mode allocates.
 
     Returns ``(mtp_keeps_target_ctx, target_rollback)`` for
@@ -8717,21 +8719,40 @@ def _estimate_spec_mode_terms(drafter_kind: str, extras: list[str]) -> tuple[boo
     Extras that name ``--spec-type`` own the mode outright, so the accumulated types
     decide; otherwise Studio picked the sidecar, and DSpark and DFlash are separate
     drafters that pay rollback without duplicating the context.
+
+    Naming a FILE is not owning the mode. ``--model-draft`` alone leaves
+    ``_build_speculative_flags`` running -- it returns early on ``--spec-type``, not on
+    a drafter path -- so on a target it recognises as an MTP model Studio still emits
+    ``--spec-type draft-mtp`` and the user's path merely last-wins as the drafter. The
+    child then does allocate the duplicated MLA context, several context-scaled
+    gigabytes that reading the path as an extras-owned spec block dropped.
+
+    On a target Studio does NOT recognise, the same extras really are draft-simple,
+    llama.cpp's default for a bare ``--model-draft``, and allocate neither. That is why
+    the caller answers ``studio_emits_mtp`` from the header rather than this deciding
+    from the mode alone.
     """
     from core.inference.llama_cpp import (
         _accumulated_spec_types,
         _child_spec_env,
+        _extra_args_set_spec_type,
         _TARGET_ROLLBACK_SPEC_TYPES,
     )
 
     # The env the CHILD sees: scrubbed of LLAMA_ARG_SPEC_* unless the extras own the
     # spec block, in which case an inherited type accumulates with theirs.
     spec_types = _accumulated_spec_types(extras, env = _child_spec_env(extras))
-    if spec_types or drafter_kind == "extras":
+    if spec_types:
         return (
             bool(spec_types & {"mtp", "draft-mtp"}),
             bool(spec_types & _TARGET_ROLLBACK_SPEC_TYPES),
         )
+    if drafter_kind == "extras" and _extra_args_set_spec_type(extras):
+        # A --spec-type whose value named no flavour we recognise. Theirs either way.
+        return False, False
+    if drafter_kind == "extras":
+        # Studio still emits the mode; only the file came from the extras.
+        return (studio_emits_mtp, True) if studio_emits_mtp else (False, False)
     return drafter_kind == "mtp", True
 
 
@@ -8771,6 +8792,56 @@ def _estimate_draft_n_max(
     except Exception:
         gpus = False
     return 2 if gpus else 3
+
+
+def _embedded_mtp_engages(probe, config, speculative_type, extras) -> bool:
+    """Whether the launch really turns on an embedded NextN head.
+
+    An embedded head is a drafter with no file, so nothing about it appears in the
+    weights and the only way to know it costs anything is to re-ask the question
+    ``_build_speculative_flags`` asks. Every no-MTP outcome it has is mirrored here,
+    through its own predicates rather than a second copy of the reasoning:
+
+    * no head in the header at all (the helper then prices nothing anyway, but this
+      keeps the cheap answer cheap);
+    * a mode that emits no drafter -- off, ngram, ngram-simple;
+    * DSpark and DFlash, which either open their own sidecar (charged as a file) or
+      fall back to --spec-default and open nothing;
+    * a sub-3B embedded head, which Auto drops for ngram-mod because MTP regresses
+      there;
+    * an MLA embedded head under Auto, where llama.cpp's MTP path is about half the
+      speed of no speculation. Forced mtp overrides that, so the drop is Auto's alone;
+    * extras that own --spec-type, where Studio emits no spec block of its own. That
+      last one can under-charge a hand-written --spec-type draft-mtp, which is the
+      side that shows a smaller number rather than refusing a load that fits.
+    """
+    if not getattr(probe, "_nextn_predict_layers", None):
+        return False
+    from core.inference.llama_cpp import (
+        _MTP_MIN_SIZE_B,
+        _canonicalize_spec_mode,
+        _extra_args_set_spec_type,
+        _extract_model_size_b,
+        _mla_mtp_auto_enabled,
+    )
+
+    if _extra_args_set_spec_type(extras):
+        return False
+    mode = _canonicalize_spec_mode(speculative_type) or "auto"
+    if mode not in ("auto", "mtp", "mtp+ngram"):
+        return False
+    if mode != "auto":
+        # Both remaining drops are Auto's judgement, not a hard incompatibility. Forced
+        # MTP on a sub-3B model logs "Engaging anyway (user override)" and emits, and
+        # the dropdown is the documented way to override the MLA drop, so an explicit
+        # request is charged for what it asked for.
+        return True
+    size_b = _extract_model_size_b(getattr(config, "identifier", None))
+    if size_b is not None and size_b < _MTP_MIN_SIZE_B:
+        return False
+    if getattr(probe, "_kv_lora_rank", None) is not None and not _mla_mtp_auto_enabled():
+        return False
+    return True
 
 
 def _gguf_memory_breakdown(
@@ -8945,9 +9016,13 @@ def _gguf_memory_breakdown(
     # nextn_predict_layers, so a model whose header carries no NextN key prices nothing
     # and this costs one arithmetic pass. The mode test is what keeps it off a launch
     # that runs no speculation at all.
+    # The header is needed to answer whether an embedded head exists at all, so the
+    # probe is built first and handed to both questions rather than read twice.
+    probe = _probe_backend()
+    probe._read_gguf_metadata(gguf_path)
     embedded_mtp = bool(
         not charged_drafter
-        and _canonicalize_spec_mode(speculative_type) not in _SPEC_MODES_WITHOUT_A_DRAFTER
+        and _embedded_mtp_engages(probe, config, speculative_type, extras)
     )
     if embedded_mtp and _extra_args_draft_offloaded_to_cpu(extras):
         # --spec-draft-ngl 0 or a CPU draft device MOVES the head, it does not switch
@@ -8958,8 +9033,6 @@ def _gguf_memory_breakdown(
         drafter_on_gpu = False
     if charged_drafter or embedded_mtp:
         drafter_path, drafter_kind = charged_drafter or (None, "mtp")
-        probe = _probe_backend()
-        probe._read_gguf_metadata(gguf_path)
         # K and V are independent overrides, and extras beat the panel field the same
         # way they do at launch; passing the field for both priced a cache the load
         # will not allocate.
@@ -8967,7 +9040,15 @@ def _gguf_memory_breakdown(
         draft_n_max = _estimate_draft_n_max(
             config, drafter_path, requested = spec_draft_n_max, extras = extras
         )
-        keeps_target_ctx, target_rollback = _estimate_spec_mode_terms(drafter_kind, extras)
+        keeps_target_ctx, target_rollback = _estimate_spec_mode_terms(
+            drafter_kind,
+            extras,
+            # Asked of the header, not the mode: the same predicate that decides
+            # whether an embedded head engages decides whether Studio emits draft-mtp
+            # over an extras-supplied drafter path.
+            studio_emits_mtp = embedded_mtp
+            or _embedded_mtp_engages(probe, config, speculative_type, extras),
+        )
         # The cache layout the target was priced with, not the helper's defaults: a
         # drafter with sliding-window attention under --swa-full allocates the full
         # window, and the same slot layout and micro-batch decide its cell count. The

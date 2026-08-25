@@ -88,3 +88,26 @@ test("two native picks of the same file name are different sources", () => {
 test("absent and null are the same, so an unset variant does not thrash the row", () => {
   assert.equal(sourceId("org/a", null), sourceId("org/a", undefined as unknown as null));
 });
+
+// Manual memory mode with GPU Layers on Auto hands context sizing to llama.cpp --fit.
+// `resolveFitMaxSeqLength` sends a positive pin or 0 there, never the resident length,
+// so falling back to what is loaded right now priced the OLD fit after a change that
+// moves it -- a KV dtype or a batch size, which is exactly when the two diverge.
+test("when --fit owns the context, the resident length is not what Load sends", () => {
+  assert.equal(resolveEstimateContext(null, 40960, true), 0);
+});
+
+test("a positive pin survives the fit path, because Load sends it", () => {
+  assert.equal(resolveEstimateContext(8192, 40960, true), 8192);
+});
+
+test("a non-positive pin is still 0 under the fit path", () => {
+  assert.equal(resolveEstimateContext(0, 40960, true), 0);
+  assert.equal(resolveEstimateContext(-1, 40960, true), 0);
+});
+
+test("every other shape keeps the resident fallback", () => {
+  assert.equal(resolveEstimateContext(null, 40960, false), 40960);
+  // And the flag defaults off, so no caller gains the fit rule by accident.
+  assert.equal(resolveEstimateContext(null, 40960), 40960);
+});
