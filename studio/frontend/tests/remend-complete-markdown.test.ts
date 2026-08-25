@@ -7,7 +7,10 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import remend from "remend";
+import { Streamdown } from "streamdown";
 
 /**
  * WHY THIS FILE EXISTS. `remend` is the incomplete-markdown repair Streamdown runs over a message
@@ -16,9 +19,19 @@ import remend from "remend";
  * message is not streaming. So this dependency decides what a finished message LOOKS like, not
  * only what a half-written one looks like, and a version bump is a rendering change.
  *
- * These are RUN, not scraped. Every assertion below is a call into the resolved package, so the
- * file fails if the dependency is downgraded, if the override that forces one copy of it is
- * dropped, or if somebody switches the repair off to make a benchmark faster.
+ * These are RUN, not scraped. Every assertion below is either a call into the resolved package or
+ * a render through Streamdown, so the file fails if the dependency is downgraded, if the override
+ * that forces one copy of it is dropped, or if the settled branch stops asking for the repair.
+ * That last one is checked by EVALUATING the `parseIncompleteMarkdown` expression that
+ * `markdown-text.tsx` writes, at `incrementalRender === null`, and handing the result to a real
+ * `<Streamdown>` -- not by asserting on the package in isolation and hoping the wiring agrees.
+ *
+ * WHAT THIS FILE DOES NOT COVER, so that the paragraph above is not read as wider than it is: the
+ * render below is a bare `<Streamdown mode="streaming">` to static markup. It carries none of the
+ * other props `markdown-text.tsx` passes (`STREAMDOWN_PLUGINS`, `STREAMDOWN_COMPONENTS`,
+ * `parseMarkdownIntoBlocksFn`, `BlockComponent`), none of the `preprocessLaTeX` /
+ * `stabilizeStreamingMarkdown` pipeline that runs upstream of it, and no DOM. A regression that
+ * lives in one of those is not caught here.
  *
  * The first test fails on remend 1.3.0, which is the point of the bump.
  */
@@ -84,6 +97,98 @@ test("a truncated stream is still repaired", () => {
     assert.ok(
       repaired.length >= truncated.length - marker.length,
       `the repair of ${JSON.stringify(truncated)} lost the document`,
+    );
+  }
+});
+
+const MARKDOWN_TEXT = new URL(
+  "../src/components/assistant-ui/markdown-text.tsx",
+  import.meta.url,
+);
+
+/**
+ * The `parseIncompleteMarkdown` a SETTLED body is rendered with, taken from the source and
+ * evaluated rather than restated. `incrementalRender` is null exactly when the message is not
+ * streaming, so evaluating the real expression in that state is the same question the component
+ * answers on the settled path.
+ */
+function settledParseIncompleteMarkdown(): boolean {
+  const source = readFileSync(MARKDOWN_TEXT, "utf8");
+  const opened = source.indexOf("<Streamdown");
+  assert.notEqual(
+    opened,
+    -1,
+    "markdown-text.tsx no longer renders a <Streamdown>, so the settled render path this file " +
+      "describes cannot be located",
+  );
+  const expression = /parseIncompleteMarkdown=\{([^}]*)\}/.exec(
+    source.slice(opened),
+  )?.[1];
+  assert.ok(
+    expression,
+    "markdown-text.tsx no longer passes parseIncompleteMarkdown to Streamdown; the repair these " +
+      "documents depend on is no longer requested where they claim it is",
+  );
+  const value: unknown = new Function(
+    "incrementalRender",
+    `return (${expression});`,
+  )(null);
+  assert.equal(
+    typeof value,
+    "boolean",
+    `parseIncompleteMarkdown={${expression}} did not evaluate to a boolean at incrementalRender === null`,
+  );
+  return value as boolean;
+}
+
+function renderSettled(markdown: string): string {
+  return renderToStaticMarkup(
+    createElement(
+      Streamdown,
+      {
+        mode: "streaming",
+        parseIncompleteMarkdown: settledParseIncompleteMarkdown(),
+      },
+      markdown,
+    ),
+  );
+}
+
+test("the settled render path runs the repair, not just the package", () => {
+  // THE TESTS ABOVE CALL `remend` THEMSELVES, so all of them pass while the UI has the repair
+  // switched off: mutating `parseIncompleteMarkdown={!incrementalRender}` to `{false}` in
+  // `markdown-text.tsx` left this file green until this test existed. The only way to see the
+  // difference is to render, and the only documents where the repair is VISIBLE are truncated
+  // ones -- a complete document is by construction unchanged either way.
+  //
+  // A truncated body does reach the settled path: a cancelled or errored response settles
+  // mid-construct and is then rendered with `incrementalRender === null` forever.
+  for (const [truncated, repaired] of [
+    ["this is **bol", 'data-streamdown="strong"'],
+    ["call `foo(", 'data-streamdown="inline-code"'],
+  ] as const) {
+    assert.ok(
+      renderSettled(truncated).includes(repaired),
+      `a settled <Streamdown> rendered ${JSON.stringify(truncated)} without repairing it: no ` +
+        `${repaired} in the output. The repair is off on the path Studio actually renders, ` +
+        "whatever the direct calls to remend above report.",
+    );
+  }
+});
+
+test("a complete document survives the settled render path unchanged", () => {
+  // The rendering half of the bump, asserted where the reader sees it. Under remend 1.3.0 the
+  // subscript `_` is "completed" with a second one, so the paragraph gains a character that is
+  // not in the source; count them rather than matching a fixed string, since the renderer resolves
+  // the `\(` escapes.
+  const underscores = (text: string): number => (text.match(/_/g) ?? []).length;
+  for (const complete of COMPLETE_LATEX_DOCUMENTS) {
+    const text = renderSettled(complete).replace(/<[^>]*>/g, "");
+    assert.equal(
+      underscores(text),
+      underscores(complete),
+      `the settled render of ${JSON.stringify(complete)} changed how many underscores reach the ` +
+        `reader: ${JSON.stringify(text)}`,
     );
   }
 });
