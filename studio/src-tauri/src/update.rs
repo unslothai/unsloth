@@ -55,6 +55,10 @@ fn configure_tauri_update_environment(cmd: &mut Command) {
     cmd.env_remove("STUDIO_HOME");
     cmd.env("UNSLOTH_TAURI_UPDATE", "1");
     cmd.env("SKIP_STUDIO_FRONTEND", "1");
+    cmd.env(
+        "UNSLOTH_DESKTOP_BACKEND_VERSION",
+        crate::preflight::expected_backend_version(),
+    );
 }
 
 fn spawn_update(

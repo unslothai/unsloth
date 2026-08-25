@@ -132,7 +132,7 @@ def executed(monkeypatch):
     return calls
 
 
-def _run(transport):
+def _run(transport, *, nudge_tool_calls: bool | None = None):
     async def _collect():
         out: list[str] = []
         agen = stream_with_studio_tools(
@@ -150,7 +150,7 @@ def _run(transport):
                 confirm_calls = False,
                 bypass_permissions = False,
                 rag_scope = None,
-                nudge_tool_calls = True,
+                nudge_tool_calls = nudge_tool_calls,
             ),
             cancel_event = threading.Event(),
         )
@@ -568,7 +568,7 @@ def test_a_stalled_turn_keeps_its_hosted_result(executed):
             [_DONE],
         ]
     )
-    _run(transport)
+    _run(transport, nudge_tool_calls = True)
     assert len(transport.requests) > 1, "the stall reprompt never happened"
     assert "gradient checkpointing lands" in json.dumps(transport.requests[1]["messages"])
 
@@ -977,7 +977,7 @@ def test_a_stalled_turn_keeps_its_thought_signature(executed):
             [_DONE],
         ]
     )
-    _run(transport)
+    _run(transport, nudge_tool_calls = True)
     reprompted = transport.requests[1]["messages"]
     stalled = [
         m

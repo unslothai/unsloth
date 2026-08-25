@@ -200,20 +200,30 @@ export async function renameChatItem(
   );
 }
 
-export async function archiveChatItem(
-  item: SidebarItem,
+async function collectItemThreadIds(
+  items: SidebarItem[],
+  args: { includeArchived?: boolean } = {},
+): Promise<string[]> {
+  const ids = new Set<string>();
+  for (const item of items) {
+    if (item.type === "single") {
+      ids.add(item.id);
+      continue;
+    }
+    const pair = await listStoredChatThreads({ pairId: item.id, ...args });
+    for (const thread of pair) ids.add(thread.id);
+  }
+  return Array.from(ids);
+}
+
+export async function archiveChatItems(
+  items: SidebarItem[],
   activeId: string | undefined,
   onSelect: (view: { mode: "single"; newThreadNonce: string }) => void,
 ): Promise<void> {
-  const threadIds: string[] =
-    item.type === "single"
-      ? [item.id]
-      : (
-          await listStoredChatThreads({
-            pairId: item.id,
-            includeArchived: true,
-          })
-        ).map((t) => t.id);
+  const threadIds = await collectItemThreadIds(items, {
+    includeArchived: true,
+  });
 
   requestPromptQueueStop(threadIds);
 
@@ -225,12 +235,20 @@ export async function archiveChatItem(
     threadIds.map((id) => updateStoredChatThread(id, { archived: true })),
   );
 
-  if (activeId === item.id) {
+  if (activeId !== undefined && items.some((item) => item.id === activeId)) {
     useChatRuntimeStore.getState().setActiveThreadId(null);
     onSelect({ mode: "single", newThreadNonce: crypto.randomUUID() });
   }
 
   notifyChatHistoryUpdated();
+}
+
+export async function archiveChatItem(
+  item: SidebarItem,
+  activeId: string | undefined,
+  onSelect: (view: { mode: "single"; newThreadNonce: string }) => void,
+): Promise<void> {
+  return archiveChatItems([item], activeId, onSelect);
 }
 
 export async function archiveAllChatItems(
@@ -286,16 +304,13 @@ export async function unarchiveChatItem(item: SidebarItem): Promise<void> {
   notifyChatHistoryUpdated();
 }
 
-export async function deleteChatItem(
-  item: SidebarItem,
+export async function deleteChatItems(
+  items: SidebarItem[],
   activeId: string | undefined,
   onSelect: (view: { mode: "single"; newThreadNonce: string }) => void,
   args: { deleteFiles?: boolean } = {},
 ) {
-  const threadIds: string[] =
-    item.type === "single"
-      ? [item.id]
-      : (await listStoredChatThreads({ pairId: item.id })).map((t) => t.id);
+  const threadIds = await collectItemThreadIds(items);
 
   // Stop queued prompts and in-flight streams before deleting.
   requestPromptQueueStop(threadIds);
@@ -315,7 +330,7 @@ export async function deleteChatItem(
   markChatThreadsDeleted(threadIds);
   notifyChatHistoryUpdated();
 
-  if (activeId === item.id) {
+  if (activeId !== undefined && items.some((item) => item.id === activeId)) {
     useChatRuntimeStore.getState().setActiveThreadId(null);
     onSelect({ mode: "single", newThreadNonce: crypto.randomUUID() });
   }
@@ -331,4 +346,13 @@ export async function deleteChatItem(
     notifyChatHistoryUpdated();
     throw error;
   }
+}
+
+export async function deleteChatItem(
+  item: SidebarItem,
+  activeId: string | undefined,
+  onSelect: (view: { mode: "single"; newThreadNonce: string }) => void,
+  args: { deleteFiles?: boolean } = {},
+) {
+  return deleteChatItems([item], activeId, onSelect, args);
 }

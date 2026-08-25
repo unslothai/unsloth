@@ -2042,7 +2042,11 @@ class ReasoningChannelNormalizer:
         return "".join(output)
 
     def finish(self) -> str:
-        """Flush a naturally completed stream and close an open think block."""
+        """Flush a stream that ended and close an open think block.
+
+        Ended, not merely finished generating: a stop sequence ends a turn as a stop
+        token does, and the block it cut inside is still owed its close.
+        """
         output = self.drain()
         if self._in_reasoning:
             # Nothing generated: no block at all, rather than a close with no opener.
@@ -2100,8 +2104,12 @@ def normalize_reasoning_snapshots(
     tools = None,
     prompt: Optional[str] = None,
     continued: bool = False,
+    ended = None,
 ):
-    """Normalize a prefix-monotonic cumulative text stream when supported."""
+    """Normalize a prefix-monotonic cumulative text stream when supported.
+
+    ``ended`` is read after the stream: a turn a stop sequence ended still owes
+    its open block a close, even if a cancel landed on the same step."""
     markers = markers or detect_reasoning_channel_markers(tokenizer, tools = tools)
     if markers is None:
         yield from stream
@@ -2122,7 +2130,9 @@ def normalize_reasoning_snapshots(
             normalized_output += delta
             yield normalized_output
 
-    cancelled = cancel_event is not None and cancel_event.is_set()
+    cancelled = (
+        not (ended is not None and ended()) and cancel_event is not None and cancel_event.is_set()
+    )
     tail = normalizer.drain() if cancelled else normalizer.finish()
     if tail:
         normalized_output += tail

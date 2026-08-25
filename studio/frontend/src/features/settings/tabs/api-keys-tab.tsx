@@ -174,6 +174,7 @@ export function ApiKeysTab() {
 
       <MonitorLink />
 
+      {/* Also on the Remote & LAN tab. One panel mounts at a time, so only one polls. */}
       <RemoteAccessSection />
 
       <LanAccessSection />

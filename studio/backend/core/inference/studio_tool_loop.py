@@ -67,11 +67,14 @@ from core.inference.tool_call_parser import (
 from core.inference.tool_loop_controller import (
     ToolLoopController,
     awaiting_approval_status,
+    mcp_display_parts,
     strip_result_for_model,
 )
 from core.inference.tool_stream_exec import (
     TOOL_HEARTBEAT_INTERVAL_S,
+    accepts_kwarg,
     accepts_output_callback,
+    search_images_kwargs,
     stream_tool_execution,
 )
 from core.inference.tools import build_rag_autoinject, execute_tool, is_high_risk_tool_call
@@ -548,7 +551,15 @@ class _Turn:
                 # Never replayed upstream: the conversation carries the
                 # de-duplicated id, which is the whole point of the rename.
                 normalized["stream_id"] = normalized["id"]
-                normalized["id"] = f"{normalized['id']}_{self.round}_{position}"
+                # The renamed id is itself stored and replayed, so a single-shot
+                # rename collides again on the next request. Counting up over a
+                # finite ledger terminates and leaves the first attempt as is.
+                renamed = f"{normalized['id']}_{self.round}_{position}"
+                attempt = 0
+                while renamed in seen:
+                    attempt += 1
+                    renamed = f"{normalized['id']}_{self.round}_{position}_{attempt}"
+                normalized["id"] = renamed
             seen.add(normalized["id"])
             out.append(normalized)
         return out
@@ -564,6 +575,16 @@ def _rewrite_content(payload: dict[str, Any], choice: dict[str, Any], text: str)
     new_payload = {key: value for key, value in payload.items() if key != "choices"}
     new_payload["choices"] = [new_choice] + list(payload.get("choices", [])[1:])
     return _sse(new_payload)
+
+
+def _unrun_provenance(tool_name: str, round_id: int) -> dict[str, Any]:
+    """Provenance for a hand-built unrun card; carries the MCP display name so a
+    budget-exhausted or truncated MCP call never shows the internal server id."""
+    provenance: dict[str, Any] = {"source": "local", "round_id": round_id}
+    mcp = mcp_display_parts(tool_name)
+    if mcp:
+        provenance["mcp_server"] = mcp[0]
+    return provenance
 
 
 def _unrun_call_card(
@@ -652,6 +673,27 @@ def _is_usage_only(payload: dict[str, Any]) -> bool:
     return "usage" in payload and isinstance(choices, list) and not choices
 
 
+def _replayed_call_ids(conversation: list[dict[str, Any]]) -> set[str]:
+    """Every tool-call id already in the history this run starts from.
+
+    The healer restarts its counter every request, so a freshly minted call_0
+    collides with a stripped call_0 replayed from history inside one upstream
+    body. Seeding the ledger makes calls() rename the new one as it does any
+    repeat within a run.
+    """
+    taken: set[str] = set()
+    for message in conversation:
+        if not isinstance(message, dict):
+            continue
+        for call in message.get("tool_calls") or []:
+            if isinstance(call, dict) and isinstance(call.get("id"), str) and call["id"]:
+                taken.add(call["id"])
+        result_id = message.get("tool_call_id")
+        if isinstance(result_id, str) and result_id:
+            taken.add(result_id)
+    return taken
+
+
 def _append_user_turn(conversation: list[dict[str, Any]], content: str) -> None:
     """Append a user turn, merging into a trailing one so roles keep alternating.
 
@@ -720,6 +762,8 @@ async def stream_with_studio_tools(
 ) -> AsyncIterator[str]:
     """Stream a provider, execute requested Studio tools, continue to a final answer."""
     conversation = [dict(message) for message in run.messages]
+    # Kept before the loop appends anything: this is the branch the request is on.
+    request_branch = list(run.messages)
     remaining = policy.max_calls
     unlimited = remaining >= 9999
     session_id = run.session_id
@@ -769,7 +813,7 @@ async def stream_with_studio_tools(
     max_reprompts = MAX_ACT_REPROMPTS
     last_reprompt_text = ""
     provider_turns = 0
-    used_call_ids: set[str] = set()
+    used_call_ids: set[str] = _replayed_call_ids(conversation)
     spent_budget_passes = 0
     fruitless_turns = 0
     # One provider call per possible execution, plus headroom for the no-op,
@@ -984,7 +1028,7 @@ async def stream_with_studio_tools(
                     # well formed to show; the result says what happened.
                     arguments = {},
                     result = _TOOL_TRUNCATED,
-                    provenance = {"source": "local", "round_id": round_id + 1},
+                    provenance = _unrun_provenance(name, round_id + 1),
                 ):
                     yield card_line
         # tool_choice "none" is an instruction, and a provider that emits a call
@@ -1065,7 +1109,7 @@ async def stream_with_studio_tools(
                     tool_call_id = call.get("stream_id") or call["id"],
                     arguments = call.get("arguments"),
                     result = _TOOL_BUDGET_EXHAUSTED,
-                    provenance = {"source": "local", "round_id": round_id},
+                    provenance = _unrun_provenance(call["function"]["name"], round_id),
                 ):
                     yield card_line
                 # The result below has to be replayed with its call: only the
@@ -1220,8 +1264,32 @@ async def stream_with_studio_tools(
                     "rag_scope": rag_scope,
                     "disable_sandbox": bypass_permissions,
                 }
+                # Provider loops share the local catalogue selector, so
+                # search_conversation is advertised here too once a thread has an archive
+                # and needs the same branch: the stored rows are the whole DAG, and Retry
+                # leaves the replaced response in them.
+                if accepts_kwarg(execute_tool, "conversation_branch"):
+                    kwargs["conversation_branch"] = request_branch
+                # And a budget, so the tool's clamp is not skipped. Studio cannot measure
+                # an external model's window, and a custom OpenAI-compatible endpoint can
+                # be a small local server, so a model-chosen 8 chunks is roughly 4K tokens
+                # replayed on every later call. Unmeasurable means one recall's worth.
+                # Explicitly unknowable, not absent: this request is served by an
+                # external provider, so the resident GGUF's window says nothing about
+                # what it can hold. 0 keeps the default page cap instead of inheriting it.
+                if accepts_kwarg(execute_tool, "context_tokens"):
+                    kwargs["context_tokens"] = 0
+                if accepts_kwarg(execute_tool, "conversation_budget_tokens"):
+                    try:
+                        from core.rag import config as rag_config
+                        kwargs["conversation_budget_tokens"] = max(
+                            1, int(rag_config.CHUNK_TOKENS)
+                        ) * max(1, int(rag_config.CONVERSATION_ARCHIVE_TOP_K))
+                    except Exception:
+                        pass
                 if accepts_output_callback(execute_tool):
                     kwargs["output_callback"] = output_callback
+                kwargs.update(search_images_kwargs(execute_tool, call.tool_name))
                 return execute_tool(call.tool_name, call.arguments, **kwargs)
 
             # The same wrapper the local loops run tools through: live stdout for

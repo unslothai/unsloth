@@ -516,6 +516,8 @@ export function ChatSettingsPanel({
     ggufContextLength != null ||
     (currentCheckpoint?.toLowerCase().endsWith(".gguf") ?? false);
   const platformDeviceType = usePlatformStore((s) => s.deviceType);
+  // Unified memory, not just Darwin: an Intel Mac spills to system RAM like a PC.
+  const isUnifiedMemory = usePlatformStore((s) => s.appleSilicon);
   const platformChatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
   const loadSettingNames = presetLoadSettingNames(
     isGguf,
@@ -539,6 +541,7 @@ export function ChatSettingsPanel({
   const gpuLayers = useChatRuntimeStore((s) => s.gpuLayers);
   const nCpuMoe = useChatRuntimeStore((s) => s.nCpuMoe);
   const tensorParallel = useChatRuntimeStore((s) => s.tensorParallel);
+  const disableVision = useChatRuntimeStore((s) => s.disableVision);
   const specDraftNMax = useChatRuntimeStore((s) => s.specDraftNMax);
   const nParallel = useChatRuntimeStore((s) => s.nParallel);
   const nBatch = useChatRuntimeStore((s) => s.nBatch);
@@ -678,6 +681,7 @@ export function ChatSettingsPanel({
     gpuLayers,
     nCpuMoe,
     tensorParallel,
+    disableVision,
     speculativeType,
     specDraftNMax,
     nParallel,
@@ -700,6 +704,7 @@ export function ChatSettingsPanel({
       gpuLayers,
       nCpuMoe,
       tensorParallel,
+      disableVision,
       speculativeType,
       specDraftNMax,
       nParallel,
@@ -1062,9 +1067,21 @@ export function ChatSettingsPanel({
               )}
               {showContextVramWarning && (
                 <p className="text-ui-11 text-amber-500">
-                  Context length exceeds the estimated VRAM capacity (
+                  {isUnifiedMemory ? (
+                    <>
+                      Context length exceeds what fits in unified memory (
+                      {ggufMaxContextLength?.toLocaleString()} tokens). The GPU
+                      and the rest of the system share one pool here, so there
+                      is nothing to offload to. Lower the context, leave it on
+                      Auto, or set the KV cache to q8_0.
+                    </>
+                  ) : (
+                    <>
+                      Context length exceeds the estimated VRAM capacity (
                       {ggufMaxContextLength?.toLocaleString()} tokens). The
                       model may use system RAM.
+                    </>
+                  )}
                 </p>
               )}
             </div>
