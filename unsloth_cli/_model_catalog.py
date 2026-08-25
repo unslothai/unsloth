@@ -340,9 +340,7 @@ def cached_entries() -> List[ModelEntry]:
         # root has no config for can_chat to read, so neither of the gates above catches it.
         if row.get("diffusers"):
             continue
-        entries.append(
-            ModelEntry("Downloaded", row["repo_id"], "", _cached_model_load_id(row))
-        )
+        entries.append(ModelEntry("Downloaded", row["repo_id"], "", _cached_model_load_id(row)))
     return entries
 
 
@@ -414,8 +412,7 @@ def _local_dir_holds_a_payload(path: Path) -> bool:
     except OSError:
         return True
     return any(
-        _is_main_gguf_filename(file.name) and not is_appledouble_metadata(file)
-        for file in children
+        _is_main_gguf_filename(file.name) and not is_appledouble_metadata(file) for file in children
     ) or _is_model_directory(path)
 
 

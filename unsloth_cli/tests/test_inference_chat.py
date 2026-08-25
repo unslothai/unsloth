@@ -2389,8 +2389,13 @@ def test_catalog_local_gguf_folder_picks_the_preferred_quant(monkeypatch, tmp_pa
     (folder / "mymodel-F16.gguf").write_bytes(b"GGUF" + b"\0" * 4096 * 40)
 
     row = SimpleNamespace(
-        source = "models_dir", partial = False, model_format = "gguf", path = str(folder),
-        display_name = "multi", load_id = str(folder), id = str(folder),
+        source = "models_dir",
+        partial = False,
+        model_format = "gguf",
+        path = str(folder),
+        display_name = "multi",
+        load_id = str(folder),
+        id = str(folder),
     )
     monkeypatch.setattr(cat, "_local_catalog_rows", lambda: [row])
     monkeypatch.setattr(cat, "_local_model_task", lambda m: None)
@@ -2421,13 +2426,17 @@ def test_catalog_pins_an_active_cache_adapter_to_its_snapshot(tmp_path):
     (repo / "refs" / "main").write_text("a" * 40)
 
     adapter = {
-        "repo_id": "Org/GatedLora", "load_id": "Org/GatedLora",
-        "model_format": "adapter", "cache_path": str(repo),
+        "repo_id": "Org/GatedLora",
+        "load_id": "Org/GatedLora",
+        "model_format": "adapter",
+        "cache_path": str(repo),
     }
     assert cat._cached_model_load_id(adapter) == str(snapshot)
 
     plain = {
-        "repo_id": "Org/Chat", "load_id": "Org/Chat",
-        "model_format": "safetensors", "cache_path": str(repo),
+        "repo_id": "Org/Chat",
+        "load_id": "Org/Chat",
+        "model_format": "safetensors",
+        "cache_path": str(repo),
     }
     assert cat._cached_model_load_id(plain) == "Org/Chat"
