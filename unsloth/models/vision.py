@@ -44,9 +44,15 @@ from ._utils import (
 )
 from ._utils import *
 from .loader_utils import (
+    DEFAULT_DEVICE_MAP,
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
     _restore_dropped_fp8_scales,
+    planner_class_mismatch_reason,
+    planner_model_class,
+    planner_quantization_kwargs,
+    requested_device_map,
+    resolve_unsloth_device_map,
 )
 from ..save import patch_saving_functions
 from ..models.loader_utils import is_distributed
@@ -890,7 +896,9 @@ class FastBaseModel:
         load_in_16bit = False,
         full_finetuning = False,
         token = None,
-        device_map = "sequential",
+        device_map = DEFAULT_DEVICE_MAP,
+        # Planner hints for device_map = "unsloth"; see resolve_unsloth_device_map.
+        device_map_planner_kwargs = None,
         trust_remote_code = False,
         model_types = None,
         tokenizer_name = None,
@@ -912,6 +920,10 @@ class FastBaseModel:
         unsloth_vllm_standby = False,
         load_in_fp8 = False,  # fp8 LoRA (True, False, 'block')
         text_only = False,
+        # True when the caller already swapped a multimodal config for its text sub-config,
+        # so `auto_config` no longer describes the repo. Set by loader.py, and by the block
+        # below on the direct-call path.
+        text_only_decoder = False,
         **kwargs,
     ):
         user_config = kwargs.pop("config", None)
@@ -971,6 +983,7 @@ class FastBaseModel:
                 auto_config = text_config
                 auto_model = AutoModelForCausalLM
                 _apply_text_only_key_mapping(kwargs, parent_config, text_config)
+                text_only_decoder = True
         elif text_only and auto_model in [
             AutoModelForVision2Seq,
             AutoModelForImageTextToText,
@@ -1123,6 +1136,8 @@ class FastBaseModel:
             )
         model_class = resolve_model_class(auto_model, auto_config)
         # Check if using forced float32 - we load it in bfloat16, then cast to float16!
+        # Resolved here rather than at the load, because attention resolution below and the
+        # device-map planner both have to size the same dtype the load will really use.
         torch_dtype = dtype
         if do_forced_float32:
             torch_dtype = torch.bfloat16
@@ -1166,6 +1181,55 @@ class FastBaseModel:
             load_in_4bit = False
             load_in_8bit = False
             load_in_16bit = False
+
+        # text_only loads the decoder alone, but the planner gets only `model_name` and
+        # rebuilds the whole VLM: it budgets a vision tower this load never creates and
+        # names `model.language_model.layers.0` where the standalone decoder has
+        # `model.layers.0`, so the first decoder weight ends up with no device set.
+        _planner_skip_reason = (
+            "text_only loads a decoder the repo config does not describe"
+            if text_only_decoder
+            else None
+        )
+        # Same failure from the other direction: `num_labels` (or an explicit `auto_model`)
+        # loads a task head whose `score` replaces the planned `lm_head`, and dispatch
+        # refuses a map with no `score.weight`.
+        if _planner_skip_reason is None:
+            _planner_skip_reason = planner_class_mismatch_reason(
+                model_class,
+                planner_model_class(auto_config, trust_remote_code = trust_remote_code),
+            )
+
+        # A no-op unless the caller asked for "unsloth" (or set UNSLOTH_AUTO_DEVICE_MAP);
+        # an already-planned map comes back unchanged, so a direct FastBaseModel call
+        # behaves the same as going through FastModel.
+        device_map = resolve_unsloth_device_map(
+            requested_device_map(device_map),
+            model_name,
+            fast_inference = fast_inference,
+            full_finetuning = full_finetuning,
+            planner_kwargs = device_map_planner_kwargs,
+            skip_reason = _planner_skip_reason,
+            token = token,
+            trust_remote_code = trust_remote_code,
+            # The pin the config and weights below use; the default branch would size a
+            # different checkpoint than the one being loaded.
+            revision = _revision,
+            # The dtype the load below is given: `from_pretrained` overrides config.json,
+            # so planning the checkpoint's own mis-sizes by 2x whenever it changed.
+            **add_dtype_kwargs(torch_dtype),
+            # A caller-supplied config overrides the flags: loader.py clears them when it
+            # forwards one, so the flags alone would size a 4bit load at full precision.
+            **planner_quantization_kwargs(
+                load_in_4bit = load_in_4bit,
+                load_in_8bit = load_in_8bit,
+                quantization_config = user_quantization_config,
+                # The same extra _skip_modules below adds.
+                extra_skip_modules = ["out_proj"]
+                if any(mt == "nemotron_h" for mt in (model_types or []))
+                else None,
+            ),
+        )
 
         if int(load_in_4bit) + int(load_in_8bit) + int(load_in_16bit) >= 2:
             raise RuntimeError(
@@ -1326,6 +1390,7 @@ class FastBaseModel:
                     if user_quantization_config is None:
                         kwargs["quantization_config"] = quantization_config
 
+        # torch_dtype is resolved above, where the device-map planner also needs it.
         kwargs = add_dtype_kwargs(torch_dtype, kwargs)
 
         config_attn_impl = kwargs.get("attn_implementation", None)
@@ -1877,7 +1942,7 @@ class FastBaseModel:
         temporary_location = "_unsloth_temporary_saved_buffers",
         qat_scheme = None,
         target_parameters = None,  # For MoE expert layers (nn.Parameter)
-        ensure_weight_tying = False,  # [TODO] Add `ensure_weight_tying` for `modules_to_save` for vision models
+        ensure_weight_tying = None,  # None = auto (tie when we redirect a tied pair)
         finetune_audio_layers = False,  # placed last to preserve existing positional argument order
         **kwargs,
     ):
@@ -1931,6 +1996,34 @@ class FastBaseModel:
         # only the auto (None / "all-linear") path relies on the regex, whose mlp
         # block is the sole remaining MLP-intent signal on fused-expert models.
         _moe_detect_target = target_modules if type(target_modules) in (list, tuple) else None
+
+        # get_peft_regex drops these (no attention/MLP ancestor) and LoRA on them never
+        # trains, so redirect before scoping, matching FastLanguageModel.
+        target_modules, modules_to_save, _moved = _redirect_embedding_targets(
+            target_modules,
+            modules_to_save,
+            allow_redirect = finetune_language_layers,
+            skip = _vllm_unmovable_embedding_modules(model, target_modules),
+        )
+        _raise_if_no_lora_targets_left(target_modules, _moved, target_parameters)
+        ensure_weight_tying = _effective_weight_tying(
+            model,
+            modules_to_save,
+            ensure_weight_tying,
+        )
+        modules_to_save = _drop_tied_output_module(
+            model,
+            modules_to_save,
+            ensure_weight_tying,
+        )
+        if _moved:
+            logger.warning_once(
+                f"Unsloth: Moved {', '.join(_moved)} from `target_modules` to "
+                f"`modules_to_save`, so they are trained as full weight matrices.\n"
+                f"This uses more VRAM than LoRA. Please list them in `modules_to_save` directly."
+            )
+        _raise_if_fast_inference_modules_to_save(model, modules_to_save)
+
         if target_modules is None or target_modules == "all-linear":
             target_modules = get_peft_regex(
                 model,

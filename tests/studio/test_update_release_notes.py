@@ -1275,70 +1275,75 @@ _SCALED_FLOOR_TAURI = "min-h-[calc(117px+93px*var(--ui-font-scale,1))]"
 _NARROW_FLOOR_TAURI = "max-[383px]:min-h-[calc(24px+224px*var(--ui-font-scale,1))]"
 
 
-def _capped_stacks(provider: str) -> int:
-    """How many overlay stacks cap themselves to the measured geometry.
+def _corner_rails(provider: str) -> list[str]:
+    """The class strings of the bottom-right overlay rails.
 
-    Matched on the value being derived from `stack.maxHeight`, not on the literal
-    `maxHeight: stack.maxHeight`, because the cap is allowed to be wrapped: the
-    shadow-gutter work passes it through `railMaxHeight(...)` so the rail keeps
-    room under its bottom card. That is the same cap, plus a constant.
-
-    Pinning the bare expression made a wrapper read as a missing cap, which is the
-    mistake this file already made once with the z-index and fixed the same way --
-    see "counted by the layer they sit on, not by a literal z-index" below. What
-    the tests are about is that EVERY stack is capped; how the number is spelled is
-    that code's business. A cap that stops reading stack.maxHeight still fails.
+    Matched on the corner they are pinned to, which is the thing under test.
+    The rail is anchored in CSS, so that corner is spelled in its classes.
     """
-    return len(re.findall(r"maxHeight:\s*(?:[A-Za-z_$][\w$]*\(\s*)?stack\.maxHeight", provider))
+    return re.findall(r'"pointer-events-none fixed bottom-0 right-4 ([^"]*)"', provider)
 
 
-def _overlay_stacks(provider: str) -> int:
-    """How many bottom-right overlay stacks the provider renders."""
-    return len(re.findall(r"z-\[9998\][^\"]*flex flex-col items-end gap-2", provider))
+def _capped_rails(provider: str) -> int:
+    """How many of those rails cap themselves to the viewport, in CSS.
+
+    2rem for the cards' band, less the 24px shadow gutter the rail adds around
+    them, so the gutter is not spent on the cards. See overlay-shadow-gutter.
+    """
+    return sum(1 for rail in _corner_rails(provider) if "max-h-[calc(100dvh_-_8px)]" in rail)
 
 
 def test_the_overlay_stack_fits_the_viewport():
     """The card's own cap does not account for a download list stacked beneath
-    it. The cap is `stackGeometry` now, checked numerically in
-    studio/frontend/tests/monitor-stack-inset.test.ts; here the stack must read it."""
+    it, so the rail carries one of its own. A static cap, not a measured one:
+    a rail whose height and offset are computed from whatever else is on screen
+    is a rail that moves out of its corner (#8082 and the chain after it)."""
     provider = (FRONTEND / "app/provider.tsx").read_text(encoding = "utf-8")
     # Counted by the layer they sit on, not by a literal z-index: the
     # overlay rail reads its depth from Z_LAYER now.
     stacks = provider.count("zIndex: Z_LAYER.OVERLAY_STACK")
     assert stacks, "the bottom-right overlay stack is gone"
+    assert len(_corner_rails(provider)) == stacks, "a rail left its bottom-right corner"
     # Counted, not merely present: capping only one of the stacks is the bug here.
-    assert _capped_stacks(provider) == stacks, "every stack is capped"
+    assert _capped_rails(provider) == stacks, "every stack is capped"
     panel = (FRONTEND / "features/hub/download-manager/download-manager-panel.tsx").read_text(
         encoding = "utf-8"
     )
     # The download list scrolls internally, so it can give up height.
     assert "flex min-h-0" in panel
     # The update card cannot: its header and buttons are fixed and only its
-    # notes yield, so it floors instead and the stack scrolls past it.
+    # notes yield, so it floors instead.
     web = WEB_BANNER.read_text(encoding = "utf-8")
     assert _SCALED_FLOOR_WEB in web, "the floor is fixed, so it is wrong at other type sizes"
     assert _NARROW_FLOOR_WEB in web, "the floor misses the narrow card's extra button row"
-    assert provider.count("overflow-y-auto") >= stacks, "a capped stack clips its cards"
+    # Those floors can add up to more than the cap at a large type size, so the
+    # rail scrolls. Without this the overflow lands below the bottom of the
+    # screen with no way to reach it.
+    assert provider.count("overflow-y-auto") >= stacks, "a capped stack spills its cards"
 
 
 def test_the_desktop_stack_is_capped_like_the_browser_one():
     """The download panel shares the desktop stack, left uncapped before now."""
     provider = (FRONTEND / "app/provider.tsx").read_text(encoding = "utf-8")
-    assert provider.count("useStackGeometry()") == 2, "both stacks measure themselves"
-    assert _capped_stacks(provider) == 2, "both stacks are capped"
+    assert len(_corner_rails(provider)) == 2, "both rails sit in the bottom-right corner"
+    assert _capped_rails(provider) == 2, "both stacks are capped"
     tauri = TAURI_BANNER.read_text(encoding = "utf-8")
     assert _SCALED_FLOOR_TAURI in tauri, "the floor is fixed, so it is wrong at other type sizes"
     assert _NARROW_FLOOR_TAURI in tauri, "the floor misses the narrow card's extra button row"
 
 
-def test_the_stack_geometry_is_checked_numerically():
-    """The cap is arithmetic now, so the node test owns it. Named here so
-    deleting that test does not quietly leave the cap unchecked."""
-    geometry = REPO / "studio/frontend/tests/monitor-stack-inset.test.ts"
-    src = geometry.read_text(encoding = "utf-8")
-    assert (
-        "stackGeometry(null, W, H).maxHeight, H - 32" in src
-    ), "nothing pins the no-obstacle cap to the 2rem the class used to spell"
+def test_the_rail_offset_is_not_computed():
+    """The rail used to place itself around the boxes in the frame store, so a
+    composer growing by a line or a download row arriving moved it to the middle
+    of the window, and a maximised monitor to the top. Its offset and cap must
+    stay out of JS."""
+    provider = (FRONTEND / "app/provider.tsx").read_text(encoding = "utf-8")
+    for banned in ("useStackGeometry", "stackGeometry", "stack.bottom", "stack.maxHeight"):
+        assert banned not in provider, f"the rail is placed from JS again ({banned})"
+    store = (FRONTEND / "features/settings/stores/monitor-frame-store.ts").read_text(
+        encoding = "utf-8"
+    )
+    assert "stackBottomInset" not in store, "the dodge arithmetic is back in the frame store"
 
 
 def test_desktop_notes_are_not_keyed_by_the_pinned_backend_version():
@@ -1533,7 +1538,7 @@ def test_the_download_panel_can_shrink_inside_the_capped_stack():
     # Counted by the layer they sit on, not by a literal z-index: the
     # overlay rail reads its depth from Z_LAYER now.
     stacks = provider.count("zIndex: Z_LAYER.OVERLAY_STACK")
-    assert _capped_stacks(provider) == stacks, "the cap this has to absorb"
+    assert _capped_rails(provider) == stacks, "the cap this has to absorb"
 
 
 @pytest.fixture(scope="module")

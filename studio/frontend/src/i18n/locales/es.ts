@@ -420,6 +420,16 @@ export const es = {
           "Usa el modelo de audio cargado (por ejemplo, Orpheus)",
         engineSystem: "Voces del sistema",
         engineStudio: "Cargar un modelo de TTS",
+        engineCustom: "Endpoint personalizado",
+        engineCustomDescription:
+          "Un servidor TTS compatible con OpenAI de tus conexiones (p. ej., Kokoro)",
+        connectionLabel: "Conexión",
+        connectionDescription:
+          "Añade un servidor compatible con OpenAI en la pestaña Conexiones",
+        connectionPlaceholder: "Selecciona una conexión",
+        customModelLabel: "Modelo",
+        customVoiceDescription:
+          "Nombre de la voz que espera el endpoint; el valor predeterminado es alloy",
         modelLabel: "Modelo de TTS",
         modelDescription:
           "Carga un modelo de audio desde el selector de modelos (por ejemplo, Orpheus TTS)",
@@ -871,6 +881,8 @@ export const es = {
         title: "Dispositivos GPU",
         ggufInference: "Inferencia GGUF",
         unavailable: "No disponible",
+        detecting: "Buscando GPU...",
+        unreadable: "No se pudo leer el hardware de este servidor.",
         noGpu:
           "No se detectó ninguna GPU visible. Arriba se muestran los recursos solo de CPU.",
         unknownDevice: "GPU desconocida",
@@ -1117,7 +1129,7 @@ export const es = {
         exportChat: "Exportar chat",
       },
       pastedTextThreshold: "Condensar pegados largos",
-      pastedTextThresholdDescription: "El texto pegado más largo que esto se convierte en un adjunto .txt en lugar de llenar el cuadro de mensaje.",
+      pastedTextThresholdDescription: "El texto pegado más largo que esto se convierte en un adjunto .txt en lugar de llenar el cuadro de mensaje. Pulsa {shortcut} para pegar en el cuadro de mensaje de todos modos.",
       pastedTextThresholdOff: "Desactivado",
       showResponseModel: "Mostrar el modelo de respuesta",
       showResponseModelDescription:

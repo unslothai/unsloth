@@ -22,6 +22,7 @@ CPU fallback is the correct outcome on RDNA 1 and every test below re-asserts it
 this change is about wording, never about routing.
 """
 
+import ast
 import contextlib
 import importlib.util
 import io
@@ -670,7 +671,13 @@ class TestAdviceIsNotEmittedForRdna1:
         """Vega 20 (Radeon VII / MI50, gfx906) is older than RDNA 2 and DOES have a
         ROCm PyTorch path -- install.sh routes it to the rocm6.3 index. A blanket
         "AMD GPUs older than RDNA 2" would send those users to Vulkan and CPU torch
-        for nothing."""
+        for nothing.
+
+        Only the wrong claim is banned outright. Saying nothing is not wrong, so the
+        member names are required only once the README describes the group: an earlier
+        version demanded them unconditionally and turned every README condensation into
+        a CI failure with nothing untrue on the page.
+        """
         src = _normalised(PACKAGE_ROOT / "README.md")
         # Any spelling of the cutoff, not one literal: "every AMD GPU older than RDNA 2"
         # slipped past an exact-string ban while contradicting the gfx906 carve-out.
@@ -679,12 +686,19 @@ class TestAdviceIsNotEmittedForRdna1:
             f"README: {blanket.group(0)!r} claims ROCm PyTorch covers nothing older "
             "than RDNA 2, which is wrong for gfx906"
         )
-        # The group must be named by its members, or the carve-out has nothing to cut.
-        for _member in ("Polaris", "RDNA 1"):
-            assert _member in src, f"README: never names {_member} as part of the unsupported group"
-        assert "gfx906" in src, "README: never carves Vega 20 out of the unsupported group"
-        # The carve-out has to be true of the installer, not just of the README.
+        # The carve-out has to be true of the installer whatever the README says.
         assert "rocm6.3" in _normalised(_INSTALL_SH), "install.sh: no gfx906 ROCm index left"
+        describes_group = re.search(r"no ROCm PyTorch wheels|Polaris|RDNA ?1", src, re.IGNORECASE)
+        if not describes_group:
+            return
+        # It does describe the group, so it has to describe it completely: named by its
+        # members, and with the one member that is covered cut back out.
+        for _member in ("Polaris", "RDNA 1"):
+            assert _member in src, (
+                f"README describes the uncovered AMD group ({describes_group.group(0)!r}) "
+                f"but never names {_member} as part of it"
+            )
+        assert "gfx906" in src, "README: never carves Vega 20 out of the unsupported group"
 
     def test_setup_sh_names_the_arch_instead_of_claiming_rocm(self):
         src = _normalised(_SETUP_SH)
@@ -1302,6 +1316,10 @@ class TestVulkanAdvice:
         block. An earlier version of this test compared first-occurrence indexes,
         which the surrounding prose satisfied on its own and which therefore passed
         with both code blocks still reverted to UNSLOTH_FORCE_VULKAN.
+
+        Wrongness only, never completeness. The README is edited for length on its own
+        schedule, so a block that is gone is not this test's business; a block that is
+        there and teaches the wrong variable is.
         """
         src = _normalised(PACKAGE_ROOT / "README.md")
         blocks = re.findall(r"```(?:bash|powershell)\n(.*?)```", src, re.DOTALL)
@@ -1311,44 +1329,49 @@ class TestVulkanAdvice:
             for line in block.splitlines()
             if "VULKAN" in line.upper() or "LLAMA_CPP_BACKEND" in line
         ]
-        assert setters, "README: no Vulkan setup command found at all"
         for line in setters:
             assert (
                 "UNSLOTH_LLAMA_CPP_BACKEND" in line
             ), f"README teaches the legacy spelling in a copy-paste block: {line!r}"
 
-    def test_readme_does_not_promise_vulkan_to_macos(self):
-        """The block sits under a combined "macOS, Linux, WSL" heading, but macOS has no
-        Vulkan llama.cpp bundle: install_llama_prebuilt.py logs that the variable is
-        ignored and installs Metal. An Intel Mac carrying one of these very cards (the
-        16-inch MacBook Pro shipped Radeon Pro 5300M/5500M/5600M, all rows above) would
-        follow the documented command and get nothing."""
+    def test_forcing_vulkan_on_macos_says_so_instead_of_going_quiet(self):
+        """macOS has no Vulkan llama.cpp bundle, so a forced request there installs Metal.
+        An Intel Mac carrying one of these very cards (the 16-inch MacBook Pro shipped
+        Radeon Pro 5300M/5500M/5600M, all rows above) can follow Vulkan advice written for
+        Linux, so the ignore has to be visible in the log rather than silent.
+
+        Asserted against the routing branch, not against the README. This used to require
+        a fixed README paragraph, which made every README condensation a CI failure with
+        nothing untrue on the page; the README is edited on its own schedule and is not a
+        test fixture. What is enforceable is that the installer states what it did.
+        """
         prebuilt = (PACKAGE_ROOT / "studio" / "install_llama_prebuilt.py").read_text(
             encoding = "utf-8"
         )
-        assert "ignored on macOS" in prebuilt, (
-            "the macOS branch this test documents was renamed; re-read it before "
-            "trusting the README assertion below"
-        )
-        src = _normalised(PACKAGE_ROOT / "README.md")
-        paragraph = next(
+        # Scoped to the routing function: `if host.is_macos:` appears many times, and an
+        # earlier cut of this test matched the DYLD_LIBRARY_PATH one instead.
+        routing = next(
             (
-                para
-                for para in src.split("\n\n")
-                if "no ROCm PyTorch wheels for" in para and "Polaris" in para
+                ast.get_source_segment(prebuilt, node)
+                for node in ast.parse(prebuilt).body
+                if isinstance(node, ast.FunctionDef) and node.name == "_route_to_vulkan_prebuilt"
             ),
             None,
         )
-        assert paragraph, "README: the uncovered-AMD Vulkan paragraph was not found"
-        assert re.search(r"\bLinux\b.{0,12}\bWSL\b", paragraph), (
-            "README: the Vulkan-for-uncovered-AMD paragraph sits under a heading that "
-            "also covers macOS, so it has to name the platforms it is true for: "
-            f"{paragraph!r}"
+        assert routing, "_route_to_vulkan_prebuilt was renamed or moved"
+        branch = re.search(
+            r"if host\.is_macos:\n(?P<body>(?:[ \t]+.*\n|\n)+?)[ \t]{8}return ", routing
         )
-        after = src.split(paragraph, 1)[1]
-        assert re.search(
-            r"macOS[^\n]*Metal", after
-        ), "README: nothing tells a macOS reader what happens there instead"
+        assert branch, "the macOS branch in _route_to_vulkan_prebuilt was restructured"
+        body = branch.group("body")
+        assert "ignored on macOS" in body and "Metal" in body, (
+            "the macOS branch no longer says the forced backend was ignored and Metal "
+            f"used, so the request fails silently there:\n{body}"
+        )
+        assert "if forced:" in body, (
+            "the ignore notice is no longer gated on an explicit request, so every macOS "
+            f"install logs it:\n{body}"
+        )
 
 
 # ── Polaris, the second card in the cluster (#8458) ──────────────────────────

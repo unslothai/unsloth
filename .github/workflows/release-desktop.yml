@@ -518,6 +518,21 @@ jobs:
     name: Build ${{ matrix.label }}
     needs: prepare-version
     runs-on: ${{ matrix.platform }}
+    # Every signing secret in this workflow -- the Apple certificate and its
+    # notarization credentials, the Azure Trusted Signing set, and the Tauri
+    # updater private key -- is read by this job and no other. Naming an
+    # environment here is what makes those thirteen secrets gateable: without
+    # it there is no place to hang a required reviewer, so anyone who can
+    # dispatch this workflow can sign a release under our identity.
+    #
+    # This is inert until protection rules exist on the environment. GitHub
+    # creates a referenced-but-absent environment on first run with no rules
+    # and no branch policy, and repository secrets keep resolving inside a job
+    # that names an environment, so adding this line alone changes nothing
+    # about how a release runs. Add required reviewers in repo settings to
+    # actually close the gap; one approval releases all three matrix legs,
+    # since pending deployments are approved per (run, environment).
+    environment: release-signing
     # 6.9-20.9 min observed across platforms and cache states.
     timeout-minutes: 60
 
@@ -539,7 +554,7 @@ jobs:
       # harden-runner v2.20.0; stay in audit until the macOS + Windows
       # codesign paths have been observed.
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
         with:
           egress-policy: audit
 
@@ -772,7 +787,7 @@ jobs:
           git diff -- Cargo.toml Cargo.lock
 
       - name: Rust cache
-        uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           workspaces: 'studio/src-tauri -> target'
 
@@ -809,7 +824,12 @@ jobs:
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
         run: |
-          echo $APPLE_CERTIFICATE | base64 --decode > certificate.p12
+          # Unquoted, this is word-split and glob-expanded before base64 sees
+          # it, and `echo` appends a newline. Base64 tolerates all three today,
+          # which is why it has worked; a re-encoded or line-wrapped secret is
+          # where it stops being tolerable. printf '%s' with quotes passes the
+          # secret through byte for byte.
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
           security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
           security default-keychain -s build.keychain
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
@@ -1563,7 +1583,7 @@ jobs:
 
     steps:
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
         with:
           egress-policy: audit
 
@@ -2051,13 +2071,13 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
         with:
           egress-policy: audit
 
       # Sparse: a full checkout to fetch one file would be wasteful.
       - name: Check out the scan script
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
           sparse-checkout: scripts/virustotal_scan.py

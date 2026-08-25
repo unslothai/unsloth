@@ -44,6 +44,9 @@ from .diffusion_families import (
     IDEOGRAM4_FAMILY_NAME,
     LUMINA2_FAMILY_NAME,
     DiffusionFamily,
+    DiffusionModelReplacedError,  # re-exported: callers import it from either module
+    LoadIdentity,
+    load_identity,
     assert_flux2_gguf_matches_base,
     assert_pipeline_class_available,
     _is_local_path,
@@ -365,7 +368,13 @@ def resolve_local_single_file(model_path: str) -> Optional[str]:
     return checkpoints[0] if len(checkpoints) == 1 else None
 
 
-def decode_b64_image(data: str, *, mode: str = "RGB") -> Any:
+def decode_b64_image(
+    data: str,
+    *,
+    mode: str = "RGB",
+    max_side: int = 4096,
+    max_pixels: Optional[int] = None,
+) -> Any:
     """Decode a base64 (optionally ``data:`` URL) image string to a PIL image.
 
     The image-conditioned workflows (img2img / inpaint / edit) transport the input
@@ -385,14 +394,17 @@ def decode_b64_image(data: str, *, mode: str = "RGB") -> Any:
         blob = base64.b64decode(raw, validate = False)
     except (binascii.Error, ValueError) as exc:
         raise ValueError(f"Invalid base64 image data: {exc}") from exc
-    # Bound the decoded size: 4096px covers txt2img 2048, upscales and outpaint canvases.
-    max_side = 4096
+    # Preprocessing paths may choose different bounded source limits.
     try:
         img = Image.open(io.BytesIO(blob))
         # Reject from the header before img.load() so a huge-dimension file cannot spike memory.
         w, h = img.size
         if w > max_side or h > max_side:
             raise ValueError(f"Image is too large ({w}x{h}); maximum is {max_side}px per side.")
+        if max_pixels is not None and w * h > max_pixels:
+            raise ValueError(
+                f"Image is too large ({w}x{h}); maximum is {max_pixels:,} source pixels."
+            )
         img.load()
     except ValueError:
         raise  # the size guard's own message; don't wrap it as a decode error
@@ -5586,6 +5598,8 @@ class DiffusionBackend:
         loras: Optional[list[tuple[str, float]]] = None,
         # ControlNet (id, control_image_b64, control_type, strength, guidance_start, guidance_end). None = off.
         controlnet: Optional[tuple[str, str, str, float, float, float]] = None,
+        # load_identity() of the caller's status() read; refuse rather than run a different load (#9448).
+        expected_load: Optional[LoadIdentity] = None,
     ) -> dict[str, Any]:
         import torch
         from PIL import Image
@@ -5599,6 +5613,10 @@ class DiffusionBackend:
                     raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
                 if cancel.is_set():
                     raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+                # The slot admits on a zero fence, which a COMMITTED replacement also satisfies (#9448).
+                loaded_id = load_identity(state.repo_id, state.base_repo, state.family.name)
+                if expected_load is not None and expected_load != loaded_id:
+                    raise DiffusionModelReplacedError(expected_load, loaded_id)
                 # Publish an active (step 0) state before the slow pre-denoise setup so a reload mount probe does not read idle.
                 self._gen = _GenState(total_steps = steps)
             try:

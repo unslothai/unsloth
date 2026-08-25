@@ -134,8 +134,6 @@ export function UpdateBanner({
                     : "min-h-[calc(117px+93px*var(--ui-font-scale,1))] max-[383px]:min-h-[calc(24px+224px*var(--ui-font-scale,1))]",
                 ),
           )}
-          // See the browser card: dismissible, so it may cover the composer.
-          data-overlay-dismissible="true"
           data-testid="tauri-update-banner"
         >
           <div className="relative flex max-h-[calc(100dvh_-_2rem)] min-h-0 flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">

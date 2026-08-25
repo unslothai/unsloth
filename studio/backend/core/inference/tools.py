@@ -24,6 +24,7 @@ import re
 import shlex
 import shutil
 import ssl
+import stat
 from stat import S_ISREG
 import subprocess
 import sys
@@ -31,6 +32,10 @@ import tempfile
 import contextlib
 import threading
 from contextvars import ContextVar
+
+# What a truncated result costs besides its body, charged where the cut is decided rather
+# than held back from the room in advance. See its definition for why that matters.
+from .context_window import _RESULT_NOTICE_RESERVE
 
 # The window of the model THIS request is served by, set by execute_tool for the call's
 # duration. Left unset, the budget falls back to the process-global probe, which is right
@@ -42,6 +47,15 @@ _UNSET_CONTEXT_TOKENS = object()
 _REQUEST_CONTEXT_TOKENS: ContextVar = ContextVar(
     "unsloth_request_context_tokens",
     default = _UNSET_CONTEXT_TOKENS,
+)
+
+# What the CONVERSATION has left, as opposed to how big the window is. The window alone
+# cannot size a result: it does not fall as the thread fills, so the last result before an
+# overflow is allowed exactly as much room as the first. None means the caller could not
+# say, and every cap then behaves exactly as it did before this existed.
+_REQUEST_RESULT_BUDGET: ContextVar = ContextVar(
+    "unsloth_request_result_budget_tokens",
+    default = None,
 )
 
 import uuid
@@ -6740,6 +6754,68 @@ def _is_trusted_windows_program_dir(path: str) -> bool:
     return False
 
 
+# not dot-named: the walks skip dot-dirs, which would hide a model's /tmp write.
+# not "tmp": too common in a workspace, and adopting one is what broke the walks.
+_SANDBOX_TEMP_DIRNAME = "unsloth-tmp"
+
+
+def _sandbox_temp_dir(workdir: str) -> str:
+    """The scratch directory for a sandboxed child, created when missing.
+
+    Inside the workdir, not the workdir itself: Git for Windows mounts /tmp at
+    %TEMP% (the msys2 ``usertemp`` fstab entry), so pointing TEMP at the workdir
+    made /tmp its shortest POSIX name and ``pwd`` printed /tmp, leaving the user
+    no way to find the real folder (#8892). One level down still sits where the
+    listings reach, so a /tmp write is offered exactly as before.
+
+    Falls back to the workdir when the name is unusable, since a TMPDIR that
+    does not exist breaks every tempfile call in the child. os.mkdir, never
+    os.makedirs, so a workdir deleted mid-call is not silently recreated.
+    """
+    temp_dir = os.path.join(workdir, _SANDBOX_TEMP_DIRNAME)
+    try:
+        os.mkdir(temp_dir, 0o700)
+    except FileExistsError:
+        if not _reusable_sandbox_temp_dir(temp_dir, workdir):
+            return workdir
+    except OSError:
+        return workdir
+    return temp_dir
+
+
+def _is_sandbox_temp_dir(temp_dir: str, workdir: str) -> bool:
+    """Whether *temp_dir* is the workdir's own scratch directory.
+
+    Exact stored spelling, because the walks read the name off os.walk: on a
+    case-insensitive volume (default APFS, every NTFS) our lowercase probe lands
+    on a directory stored as ``TMP``, and realpath does not canonicalise case.
+    And the real directory, not a link or junction to one, since os.walk does
+    not follow links and the artifacts would land where both walks skip.
+    """
+    try:
+        with os.scandir(workdir) as entries:
+            if not any(entry.name == _SANDBOX_TEMP_DIRNAME for entry in entries):
+                return False
+        # realpath, not islink: a Windows junction is not a link to either.
+        if os.path.realpath(temp_dir) != os.path.join(
+            os.path.realpath(workdir), _SANDBOX_TEMP_DIRNAME
+        ):
+            return False
+    except OSError:
+        return False
+    return os.path.isdir(temp_dir)
+
+
+def _reusable_sandbox_temp_dir(temp_dir: str, workdir: str) -> bool:
+    """Whether an existing entry may serve as the scratch directory.
+
+    Identity plus writability, since tempfile abandons an unwritable TMPDIR for
+    the platform default. Path accounting asks _is_sandbox_temp_dir instead:
+    which directory a segment sits in does not depend on writability.
+    """
+    return _is_sandbox_temp_dir(temp_dir, workdir) and os.access(temp_dir, os.W_OK | os.X_OK)
+
+
 def _build_safe_env(workdir: str) -> dict[str, str]:
     """Build a minimal, credential-free environment for sandboxed subprocesses.
 
@@ -6747,8 +6823,8 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     TMPDIR/LANG/TERM/PYTHONIOENCODING/PYTHONPATH (+VIRTUAL_ENV or Windows
     SystemRoot and a minimal PATHEXT) reach the child; all credential vars
     (HF_TOKEN, AWS_*, etc.) are absent. HOME points at the sandbox workdir so SDKs can't read the
-    operator's cached creds. PYTHONPATH carries only the sandbox sitecustomize
-    shim directory.
+    operator's cached creds, and the temp vars at _sandbox_temp_dir just inside
+    it. PYTHONPATH carries only the sandbox sitecustomize shim directory.
 
     PATH starts with the Studio interpreter / venv and OS system dirs so
     ``python``/``pip`` stay pinned. On Windows only, Git-for-Windows install
@@ -6795,10 +6871,11 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     # Deduplicate, preserving order.
     deduped = list(dict.fromkeys(p for p in path_entries if p))
 
+    temp_dir = _sandbox_temp_dir(workdir)
     env = {
         "PATH": os.pathsep.join(deduped),
         "HOME": workdir,
-        "TMPDIR": workdir,
+        "TMPDIR": temp_dir,
         "LANG": os.environ.get("LANG", "C.UTF-8"),
         "TERM": "dumb",
         "PYTHONIOENCODING": "utf-8",
@@ -6815,8 +6892,8 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
         env["SystemRoot"] = os.environ.get("SystemRoot", r"C:\Windows")
         # Windows tempfile / native SDKs honour TEMP/TMP, not TMPDIR; without
         # these a child falls back to GetTempPath and writes outside the workdir.
-        env["TEMP"] = workdir
-        env["TMP"] = workdir
+        env["TEMP"] = temp_dir
+        env["TMP"] = temp_dir
         # Restrict PATHEXT so cwd .BAT/.CMD cannot hijack bare names (#7317).
         pathext = ".EXE;.COM"
         if git_ext and git_ext not in (".EXE", ".COM"):
@@ -6981,8 +7058,8 @@ def _is_secret_env_value(value: str) -> bool:
 
 
 def _build_bypass_env(workdir: str) -> dict[str, str]:
-    """Env for bypass exec: full host env minus credential vars, with HOME/TMPDIR
-    repointed at the workdir so SDKs cannot read cached creds.
+    """Env for bypass exec: full host env minus credential vars, with HOME at the
+    workdir and TMPDIR just inside it so SDKs cannot read cached creds.
 
     Stripping the child env is necessary but not sufficient (a same-UID child can
     read the parent's env via procfs), so callers also harden the parent (see
@@ -6995,12 +7072,13 @@ def _build_bypass_env(workdir: str) -> dict[str, str]:
         and not _is_secret_env_value(v)
         and not _is_cred_location_env_name(k)
     }
+    temp_dir = _sandbox_temp_dir(workdir)
     env["HOME"] = workdir
-    env["TMPDIR"] = workdir
+    env["TMPDIR"] = temp_dir
     # Windows tempfile / SDKs honour TEMP/TMP, not TMPDIR; repoint all three so
     # the bypassed tool writes under the per-session sandbox dir on every OS.
-    env["TEMP"] = workdir
-    env["TMP"] = workdir
+    env["TEMP"] = temp_dir
+    env["TMP"] = temp_dir
     # sitecustomize path shim (see _build_safe_env). Bypass inherits the
     # operator's PYTHONPATH, so prepend rather than replace.
     inherited_pythonpath = env.get("PYTHONPATH", "")
@@ -8754,6 +8832,24 @@ def session_sandbox_has_files(session_id: str) -> bool:
         return False
 
 
+def _is_spill_artifact(sandbox: str, parent: str, name: str) -> bool:
+    """Whether ``parent/name`` is a spill this process wrote, rather than anything else.
+
+    Both halves are checked: the name has to be one `_spill_full_output` generates, and it
+    has to sit at the spill root or one scope below it. A link is never one, whatever it
+    is called.
+    """
+    root = os.path.join(sandbox, _SPILL_DIR)
+    if parent != root and os.path.dirname(parent) != root:
+        return False
+    identity, owned = _spill_record(root)
+    if identity is None or identity != _spill_identity(root):
+        # No record of this directory: it came with the sandbox or was replaced, so
+        # everything in it is the user's, however the files are named.
+        return False
+    return _is_recorded_spill(root, os.path.join(parent, name), owned)
+
+
 def _holds_no_user_files(target: str, owner: "str | None" = None) -> bool:
     """Whether a sandbox holds nothing but (possibly empty) directories.
 
@@ -8775,6 +8871,14 @@ def _holds_no_user_files(target: str, owner: "str | None" = None) -> bool:
                 marker = _marker_owner(target)
                 if marker is not None and owner in (None, marker):
                     continue
+            # Studio's own, like the marker above: a spill is truncated tool output this
+            # process wrote and deliberately kept off the file cards, so counting one as
+            # the user's content leaves an unreachable sandbox behind, reported as holding
+            # files the user never created. Only the artifacts themselves, by the name
+            # `_spill_full_output` generates: the directory is writable, tool code can
+            # create anything in it, and a real file there is the user's like any other.
+            if _is_spill_artifact(target, parent, name):
+                continue
             return False
         budget -= 1
         if budget <= 0:
@@ -8881,6 +8985,10 @@ def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
         # evidence, and it names the other chat.
         return False
     _workdirs.pop(session_id, None)
+    # Resolved BEFORE anything is removed: the record is named by the real path of the
+    # spill directory, which cannot be derived once the tree is gone. Without this every
+    # deleted chat that ever truncated output leaves one small file behind for good.
+    forget_record = _spill_record_path(os.path.join(target, _SPILL_DIR))
     try:
         if delete_files:
             # Renamed while locked, deleted after: every tool start takes this
@@ -8891,8 +8999,12 @@ def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
                 os.rename(target, detached)
             except OSError:
                 shutil.rmtree(target, ignore_errors = True)
-                return not os.path.isdir(target)
+                gone = not os.path.isdir(target)
+                if gone:
+                    _forget_spill_record(forget_record)
+                return gone
             _queue_detached_delete(detached)
+            _forget_spill_record(forget_record)
             return True
         # Empty means no files of the user's: a tool that only ran mkdir, or
         # deleted what it wrote, leaves directories behind, and the chat record
@@ -8900,7 +9012,10 @@ def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
         if not _holds_no_user_files(target, _sandbox_name(session_id)):
             return False
         shutil.rmtree(target, ignore_errors = True)
-        return not os.path.isdir(target)
+        gone = not os.path.isdir(target)
+        if gone:
+            _forget_spill_record(forget_record)
+        return gone
     except OSError:
         return False
 
@@ -9558,8 +9673,8 @@ def _to_full_access(description: str, tool_name: str) -> str:
     Handing a model the sandboxed text in that mode makes it answer "I am
     sandboxed and cannot see your files" to a question one tool call would have
     answered. Untouched clauses are the ones still true in both modes: the
-    workdir is the per-session dir either way (_build_bypass_env repoints HOME /
-    TMPDIR / TEMP / TMP at it), and so is the download-link note.
+    workdir is the per-session dir either way (_build_bypass_env repoints HOME at
+    it and TMPDIR / TEMP / TMP just inside it), and so is the download-link note.
     """
     clause = _FULL_ACCESS_CLAUSE[tool_name]
     for sandboxed, full_access in _FULL_ACCESS_SUBSTITUTIONS:
@@ -10043,6 +10158,7 @@ def execute_tool(
     conversation_token_counter = None,
     context_tokens = _UNSET_CONTEXT_TOKENS,
     search_images: bool = False,
+    result_budget_tokens: int | None = None,
 ) -> str:
     """Execute a tool by name with the given arguments; returns a string.
 
@@ -10065,31 +10181,41 @@ def execute_tool(
     # Set unconditionally, so a value from an earlier call on this thread can never be
     # read by a later one. That is what makes a try/finally reset unnecessary here.
     _REQUEST_CONTEXT_TOKENS.set(context_tokens)
+    # Same rule, and it matters more here: a stale budget is a budget measured before this
+    # turn's own tool exchanges existed, which is precisely the undercount that lets the
+    # last result overflow.
+    _REQUEST_RESULT_BUDGET.set(result_budget_tokens)
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
     if name == "search_knowledge_base":
-        return _search_knowledge_base_with_budget(
-            arguments,
-            rag_scope,
-            effective_timeout,
-            cancel_event,
+        return _fit_result_to_room(
+            _search_knowledge_base_with_budget(
+                arguments,
+                rag_scope,
+                effective_timeout,
+                cancel_event,
+            ),
+            name,
         )
     if name == "search_conversation":
         # Scoped by thread id alone: the archive is this chat's own evicted turns, so it
         # works with or without a document rag_scope.
-        return _search_knowledge_base_with_budget(
-            arguments,
-            {
-                "thread_id": thread_id,
-                "branch_messages": conversation_branch,
-                "budget_tokens": conversation_budget_tokens,
-                "token_counter": conversation_token_counter,
-            },
-            effective_timeout,
-            cancel_event,
-            search_fn = _search_conversation,
+        return _fit_result_to_room(
+            _search_knowledge_base_with_budget(
+                arguments,
+                {
+                    "thread_id": thread_id,
+                    "branch_messages": conversation_branch,
+                    "budget_tokens": conversation_budget_tokens,
+                    "token_counter": conversation_token_counter,
+                },
+                effective_timeout,
+                cancel_event,
+                search_fn = _search_conversation,
+            ),
+            name,
         )
     if name == "render_html":
-        return _render_html_result(arguments)
+        return _fit_result_to_room(_render_html_result(arguments), name)
     if name.startswith(MCP_TOOL_PREFIX):
         try:
             _, server_id, tool_name = name.split("__", 2)
@@ -10128,26 +10254,32 @@ def execute_tool(
                 and parse_server_headers(row) == headers
             )
 
-        return call_tool_sync(
-            url = url,
-            headers = headers,
-            name = tool_name,
-            args = arguments,
-            timeout = effective_timeout,
-            use_oauth = bool(server.get("use_oauth")),
-            cancel_event = cancel_event,
-            scope = mcp_scope,
-            config_check = _config_current,
+        return _fit_result_to_room(
+            call_tool_sync(
+                url = url,
+                headers = headers,
+                name = tool_name,
+                args = arguments,
+                timeout = effective_timeout,
+                use_oauth = bool(server.get("use_oauth")),
+                cancel_event = cancel_event,
+                scope = mcp_scope,
+                config_check = _config_current,
+            ),
+            name,
         )
     if name == "web_search":
-        return _web_search(
-            arguments.get("query", ""),
-            url = arguments.get("url"),
-            timeout = effective_timeout,
-            cancel_event = cancel_event,
-            website_policy = website_policy,
-            include_images = search_images,
-            image_queries = arguments.get("image_queries"),
+        return _fit_result_to_room(
+            _web_search(
+                arguments.get("query", ""),
+                url = arguments.get("url"),
+                timeout = effective_timeout,
+                cancel_event = cancel_event,
+                website_policy = website_policy,
+                include_images = search_images,
+                image_queries = arguments.get("image_queries"),
+            ),
+            name,
         )
     # Both run with the session's sandbox as cwd, so a chat deleted mid-call
     # must not unlink it from under them.
@@ -10160,6 +10292,7 @@ def execute_tool(
                 session_id,
                 disable_sandbox = disable_sandbox,
                 output_callback = output_callback,
+                thread_id = thread_id,
             )
     if name == "terminal":
         with _session_in_flight(session_id):
@@ -10170,15 +10303,19 @@ def execute_tool(
                 session_id,
                 disable_sandbox = disable_sandbox,
                 output_callback = output_callback,
+                thread_id = thread_id,
             )
     # Same in-flight guard as the two above: it writes into the session workdir,
     # so a chat deleted mid-call must not unlink it underneath.
     if name == "edit_file":
         with _session_in_flight(session_id):
-            return _edit_file(
-                arguments,
-                session_id = session_id,
-                disable_sandbox = disable_sandbox,
+            return _fit_result_to_room(
+                _edit_file(
+                    arguments,
+                    session_id = session_id,
+                    disable_sandbox = disable_sandbox,
+                ),
+                name,
             )
     return f"Unknown tool: {name}"
 
@@ -10878,6 +11015,11 @@ _MAX_PAGE_CHARS = 16000  # cap fetched page text (after HTML-to-MD conversion)
 # to answer, so a third is already generous.
 _PAGE_CONTEXT_SHARE = 0.35
 # Below this a page is too clipped to answer from, so the fetch is not worth making small.
+# Half, when the room has to be converted to characters with no way to check the answer.
+# See `_dense_char_limit`: the conversion charges ASCII an English four characters per
+# token and the dense ASCII these tools print runs nearer two.
+_UNMEASURED_ROOM_MARGIN = 0.5
+
 _MIN_PAGE_CHARS = 2000
 # A percent-escape is one non-ASCII byte written in ASCII, and tokenises like one.
 _HEX_PAIR_RE = re.compile(r"[0-9A-Fa-f]{2}")
@@ -11776,6 +11918,22 @@ def _page_char_budget() -> int:
     return max(_MIN_PAGE_CHARS, min(_MAX_PAGE_CHARS, int(ctx * 4 * _PAGE_CONTEXT_SHARE)))
 
 
+def _request_result_room() -> int | None:
+    """Tokens this result may add before the NEXT prompt is over budget.
+
+    None when the caller could not say, and every cap then behaves exactly as it did
+    before this existed: external providers, the hosted path and any tool loop that does
+    not price its own conversation all take that leg.
+    """
+    room = _REQUEST_RESULT_BUDGET.get()
+    if room is None:
+        return None
+    try:
+        return max(0, int(room))
+    except (TypeError, ValueError):
+        return None
+
+
 def _window_context_tokens() -> int | None:
     """The window this request is served by, or None when it cannot be read."""
     scoped = _REQUEST_CONTEXT_TOKENS.get()
@@ -11835,6 +11993,132 @@ _PROBE_ROLE = "user"
 # hundreds, or at infinity as the chunk grows, because its count does not move at all.
 _MAX_PROBE_CHARS_PER_TOKEN = 256
 
+# A measured count is a pure function of (model, chat template, window, chunk), and each
+# `count_chat_tokens` is two llama-server calls (/apply-template then /tokenize) over a
+# fresh connection. So the framing baseline -- one number for EVERY result the process
+# truncates -- is worth remembering, and so is any prefix already priced.
+#
+# Keyed on the resident llama-server process, because the count depends on the EFFECTIVE
+# chat template and the managed fields cannot reconstruct it: user pass-through args are
+# appended verbatim after Studio's own flags (`llama_cpp.py`, "User pass-through args go
+# last") and llama.cpp is last-wins, so `--chat-template` in extra args renders through a
+# template `_chat_template_override` never sees. Reload the same GGUF into the same window
+# with only those args changed and every managed field matches while the rendering does
+# not, which would price a prefix by a template no longer serving it. `is_loaded` is
+# `self._process is not None and self._healthy` and args reach llama-server only on its
+# command line, so any change to them is a new process by construction -- which settles it
+# without enumerating the flags that matter. The content fields ride along so a recycled
+# pid still has to agree on everything before a count is reused.
+_PROBE_COUNT_CACHE: dict = {}
+
+# Tool calls run in worker threads (`tool_stream_exec.stream_tool_execution` runs each
+# invocation in one), so concurrent chats reach this cache at the same time. A bare dict
+# assignment is atomic under the GIL, but the LRU touch and the eviction below are
+# read-then-mutate sequences and are not: measured with 24 threads over a 3-entry cache,
+# `cache.pop(chunk)` raised KeyError after another thread evicted the same key, `del
+# cache[victim]` raised on a victim already taken, and choosing a victim raised
+# "dictionary changed size during iteration" -- 90 exceptions in one run, none of them
+# caught on the way out of `_truncate`.
+#
+# Held only across the dict work, never across a `count_chat_tokens` call. Serialising the
+# round trips themselves would trade a shared cache for a shared queue, which is the
+# opposite of the point. Two threads may therefore measure the same chunk at once and both
+# store it; the value is the same either way, so that costs one duplicate measurement,
+# which is what the merge base did on every result anyway.
+_PROBE_COUNT_LOCK = threading.Lock()
+
+# The empty chunk: the framing baseline, and the entry eviction pins. Named so the two
+# places that treat it specially cannot drift apart from a bare "".
+_PROBE_BASELINE = ""
+
+# One model's counts at a time (a new identity clears the map). Ten times the worst case
+# for one result: `_EXACT_FIT_PASSES` prefixes plus the baseline.
+_PROBE_COUNT_CACHE_ENTRIES = 64
+
+# And a bound on what is HELD, since the entry count alone does not give one. Only a
+# fetched page is capped at `_MAX_PAGE_CHARS`; a tool result's prefix is bounded by
+# `min(UNSLOTH_TOOL_RESULT_MAX_CHARS, ctx * 4 * _PAGE_CONTEXT_SHARE)` and `_env_int`
+# accepts any positive integer, so a large configured cap on a large window makes one
+# prefix enormous. Measured: a cap of 1,000,000 on a 262k window cached 733,971 characters
+# from a SINGLE result, which 64 entries would then multiply. This also drops an oversized
+# prefix rather than storing it. The baseline is 0 characters, so the entry that earns the
+# most is never the one squeezed out.
+_PROBE_COUNT_CACHE_CHARS = 1_000_000
+
+
+def _probe_identity(llama, ctx: int):
+    """A key that changes whenever a measured count could, or None to disable the cache.
+
+    None is the safe answer: it costs round trips, it never returns a stale number.
+    """
+    try:
+        # The resident llama-server. No process is no key: a backend this module cannot
+        # tie a count to keeps paying for its round trips, which is the safe direction.
+        pid = getattr(getattr(llama, "_process", None), "pid", None)
+        if not isinstance(pid, int):
+            return None
+        key = (
+            pid,
+            ctx,
+            getattr(llama, "model_identifier", None),
+            getattr(llama, "_gguf_load_identity", None),
+            getattr(llama, "_chat_template_override", None),
+            # The gap the process id closes, spelled out: whatever the user appended to
+            # the command line, including a template that overrides the managed one.
+            tuple(getattr(llama, "_extra_args", None) or ()),
+        )
+        hash(key)  # an unhashable field is also "do not cache", not a TypeError upstream
+        return key
+    except Exception:  # noqa: BLE001 -- an unreadable identity is "do not cache"
+        return None
+
+
+def _probe_cache(llama, ctx: int) -> dict:
+    """The count cache for the model serving this request.
+
+    A fresh per-call dict when the model has no identity, so the caller's code path is the
+    same either way and an unidentifiable backend simply gets no reuse between calls.
+    """
+    identity = _probe_identity(llama, ctx)
+    if identity is None:
+        return {}
+    with _PROBE_COUNT_LOCK:
+        cache = _PROBE_COUNT_CACHE.get(identity)
+        if cache is None:
+            # A different model is serving now. Drop the previous one's numbers rather than
+            # keep them around to be matched against.
+            _PROBE_COUNT_CACHE.clear()
+            cache = _PROBE_COUNT_CACHE[identity] = {}
+    return cache
+
+
+def _neutralized_for_prompt(chunk: str, llama) -> str:
+    """``chunk`` as the outgoing request will carry it, rather than as it is in hand.
+
+    The same sweep the request path applies, through the same helper and the backend's own
+    markup profile, so the two cannot disagree about what a marker becomes. `_PROBE_ROLE`
+    is a user role, which takes the full control rewrite a tool result takes rather than
+    the boundary-only one an assistant turn takes.
+
+    Best effort: a sweep that cannot run leaves the text as it was, which is the estimate
+    this had before and never worse.
+    """
+    if not chunk:
+        return chunk
+    try:
+        from .chat_template_helpers import neutralize_control_markup_in_messages  # noqa: PLC0415
+
+        swept = neutralize_control_markup_in_messages(
+            [{"role": _PROBE_ROLE, "content": chunk}],
+            None,
+            getattr(llama, "markup_profile", None),
+        )
+        content = swept[0].get("content") if swept else None
+        return content if isinstance(content, str) else chunk
+    except Exception:  # noqa: BLE001 -- measuring is never fatal
+        logger.debug("result budget: markup sweep failed", exc_info = True)
+        return chunk
+
 
 def _loaded_token_counter(ctx: int):
     """The tokenizer of the model serving this request, or None when there is not one.
@@ -11859,27 +12143,124 @@ def _loaded_token_counter(ctx: int):
     except Exception:  # noqa: BLE001 -- no tokenizer is "unknown", never an error
         return None
 
+    cache = _probe_cache(llama, ctx)
+    # Whether anything said here will outlive this call, and whether `/apply-template` has
+    # already refused once. Both only gate the strict attempt, never a returned value.
+    retained = bool(_probe_identity(llama, ctx))
+    template_down: list[bool] = []
+
+    def _remember(chunk: str, value: int) -> None:
+        """Hold `value` for `chunk`, evicting least-recently-used entries to stay in bounds.
+
+        Refusing new entries once full was worse than not caching at all. Most tool results
+        are one-offs, so the first `_PROBE_COUNT_CACHE_ENTRIES` distinct prefixes froze the
+        cache on text that would never be asked about again -- and because the baseline is
+        only priced when a count comes in OVER budget, a process that handled 64 results
+        that FIT first locked it out for good. Measured: after 64 English results, every
+        later dense result paid 4 counter calls (8 HTTP) again, exactly the merge base's
+        cost, for the life of the process.
+
+        So evict, and pin the baseline: it is 0 characters, it is the same number for every
+        result this process truncates, and it is the one entry a bounded cache most needs.
+        """
+        if len(chunk) > _PROBE_COUNT_CACHE_CHARS:
+            return  # too large to hold at all; evicting the rest would not help
+        with _PROBE_COUNT_LOCK:
+            held = sum(map(len, cache))
+            while len(cache) >= _PROBE_COUNT_CACHE_ENTRIES or (
+                held + len(chunk) > _PROBE_COUNT_CACHE_CHARS
+            ):
+                # `list()` so the scan cannot trip over another thread's insert, and
+                # `pop(..., None)` so a victim someone else already took is not an error.
+                victim = next((key for key in list(cache) if key != _PROBE_BASELINE), None)
+                if victim is None:
+                    return  # only the pinned baseline is left, and it stays
+                held -= len(victim)
+                cache.pop(victim, None)
+            cache[chunk] = value
+
     def _rendered(chunk: str):
-        try:
-            spent = counter([{"role": _PROBE_ROLE, "content": chunk}], None, None, strict = False)
-        except Exception:  # noqa: BLE001 -- same rule: fall back to the estimate
-            logger.debug("result budget: exact count failed", exc_info = True)
-            return None
-        return int(spent) if isinstance(spent, (int, float)) and spent > 0 else None
+        # Priced as the request will really carry it. A tool result is swept for control
+        # markup before it is sent (`neutralize_control_markup_in_messages`, #7066), and
+        # the sweep costs tokens: a live `<|eot_id|>` is one special token raw and several
+        # ordinary ones once it has been broken up. A result full of them measured on the
+        # raw text fits the room here and does not fit the prompt that follows, which is
+        # the overflow this budget exists to prevent, reached through the leg that is
+        # supposed to be the accurate one.
+        chunk = _neutralized_for_prompt(chunk, llama)
+        with _PROBE_COUNT_LOCK:
+            hit = cache.get(chunk)
+            if hit is not None and chunk != _PROBE_BASELINE:
+                # Most recently used moves to the back. `pop(..., None)` and the re-check
+                # keep this a no-op rather than a KeyError if it lost a race to an evictor.
+                if cache.pop(chunk, None) is not None:
+                    cache[chunk] = hit
+        if hit is not None:
+            return hit
+        # Strict, so that a count is only retained when the chat template really rendered
+        # it. With `strict = False` a failed `/apply-template` still returns the plain-text
+        # fallback, which drops role markers and special tokens -- fine as a one-off answer,
+        # but it prices a prompt the model will never be sent, and caching it would let one
+        # bad moment quietly under-count that prefix for the life of the process.
+        #
+        # Asked at most once per counter, and not at all when nothing would be retained
+        # anyway. Strictness exists only to decide whether a count may be KEPT, so paying
+        # for it twice would spend round trips to answer a question already settled: a
+        # template that would not render is not going to start, and this whole change is
+        # about not making calls that cannot change an answer. So a template outage costs
+        # one extra attempt for the first probe of a result rather than one for every probe.
+        message = [{"role": _PROBE_ROLE, "content": chunk}]
+        rendered = False
+        if retained and not template_down:
+            try:
+                spent = counter(message, None, None, strict = True)
+                rendered = True
+            except Exception:  # noqa: BLE001 -- not fatal: the fallback still prices bytes
+                template_down.append(True)
+        if not rendered:
+            try:
+                spent = counter(message, None, None, strict = False)
+            except Exception:  # noqa: BLE001 -- now it is: fall back to the estimate
+                logger.debug("result budget: exact count failed", exc_info = True)
+                return None
+        value = int(spent) if isinstance(spent, (int, float)) and spent > 0 else None
+        # The fallback's count is USED, exactly as before -- it still tokenizes the real
+        # bytes, which is what catches dense ASCII, and the estimate it would otherwise fall
+        # back to undercharges base64 several fold. It is simply not retained: like a
+        # failure, it is a property of the moment rather than of the text.
+        if value is not None and rendered:
+            _remember(chunk, value)
+        return value
 
-    # What the turn costs with nothing in it, priced once. Two jobs: it is the baseline the
-    # guard measures growth against, so a template that renders no content is caught by its
-    # count not moving rather than by a guess about density; and it is the only part of the
-    # count that is not the chunk. Left IN the total rather than subtracted -- 8 tokens on
-    # Qwen3 and 11 on the Gemma-4 templates, under 1% of a 1,792-token share, and the real
-    # tool turn pays its own framing anyway, so counting it errs toward a smaller result.
-    framing = _rendered("") or 0
+    # What the turn costs with nothing in it: the baseline the guard measures growth
+    # against, so a template that renders no content is caught by its count not moving
+    # rather than by a guess about density. Left IN the total rather than subtracted -- 8
+    # tokens on Qwen3 and 11 on the Gemma-4 templates, under 1% of a 1,792-token share, and
+    # the real tool turn pays its own framing anyway, so counting it errs toward a smaller
+    # result. Priced on demand: see `_count`.
+    baseline: list[int] = []
 
-    def _count(chunk: str):
+    def _framing() -> int:
+        if not baseline:
+            baseline.append(_rendered(_PROBE_BASELINE) or 0)
+        return baseline[0]
+
+    def _count(chunk: str, token_budget: float = 0.0):
+        """Tokens for `chunk`, or None when the count did not measure it.
+
+        `token_budget` is an optimisation and nothing more. A count within budget and a
+        count the guard rejects both make the caller return its own estimate unchanged, so
+        when `spent` fits, the baseline that separates those two paths cannot change the
+        answer and is not priced -- which is why an English result costs one round trip
+        rather than two. The default of 0 means "no budget", so the guard always runs.
+        """
         spent = _rendered(chunk)
         if spent is None:
             return None
+        if spent <= token_budget:
+            return spent
         # A count that barely moves off the framing measured nothing, whatever it reports.
+        framing = _framing()
         if spent - framing < len(chunk) / _MAX_PROBE_CHARS_PER_TOKEN:
             logger.debug(
                 "result budget: template priced %d chars at %d tokens over %d of framing; "
@@ -11900,7 +12281,13 @@ def _loaded_token_counter(ctx: int):
 _EXACT_FIT_PASSES = 5
 
 
-def _exact_prefix_chars(text: str, chars: int, token_budget: float, ctx: int) -> int:
+def _exact_prefix_chars(
+    text: str,
+    chars: int,
+    token_budget: float,
+    ctx: int,
+    floor: int | None = None,
+) -> int:
     """`chars`, shrunk until the prefix really costs `token_budget`. Never grown.
 
     The estimate below charges every ASCII character a flat 0.25 tokens, which is an
@@ -11915,6 +12302,21 @@ def _exact_prefix_chars(text: str, chars: int, token_budget: float, ctx: int) ->
     costs and shrinks every page that was already fine. So when a tokenizer is serving the
     request, ask it; when none is, keep the estimate exactly as it was.
     """
+    # `floor` is the caller's, not this function's: when a thread has 100 tokens left, the
+    # 2,000-character comfort floor is 666 tokens of dense output and the overflow this
+    # whole path exists to prevent. Defaulted, so the page callers are unchanged.
+    if floor is None:
+        floor = _MIN_PAGE_CHARS
+    # An estimate already at or below the floor the caller guarantees cannot be improved
+    # on, so nothing measured here could change its answer. Every value below is at most
+    # `chars` or is exactly `floor`, so with `chars <= floor` the caller lands on the same
+    # number whichever branch is taken. Checked before the counter is even looked up: this
+    # is the small-window case, and it used to spend a full set of round trips
+    # rediscovering a number the caller already had. Against the caller's floor rather
+    # than `_MIN_PAGE_CHARS` itself, since a room-aware caller passes a lower one and
+    # returning early on the legacy constant would skip the measurement it asked for.
+    if chars <= floor:
+        return chars
     counter = _loaded_token_counter(ctx)
     if counter is None:
         return chars
@@ -11929,7 +12331,9 @@ def _exact_prefix_chars(text: str, chars: int, token_budget: float, ctx: int) ->
     # to prevent.
     previous = None  # the last (chars, tokens) pair, for the secant step below
     for _ in range(_EXACT_FIT_PASSES):
-        spent = counter(text[:chars])
+        # The budget goes with the chunk so a count that already fits can skip pricing the
+        # framing baseline it would only be compared against. See `_count`.
+        spent = counter(text[:chars], token_budget)
         if spent is None:
             return chars  # nothing to measure with; the estimate stands, as before
         if spent <= token_budget:
@@ -11946,15 +12350,67 @@ def _exact_prefix_chars(text: str, chars: int, token_budget: float, ctx: int) ->
         previous = (chars, spent)
         # The floor still applies, and stopping here saves a round trip that cannot
         # change the answer.
-        if fitted <= _MIN_PAGE_CHARS:
-            return _MIN_PAGE_CHARS
+        if fitted <= floor:
+            return floor
         chars = min(fitted, chars - 1)  # always progress, so the loop cannot stall
     # Out of passes with the last shrink still unmeasured. Returning it would be the
     # unchecked prefix above, so fall back to the floor the caller guarantees anyway.
-    return _MIN_PAGE_CHARS
+    return floor
 
 
-def _dense_char_limit(text: str, max_chars: int) -> int:
+def _can_measure_tokens(ctx: int, text: str) -> bool:
+    """Whether this request's tokens can really be counted, not merely whether a counter
+    is exposed.
+
+    `_loaded_token_counter` returns a callable that answers None whenever the probe does
+    not come back with a number: `/apply-template` failing, or a chat template that drops
+    the probe role, or a backend that stopped serving between the check and the call.
+    `_exact_prefix_chars` then hands back the caller's estimate untouched, which charges
+    plain ASCII the English four characters per token; base64, minified JSON and hashes
+    run nearer two, so a room that was never halved is spent about twice over. A counter
+    that cannot measure has to be treated exactly like a counter that is not there.
+
+    Probed on this text's own opening rather than a constant, so a template that refuses
+    some content and not other content is judged on what is actually being sized.
+    """
+    counter = _loaded_token_counter(ctx)
+    if counter is None:
+        return False
+    return counter(text[:_MEASURABILITY_PROBE_CHARS] or "x") is not None
+
+
+# Enough to render as a real message and cheap enough to price on every call.
+_MEASURABILITY_PROBE_CHARS = 64
+
+
+def _text_token_cost(text: str, ctx: int) -> float:
+    """What ``text`` really costs, measured when the serving model can measure it.
+
+    The estimate is the inverse of `_dense_prefix_chars`: ASCII at the English four
+    characters per token, everything else at one. Doubled when nothing can check it, for
+    the same reason `_UNMEASURED_ROOM_MARGIN` halves a room that cannot be measured.
+    """
+    counter = _loaded_token_counter(ctx) if ctx else None
+    measured = None
+    if counter is not None:
+        try:
+            spent = counter(text)
+            measured = None if spent is None else float(spent)
+        except Exception:
+            logger.debug("token count failed", exc_info = True)
+    if measured is not None:
+        return measured
+    # A counter that could not answer is a counter that is not there: taking its presence
+    # as proof the estimate is safe is what leaves dense ASCII priced at the English rate.
+    estimate = sum(0.25 if character.isascii() else 1.0 for character in text)
+    return estimate / _UNMEASURED_ROOM_MARGIN
+
+
+def _dense_char_limit(
+    text: str,
+    max_chars: int,
+    reserve_tokens: float = 0.0,
+) -> int:
     """`max_chars`, lowered when `text` tokenises denser than four characters per token.
 
     Without this the window-derived caps above reserve their share only for English. On
@@ -11964,18 +12420,70 @@ def _dense_char_limit(text: str, max_chars: int) -> int:
     That is the same irreducible refusal the budget exists to prevent.
     """
     ctx = _window_context_tokens()
-    if not ctx or len(text) <= _MIN_PAGE_CHARS:
-        return max_chars
+    room = _request_result_room()
+    if room is None and (not ctx or len(text) <= _MIN_PAGE_CHARS):
+        # Nothing measured, so the caller's cap is the only budget there is, and the
+        # reserve comes off it at the same four characters per token used everywhere else
+        # the real rate is unknown.
+        return max(0, max_chars - int(reserve_tokens * 4))
+    if room is not None and not _can_measure_tokens(ctx or 0, text):
+        # Nothing here can measure this model's tokens: `_can_measure_tokens` answers only
+        # for a resident GGUF that just proved it can price a string, and a native
+        # safetensors model is served through a loop with no rolling fit to recover if the
+        # estimate is wrong. The estimate below
+        # charges plain ASCII four characters per token, which is an English rate; base64,
+        # minified JSON and hashes run nearer two, so the room could be spent twice over.
+        # Halved so the optimistic rate becomes a pessimistic one. It costs a shorter
+        # result on a path that cannot check its own arithmetic, which is the side to be
+        # wrong on when being wrong the other way is an unrecoverable turn.
+        room = int(room * _UNMEASURED_ROOM_MARGIN)
     # Kept a float, so English text lands on exactly the character budget rather than
-    # one character short of it.
-    share = ctx * _PAGE_CONTEXT_SHARE
+    # one character short of it. Unknown window, known room: the room is the whole answer,
+    # which is the native case where nothing here can see a context length.
+    share = float(ctx * _PAGE_CONTEXT_SHARE) if ctx else float(room)
+    # Whatever the caller will append is part of what has to fit, and it is taken off the
+    # TOKEN budget rather than off the character cap: a punctuation-heavy path tokenises
+    # far more densely than the prose characters that would otherwise be dropped to make
+    # room for it, so subtracting its length in characters buys less room than it costs.
+    share = max(0.0, share - reserve_tokens)
+    if room is not None:
+        room = max(0, int(room - reserve_tokens))
+        # The share is a fraction of the WINDOW and does not fall as the thread fills, so
+        # on its own it lets the last result before an overflow claim as much as the
+        # first. Whichever of the two is smaller is the one that has to hold.
+        share = min(share, float(room))
+    # Never below the floor that keeps a result worth reading...
+    floor = _MIN_PAGE_CHARS
+    if room is not None:
+        # ...but the floor is a comfort, not a right. 2,000 characters of dense output on
+        # a thread with room for 100 tokens is the overflow this budget exists to prevent,
+        # and the fit protects the newest turn so nothing downstream recovers. In the
+        # extreme it leaves the stub alone, which is small enough to stay servable.
+        #
+        # MEASURED, not estimated: the flat four-characters-per-token rule hands back
+        # about a third more than the room holds. Bottomed at one character rather than
+        # the legacy floor, since going below it is the point.
+        room_chars = _dense_prefix_chars(text, float(room))
+        if not ctx:
+            # No window to measure against, so the estimate above is the answer, already
+            # halved for being unmeasurable.
+            return min(max_chars, room_chars)
+        # Bottomed at ZERO, not at one character. A thread at its budget measures a room of
+        # zero, and a real tokenizer charges for the framing around even an empty string,
+        # so the exact fit lands on nothing fitting. One character here is not a rounding
+        # detail: it puts `_truncate` past its `limit <= 0` stub and back on the ordinary
+        # notice, which is the ~90 tokens the stub exists to avoid spending when the
+        # measurement just said there are none.
+        floor = min(floor, _exact_prefix_chars(text, room_chars, float(room), ctx, 0))
     fitted = _dense_prefix_chars(text, share)
     # And measured rather than estimated when the serving model can measure it: the rule
-    # above is honest about non-ASCII and still optimistic about dense ASCII.
-    fitted = _exact_prefix_chars(text, min(fitted, max_chars), share, ctx)
-    # Never above what the caller allowed, and never below the floor that keeps a page
-    # worth reading. An explicit cap smaller than the floor still wins.
-    return min(max_chars, max(_MIN_PAGE_CHARS, fitted))
+    # above is honest about non-ASCII and still optimistic about dense ASCII. The floor
+    # goes WITH it: the exact fit bottoms out on that value, so leaving it at the legacy
+    # 2,000 would hand back 2,000 characters on a thread with room for a few hundred --
+    # the same overflow, reached through the leg that is supposed to be the accurate one.
+    fitted = _exact_prefix_chars(text, min(fitted, max_chars), share, ctx, floor)
+    # An explicit cap smaller than the floor still wins.
+    return min(max_chars, max(floor, fitted))
 
 
 def _truncate_page_text(text: str, max_chars: int) -> str:
@@ -13673,7 +14181,31 @@ def _cancel_watcher(
         cancel_event.wait(poll_interval) if cancel_event else None
 
 
-def _truncate(text: str, limit: int | None = None) -> str:
+def _appended_by_the_loop(text: str) -> float:
+    """What the tool loop will add to this result after the tool has handed it back.
+
+    `ToolCallCompletion.model_message` appends `TOOL_ERROR_NUDGE` to a result that opens
+    with one of `TOOL_ERROR_PREFIXES`, after this budget has already let the body take the
+    whole room, and a parallel batch of failed calls carries one nudge each. Priced in
+    tokens like the retry hint, and only for the results that will really carry it.
+    """
+    try:
+        from .tool_call_parser import TOOL_ERROR_NUDGE, TOOL_ERROR_PREFIXES  # noqa: PLC0415
+    except Exception:  # noqa: BLE001 -- an unpriced nudge, not a failed tool call
+        logger.debug("result budget: tool error nudge unavailable", exc_info = True)
+        return 0.0
+    if not text.startswith(TOOL_ERROR_PREFIXES):
+        return 0.0
+    return _text_token_cost(TOOL_ERROR_NUDGE, _window_context_tokens())
+
+
+def _truncate(
+    text: str,
+    limit: int | None = None,
+    workdir: str | None = None,
+    scope: "str | None" = "",
+    hint: str = "",
+) -> str:
     # Resolved per call, not bound at import: the default would freeze the constant
     # before any model is loaded, which is exactly when the window is still unknown.
     if limit is None:
@@ -13681,18 +14213,926 @@ def _truncate(text: str, limit: int | None = None) -> str:
     # Same correction as a fetched page: a character cap reserves its share of the window
     # only for English, and a command that prints CJK or percent-escaped text costs two to
     # three times what the cap assumed.
-    limit = _dense_char_limit(text, limit)
+    # Whatever the loop will append to this result once it has it: the tool-error nudge
+    # goes on after the tool has returned, so a result sized to fill the room arrives at
+    # the prompt with the nudge past the end of it. Charged only to the results that will
+    # actually carry one, since a reserve taken from every result spends room the thread
+    # has.
+    cap, cost = limit, _appended_by_the_loop(text)
+    if hint:
+        # Priced in tokens, not characters, and taken off the budget before it is converted
+        # (see `_dense_char_limit`). A failing absolute path is dense: subtracting its
+        # LENGTH from the character cap frees fewer tokens than the hint then spends, which
+        # is the unbudgeted overflow this whole change exists to prevent. It may take at
+        # most half the room; past that the output is worth more than the advice about it.
+        plain = _dense_char_limit(text, limit, cost)
+        cost += _text_token_cost(hint, _window_context_tokens())
+        with_hint = _dense_char_limit(text, limit, cost)
+        if plain > 0 and (len(text) <= with_hint or with_hint * 2 >= plain):
+            limit = with_hint
+        else:
+            # Nothing to spend on advice: at zero room the stub IS the message, and when
+            # paying for it would cut the output in half the output is worth more than the
+            # advice about it. Nothing is dropped while the result fits anyway.
+            limit, hint, cost = plain, "", _appended_by_the_loop(text)
+    else:
+        limit = _dense_char_limit(text, limit, cost)
     # Mode-neutral notice: this result serves both the streaming UI and
     # non-streaming callers and must stay byte-identical with and without an
     # output_callback (a regression-tested invariant), so it can't claim the
     # user saw the full output.
-    if len(text) > limit:
-        return text[:limit] + (
-            f"\n\n... (truncated to {limit} chars for the model; {len(text)} chars "
-            "total. The full output is not retained here; any files the code wrote "
-            "persist in the working directory.)"
+    if len(text) <= limit:
+        return text + hint
+    # Only now is a notice certain, and only now is it charged. Held back before the
+    # measurement above, it would cut results that fit: a 100-token result with 200 tokens
+    # of room would be sized against 72 and come back as 72 tokens of body plus ~70 of
+    # notice, which is more of the window spent to say less. See `_RESULT_NOTICE_RESERVE`.
+    #
+    # Against a priced room only. With none, the caller's character cap is the whole
+    # budget and the notice has always been appended past it; taking a token reserve off a
+    # character cap there would cut every legacy caller's output to nothing.
+    if _request_result_room() is not None:
+        limit = _dense_char_limit(text, cap, cost + _RESULT_NOTICE_RESERVE)
+    if limit <= 0 and len(_zero_room_stub(len(text), None, True)) >= len(text):
+        # Decided BEFORE the spill: a result this short is served whole below, and writing
+        # a file (and creating the spill directory) for output that is never cut is a side
+        # effect with nothing on the other side of it.
+        return text + hint
+    spill, complete = _spill_full_output(text, workdir, scope)
+    if limit <= 0:
+        # No room for a body, so no room for the usual notice either: at this point the
+        # notice IS the message, and the full one costs ~90 tokens of a budget that just
+        # reported none. Kept to a line so the thread stays servable and the next fit can
+        # evict older turns and recover, which is the whole reason a stub beats a refusal.
+        stub = _zero_room_stub(len(text), spill, complete)
+        # A short result costs less than the notice explaining it is gone, and replacing
+        # "done" with a longer sentence saves nothing and loses the answer.
+        return (stub if len(stub) < len(text) else text) + hint
+    head, on_boundary = _head_whole_lines(text, limit)
+    if spill is None:
+        return (
+            head
+            + (
+                f"\n\n... (truncated to {limit} chars for the model; {len(text)} chars "
+                "total. The full output is not retained here; any files the code wrote "
+                "persist in the working directory.)"
+            )
+            + hint
         )
-    return text
+    # The rest is not advice, it is reachable: the sandbox persists between calls and the
+    # model already has the terminal, so naming the exact next command turns a dead end
+    # into paging. Truncating without one is what makes a model re-run the same command
+    # and truncate identically.
+    if on_boundary:
+        # No "+1" when the head already ends in a newline: the count is of the lines
+        # SHOWN, and a trailing break closes the last one rather than opening another.
+        # Reachable at a limit of 1 on output that starts with a blank line, where the
+        # head is "\n" alone and a count of two makes the hint resume at line 3, skipping
+        # the first line the reader never saw.
+        shown = 0 if not head else head.count("\n") + (0 if head.endswith("\n") else 1)
+        total = text.count("\n") + 1
+        resume = f"sed -n '{shown + 1},{shown + max(1, shown)}p' {spill}"
+        where = f"showing lines 1-{shown} of {total}"
+    else:
+        # Cut inside a line, so a line number would name the NEXT one and skip the rest of
+        # the line still unread -- on single-line output, everything. Bytes resume exactly
+        # where this stopped. Measured in bytes, not characters, because that is what
+        # `tail -c` counts and the two differ on any non-ASCII text.
+        offset = len(head.encode("utf-8", "surrogatepass"))
+        # The chunk is as many BYTES as the next `len(head)` characters actually occupy,
+        # not as many bytes as this one did. `head -c` counts bytes, and a round number of
+        # them lands inside a code point on any mixed-width text, so the model would read
+        # back a mangled character at the end of every chunk (the runner decodes with
+        # errors="replace"). The text is here, so the boundary is not a guess.
+        chunk = text[len(head) : len(head) * 2 or None]
+        span = len(chunk.encode("utf-8", "surrogatepass"))
+        resume = f"tail -c +{offset + 1} {spill} | head -c {max(1, span)}"
+        where = f"showing the first {len(head)} chars of {len(text)}"
+    # The workdir sentence stays whatever else the notice says: it is about the files the
+    # CODE wrote, not the spill, and it is the only thing telling the model those survive.
+    common = (
+        f"\n\n... (truncated to {limit} chars for the model; {where}, {len(text)} chars "
+        f"total. {_capitalise(_spill_phrase(spill, complete))}, and any files the code "
+        "wrote persist in the working directory"
+    )
+    if not _posix_tools_available():
+        # A cmd-only Windows host has none of sed, tail or head, so the command would fail
+        # and the model would most likely re-run the command that truncated. Name where
+        # the output is and stop there, rather than promising paging that cannot happen.
+        return head + common + ".)" + hint
+    return head + common + f" -- continue with:\n  {resume})" + hint
+
+
+def _fit_result_to_room(text, name = None):
+    """Cap a tool that does not cap its own output, when this request priced its room.
+
+    `python` and `terminal` truncate against this same budget before they return, so this
+    is a no-op for them. The other tools hand their string back whole: an MCP response is
+    unbounded, a fetched page or an edit receipt runs to a few thousand characters, and
+    any of them can overflow a nearly full local thread and then be protected as its
+    newest exchange, which is the failure the budget exists to prevent.
+
+    No spill file: these tools have no sandbox of their own, and `edit_file` must not have
+    a workdir created underneath a caller running with code execution off. So the cap
+    comes with the plain notice and no paging hint, which is the scope limit this change
+    states rather than hides.
+
+    With no priced room -- external providers, the hosted path, any loop that does not
+    measure its own conversation -- the text is returned untouched, so nothing outside a
+    local tool loop changes.
+    """
+    if _request_result_room() is None or not isinstance(text, str) or not text:
+        return text
+    # Only the part the model will actually be shown is measured and cut. The rest is a
+    # frontend-only envelope -- an MCP image array, web_search thumbnails, RAG sources --
+    # which `strip_result_for_model` removes before the result is replayed, so it costs
+    # the window nothing and must come back byte-identical: every consumer of the
+    # __MCP_IMAGES__ envelope requires the whole valid JSON array, and a cut anywhere
+    # inside a megabyte of base64 does not lose the image quietly, it replays the broken
+    # fragment to the model instead.
+    body, suffix = _split_frontend_suffix(text, name)
+    if not body:
+        return text
+    fitted = _truncate(body)
+    return fitted + suffix if fitted is not body else text
+
+
+def _split_frontend_suffix(text: str, name: "str | None") -> "tuple[str, str]":
+    """``text`` split into what the model sees and the trailing frontend-only envelope.
+
+    `strip_result_for_model` is the same function the replay path uses, so the split
+    follows its validation exactly -- a result that merely mentions a sentinel keeps it in
+    the body and is capped with it, which is the conservative half.
+    """
+    from .tool_loop_controller import strip_result_for_model
+
+    try:
+        body = strip_result_for_model(text, name)
+    except Exception:
+        logger.debug("frontend suffix split failed", exc_info = True)
+        return text, ""
+    # It only ever strips a suffix, so the remainder is the exact bytes that were removed
+    # (including whatever whitespace the strip rstripped away).
+    if not isinstance(body, str) or not text.startswith(body):
+        return text, ""
+    return body, text[len(body) :]
+
+
+def _head_whole_lines(text: str, limit: int) -> "tuple[str, bool]":
+    """``text`` cut to at most ``limit`` characters, and whether it ended on a line break.
+
+    Whole lines where possible, so the hint can name a line that resumes exactly where
+    this stopped; a mid-line cut would repeat or lose one, and on a file printed verbatim
+    that is a line of the user's own code.
+
+    The flag is not decoration. One enormous line (minified JS, base64) has no boundary to
+    cut on, and a line number would then name the line AFTER the one the reader is halfway
+    through, skipping the rest of it. On single-line output that returns nothing at all.
+    """
+    head = text[:limit]
+    cut = head.rfind("\n")
+    # Only when a boundary is actually near the end: rewinding further would throw away
+    # the whole result to keep the hint tidy.
+    if cut > 0 and cut >= limit // 2:
+        return head[:cut], True
+    return head, head.endswith("\n")
+
+
+def _posix_tools_available() -> bool:
+    """Whether the shell these tools run in has sed/tail/head.
+
+    `_get_shell_cmd` falls back to `cmd /c` on a Windows host with no trusted bash, and
+    none of those exist there, so a hint naming them is a command the model cannot run.
+    The spill is still worth naming; the command is not.
+    """
+    if sys.platform != "win32":
+        return True
+    return _windows_bash() is not None
+
+
+# Dot-directory on purpose: `_snapshot_workdir_files` skips those, so the spill never
+# appears as a file the model created and never earns a download card in the UI. A plain
+# name here would put a phantom artifact beside every truncated result.
+_SPILL_DIR = ".unsloth_tool_output"
+_SPILL_KEEP = 20
+# A result reaches here whole, so one `cat` of a multi-gigabyte file would be retained in
+# full and twenty of them would fill the host's disk. The subprocess file-size limit does
+# not apply: this output came through a pipe, not a file the sandbox wrote. A spill exists
+# so the model can page through what it was shown, and 8 MB is already far more of that
+# than any window can consume.
+_SPILL_MAX_BYTES = 8 * 1024 * 1024
+
+# How much of a result is encoded at a time when it is hashed. UTF-8 encodes one code
+# point at a time, so a stream built from slices of the string is byte for byte the stream
+# built from the whole of it, whatever the chunk size.
+_SPILL_HASH_CHUNK_CHARS = 1 << 20
+
+
+def _digest_and_head(text: str, max_bytes: int) -> "tuple[str, int, bytes]":
+    """``(digest, encoded length, the first max_bytes of it)``, in one bounded pass.
+
+    Encoding the whole result to hash it and again to cut it puts two more copies of it
+    through memory, and at most `max_bytes` of the second is ever written. The output this
+    runs on is by definition the output that did not fit: `cat` of a file the model just
+    wrote can be hundreds of megabytes, and spending it twice more inside the backend, at
+    the point the result is already in hand, risks the stall or the OOM instead of the
+    bounded answer this whole path exists to return.
+    """
+    digest = hashlib.sha256()
+    head = bytearray()
+    total = 0
+    for start in range(0, len(text), _SPILL_HASH_CHUNK_CHARS):
+        chunk = text[start : start + _SPILL_HASH_CHUNK_CHARS].encode("utf-8", "surrogatepass")
+        digest.update(chunk)
+        total += len(chunk)
+        if len(head) < max_bytes:
+            head += chunk[: max_bytes - len(head)]
+    return digest.hexdigest()[:12], total, bytes(head)
+
+
+_SPILL_MAX_TOTAL_BYTES = 64 * 1024 * 1024
+# Exactly the names `_spill_full_output` generates: twelve hex characters of a content
+# digest. The prune below deletes what it matches, and the sandbox is the user's own
+# directory -- a session may open on one that already holds a folder of this name, and
+# anything in it that Studio did not write is not Studio's to remove.
+_SPILL_NAME_RE = re.compile(r"[0-9a-f]{12}\.txt")
+# Written once, when this process creates the spill directory. Ownership is RECORDED
+# rather than inferred from the names inside: a sandbox can be a project the user opened,
+# a directory of this name in it may be theirs, and a file name proves nothing about who
+# wrote it. Without the marker nothing here writes, prunes or discounts anything there.
+_SPILL_RECORD_HEADER = "unsloth-studio tool output "
+# One lock per spill root. Appending a spill and rewriting the manifest after a prune are
+# a read-modify-write over one shared file, and a project's chats share a sandbox: two
+# calls spilling at once could otherwise have the pruner drop the entry the other just
+# appended, leaving a file nothing counts, prunes, or recognises as Studio's.
+_SPILL_LOCKS: "dict[str, threading.Lock]" = {}
+_SPILL_LOCKS_GUARD = threading.Lock()
+
+
+def _spill_lock(root: str) -> "threading.Lock":
+    key = os.path.realpath(root)
+    with _SPILL_LOCKS_GUARD:
+        return _SPILL_LOCKS.setdefault(key, threading.Lock())
+
+
+def _spill_records_dir() -> str:
+    """Where the spill manifests live: Studio's own storage, NOT the sandbox.
+
+    The sandbox is a directory tool code writes to, so nothing kept inside it can be
+    evidence about the sandbox. A marker file there was replaceable by a link, and once it
+    is a plain file the model can rewrite its contents and name the user's own files as
+    Studio's, which turns the cleanup into a delete and the prune into an unlink. Held
+    beside the other records this file already keeps outside the sandboxes.
+    """
+    try:
+        from utils.paths.storage_roots import studio_root  # noqa: PLC0415
+        return os.path.join(str(studio_root()), "tool-output-records")
+    except Exception:
+        return os.path.join(
+            os.path.dirname(os.path.realpath(sandbox_root())), "tool-output-records"
+        )
+
+
+def _spill_record_path(root: str) -> str:
+    """The record for one spill root, named by a digest of its real path."""
+    digest = hashlib.sha256(os.path.realpath(root).encode("utf-8", "surrogatepass")).hexdigest()
+    return os.path.join(_spill_records_dir(), f"{digest[:24]}.txt")
+
+
+def _spill_identity(root: str) -> "str | None":
+    """The directory's device and inode, which is what the record claims ownership OF.
+
+    Tool code can delete `.unsloth_tool_output` and make its own in the same place. That
+    is a different directory with the same path, and a record that only knew the path
+    would hand the new one's contents to the prune.
+    """
+    try:
+        stat = os.lstat(root)
+    except OSError:
+        return None
+    if not os.path.isdir(root) or os.path.islink(root):
+        return None
+    return f"{stat.st_dev}:{stat.st_ino}"
+
+
+def _own_spill_root(root: str) -> bool:
+    """Whether the spill directory is one this process made, creating it if it is absent.
+
+    Ownership is recorded outside the sandbox (`_spill_records_dir`) and is of a specific
+    directory, not of a path: a `.unsloth_tool_output` that came with the sandbox, or one
+    tool code deleted and recreated, has no matching record and is left alone entirely.
+    """
+    if os.path.islink(root):
+        return False
+    try:
+        # The existence check, the creation and the first record are ONE locked step. Two
+        # first-time spills in a shared project sandbox can both see the directory absent,
+        # and the slower one would otherwise write an empty record over the winner's, which
+        # leaves the winner's spill owned by nobody: never pruned, counted as the user's
+        # content on cleanup, and outside the byte budget for good.
+        with _spill_lock(root):
+            existed = os.path.isdir(root)
+            if not existed:
+                if os.path.exists(root):
+                    return False
+                os.makedirs(root, exist_ok = True)
+            identity = _spill_identity(root)
+            if identity is None:
+                return False
+            recorded = _spill_record(root)[0]
+            if recorded is None:
+                if existed and os.listdir(root):
+                    # Not ours and not empty, so it came with the sandbox.
+                    return False
+                os.makedirs(_spill_records_dir(), exist_ok = True)
+                _write_spill_manifest(root, {}, identity = identity)
+                recorded = identity
+            return recorded == identity
+    except OSError:
+        logger.debug("tool result spill ownership check failed", exc_info = True)
+        return False
+
+
+# Only where the platform can do the whole write through a directory descriptor: Windows
+# has neither O_DIRECTORY nor dir_fd, and there the path-based write below stands, with the
+# link checks it already makes.
+_DIR_FD_WRITES = (
+    hasattr(os, "O_DIRECTORY")
+    and os.open in getattr(os, "supports_dir_fd", set())
+    and os.link in getattr(os, "supports_dir_fd", set())
+    and os.unlink in getattr(os, "supports_dir_fd", set())
+)
+
+
+def _write_spill_file(target_dir: str, name: str, body: str) -> "str | None":
+    """Write one spill into ``target_dir``, without following a link at any point.
+
+    The directory is opened ONCE, O_NOFOLLOW, and every step after that is relative to
+    that descriptor. Checking the path and then writing to it by name is a race a shared
+    project sandbox can lose: another call can replace the directory with a symlink in
+    between, and both the create and the rename would follow it, putting this output
+    outside the sandbox with the backend's own permissions.
+
+    Still written to a fresh O_EXCL file and installed under the real name rather than
+    opened over whatever is there: the spill name comes from content the model produced, so
+    it can predict it and pre-create it, as a symlink or as a hard link sharing an inode
+    with some file elsewhere.
+
+    Installed with `os.link`, which fails when the name is taken, rather than a rename,
+    which on POSIX replaces silently. The caller checks the destination first, but between
+    that check and this write another call sharing the workspace can put a file there, and
+    a rename would then destroy it.
+
+    Returns the stamp of what was installed, or None if nothing was. The stamp is taken
+    here rather than re-read from the path afterwards, because by then another call can
+    have replaced the file and the record would name its content as Studio's.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if not _DIR_FD_WRITES:
+        tmp = os.path.join(target_dir, f".tmp-{uuid.uuid4().hex[:12]}.txt")
+        try:
+            with os.fdopen(
+                os.open(tmp, flags | getattr(os, "O_NOFOLLOW", 0), 0o600),
+                "w",
+                encoding = "utf-8",
+                newline = "",
+            ) as handle:
+                handle.write(body)
+            installed = os.path.join(target_dir, name)
+            os.link(tmp, installed)
+            _quiet_unlink(tmp)
+            return _spill_stamp(installed)
+        except OSError:
+            logger.debug("tool result spill write failed", exc_info = True)
+            _quiet_unlink(tmp)
+            return None
+    dir_fd = None
+    tmp_name = f".tmp-{uuid.uuid4().hex[:12]}.txt"
+    try:
+        dir_fd = os.open(target_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        with os.fdopen(
+            os.open(tmp_name, flags, 0o600, dir_fd = dir_fd), "w", encoding = "utf-8", newline = ""
+        ) as handle:
+            handle.write(body)
+        # `os.link` rather than a rename: rename replaces the destination silently on
+        # POSIX, and the name may have been taken since the caller looked. link fails with
+        # EEXIST instead, which is the answer this wants.
+        os.link(tmp_name, name, src_dir_fd = dir_fd, dst_dir_fd = dir_fd)
+        _quiet_unlink(tmp_name, dir_fd = dir_fd)
+        # Through the same descriptor, so it is the file just linked rather than whatever
+        # the name resolves to by the time this returns.
+        stat = os.stat(name, dir_fd = dir_fd, follow_symlinks = False)
+        return ":".join(
+            str(part)
+            for part in (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+        )
+    except OSError:
+        logger.debug("tool result spill write failed", exc_info = True)
+        if dir_fd is not None:
+            _quiet_unlink(tmp_name, dir_fd = dir_fd)
+        return None
+    finally:
+        if dir_fd is not None:
+            os.close(dir_fd)
+
+
+def _quiet_unlink(path: str, dir_fd = None) -> None:
+    try:
+        os.unlink(path, dir_fd = dir_fd) if dir_fd is not None else os.unlink(path)
+    except OSError:
+        pass
+
+
+def _forget_spill_record(path: str) -> None:
+    """Drop the record for a sandbox that has been removed. See `_spill_records_dir`."""
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _spill_stamp(path: str) -> "str | None":
+    """What a spill looked like when it was written: device, inode, size, mtime, ctime.
+
+    A recorded PATH is not the file: tool code can write its own content over one, in
+    place, keeping the inode. mtime alone is not enough either, since `os.utime` can put
+    it back and a coarse-grained filesystem can leave it unchanged on its own; ctime moves
+    on any write to the file OR its metadata and cannot be set back from userspace, so
+    restoring the mtime is itself a change this sees.
+    """
+    try:
+        stat = os.lstat(path)
+    except OSError:
+        return None
+    if not os.path.isfile(path) or os.path.islink(path):
+        return None
+    return ":".join(
+        str(part)
+        for part in (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+    )
+
+
+def _stamp_size(stamp: str) -> "int | None":
+    """The size a stamp remembers. See `_spill_stamp`."""
+    try:
+        return int(stamp.split(":")[2])
+    except (IndexError, ValueError):
+        return None
+
+
+def _file_digest(path: str, expected_size: "int | None" = None) -> "str | None":
+    """The digest of what is on disk now, or None when it is not a file this may read.
+
+    Opened O_NOFOLLOW and O_NONBLOCK and checked through the DESCRIPTOR, not the path. The
+    stamp was taken a moment ago and this runs in the sandbox's own directory: between the
+    two, tool code can put a symlink at the name, or a FIFO, or a device. A plain open
+    would follow the first and block forever on the others, and this is called
+    synchronously by the prune and by chat deletion, neither of which has a timeout.
+
+    ``expected_size`` refuses anything that is not the size the record remembers, so a
+    file swapped for an enormous one is not hashed before it is rejected.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    fd = None
+    try:
+        fd = os.open(path, flags)
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            return None
+        if expected_size is not None and info.st_size != expected_size:
+            return None
+        digest = hashlib.sha256()
+        with os.fdopen(fd, "rb") as handle:
+            fd = None
+            for chunk in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def _is_recorded_spill(root: str, path: str, owned: "dict[str, tuple[str, str]]") -> bool:
+    """Whether ``path`` is still the file this wrote, rather than one written over it.
+
+    Both the stamp and the CONTENT, because the stamp is only evidence about metadata: the
+    content is what says this file is still the output this process put there, and it is
+    the last word before anything is deleted. Read only after the cheap check passes, so
+    the cost falls on the handful of files that already look like ours.
+    """
+    relative = os.path.relpath(path, root).replace(os.sep, "/")
+    recorded = owned.get(relative)
+    if recorded is None or recorded[0] != _spill_stamp(path):
+        return False
+    return recorded[1] == _file_digest(path, _stamp_size(recorded[0]))
+
+
+def _spill_record(root: str) -> "tuple[str | None, dict[str, tuple[str, str]]]":
+    """The recorded identity of ``root`` and the spills written into it.
+
+    ``(None, {})`` when there is no record, which is the answer for any directory this
+    process did not create. An unreadable or half-written record reads the same way, which
+    retains too much rather than deleting something that was never ours.
+    """
+    try:
+        with open(_spill_record_path(root), encoding = "utf-8") as handle:
+            lines = handle.read().splitlines()
+    except OSError:
+        return None, {}
+    if not lines or not lines[0].startswith(_SPILL_RECORD_HEADER):
+        return None, {}
+    identity = lines[0][len(_SPILL_RECORD_HEADER) :].strip() or None
+    entries: "dict[str, tuple[str, str]]" = {}
+    for line in lines[1:]:
+        name, _, rest = line.strip().partition("\t")
+        stamp, _, digest = rest.partition("\t")
+        if name and stamp and digest:
+            # Last line wins: the same content spilled twice rewrites the file, and the
+            # stamp of the write actually on disk is the later one.
+            entries[name] = (stamp, digest)
+    return identity, entries
+
+
+def _spill_manifest(root: str) -> "dict[str, tuple[str, str]]":
+    """The spills this process wrote into ``root``: relative path to stamp and digest."""
+    return _spill_record(root)[1]
+
+
+def _write_spill_manifest(
+    root: str,
+    entries,
+    identity: "str | None" = None,
+) -> None:
+    """Rewrite the record with ``entries`` (relative name to stamp), atomically."""
+    if identity is None:
+        identity = _spill_record(root)[0]
+    path = _spill_record_path(root)
+    os.makedirs(os.path.dirname(path), exist_ok = True)
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(dir = os.path.dirname(path), prefix = ".tmp-record-")
+        with os.fdopen(fd, "w", encoding = "utf-8") as handle:
+            handle.write(f"{_SPILL_RECORD_HEADER}{identity or ''}\n")
+            for name in sorted(entries):
+                stamp, digest = entries[name]
+                handle.write(f"{name}\t{stamp}\t{digest}\n")
+        os.replace(tmp, path)
+        tmp = None
+    finally:
+        if tmp is not None and os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
+def _record_spill(root: str, relative: str, stamp: str, digest: str) -> None:
+    """Append one written spill, with the stamp and digest of what was INSTALLED.
+
+    Not re-read from the path: between the install and this, another call sharing the
+    sandbox can replace the file, and stating the path then records that call's content as
+    Studio's, which a later prune or cleanup would delete. The writer knows what it put
+    there, so it says so.
+    """
+    try:
+        with _spill_lock(root):
+            with open(_spill_record_path(root), "a", encoding = "utf-8") as handle:
+                handle.write(f"{relative}\t{stamp}\t{digest}\n")
+    except OSError:
+        logger.debug("tool result spill record append failed", exc_info = True)
+
+
+def _spill_scope(session_id: "str | None", thread_id: "str | None") -> "str | None":
+    """Where this call's spills belong, or None for "retain nothing".
+
+    Nothing is retained in a sandbox that more than one chat runs in. A project's chats
+    share one session by design (`project_session_id`) and a call with no session lands in
+    the shared `_default` one, and in both the sandbox is a directory every sibling chat's
+    model has a terminal in: a sub-directory is not access control, it is a name. Writing
+    a result there puts output that existed only in one chat's response on disk where the
+    next chat can read it, and lets that chat prune the files this one was told to page
+    through.
+
+    So the trade is stated rather than hidden: in a project, a large result is truncated
+    with a notice and no continuation. Only a chat with a sandbox of its own gets paging.
+    ``thread_id`` is taken and unused for that reason -- it identifies the chat, which is
+    not the thing that has to be separate.
+    """
+    if not session_id or session_id.startswith(_PROJECT_SESSION_PREFIX):
+        return None
+    return ""
+
+
+def _spill_phrase(spill: str, complete: bool) -> str:
+    """How the notice names the spill, which depends on whether all of it got there.
+
+    Lower case, and capitalised by the caller that needs it: the phrase ends in a path,
+    and case-folding a whole sentence to fit it into another would fold that too.
+    """
+    if complete:
+        return f"full output saved to {spill}"
+    return f"the first {_SPILL_MAX_BYTES} bytes of it are saved to {spill}"
+
+
+def _capitalise(phrase: str) -> str:
+    """First letter only. `str.capitalize` lower-cases the rest, including a path."""
+    return phrase[:1].upper() + phrase[1:]
+
+
+def _zero_room_stub(size: int, spill: "str | None", complete: bool) -> str:
+    """The whole message when there is no room for a body. See `_truncate`."""
+    located = f", {_spill_phrase(spill, complete)}" if spill else ""
+    return f"(output omitted: {size} chars, no context room left{located})"
+
+
+def _spill_full_output(
+    text: str,
+    workdir: str | None,
+    scope: "str | None" = "",
+) -> "tuple[str | None, bool]":
+    """Write the result into the sandbox; return its relative path and whether it is whole.
+
+    ``(None, True)`` whenever it cannot be done -- no workdir, a read-only mount, a full
+    disk, a path that is not what it claims to be. The caller then falls back to the plain
+    notice, because a hint naming a file that is not there is worse than admitting the
+    output is gone.
+    """
+    if not workdir or not os.path.isdir(workdir) or scope is None:
+        return None, True
+    try:
+        if not _own_spill_root(os.path.join(workdir, _SPILL_DIR)):
+            return None, True
+        relative = f"{_SPILL_DIR}/{scope}" if scope else _SPILL_DIR
+        target_dir = os.path.join(workdir, *relative.split("/"))
+        # The sandbox is a directory the model runs commands in, so `.unsloth_tool_output`
+        # may already be a symlink it made, or one that came with a project opened as the
+        # workdir. makedirs(exist_ok=True) and a plain open() both follow it, which writes
+        # this result outside the sandbox with the backend's own permissions and then lets
+        # the prune delete files there. Refuse instead: no spill means a notice without a
+        # continuation hint, which is a great deal better than a write out of bounds.
+        if any(
+            os.path.islink(os.path.join(workdir, *relative.split("/")[: n + 1]))
+            for n in range(len(relative.split("/")))
+        ):
+            return None, True
+        os.makedirs(target_dir, exist_ok = True)
+        expected = os.path.join(os.path.realpath(workdir), *relative.split("/"))
+        if os.path.realpath(target_dir) != expected:
+            return None, True
+        # Named from the CONTENT, not at random. The result has to come back byte-identical
+        # with and without an output_callback (the streaming invariant asserted by
+        # test_truncated_result_identical_and_notice_neutral_with_streaming), and a random
+        # name puts a different path in the notice on each of the two runs. Content
+        # addressing also means asking for the same file twice reuses one spill instead of
+        # filling the sandbox with copies, which is the repeat case this whole change is
+        # about.
+        # Bounded before it is written rather than after: pruning by count alone still
+        # lets one enormous result through, and by then it is already on the disk.
+        digest, spilled_bytes, head = _digest_and_head(text, _SPILL_MAX_BYTES)
+        name = f"{digest}.txt"
+        complete = spilled_bytes <= _SPILL_MAX_BYTES
+        # Cut on a character boundary, so what lands is still decodable text.
+        body = text if complete else head.decode("utf-8", "ignore")
+        # newline="" so the bytes on disk are the bytes measured. The default translates
+        # "\n" to os.linesep, which on Windows writes an extra byte per line, and the
+        # byte offset in the continuation hint is counted from the untranslated text --
+        # so a mid-line resume would start one byte early for every preceding newline.
+        path = os.path.join(target_dir, name)
+        # Written to a fresh O_EXCL file and moved into place, never opened O_TRUNC over
+        # whatever is already at that path. The spill name is derived from content the
+        # model produced, so it can predict it and pre-create it: as a symlink (refused by
+        # O_NOFOLLOW and the check above) or as a HARD link, which reports islink() false
+        # and shares the inode of some file outside the sandbox. Truncating that writes
+        # through to it with the backend's privileges; replacing a directory entry does
+        # not touch the linked file at all.
+        # The name comes from the content, so re-running a command lands on the same path,
+        # and the file there may no longer be the spill this wrote: a later call can have
+        # put the user's own data at it. `_is_recorded_spill` is what says whether it is
+        # still ours, and the rename below would otherwise replace it either way.
+        path = os.path.join(target_dir, name)
+        if os.path.exists(path):
+            # The name is the digest of the text, so a recorded spill at it already HOLDS
+            # this content: reuse it and write nothing. That is the repeat case this whole
+            # change is about, and not writing is also the only way not to race with
+            # another call that may be replacing the file right now.
+            if _is_recorded_spill(
+                os.path.join(workdir, _SPILL_DIR),
+                path,
+                _spill_manifest(os.path.join(workdir, _SPILL_DIR)),
+            ):
+                return f"{relative}/{name}", complete
+            # Not ours: the user's code put something at that path, and the install below
+            # would replace it.
+            return None, True
+        stamp = _write_spill_file(target_dir, name, body)
+        if stamp is None:
+            return None, True
+        _record_spill(
+            os.path.join(workdir, _SPILL_DIR),
+            f"{scope}/{name}" if scope else name,
+            stamp,
+            hashlib.sha256(body.encode("utf-8", "surrogatepass")).hexdigest(),
+        )
+        _prune_spills(target_dir, os.path.join(workdir, _SPILL_DIR))
+        # Relative, so the command works from the cwd the tools already run in, and so
+        # the absolute sandbox path never reaches the model.
+        return f"{relative}/{name}", complete
+    except Exception:
+        logger.debug("tool result spill failed", exc_info = True)
+        return None, True
+
+
+def _spill_files(root: str, directory: str, owned: "set[str]") -> "list[str]":
+    """The spills in one directory: the ones ``owned`` records this process having written.
+
+    Everything else there is the user's, whatever it is called. Links are never spills.
+    """
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return []
+    return [
+        path
+        for path in (os.path.join(directory, name) for name in names)
+        if _is_recorded_spill(root, path, owned)
+    ]
+
+
+def _unlink_verified_spill(root: str, path: str, owned: "dict[str, tuple[str, str]]") -> bool:
+    """Delete a spill, and only ever the file that was checked.
+
+    Moved to a private name first. A rename is atomic, so from that point the inode this
+    verifies is the inode this deletes: a sandbox writer that replaces the original name
+    afterwards replaces nothing that is on its way out. Verifying and then unlinking by
+    name cannot promise that, because the manifest lock orders Studio's own threads and
+    the thing racing here is the sandbox.
+
+    Checked again under the private name, and put back if it no longer matches, since at
+    that point it is not the file this recorded and is not this to delete. The rename
+    itself moves ctime, which is ours to move, so the second check compares the device,
+    inode, size and mtime, and the content.
+
+    Nothing but a regular file with the recorded identity is moved at all: a directory or
+    a FIFO left at the name by the sandbox is rejected through its own descriptor before
+    the rename, so the restore below is never asked to put back a kind of thing `os.link`
+    cannot. That leaves only the vanishing window between the check and the rename, and
+    the restore handles it by falling back to a rename when the name is free again.
+    """
+    directory, name = os.path.split(path)
+    recorded = owned.get(os.path.relpath(path, root).replace(os.sep, "/"))
+    if recorded is None:
+        return False
+    if not _is_stamped_regular(path, recorded[0]):
+        return False
+    private = os.path.join(directory, f".tmp-prune-{uuid.uuid4().hex[:12]}.txt")
+    try:
+        os.rename(path, private)
+    except OSError:
+        return False
+    stamp = _spill_stamp(private)
+    if (
+        stamp is not None
+        and stamp.split(":")[:4] == recorded[0].split(":")[:4]
+        and recorded[1] == _file_digest(private, _stamp_size(recorded[0]))
+    ):
+        _quiet_unlink(private)
+        return True
+    _restore_pruned_path(private, path)
+    return False
+
+
+def _is_stamped_regular(path: str, stamp: str) -> bool:
+    """Whether ``path`` is right now the regular file ``stamp`` recorded.
+
+    Through a descriptor rather than the path, and for the same reasons `_file_digest`
+    does it that way: O_NOFOLLOW refuses a symlink dropped at the name and O_NONBLOCK
+    refuses to hang on a FIFO or a device. A directory opens, and is rejected by the
+    mode check. ctime is deliberately not compared -- the caller compares it under the
+    private name, where the rename it performs has already moved it.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    fd = None
+    try:
+        fd = os.open(path, flags)
+        info = os.fstat(fd)
+    except OSError:
+        return False
+    finally:
+        if fd is not None:
+            os.close(fd)
+    if not stat.S_ISREG(info.st_mode):
+        return False
+    return [str(part) for part in (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)] == (
+        stamp.split(":")[:4]
+    )
+
+
+def _restore_pruned_path(private: str, path: str) -> None:
+    """Put back something the prune moved but must not delete.
+
+    `os.link` first, because it refuses to overwrite: if the sandbox has taken the name
+    again in the meantime, the file it put there is not this to replace. A hard link
+    cannot be made to a directory, so when it fails and the name is in fact free, the
+    rename that moved this here is reversed instead, which works whatever was moved.
+    Neither can promise the name is still free at the instant it runs, so the last resort
+    is to leave the data under the private name and say where it went, rather than
+    unlink it.
+    """
+    try:
+        os.link(private, path)
+        _quiet_unlink(private)
+        return
+    except OSError:
+        pass
+    try:
+        if not os.path.lexists(path):
+            os.rename(private, path)
+            return
+    except OSError:
+        pass
+    # The name is taken again, so whatever is there now is not this to overwrite either.
+    # The file stays, under a name nothing will prune.
+    logger.warning("tool result spill prune: kept a swapped file as %s", private)
+
+
+def _prune_spills(target_dir: str, root: "str | None" = None) -> None:
+    """Bound this scope by count and the whole spill tree by bytes.
+
+    A long session prints many large results and each one is retained; without this the
+    sandbox grows without bound for output the model has almost certainly finished paging
+    through.
+
+    The byte budget is enforced across ``root`` rather than per directory. A project's
+    chats each get their own scope under one shared sandbox, so a per-directory limit is
+    really a per-chat limit and a project with many tool-using chats multiplies it by
+    however many there are.
+    """
+    root = root or target_dir
+    try:
+        # Held across the read and the rewrite below, so a spill recorded in between is
+        # not dropped from the manifest by a prune that read it before the append.
+        with _spill_lock(root):
+            _prune_spills_locked(target_dir, root)
+    except Exception:
+        logger.debug("tool result spill prune failed", exc_info = True)
+
+
+def _prune_spills_locked(target_dir: str, root: str) -> None:
+    try:
+        identity, owned = _spill_record(root)
+        if identity is None or identity != _spill_identity(root):
+            # No record of this directory, so it came with the sandbox or was replaced.
+            return
+        removed = set()
+        # Newest first within this scope, so the count keeps the ones still being paged.
+        for extra in sorted(
+            _spill_files(root, target_dir, owned), key = os.path.getmtime, reverse = True
+        )[_SPILL_KEEP:]:
+            if _unlink_verified_spill(root, extra, owned):
+                removed.add(extra)
+
+        everything = [p for p in _spill_files(root, root, owned) if p not in removed]
+        for name in sorted(os.listdir(root)):
+            scope = os.path.join(root, name)
+            if os.path.isdir(scope) and not os.path.islink(scope):
+                everything.extend(p for p in _spill_files(root, scope, owned) if p not in removed)
+        kept, total = 0, 0
+        for path in sorted(everything, key = os.path.getmtime, reverse = True):
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                continue
+            # The newest is always kept, whatever the budget says: it is the file the
+            # notice about to be returned names, and a hint pointing at a path that was
+            # deleted on the way out is worse than no hint at all.
+            if kept == 0 or total + size <= _SPILL_MAX_TOTAL_BYTES:
+                kept, total = kept + 1, total + size
+                continue
+            if _unlink_verified_spill(root, path, owned):
+                removed.add(path)
+        # The manifest follows the files: a name left in it after its file is gone would
+        # keep being counted as something this owns.
+        _write_spill_manifest(
+            root,
+            {
+                name: stamp
+                for name, stamp in owned.items()
+                if os.path.join(root, *name.split("/")) not in removed
+            },
+        )
+        # An emptied scope is a chat that stopped spilling, and leaving its directory
+        # behind is what makes the sandbox look non-empty to the cleanup.
+        for name in sorted(os.listdir(root)):
+            scope = os.path.join(root, name)
+            if os.path.isdir(scope) and not os.path.islink(scope) and not os.listdir(scope):
+                try:
+                    os.rmdir(scope)
+                except OSError:
+                    pass
+    except Exception:
+        logger.debug("tool result spill prune failed", exc_info = True)
 
 
 # ChatGPT code-interpreter path conventions models write out of habit; none
@@ -13884,6 +15324,27 @@ _MAX_SNAPSHOT_FILES = 2000  # a shard-writing script must not blow up the result
 _MAX_SNAPSHOT_DIRS = 2000  # nor a directory-writing one stall the next call
 
 
+def _user_path_parts(parts: "list[str]", root: "str | None" = None) -> "list[str]":
+    """The segments _MAX_SANDBOX_PATH_SEGMENTS applies to.
+
+    The scratch container is Studio's, not a name the model chose, and on
+    Windows it is what /tmp resolves to, so charging it a segment would drop one
+    level of the /tmp artifacts served before the workdir stopped being %TEMP%.
+
+    *root* is for callers that resolve the path afterwards. The walks read the
+    stored spelling off os.walk and never follow links; the download route
+    resolves, and without the root a link named unsloth-tmp (or a wrong-case
+    entry on NTFS or APFS) would take the discount for a tree neither walk lists.
+    """
+    if not parts or parts[0] != _SANDBOX_TEMP_DIRNAME:
+        return parts
+    if root is not None and not _is_sandbox_temp_dir(
+        os.path.join(root, _SANDBOX_TEMP_DIRNAME), root
+    ):
+        return parts
+    return parts[1:]
+
+
 # The same allowlist the download route applies per segment, so a name that
 # route would refuse never reaches a file chip.
 _SERVABLE_SEGMENT_RE = re.compile(r"\A[^/\\\x00-\x1f]{1,255}\Z")
@@ -14002,7 +15463,8 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
         if visited > _MAX_SNAPSHOT_DIRS:
             return snapshot
         # depth 0 is the workdir itself, whose files are one segment.
-        depth = base[len(workdir) :].count(os.sep)
+        relative = base[len(workdir) :].strip(os.sep)
+        depth = len(_user_path_parts(relative.split(os.sep) if relative else []))
         # Dot-directories stay out: .git, .cache and friends are where the noise
         # lives. Dot-FILES are reported, since .gitignore is a real artifact.
         dirs[:] = (
@@ -14164,6 +15626,7 @@ def _python_exec(
     session_id: str | None = None,
     disable_sandbox: bool = False,
     output_callback = None,
+    thread_id: str | None = None,
 ) -> str:
     """Execute Python code in a subprocess sandbox.
 
@@ -14179,7 +15642,11 @@ def _python_exec(
     if not disable_sandbox:
         error = _check_code_safety(code)
         if error:
-            return error
+            # Capped like any other result: the analyzer names every occurrence it
+            # found, so code that repeats a forbidden construct enough times reports
+            # back something larger than the room that is left, which is the overflow
+            # this budget exists to prevent. See `_fit_result_to_room`.
+            return _truncate(error)
         # Stripping the child env is not enough: a same-UID child can read
         # /proc/<getppid()>/environ to recover the unfiltered secrets, so close
         # that read here too, not only in bypass mode. Best-effort: the child env
@@ -14196,6 +15663,12 @@ def _python_exec(
     tmp_path = None
     _scratch_name = None
     workdir = _get_workdir(session_id)
+    # `_get_workdir(None)` is the shared `_default` sandbox, and a project's chats share
+    # one session by design. Retaining a result in either, under a path the next chat can
+    # list, would leave behind output that existed only in this call's own response. See
+    # `_spill_scope`, which returns None for exactly those cases.
+    spill_scope = _spill_scope(session_id, thread_id)
+    spill_dir = workdir if session_id else None
     call_token = _call_started(workdir)
     # Snapshot mtimes to detect new and overwritten files.
     _before = _snapshot_workdir_files(workdir)
@@ -14283,11 +15756,17 @@ def _python_exec(
         # paths are judged against the real workdir (project sessions live outside
         # the default sandbox root).
         hint = _missing_path_hint(result, workdir)
-        result = _truncate(result) if result.strip() else "(no output)"
-        result += hint
-        # Before ours is appended, and whether or not one is: a program's own
-        # marker line is not an envelope.
+        # Before the fit, not after it. Defusing inserts a space into every line that
+        # opens with a marker, so a result full of them grows after it has been measured
+        # and the text replayed to the model is larger than the prefix that was admitted.
+        # Before ours is appended, and whether or not one is: a program's own marker line
+        # is not an envelope.
         result = _defuse_sentinels(result)
+        result = (
+            _truncate(result, workdir = spill_dir, scope = spill_scope, hint = hint)
+            if result.strip()
+            else "(no output)" + hint
+        )
 
         # Only for a chat that has an id: without one every first turn shares
         # the _default workdir, so a card pinned to it would later download
@@ -14298,7 +15777,9 @@ def _python_exec(
         return result
 
     except Exception as e:
-        return f"Execution error: {e}"
+        # An exception message carries whatever the failure put in it, so it is capped
+        # like the result would have been.
+        return _truncate(f"Execution error: {e}")
     finally:
         _call_finished(call_token)
         if _scratch_name:
@@ -14319,6 +15800,7 @@ def _bash_exec(
     session_id: str | None = None,
     disable_sandbox: bool = False,
     output_callback = None,
+    thread_id: str | None = None,
 ) -> str:
     """Execute a bash command in a subprocess sandbox.
 
@@ -14334,7 +15816,9 @@ def _bash_exec(
     if not disable_sandbox:
         blocked = _find_blocked_commands(command)
         if blocked:
-            return f"Blocked command(s) for safety: {', '.join(sorted(blocked))}"
+            # Capped for the same reason the Python analyzer's error is: it lists what
+            # it found in the command it was handed.
+            return _truncate(f"Blocked command(s) for safety: {', '.join(sorted(blocked))}")
         # Stripping the child env is not enough: a same-UID child can read
         # /proc/<getppid()>/environ to recover the unfiltered secrets, so close
         # that read here too, not only in bypass mode. Best-effort: the child env
@@ -14349,9 +15833,14 @@ def _bash_exec(
         )
 
     workdir = None
+    spill_dir = None
+    spill_scope = None
     call_token = None
     try:
         workdir = _get_workdir(session_id)
+        # Same scoping as _python_exec: nothing is retained in a sandbox that is shared.
+        spill_scope = _spill_scope(session_id, thread_id)
+        spill_dir = workdir if session_id else None
         call_token = _call_started(workdir)
         # Same pre-run snapshot as _python_exec. A command that writes a file used
         # to produce "(no output)" and no other trace anywhere in the product.
@@ -14413,16 +15902,21 @@ def _bash_exec(
             result = f"Exit code {proc.returncode}:\n{result}"
         # Same missing-path healing as _python_exec.
         hint = _missing_path_hint(result, workdir)
-        result = _truncate(result) if result.strip() else "(no output)"
-        result += hint
-        result = _defuse_sentinels(result)  # see _python_exec
+        result = _defuse_sentinels(result)  # before the fit; see _python_exec
+        result = (
+            _truncate(result, workdir = spill_dir, scope = spill_scope, hint = hint)
+            if result.strip()
+            else "(no output)" + hint
+        )
         # Only for a chat that has an id (see _python_exec).
         if session_id:
             result += _created_file_sentinels(workdir, _before, None, call_token)
         return result
 
     except Exception as e:
-        return f"Execution error: {e}"
+        # An exception message carries whatever the failure put in it, so it is capped
+        # like the result would have been.
+        return _truncate(f"Execution error: {e}")
     finally:
         _call_finished(call_token)
         _forget_tool_pid(locals().get("proc"))
