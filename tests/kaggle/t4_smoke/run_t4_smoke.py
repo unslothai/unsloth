@@ -1887,17 +1887,22 @@ def main() -> int:
         vision_cmd = [
             sys.executable,
             str(Path(__file__).resolve().parent / "run_vision_t4.py"),
-            "--outdir", str(vision_dir),
-            "--model", args.model,
-            "--max-seq-length", str(args.max_seq_length),
+            "--outdir",
+            str(vision_dir),
+            "--model",
+            args.model,
+            "--max-seq-length",
+            str(args.max_seq_length),
             # Deliberately small and stated here rather than inherited. The
             # text side runs 10-20 steps in seconds; a vision step on a T4 is
             # ~100s (317.9s for three, kernel unsloth-probe-vision-train-r3),
             # so inheriting --max-steps would quietly add half an hour to the
             # leg. Three steps is what the pixel, adapter and export claims
             # need; more of them prove nothing extra.
-            "--max-steps", "3",
-            "--samples", "8",
+            "--max-steps",
+            "3",
+            "--samples",
+            "8",
         ]
         if args.export_gguf:
             # The merged-export half of the vision claim. Same flag the text

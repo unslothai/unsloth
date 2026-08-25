@@ -304,9 +304,9 @@ def test_the_leg_actually_DRIVES_the_vision_run():
     leg = legs.LEGS["vision_fla_compile"]
     assert "--vision-run" in leg.args, "the leg ships the payload but never runs it"
     assert "run_vision_t4.py" in leg.files
-    assert "--export-gguf" in leg.args, (
-        "the merged vision export is the half the text path cannot exercise"
-    )
+    assert (
+        "--export-gguf" in leg.args
+    ), "the merged vision export is the half the text path cannot exercise"
 
 
 def test_the_parent_spawns_the_vision_run_after_the_cycles():
@@ -321,7 +321,7 @@ def test_the_parent_spawns_the_vision_run_after_the_cycles():
 
 
 def test_a_vision_run_that_wrote_no_report_is_a_failure_not_a_silence():
-    """"the vision run did not happen" and "the vision run passed" are opposite
+    """ "the vision run did not happen" and "the vision run passed" are opposite
     outcomes, and an absent report must not read as the second."""
     src = (PAYLOAD / "run_t4_smoke.py").read_text(encoding = "utf-8")
     assert '"the vision process wrote no report"' in src
@@ -333,7 +333,7 @@ def test_the_vision_step_count_is_pinned_low_rather_than_inherited():
     unsloth-probe-vision-train-r3). Inheriting the text side's --max-steps
     would quietly add half an hour to the leg."""
     src = (PAYLOAD / "run_t4_smoke.py").read_text(encoding = "utf-8")
-    spawn = src[src.index('"run_vision_t4.py"'):]
+    spawn = src[src.index('"run_vision_t4.py"') :]
     spawn = spawn[: spawn.index("subprocess.run(vision_cmd)")]
     assert '"--max-steps", "3",' in spawn
     assert "args.max_steps" not in spawn, "the text step count must not reach the vision run"
