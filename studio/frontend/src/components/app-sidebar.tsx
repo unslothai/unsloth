@@ -992,6 +992,16 @@ export function AppSidebar() {
     (s) => s.alwaysDeleteChatFiles,
   );
   const pinnedIdSet = useMemo(() => new Set(pinnedIds), [pinnedIds]);
+  // Which row every thread belongs to, listed or not. The published lists carry
+  // only what is on screen, so this is what lets an unread Compare row behind a
+  // collapsed section still be counted as one chat.
+  const rowIdByThreadId = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const item of allChatItems) {
+      for (const threadId of getSidebarItemThreadIds(item)) map[threadId] = item.id;
+    }
+    return map;
+  }, [allChatItems]);
   const organizeBy = useSidebarOrganizationStore((s) => s.organizeBy);
   const chatSort = useSidebarOrganizationStore((s) => s.chatSort);
   const pinnedSort = useSidebarOrganizationStore((s) => s.pinnedSort);
@@ -1644,7 +1654,7 @@ export function AppSidebar() {
   function markSelectedUnread() {
     const threadIds = selectedChatItems.flatMap(getSidebarItemThreadIds);
     clearSelection();
-    markThreadsUnread(threadIds);
+    markThreadsUnread(threadIds, rowIdByThreadId);
   }
 
   async function archiveSelected() {
@@ -1818,7 +1828,7 @@ export function AppSidebar() {
     if (completedThreadIds.length > 0 || activeVisibleThreadIdSet.size > 0) {
       queueMicrotask(() => {
         // A run that finished in the open chat is read, so clear after mark.
-        markThreadsUnread(completedThreadIds);
+        markThreadsUnread(completedThreadIds, rowIdByThreadId);
         clearThreadsUnread([...activeVisibleThreadIdSet]);
       });
     }
@@ -1828,6 +1838,7 @@ export function AppSidebar() {
     runningByThreadId,
     markThreadsUnread,
     clearThreadsUnread,
+    rowIdByThreadId,
   ]);
 
   const activeJobId = useTrainingRuntimeStore((s) => s.jobId);
@@ -2716,7 +2727,9 @@ export function AppSidebar() {
       return;
     }
     if (followsSelectionAction("markChatUnread")) return;
-    withActiveChat((item) => markThreadsUnread(getSidebarItemThreadIds(item)));
+    withActiveChat((item) =>
+      markThreadsUnread(getSidebarItemThreadIds(item), rowIdByThreadId),
+    );
   });
   useShortcut("togglePinChat", () => {
     if (sidebarCovered()) return;

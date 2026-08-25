@@ -1930,7 +1930,13 @@ export function SharedComposer({
       if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
       sendRef.current?.();
     },
-    { enabled: chatActive && canSend },
+    {
+      enabled: chatActive && canSend,
+      // As in the single-chat composer: a non-modal popover's search box is a
+      // text field the composer is still the foreground behind.
+      skipInTextFields: true,
+      textFieldException: COMPOSER_INPUT_SELECTOR,
+    },
   );
   useShortcut(
     "attachFiles",

@@ -192,7 +192,7 @@ test("signing out drops the previous account's navigation state", async () => {
   );
   assert.match(store, /resetAccountState: \(\) =>/);
   // A fresh Set, or every account after the first shares one.
-  assert.match(store, /set\(\{ \.\.\.ACCOUNT_STATE, unreadThreadIds: new Set\(\) \}\)/);
+  assert.match(store, /set\(\{ \.\.\.ACCOUNT_STATE, unreadThreadIds: new Set\(\), unreadRowIds: \{\} \}\)/);
   const sidebar = await readFile(
     new URL("../src/components/app-sidebar.tsx", import.meta.url),
     "utf8",
@@ -567,4 +567,24 @@ test("the remaining chat-page chords stop at a covered surface", async () => {
     thread.slice(at, at + 320),
     /if \(!isSurfaceInForeground\(COMPOSER_INPUT_SELECTOR\)\) return;/,
   );
+});
+
+// A non-modal popover leaves the composer the foreground, so the press-time
+// check alone does not keep the send chord out of the picker's search box.
+test("the send chords stand aside in any text field but the composer", async () => {
+  for (const path of [
+    "../src/components/assistant-ui/thread.tsx",
+    "../src/features/chat/shared-composer.tsx",
+  ]) {
+    const source = await readFile(new URL(path, import.meta.url), "utf8");
+    const at = source.indexOf('useShortcut(\n    "sendMessage"');
+    assert.notEqual(at, -1, `${path} lost its send chord`);
+    const body = source.slice(at, source.indexOf("\n  );", at));
+    assert.match(body, /skipInTextFields: true,/, `${path} sends from any field`);
+    assert.match(
+      body,
+      /textFieldException: COMPOSER_INPUT_SELECTOR,/,
+      `${path} can no longer send from the composer itself`,
+    );
+  }
 });

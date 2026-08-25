@@ -296,3 +296,47 @@ test("an unread chat that left the list still counts", () => {
   store().markThreadsUnread(["A", "gone"]);
   assert.equal(countUnreadRows(store()), 2);
 });
+
+test("a hidden Compare row counts once, not once per pane", () => {
+  const compare = {
+    id: "cmp",
+    title: "cmp",
+    type: "compare",
+    updatedAt: 0,
+    threadIds: ["left", "right"],
+  } as SidebarItem;
+  useChatNavigationStore.setState({
+    unreadThreadIds: new Set(),
+    unreadRowIds: {},
+  });
+  // Marked while it was on screen, then the section closes and the published
+  // lists no longer carry it. Both threads stay unread.
+  store().publishLists({
+    pinnedItems: [],
+    projectItems: [],
+    recentItems: [compare],
+    attentionItemIds: [],
+    activeItemId: null,
+  });
+  store().markThreadsUnread(["left", "right"], { left: "cmp", right: "cmp" });
+  assert.equal(countUnreadRows(store()), 1);
+  store().publishLists({
+    pinnedItems: [],
+    projectItems: [],
+    recentItems: [],
+    attentionItemIds: [],
+    activeItemId: null,
+  });
+  assert.equal(store().unreadThreadIds.size, 2);
+  assert.equal(countUnreadRows(store()), 1);
+});
+
+test("clearing an unread drops the row it was grouped under", () => {
+  useChatNavigationStore.setState({
+    unreadThreadIds: new Set(),
+    unreadRowIds: {},
+  });
+  store().markThreadsUnread(["left"], { left: "cmp" });
+  store().clearThreadsUnread(["left"]);
+  assert.deepEqual(store().unreadRowIds, {});
+});

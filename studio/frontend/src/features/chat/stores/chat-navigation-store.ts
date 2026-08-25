@@ -26,6 +26,8 @@ export interface ChatNavigationState {
   attentionItemIds: string[];
   activeItemId: string | null;
   unreadThreadIds: Set<string>;
+  /** Which row each unread thread belongs to, for rows no longer published. */
+  unreadRowIds: Record<string, string>;
   /** Row ids, most recently opened first. */
   recentlyViewedIds: string[];
   /** A walk through the stack in progress: the order frozen at the first step,
@@ -49,7 +51,16 @@ export interface ChatNavigationState {
   /** Drop one account's rows, unread set and walk. Called as the sidebar goes. */
   resetAccountState: () => void;
   setSelectionActive: (active: boolean) => void;
-  markThreadsUnread: (threadIds: string[]) => void;
+  /**
+   * `rowIdByThreadId` groups the threads by the row they belong to, so a
+   * Compare row still counts once after it leaves the published lists. The
+   * lists only carry what is on screen, and a collapsed section takes its rows
+   * with it while their threads stay unread.
+   */
+  markThreadsUnread: (
+    threadIds: string[],
+    rowIdByThreadId?: Record<string, string>,
+  ) => void;
   clearThreadsUnread: (threadIds: string[]) => void;
   clearAllUnreads: () => void;
   noteViewed: (itemId: string) => void;
@@ -102,6 +113,7 @@ const ACCOUNT_STATE = {
   attentionItemIds: [] as string[],
   activeItemId: null as string | null,
   unreadThreadIds: new Set<string>(),
+  unreadRowIds: {} as Record<string, string>,
   recentlyViewedIds: [] as string[],
   traversal: null as { order: string[]; index: number } | null,
   selectionActive: false,
@@ -132,19 +144,24 @@ export const useChatNavigationStore = create<ChatNavigationState>(
 
     // A fresh Set each time, or every account after the first shares one.
     resetAccountState: () =>
-      set({ ...ACCOUNT_STATE, unreadThreadIds: new Set() }),
+      set({ ...ACCOUNT_STATE, unreadThreadIds: new Set(), unreadRowIds: {} }),
 
     setSelectionActive: (active) =>
       set((state) =>
         state.selectionActive === active ? state : { selectionActive: active },
       ),
 
-    markThreadsUnread: (threadIds) =>
+    markThreadsUnread: (threadIds, rowIdByThreadId) =>
       set((state) => {
         if (threadIds.length === 0) return state;
         const unreadThreadIds = new Set(state.unreadThreadIds);
         for (const id of threadIds) unreadThreadIds.add(id);
-        return { unreadThreadIds };
+        const unreadRowIds = { ...state.unreadRowIds };
+        for (const id of threadIds) {
+          const rowId = rowIdByThreadId?.[id];
+          if (rowId) unreadRowIds[id] = rowId;
+        }
+        return { unreadThreadIds, unreadRowIds };
       }),
 
     clearThreadsUnread: (threadIds) =>
@@ -153,15 +170,19 @@ export const useChatNavigationStore = create<ChatNavigationState>(
           return state;
         }
         const unreadThreadIds = new Set(state.unreadThreadIds);
-        for (const id of threadIds) unreadThreadIds.delete(id);
-        return { unreadThreadIds };
+        const unreadRowIds = { ...state.unreadRowIds };
+        for (const id of threadIds) {
+          unreadThreadIds.delete(id);
+          delete unreadRowIds[id];
+        }
+        return { unreadThreadIds, unreadRowIds };
       }),
 
     clearAllUnreads: () =>
       set((state) =>
         state.unreadThreadIds.size === 0
           ? state
-          : { unreadThreadIds: new Set() },
+          : { unreadThreadIds: new Set(), unreadRowIds: {} },
       ),
 
     noteViewed: (itemId) => {
@@ -266,9 +287,14 @@ export function countUnreadRows(state: ChatNavigationState): number {
   // Plus the unreads no row accounts for, one each: a chat archived or deleted
   // while unread leaves its thread in the set with nothing to fold it into, and
   // the wipe below clears those too.
-  let unlisted = 0;
-  for (const id of state.unreadThreadIds) if (!listed.has(id)) unlisted += 1;
-  return rows + unlisted;
+  // Grouped by the row each belongs to, so a Compare row hidden behind a
+  // collapsed section still counts once rather than once per pane. An id with
+  // no group recorded stands for itself.
+  const hidden = new Set<string>();
+  for (const id of state.unreadThreadIds) {
+    if (!listed.has(id)) hidden.add(state.unreadRowIds[id] ?? id);
+  }
+  return rows + hidden.size;
 }
 
 /** The row `slot` (1-based) of Recents only, ignoring the pinned block. */

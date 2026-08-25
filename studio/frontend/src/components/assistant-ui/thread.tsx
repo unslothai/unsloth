@@ -4310,7 +4310,14 @@ const Composer: FC<{
       // refuses it.
       formRef.current?.requestSubmit();
     },
-    { enabled: chatActive && !disabled },
+    {
+      enabled: chatActive && !disabled,
+      // The model picker is a non-modal popover, so the composer stays the
+      // foreground while its search box has focus. Every text field but the
+      // composer keeps this chord.
+      skipInTextFields: true,
+      textFieldException: COMPOSER_INPUT_SELECTOR,
+    },
   );
   const wasDictatingRef = useRef(false);
   useEffect(() => {
