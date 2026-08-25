@@ -447,7 +447,6 @@ class InferenceOrchestrator:
             logger.warning("Inference subprocess did not exit gracefully, terminating")
             try:
                 from utils.process_lifetime import collect_descendants
-
                 descendants = collect_descendants(self._proc.pid)
             except Exception:
                 pass
@@ -467,7 +466,6 @@ class InferenceOrchestrator:
         if descendants:
             try:
                 from utils.process_lifetime import terminate_descendants
-
                 terminate_descendants(descendants, timeout = 5)
             except Exception:
                 pass
