@@ -2806,40 +2806,53 @@ async function serverLoadEvidence(): Promise<boolean | null> {
 const CLI_LOAD_ADOPT_MAX_MS = 600_000;
 
 /**
+ * How the wait ended. Only "server-idle" clears automatic loading: a load still
+ * in flight owns the backend's load lock, so an auto-load issued beside it
+ * queues behind that load and then replaces the model it was loading.
+ */
+type CliLoadAdoption = "adopted" | "server-idle" | "still-loading";
+
+/**
  * With the empty-model load lease held, adopt or await a server-started load
  * before automatic loading.
  */
 async function adoptInFlightServerLoad(
   abortSignal?: AbortSignal,
-): Promise<boolean> {
+): Promise<CliLoadAdoption> {
   const checkpointSelected = () =>
     Boolean(useChatRuntimeStore.getState().params.checkpoint);
-  const tryAdopt = () =>
-    tryAdoptServerActiveModel({ allowWhileModelLoading: true });
+  const adopted = async () =>
+    checkpointSelected() ||
+    (await tryAdoptServerActiveModel({ allowWhileModelLoading: true }));
+  const settle = async (): Promise<CliLoadAdoption> =>
+    (await adopted()) ? "adopted" : "server-idle";
 
   abortSignal?.throwIfAborted();
-  if (checkpointSelected() || (await tryAdopt())) return true;
+  if (await adopted()) return "adopted";
 
   let evidence = await serverLoadEvidence();
   abortSignal?.throwIfAborted();
   if (evidence !== true) {
-    return checkpointSelected() || (await tryAdopt());
+    return settle();
   }
 
   toast.info("Waiting for model to finish loading…");
   const deadline = Date.now() + CLI_LOAD_ADOPT_MAX_MS;
   while (Date.now() < deadline) {
     abortSignal?.throwIfAborted();
-    if (checkpointSelected()) return true;
+    if (checkpointSelected()) return "adopted";
     await new Promise((resolve) => setTimeout(resolve, 500));
     abortSignal?.throwIfAborted();
-    if (checkpointSelected() || (await tryAdopt())) return true;
+    if (await adopted()) return "adopted";
     evidence = await serverLoadEvidence();
     if (evidence === false) {
-      return checkpointSelected() || (await tryAdopt());
+      return settle();
     }
   }
-  return checkpointSelected() || (await tryAdopt());
+  // The cap bounds the wait; it is not evidence the server went idle. Auto-loading
+  // from here queues a second load behind the one still running and replaces it,
+  // which is the failure this path exists to stop.
+  return (await adopted()) ? "adopted" : "still-loading";
 }
 
 async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
@@ -2850,12 +2863,20 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
 }> {
   options?.abortSignal?.throwIfAborted();
   if (!options?.skipAdoptServerModel) {
-    const adoptedServerModel = await adoptInFlightServerLoad(
-      options?.abortSignal,
-    );
+    const adoption = await adoptInFlightServerLoad(options?.abortSignal);
     options?.abortSignal?.throwIfAborted();
-    if (adoptedServerModel) {
+    if (adoption === "adopted") {
       return { loaded: true, blockedByTrustRemoteCode: false };
+    }
+    if (adoption === "still-loading") {
+      toast.error("The model is still loading", {
+        description: "Send again once it finishes, or pick a model in the top bar.",
+      });
+      return {
+        loaded: false,
+        blockedByTrustRemoteCode: false,
+        loadFailureReported: true,
+      };
     }
   }
 

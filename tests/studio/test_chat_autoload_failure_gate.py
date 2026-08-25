@@ -163,13 +163,18 @@ const GPU_LAYERS_AUTO = -1;
 // visible-state snapshot helpers, so their imported contracts must exist even
 // though these scenarios call autoLoadSmallestModel directly.
 async function getInferenceStatus() {
-  return { active_model: null, loading: [] };
+  return { active_model: null, loading: SCENARIO.serverLoading ?? [] };
 }
-// serverLoadEvidence reads phase to decide whether a CLI load is in flight.
-// Null is the idle answer the route returns with no llama-server running, so
+// serverLoadEvidence reads phase to decide whether a CLI load is in flight. The
+// default is the idle answer the route gives with no llama-server running, so
 // these scenarios reach the auto-load path instead of waiting on a phantom load.
 async function getLoadProgress() {
-  return { phase: null, bytes_loaded: 0, bytes_total: 0, fraction: 0 };
+  return {
+    phase: SCENARIO.loadPhase ?? null,
+    bytes_loaded: 0,
+    bytes_total: 0,
+    fraction: 0,
+  };
 }
 function isExternalModelId(value: unknown) {
   return typeof value === "string" && value.startsWith("external::");
@@ -586,6 +591,10 @@ SCENARIO_HELPERS = """
       platformFetched: true,
       variants: {},
       lastLoaded: null,
+      // /api/inference/load-progress phase and /status loading[], the two probes
+      // serverLoadEvidence reads. Both idle unless a scenario says otherwise.
+      loadPhase: null,
+      serverLoading: [],
       validate: VALIDATE_OK,
       load: LOADED,
       download: () => "complete",
@@ -690,7 +699,7 @@ def _build_harness(run_dir: Path):
     )
 
 
-def _run(scenario_expr: str) -> dict:
+def _run(scenario_expr: str, prelude: str = "") -> dict:
     _require_node()
     # Its own directory per invocation: a shared file lets one runner read another's rewrite.
     TEMP.mkdir(parents = True, exist_ok = True)
@@ -704,6 +713,7 @@ def _run(scenario_expr: str) -> dict:
         """
         )
         + SCENARIO_HELPERS
+        + textwrap.dedent(prelude)
         + textwrap.dedent(
             f"""
         setScenario({scenario_expr});
@@ -1561,3 +1571,48 @@ def test_an_unclassified_local_row_is_never_auto_loaded(fmt):
 
     assert "/models/x" not in _loaded_paths(out)
     assert _loaded_paths(out) == [DEFAULT_MODEL]
+
+
+# Only adoptInFlightServerLoad reads the clock in the sliced region (its deadline
+# and the loop guard), so moving it forward once past the cap lands on the
+# timed-out exit without touching anything else in the cascade.
+_EXPIRE_CLI_LOAD_WAIT = """
+const realNow = Date.now.bind(Date);
+let nowCalls = 0;
+Date.now = () => realNow() + (nowCalls++ === 0 ? 0 : 600_001);
+"""
+
+
+def test_a_load_still_in_flight_at_the_cap_does_not_auto_load_over_it():
+    """The wait is capped, but the cap is not evidence the server went idle. Auto-loading
+    there queues a second load behind the one still running and replaces the model the
+    CLI was asked for, which is the failure this path exists to stop."""
+    out = _run(
+        "scenario({ loadPhase: 'mmap', serverLoading: ['org/slow-model-GGUF'],"
+        " ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })",
+        prelude = _EXPIRE_CLI_LOAD_WAIT,
+    )
+
+    assert _loaded_paths(out) == []
+    assert _downloads_started(out) == []
+    assert out["result"]["loaded"] is False
+    assert out["result"]["loadFailureReported"] is True
+    assert [t["msg"] for t in _toasts(out, "toast.error")] == [
+        "The model is still loading"
+    ]
+    # The wait announced itself, so the refusal is the end of a visible wait.
+    assert [t["msg"] for t in _toasts(out, "toast.info")] == [
+        "Waiting for model to finish loading\u2026"
+    ]
+
+
+def test_a_server_that_went_idle_during_the_wait_still_auto_loads():
+    """The other side of the same branch: once the probes report idle the cascade must
+    run, or a cleared load would leave Send with nothing."""
+    out = _run(
+        "scenario({ ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })",
+        prelude = _EXPIRE_CLI_LOAD_WAIT,
+    )
+
+    assert _loaded_paths(out) == [GEMMA_REPO]
+    assert out["result"]["loaded"] is True
