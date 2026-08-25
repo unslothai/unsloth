@@ -33,10 +33,10 @@ from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
 
 
 # The method a load may ask for; ``auto`` lets the backend choose.
-MlxSpeculativeMode = Literal["off", "auto", "mtp", "dflash", "eagle3"]
+MlxSpeculativeMode = Literal["off", "auto", "mtp", "dflash", "dspark", "dflash2", "eagle3"]
 # The method a resolution can produce: ``auto`` has already been decided by the time it is
 # reported, so it is never an answer.
-MlxSpeculativeResolvedMode = Literal["off", "mtp", "dflash", "eagle3"]
+MlxSpeculativeResolvedMode = Literal["off", "mtp", "dflash", "dspark", "dflash2", "eagle3"]
 
 
 class LoadRequest(BaseModel):
@@ -1446,7 +1446,7 @@ class MlxSpeculativeCandidate(BaseModel):
     verdict. ``loadable`` is exactly ``reason is None``, carried so a client need not re-derive it.
     """
 
-    method: Literal["mtp", "dflash", "eagle3"]
+    method: Literal["mtp", "dflash", "dspark", "dflash2", "eagle3"]
     repo_id: str
     label: str
     source: Literal["builtin", "cached", "recommended"] = "recommended"

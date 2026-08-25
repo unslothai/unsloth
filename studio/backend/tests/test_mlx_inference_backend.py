@@ -4787,6 +4787,194 @@ def test_the_built_in_head_is_split_for_the_target_the_load_names(monkeypatch, t
         backend._load_speculative_drafter("mtp", spec.BUILTIN_MTP_ID, 4, None)
 
 
+@pytest.mark.parametrize(
+    "config,expected",
+    [
+        # Plain DFlash: no architecture and no projector says otherwise.
+        ({"dflash_config": {"target_layer_ids": [0]}}, "dflash"),
+        # DFlash2 is named by its architecture; its config is otherwise a DFlash one.
+        (
+            {
+                "architectures": ["DFlash2DraftModel"],
+                "dflash_config": {"target_layer_ids": [0]},
+            },
+            "dflash2",
+        ),
+        # DSpark declares either a projector or a Markov head, in either place.
+        ({"dflash_config": {"projector_type": "dspark"}}, "dspark"),
+        ({"markov_rank": 256, "dflash_config": {}}, "dspark"),
+        ({"dflash_config": {"markov_rank": 256}}, "dspark"),
+        # A rank of zero is the absence of that head, not a small one.
+        ({"markov_rank": 0, "dflash_config": {}}, "dflash"),
+        ({"markov_rank": "not a number", "dflash_config": {}}, "dflash"),
+    ],
+)
+def test_a_drafter_over_the_dflash_loop_is_named_by_its_architecture(config, expected):
+    """These checkpoints leave model_type as their backbone's -- every one of them reads
+    ``qwen3`` -- so the method has to come from the architecture and the projector, as mlx-vlm
+    reads it. Reading model_type instead makes all of them plain DFlash.
+    """
+    from core.inference import mlx_speculative as spec
+    assert spec._drafter_method({"model_type": "qwen3", **config}) == expected
+
+
+@pytest.mark.parametrize("gated", ["dspark", "dflash2"])
+def test_a_method_whose_drafter_the_runtime_lacks_is_reported_unavailable(monkeypatch, gated):
+    """The DFlash loop is everywhere; the architectures over it are not, so a runtime
+    predating one must say so rather than answer for the loop it shares.
+    """
+    pytest.importorskip("mlx_vlm")
+    import importlib
+
+    from core.inference import mlx_speculative as spec
+
+    # Resolved the way the probe itself resolves them.
+    drafters = importlib.import_module("mlx_vlm.speculative.drafters")
+    ar = importlib.import_module("mlx_vlm.generate.ar")
+    utils = importlib.import_module("mlx_vlm.speculative.utils")
+
+    assert spec._runtime_capabilities_from_modules(drafters, ar, utils)["methods"][gated]
+
+    monkeypatch.setitem(
+        spec._MLX_METHOD_MODULES, gated, "mlx_vlm.speculative.drafters.absent_here"
+    )
+    methods = spec._runtime_capabilities_from_modules(drafters, ar, utils)["methods"]
+    assert methods[gated] is False
+    # The loop it runs is still there, so the methods that only need the loop are unaffected.
+    assert all(methods[other] is True for other in spec.MLX_SPECULATIVE_METHODS - {gated})
+
+
+def test_a_dflash_architecture_loads_under_the_loop_it_runs_not_its_own_name(monkeypatch):
+    """A method sharing a loop is translated before load_drafter sees it, and still reported
+    as the method that was asked for.
+    """
+    pytest.importorskip("mlx_vlm")
+    import mlx_vlm.speculative.drafters as drafters
+
+    from core.inference import mlx_speculative as spec
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    assert "dspark" not in drafters.KNOWN_DRAFTER_KINDS
+    kinds = []
+    monkeypatch.setattr(spec, "mlx_speculative_snapshot_path", lambda *_a: Path("/drafter"))
+    monkeypatch.setattr(
+        drafters, "load_drafter", lambda p, kind: kinds.append(kind) or (SimpleNamespace(), kind)
+    )
+    monkeypatch.setattr(drafters, "validate_drafter_compatibility", lambda *_a: None)
+    monkeypatch.setattr(
+        "core.inference.mlx_inference.validate_speculative_target_contract", lambda *_a: None
+    )
+    backend = MLXInferenceBackend()
+    backend._model = SimpleNamespace()
+    for method in ("dspark", "dflash2", "dflash"):
+        backend._load_speculative_drafter(method, "org/drafter", 4, "org/target")
+        assert backend._draft_method == method
+        assert backend._draft_kind == "dflash"
+    assert kinds == ["dflash", "dflash", "dflash"]
+
+
+def test_discovery_keeps_a_drafter_whose_method_the_probe_can_explain(monkeypatch, tmp_path):
+    """An architecture the runtime cannot load looks like a config that is not a drafter, so
+    discovery drops it. A method the probe reports on is the exception: dropping it there leaves
+    nothing downstream to attach the reason to.
+    """
+    import json
+
+    from core.inference import mlx_speculative as spec
+
+    def repo(name: str, config: dict) -> None:
+        snapshot = tmp_path / f"models--org--{name}" / "snapshots" / "abc"
+        snapshot.mkdir(parents = True)
+        (snapshot / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+        (snapshot / "model.safetensors").write_bytes(b"\0")
+
+    repo("dspark-drafter", {"model_type": "qwen3", "dflash_config": {"projector_type": "dspark"}})
+    repo("dflash2-drafter", {"model_type": "qwen3", "architectures": ["DFlash2DraftModel"],
+                             "dflash_config": {"num_target_layers": 2}})
+    repo("plain-drafter", {"model_type": "qwen3", "dflash_config": {"num_target_layers": 2}})
+
+    # Every architecture unavailable, as on a runtime predating all of them.
+    monkeypatch.setattr(spec, "_drafter_architecture_available", lambda _config: False)
+    monkeypatch.setattr(spec, "_normalized_drafter_config", lambda _config: None)
+    monkeypatch.setattr(spec, "_snapshot_complete_at", lambda *_a, **_k: True)
+    monkeypatch.setattr(spec, "_snapshot_weight_bytes_at", lambda _snapshot: 1024)
+
+    kept = {repo_id: spec._drafter_method(config)
+            for repo_id, config, _snapshot, _size in spec._scan_active_cached_drafter_configs(tmp_path)}
+    assert kept == {"org/dspark-drafter": "dspark", "org/dflash2-drafter": "dflash2"}
+
+
+@pytest.mark.parametrize(
+    ("gated", "draft_config"),
+    [
+        ("dspark", {"model_type": "qwen3", "dflash_config": {"projector_type": "dspark"}}),
+        (
+            "dflash2",
+            {
+                "model_type": "qwen3",
+                "architectures": ["DFlash2DraftModel"],
+                "dflash_config": {"num_target_layers": 2},
+            },
+        ),
+    ],
+)
+def test_a_cached_drafter_the_runtime_is_too_old_for_says_so_instead_of_vanishing(
+    monkeypatch, gated, draft_config
+):
+    """The two predicates that ask mlx-vlm about a drafter's architecture are the runtime
+    boundary, so an older runtime is one where they fail for these methods and no other. Blaming
+    the checkpoint's configuration for a runtime gap sends the user after the wrong thing.
+    """
+    from core.inference import mlx_speculative as spec
+
+    target_config = {"model_type": "qwen3", "text_config": {"hidden_size": 8}}
+    assert spec._drafter_method(draft_config) == gated
+
+    monkeypatch.setattr(
+        spec,
+        "_drafter_architecture_available",
+        lambda config: spec._drafter_method(config) != gated,
+    )
+    monkeypatch.setattr(
+        spec,
+        "_normalized_drafter_config",
+        lambda config: None if spec._drafter_method(config) == gated else object(),
+    )
+    monkeypatch.setattr(
+        spec,
+        "_cached_drafter_configs",
+        lambda: iter([("org/drafter", draft_config, Path("/snap"), 1024)]),
+    )
+    monkeypatch.setattr(spec, "_snapshot_weight_bytes", lambda *_a: 2048)
+    monkeypatch.setattr(spec, "_dynamic_materialization_bytes", lambda *_a: 0)
+
+    caps = {"methods": dict.fromkeys(spec.MLX_SPECULATIVE_METHODS, True), "reason": None}
+    caps["methods"][gated] = False
+    rows = list(
+        spec._cached_candidate_rows(
+            "org/target", target_config, caps, spec.ENABLED_MLX_SPECULATIVE_METHODS
+        )
+    )
+    assert [row.reason for row in rows] == ["method_runtime_unavailable"]
+    assert rows[0].fields["runtime_supported"] is False
+
+
+def test_auto_can_rank_and_size_every_method_it_may_select():
+    """Auto subscripts its rank table directly, so a method missing from it raises exactly when
+    a user turns out to have that drafter downloaded. Distinct ranks keep the order total.
+    """
+    from core.inference import mlx_speculative as spec
+    from models.inference import LoadRequest
+
+    assert set(spec._AUTO_METHOD_RANK) == set(spec.MLX_SPECULATIVE_METHODS)
+    assert len(set(spec._AUTO_METHOD_RANK.values())) == len(spec._AUTO_METHOD_RANK)
+    field = LoadRequest.model_fields["mlx_draft_block_size"]
+    low = next(m.ge for m in field.metadata if hasattr(m, "ge"))
+    high = next(m.le for m in field.metadata if hasattr(m, "le"))
+    for method in spec.MLX_SPECULATIVE_METHODS:
+        assert low <= (spec.mlx_auto_draft_block_size(method) or 0) <= high, method
+
+
 def test_the_adapter_probe_reads_the_snapshot_the_load_would_open(monkeypatch, tmp_path):
     # No model configuration exists yet, so the adapter is read from the files, under the
     # name the scan matches on.

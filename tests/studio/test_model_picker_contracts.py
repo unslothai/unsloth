@@ -491,6 +491,27 @@ def test_a_drafter_download_is_watched_from_outside_the_collapsible():
     assert ".at(" not in hook and "[0]" not in hook, hook
 
 
+def test_the_picker_and_the_backend_name_the_same_speculative_methods():
+    """A method only the backend knows is never offered, and one only the picker knows is
+    refused by the request schema once picked. Labels and listing order are keyed by method, so
+    a missing entry there is a compile error rather than something this has to catch.
+    """
+    spec = _read_backend("core/inference/mlx_speculative.py")
+    start = spec.index("MLX_SPECULATIVE_METHODS = frozenset(")
+    backend = set(re.findall(r'"([a-z0-9_]+)"', spec[start : spec.index(")", start)]))
+    assert backend, "the backend's method set moved"
+
+    modes = " ".join(_read("lib/speculative-modes.ts").split())
+    start = modes.index("MLX_SPECULATIVE_METHODS = [")
+    assert set(re.findall(r'"([a-z0-9_]+)"', modes[start : modes.index("]", start)])) == backend
+
+    # The request schema is the third copy, and the door every picked method has to pass.
+    literal = _read_backend("models/inference.py")
+    start = literal.index("MlxSpeculativeMode = Literal[")
+    accepted = set(re.findall(r'"([a-z0-9_]+)"', literal[start : literal.index("]", start)]))
+    assert accepted == backend | {"off", "auto"}
+
+
 def test_the_picker_offers_every_pairing_the_backend_defers():
     """A deferred reason is not a refusal -- the backend declines to judge until the load
     supplies the target's own files, then settles it. Drop one from the picker's set and the

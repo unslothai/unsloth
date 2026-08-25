@@ -24,12 +24,31 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
 
 
-MLX_SPECULATIVE_METHODS = frozenset({"mtp", "dflash", "eagle3"})
+MLX_SPECULATIVE_METHODS = frozenset({"mtp", "dflash", "eagle3", "dspark", "dflash2"})
+
+# DSpark and DFlash2 are architectures over the DFlash loop rather than loops of their own, and
+# mlx-vlm refuses any kind outside KNOWN_DRAFTER_KINDS, so only a kind from here may reach
+# ``load_drafter``.
+MLX_SPECULATIVE_DRAFT_KINDS: dict[str, str] = {
+    "mtp": "mtp",
+    "dflash": "dflash",
+    "eagle3": "eagle3",
+    "dspark": "dflash",
+    "dflash2": "dflash",
+}
+
+# Methods carried by a drafter module a runtime can predate; absent means as old as the API.
+_MLX_METHOD_MODULES: dict[str, str] = {
+    "dspark": "mlx_vlm.speculative.drafters.dspark",
+    "dflash2": "mlx_vlm.speculative.drafters.dflash2",
+}
 MLX_SPECULATIVE_MODES = MLX_SPECULATIVE_METHODS | {"auto"}
 
 # Each method joins this set with the load path that can run it, so a request for a
 # method the worker cannot execute is refused before the active model is torn down.
-ENABLED_MLX_SPECULATIVE_METHODS: frozenset[str] = frozenset({"mtp", "dflash", "eagle3"})
+ENABLED_MLX_SPECULATIVE_METHODS: frozenset[str] = frozenset(
+    {"mtp", "dflash", "eagle3", "dspark", "dflash2"}
+)
 
 # Refusals reach the client as prose, while the codes stay the vocabulary the response
 # schema will use to say why a resolved method differs from the one requested.
@@ -377,11 +396,19 @@ def _runtime_capabilities_from_modules(drafters: Any, ar: Any, utils: Any) -> di
     known = set(getattr(drafters, "KNOWN_DRAFTER_KINDS", ()))
     methods = {}
     for method in sorted(MLX_SPECULATIVE_METHODS):
+        kind = MLX_SPECULATIVE_DRAFT_KINDS[method]
         try:
-            dispatch = utils.get_speculative_rounds_batch(method)
+            dispatch = utils.get_speculative_rounds_batch(kind)
         except Exception:
             dispatch = None
-        methods[method] = bool(common and method in known and callable(dispatch))
+        available = bool(common and kind in known and callable(dispatch))
+        module = _MLX_METHOD_MODULES.get(method)
+        if available and module is not None:
+            try:
+                importlib.import_module(module)
+            except Exception:
+                available = False
+        methods[method] = available
     result = {"common": common, "methods": methods}
     result["reason"] = None if common else "runtime_missing_speculative_api"
     return result
@@ -623,9 +650,12 @@ def _scan_active_cached_drafter_configs(root: Path) -> Optional[_DrafterRows]:
                 continue
             # Completeness reads shard indexes off disk, so reject on the configuration first.
             method = _drafter_method(config)
-            if (
-                method is None
-                or not _drafter_architecture_available(config)
+            if method is None:
+                continue
+            # An architecture this runtime cannot load looks like a config that is not a
+            # drafter. A method the probe tracks is the exception: its row survives to name why.
+            if method not in _MLX_METHOD_MODULES and (
+                not _drafter_architecture_available(config)
                 or _normalized_drafter_config(config) is None
             ):
                 continue
@@ -807,17 +837,35 @@ def _cached_token_id_map(
     return mapping
 
 
+def _dflash_family_method(config: dict[str, Any]) -> Optional[str]:
+    """These checkpoints leave ``model_type`` as their backbone's, so mlx-vlm separates them in
+    ``get_model_and_args`` by architecture and projector. Read the same way rather than by loading
+    the drafter module, so a runtime too old to load one can still name the method.
+    """
+    architectures = config.get("architectures")
+    if "DFlash2DraftModel" in set(architectures if isinstance(architectures, list) else ()):
+        return "dflash2"
+    nested = config.get("dflash_config")
+    if not isinstance(nested, dict):
+        return None
+    try:
+        markov = int(config.get("markov_rank") or nested.get("markov_rank") or 0)
+    except (TypeError, ValueError):
+        markov = 0
+    return "dspark" if nested.get("projector_type") == "dspark" or markov > 0 else "dflash"
+
+
 def _drafter_method(config: dict[str, Any]) -> Optional[str]:
     model_type = _draft_model_type(config)
     try:
         from mlx_vlm.speculative.drafters import DRAFTER_KIND_BY_MODEL_TYPE
-        method = DRAFTER_KIND_BY_MODEL_TYPE.get(model_type)
+        kind = DRAFTER_KIND_BY_MODEL_TYPE.get(model_type)
     except Exception:
-        method = None
-    if method in MLX_SPECULATIVE_METHODS:
-        return method
-    if isinstance(config.get("dflash_config"), dict):
-        return "dflash"
+        kind = None
+    if kind == "dflash" or (kind is None and isinstance(config.get("dflash_config"), dict)):
+        return _dflash_family_method(config) or "dflash"
+    if kind in MLX_SPECULATIVE_METHODS:
+        return kind
     speculators = config.get("speculators_config")
     if isinstance(speculators, dict) and speculators.get("algorithm") == "eagle3":
         return "eagle3"
@@ -1126,7 +1174,7 @@ def _dynamic_candidate_config_matches(
     if normalized is None:
         return False
 
-    if method == "dflash":
+    if MLX_SPECULATIVE_DRAFT_KINDS.get(method) == "dflash":
         # Where a field lives is the config class's decision, not the raw file's: newer
         # checkpoints state num_target_layers under dflash_config.
         captures = _config_value(normalized, "target_layer_ids")
@@ -1190,10 +1238,32 @@ BUILTIN_MTP_ID = "builtin://mtp"
 
 # Draft tokens Auto runs each method at. The drafter's own configuration declares either
 # nothing or its block size, neither near where the method pays off.
-MLX_AUTO_DRAFT_TOKENS: dict[str, int] = {"mtp": 3, "dflash": 3, "eagle3": 1}
+MLX_AUTO_DRAFT_TOKENS: dict[str, int] = {
+    "mtp": 3,
+    "dflash": 3,
+    # Drafts exactly what it is asked for, and acceptance falls off faster than a third token
+    # repays: measured slower at three on every target.
+    "dspark": 2,
+    # Adapts below the request -- measured two per round when asked for three -- so the third
+    # is headroom for sequences that accept enough to use it, not a cost paid up front.
+    "dflash2": 3,
+    "eagle3": 1,
+}
 
 # A target's own head ranks with MTP because it is MTP, and needs no download to get there.
-_AUTO_METHOD_RANK: dict[str, int] = {"mtp": 0, "dflash": 1, "eagle3": 2}
+# What a round returns against what it costs: a drafter's weights are read once per drafted
+# token, the target once for the whole round. Neither term orders these methods alone.
+_AUTO_METHOD_RANK: dict[str, int] = {
+    # Within a few hundredths of DFlash2's acceptance per round, from a fifth of the weights.
+    "mtp": 0,
+    # Accepts enough more than DSpark to cover the weights it adds. That margin narrows with
+    # the target and reverses under about 10 GB of it, which a low-bit large target can reach.
+    "dflash2": 1,
+    "dspark": 2,
+    # Both lead the original DFlash by family, ordering checkpoints no target currently spans.
+    "dflash": 3,
+    "eagle3": 4,
+}
 
 
 def _precision_rank(bits: Optional[int]) -> tuple[int, int]:
@@ -2322,7 +2392,8 @@ def _cached_candidate_rows(target_id, target_config, caps, enabled):
         match = _dynamic_candidate_config_matches(
             method, target_id, target_config, draft_config, snapshot, repo_id
         )
-        if match is False:
+        # A runtime that cannot load the drafter cannot judge its configuration either.
+        if match is False and upstream_ready:
             yield _CandidateRow(
                 repo_id.casefold(),
                 _MISMATCH,

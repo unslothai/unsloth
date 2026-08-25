@@ -1339,6 +1339,8 @@ function LoadModeRow({
 
 const MLX_SPECULATIVE_METHOD_LABELS: Record<MlxSpeculativeMethod, string> = {
   mtp: "MTP",
+  dspark: "DSpark",
+  dflash2: "DFlash2",
   dflash: "DFlash",
   eagle3: "EAGLE-3",
 };

@@ -54,7 +54,13 @@ export const SEPARATE_DRAFT_MODEL_SPEC_TYPES: ReadonlySet<string> = new Set([
  * (core/inference/mlx_speculative.py); the mode list adds "off", which the backend accepts
  * through normalization rather than through that constant.
  */
-export const MLX_SPECULATIVE_METHODS = ["mtp", "dflash", "eagle3"] as const;
+export const MLX_SPECULATIVE_METHODS = [
+  "mtp",
+  "dspark",
+  "dflash2",
+  "dflash",
+  "eagle3",
+] as const;
 export type MlxSpeculativeMethod = (typeof MLX_SPECULATIVE_METHODS)[number];
 
 /** Menu order, matching the GGUF control: Auto first, Off last. */
@@ -209,8 +215,10 @@ export interface MlxSpeculativeOptions {
 /** Listing order between the methods, cheapest drafting first. Not a depth or a count. */
 const METHOD_ORDER: Record<MlxSpeculativeMethod, number> = {
   mtp: 1,
-  dflash: 2,
-  eagle3: 3,
+  dspark: 2,
+  dflash2: 3,
+  dflash: 4,
+  eagle3: 5,
 };
 
 /**

@@ -34,7 +34,7 @@ export interface ApiModelOverride {
   // biome-ignore lint/style/useNamingConvention: API schema
   mlx_kv_bits?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
-  mlx_speculative_mode?: "auto" | "mtp" | "dflash" | "eagle3";
+  mlx_speculative_mode?: "auto" | "mtp" | "dspark" | "dflash2" | "dflash" | "eagle3";
   // biome-ignore lint/style/useNamingConvention: API schema
   mlx_draft_model?: string;
   // biome-ignore lint/style/useNamingConvention: API schema
