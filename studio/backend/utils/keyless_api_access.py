@@ -306,12 +306,39 @@ def _full_scope_transport_allowed(request: Any, app_state: Any) -> bool:
     )
 
 
+def _browser_initiated_elsewhere(request: Any) -> bool:
+    """Whether a page on another site made this request, as the browser reports it.
+
+    ``Origin`` alone does not answer that. No browser attaches it to a same-origin
+    GET, nor to a cross-site GET issued in ``no-cors`` mode -- and a ``no-cors``
+    fetch at ``http://127.0.0.1:<port>`` really does arrive, since only Chromium
+    holds those back with Private Network Access. So the Origin rule below sees
+    nothing, and the page gets a keyless request it did not have to authenticate.
+
+    ``Sec-Fetch-Site`` closes that: the browser sets it on every request whatever
+    the mode, and a page cannot forge it, because the ``Sec-`` prefix makes it a
+    forbidden header name. Absence has to stay admitted -- curl, the OpenAI SDKs
+    and Safari before 16.4 all send nothing, and the whole point of the setting is
+    to serve them -- so this only ever narrows what a browser can reach.
+    """
+    try:
+        site = request.headers.get("sec-fetch-site")
+    except Exception:
+        return True
+    if site is None:
+        return False
+    # `none` is the user typing the URL or opening a bookmark, which no page can cause.
+    return site.strip().lower() not in ("same-origin", "none")
+
+
 def keyless_transport_allowed(request: Any, scope: str) -> bool:
     """Enforce the loopback/private-LAN boundary from authoritative ASGI state."""
     try:
         if request.headers.get("origin") is not None:
             return False
     except Exception:
+        return False
+    if _browser_initiated_elsewhere(request):
         return False
     app_state = _request_app_state(request)
     if _hosted_mode_forbidden(app_state):
