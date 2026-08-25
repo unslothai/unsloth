@@ -848,6 +848,94 @@ class Payload:
         detail["failures"] = failures
         return self.record("server_flags", not failures, detail)
 
+    def assert_compaction(self) -> bool:
+        """A conversation past the window must COMPACT, and a short one must not.
+
+        The context length is pinned to `--studio-ctx` by `assert_server_flags`
+        immediately above, so this is the one place the payload knows what the
+        window is and can overflow it deliberately.
+
+        Studio reports the fit on the completion itself, as `context_truncated`
+        with `dropped_messages`, so the claim is readable without a browser.
+        The rule is a PAIR, and the second half is what makes the first mean
+        anything:
+
+        * a conversation built past the budget comes back 200 with
+          `dropped_messages > 0` -- it was shortened, not refused;
+        * a two-message conversation comes back with nothing dropped.
+
+        Asserting only the first passes on a server that reports truncation
+        unconditionally, which is indistinguishable from working and is the
+        failure this file keeps being caught by. Asserting only the second
+        passes on a server that never compacts at all and returns a
+        context-length error instead.
+        """
+        failures: list[str] = []
+        detail: dict = {}
+
+        def _dropped(body) -> int | None:
+            if not isinstance(body, dict):
+                return None
+            truncation = body.get("context_truncated")
+            if not isinstance(truncation, dict):
+                return 0
+            try:
+                return int(truncation.get("dropped_messages") or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        # Distinct filler, so nothing can be deduplicated or cached into
+        # fitting. Sized past `studio_ctx` by a wide margin rather than a
+        # narrow one: the budget subtracts the reply reserve and the template's
+        # own framing, so a prompt that merely equals the context length is not
+        # reliably over it.
+        long_messages = []
+        for i in range(40):
+            long_messages.append({
+                "role": "user",
+                "content": f"Fact {i}: the {i}th token of this transcript is "
+                           + " ".join(f"w{i}x{j}" for j in range(40)),
+            })
+            long_messages.append({"role": "assistant", "content": f"Noted fact {i}."})
+        long_messages.append({"role": "user", "content": "Reply with one word."})
+
+        code, body = self.chat(long_messages, max_tokens = 32)
+        detail["long_status"] = code
+        detail["long_messages"] = len(long_messages)
+        detail["long_truncation"] = (body or {}).get("context_truncated") if isinstance(body, dict) else None
+        long_dropped = _dropped(body)
+        if code != 200:
+            failures.append(
+                f"an over-length conversation returned HTTP {code} instead of "
+                f"being compacted: {str(body)[:300]}"
+            )
+        elif not long_dropped:
+            failures.append(
+                f"a {len(long_messages)}-message conversation against a "
+                f"{self.args.studio_ctx}-token window dropped nothing, so no "
+                f"compaction happened and the reply used a prompt nobody sized"
+            )
+
+        # The negative control, and it is not optional: without it a server
+        # that always claims truncation passes the check above.
+        code, body = self.chat(
+            [{"role": "user", "content": "Say hi."}], max_tokens = 16
+        )
+        detail["short_status"] = code
+        short_dropped = _dropped(body)
+        detail["short_dropped"] = short_dropped
+        if code != 200:
+            failures.append(f"the short control returned HTTP {code}")
+        elif short_dropped:
+            failures.append(
+                f"a two-message conversation reported {short_dropped} dropped "
+                f"messages, so the field is not responsive to length and the "
+                f"check above proves nothing"
+            )
+
+        detail["failures"] = failures
+        return self.record("compaction", not failures, detail)
+
     def assert_api_key(self) -> bool:
         """Mint an API key and DRIVE it, which is the half that can be wrong.
 
@@ -1856,7 +1944,21 @@ class Payload:
         # training would put a reload between the adapter and the export.
         if gpu_ok:
             self.assert_server_flags()
+            # AFTER the reload, because that is what pins the window to
+            # --studio-ctx: a compaction check against an unknown context
+            # length cannot say whether the prompt was over it.
+            self.assert_compaction()
         else:
+            self.record(
+                "compaction",
+                False,
+                {
+                    "failures": [
+                        "skipped: the model was not on the GPU, so the window "
+                        "the check overflows was never pinned"
+                    ]
+                },
+            )
             self.record(
                 "server_flags",
                 False,

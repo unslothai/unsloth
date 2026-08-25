@@ -73,7 +73,10 @@ def test_it_counts_only_what_this_request_wrote():
     this one, which is a green tick for a search that never happened."""
     body = _body()
     assert "before = self.server_log.read_text" in body
-    assert "fresh = after[len(before):]" in body
+    # Whitespace-insensitive: the repo's formatter rewrites this slice to
+    # `after[len(before) :]`, and a guard that matched the unformatted spelling
+    # went red on a reformat rather than on a regression.
+    assert "fresh=after[len(before):]" in "".join(body.split())
     assert "fresh.count(marker)" in body, "counted over the fresh slice, not the file"
 
 
