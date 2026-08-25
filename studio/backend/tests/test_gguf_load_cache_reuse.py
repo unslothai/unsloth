@@ -657,6 +657,22 @@ class TestLoadReusesCachedCopy:
 
         assert out == str(projector)
 
+    def test_an_empty_resolved_projector_does_not_shadow_the_repo_root(self, hf_cache):
+        """An interrupted copy is a file llama-server cannot open. The snapshot and
+        offline paths already refuse one; what a download resolves out of the cache
+        reaches the caller unchecked."""
+        backend = LlamaCppBackend()
+        snap = _build_cache(hf_cache, REPO, {MAIN: 4})
+        empty = snap.parent.parent / "stale-mmproj.gguf"
+        empty.write_bytes(b"")
+        projector = snap.parent.parent / "mmproj-F16.gguf"
+        projector.write_bytes(b"mmproj")
+
+        with patch.object(backend, "_download_companion_gguf", return_value = str(empty)):
+            out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN))
+
+        assert out == str(projector)
+
     def test_an_unanswered_listing_still_reaches_the_repo_root(self, hf_cache):
         """Offline the listing says nothing at all, and the hand-added file is all
         there is; that is not the same claim as a repo that publishes one."""

@@ -11888,8 +11888,19 @@ class LlamaCppBackend:
             near_path = near_path,
             outcome = outcome,
         )
-        if resolved is not None or not near_path or cancel_event.is_set():
-            return resolved
+        if resolved is not None:
+            # Same rule discovery applies to a candidate: an interrupted copy is a file
+            # llama-server cannot open, and it must not shadow one that works. The
+            # snapshot and offline paths check it through _drafter_split_is_complete;
+            # what a download resolved out of the cache reaches here unchecked.
+            try:
+                if Path(resolved).stat().st_size > 0:
+                    return resolved
+            except OSError:
+                return resolved
+            logger.info("Ignoring an empty mmproj resolved for %s: %s", hf_repo, resolved)
+        if not near_path or cancel_event.is_set():
+            return None
         # "The repo publishes none" and "the fetch dropped" both come back None, and only
         # the first is what this fallback is for: launching a hand-added file in place of
         # the repo's own projector is worse than the retry the next Apply gets. The LIVE
