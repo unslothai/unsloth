@@ -4200,8 +4200,7 @@ def _emitted_n_batch(n_batch: Optional[int], n_parallel: int) -> Optional[int]:
 
 
 def _extra_args_n_parallel(
-    extra_args: Optional[Iterable[str]],
-    env: Optional[Mapping[str, str]] = None,
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> Optional[int]:
     """Serving slots a pass-through overrides to, or None when nothing does.
 
