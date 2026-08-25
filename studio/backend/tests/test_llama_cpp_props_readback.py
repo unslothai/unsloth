@@ -230,8 +230,29 @@ def test_larger_server_ctx_does_not_inflate_advertised_value(monkeypatch):
         monkeypatch,
         body = {"default_generation_settings": {"n_ctx": 65536}},
     )
-    inst._reconcile_effective_ctx_with_server()
+    inst._reconcile_effective_ctx_with_server(requested_n_ctx = 32768)
     assert inst._effective_context_length == 32768
+
+
+def test_explicit_extra_arg_ctx_adopts_larger_confirmed_server_value(monkeypatch):
+    """A trailing --ctx-size can override Studio's earlier VRAM-fit ``-c``.
+
+    The resolved explicit request is 100352, Studio's pre-launch estimate is
+    65983, and /props confirms that llama-server actually allocated 100352.
+    Publish the real window while retaining the VRAM warning threshold.
+    """
+    inst = _make_backend(effective_ctx = 65983)
+    inst._max_context_length = 65983
+    _stub_props(
+        monkeypatch,
+        body = {"default_generation_settings": {"n_ctx": 100352}},
+    )
+
+    inst._reconcile_effective_ctx_with_server(requested_n_ctx = 100352)
+
+    assert inst._effective_context_length == 100352
+    assert inst.context_length == 100352
+    assert inst.max_context_length == 65983
 
 
 def test_unset_effective_ctx_adopts_server_value(monkeypatch):

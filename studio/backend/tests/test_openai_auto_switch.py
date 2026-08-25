@@ -6018,6 +6018,35 @@ def test_a_carried_ctx_flag_cannot_outrank_a_freshly_saved_context(monkeypatch):
     assert request.llama_extra_args == ["--top-k", "40"]
 
 
+def test_a_matching_explicit_ctx_flag_survives_auto_switch(monkeypatch):
+    """A matching stored flag is the opt-in that bypasses the VRAM-fit ceiling."""
+    _mock_override_store(monkeypatch)
+    _put(
+        "unsloth/B-GGUF:Q4_K_M",
+        llama_extra_args = ["--ctx-size", "100352", "--spec-draft-n-max", "3"],
+        custom_context_length = 100352,
+        speculative_type = "mtp",
+        spec_draft_n_max = 3,
+    )
+
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+
+    _run_hook("unsloth/B-GGUF")
+    request = rec.calls[0]
+    assert request.max_seq_length == 100352
+    # The matching context opt-in survives. The redundant speculative flag is
+    # still stripped because its first-class fields are unconditional.
+    assert request.llama_extra_args == ["--ctx-size", "100352"]
+
+
 def test_load_kwargs_strip_only_the_shadow_groups_the_override_supplies():
     # Same rule the /load route applies to inherited extras: one group per first-class
     # field actually being sent, so a flag with nothing to shadow still passes through.
