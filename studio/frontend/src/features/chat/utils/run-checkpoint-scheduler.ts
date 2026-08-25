@@ -46,11 +46,9 @@ export function createRunCheckpointScheduler(
     intervalMs?: number;
     timers?: RunCheckpointTimers;
     /**
-     * Whether the run this thread is being checkpointed for is still going. runEnd is the
-     * fast path out, but it is delivered on a subscription bound to whichever thread is
-     * currently main, so a thread that stops being main mid-run never receives its own
-     * runEnd. Without a second opinion that thread would checkpoint for the life of the
-     * page. Omit it and the scheduler behaves exactly as if every thread were active.
+     * Whether the thread's run is still going. runEnd is the fast path out, but it only
+     * reaches whichever thread is main, so one that stops being main mid-run would
+     * checkpoint for the life of the page. Omit it to treat every thread as active.
      */
     isActive?: (threadId: string) => boolean;
   } = {},
@@ -91,8 +89,7 @@ export function createRunCheckpointScheduler(
         }
       };
       if (!isRunning(threadId)) {
-        // The run ended without a runEnd we could hear. That lost the final save too, so
-        // take one here before letting the thread go.
+        // A missed runEnd also lost the final save, so take one on the way out.
         stop(threadId);
         void runSave(threadId).then(noop, noop);
         return;

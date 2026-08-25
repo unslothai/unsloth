@@ -90,9 +90,7 @@ function createGatedSave() {
   };
 }
 
-// ---------------------------------------------------------------------------
 // A. backwards compatibility of the new options
-// ---------------------------------------------------------------------------
 
 test("omitting isActive keeps checkpointing indefinitely while started", async () => {
   const clock = createFakeTimers();
@@ -184,9 +182,7 @@ test("the original no-options call shape arms a window timer at the production i
   }
 });
 
-// ---------------------------------------------------------------------------
 // B. the liveness guard
-// ---------------------------------------------------------------------------
 
 test("a thread that is already inactive at the first tick takes exactly one final save", async () => {
   const clock = createFakeTimers();
@@ -456,9 +452,7 @@ test("the liveness probe receives the thread id under checkpoint", async () => {
   scheduler.stopAll();
 });
 
-// ---------------------------------------------------------------------------
 // C. sync-throw and non-thenable hardening
-// ---------------------------------------------------------------------------
 
 test("a save that throws synchronously does not stop the schedule", async () => {
   const clock = createFakeTimers();
@@ -630,9 +624,7 @@ test("a throwing probe and a throwing save still terminate cleanly", async () =>
   assert.equal(attempts, 1);
 });
 
-// ---------------------------------------------------------------------------
 // D. flushAll
-// ---------------------------------------------------------------------------
 
 test("flushAll checkpoints every started thread", async () => {
   const clock = createFakeTimers();
@@ -901,9 +893,7 @@ test("flushAll writes a thread that was restarted after stopAll", async () => {
   scheduler.stopAll();
 });
 
-// ---------------------------------------------------------------------------
 // E. pre-existing behaviour that must not regress
-// ---------------------------------------------------------------------------
 
 test("the checkpoint interval constant is still eight seconds", () => {
   assert.equal(RUN_CHECKPOINT_INTERVAL_MS, 8_000);

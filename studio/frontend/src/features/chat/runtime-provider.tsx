@@ -2598,10 +2598,9 @@ function ThreadBackendAutosave({
     [reportAutosaveError, saveThread],
   );
 
-  // runEnd rides a subscription bound to whichever thread is main, so a thread that stops
-  // being main mid-run never gets its own runEnd and would otherwise checkpoint for the
-  // life of the page. CancelRegistrar above solves the same problem the same way: ask the
-  // runtime whether the run is still going rather than trusting the event.
+  // runEnd only reaches whichever thread is main, so a thread that stops being main
+  // mid-run never gets its own and would checkpoint for the life of the page. Ask the
+  // runtime instead of trusting the event, as CancelRegistrar above already does.
   const isRunActive = useCallback(
     (threadId: string): boolean => {
       const runtime = aui.threads().__internal_getAssistantRuntime?.();
@@ -2638,11 +2637,10 @@ function ThreadBackendAutosave({
   }, []);
 
   useEffect(() => {
-    // The interval is quiet time between saves, and a hidden renderer may not get one:
-    // Chromium throttles chained timers to a wake a minute, and a WebView can be parked
-    // outright. Checkpoint on the way out instead. beforeunload is deliberately not used
-    // here, matching flushSettingsOnPageHidden: it does not fire on every platform, and a
-    // Tauri quit never fires it at all.
+    // A hidden renderer may never get its next interval: Chromium throttles chained timers
+    // to a wake a minute and a WebView can be parked outright, so checkpoint on the way
+    // out. No beforeunload, matching flushSettingsOnPageHidden: it does not fire on every
+    // platform and a Tauri quit never fires it at all.
     const flush = () => {
       checkpointsRef.current?.flushAll();
     };
