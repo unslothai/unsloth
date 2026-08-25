@@ -51,13 +51,13 @@ def test_repeated_failed_recoveries_stop_replaying_the_same_intent() -> None:
 
     backend.load_model = load_model
 
-    results = [backend._respawn_if_dead() for _ in range(5)]
+    results = [bool(backend._respawn_if_dead()) for _ in range(5)]
 
     assert results == [True, True, True, False, False]
     assert loads == [backend._last_load_intent] * 3
 
 
-def test_completed_generation_restores_the_respawn_budget() -> None:
+def test_opened_stream_does_not_restore_the_budget_before_done() -> None:
     backend = _backend_with_dead_process()
     loads: list[GgufLoadIntent] = []
 
@@ -68,8 +68,8 @@ def test_completed_generation_restores_the_respawn_budget() -> None:
         return True
 
     backend.load_model = dead_load
-    assert backend._respawn_if_dead() is True
-    assert backend._respawn_if_dead() is True
+    assert backend._respawn_if_dead() is not None
+    assert backend._respawn_if_dead() is not None
 
     stream_attempts = 0
 
@@ -79,7 +79,7 @@ def test_completed_generation_restores_the_respawn_budget() -> None:
         stream_attempts += 1
         if stream_attempts == 1:
             raise httpx.ConnectError("forced dead child")
-        yield object()
+        yield object(), None
 
     def healthy_load(intent: GgufLoadIntent) -> bool:
         loads.append(intent)
@@ -94,24 +94,14 @@ def test_completed_generation_restores_the_respawn_budget() -> None:
 
     backend._process.returncode = -9
     backend.load_model = dead_load
-    assert [backend._respawn_if_dead() for _ in range(4)] == [True, True, True, False]
+    assert backend._respawn_if_dead() is None
 
 
-def test_later_completed_generation_also_restores_the_budget() -> None:
+def test_caller_driven_new_process_starts_a_fresh_budget() -> None:
     backend = _backend_with_dead_process()
-    backend._process = _Process(returncode = None)
-    backend._respawned_process = backend._process
     backend._respawn_attempts = 3
-
-    @contextmanager
-    def open_stream(url, payload, cancel_event):
-        yield object()
-
-    backend._open_stream = open_stream
-    with backend._open_chat_stream_with_respawn_retry({}, None):
-        pass
-
-    backend._process.returncode = -9
+    backend._respawned_process = backend._process
+    backend._process = _Process()
 
     def dead_load(intent: GgufLoadIntent) -> bool:
         backend._process = _Process()
@@ -119,4 +109,54 @@ def test_later_completed_generation_also_restores_the_budget() -> None:
         return True
 
     backend.load_model = dead_load
-    assert [backend._respawn_if_dead() for _ in range(4)] == [True, True, True, False]
+    assert [bool(backend._respawn_if_dead()) for _ in range(4)] == [True, True, True, False]
+
+
+def test_direct_completion_recovery_restores_the_budget_each_time() -> None:
+    backend = _backend_with_dead_process()
+    backend._port = 1
+    stream_attempts = 0
+
+    @contextmanager
+    def open_stream(url, payload, cancel_event):
+        nonlocal stream_attempts
+        stream_attempts += 1
+        if stream_attempts % 2:
+            raise httpx.ConnectError("forced dead child")
+        yield object(), None
+
+    def healthy_load(intent: GgufLoadIntent) -> bool:
+        backend._process = _Process(returncode = None)
+        backend._healthy = True
+        return True
+
+    backend._open_stream = open_stream
+    backend._iter_text_cancellable = lambda *args, **kwargs: iter(["data: [DONE]\n"])
+    backend._maybe_recover_from_mtp_crash = lambda exc: False
+    backend.load_model = healthy_load
+
+    for _ in range(4):
+        list(backend.generate_chat_completion([{"role": "user", "content": "ping"}]))
+        backend._process.returncode = -9
+
+    assert stream_attempts == 8
+
+
+def test_stale_completion_token_cannot_reset_a_newer_recovery() -> None:
+    backend = _backend_with_dead_process()
+
+    def dead_load(intent: GgufLoadIntent) -> bool:
+        backend._process = _Process()
+        backend._healthy = True
+        return True
+
+    backend.load_model = dead_load
+    first = backend._respawn_if_dead()
+    second = backend._respawn_if_dead()
+    assert first is not None and second is not None
+
+    backend._complete_respawn_recovery(first)
+    assert backend._respawn_attempts == 2
+
+    backend._complete_respawn_recovery(second)
+    assert backend._respawn_attempts == 0

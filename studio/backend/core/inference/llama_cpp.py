@@ -462,6 +462,15 @@ class GgufLoadIntent:
             object.__setattr__(self, "gpu_ids", None)
 
 
+@dataclass(frozen = True)
+class _RespawnRetryToken:
+    """One automatic retry, completed only by its own terminal SSE event."""
+
+    process: Any
+    attempt_id: Optional[int]
+    unload_epoch: int
+
+
 class _CpuFallbackRuntime(NamedTuple):
     tempdir: tempfile.TemporaryDirectory
     source_binary: Path
@@ -4895,6 +4904,7 @@ class LlamaCppBackend:
         # receives a fresh budget even when it repeats the same model settings.
         self._respawn_attempts = 0
         self._respawned_process = None
+        self._respawn_attempt_id = 0
         # Bumped by every unload. load_model clears _cancel_event, so a respawn that
         # raced an unload needs a signal that survives the clear (see _respawn_if_dead).
         self._unload_epoch = 0
@@ -23456,7 +23466,7 @@ class LlamaCppBackend:
         except OSError:
             return False
 
-    def _respawn_if_dead(self) -> bool:
+    def _respawn_if_dead(self) -> Optional[_RespawnRetryToken]:
         """Relaunch the llama-server if its process has exited.
 
         A loaded chat model can be SIGKILL'd mid-session (usually GPU/RAM pressure
@@ -23472,20 +23482,28 @@ class LlamaCppBackend:
         with self._respawn_lock:
             proc = self._process
             if proc is None:
-                return False
+                return None
             if self._cancel_event.is_set():
                 # unload_model sets this before it kills, so the child can still be
                 # accepting. Reporting it healthy would aim the retry at a server
                 # that is deliberately going away.
-                return False
+                return None
             if proc is not served_by:
                 # Replaced while we queued: this child never served our request.
-                return self._healthy
+                return (
+                    _RespawnRetryToken(proc, None, self._unload_epoch)
+                    if self._healthy
+                    else None
+                )
             if proc.poll() is None:
                 # Still serving, so the error was transient. Charging it the grace below
                 # would cost a second per caller, serialised under this lock.
                 if self._server_socket_is_open():
-                    return self._healthy
+                    return (
+                        _RespawnRetryToken(proc, None, self._unload_epoch)
+                        if self._healthy
+                        else None
+                    )
                 # A closing server can beat its own exit status: calling it alive returns
                 # the stale _healthy and spends the retry on the corpse.
                 deadline = time.monotonic() + _RESPAWN_REAP_GRACE_S
@@ -23494,28 +23512,37 @@ class LlamaCppBackend:
             if proc.poll() is None:
                 # Alive: either a concurrent caller already respawned it (healthy), or
                 # this connection error wasn't a dead server.
-                return self._healthy
+                return (
+                    _RespawnRetryToken(proc, None, self._unload_epoch)
+                    if self._healthy
+                    else None
+                )
             with self._mtp_runtime_fallback_lock:
                 if self._mtp_runtime_fallback_in_progress:
                     # An MTP-free reload owns this corpse; replaying the old kwargs
                     # restarts the crashing config and aborts that reload.
                     logger.info("Respawn skipped: an MTP-free reload is already recovering.")
-                    return False
+                    return None
             # The RLock lets the load_model below re-enter it.
             with self._serial_load_lock:
                 if self._process is not proc:
                     logger.info("Respawn skipped: a newer load is already active.")
-                    return self._healthy
+                    current = self._process
+                    return (
+                        _RespawnRetryToken(current, None, self._unload_epoch)
+                        if self._healthy and current is not None
+                        else None
+                    )
                 # Snapshot under _lock, the one unload_model holds, so a teardown is
                 # either wholly before us (flag set) or wholly after (epoch bumped).
                 # _serial_load_lock alone would not exclude it: unload never takes it.
                 with self._lock:
                     if self._cancel_event.is_set():
                         logger.info("Respawn skipped: the model was unloaded.")
-                        return False
+                        return None
                     intent = self._last_load_intent
                     if intent is None:
-                        return False
+                        return None
                     if proc is not self._respawned_process:
                         self._respawn_attempts = 0
                     if self._respawn_attempts >= _MAX_CONSECUTIVE_RESPAWN_ATTEMPTS:
@@ -23525,8 +23552,10 @@ class LlamaCppBackend:
                             "without a completed generation. Reload the model after "
                             "reducing GPU/RAM pressure or changing its load settings."
                         )
-                        return False
+                        return None
                     self._respawn_attempts += 1
+                    self._respawn_attempt_id += 1
+                    attempt_id = self._respawn_attempt_id
                     # Record before load_model: if it raises while leaving this corpse
                     # installed, the next request must retain the consumed attempt.
                     self._respawned_process = proc
@@ -23541,7 +23570,7 @@ class LlamaCppBackend:
                 except Exception as exc:
                     self._respawned_process = self._process or proc
                     logger.error(f"Failed to respawn llama-server: {exc}")
-                    return False
+                    return None
                 self._respawned_process = self._process or proc
                 if started and self._unload_epoch != epoch:
                     # An unload landed mid-reload. load_model cleared _cancel_event on
@@ -23549,13 +23578,23 @@ class LlamaCppBackend:
                     # replacement rather than leave a model the user stopped running.
                     logger.info("Respawn undone: the model was unloaded during the reload.")
                     self.unload_model()
-                    return False
-                return started
+                    return None
+                replacement = self._process
+                if not started or replacement is None:
+                    return None
+                return _RespawnRetryToken(replacement, attempt_id, epoch)
 
-    def _mark_respawn_recovered(self, proc) -> None:
-        """Reset the circuit after the respawned child completes a generation."""
+    def _complete_respawn_recovery(self, token: Optional[_RespawnRetryToken]) -> None:
+        """Reset only the automatic retry that emitted this terminal event."""
+        if token is None or token.attempt_id is None:
+            return
         with self._respawn_lock:
-            if self._process is proc and self._respawned_process is proc:
+            if (
+                self._process is token.process
+                and self._respawned_process is token.process
+                and self._respawn_attempt_id == token.attempt_id
+                and self._unload_epoch == token.unload_epoch
+            ):
                 self._respawn_attempts = 0
                 self._respawned_process = None
 
@@ -23582,23 +23621,25 @@ class LlamaCppBackend:
         excluded: the server is slow, not dead, and a replay would spend the
         first-token budget twice.
         """
+        retry_token = None
         for attempt in range(2):
             response_opened = False
-            opened_process = self._process
             try:
                 url = f"{self.base_url}/v1/chat/completions"
-                with self._open_stream(url, payload, cancel_event) as opened:
+                with self._open_stream(url, payload, cancel_event) as (
+                    response,
+                    first_token_deadline,
+                ):
                     response_opened = True
-                    opened_process = self._process
-                    yield opened
-                    self._mark_respawn_recovered(opened_process)
+                    yield response, first_token_deadline, retry_token
                     return
             except (httpx.NetworkError, httpx.RemoteProtocolError) as exc:
                 if response_opened:
                     raise
                 if self._maybe_recover_from_mtp_crash(exc):
                     raise RuntimeError("Lost connection to llama-server") from exc
-                if attempt == 0 and self._respawn_if_dead():
+                retry_token = self._respawn_if_dead() if attempt == 0 else None
+                if retry_token is not None:
                     logger.warning(
                         "llama-server was unreachable; respawned it and retrying the generation"
                     )
@@ -23634,6 +23675,7 @@ class LlamaCppBackend:
         thread_id: Optional[str] = None,
         tools_withheld: bool = False,
         _allow_respawn_retry: bool = True,
+        _respawn_retry_token: Optional[_RespawnRetryToken] = None,
     ) -> Generator[Union[str, dict], None, None]:
         """
         Send a chat completion to llama-server and stream tokens back.
@@ -23818,6 +23860,7 @@ class LlamaCppBackend:
                         if not line:
                             continue
                         if line == "data: [DONE]":
+                            self._complete_respawn_recovery(_respawn_retry_token)
                             if in_thinking:
                                 if has_content_tokens:
                                     # Real thinking + content: close the tag
@@ -23934,7 +23977,12 @@ class LlamaCppBackend:
             # generation once (bounded by the private flag, no duplicate output).
             if self._maybe_recover_from_mtp_crash(e):
                 raise RuntimeError("Lost connection to llama-server")
-            if _allow_respawn_retry and not cumulative and self._respawn_if_dead():
+            respawn_retry = (
+                self._respawn_if_dead()
+                if _allow_respawn_retry and not cumulative
+                else None
+            )
+            if respawn_retry is not None:
                 logger.warning(
                     "llama-server was unreachable; respawned it and retrying the generation"
                 )
@@ -23979,6 +24027,7 @@ class LlamaCppBackend:
                     # tools as the first attempt was.
                     tools_withheld = tools_withheld,
                     _allow_respawn_retry = False,
+                    _respawn_retry_token = respawn_retry,
                 )
                 return
             raise RuntimeError("Lost connection to llama-server")
@@ -24658,6 +24707,7 @@ class LlamaCppBackend:
                 ) as (
                     response,
                     first_token_deadline,
+                    _iteration_respawn_retry_token,
                 ):
                     for truncation in _respawn_truncations:
                         yield {"type": "context_truncated", **truncation}
@@ -24675,6 +24725,9 @@ class LlamaCppBackend:
                             if not line:
                                 continue
                             if line == "data: [DONE]":
+                                self._complete_respawn_recovery(
+                                    _iteration_respawn_retry_token
+                                )
                                 # Flush thinking state for STREAMING
                                 if detect_state == _S_STREAMING and in_thinking:
                                     if has_content_tokens:
@@ -26198,6 +26251,7 @@ class LlamaCppBackend:
             ) as (
                 response,
                 first_token_deadline,
+                _final_respawn_retry_token,
             ):
                 for truncation in _final_respawn_truncations:
                     yield {"type": "context_truncated", **truncation}
@@ -26215,6 +26269,7 @@ class LlamaCppBackend:
                         if not line:
                             continue
                         if line == "data: [DONE]":
+                            self._complete_respawn_recovery(_final_respawn_retry_token)
                             if in_thinking:
                                 if (
                                     _final_reasoning_started_at is not None
