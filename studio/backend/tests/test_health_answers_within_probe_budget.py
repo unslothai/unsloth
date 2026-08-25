@@ -24,6 +24,34 @@ import subprocess
 import sys
 from pathlib import Path
 
+# What the stubs make detection cost. The regression these tests guard returns after
+# exactly this long, so it is also the number the timing ceiling has to stay clear of.
+_SLOW_DETECT_S = 10.0
+# How much wall clock, on top of the budget, the timed request is allowed to spend.
+#
+# This assertion has to stay under the launcher's own deadline to mean anything: the
+# desktop probe gives up at _desktop_probe_timeout_s() and does not retry, so a response
+# that arrives after it dead-ends the launch. The ceiling is therefore derived from that
+# timeout rather than chosen, and asserted to be below it.
+#
+# It also has to stop flaking. It failed twice, at 1.63s and 1.69s, on two unrelated
+# branches 54 minutes apart, each time as the only failure in a run of about 30,780
+# tests. Neither was a regression; an unbounded wait measures 10.01s.
+#
+# Those two numbers were not the endpoint being slow. The budget wait is
+# deadline-accurate, polling against loop.time(), and the rest was one-time setup: the
+# lazy imports inside health_check, the anyio threadpool the auth dependency hops onto,
+# and TestClient's portal. Timing the first-ever call charged all of that to the
+# endpoint. The fix is to warm the app first, not to widen the number: measured after a
+# warm call, the request is 1.012-1.013s idle and 1.034-1.045s pinned to two CPUs under
+# six spinners, so it moves by about 35ms across a 6x change in load, against the 630ms
+# it moved before. The variance goes where it belongs, into the warm call, which went
+# from 0.009s to 0.063s over the same range.
+#
+# 0.5s of headroom against a post-warm overhead of ~45ms is roughly 11x, and leaves the
+# ceiling at 1.5s, comfortably inside the 2s the launcher allows.
+_POST_WARM_OVERHEAD_ALLOWANCE_S = 0.5
+
 _BACKEND_DIR = Path(__file__).resolve().parent.parent  # studio/backend
 _MAIN_SRC = _BACKEND_DIR / "main.py"
 _PROBE_RS = _BACKEND_DIR.parent / "src-tauri" / "src" / "preflight" / "backend.rs"
@@ -37,6 +65,29 @@ def _run(snippet: str) -> subprocess.CompletedProcess:
         text = True,
         timeout = 900,
     )
+
+
+def _desktop_probe_timeout_s() -> float:
+    """The launcher's whole-client timeout, read out of the Rust it belongs to.
+
+    The builder's .timeout() and the shared loopback_http::client() constructor both take
+    it as a whole-seconds Duration, and the probe sets exactly one. Matching the Duration
+    rather than either call site keeps this working across that refactor while still
+    failing if the unit stops being seconds.
+    """
+    assert _PROBE_RS.is_file(), f"{_PROBE_RS} moved; update this guard"
+    rust = _PROBE_RS.read_text(encoding = "utf-8")
+    probe = rust[rust.index("fn probe_ownerless_spawned_backend") :]
+    # Bound to this function; a later one must not be the source of the number.
+    end = probe.find("\n}\n")
+    if end != -1:
+        probe = probe[: end + 3]
+    match = re.search(r"Duration::from_secs\((\d+)\)", probe)
+    assert match, (
+        "probe_ownerless_spawned_backend no longer sets a whole-seconds client "
+        "timeout; re-derive the health budget from whatever replaced it"
+    )
+    return float(match.group(1))
 
 
 def _main_constant(name: str) -> float:
@@ -53,23 +104,7 @@ def _main_constant(name: str) -> float:
 def test_the_budget_stays_under_the_desktop_probe_timeout():
     """Cross-language guard: the budget is only correct relative to the Rust one, and
     either side can be changed without the other."""
-    assert _PROBE_RS.is_file(), f"{_PROBE_RS} moved; update this guard"
-    rust = _PROBE_RS.read_text(encoding = "utf-8")
-    probe = rust[rust.index("fn probe_ownerless_spawned_backend") :]
-    # Bound to this function; a later one must not be the source of the number.
-    end = probe.find("\n}\n")
-    if end != -1:
-        probe = probe[: end + 3]
-    # The builder's .timeout() and the shared loopback_http::client() constructor both
-    # take the client timeout as a whole-seconds Duration, and the probe sets exactly
-    # one. Matching the Duration rather than either call site keeps this guard working
-    # across that refactor while still failing if the unit stops being seconds.
-    match = re.search(r"Duration::from_secs\((\d+)\)", probe)
-    assert match, (
-        "probe_ownerless_spawned_backend no longer sets a whole-seconds client "
-        "timeout; re-derive the health budget from whatever replaced it"
-    )
-    probe_timeout = float(match.group(1))
+    probe_timeout = _desktop_probe_timeout_s()
     budget = _main_constant("_HEALTH_DETECT_BUDGET_S")
     assert budget < probe_timeout, (
         f"/api/health waits up to {budget}s for detection but the desktop probe "
@@ -125,6 +160,24 @@ app = FastAPI()
 app.add_api_route("/api/health", main.health_check, methods = ["GET"])
 client = TestClient(app)
 
+# Warm first, with detection already settled so this call returns at once. It pays the
+# one-time costs that are not part of what is being measured: the lazy imports inside
+# health_check, the anyio threadpool the auth dependency hops onto, and TestClient's
+# portal. Timing the first-ever call folds those into the result, and they are the only
+# part of it that moves on a loaded runner, which is what made this assertion flaky.
+hw.DEVICE = hw.DeviceType.CUDA
+hw.CHAT_ONLY = False
+hw.DETECTION_COMPLETE.set()
+warm_started = time.perf_counter()
+client.get("/api/health")
+warm_cost = time.perf_counter() - warm_started
+
+# Back to "detection has not run", now that the machinery around it is warm.
+hw.DEVICE = None
+hw.CHAT_ONLY = True
+hw.CHAT_ONLY_REASON = None
+hw.DETECTION_COMPLETE.clear()
+
 started = time.perf_counter()
 response = client.get("/api/health")
 elapsed = time.perf_counter() - started
@@ -144,6 +197,7 @@ authed = client.get("/api/health", headers = {"Authorization": "Bearer probe"}).
 print("RESULT" + json.dumps({
     "status": response.status_code,
     "elapsed": elapsed,
+    "warm_cost": warm_cost,
     "chat_only": body.get("chat_only"),
     "hardware_detecting": body.get("hardware_detecting"),
     "authed_has_device_type": "device_type" in authed,
@@ -238,12 +292,33 @@ def test_health_answers_within_the_budget_while_detection_is_slow():
     `await asyncio.to_thread(ensure_hardware_detected)` this returns in ~10s and the desktop
     launch dead-ends."""
     budget = _main_constant("_HEALTH_DETECT_BUDGET_S")
-    result = _probe(10.0)
+    probe_timeout = _desktop_probe_timeout_s()
+    ceiling = budget + _POST_WARM_OVERHEAD_ALLOWANCE_S
+    # The ceiling has to stay under the launcher's deadline, or a response this test
+    # accepts is one the desktop probe has already given up on.
+    assert ceiling < probe_timeout, (
+        f"a {ceiling}s ceiling is at or past the {probe_timeout}s the desktop probe "
+        "allows, so this assertion would pass responses that dead-end the launch"
+    )
+    # And it is only worth asserting while it still separates a bounded wait from an
+    # unbounded one, so widening the allowance far enough to stop discriminating fails
+    # here instead of quietly making this test vacuous.
+    assert ceiling < _SLOW_DETECT_S / 2, (
+        f"a {ceiling}s ceiling no longer separates the budget from a {_SLOW_DETECT_S}s "
+        "unbounded wait; this assertion would pass against the regression it guards"
+    )
+    result = _probe(_SLOW_DETECT_S)
 
     assert result["status"] == 200
-    assert result["elapsed"] < budget + 0.5, (
-        f"/api/health took {result['elapsed']:.2f}s with detection still "
-        f"running; the budget is {budget}s and the desktop probe gives up at 2s"
+    # The one-time setup is charged to the warm call, not to this one. If that stops
+    # being true the number below stops meaning what it says, so check it here.
+    assert result["warm_cost"] < budget / 2, (
+        f"the warm call took {result['warm_cost']:.2f}s, so it waited on detection "
+        "rather than warming; the timed request below is measuring setup again"
+    )
+    assert result["elapsed"] < ceiling, (
+        f"/api/health took {result['elapsed']:.2f}s with detection still running; the "
+        f"budget is {budget}s and the desktop probe gives up at {probe_timeout}s"
     )
     assert result["hardware_detecting"] is True, (
         "health returned a provisional chat_only without saying so; a client "
@@ -251,6 +326,80 @@ def test_health_answers_within_the_budget_while_detection_is_slow():
     )
     # Conservative direction: never offer Train/Export on a host that may not have it.
     assert result["chat_only"] is True
+
+
+_UNBOUNDED_SNIPPET = r"""
+import asyncio, json, os, time
+
+os.environ.pop("UNSLOTH_STUDIO_DISABLE_TORCH_WARM", None)
+
+import main
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+hw = main._hw_module
+hw.DEVICE = None
+hw.CHAT_ONLY = True
+hw.CHAT_ONLY_REASON = None
+hw.DETECTION_COMPLETE.clear()
+
+DETECT_SECONDS = %(detect_seconds)s
+
+def slow_detect(*_):
+    time.sleep(DETECT_SECONDS)
+    hw.DEVICE = hw.DeviceType.CUDA
+    hw.CHAT_ONLY = False
+    hw.DETECTION_COMPLETE.set()
+    return hw.DEVICE
+
+hw.ensure_hardware_detected = slow_detect
+
+# The regression shape named in test_health_does_not_await_detection_unbounded, written
+# out here so the ceiling can be calibrated against what it is supposed to catch rather
+# than against a number someone picked.
+async def unbounded_health():
+    await asyncio.to_thread(hw.ensure_hardware_detected)
+    return {"status": "ok"}
+
+app = FastAPI()
+app.add_api_route("/api/health", unbounded_health, methods = ["GET"])
+client = TestClient(app)
+
+started = time.perf_counter()
+client.get("/api/health")
+print("RESULT" + json.dumps({"elapsed": time.perf_counter() - started}))
+"""
+
+
+def test_the_ceiling_still_catches_an_unbounded_wait():
+    """Calibration for _POST_WARM_OVERHEAD_ALLOWANCE_S, measured rather than argued.
+
+    Widening a timing assertion is only safe while it still fails the thing it exists to
+    catch. This builds the unbounded wait the sibling static guard forbids, times it, and
+    asserts it lands above the ceiling the budget test uses. If the allowance is ever
+    raised past the point of discriminating, this goes red and says so.
+
+    Deliberately a shorter detection than _SLOW_DETECT_S: the property is that an
+    unbounded wait tracks detection instead of the budget, and a shorter one shows that
+    while keeping the test cheap.
+    """
+    detect_s = 6.0
+    ceiling = _main_constant("_HEALTH_DETECT_BUDGET_S") + _POST_WARM_OVERHEAD_ALLOWANCE_S
+    proc = _run(_UNBOUNDED_SNIPPET % {"detect_seconds": detect_s})
+    assert (
+        proc.returncode == 0
+    ), f"probe failed\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr[-4000:]}"
+    line = next(ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT"))
+    elapsed = json.loads(line[len("RESULT") :])["elapsed"]
+
+    assert elapsed >= detect_s * 0.9, (
+        f"the unbounded handler returned in {elapsed:.2f}s against a {detect_s}s "
+        "detection, so this is no longer modelling an unbounded wait"
+    )
+    assert elapsed > ceiling, (
+        f"an unbounded wait measured {elapsed:.2f}s but the budget test's ceiling is "
+        f"{ceiling}s, so that assertion would pass against the regression it guards"
+    )
 
 
 def test_health_still_waits_when_detection_finishes_inside_the_budget():
@@ -300,7 +449,7 @@ def test_a_provisional_reply_is_not_cacheable_by_the_frontend():
     device_type pins chat_only=true for the rest of the SPA session on a GPU host: Train
     hidden, /studio redirected to /chat. The sidebar's recovery poll runs only for
     chat_only_reason === "mlx_unavailable", so it does not save it either."""
-    result = _probe(10.0)
+    result = _probe(_SLOW_DETECT_S)
 
     assert result["authed_hardware_detecting"] is True, "expected a provisional reply"
     assert not result["authed_has_device_type"], (
