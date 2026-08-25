@@ -47,7 +47,13 @@ failures: list[str] = []
 passed = 0
 
 
-def check(engine: str, platform: str, name: str, ok: bool, detail: str = "") -> None:
+def check(
+    engine: str,
+    platform: str,
+    name: str,
+    ok: bool,
+    detail: str = "",
+) -> None:
     global passed
     if ok:
         passed += 1
@@ -92,9 +98,10 @@ def reload_with(page, raw: str | None) -> None:
 
 def check_defaults(page, engine: str, platform: str) -> None:
     check(
-        engine, platform, "isMacPlatform follows the emulated platform",
-        page.evaluate("window.__shortcutsSmoke.registry.isMacPlatform()")
-        == (platform == "macOS"),
+        engine,
+        platform,
+        "isMacPlatform follows the emulated platform",
+        page.evaluate("window.__shortcutsSmoke.registry.isMacPlatform()") == (platform == "macOS"),
     )
     rows = page.evaluate(
         """() => {
@@ -114,14 +121,23 @@ def check_defaults(page, engine: str, platform: str) -> None:
             return out;
         }"""
     )
-    check(engine, platform, "every shipped default parses and is canonical",
-          all(r["parsed"] and r["canon"] == r["value"] for r in rows))
+    check(
+        engine,
+        platform,
+        "every shipped default parses and is canonical",
+        all(r["parsed"] and r["canon"] == r["value"] for r in rows),
+    )
     seen: dict[str, set[str]] = {}
     for row in rows:
         seen.setdefault(row["parsed"], set()).add(row["id"])
     clash = {k: sorted(v) for k, v in seen.items() if len(v) > 1}
-    check(engine, platform, "no two actions claim one physical chord", not clash,
-          json.dumps(clash)[:200])
+    check(
+        engine,
+        platform,
+        "no two actions claim one physical chord",
+        not clash,
+        json.dumps(clash)[:200],
+    )
     if platform != "macOS":
         ctrl = [r["id"] for r in rows if r["parsed"].split("|")[2] == "true"]
         check(engine, platform, "no unreachable Ctrl default off macOS", not ctrl, str(ctrl))
@@ -130,21 +146,36 @@ def check_defaults(page, engine: str, platform: str) -> None:
 def check_dispatch(page, engine: str, platform: str) -> None:
     reset(page)
     page.keyboard.press(to_press("Mod+Comma", platform))
-    check(engine, platform, "a shipped chord fires from a real keypress",
-          "openSettings" in actions(page), str(actions(page)))
+    check(
+        engine,
+        platform,
+        "a shipped chord fires from a real keypress",
+        "openSettings" in actions(page),
+        str(actions(page)),
+    )
 
     # Exact match: the chord is this set of modifiers, not at least this set.
     reset(page)
     page.keyboard.press(f"{MOD[platform]}+Alt+Comma")
-    check(engine, platform, "an extra modifier does not satisfy a chord",
-          "openSettings" not in actions(page), str(actions(page)))
+    check(
+        engine,
+        platform,
+        "an extra modifier does not satisfy a chord",
+        "openSettings" not in actions(page),
+        str(actions(page)),
+    )
 
     # Both slots answer. newChat is the only action that ships a pair.
     reset(page)
     page.keyboard.press(to_press("Mod+Shift+KeyO", platform))
     page.keyboard.press(to_press("Mod+KeyN", platform))
-    check(engine, platform, "both slots of an action fire",
-          actions(page).count("newChat") == 2, str(actions(page)))
+    check(
+        engine,
+        platform,
+        "both slots of an action fire",
+        actions(page).count("newChat") == 2,
+        str(actions(page)),
+    )
 
 
 def check_text_fields(page, engine: str, platform: str) -> None:
@@ -155,15 +186,24 @@ def check_text_fields(page, engine: str, platform: str) -> None:
     page.evaluate("document.activeElement && document.activeElement.blur()")
     reset(page)
     page.keyboard.press(to_press("Mod+KeyK", platform))
-    check(engine, platform, "a text-field chord stands aside while typing",
-          "searchChats" not in guarded and "searchChats" in actions(page),
-          f"in field {guarded}, outside {actions(page)}")
+    check(
+        engine,
+        platform,
+        "a text-field chord stands aside while typing",
+        "searchChats" not in guarded and "searchChats" in actions(page),
+        f"in field {guarded}, outside {actions(page)}",
+    )
 
     reset(page)
     page.focus("#smoke-editable")
     page.keyboard.press(to_press("Mod+KeyK", platform))
-    check(engine, platform, "the gate covers contenteditable too",
-          "searchChats" not in actions(page), str(actions(page)))
+    check(
+        engine,
+        platform,
+        "the gate covers contenteditable too",
+        "searchChats" not in actions(page),
+        str(actions(page)),
+    )
 
     # Escape types nothing in the composer, so declining keeps working there,
     # and Enter, which sends, does not.
@@ -174,23 +214,37 @@ def check_text_fields(page, engine: str, platform: str) -> None:
     reset(page)
     page.focus("#smoke-composer")
     page.keyboard.press("Enter")
-    check(engine, platform, "the composer excepts Escape but not Enter",
-          "decline" in declined and "approve" not in actions(page),
-          f"escape {declined}, enter {actions(page)}")
+    check(
+        engine,
+        platform,
+        "the composer excepts Escape but not Enter",
+        "decline" in declined and "approve" not in actions(page),
+        f"escape {declined}, enter {actions(page)}",
+    )
 
     reset(page)
     page.focus("#smoke-input")
     page.keyboard.press("Escape")
-    check(engine, platform, "an ordinary field keeps its own Escape",
-          "decline" not in actions(page), str(actions(page)))
+    check(
+        engine,
+        platform,
+        "an ordinary field keeps its own Escape",
+        "decline" not in actions(page),
+        str(actions(page)),
+    )
     page.evaluate("document.activeElement && document.activeElement.blur()")
 
 
 def check_bare_keys(page, engine: str, platform: str) -> None:
     reset(page)
     page.keyboard.press("Enter")
-    check(engine, platform, "bare Enter answers a waiting request",
-          "approve" in actions(page), str(actions(page)))
+    check(
+        engine,
+        platform,
+        "bare Enter answers a waiting request",
+        "approve" in actions(page),
+        str(actions(page)),
+    )
 
     # The whole reason the stand-aside exists: preventDefault runs before the
     # handler, so without it Enter on Deny would cancel the click and approve.
@@ -198,21 +252,36 @@ def check_bare_keys(page, engine: str, platform: str) -> None:
     page.focus("#smoke-button")
     page.keyboard.press("Enter")
     got = actions(page)
-    check(engine, platform, "Enter on a focused button clicks it and does not approve",
-          "buttonClick" in got and "approve" not in got, str(got))
+    check(
+        engine,
+        platform,
+        "Enter on a focused button clicks it and does not approve",
+        "buttonClick" in got and "approve" not in got,
+        str(got),
+    )
 
     reset(page)
     page.focus("#smoke-link")
     page.keyboard.press("Enter")
-    check(engine, platform, "Enter on a focused link does not approve",
-          "approve" not in actions(page), str(actions(page)))
+    check(
+        engine,
+        platform,
+        "Enter on a focused link does not approve",
+        "approve" not in actions(page),
+        str(actions(page)),
+    )
 
     # Escape activates nothing, so it is deliberately not stood aside.
     reset(page)
     page.focus("#smoke-button")
     page.keyboard.press("Escape")
-    check(engine, platform, "Escape still declines from a focused button",
-          "decline" in actions(page), str(actions(page)))
+    check(
+        engine,
+        platform,
+        "Escape still declines from a focused button",
+        "decline" in actions(page),
+        str(actions(page)),
+    )
     page.evaluate("document.activeElement && document.activeElement.blur()")
 
 
@@ -233,8 +302,7 @@ def check_repeat(page, engine: str, platform: str) -> None:
             }""",
             [platform == "macOS", code, key, code == "BracketRight"],
         )
-        check(engine, platform, label, actions(page).count(name) == expected,
-              str(actions(page)))
+        check(engine, platform, label, actions(page).count(name) == expected, str(actions(page)))
 
 
 def check_altgr(page, engine: str, platform: str) -> None:
@@ -255,11 +323,21 @@ def check_altgr(page, engine: str, platform: str) -> None:
     )
     got = actions(page)
     if platform == "macOS":
-        check(engine, platform, "an Option chord still fires on macOS",
-              "archiveActive" in got or "archiveSelected" in got, str(got))
+        check(
+            engine,
+            platform,
+            "an Option chord still fires on macOS",
+            "archiveActive" in got or "archiveSelected" in got,
+            str(got),
+        )
     else:
-        check(engine, platform, "AltGr typing neither fires a chord nor loses the character",
-              not got and not prevented, f"{got} prevented={prevented}")
+        check(
+            engine,
+            platform,
+            "AltGr typing neither fires a chord nor loses the character",
+            not got and not prevented,
+            f"{got} prevented={prevented}",
+        )
 
 
 def check_foreign_binding(page, engine: str, platform: str) -> None:
@@ -277,42 +355,72 @@ def check_foreign_binding(page, engine: str, platform: str) -> None:
     page.keyboard.press("Control+KeyG")
     held = actions(page)
     if platform == "macOS":
-        check(engine, platform, "a Ctrl chord fires on Ctrl, not on the bare key",
-              "copySessionId" in held and "copySessionId" not in bare,
-              f"bare {bare}, ctrl {held}")
+        check(
+            engine,
+            platform,
+            "a Ctrl chord fires on Ctrl, not on the bare key",
+            "copySessionId" in held and "copySessionId" not in bare,
+            f"bare {bare}, ctrl {held}",
+        )
     else:
-        check(engine, platform, "a Mac Ctrl chord is inert off macOS",
-              "copySessionId" not in bare and "copySessionId" not in held,
-              f"bare {bare}, ctrl {held}")
+        check(
+            engine,
+            platform,
+            "a Mac Ctrl chord is inert off macOS",
+            "copySessionId" not in bare and "copySessionId" not in held,
+            f"bare {bare}, ctrl {held}",
+        )
     reload_with(page, None)
 
 
 def check_storage(page, engine: str, platform: str) -> None:
     cases = [
-        ("a pre-alternate rebind becomes a primary override",
-         json.dumps({"newChat": "Mod+KeyJ"}),
-         lambda a: a["newChat"]["primary"] == "Mod+KeyJ"
-         and a["newChat"]["alternate"] == "Mod+KeyN"),
-        ("an action cleared before alternates existed stays cleared",
-         json.dumps({"newChat": None}),
-         lambda a: a["newChat"]["primary"] is None and a["newChat"]["alternate"] is None),
-        ("an id from an older build is dropped",
-         json.dumps({"aRemovedAction": "Mod+KeyJ", "newChat": "Mod+KeyJ"}),
-         lambda a: a["newChat"]["primary"] == "Mod+KeyJ"),
-        ("the current shape round-trips",
-         json.dumps({"toggleSidebar": {"primary": "Mod+Alt+KeyW"}}),
-         lambda a: a["toggleSidebar"]["primary"] == "Mod+Alt+KeyW"),
-        ("corrupt JSON falls back to the defaults",
-         "{not json", lambda a: a["openSettings"]["primary"] == "Mod+Comma"),
-        ("a non-object payload falls back to the defaults",
-         "42", lambda a: a["openSettings"]["primary"] == "Mod+Comma"),
-        ("an array payload falls back to the defaults",
-         "[1,2]", lambda a: a["openSettings"]["primary"] == "Mod+Comma"),
-        ("a junk slot type reverts that action",
-         json.dumps({"toggleSidebar": {"primary": 5}}),
-         lambda a: a["toggleSidebar"]["primary"] == "Mod+KeyB"),
-        ("nothing stored takes the defaults",
-         None, lambda a: a["openSettings"]["primary"] == "Mod+Comma"),
+        (
+            "a pre-alternate rebind becomes a primary override",
+            json.dumps({"newChat": "Mod+KeyJ"}),
+            lambda a: a["newChat"]["primary"] == "Mod+KeyJ"
+            and a["newChat"]["alternate"] == "Mod+KeyN",
+        ),
+        (
+            "an action cleared before alternates existed stays cleared",
+            json.dumps({"newChat": None}),
+            lambda a: a["newChat"]["primary"] is None and a["newChat"]["alternate"] is None,
+        ),
+        (
+            "an id from an older build is dropped",
+            json.dumps({"aRemovedAction": "Mod+KeyJ", "newChat": "Mod+KeyJ"}),
+            lambda a: a["newChat"]["primary"] == "Mod+KeyJ",
+        ),
+        (
+            "the current shape round-trips",
+            json.dumps({"toggleSidebar": {"primary": "Mod+Alt+KeyW"}}),
+            lambda a: a["toggleSidebar"]["primary"] == "Mod+Alt+KeyW",
+        ),
+        (
+            "corrupt JSON falls back to the defaults",
+            "{not json",
+            lambda a: a["openSettings"]["primary"] == "Mod+Comma",
+        ),
+        (
+            "a non-object payload falls back to the defaults",
+            "42",
+            lambda a: a["openSettings"]["primary"] == "Mod+Comma",
+        ),
+        (
+            "an array payload falls back to the defaults",
+            "[1,2]",
+            lambda a: a["openSettings"]["primary"] == "Mod+Comma",
+        ),
+        (
+            "a junk slot type reverts that action",
+            json.dumps({"toggleSidebar": {"primary": 5}}),
+            lambda a: a["toggleSidebar"]["primary"] == "Mod+KeyB",
+        ),
+        (
+            "nothing stored takes the defaults",
+            None,
+            lambda a: a["openSettings"]["primary"] == "Mod+Comma",
+        ),
     ]
     for name, raw, predicate in cases:
         reload_with(page, raw)
@@ -341,15 +449,23 @@ def check_storage(page, engine: str, platform: str) -> None:
     page.wait_for_selector("#smoke-ready")
     reset(page)
     page.keyboard.press(to_press("Mod+Alt+KeyW", platform))
-    check(engine, platform, "a rebind takes effect live and survives a restart",
-          "toggleSidebar" in live and "toggleSidebar" in actions(page),
-          f"live {live}, after restart {actions(page)}")
+    check(
+        engine,
+        platform,
+        "a rebind takes effect live and survives a restart",
+        "toggleSidebar" in live and "toggleSidebar" in actions(page),
+        f"live {live}, after restart {actions(page)}",
+    )
 
     page.evaluate(
         "() => window.__shortcutsSmoke.store.useKeyboardShortcutsStore.getState().resetAll()"
     )
-    check(engine, platform, "reset all leaves no storage residue",
-          page.evaluate("localStorage.getItem('unsloth_keyboard_shortcuts')") is None)
+    check(
+        engine,
+        platform,
+        "reset all leaves no storage residue",
+        page.evaluate("localStorage.getItem('unsloth_keyboard_shortcuts')") is None,
+    )
 
 
 def check_selection_latch(page, engine: str, platform: str) -> None:
@@ -367,16 +483,26 @@ def check_selection_latch(page, engine: str, platform: str) -> None:
     page.keyboard.press(archive)
     page.wait_for_function("document.getElementById('smoke-selection').textContent === '0'")
     page.keyboard.press(archive)
-    check(engine, platform, "a second fast press does not reach the open chat",
-          actions(page) == ["archiveSelected", "archiveSuppressed"], str(actions(page)))
+    check(
+        engine,
+        platform,
+        "a second fast press does not reach the open chat",
+        actions(page) == ["archiveSelected", "archiveSuppressed"],
+        str(actions(page)),
+    )
 
     # A sibling chord inside the window is held back for the same reason.
     with_selection()
     page.keyboard.press(archive)
     page.wait_for_function("document.getElementById('smoke-selection').textContent === '0'")
     page.keyboard.press(pin)
-    check(engine, platform, "a sibling chord inside the window is held back too",
-          actions(page) == ["archiveSelected", "pinSuppressed"], str(actions(page)))
+    check(
+        engine,
+        platform,
+        "a sibling chord inside the window is held back too",
+        actions(page) == ["archiveSelected", "pinSuppressed"],
+        str(actions(page)),
+    )
 
     # And a deliberate press afterwards still works, or the latch has traded one
     # silent wrong action for a silent dead key.
@@ -385,15 +511,25 @@ def check_selection_latch(page, engine: str, platform: str) -> None:
     page.wait_for_function("document.getElementById('smoke-selection').textContent === '0'")
     page.wait_for_timeout(900)
     page.keyboard.press(archive)
-    check(engine, platform, "a deliberate press after the window still acts",
-          actions(page) == ["archiveSelected", "archiveActive"], str(actions(page)))
+    check(
+        engine,
+        platform,
+        "a deliberate press after the window still acts",
+        actions(page) == ["archiveSelected", "archiveActive"],
+        str(actions(page)),
+    )
 
     # With no selection the latch is never stamped, so nothing is swallowed.
     reset(page)
     page.keyboard.press(archive)
     page.keyboard.press(archive)
-    check(engine, platform, "with no selection nothing is swallowed",
-          actions(page) == ["archiveActive", "archiveActive"], str(actions(page)))
+    check(
+        engine,
+        platform,
+        "with no selection nothing is swallowed",
+        actions(page) == ["archiveActive", "archiveActive"],
+        str(actions(page)),
+    )
 
     # Deleting needs no latch: it has no open-chat branch to fall through to.
     reset(page)
@@ -402,8 +538,13 @@ def check_selection_latch(page, engine: str, platform: str) -> None:
             .getState().setBinding('deleteSelectedChats', 'primary', 'Mod+Alt+KeyY')"""
     )
     page.keyboard.press(to_press("Mod+Alt+KeyY", platform))
-    check(engine, platform, "delete selected does nothing without a selection",
-          actions(page) == [], str(actions(page)))
+    check(
+        engine,
+        platform,
+        "delete selected does nothing without a selection",
+        actions(page) == [],
+        str(actions(page)),
+    )
     page.evaluate(
         "() => window.__shortcutsSmoke.store.useKeyboardShortcutsStore.getState().resetAll()"
     )
@@ -411,8 +552,11 @@ def check_selection_latch(page, engine: str, platform: str) -> None:
 
 def check_unreads(page, engine: str, platform: str) -> None:
     chord = "Shift+Escape" if platform == "macOS" else to_press("Mod+Alt+Shift+KeyU", platform)
-    for size, expected in ((0, "No unread chats"), (1, "Cleared 1 unread chat"),
-                           (3, "Cleared 3 unread chats")):
+    for size, expected in (
+        (0, "No unread chats"),
+        (1, "Cleared 1 unread chat"),
+        (3, "Cleared 3 unread chats"),
+    ):
         reset(page)
         page.evaluate(
             """([size]) => window.__shortcutsSmoke.nav.setState({
@@ -422,9 +566,13 @@ def check_unreads(page, engine: str, platform: str) -> None:
         )
         page.keyboard.press(chord)
         left = page.evaluate("window.__shortcutsSmoke.nav.getState().unreadThreadIds.size")
-        check(engine, platform, f"clearing {size} unread reports it and empties the set",
-              details(page)[:1] == [expected] and left == 0,
-              f"{details(page)} left={left}")
+        check(
+            engine,
+            platform,
+            f"clearing {size} unread reports it and empties the set",
+            details(page)[:1] == [expected] and left == 0,
+            f"{details(page)} left={left}",
+        )
 
 
 def run_engine(pw, engine: str) -> None:
@@ -459,8 +607,13 @@ def run_engine(pw, engine: str) -> None:
                 check_selection_latch(page, engine, platform)
                 check_unreads(page, engine, platform)
             except Exception as exc:  # noqa: BLE001
-                check(engine, platform, "the harness ran to completion", False,
-                      f"{type(exc).__name__}: {str(exc)[:300]}")
+                check(
+                    engine,
+                    platform,
+                    "the harness ran to completion",
+                    False,
+                    f"{type(exc).__name__}: {str(exc)[:300]}",
+                )
             context.close()
     finally:
         browser.close()
@@ -476,8 +629,10 @@ def main() -> int:
         stop_process(server)
 
     total = passed + len(failures)
-    print(f"[keyboard-shortcuts] {passed}/{total} checks passed "
-          f"across {', '.join(ENGINES)} on {', '.join(PLATFORMS)}")
+    print(
+        f"[keyboard-shortcuts] {passed}/{total} checks passed "
+        f"across {', '.join(ENGINES)} on {', '.join(PLATFORMS)}"
+    )
     for failure in failures:
         print(f"[keyboard-shortcuts] FAIL {failure}")
     return 1 if failures else 0
