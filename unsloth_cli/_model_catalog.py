@@ -189,7 +189,11 @@ def _reachable_snapshots(repo_path: Path, load_id: Optional[str] = None) -> List
     except OSError:
         return []
     pinned = _pinned_snapshot(repo_path, load_id)
-    if pinned is not None and pinned in available:
+    if pinned is not None:
+        # Returned as validated, not re-checked against `available`. inventory_scan resolves
+        # the snapshot it pins while cache_path keeps the configured spelling, so under a
+        # symlinked cache root the two name one directory and fail lexical equality, and the
+        # membership test would drop a good pin back onto the ref it was pinned away from.
         return [pinned]
     try:
         # ValueError too: an undecodable ref raises UnicodeDecodeError, which is not an

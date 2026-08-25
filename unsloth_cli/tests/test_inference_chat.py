@@ -2533,3 +2533,32 @@ def test_one_undecodable_ref_does_not_empty_the_downloaded_group(monkeypatch, tm
 
     entries = cat.cached_entries()
     assert [(e.name, e.detail) for e in entries] == [("org/Tiny-GGUF", "Q4_K_M")]
+
+
+def test_a_pin_survives_a_symlinked_cache_root(monkeypatch, tmp_path):
+    """inventory_scan resolves the snapshot it pins; cache_path keeps the configured spelling.
+
+    Under a symlinked cache root (or a Windows junction) those two name one directory and
+    are not lexically equal, so a membership test against the listed snapshots dropped a
+    good pin back onto the ref it was pinned away from.
+    """
+    from unsloth_cli import _model_catalog as cat
+
+    monkeypatch.syspath_prepend(str(_REPO_ROOT / "studio" / "backend"))
+    physical = tmp_path / "physical_hub"
+    physical.mkdir()
+    repo = physical / "models--org--Two-GGUF"
+    by_ref = repo / "snapshots" / ("a" * 40)
+    pinned = repo / "snapshots" / ("b" * 40)
+    by_ref.mkdir(parents = True)
+    pinned.mkdir(parents = True)
+    (by_ref / "Two-Q2_K.gguf").write_bytes(b"\0" * 16)
+    (pinned / "Two-Q6_K.gguf").write_bytes(b"\0" * 16)
+    (repo / "refs").mkdir(parents = True)
+    (repo / "refs" / "main").write_text("a" * 40)
+
+    configured = tmp_path / "configured_hub"
+    configured.symlink_to(physical, target_is_directory = True)
+    cache_path = configured / "models--org--Two-GGUF"
+
+    assert cat._quant_labels("org/Two-GGUF", str(cache_path), str(pinned.resolve())) == "Q6_K"
