@@ -1889,8 +1889,7 @@ export async function buildLocalTokenCountExtras(
       ...(artifactsEnabled ? ["render_html"] : []),
     ],
     mcp_enabled: mcpEnabledForChat,
-    // Only truthiness is read server-side, to keep search_knowledge_base and its grounding nudge
-    // in the prompt; no retrieval runs for a count.
+    // the ids name the attached documents in the nudge server-side; no retrieval runs for a count.
     ...(ragOn
       ? {
           rag_scope: {
