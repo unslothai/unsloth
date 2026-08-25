@@ -55,6 +55,19 @@ test("both composers render the icon that narrow layout reveals", () => {
   }
 });
 
+test("the toggle half still answers clicks while the menu is open", () => {
+  // Radix's modal menu drops pointer events outside its content. The open
+  // trigger opts back in, so the toggle half has to as well, or half of one
+  // pill goes dead exactly while it is lit as one pill.
+  assert.match(
+    block(
+      css,
+      '.unsloth-thinking-split:has([data-state="open"]) .unsloth-thinking-split-toggle {',
+    ),
+    /pointer-events:\s*auto/,
+  );
+});
+
 test("only a split pill gets the wrapper that paints the background", () => {
   for (const { path, flag } of COMPOSERS) {
     const source = read(path);
