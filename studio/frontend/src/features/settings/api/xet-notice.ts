@@ -46,6 +46,10 @@ function markLegacyMigrated(): void {
   }
 }
 
+function isCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
 /** Take one of the remaining notices, or report that none are left.
  *
  * FAILS CLOSED: an unreachable, older or erroring backend shows nothing. Falling back
@@ -67,11 +71,15 @@ export async function reserveXetNoticeFromServer(): Promise<XetNoticeReservation
     );
     if (!res.ok) return denied;
     const body = (await res.json()) as Partial<XetNoticeReservation>;
+    // A proxy or an older backend can answer this unknown route with a 200 and some
+    // other JSON, so `res.ok` is not proof the hint was stored. Only a reply that
+    // reports the cap it enforced came from the reservation endpoint.
+    if (typeof body.granted !== "boolean" || !isCount(body.limit)) return denied;
     markLegacyMigrated();
     return {
-      granted: body.granted === true,
-      shown: typeof body.shown === "number" ? body.shown : 0,
-      limit: typeof body.limit === "number" ? body.limit : 0,
+      granted: body.granted,
+      shown: isCount(body.shown) ? body.shown : 0,
+      limit: body.limit,
     };
   } catch {
     return denied;

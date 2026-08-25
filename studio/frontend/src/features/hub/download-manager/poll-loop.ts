@@ -580,9 +580,14 @@ export async function startJob(
     state?: DownloadJobState;
     transport?: ResolvedTransport;
     cancelTransport?: ResolvedTransport | null;
+    /** The surface this start was asked for, for the start toast to be held against.
+     * Passed in by `requestStart`, whose transport preflight is itself a round trip
+     * the user can navigate during; taken here only for a direct caller. */
+    originRoute?: string;
   } = {},
 ): Promise<void> {
   const key = jobKeyOf(req.kind, req.repoId, req.variant);
+  const startRoute = opts.originRoute ?? currentRoute();
   // Peer guard stops a FRESH start from double-starting a variant already
   // downloading (or colliding with a no-variant snapshot). Skipped when ADOPTING:
   // the restored own entry would look like a peer and freeze the bar; adoptJob's
@@ -745,10 +750,6 @@ export async function startJob(
     // A cancel can land while this start is in flight, and the reissue above is
     // the giveaway. Neither message is true of a start that is already stopping.
     const stopping = rt.cancelRequested;
-    // The surface this start belongs to, taken now rather than when the toast is
-    // raised: the reservation below is a round trip, and a raise that lands after
-    // the user has navigated would otherwise claim the page they moved to.
-    const startRoute = currentRoute();
     if (
       shouldShowXetNotice({
         kind: req.kind,

@@ -2856,9 +2856,21 @@ export function ChatPage({
       }
     },
   });
+  // The job the pending auto-load is waiting on, read by the context-change effect
+  // below. Written from an effect, never during render.
+  const pendingAutoLoadKeyRef = useRef<string | null>(null);
   useEffect(() => {
     const pending = pendingHubAutoLoad;
-    if (!pending) return;
+    if (!pending) {
+      pendingAutoLoadKeyRef.current = null;
+      return;
+    }
+    const pendingKey = jobKeyOf(
+      DOWNLOAD_KIND.MODEL,
+      pending.selection.id,
+      pending.selection.ggufVariant ?? null,
+    );
+    pendingAutoLoadKeyRef.current = pendingKey;
     let active = true;
     void (async () => {
       const outcome = await downloadManager.requestStart({
@@ -2905,15 +2917,19 @@ export function ChatPage({
       // This selection is no longer the pending auto-load: the user picked another
       // model, so its completion loads nothing. Drop the toast still saying it will.
       // A no-op once the download itself finished, which dismisses the same id.
-      dismissStartToast(
-        jobKeyOf(
-          DOWNLOAD_KIND.MODEL,
-          pending.selection.id,
-          pending.selection.ggufVariant ?? null,
-        ),
-      );
+      dismissStartToast(pendingKey);
     };
   }, [pendingHubAutoLoad]);
+  // Switching thread, project or starting a new chat keeps the pathname at /chat and
+  // leaves pendingHubAutoLoad untouched, so neither the route sweep nor the cleanup
+  // above runs. onComplete refuses to load into a different contextKey, so the toast
+  // would go on promising an auto-load that cannot happen.
+  useEffect(() => {
+    return () => {
+      const pendingKey = pendingAutoLoadKeyRef.current;
+      if (pendingKey) dismissStartToast(pendingKey);
+    };
+  }, [chatContextKey]);
   const loadNativeModelIntent = useCallback(
     async (intent: NativeIntent, loadingDescription: string) => {
       const label =

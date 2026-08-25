@@ -137,6 +137,27 @@ test("a legacy count survives a failed reservation", async () => {
   assert.equal(store.get(LEGACY_MIGRATED_KEY), "1");
 });
 
+test("a 200 that is not a reservation does not end the migration", async () => {
+  // A proxy or an older backend can answer this unknown route with a 200 and some
+  // other JSON. Treating that as proof the hint was stored drops the floor, and the
+  // three notices come back on the next upgrade.
+  reset();
+  store.set(LEGACY_COUNT_KEY, "3");
+  respond = async () =>
+    new Response(JSON.stringify({ detail: "Not Found" }), { status: 200 });
+  assert.equal((await reserveXetNoticeFromServer()).granted, false);
+  assert.equal(store.get(LEGACY_MIGRATED_KEY), undefined);
+
+  respond = async () =>
+    new Response(JSON.stringify({ granted: true, shown: 4, limit: 3 }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  await reserveXetNoticeFromServer();
+  assert.deepEqual(calls[1].body, { seen_hint: 3 });
+  assert.equal(store.get(LEGACY_MIGRATED_KEY), "1");
+});
+
 test("junk or absent legacy counts migrate as zero", async () => {
   reset();
   await reserveXetNoticeFromServer();
