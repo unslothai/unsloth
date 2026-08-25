@@ -169,7 +169,9 @@ class StallWatchdog:
             last_beat = beat_started
 
             if self._suppress_now():
-                self._stop_event.wait(self._beat_interval_s)
+                # Shorter waits while standing down: a full beat's sleep after the
+                # warm finishes is a window where a stall goes entirely uncaptured.
+                self._stop_event.wait(min(self._beat_interval_s, 0.5))
                 continue
 
             self._arm_dead_man()
@@ -262,6 +264,10 @@ class StallWatchdog:
             return
         now = time.monotonic()
         self._last_dump = now
+        # The switch armed earlier this beat is still live and would fire a second
+        # dump if a GIL freeze followed inside the cooldown; the cooldown owns both
+        # paths, so take it down now rather than at the next beat.
+        self._cancel_dead_man()
         stalled_for = now - (self._stall_started or now)
         try:
             self._dump_file.write(

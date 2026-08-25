@@ -197,6 +197,53 @@ def test_repeated_gil_stalls_dump_once_per_cooldown(loop_in_thread, tmp_path):
     )
 
 
+def test_a_python_dump_disarms_the_switch_for_the_cooldown(loop_in_thread, tmp_path):
+    """The two paths share the cooldown. A slow-probe dump leaves the switch armed
+    from earlier in the same beat unless it is taken down with it, and a GIL freeze
+    right after would land a second dump inside the window."""
+    dump_path = tmp_path / "dump.txt"
+
+    def blocks_the_loop():
+        time.sleep(0.5)
+
+    def holds_the_gil():
+        old = sys.getswitchinterval()
+        sys.setswitchinterval(10.0)
+        try:
+            deadline = time.monotonic() + 0.8
+            while time.monotonic() < deadline:
+                pass
+        finally:
+            sys.setswitchinterval(old)
+
+    with dump_path.open("w") as dump_file:
+        watchdog = StallWatchdog(
+            loop_in_thread,
+            dump_file = dump_file,
+            beat_interval_s = 0.05,
+            probe_slow_s = 0.05,
+            slow_probes_before_dump = 2,
+            dead_man_timeout_s = 0.3,
+            dump_cooldown_s = 60.0,
+        )
+        watchdog.start()
+        try:
+            loop_in_thread.call_soon_threadsafe(blocks_the_loop)
+            assert _wait_for(
+                lambda: "stall watchdog:" in dump_path.read_text(errors = "replace")
+            )
+            loop_in_thread.call_soon_threadsafe(holds_the_gil)
+            time.sleep(1.4)
+        finally:
+            watchdog.stop()
+
+    text = dump_path.read_text(errors = "replace")
+    assert "Timeout" not in text, (
+        "the dead man's switch fired inside the cooldown a slow-probe dump started; "
+        "one stall episode left two dumps"
+    )
+
+
 def test_stands_down_until_the_warm_is_over(monkeypatch):
     """The dead man's switch cannot be disarmed once the warm holds the GIL, so the
     gate has to be closed before the warm starts, and stay closed until it is over.
