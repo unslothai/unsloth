@@ -732,6 +732,65 @@ class TestChatCompletionRequestToolFields:
         assert "does not advertise tools" in entry["error"]
         assert monitor.active_count() == 0
 
+    def test_a_multi_image_message_closes_the_monitor_row(self, monkeypatch):
+        """The single-image refusal lands after the monitor row opens, so it must
+        close it: a row left running keeps Studio reporting the backend as
+        generating long after the request has been answered with a 400."""
+        import routes.inference as inference_route
+
+        class _LlamaOff:
+            is_loaded = False
+            supports_tools = False
+            is_vision = False
+            context_length = None
+
+        class _VisionBackend:
+            active_model_name = "vision-sf"
+            models = {
+                "vision-sf": {
+                    "is_vision": True,
+                    "chat_template_info": {"template": "chatml"},
+                    "context_length": 4096,
+                }
+            }
+
+            def resize_image(self, image):
+                return image
+
+            def generate_chat_response(self, **kwargs):
+                yield "ok"
+
+            def reset_generation_state(self, cancel_event = None):
+                pass
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
+        monkeypatch.setattr(
+            inference_route,
+            "_detect_safetensors_features",
+            lambda *a, **k: {"supports_tools": False},
+        )
+        client = self._v1_client(monkeypatch, _LlamaOff(), _VisionBackend())
+        image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [{"type": "text", "text": "compare these"}, image, image],
+                    }
+                ]
+            },
+        )
+
+        assert resp.status_code == 400
+        assert "one image per message" in resp.text
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "error"
+        assert "one image per message" in entry["error"]
+        assert monitor.active_count() == 0
+
     def test_client_tools_use_passthrough_capability_when_tool_loop_is_disabled(self, monkeypatch):
         import routes.inference as inference_route
 

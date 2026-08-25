@@ -18059,9 +18059,12 @@ async def openai_chat_completions(
                 )
 
             if _images_in_last_user_message(payload.messages) > 1:
-                raise HTTPException(
-                    status_code = 400,
-                    detail = (
+                # Through _reject, not a bare raise: the monitor row is already open
+                # by here, and a rejection that leaves it running keeps Studio
+                # reporting the backend as generating.
+                raise _reject(
+                    400,
+                    (
                         "This model takes one image per message. Attach one, or load a"
                         " GGUF build of it, which accepts several."
                     ),
