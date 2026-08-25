@@ -1074,9 +1074,18 @@ export function AppSidebar() {
     manualOrder,
     chatsByProjectId,
   ]);
-  const visibleProjectRecords = showAllProjects
-    ? sidebarProjectRecords
-    : sidebarProjectRecords.slice(0, SIDEBAR_PROJECT_LIMIT);
+  // Memoised for its identity, not for the slice: this feeds the rendered-row
+  // set the selection guard runs off, and an effect whose dependency is rebuilt
+  // every render re-runs every render. Its setState bails out on an unchanged
+  // selection, but React still re-renders once to find that out, which rebuilds
+  // this array and schedules the effect again, without end.
+  const visibleProjectRecords = useMemo(
+    () =>
+      showAllProjects
+        ? sidebarProjectRecords
+        : sidebarProjectRecords.slice(0, SIDEBAR_PROJECT_LIMIT),
+    [showAllProjects, sidebarProjectRecords],
+  );
   // Default expanded; the row toggles this. Show-more reveals chats past the limit.
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(
     () => new Set(),

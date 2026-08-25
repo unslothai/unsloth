@@ -1866,3 +1866,31 @@ test("a parked tool request is keyed by its own approval, not call_0", async () 
     "sess:thread:tok",
   );
 });
+
+// The selection guard's effect depends on the set of rendered rows. Every
+// value that set is built from has to keep its identity across a render that
+// changed nothing: the effect's setState bails out on an unchanged selection,
+// but React re-renders once to discover that, and a dependency rebuilt during
+// that render schedules the effect again. That is React error #185, and it
+// took the whole chat route down rather than just the sidebar.
+test("the rows the selection guard reads keep their identity", async () => {
+  const sidebar = await readFile(
+    new URL("../src/components/app-sidebar.tsx", import.meta.url),
+    "utf8",
+  );
+  for (const name of [
+    "visibleProjectRecords",
+    "visiblePinnedItems",
+    "visibleRecentItems",
+    "renderedProjectChatItems",
+    "renderedChatIds",
+  ]) {
+    const at = sidebar.indexOf(`const ${name} = `);
+    assert.notEqual(at, -1, `${name} is gone`);
+    assert.match(
+      sidebar.slice(at, at + name.length + 40),
+      /= useMemo\(/,
+      `${name} is rebuilt every render and feeds a selection effect`,
+    );
+  }
+});
