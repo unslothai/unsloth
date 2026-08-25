@@ -486,8 +486,8 @@ def _run_nested_child_arm(tmp_path, arm: str) -> tuple[str, bool]:
 @pytest.mark.skipif(
     not __debug__,
     reason = "CPython's daemonic-children guard is an assert, so -O strips it and a "
-             "daemonic worker spawns freely -- this arm would assert the opposite of "
-             "what it means",
+    "daemonic worker spawns freely -- this arm would assert the opposite of "
+    "what it means",
 )
 def test_daemonic_worker_cannot_spawn_children_without_the_shim(tmp_path):
     stdout, grandchild_ran = _run_nested_child_arm(tmp_path, "plain")
@@ -529,9 +529,7 @@ def test_an_older_process_lifetime_still_gets_the_parent_death_binding(monkeypat
     from utils import native_path_leases
 
     calls = []
-    monkeypatch.setattr(
-        pl, "bind_current_process_to_parent_lifetime", lambda: calls.append("bind")
-    )
+    monkeypatch.setattr(pl, "bind_current_process_to_parent_lifetime", lambda: calls.append("bind"))
     monkeypatch.delattr(pl, "allow_child_processes")
 
     native_path_leases.run_without_native_path_secret(lambda: None)
