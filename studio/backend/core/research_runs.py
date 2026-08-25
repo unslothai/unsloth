@@ -248,7 +248,9 @@ def _extract_text(message: dict) -> str:
 
 
 def _research_question_context(
-    thread_id: str, user_message_id: str, override: str = ""
+    thread_id: str,
+    user_message_id: str,
+    override: str = "",
 ) -> tuple[str, str]:
     """The question to research plus the conversation that led to it.
 

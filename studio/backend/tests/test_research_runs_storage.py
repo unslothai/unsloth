@@ -3762,7 +3762,11 @@ def _new_user_message(message_id = "user-2", created_at = 20):
     return message_id
 
 
-def _rebind(user_message_id, assistant_message_id = None, thread_id = "thread-1"):
+def _rebind(
+    user_message_id,
+    assistant_message_id = None,
+    thread_id = "thread-1",
+):
     return research_db.rebind_cancelled(
         thread_id = thread_id,
         owner_subject = "alice",
