@@ -78,6 +78,7 @@ export { useChatSearchStore } from "./stores/chat-search-store";
 export type { ChatNavigationState } from "./stores/chat-navigation-store";
 export {
   adjacentChatItem,
+  countUnreadRows,
   nextAttentionChatItem,
   openChatItemById,
   recentChatItemAtSlot,

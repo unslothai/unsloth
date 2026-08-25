@@ -250,6 +250,24 @@ export function visibleChatItems(state: ChatNavigationState): SidebarItem[] {
   return out;
 }
 
+/**
+ * How many rows hold an unread thread. Not the size of the unread set: a
+ * Compare row is backed by two threads and marked unread by both, so the set
+ * counts that one row twice and the toast said it cleared two chats.
+ *
+ * Falls back to the set when no row matches, for unreads left behind by a chat
+ * that is no longer listed. Those are still cleared, and no row count describes
+ * them.
+ */
+export function countUnreadRows(state: ChatNavigationState): number {
+  const rows = visibleChatItems(state).filter((item) =>
+    (item.threadIds?.length ? item.threadIds : [item.id]).some((id) =>
+      state.unreadThreadIds.has(id),
+    ),
+  ).length;
+  return rows || state.unreadThreadIds.size;
+}
+
 /** The row `slot` (1-based) of Recents only, ignoring the pinned block. */
 export function recentChatItemAtSlot(
   state: ChatNavigationState,

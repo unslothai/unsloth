@@ -171,6 +171,7 @@ import {
   type SidebarItem,
   type ChatNavigationState,
   adjacentChatItem,
+  countUnreadRows,
   nextAttentionChatItem,
   openChatItemById,
   recentChatItemAtSlot,
@@ -2733,8 +2734,8 @@ export function AppSidebar() {
   // No undo and no menu item anywhere, so it says what it did.
   useShortcut("clearAllUnreads", () => {
     const state = useChatNavigationStore.getState();
-    const cleared = state.unreadThreadIds.size;
-    if (cleared === 0) {
+    const cleared = countUnreadRows(state);
+    if (state.unreadThreadIds.size === 0) {
       toast.info("No unread chats");
       return;
     }

@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   adjacentChatItem,
   nextAttentionChatItem,
+  countUnreadRows,
   recentChatItemAtSlot,
   useChatNavigationStore,
   visibleChatItems,
@@ -240,4 +241,43 @@ test("a pinned project chat is drawn twice but walked once", () => {
     ["both", "other"],
   );
   assert.equal(adjacentChatItem(store(), 1)?.id, "other");
+});
+
+test("a Compare row counts once, not once per pane", () => {
+  const compare = {
+    id: "cmp",
+    title: "cmp",
+    type: "compare",
+    updatedAt: 0,
+    threadIds: ["left", "right"],
+  } as SidebarItem;
+  useChatNavigationStore.setState({ unreadThreadIds: new Set() });
+  store().publishLists({
+    pinnedItems: [],
+    projectItems: [],
+    recentItems: [compare, row("A")],
+    attentionItemIds: [],
+    activeItemId: null,
+  });
+
+  // Both panes finishing marks the one row unread twice.
+  store().markThreadsUnread(["left", "right"]);
+  assert.equal(store().unreadThreadIds.size, 2);
+  assert.equal(countUnreadRows(store()), 1);
+
+  store().markThreadsUnread(["A"]);
+  assert.equal(countUnreadRows(store()), 2);
+});
+
+test("unreads whose row is gone still get a count", () => {
+  useChatNavigationStore.setState({ unreadThreadIds: new Set() });
+  store().publishLists({
+    pinnedItems: [],
+    projectItems: [],
+    recentItems: [],
+    attentionItemIds: [],
+    activeItemId: null,
+  });
+  store().markThreadsUnread(["deleted-1", "deleted-2"]);
+  assert.equal(countUnreadRows(store()), 2);
 });

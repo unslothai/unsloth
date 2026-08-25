@@ -1817,9 +1817,10 @@ test("clearing every unread says what it cleared", async () => {
     sidebar.indexOf('useShortcut("clearAllUnreads"'),
     sidebar.indexOf("\n  });", sidebar.indexOf('useShortcut("clearAllUnreads"')),
   );
-  // Counted before the wipe, or the toast reports zero every time.
-  assert.match(body, /const cleared = state\.unreadThreadIds\.size;[\s\S]*state\.clearAllUnreads\(\)/);
-  assert.match(body, /if \(cleared === 0\) \{\n\s*toast\.info\(/);
+  // Counted before the wipe, or the toast reports zero every time. Rows, not
+  // threads: a Compare row is backed by two and would be cleared as two chats.
+  assert.match(body, /const cleared = countUnreadRows\(state\);[\s\S]*state\.clearAllUnreads\(\)/);
+  assert.match(body, /if \(state\.unreadThreadIds\.size === 0\) \{\n\s*toast\.info\(/);
   assert.match(body, /toast\.success\(/);
 });
 
