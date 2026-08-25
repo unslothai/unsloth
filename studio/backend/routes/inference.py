@@ -26352,7 +26352,14 @@ async def diffusion_download_plan(
             cpu_offload = request.cpu_offload,
             transformer_prequant_path = request.transformer_prequant_path,
             loras = request.loras,
-            allow_device_probe = not training,
+            # Only the verdict, not the probe. This endpoint drives the download panel, and the
+            # panel stages exactly what it is told: clearing the probe drops the hosted DiT
+            # prequant and the pre-cast encoder from the plan, so a GGUF pick that names an
+            # explicit transformer_quant reports ~21 GB short, stages that, says done, and the
+            # load then pulls the checkpoint inline under the load lock. The probe this keeps is
+            # the one the endpoint already made before this PR: a capability read plus
+            # total_mib, no free-VRAM reading and no allocation.
+            memory_verdict = not training,
         )
         return DiffusionDownloadPlanResponse(**plan)
     except (ValueError, FileNotFoundError) as exc:
