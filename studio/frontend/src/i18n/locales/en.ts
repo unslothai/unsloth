@@ -217,23 +217,11 @@ export const en = {
       clear: "Remove shortcut",
       reset: "Restore default",
       resetAll: "Reset all to defaults",
-      groups: {
-        general: "General",
-        chat: "Chat",
-      },
+      primarySlot: "Shortcut",
+      alternateSlot: "Alternate shortcut",
+      browserReserved:
+        "Your browser may keep this chord for itself. It works in the desktop app.",
       actions: {
-        newChat: {
-          label: "New chat",
-          description: "Start a new chat",
-        },
-        searchChats: {
-          label: "Search chats",
-          description: "Open the chat search dialog",
-        },
-        toggleSidebar: {
-          label: "Toggle sidebar",
-          description: "Show or hide the sidebar",
-        },
         openSettings: {
           label: "Open settings",
           description: "Open the settings dialog",
@@ -241,6 +229,206 @@ export const en = {
         openKeyboardShortcuts: {
           label: "Keyboard shortcuts",
           description: "Open this shortcuts list",
+        },
+        searchChats: {
+          label: "Search chats",
+          description: "Open the chat search dialog",
+        },
+        openMcpServers: {
+          label: "MCP servers",
+          description: "Configure MCP servers for this chat",
+        },
+        logOut: {
+          label: "Log out",
+          description: "Sign out of Unsloth",
+        },
+        approveToolRequest: {
+          label: "Approve request",
+          description: "Allow the tool call waiting for approval",
+        },
+        declineToolRequest: {
+          label: "Decline request",
+          description: "Deny the tool call waiting for approval",
+        },
+        newChat: {
+          label: "New chat",
+          description: "Start a new chat",
+        },
+        newTemporaryChat: {
+          label: "New temporary chat",
+          description: "Start a chat that is not saved to history",
+        },
+        newStandaloneChat: {
+          label: "New standalone chat",
+          description: "Start a new chat outside of any project",
+        },
+        archiveChat: {
+          label: "Archive chat",
+          description: "Archive the selected chats, or the current one",
+        },
+        markChatUnread: {
+          label: "Mark as unread",
+          description: "Mark the selected chats unread, or the current one",
+        },
+        togglePinChat: {
+          label: "Toggle pin",
+          description: "Pin or unpin the selected chats, or the current one",
+        },
+        selectAllChats: {
+          label: "Select all chats",
+          description: "Select every chat in the sidebar",
+        },
+        clearChatSelection: {
+          label: "Clear selection",
+          description: "Deselect the selected chats. Escape does too",
+        },
+        deleteSelectedChats: {
+          label: "Delete selected chats",
+          description: "Delete every selected chat",
+        },
+        nextRecentlyViewedChat: {
+          label: "Next recently viewed chat",
+          description: "Cycle forward through recently viewed chats",
+        },
+        previousRecentlyViewedChat: {
+          label: "Previous recently viewed chat",
+          description: "Cycle back through recently viewed chats",
+        },
+        nextChat: {
+          label: "Next chat",
+          description: "Switch to the next chat in the sidebar",
+        },
+        previousChat: {
+          label: "Previous chat",
+          description: "Switch to the previous chat in the sidebar",
+        },
+        nextChatNeedingAttention: {
+          label: "Next chat needing attention",
+          description: "Switch to the next generating, queued or unread chat",
+        },
+        clearAllUnreads: {
+          label: "Clear all unreads",
+          description: "Mark every chat as read",
+        },
+        goToRecentChat1: {
+          label: "Go to recent chat 1",
+          description: "Open the first chat under Recents",
+        },
+        goToRecentChat2: {
+          label: "Go to recent chat 2",
+          description: "Open the second chat under Recents",
+        },
+        goToRecentChat3: {
+          label: "Go to recent chat 3",
+          description: "Open the third chat under Recents",
+        },
+        goToRecentChat4: {
+          label: "Go to recent chat 4",
+          description: "Open the fourth chat under Recents",
+        },
+        goToRecentChat5: {
+          label: "Go to recent chat 5",
+          description: "Open the fifth chat under Recents",
+        },
+        goToRecentChat6: {
+          label: "Go to recent chat 6",
+          description: "Open the sixth chat under Recents",
+        },
+        switchToChat: {
+          label: "Switch to Chat",
+          description: "Go to the chat workspace",
+        },
+        switchToProjects: {
+          label: "Switch to Projects",
+          description: "Go to the projects workspace",
+        },
+        switchToHub: {
+          label: "Switch to Model hub",
+          description: "Go to the model hub",
+        },
+        switchToTrain: {
+          label: "Switch to Train",
+          description: "Go to the training workspace",
+        },
+        switchToRecipes: {
+          label: "Switch to Recipes",
+          description: "Go to Data Recipes",
+        },
+        switchToImages: {
+          label: "Switch to Images",
+          description: "Go to the images workspace",
+        },
+        switchToVideo: {
+          label: "Switch to Video",
+          description: "Go to the video workspace",
+        },
+        switchToAudio: {
+          label: "Switch to Audio",
+          description: "Go to the audio workspace",
+        },
+        switchToExport: {
+          label: "Switch to Export",
+          description: "Go to the export workspace",
+        },
+        toggleSidebar: {
+          label: "Toggle sidebar",
+          description: "Show or hide the sidebar",
+        },
+        toggleApiMonitor: {
+          label: "Toggle API activity",
+          description: "Show or hide the API activity monitor",
+        },
+        openModelPicker: {
+          label: "Open model picker",
+          description: "Choose the model for this chat",
+        },
+        openProjectPicker: {
+          label: "Open project picker",
+          description: "Switch to another project from the chat header",
+        },
+        startDictation: {
+          label: "Dictation",
+          description: "Start or stop dictating into the composer",
+        },
+        attachFiles: {
+          label: "Attach photos and files",
+          description: "Add an attachment to the composer",
+        },
+        sendMessage: {
+          label: "Send message",
+          description: "Send what is in the composer",
+        },
+        cycleReasoningEffort: {
+          label: "Cycle reasoning effort",
+          description: "Step through the reasoning effort levels",
+        },
+        increaseReasoningEffort: {
+          label: "Increase reasoning effort",
+          description: "Raise reasoning effort one level",
+        },
+        decreaseReasoningEffort: {
+          label: "Decrease reasoning effort",
+          description: "Lower reasoning effort one level",
+        },
+        toggleFastMode: {
+          label: "Toggle Fast mode",
+          description: "Turn Fast mode on or off",
+        },
+        renameChat: {
+          label: "Rename chat",
+          description: "Rename the current chat",
+        },
+        forkChat: {
+          label: "Fork chat",
+          description: "Branch a new chat from the latest message",
+        },
+        copyChatAsMarkdown: {
+          label: "Copy as Markdown",
+          description: "Copy the whole chat to the clipboard as Markdown",
+        },
+        copySessionId: {
+          label: "Copy session id",
+          description: "Copy this chat's sandbox session id",
         },
       },
     },

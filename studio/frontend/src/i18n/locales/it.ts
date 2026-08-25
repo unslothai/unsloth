@@ -185,23 +185,11 @@ export const it = {
       clear: "Rimuovi scorciatoia",
       reset: "Ripristina il valore predefinito",
       resetAll: "Ripristina tutto",
-      groups: {
-        general: "Generali",
-        chat: "Chat",
-      },
+      primarySlot: "Scorciatoia",
+      alternateSlot: "Scorciatoia alternativa",
+      browserReserved:
+        "Il browser potrebbe riservare questa combinazione per sé. Nell’app desktop funziona.",
       actions: {
-        newChat: {
-          label: "Nuova chat",
-          description: "Avvia una nuova chat",
-        },
-        searchChats: {
-          label: "Cerca nelle chat",
-          description: "Apri la ricerca delle chat",
-        },
-        toggleSidebar: {
-          label: "Mostra/nascondi barra laterale",
-          description: "Mostra o nascondi la barra laterale",
-        },
         openSettings: {
           label: "Apri le impostazioni",
           description: "Apri la finestra delle impostazioni",
@@ -209,6 +197,206 @@ export const it = {
         openKeyboardShortcuts: {
           label: "Scorciatoie da tastiera",
           description: "Apri questo elenco di scorciatoie",
+        },
+        searchChats: {
+          label: "Cerca nelle chat",
+          description: "Apri la ricerca delle chat",
+        },
+        openMcpServers: {
+          label: "Server MCP",
+          description: "Configura i server MCP per questa chat",
+        },
+        logOut: {
+          label: "Esci",
+          description: "Esci da Unsloth",
+        },
+        approveToolRequest: {
+          label: "Approva la richiesta",
+          description: "Consenti la chiamata allo strumento in attesa",
+        },
+        declineToolRequest: {
+          label: "Rifiuta la richiesta",
+          description: "Nega la chiamata allo strumento in attesa",
+        },
+        newChat: {
+          label: "Nuova chat",
+          description: "Avvia una nuova chat",
+        },
+        newTemporaryChat: {
+          label: "Nuova chat temporanea",
+          description: "Avvia una chat che non viene salvata nella cronologia",
+        },
+        newStandaloneChat: {
+          label: "Nuova chat autonoma",
+          description: "Avvia una chat fuori da qualsiasi progetto",
+        },
+        archiveChat: {
+          label: "Archivia chat",
+          description: "Archivia le chat selezionate, o quella corrente",
+        },
+        markChatUnread: {
+          label: "Segna come non letta",
+          description: "Segna come non lette le chat selezionate, o quella corrente",
+        },
+        togglePinChat: {
+          label: "Fissa/sblocca",
+          description: "Fissa o sblocca le chat selezionate, o quella corrente",
+        },
+        selectAllChats: {
+          label: "Seleziona tutte le chat",
+          description: "Seleziona tutte le chat nella barra laterale",
+        },
+        clearChatSelection: {
+          label: "Annulla selezione",
+          description: "Deseleziona le chat scelte. Anche Esc le annulla",
+        },
+        deleteSelectedChats: {
+          label: "Elimina le chat selezionate",
+          description: "Elimina tutte le chat selezionate",
+        },
+        nextRecentlyViewedChat: {
+          label: "Chat vista successiva",
+          description: "Avanza tra le chat viste di recente",
+        },
+        previousRecentlyViewedChat: {
+          label: "Chat vista precedente",
+          description: "Torna indietro tra le chat viste di recente",
+        },
+        nextChat: {
+          label: "Chat successiva",
+          description: "Passa alla chat successiva nella barra laterale",
+        },
+        previousChat: {
+          label: "Chat precedente",
+          description: "Passa alla chat precedente nella barra laterale",
+        },
+        nextChatNeedingAttention: {
+          label: "Chat da seguire successiva",
+          description: "Passa alla prossima chat in generazione, in coda o non letta",
+        },
+        clearAllUnreads: {
+          label: "Segna tutto come letto",
+          description: "Segna ogni chat come letta",
+        },
+        goToRecentChat1: {
+          label: "Vai alla chat recente 1",
+          description: "Apri la chat 1 in Recenti",
+        },
+        goToRecentChat2: {
+          label: "Vai alla chat recente 2",
+          description: "Apri la chat 2 in Recenti",
+        },
+        goToRecentChat3: {
+          label: "Vai alla chat recente 3",
+          description: "Apri la chat 3 in Recenti",
+        },
+        goToRecentChat4: {
+          label: "Vai alla chat recente 4",
+          description: "Apri la chat 4 in Recenti",
+        },
+        goToRecentChat5: {
+          label: "Vai alla chat recente 5",
+          description: "Apri la chat 5 in Recenti",
+        },
+        goToRecentChat6: {
+          label: "Vai alla chat recente 6",
+          description: "Apri la chat 6 in Recenti",
+        },
+        switchToChat: {
+          label: "Vai a Chat",
+          description: "Vai allo spazio di lavoro chat",
+        },
+        switchToProjects: {
+          label: "Vai a Progetti",
+          description: "Vai allo spazio di lavoro progetti",
+        },
+        switchToHub: {
+          label: "Vai all’Hub modelli",
+          description: "Vai all’hub dei modelli",
+        },
+        switchToTrain: {
+          label: "Vai ad Addestramento",
+          description: "Vai allo spazio di lavoro di addestramento",
+        },
+        switchToRecipes: {
+          label: "Vai a Recipes",
+          description: "Vai a Data Recipes",
+        },
+        switchToImages: {
+          label: "Vai a Immagini",
+          description: "Vai allo spazio di lavoro immagini",
+        },
+        switchToVideo: {
+          label: "Vai a Video",
+          description: "Vai allo spazio di lavoro video",
+        },
+        switchToAudio: {
+          label: "Vai ad Audio",
+          description: "Vai allo spazio di lavoro audio",
+        },
+        switchToExport: {
+          label: "Vai a Esporta",
+          description: "Vai allo spazio di lavoro di esportazione",
+        },
+        toggleSidebar: {
+          label: "Mostra/nascondi barra laterale",
+          description: "Mostra o nascondi la barra laterale",
+        },
+        toggleApiMonitor: {
+          label: "Mostra/nascondi attività API",
+          description: "Mostra o nascondi il monitor di attività API",
+        },
+        openModelPicker: {
+          label: "Apri selettore modello",
+          description: "Scegli il modello per questa chat",
+        },
+        openProjectPicker: {
+          label: "Apri selettore progetto",
+          description: "Passa a un altro progetto dall'intestazione della chat",
+        },
+        startDictation: {
+          label: "Dettatura",
+          description: "Avvia o interrompi la dettatura nell’editor",
+        },
+        attachFiles: {
+          label: "Allega foto e file",
+          description: "Aggiungi un allegato all’editor",
+        },
+        sendMessage: {
+          label: "Invia messaggio",
+          description: "Invia il contenuto dell’editor",
+        },
+        cycleReasoningEffort: {
+          label: "Scorri lo sforzo di ragionamento",
+          description: "Passa in rassegna i livelli di sforzo di ragionamento",
+        },
+        increaseReasoningEffort: {
+          label: "Aumenta lo sforzo di ragionamento",
+          description: "Alza di un livello lo sforzo di ragionamento",
+        },
+        decreaseReasoningEffort: {
+          label: "Riduci lo sforzo di ragionamento",
+          description: "Abbassa di un livello lo sforzo di ragionamento",
+        },
+        toggleFastMode: {
+          label: "Attiva/disattiva la modalità Fast",
+          description: "Attiva o disattiva la modalità Fast",
+        },
+        renameChat: {
+          label: "Rinomina chat",
+          description: "Rinomina la chat corrente",
+        },
+        forkChat: {
+          label: "Dirama chat",
+          description: "Crea una nuova chat a partire dall’ultimo messaggio",
+        },
+        copyChatAsMarkdown: {
+          label: "Copia come Markdown",
+          description: "Copia l’intera chat negli appunti come Markdown",
+        },
+        copySessionId: {
+          label: "Copia ID sessione",
+          description: "Copia l’ID di sessione sandbox di questa chat",
         },
       },
     },

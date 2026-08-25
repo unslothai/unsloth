@@ -221,23 +221,11 @@ export const de = {
       clear: "Kürzel entfernen",
       reset: "Standard wiederherstellen",
       resetAll: "Alle auf Standard zurücksetzen",
-      groups: {
-        general: "Allgemein",
-        chat: "Chat",
-      },
+      primarySlot: "Kürzel",
+      alternateSlot: "Alternatives Kürzel",
+      browserReserved:
+        "Dein Browser behält diese Tastenkombination unter Umständen für sich. In der Desktop-App funktioniert sie.",
       actions: {
-        newChat: {
-          label: "Neuer Chat",
-          description: "Einen neuen Chat starten",
-        },
-        searchChats: {
-          label: "Chats durchsuchen",
-          description: "Die Chat-Suche öffnen",
-        },
-        toggleSidebar: {
-          label: "Seitenleiste umschalten",
-          description: "Seitenleiste ein- oder ausblenden",
-        },
         openSettings: {
           label: "Einstellungen öffnen",
           description: "Den Einstellungsdialog öffnen",
@@ -245,6 +233,206 @@ export const de = {
         openKeyboardShortcuts: {
           label: "Tastenkürzel",
           description: "Diese Kürzelliste öffnen",
+        },
+        searchChats: {
+          label: "Chats durchsuchen",
+          description: "Die Chat-Suche öffnen",
+        },
+        openMcpServers: {
+          label: "MCP-Server",
+          description: "MCP-Server für diesen Chat einrichten",
+        },
+        logOut: {
+          label: "Abmelden",
+          description: "Von Unsloth abmelden",
+        },
+        approveToolRequest: {
+          label: "Anfrage genehmigen",
+          description: "Den wartenden Tool-Aufruf zulassen",
+        },
+        declineToolRequest: {
+          label: "Anfrage ablehnen",
+          description: "Den wartenden Tool-Aufruf ablehnen",
+        },
+        newChat: {
+          label: "Neuer Chat",
+          description: "Einen neuen Chat starten",
+        },
+        newTemporaryChat: {
+          label: "Neuer temporärer Chat",
+          description: "Einen Chat starten, der nicht im Verlauf gespeichert wird",
+        },
+        newStandaloneChat: {
+          label: "Neuer eigenständiger Chat",
+          description: "Einen neuen Chat außerhalb jedes Projekts starten",
+        },
+        archiveChat: {
+          label: "Chat archivieren",
+          description: "Die ausgewählten Chats archivieren, sonst den aktuellen",
+        },
+        markChatUnread: {
+          label: "Als ungelesen markieren",
+          description: "Die ausgewählten Chats als ungelesen markieren, sonst den aktuellen",
+        },
+        togglePinChat: {
+          label: "Anheften umschalten",
+          description: "Die ausgewählten Chats anheften oder lösen, sonst den aktuellen",
+        },
+        selectAllChats: {
+          label: "Alle Chats auswählen",
+          description: "Jeden Chat in der Seitenleiste auswählen",
+        },
+        clearChatSelection: {
+          label: "Auswahl aufheben",
+          description: "Die ausgewählten Chats abwählen. Escape hebt sie ebenfalls auf",
+        },
+        deleteSelectedChats: {
+          label: "Ausgewählte Chats löschen",
+          description: "Jeden ausgewählten Chat löschen",
+        },
+        nextRecentlyViewedChat: {
+          label: "Nächster zuletzt geöffneter Chat",
+          description: "Vorwärts durch zuletzt geöffnete Chats blättern",
+        },
+        previousRecentlyViewedChat: {
+          label: "Vorheriger zuletzt geöffneter Chat",
+          description: "Rückwärts durch zuletzt geöffnete Chats blättern",
+        },
+        nextChat: {
+          label: "Nächster Chat",
+          description: "Zum nächsten Chat in der Seitenleiste wechseln",
+        },
+        previousChat: {
+          label: "Vorheriger Chat",
+          description: "Zum vorherigen Chat in der Seitenleiste wechseln",
+        },
+        nextChatNeedingAttention: {
+          label: "Nächster Chat mit Aktivität",
+          description: "Zum nächsten generierenden, wartenden oder ungelesenen Chat wechseln",
+        },
+        clearAllUnreads: {
+          label: "Alle als gelesen markieren",
+          description: "Jeden Chat als gelesen markieren",
+        },
+        goToRecentChat1: {
+          label: "Zu letztem Chat 1 wechseln",
+          description: "Chat 1 unter „Zuletzt“ öffnen",
+        },
+        goToRecentChat2: {
+          label: "Zu letztem Chat 2 wechseln",
+          description: "Chat 2 unter „Zuletzt“ öffnen",
+        },
+        goToRecentChat3: {
+          label: "Zu letztem Chat 3 wechseln",
+          description: "Chat 3 unter „Zuletzt“ öffnen",
+        },
+        goToRecentChat4: {
+          label: "Zu letztem Chat 4 wechseln",
+          description: "Chat 4 unter „Zuletzt“ öffnen",
+        },
+        goToRecentChat5: {
+          label: "Zu letztem Chat 5 wechseln",
+          description: "Chat 5 unter „Zuletzt“ öffnen",
+        },
+        goToRecentChat6: {
+          label: "Zu letztem Chat 6 wechseln",
+          description: "Chat 6 unter „Zuletzt“ öffnen",
+        },
+        switchToChat: {
+          label: "Zu Chat wechseln",
+          description: "Zum Chat-Arbeitsbereich gehen",
+        },
+        switchToProjects: {
+          label: "Zu Projekte wechseln",
+          description: "Zum Projekte-Arbeitsbereich gehen",
+        },
+        switchToHub: {
+          label: "Zu Modell-Hub wechseln",
+          description: "Zum Modell-Hub gehen",
+        },
+        switchToTrain: {
+          label: "Zu Training wechseln",
+          description: "Zum Trainings-Arbeitsbereich gehen",
+        },
+        switchToRecipes: {
+          label: "Zu Recipes wechseln",
+          description: "Zu Data Recipes gehen",
+        },
+        switchToImages: {
+          label: "Zu Bilder wechseln",
+          description: "Zum Bilder-Arbeitsbereich gehen",
+        },
+        switchToVideo: {
+          label: "Zu Video wechseln",
+          description: "Zum Video-Arbeitsbereich gehen",
+        },
+        switchToAudio: {
+          label: "Zu Audio wechseln",
+          description: "Zum Audio-Arbeitsbereich gehen",
+        },
+        switchToExport: {
+          label: "Zu Export wechseln",
+          description: "Zum Export-Arbeitsbereich gehen",
+        },
+        toggleSidebar: {
+          label: "Seitenleiste umschalten",
+          description: "Seitenleiste ein- oder ausblenden",
+        },
+        toggleApiMonitor: {
+          label: "API-Aktivität umschalten",
+          description: "Den API-Aktivitätsmonitor ein- oder ausblenden",
+        },
+        openModelPicker: {
+          label: "Modellauswahl öffnen",
+          description: "Das Modell für diesen Chat wählen",
+        },
+        openProjectPicker: {
+          label: "Projektauswahl öffnen",
+          description: "Über die Chat-Kopfzeile zu einem anderen Projekt wechseln",
+        },
+        startDictation: {
+          label: "Diktat",
+          description: "Diktat im Eingabefeld starten oder stoppen",
+        },
+        attachFiles: {
+          label: "Fotos und Dateien anhängen",
+          description: "Einen Anhang zum Eingabefeld hinzufügen",
+        },
+        sendMessage: {
+          label: "Nachricht senden",
+          description: "Den Inhalt des Eingabefelds senden",
+        },
+        cycleReasoningEffort: {
+          label: "Denkaufwand durchschalten",
+          description: "Durch die Stufen des Denkaufwands blättern",
+        },
+        increaseReasoningEffort: {
+          label: "Denkaufwand erhöhen",
+          description: "Den Denkaufwand um eine Stufe anheben",
+        },
+        decreaseReasoningEffort: {
+          label: "Denkaufwand verringern",
+          description: "Den Denkaufwand um eine Stufe senken",
+        },
+        toggleFastMode: {
+          label: "Fast-Modus umschalten",
+          description: "Den Fast-Modus ein- oder ausschalten",
+        },
+        renameChat: {
+          label: "Chat umbenennen",
+          description: "Den aktuellen Chat umbenennen",
+        },
+        forkChat: {
+          label: "Chat verzweigen",
+          description: "Aus der letzten Nachricht einen neuen Chat abzweigen",
+        },
+        copyChatAsMarkdown: {
+          label: "Als Markdown kopieren",
+          description: "Den gesamten Chat als Markdown in die Zwischenablage kopieren",
+        },
+        copySessionId: {
+          label: "Sitzungs-ID kopieren",
+          description: "Die Sandbox-Sitzungs-ID dieses Chats kopieren",
         },
       },
     },

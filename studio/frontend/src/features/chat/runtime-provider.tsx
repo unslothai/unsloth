@@ -2687,6 +2687,15 @@ export function useChatActive(): boolean {
   return useContext(ChatActiveContext);
 }
 
+// True inside a Compare pane. Both panes mount the same message controls, so a
+// window-level chord would otherwise be answered by whichever pane mounted
+// first, whatever the user was looking at.
+const ComparePaneContext = createContext(false);
+
+export function useInComparePane(): boolean {
+  return useContext(ComparePaneContext);
+}
+
 export function ChatRuntimeProvider({
   children,
   modelType = "base",
@@ -2768,6 +2777,7 @@ export function ChatRuntimeProvider({
           ("call_0") can't bleed live output into each other's cards. */}
       <ChatProjectScopeContext.Provider value={projectId ?? null}>
       <ToolPaneScopeContext.Provider value={toolPaneScope(modelType, pairId)}>
+        <ComparePaneContext.Provider value={Boolean(pairId)}>
         <ActiveThreadSync
           enabled={
             modelType === "base" &&
@@ -2828,6 +2838,7 @@ export function ChatRuntimeProvider({
         {/* The view stays mounted (only CSS-hidden) while off-route so the run
             stays attached and the stream alive; unmounting aborts generation. */}
         {children}
+        </ComparePaneContext.Provider>
       </ToolPaneScopeContext.Provider>
       </ChatProjectScopeContext.Provider>
     </AssistantRuntimeProvider>

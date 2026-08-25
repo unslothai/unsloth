@@ -221,23 +221,11 @@ export const fr = {
       clear: "Supprimer le raccourci",
       reset: "Rétablir la valeur par défaut",
       resetAll: "Tout réinitialiser",
-      groups: {
-        general: "Général",
-        chat: "Discussion",
-      },
+      primarySlot: "Raccourci",
+      alternateSlot: "Raccourci alternatif",
+      browserReserved:
+        "Votre navigateur peut réserver cette combinaison. Elle fonctionne dans l’application de bureau.",
       actions: {
-        newChat: {
-          label: "Nouvelle discussion",
-          description: "Démarrer une nouvelle discussion",
-        },
-        searchChats: {
-          label: "Rechercher dans les discussions",
-          description: "Ouvrir la recherche de discussions",
-        },
-        toggleSidebar: {
-          label: "Afficher/masquer la barre latérale",
-          description: "Afficher ou masquer la barre latérale",
-        },
         openSettings: {
           label: "Ouvrir les paramètres",
           description: "Ouvrir la fenêtre des paramètres",
@@ -245,6 +233,206 @@ export const fr = {
         openKeyboardShortcuts: {
           label: "Raccourcis clavier",
           description: "Ouvrir cette liste de raccourcis",
+        },
+        searchChats: {
+          label: "Rechercher dans les discussions",
+          description: "Ouvrir la recherche de discussions",
+        },
+        openMcpServers: {
+          label: "Serveurs MCP",
+          description: "Configurer les serveurs MCP de cette discussion",
+        },
+        logOut: {
+          label: "Se déconnecter",
+          description: "Se déconnecter d’Unsloth",
+        },
+        approveToolRequest: {
+          label: "Approuver la demande",
+          description: "Autoriser l’appel d’outil en attente",
+        },
+        declineToolRequest: {
+          label: "Refuser la demande",
+          description: "Refuser l’appel d’outil en attente",
+        },
+        newChat: {
+          label: "Nouvelle discussion",
+          description: "Démarrer une nouvelle discussion",
+        },
+        newTemporaryChat: {
+          label: "Nouvelle discussion temporaire",
+          description: "Démarrer une discussion qui n’est pas enregistrée dans l’historique",
+        },
+        newStandaloneChat: {
+          label: "Nouvelle discussion autonome",
+          description: "Démarrer une discussion en dehors de tout projet",
+        },
+        archiveChat: {
+          label: "Archiver la discussion",
+          description: "Archiver les discussions sélectionnées, sinon celle en cours",
+        },
+        markChatUnread: {
+          label: "Marquer comme non lu",
+          description: "Marquer comme non lues les discussions sélectionnées, sinon celle en cours",
+        },
+        togglePinChat: {
+          label: "Épingler/désépingler",
+          description: "Épingler ou désépingler les discussions sélectionnées, sinon celle en cours",
+        },
+        selectAllChats: {
+          label: "Tout sélectionner",
+          description: "Sélectionner tous les chats de la barre latérale",
+        },
+        clearChatSelection: {
+          label: "Effacer la sélection",
+          description: "Désélectionner les chats sélectionnés. Échap le fait aussi",
+        },
+        deleteSelectedChats: {
+          label: "Supprimer les chats sélectionnés",
+          description: "Supprimer tous les chats sélectionnés",
+        },
+        nextRecentlyViewedChat: {
+          label: "Discussion consultée suivante",
+          description: "Avancer dans les discussions récemment consultées",
+        },
+        previousRecentlyViewedChat: {
+          label: "Discussion consultée précédente",
+          description: "Reculer dans les discussions récemment consultées",
+        },
+        nextChat: {
+          label: "Discussion suivante",
+          description: "Passer à la discussion suivante de la barre latérale",
+        },
+        previousChat: {
+          label: "Discussion précédente",
+          description: "Passer à la discussion précédente de la barre latérale",
+        },
+        nextChatNeedingAttention: {
+          label: "Discussion à traiter suivante",
+          description: "Passer à la discussion suivante en cours, en file ou non lue",
+        },
+        clearAllUnreads: {
+          label: "Tout marquer comme lu",
+          description: "Marquer toutes les discussions comme lues",
+        },
+        goToRecentChat1: {
+          label: "Aller à la discussion récente 1",
+          description: "Ouvrir la discussion 1 sous Récents",
+        },
+        goToRecentChat2: {
+          label: "Aller à la discussion récente 2",
+          description: "Ouvrir la discussion 2 sous Récents",
+        },
+        goToRecentChat3: {
+          label: "Aller à la discussion récente 3",
+          description: "Ouvrir la discussion 3 sous Récents",
+        },
+        goToRecentChat4: {
+          label: "Aller à la discussion récente 4",
+          description: "Ouvrir la discussion 4 sous Récents",
+        },
+        goToRecentChat5: {
+          label: "Aller à la discussion récente 5",
+          description: "Ouvrir la discussion 5 sous Récents",
+        },
+        goToRecentChat6: {
+          label: "Aller à la discussion récente 6",
+          description: "Ouvrir la discussion 6 sous Récents",
+        },
+        switchToChat: {
+          label: "Aller à Discussion",
+          description: "Ouvrir l’espace de discussion",
+        },
+        switchToProjects: {
+          label: "Aller à Projets",
+          description: "Ouvrir l’espace des projets",
+        },
+        switchToHub: {
+          label: "Aller au Hub de modèles",
+          description: "Ouvrir le hub de modèles",
+        },
+        switchToTrain: {
+          label: "Aller à Entraînement",
+          description: "Ouvrir l’espace d’entraînement",
+        },
+        switchToRecipes: {
+          label: "Aller à Recipes",
+          description: "Ouvrir Data Recipes",
+        },
+        switchToImages: {
+          label: "Aller à Images",
+          description: "Ouvrir l’espace des images",
+        },
+        switchToVideo: {
+          label: "Aller à Vidéo",
+          description: "Ouvrir l’espace vidéo",
+        },
+        switchToAudio: {
+          label: "Aller à Audio",
+          description: "Ouvrir l’espace audio",
+        },
+        switchToExport: {
+          label: "Aller à Export",
+          description: "Ouvrir l’espace d’export",
+        },
+        toggleSidebar: {
+          label: "Afficher/masquer la barre latérale",
+          description: "Afficher ou masquer la barre latérale",
+        },
+        toggleApiMonitor: {
+          label: "Afficher/masquer l’activité API",
+          description: "Afficher ou masquer le moniteur d’activité API",
+        },
+        openModelPicker: {
+          label: "Ouvrir le sélecteur de modèle",
+          description: "Choisir le modèle de cette discussion",
+        },
+        openProjectPicker: {
+          label: "Ouvrir le sélecteur de projet",
+          description: "Passer à un autre projet depuis l'en-tête du chat",
+        },
+        startDictation: {
+          label: "Dictée",
+          description: "Démarrer ou arrêter la dictée dans la zone de saisie",
+        },
+        attachFiles: {
+          label: "Joindre photos et fichiers",
+          description: "Ajouter une pièce jointe à la zone de saisie",
+        },
+        sendMessage: {
+          label: "Envoyer le message",
+          description: "Envoyer le contenu de la zone de saisie",
+        },
+        cycleReasoningEffort: {
+          label: "Faire défiler l’effort de raisonnement",
+          description: "Parcourir les niveaux d’effort de raisonnement",
+        },
+        increaseReasoningEffort: {
+          label: "Augmenter l’effort de raisonnement",
+          description: "Monter d’un niveau l’effort de raisonnement",
+        },
+        decreaseReasoningEffort: {
+          label: "Diminuer l’effort de raisonnement",
+          description: "Descendre d’un niveau l’effort de raisonnement",
+        },
+        toggleFastMode: {
+          label: "Activer/désactiver le mode Fast",
+          description: "Activer ou désactiver le mode Fast",
+        },
+        renameChat: {
+          label: "Renommer la discussion",
+          description: "Renommer la discussion en cours",
+        },
+        forkChat: {
+          label: "Dupliquer la discussion",
+          description: "Créer une branche à partir du dernier message",
+        },
+        copyChatAsMarkdown: {
+          label: "Copier en Markdown",
+          description: "Copier toute la discussion dans le presse-papiers en Markdown",
+        },
+        copySessionId: {
+          label: "Copier l’ID de session",
+          description: "Copier l’ID de session sandbox de cette discussion",
         },
       },
     },
