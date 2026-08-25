@@ -38,6 +38,7 @@ from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
 from .loader_utils import (
     DEFAULT_DEVICE_MAP,
+    OFFLOAD_EMBEDDING_AUTO,
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
     _offline_quantize_to_fp8,
@@ -443,7 +444,7 @@ class FastLanguageModel(FastLlamaModel):
         resize_model_vocab = None,
         revision = None,
         use_exact_model_name = False,
-        offload_embedding = False,
+        offload_embedding = OFFLOAD_EMBEDDING_AUTO,
         float32_mixed_precision = None,  # Forces float32 mixed precision
         fast_inference = False,  # uses vLLM
         gpu_memory_utilization = 0.5,
@@ -1033,6 +1034,16 @@ class FastLanguageModel(FastLlamaModel):
         except Exception as e:
             print(f"Unsloth: Could not patch bitsandbytes for torch.compile - {e}")
 
+        # The optimized path has never carried `offload_embedding`, so a request for one is
+        # dropped rather than honoured; say so instead of leaving the caller to infer it
+        # from memory use. `"auto"` stays quiet: it promises a decision, and off is one.
+        if offload_embedding != OFFLOAD_EMBEDDING_AUTO and offload_embedding:
+            print(
+                "Unsloth: Not offloading embeddings; the optimized path for this "
+                "architecture does not support it. Pass `device_map` or use FastModel "
+                "if you need the offload."
+            )
+
         model, tokenizer = dispatch_model.from_pretrained(
             model_name = model_name,
             max_seq_length = max_seq_length,
@@ -1250,7 +1261,7 @@ class FastModel(FastBaseModel):
         whisper_language = None,
         whisper_task = None,
         unsloth_force_compile = False,
-        offload_embedding = False,
+        offload_embedding = OFFLOAD_EMBEDDING_AUTO,
         float32_mixed_precision = None,  # Forces float32 mixed precision
         # Add the missing vLLM/inference parameters
         fast_inference = False,  # uses vLLM
@@ -2088,7 +2099,16 @@ class FastModel(FastBaseModel):
             whisper_language = whisper_language,
             whisper_task = whisper_task,
             auto_config = model_config,
-            offload_embedding = offload_embedding,
+            auto_config_from_caller = user_config is not None,
+            # `resize_token_embeddings` below replaces the embedding module and hooks do
+            # not travel to the replacement, so an offload installed during the load would
+            # leave a CPU embedding feeding a GPU decoder. An explicit request is left
+            # alone, since that combination was already this caller's to get wrong.
+            offload_embedding = (
+                False
+                if resize_model_vocab is not None and offload_embedding == OFFLOAD_EMBEDDING_AUTO
+                else offload_embedding
+            ),
             float32_mixed_precision = float32_mixed_precision,
             # Pass vLLM/inference parameters
             fast_inference = fast_inference,
