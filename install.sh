@@ -3413,6 +3413,78 @@ _kfd_gfx_targets() {
     return 0
 }
 
+# Pair each rocminfo GPU gfx id with its marketing name instead of using the CPU-first
+# global name (#7307). Blank names keep device ordinals; no GPU keeps the old fallback.
+# Exactly one record per device -- rocminfo repeats a device's arch across its Name and
+# ISA lines -- which is also what lets the arch routing index a visible-device mask by
+# card rather than by arch, so it reads the gfx half of these records.
+# Keep in sync with studio/setup.sh.
+_rocminfo_gpu_records() {
+    awk '
+        # Split at the first colon so embedded colons survive.
+        function value(line,   v) {
+            v = line
+            sub(/^[^:]*:[[:space:]]*/, "", v)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+            return v
+        }
+        /^[[:space:]]*Name:/ {
+            # Keep a slot for a nameless GPU.
+            if (gfx != "" && !named) { print gfx "|"; gpus++ }
+            gfx = ""; named = 0
+            name = value($0)
+            # Accept target suffixes such as gfx90a:sramecc+, but reject ISA names.
+            if (match(name, /^gfx[1-9][0-9a-z][0-9a-z][0-9a-z]?/)) {
+                rest = substr(name, RLENGTH + 1)
+                if (rest == "" || rest ~ /^[^0-9a-z]/) gfx = substr(name, 1, RLENGTH)
+            }
+            next
+        }
+        /^[[:space:]]*Marketing Name:/ {
+            mkt = value($0)
+            if (gfx != "" && !named) { print gfx "|" mkt; gpus++; named = 1 }
+            else if (first == "") first = mkt
+            next
+        }
+        END {
+            if (gfx != "" && !named) { print gfx "|"; gpus++ }
+            if (gpus == 0 && first != "") print "|" first
+        }
+    '
+}
+
+# One `gfx|marketing name` per adapter, in `GPU: N` order, so the mask picks both halves
+# of one device. Was: arch indexed, name always adapter 0's -- and on amd-smi 6.1.1, which
+# has no TARGET_GRAPHICS_VERSION, that name is what --rocm-gfx is inferred from.
+# The amd-smi counterpart of _rocminfo_gpu_records, and the arch routing reads the gfx
+# half of these for the same per-device reason.
+# Keep in sync with studio/setup.sh.
+_amd_smi_gpu_records() {
+    awk '
+        function value(line,   v) {
+            v = line
+            sub(/^[^:]*:[[:space:]]*/, "", v)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+            return v
+        }
+        function flush() {
+            if (started) print gfx "|" mkt
+            gfx = ""; mkt = ""
+        }
+        # amd-smi upper-cases every key (amdsmi_logger.py _capitalize_keys): MARKET_NAME,
+        # TARGET_GRAPHICS_VERSION. Matched case-folded so older spellings work too.
+        /^[[:space:]]*GPU:[[:space:]]*[0-9]/ { flush(); started = 1; next }
+        !started { next }
+        tolower($0) ~ /market.?name/ { if (mkt == "") mkt = value($0); next }
+        tolower($0) ~ /target.?graphics.?version/ {
+            v = value($0)
+            if (gfx == "" && v ~ /^gfx[1-9][0-9a-z][0-9a-z][0-9a-z]?$/) gfx = v
+            next
+        }
+        END { flush() }
+    '
+}
+
 # Physical gfx arch when the ISA probe is an HSA_OVERRIDE_GFX_VERSION spoof
 # (unslothai#7331): $1 = the arch inferred from the product name, $2 = the probed gfx
 # token list. Prints the physical arch, or nothing to mean "believe the probe" (default).
@@ -3434,30 +3506,6 @@ _kfd_gfx_targets() {
 # reasons), and rerouting a working machine to the wrong wheels is worse than
 # unslothai#7331 itself.
 # Kept in sync with _hsa_spoofed_physical_gfx in studio/install_python_stack.py.
-# one gfx token per device from a probe on stdin, so a visible-device ordinal indexes devices and not arches; rocminfo repeats a device's arch across its Name and ISA lines, so split on agent headers first (mirrors _detect_amd_gfx_codes(dedup=False)) and fall back to first-seen order for flat output such as amd-smi's
-_gfx_targets_per_device() {
-    awk '
-        {
-            _low = tolower($0)
-            if (match(_low, /agent[ \t]+[0-9]+/) || match(_low, /device[ \t]*#[ \t]*[0-9]+/) \
-                || match(_low, /^[ \t]*gpu[ \t]*:[ \t]*[0-9]+/) \
-                || match(_low, /^[ \t]*gpu[ \t]*\[[ \t]*[0-9]+/)) {
-                if (_started && _cur != "") print _cur
-                _started = 1; _cur = ""
-            }
-            if (match(_low, /gfx[1-9][0-9a-z][0-9a-z][0-9a-z]?/)) {
-                _tok = substr(_low, RSTART, RLENGTH)
-                if (_started) { if (_cur == "") _cur = _tok }
-                else if (!_seen[_tok]++) _flat[_nf++] = _tok
-            }
-        }
-        END {
-            if (_started) { if (_cur != "") print _cur }
-            else for (_i = 0; _i < _nf; _i++) print _flat[_i]
-        }
-    '
-}
-
 _hsa_spoofed_physical_gfx() {
     _hsp_inferred="${1:-}"
     _hsp_probed_all="${2:-}"
@@ -4661,14 +4709,16 @@ _venv_torch_rocm_below() {
 # rocm6.0-7.2 and any future 7.x < 7.13; rocm7.13+ already has the fixes, so leave it.
 case "$_torch_index_leaf" in
     rocm[0-9]*)
-        # Collect every gfx token in rocminfo / amd-smi enumeration order
-        # (skip duplicates), then index by HIP_VISIBLE_DEVICES /
-        # ROCR_VISIBLE_DEVICES so a mixed Strix iGPU + non-Strix dGPU box
-        # where the user selected the dGPU does NOT get rerouted to the
-        # Strix per-gfx index.
-        # || true on each probe: no gfx match makes grep exit 1, which under
-        # set -euo pipefail would abort the installer before the next fallback
-        # runs (now that the case matches every rocm* index, not just rocm7.1).
+        # The gfx half of the same per-device records the display block below
+        # reads, so one line means one adapter in rocminfo / amd-smi enumeration
+        # order. Indexing that by HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES
+        # selects a card: a deduplicated arch list could not, so a mixed
+        # gfx1100 + gfx1100 + gfx1200 box ran off the end of a two-entry list,
+        # and a mixed Strix iGPU + non-Strix dGPU box where the user selected
+        # the dGPU got rerouted to the Strix per-gfx index anyway.
+        # || true on each probe: a probe that finds nothing must not abort the
+        # installer under set -euo pipefail before the next fallback runs (the
+        # case now matches every rocm* index, not just rocm7.1).
         # A user-supplied UNSLOTH_ROCM_GFX_ARCH overrides probing (mirrors setup.sh
         # and the display block), so a Strix override still reaches the arch index.
         _gfx_all=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
@@ -4677,15 +4727,15 @@ case "$_torch_index_leaf" in
         # which probe answered: only rocminfo is filtered by an rocr mask, so only it can pre-apply one
         _gfx_probe=""
         if [ -z "$_gfx_all" ] && command -v rocminfo >/dev/null 2>&1; then
-            _gfx_all=$(rocminfo 2>/dev/null | _gfx_targets_per_device || true)
+            _gfx_all=$(rocminfo 2>/dev/null | _rocminfo_gpu_records | cut -d'|' -f1 || true)
             [ -n "$_gfx_all" ] && _gfx_probe=rocminfo
         fi
         if [ -z "$_gfx_all" ] && command -v amd-smi >/dev/null 2>&1; then
-            _gfx_all=$(amd-smi list 2>/dev/null | _gfx_targets_per_device || true)
+            _gfx_all=$(amd-smi list 2>/dev/null | _amd_smi_gpu_records | cut -d'|' -f1 || true)
             # PowerShell paths also probe `amd-smi static --asic`; mirror it
             # so a host with hipinfo-less amd-smi reports the gfx target.
             if [ -z "$_gfx_all" ]; then
-                _gfx_all=$(amd-smi static --asic 2>/dev/null | _gfx_targets_per_device || true)
+                _gfx_all=$(amd-smi static --asic 2>/dev/null | _amd_smi_gpu_records | cut -d'|' -f1 || true)
             fi
         fi
         # get_torch_index_url reads the arch with ROCR/HIP masks cleared, so a
@@ -4697,12 +4747,12 @@ case "$_torch_index_leaf" in
         # must trigger the re-probe too.
         if [ -z "$_gfx_all" ] && [ -n "${ROCR_VISIBLE_DEVICES+x}${HIP_VISIBLE_DEVICES+x}" ]; then
             if command -v rocminfo >/dev/null 2>&1; then
-                _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; rocminfo 2>/dev/null) | _gfx_targets_per_device || true)
+                _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; rocminfo 2>/dev/null) | _rocminfo_gpu_records | cut -d'|' -f1 || true)
             fi
             if [ -z "$_gfx_all" ] && command -v amd-smi >/dev/null 2>&1; then
-                _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi list 2>/dev/null) | _gfx_targets_per_device || true)
+                _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi list 2>/dev/null) | _amd_smi_gpu_records | cut -d'|' -f1 || true)
                 [ -z "$_gfx_all" ] && \
-                    _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi static --asic 2>/dev/null) | _gfx_targets_per_device || true)
+                    _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi static --asic 2>/dev/null) | _amd_smi_gpu_records | cut -d'|' -f1 || true)
             fi
         fi
         # HSA_OVERRIDE_GFX_VERSION=11.0.0 (the circulated Strix workaround) makes ROCr
@@ -4914,43 +4964,6 @@ fi
 _TAURI_GPU_BRANCH=$(_tauri_gpu_branch "$_TAURI_TORCH_INDEX_FAMILY" "$_amd_gpu_radeon")
 tauri_diag_marker "$_TAURI_GPU_BRANCH" "$_TAURI_TORCH_INDEX_FAMILY"
 
-# Pair each rocminfo GPU gfx id with its marketing name instead of using the CPU-first
-# global name (#7307). Blank names keep device ordinals; no GPU keeps the old fallback.
-# Keep in sync with studio/setup.sh.
-_rocminfo_gpu_records() {
-    awk '
-        # Split at the first colon so embedded colons survive.
-        function value(line,   v) {
-            v = line
-            sub(/^[^:]*:[[:space:]]*/, "", v)
-            gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
-            return v
-        }
-        /^[[:space:]]*Name:/ {
-            # Keep a slot for a nameless GPU.
-            if (gfx != "" && !named) { print gfx "|"; gpus++ }
-            gfx = ""; named = 0
-            name = value($0)
-            # Accept target suffixes such as gfx90a:sramecc+, but reject ISA names.
-            if (match(name, /^gfx[1-9][0-9a-z][0-9a-z][0-9a-z]?/)) {
-                rest = substr(name, RLENGTH + 1)
-                if (rest == "" || rest ~ /^[^0-9a-z]/) gfx = substr(name, 1, RLENGTH)
-            }
-            next
-        }
-        /^[[:space:]]*Marketing Name:/ {
-            mkt = value($0)
-            if (gfx != "" && !named) { print gfx "|" mkt; gpus++; named = 1 }
-            else if (first == "") first = mkt
-            next
-        }
-        END {
-            if (gfx != "" && !named) { print gfx "|"; gpus++ }
-            if (gpus == 0 && first != "") print "|" first
-        }
-    '
-}
-
 # amd-smi enumerates in discovery order over its KFD view; HIP_VISIBLE_DEVICES and
 # ROCR_VISIBLE_DEVICES index HIP/ROCr order, which the library derives from the KFD node
 # id instead. The two disagree on real hardware (MI350X SPX/NPS1), and _gfx here becomes
@@ -4991,36 +5004,6 @@ _amd_smi_hip_order() {
             print "hip"
             for (i = 0; i < r; i++) print out[i]
         }
-    '
-}
-
-# One `gfx|marketing name` per adapter, in `GPU: N` order, so the mask picks both halves
-# of one device. Was: arch indexed, name always adapter 0's -- and on amd-smi 6.1.1, which
-# has no TARGET_GRAPHICS_VERSION, that name is what --rocm-gfx is inferred from.
-# Keep in sync with studio/setup.sh.
-_amd_smi_gpu_records() {
-    awk '
-        function value(line,   v) {
-            v = line
-            sub(/^[^:]*:[[:space:]]*/, "", v)
-            gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
-            return v
-        }
-        function flush() {
-            if (started) print gfx "|" mkt
-            gfx = ""; mkt = ""
-        }
-        # amd-smi upper-cases every key (amdsmi_logger.py _capitalize_keys): MARKET_NAME,
-        # TARGET_GRAPHICS_VERSION. Matched case-folded so older spellings work too.
-        /^[[:space:]]*GPU:[[:space:]]*[0-9]/ { flush(); started = 1; next }
-        !started { next }
-        tolower($0) ~ /market.?name/ { if (mkt == "") mkt = value($0); next }
-        tolower($0) ~ /target.?graphics.?version/ {
-            v = value($0)
-            if (gfx == "" && v ~ /^gfx[1-9][0-9a-z][0-9a-z][0-9a-z]?$/) gfx = v
-            next
-        }
-        END { flush() }
     '
 }
 

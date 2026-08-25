@@ -94,6 +94,14 @@ def _extract_sh_function_body(source: str, name: str) -> str:
     return source[start:]
 
 
+def _gpu_record_helpers(source: str) -> str:
+    """install.sh's per-device GPU record parsers, for injecting into a probe block."""
+    return "\n".join(
+        _extract_sh_function_body(source, name)
+        for name in ("_rocminfo_gpu_records", "_amd_smi_gpu_records")
+    )
+
+
 # A dpkg-query -W stand-in that renders whichever showformat string it is handed,
 # so this tests how production ASKS for versions, not only how it parses answers.
 # It requires rocm-core and Debian's HSA runtime in ONE invocation, emits any
@@ -2232,7 +2240,7 @@ class TestGfx1102Rocm64Floor:
             pytest.skip("bash needed to execute install.sh architecture routing")
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
         leaf_helper = _extract_sh_function_body(source, "_rocm_leaf_below")
-        gfx_helper = _extract_sh_function_body(source, "_gfx_targets_per_device")
+        gfx_helper = _gpu_record_helpers(source)
         start = source.find('case "$_torch_index_leaf" in\n    rocm[0-9]*)')
         end = source.find("\nfi  # _torch_index_pinned guard", start)
         assert leaf_helper and gfx_helper and start >= 0 and end >= 0
@@ -2352,10 +2360,18 @@ class TestGfx1102Rocm64Floor:
         assert self._run_install_sh_routing(preamble) == expected
 
     def test_install_sh_still_indexes_amd_smi_output_under_a_rocr_mask(self):
-        """amd-smi ignores ROCR_VISIBLE_DEVICES, so its flat output still needs indexing."""
+        """amd-smi ignores ROCR_VISIBLE_DEVICES, so its output still needs indexing."""
+        asic = "\\n".join(
+            [
+                "GPU: 0",
+                "        TARGET_GRAPHICS_VERSION: gfx1200",
+                "GPU: 1",
+                "        TARGET_GRAPHICS_VERSION: gfx1100",
+            ]
+        )
         preamble = (
             "rocminfo() { return 1; }\n"
-            "amd-smi() { printf 'gfx1200\\ngfx1100\\n'; }\n"
+            f"amd-smi() {{ printf '{asic}\\n'; }}\n"
             "export ROCR_VISIBLE_DEVICES=1"
         )
         assert self._run_install_sh_routing(preamble) == "rocm6.1"
@@ -6436,7 +6452,7 @@ class TestStrixRocm71Override:
             assert not below(leaf), f"{leaf} must NOT reroute (>= floor or non-rocm)"
 
     def test_gfx_probe_survives_no_match_under_set_e(self):
-        """A gfx probe whose grep finds no match must not abort install.sh under
+        """A gfx probe that finds no match must not abort install.sh under
         set -euo pipefail before the amd-smi fallback runs. The reroute case now
         matches every rocm* index, so this would break ordinary 6.x/7.2 installs
         with a flaky rocminfo. Executed with shimmed tools, not a text match."""
@@ -6451,15 +6467,26 @@ class TestStrixRocm71Override:
         )
         assert block, "could not extract the gfx-detection block"
         with tempfile.TemporaryDirectory() as d:
-            # rocminfo emits no gfx token; amd-smi supplies gfx1151 (the fallback)
-            for name, out in (("rocminfo", "no gpu here"), ("amd-smi", "GPU: gfx1151")):
+            # rocminfo emits no gfx token; amd-smi supplies gfx1151 (the fallback).
+            # `list` carries no arch on a real host, so `static --asic` is the one
+            # that answers -- the shim keeps the subcommands distinct to prove it.
+            amd_smi = (
+                '#!/bin/sh\ncase "$1" in\n'
+                '  list) printf "GPU: 0\\n    BDF: 0000:03:00.0\\n" ;;\n'
+                '  *) printf "GPU: 0\\n    TARGET_GRAPHICS_VERSION: gfx1151\\n" ;;\n'
+                "esac\n"
+            )
+            for name, body in (
+                ("rocminfo", '#!/bin/sh\ncat <<"EOT"\nno gpu here\nEOT\n'),
+                ("amd-smi", amd_smi),
+            ):
                 p = os.path.join(d, name)
                 with open(p, "w", encoding = "utf-8") as f:
-                    f.write(f'#!/bin/sh\ncat <<"EOT"\n{out}\nEOT\n')
+                    f.write(body)
                 os.chmod(p, 0o755)
             script = (
                 'set -euo pipefail\nHIP_VISIBLE_DEVICES=""\nROCR_VISIBLE_DEVICES=""\n'
-                + _extract_sh_function_body(source, "_gfx_targets_per_device")
+                + _gpu_record_helpers(source)
                 + "\n"
                 + block.group(0)
                 + '\nprintf "OK:%s\\n" "$_gfx_all"\n'
@@ -6505,7 +6532,7 @@ class TestStrixRocm71Override:
                 os.chmod(p, 0o755)
             script = (
                 "set -euo pipefail\n"
-                + _extract_sh_function_body(source, "_gfx_targets_per_device")
+                + _gpu_record_helpers(source)
                 + "\n"
                 + block.group(0)
                 + '\nprintf "OK:%s\\n" "$_runtime_gfx"\n'
