@@ -14,6 +14,7 @@ import threading
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any, AsyncIterator, Callable
 
 import httpx
@@ -122,6 +123,10 @@ _ADMISSION_HEARTBEAT_MISSES = 3
 # the poll loop stays bounded however long generation itself may run.
 _DEFAULT_MODEL_TIMEOUT_SECONDS = 900.0
 _MAX_MODEL_WAIT_BUDGET_SECONDS = 3600.0
+# An unlimited run has no wall clock to bound a provider's Retry-After against, so it is
+# bounded here instead: long enough for the hour-long windows providers reset on, short
+# enough that one mistaken or hostile header cannot park a run, and its lease, indefinitely.
+_MAX_RATE_LIMIT_WAIT_SECONDS = 3600.0
 # Headroom so the named stall guards expire before HTTPX's own read timeout does.
 _STREAM_READ_TIMEOUT_MARGIN_SECONDS = 30.0
 
@@ -454,16 +459,36 @@ async def _model_unloaded(response: httpx.Response) -> str | None:
     return "named" if _MODEL_NOT_FOUND_CODE in text else None
 
 
-def _retry_after_seconds(response: httpx.Response) -> float | None:
-    """The response's Retry-After delay in seconds, or None when it is absent or a HTTP date."""
-    header = response.headers.get("Retry-After")
-    if not header:
+def _retry_after_delay(raw: object) -> float | None:
+    """A Retry-After value as a delay in seconds, or None when it names none or has passed.
+
+    RFC 9110 defines the field as ``HTTP-date / delay-seconds`` and providers fronted by a CDN do
+    send the date form. Reading only the number leaves the caller backing off for a second or two
+    inside a cooldown that has minutes left, which spends the retry on the same refusal."""
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
         return None
     try:
-        delay = float(header.strip())
+        delay = float(text)
     except ValueError:
-        return None
+        try:
+            at = parsedate_to_datetime(text)
+        except (IndexError, TypeError, ValueError):
+            return None
+        if at is None:
+            return None
+        if at.tzinfo is None:
+            # RFC 9110 dates are GMT; a form that omits the zone is not a local time.
+            at = at.replace(tzinfo = timezone.utc)
+        delay = (at - datetime.now(timezone.utc)).total_seconds()
     return delay if delay > 0 else None
+
+
+def _retry_after_seconds(response: httpx.Response) -> float | None:
+    """The response's Retry-After delay in seconds, or None when it is absent or already past."""
+    return _retry_after_delay(response.headers.get("Retry-After"))
 
 
 async def _peek_stream_head(lines: AsyncIterator[str]) -> list[str]:
@@ -500,11 +525,7 @@ def _stream_rate_limit_delay(head: list[str]) -> float | None:
         metadata = error.get("metadata")
         if requested is None and isinstance(metadata, dict):
             requested = metadata.get("retry_after")
-        try:
-            delay = float(str(requested).strip())
-        except (TypeError, ValueError):
-            return 0.0
-        return delay if delay > 0 else 0.0
+        return _retry_after_delay(requested) or 0.0
     return None
 
 
@@ -516,17 +537,15 @@ async def _with_head(head: list[str], rest: AsyncIterator[str]) -> AsyncIterator
         yield line
 
 
-def _rate_limit_wait(
-    run: dict, requested: float, remaining: float | None, headroom: float
-) -> float:
+def _rate_limit_wait(requested: float, remaining: float | None, headroom: float) -> float:
     """How much of a provider's requested retry delay this call can afford.
 
     The delay is the provider's, not a share of the model-load budget, so it is bounded by what
     is left of the call's wall clock minus the room the re-sent request still needs. Coming back
     sooner than the provider allows only spends an attempt on the same refusal. An unlimited run
-    has no wall clock to divide, so it keeps the model-wait share as its ceiling."""
+    has no wall clock to divide, so only the standing ceiling applies to it."""
     if remaining is None:
-        return min(requested, _model_wait_budget(run))
+        return min(requested, _MAX_RATE_LIMIT_WAIT_SECONDS)
     return max(0.0, min(requested, remaining - headroom))
 
 
@@ -1138,7 +1157,7 @@ class ResearchSupervisor:
             model_timeout - (asyncio.get_running_loop().time() - started) if model_timeout else None
         )
         await self._wait_out_retry_after(
-            run["id"], _rate_limit_wait(run, requested, remaining, headroom)
+            run["id"], _rate_limit_wait(requested, remaining, headroom)
         )
 
     async def _wait_out_retry_after(self, run_id: str, delay: float) -> None:

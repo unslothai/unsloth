@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 import json
 import sys
 import time
@@ -2204,14 +2205,21 @@ def test_model_unloaded_matches_the_model_switch_refusal():
     assert asyncio.run(research_runs._model_unloaded(_response(503, body = "overloaded"))) is None
 
 
-def test_retry_after_seconds_reads_only_a_delay():
+def _http_date_in(seconds):
+    at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds = seconds)
+    return at.strftime("%a, %d %b %Y %H:%M:%S GMT")
+
+
+def test_retry_after_seconds_reads_both_rfc_9110_forms():
     assert research_runs._retry_after_seconds(_switch_failed()) == 5.0
     assert research_runs._retry_after_seconds(_switch_failed(None)) is None
-    # HTTP-date form and non-positive delays carry no usable delay, so the default applies.
-    assert (
-        research_runs._retry_after_seconds(_switch_failed("Wed, 21 Oct 2026 07:28:00 GMT")) is None
-    )
+    # RFC 9110 allows "Retry-After: <HTTP-date>", which is the delay from now until then.
+    soon = research_runs._retry_after_seconds(_switch_failed(_http_date_in(30)))
+    assert soon is not None and 27.0 < soon <= 30.0
+    # A date already past, a non-positive delay, and an unparsable one all carry none.
+    assert research_runs._retry_after_seconds(_switch_failed(_http_date_in(-60))) is None
     assert research_runs._retry_after_seconds(_switch_failed("0")) is None
+    assert research_runs._retry_after_seconds(_switch_failed("shortly")) is None
 
 
 def test_stream_completion_waits_out_an_in_flight_model_switch(monkeypatch):
@@ -2394,6 +2402,30 @@ _PROVIDER_429 = {
 }
 
 
+def test_a_retry_after_http_date_is_read_as_a_delay(monkeypatch):
+    # RFC 9110 allows "Retry-After: <HTTP-date>", and providers behind a CDN send it. Reading
+    # only the numeric form backed off for a second inside a 30s cooldown.
+    _, waits = _send_attempts(monkeypatch, 429, {"Retry-After": _http_date_in(30)})
+    assert len(waits) == 2
+    assert all(27.0 < wait <= 30.0 for wait in waits), waits
+
+
+def test_a_retry_after_date_already_past_falls_back_to_the_backoff(monkeypatch):
+    assert _send_attempts(monkeypatch, 429, {"Retry-After": _http_date_in(-60)}) == (3, [1, 2])
+
+
+def test_an_unlimited_run_honours_the_whole_retry_after(monkeypatch):
+    # No wall clock to divide, so nothing may trim the provider's delay to a model-load share.
+    unlimited = _send_attempts(monkeypatch, 429, {"Retry-After": "300"}, model_timeout = 0.0)
+    assert unlimited == (3, [300.0, 300.0])
+
+
+def test_an_unlimited_rate_limit_wait_still_has_a_ceiling(monkeypatch):
+    # Unlimited is not "park this run for a day on one header".
+    _, waits = _send_attempts(monkeypatch, 429, {"Retry-After": "86400"}, model_timeout = 0.0)
+    assert waits == [research_runs._MAX_RATE_LIMIT_WAIT_SECONDS] * 2
+
+
 def test_a_rate_limit_delivered_inside_the_stream_is_retried(monkeypatch):
     # An external provider's 429 is proxied as a 200 whose first line carries the refusal, so
     # the status line never shows it and the run used to end on the first send.
@@ -2420,6 +2452,13 @@ def test_a_chatgpt_quota_refusal_in_the_stream_is_retried(monkeypatch):
         }
     )
     assert _send_attempts(monkeypatch, 200, body = body) == (3, [30.0, 30.0])
+
+
+def test_an_in_band_retry_after_http_date_is_read_as_a_delay(monkeypatch):
+    body = _provider_error_sse(dict(_PROVIDER_429, retry_after = _http_date_in(30)))
+    _, waits = _send_attempts(monkeypatch, 200, body = body)
+    assert len(waits) == 2
+    assert all(27.0 < wait <= 30.0 for wait in waits), waits
 
 
 def test_another_in_band_provider_error_is_not_retried(monkeypatch):
