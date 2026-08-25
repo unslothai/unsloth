@@ -134,6 +134,9 @@ export type ApplyInferenceStatusOptions = {
    * status -- without it a variant-only switch underneath the tab reads as
    * steady state and the hydration reseed keeps the old quant's baselines. */
   previousGgufVariant?: string | null;
+  /** Hydrate the running model's load settings even while this caller owns
+   * the model-loading lifecycle lease. */
+  seedLoadParams?: boolean;
 };
 
 /** Mirror refresh() hydration so adopted CLI models get reasoning/tools flags. */
@@ -217,7 +220,7 @@ export function applyActiveModelStatusToStore(
       : status.chat_template;
   // While a load is in flight, performLoad owns the load params. Seeding them
   // from a stale poll here would clobber the values the load dialog just set.
-  const seedLoadParams = !prevState.modelLoading;
+  const seedLoadParams = options.seedLoadParams ?? !prevState.modelLoading;
   // A model/variant change underneath this tab. The controls in the store belong
   // to the model that just left, so they are reseeded here the way every other
   // load param at this site already is: the echo cannot stand in, since a new
@@ -735,6 +738,7 @@ export async function tryAdoptServerActiveModel(options?: {
   applyActiveModelStatusToStore(status, {
     previousCheckpoint,
     previousGgufVariant,
+    seedLoadParams: options?.allowWhileModelLoading,
   });
   return true;
 }

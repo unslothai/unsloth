@@ -182,6 +182,38 @@ def test_status_reports_tracked_load_before_backend_lock(monkeypatch):
     assert response.loading == ["org/slow-model-GGUF"]
 
 
+def test_status_keeps_resident_model_visible_during_tracked_preflight(monkeypatch):
+    """A new load must not hide the model that is still serving."""
+    _patch_status_dependencies(monkeypatch)
+    monkeypatch.setattr(
+        inference_route,
+        "_probe_llama_cpp_status",
+        lambda _backend: (False, {}),
+    )
+    backend = _FakeInferenceBackend()
+    backend.active_model_name = "org/resident-model"
+    backend.models = {"org/resident-model": {}}
+    backend.loading_models = set()
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "load_inference_config", lambda _model: None)
+    attempt = inference_route._ScopedLoadAttempt(
+        token = "attempt",
+        request_id = None,
+        model_path = "org/incoming-model",
+        subject = "test",
+        cancel_event = threading.Event(),
+        cancel_complete = threading.Event(),
+    )
+    monkeypatch.setattr(inference_route, "_running_load_attempt", attempt)
+
+    response = asyncio.run(inference_route.get_status(current_subject = "test"))
+
+    assert response.active_model == "org/resident-model"
+    assert response.model_identifier == "org/resident-model"
+    assert response.loaded == ["org/resident-model"]
+    assert response.loading == ["org/incoming-model"]
+
+
 def test_status_reports_gguf_load_while_serial_lock_is_held(monkeypatch):
     """The RLock-compatible probe exposes direct GGUF loads after preflight."""
     lock = threading.RLock()

@@ -11897,11 +11897,9 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
         _installed_tag = _freshness.get("installed_tag")
         _latest_tag = _freshness.get("latest_tag")
 
-        # A CLI/API-started load has no active model to report until the server
-        # is ready. The tracked attempt starts before model resolution, while
-        # the llama lock covers direct GGUF callers and the later launch phase.
-        # Surface either window so first-paint clients do not mistake it for an
-        # idle server and start a competing auto-load.
+        # The tracked attempt starts before model resolution, while the llama
+        # lock covers direct GGUF callers and the later launch phase. Surface
+        # either window without hiding a model that is still serving.
         with _scoped_load_attempts_lock:
             _tracked_loading_id = (
                 _running_load_attempt.model_path if _running_load_attempt is not None else ""
@@ -11914,15 +11912,23 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             _lock_acquired = _serial_load_lock.acquire(blocking = False)
             if _lock_acquired:
                 _serial_load_lock.release()
-        if (_tracked_loading_id or not _lock_acquired) and not llama_backend.is_loaded:
-            _loading_id = _tracked_loading_id or llama_backend._model_identifier or ""
+        _load_in_flight = bool(_tracked_loading_id or not _lock_acquired)
+        _loading_id = (
+            _tracked_loading_id or getattr(llama_backend, "_model_identifier", "") or ""
+        )
+        _reported_loading_id = _loading_id or "(loading)"
+        backend = _peek_inference_backend()
+        _active_standard_model = (
+            getattr(backend, "active_model_name", None) if backend is not None else None
+        )
+        if _load_in_flight and not llama_backend.is_loaded and not _active_standard_model:
             return InferenceStatusResponse(
                 active_model = None,
                 model_identifier = None,
                 # Before config resolution the tracked attempt does not yet
                 # know its runtime. Once llama owns the lock this is GGUF.
                 is_gguf = not _lock_acquired,
-                loading = [_loading_id] if _loading_id else ["(loading)"],
+                loading = [_reported_loading_id],
                 loaded = [],
                 llama_cpp_supports_mtp = _supports_mtp,
                 llama_cpp_prebuilt_stale = _stale,
@@ -11967,7 +11973,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                     llama_backend, _native_grant_backed, _model_id
                 ),
                 gguf_variant = llama_backend.hf_variant,
-                loading = [],
+                loading = [_reported_loading_id] if _load_in_flight else [],
                 # Plus anything the Unsloth registry still holds: the GGUF load
                 # only unloaded the ACTIVE one, so a model cached behind it is
                 # still in VRAM and was invisible to every client reading this.
@@ -11996,7 +12002,6 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
 
         # Otherwise report Unsloth backend status. Peek rather than build: no singleton means
         # nothing is loaded, and the chat UI polls this from first paint.
-        backend = _peek_inference_backend()
         if backend is None:
             return InferenceStatusResponse(
                 llama_cpp_supports_mtp = _supports_mtp,
@@ -12027,6 +12032,10 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             load_inference_config(backend.active_model_name) if backend.active_model_name else None
         )
 
+        _loading_models = list(getattr(backend, "loading_models", set()))
+        if _load_in_flight and _reported_loading_id not in _loading_models:
+            _loading_models.append(_reported_loading_id)
+
         return InferenceStatusResponse(
             active_model = backend.active_model_name,
             model_identifier = backend.active_model_name,
@@ -12046,7 +12055,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             mlx_kv_quant_note = model_info.get("mlx_kv_quant_note"),
             chat_template_override = model_info.get("chat_template_override_requested"),
             chat_template_override_reason = model_info.get("chat_template_override_reason"),
-            loading = list(getattr(backend, "loading_models", set())),
+            loading = _loading_models,
             loaded = list(backend.models.keys()),
             inference = inference_config,
             requires_trust_remote_code = _resolve_loaded_trust_remote_code(
