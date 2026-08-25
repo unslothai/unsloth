@@ -76,6 +76,14 @@ CANDIDATES = [
 ]
 
 
+def _span(seconds: int) -> str:
+    """Human duration. Integer division alone printed "0 minutes" for a short window."""
+    if seconds < 60:
+        return f"{seconds} seconds"
+    m, sec = divmod(seconds, 60)
+    return f"{m} minutes" if not sec else f"{m} minutes {sec} seconds"
+
+
 def sh(args, timeout = 20):
     try:
         r = subprocess.run(args, capture_output = True, text = True, timeout = timeout)
@@ -250,7 +258,7 @@ def run_candidate(label, extra, why, cmd) -> dict:
     started = time.time()
     applied, samples, exited = {}, [], None
 
-    print(f"    launching, then watching for {(WARMUP + WINDOW) // 60} minutes.", flush = True)
+    print(f"    launching, then watching for {_span(WARMUP + WINDOW)}.", flush = True)
     print("    Use the window normally while this runs.", flush = True)
     try:
         while time.time() - started < WARMUP + WINDOW:
@@ -299,6 +307,9 @@ def run_candidate(label, extra, why, cmd) -> dict:
             stalled_at = samples[i][0]
             break
 
+    pre_lines = [l for l in text.splitlines() if "desktop_preflight completed" in l]
+    preflight = pre_lines[-1].strip() if pre_lines else ""
+
     if exited == 0:
         # A clean, immediate exit is almost always the single-instance guard: another copy
         # of Unsloth is already open, so this launch handed over and quit. Calling that
@@ -308,13 +319,33 @@ def run_candidate(label, extra, why, cmd) -> dict:
             "SKIPPED: the app exited immediately and cleanly, which usually means "
             "another copy of Unsloth is already running. Close it and re-run"
         )
+    elif exited is not None and not (
+        os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+    ):
+        # Over plain SSH there is nothing to draw on. Calling that a crash starts a bug
+        # hunt for a bug that is not there.
+        verdict = (
+            f"CANNOT RUN: the app exited (code {exited}) and there is no display to draw "
+            f"on. Run this from a desktop session, not over plain SSH"
+        )
     elif exited is not None:
         verdict = f"CRASHED: the app exited on its own (code {exited})"
     elif n_mon == 0 and n_live == 0:
-        verdict = (
-            "NO SIGNAL: neither loop was seen, so this run measured nothing. "
-            "Usually means the backend was already running before the app started"
-        )
+        # Do not guess the cause: the preflight line the app already printed says which
+        # of the two it is, and naming the wrong one sends the user off fixing nothing.
+        if "NotInstalled" in preflight:
+            why = (
+                "Unsloth Studio itself is not installed, so there is no backend to "
+                "observe. Open the app once and let it finish installing, then re-run"
+            )
+        elif "AttachedReady" in preflight or "OwnedReady" in preflight:
+            why = (
+                "the app attached to a backend that was already running, which nothing "
+                "is recording. Close every copy of Unsloth and re-run"
+            )
+        else:
+            why = "the backend never started, so there was nothing to observe"
+        verdict = f"NO SIGNAL: this run measured nothing, because {why}"
     elif n_live > 0 and n_mon == 0:
         verdict = "FROZE: the interface never polled at all while the app kept running"
     elif stalled_at is not None:
@@ -328,13 +359,12 @@ def run_candidate(label, extra, why, cmd) -> dict:
         verdict = "OK: the interface kept polling for the whole run"
 
     print(f"    VERDICT: {verdict}", flush = True)
-    pre = [l for l in text.splitlines() if "desktop_preflight completed" in l]
     return {
         "candidate": label,
         "why": why,
         "env": extra,
         "verdict": verdict,
-        "preflight": scrub(pre[-1].strip()) if pre else "(not seen)",
+        "preflight": scrub(preflight) if preflight else "(not seen)",
         "applied_by_app": applied,
         "interface_polls": n_mon,
         "watchdog_polls": n_live,
@@ -357,8 +387,8 @@ def main() -> int:
     print("=" * 60)
     print(
         f"This runs {len(CANDIDATES)} launches of about "
-        f"{(WARMUP + WINDOW) // 60} minutes each, so roughly "
-        f"{len(CANDIDATES) * (WARMUP + WINDOW) // 60} minutes total."
+        f"{_span(WARMUP + WINDOW)} each, so roughly "
+        f"{_span(len(CANDIDATES) * (WARMUP + WINDOW))} in total."
     )
     print("Use the app normally during each one. Ctrl-C skips to the next candidate.\n")
 
