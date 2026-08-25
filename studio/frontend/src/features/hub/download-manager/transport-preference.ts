@@ -49,13 +49,10 @@ function readStored(): TransportMode | null {
 }
 
 function loadInstallMode(refresh: boolean): Promise<TransportMode | null> {
-  return loadDownloadTransportSettings({ refresh })
-    .then((settings) => {
-      installMode = isTransportMode(settings.mode) ? settings.mode : null;
-      return installMode;
-    })
-    // Keep what we loaded: discarding it on a transient failure sent the next download to Auto.
-    .catch(() => installMode);
+  return loadDownloadTransportSettings({ refresh }).then((settings) => {
+    installMode = isTransportMode(settings.mode) ? settings.mode : null;
+    return installMode;
+  });
 }
 
 function hydrateInstallMode(refresh = false): Promise<TransportMode | null> {
@@ -64,12 +61,19 @@ function hydrateInstallMode(refresh = false): Promise<TransportMode | null> {
   if (installModeInFlight && (!refresh || installModeInFlightIsRefresh)) {
     return installModeInFlight;
   }
-  const pending = loadInstallMode(refresh).finally(() => {
-    if (installModeInFlight === pending) {
-      installModeInFlight = null;
-      installModeInFlightIsRefresh = false;
-    }
-  });
+  // Not shared, but not thrown away either: a download started before the first hydration
+  // answers overtakes it with a refresh, and if that refresh fails there is still a request
+  // coming with the install's real choice.
+  const superseded = refresh ? installModeInFlight : null;
+  const pending = loadInstallMode(refresh)
+    // Keep what we loaded: discarding it on a transient failure sent the next download to Auto.
+    .catch(() => (installMode === null && superseded ? superseded : installMode))
+    .finally(() => {
+      if (installModeInFlight === pending) {
+        installModeInFlight = null;
+        installModeInFlightIsRefresh = false;
+      }
+    });
   installModeInFlight = pending;
   installModeInFlightIsRefresh = refresh;
   return pending;

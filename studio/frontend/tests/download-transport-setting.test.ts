@@ -174,7 +174,13 @@ test("the untranslated health reason is not folded into a translated sentence", 
 test("a failed refresh keeps the install mode already loaded", () => {
   // Falling back to null sent the next download to Auto even though the install's choice was
   // still known here, so a blip on the settings route silently changed transport.
-  assert.match(PREFERENCE, /\.catch\(\(\) => installMode\)/);
+  assert.match(PREFERENCE, /installMode === null && superseded \? superseded : installMode/);
+});
+
+test("a failed refresh waits for the hydration it overtook", () => {
+  // A download started before the first hydration answers overtakes it, and answering null
+  // when the refresh fails ran on Auto while the install's real choice was still on its way.
+  assert.match(PREFERENCE, /const superseded = refresh \? installModeInFlight : null;/);
 });
 
 test("adopting an existing job does not wait on the settings route", () => {
