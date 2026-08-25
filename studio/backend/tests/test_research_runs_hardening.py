@@ -2288,7 +2288,12 @@ def test_an_unlimited_run_survives_a_gap_past_the_default_queue_bound(monkeypatc
     assert _run_stream(supervisor, timeout_seconds = 0) == ("report", "", "stop", None)
 
 
-def _send_attempts(monkeypatch, status, headers = None, model_timeout = 900.0):
+def _send_attempts(
+    monkeypatch,
+    status,
+    headers = None,
+    model_timeout = 900.0,
+):
     """Drive the real send/retry loop against a canned response; return (attempts, waits)."""
     run = {
         "id": "run-1",
@@ -2312,11 +2317,13 @@ def _send_attempts(monkeypatch, status, headers = None, model_timeout = 900.0):
             waits.append(round(delay, 2))
         return await real_sleep(0)
 
-    async def _send(self, request, stream = False):
+    async def _send(
+        self,
+        request,
+        stream = False,
+    ):
         attempts.append(request.url)
-        return httpx.Response(
-            status, headers = headers or {}, content = b"{}", request = request
-        )
+        return httpx.Response(status, headers = headers or {}, content = b"{}", request = request)
 
     monkeypatch.setattr(asyncio, "sleep", _sleep)
     monkeypatch.setattr(httpx.AsyncClient, "send", _send)
