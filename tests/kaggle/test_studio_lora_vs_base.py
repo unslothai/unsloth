@@ -63,7 +63,8 @@ def test_it_compares_against_the_file_the_export_actually_made():
 def test_the_claim_is_that_the_two_differ():
     func = _func("assert_lora_vs_base")
     guarded = [
-        n for n in ast.walk(func)
+        n
+        for n in ast.walk(func)
         if isinstance(n, ast.If) and "tuned == base_one" in ast.unparse(n.test)
     ]
     assert guarded, (
@@ -82,14 +83,15 @@ def test_the_determinism_control_runs_before_the_claim():
 
 
 def test_a_non_reproducing_base_is_reported_as_a_failure_not_a_pass():
-    """"I could not compare" and "they matched" are opposite outcomes. Letting
+    """ "I could not compare" and "they matched" are opposite outcomes. Letting
     the first through as a pass is the exact shape this directory keeps being
     caught by."""
     func = _func("assert_lora_vs_base")
     for node in ast.walk(func):
         if isinstance(node, ast.If) and "base_one != base_two" in ast.unparse(node.test):
             appends = [
-                n for n in ast.walk(node)
+                n
+                for n in ast.walk(node)
                 if isinstance(n, ast.Call)
                 and isinstance(n.func, ast.Attribute)
                 and n.func.attr == "append"
@@ -124,11 +126,12 @@ def test_both_models_are_driven_with_the_same_prompt():
     do with the adapter."""
     func = _func("assert_lora_vs_base")
     prompts = [
-        n for n in ast.walk(func)
+        n
+        for n in ast.walk(func)
         if isinstance(n, ast.Assign)
         and any(isinstance(t, ast.Name) and t.id == "prompt" for t in n.targets)
     ]
     assert len(prompts) == 1, "the prompt must be built once and reused"
-    assert _body().count("self.chat(prompt)") == 1, (
-        "one call site, reached by every arm, or the arms can drift apart"
-    )
+    assert (
+        _body().count("self.chat(prompt)") == 1
+    ), "one call site, reached by every arm, or the arms can drift apart"
