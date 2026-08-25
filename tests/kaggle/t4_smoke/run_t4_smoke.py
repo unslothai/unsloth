@@ -693,7 +693,16 @@ def batched_generation(model, tokenizer, prompts, *, max_new_tokens) -> dict:
         width = enc["input_ids"].shape[1]
         return [tokenizer.decode(row[width:], skip_special_tokens = True) for row in out]
 
-    lengths = [len(tokenizer(text = p)["input_ids"]) for p in prompts]
+    # `[0]`, and the missing index made this whole check vacuous. A processor
+    # returns input_ids with a BATCH dimension, so `len(...)` on it is the
+    # number of sequences -- 1 -- for every prompt. Measured on kernel
+    # unsloth-probe-latestcompile-r3-cb1125, where gemma-4 reported
+    # [1, 1, 1, 1, 1, 1, 1, 1] and the vacuity guard below caught it:
+    #   "every batched prompt tokenised to the same length ... so nothing was
+    #    ever padded and the left-padding check proved nothing"
+    # A plain tokenizer given one string returns a flat list, which is why this
+    # read correctly on every text model and only broke on the first vision one.
+    lengths = [len(tokenizer(text = [p])["input_ids"][0]) for p in prompts]
     singles = [_gen([p])[0] for p in prompts]
     result = {
         "prompt_token_lengths": lengths,
@@ -1790,8 +1799,21 @@ def main() -> int:
             "--outdir",
             str(naive_dir),
         ]
+        # The repo UNSLOTH RESOLVED, not the name that was asked for. This is
+        # the difference between a comparison and an OOM: `load_in_4bit=True`
+        # sends unsloth through FLOAT_TO_INT_MAPPER to a pre-quantised
+        # `-unsloth-bnb-4bit` sibling, while the plain path quantises the
+        # ORIGINAL on the fly and therefore has to materialise the 16bit
+        # checkpoint first. On gemma-4-E2B-it that asked for 8.75GiB on top of
+        # 7.25GiB already resident and died (kernel
+        # unsloth-probe-latestcompile-r3-cb1125).
+        #
+        # Pointing both arms at the same weights is also the fairer comparison:
+        # the question is what the two TRAINING stacks do, not which repo each
+        # loader picks.
+        control_model = runs[0].get("resolved_checkpoint") or args.model
         for flag, value in (
-            ("--model", args.model),
+            ("--model", control_model),
             ("--dataset", args.dataset),
             ("--max-steps", args.max_steps),
             ("--batch-size", args.batch_size),

@@ -102,3 +102,21 @@ def test_the_payload_runs_the_control_in_a_separate_process():
     cycles_at = src.index("runs.append(json.loads(report_file.read_text")
     spawn_at = src.index('"naive_trl_compare.py"')
     assert cycles_at < spawn_at, "the control arm must be spawned after the cycles"
+
+
+def test_the_control_arm_loads_the_repo_unsloth_resolved():
+    """Not the name that was asked for, and the difference is an OOM.
+
+    `load_in_4bit=True` sends unsloth through FLOAT_TO_INT_MAPPER to a
+    pre-quantised `-unsloth-bnb-4bit` sibling. The plain path quantises the
+    ORIGINAL on the fly and has to materialise the 16bit checkpoint first. On
+    gemma-4-E2B-it that asked for 8.75 GiB on top of 7.25 GiB already resident
+    and died (kernel unsloth-probe-latestcompile-r3-cb1125).
+
+    Pointing both arms at the same weights is also the fairer comparison: the
+    question is what the two training stacks do, not which repo each loader
+    picks.
+    """
+    src = (ROOT / "tests" / "kaggle" / "t4_smoke" / "run_t4_smoke.py").read_text(encoding = "utf-8")
+    assert 'control_model = runs[0].get("resolved_checkpoint") or args.model' in src
+    assert '("--model", control_model),' in src

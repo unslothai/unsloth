@@ -155,3 +155,22 @@ def test_the_payload_never_calls_a_tokenizer_positionally():
         if arg and not arg.split(",")[0].strip().endswith("=") and "=" not in arg.split(",")[0]:
             offenders.append(match.group(0))
     assert offenders == [], f"positional tokenizer calls: {offenders}"
+
+
+def test_prompt_token_lengths_index_past_the_batch_dimension():
+    """The missing `[0]` made the whole padding check vacuous.
+
+    A processor returns `input_ids` with a BATCH dimension, so `len(...)` on it
+    is the number of sequences -- 1 -- for every prompt. Measured on kernel
+    unsloth-probe-latestcompile-r3-cb1125, where gemma-4 reported
+    `[1, 1, 1, 1, 1, 1, 1, 1]` and the run's own vacuity guard caught it:
+
+        every batched prompt tokenised to the same length, so nothing was ever
+        padded and the left-padding check proved nothing
+
+    A plain tokenizer given one string returns a flat list, which is why this
+    read correctly on every text model and broke on the first vision one.
+    """
+    src = (PAYLOAD / "run_t4_smoke.py").read_text(encoding = "utf-8")
+    assert 'len(tokenizer(text = [p])["input_ids"][0]) for p in prompts' in src
+    assert 'len(tokenizer(text = p)["input_ids"]) for p in prompts' not in src
