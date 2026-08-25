@@ -349,6 +349,17 @@ LEGS: dict[str, Leg] = {
             # that would otherwise surface as an unexplained crash at the first
             # forward.
             "--kernel-provenance",
+            # The image path itself, spawned by the parent after the cycles in
+            # a process of its own. Without it this leg trains TEXT and asserts
+            # kernels, which is a vision leg in name only -- and the directive
+            # asks for a short vision training run, not a vision-capable model
+            # trained on text.
+            "--vision-run",
+            # Q8_0 through the prebuilt llama.cpp binaries, then inference on
+            # the result. Asked for on every leg; measured here for the first
+            # time on a vision checkpoint, whose merged export is the half the
+            # text path cannot exercise.
+            "--export-gguf",
         ),
         reference = "",
     ),

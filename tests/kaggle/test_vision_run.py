@@ -285,3 +285,55 @@ def test_adapter_sum_finds_the_capital_b_peft_names():
     got = adapter_sum(_Stub())
     assert got["tensors"] == 2, got
     assert got["sum"] == 16.0, got
+
+
+def test_the_leg_actually_DRIVES_the_vision_run():
+    """The gap this closes was live for two rounds: `run_vision_t4.py` was in
+    the leg's `files` and nothing ever executed it, so Vision_FLA_compile
+    trained TEXT, asserted kernels, and shipped a payload it never ran.
+
+    A file that is copied and not run is the quietest kind of coverage there
+    is: every guard in this module passed, on a leg where the image path was
+    dead.
+    """
+    import sys as _sys
+
+    _sys.path.insert(0, str(ROOT / ".github" / "scripts" / "kaggle_t4_ci"))
+    import legs  # noqa: E402
+
+    leg = legs.LEGS["vision_fla_compile"]
+    assert "--vision-run" in leg.args, "the leg ships the payload but never runs it"
+    assert "run_vision_t4.py" in leg.files
+    assert "--export-gguf" in leg.args, (
+        "the merged vision export is the half the text path cannot exercise"
+    )
+
+
+def test_the_parent_spawns_the_vision_run_after_the_cycles():
+    """Two 4bit models resident at once on a 14.56GB card is how a leg becomes
+    an OOM blamed on the thing it was testing. It is also what keeps a vision
+    failure from reading as a text-training one."""
+    src = (PAYLOAD / "run_t4_smoke.py").read_text(encoding = "utf-8")
+    assert '"run_vision_t4.py"' in src
+    cycles_at = src.index("runs.append(json.loads(report_file.read_text")
+    spawn_at = src.index('"run_vision_t4.py"')
+    assert cycles_at < spawn_at
+
+
+def test_a_vision_run_that_wrote_no_report_is_a_failure_not_a_silence():
+    """"the vision run did not happen" and "the vision run passed" are opposite
+    outcomes, and an absent report must not read as the second."""
+    src = (PAYLOAD / "run_t4_smoke.py").read_text(encoding = "utf-8")
+    assert '"the vision process wrote no report"' in src
+    assert 'failures += report["vision_failures"]' in src
+
+
+def test_the_vision_step_count_is_pinned_low_rather_than_inherited():
+    """A vision step on a T4 is ~100s (317.9s for three, measured on
+    unsloth-probe-vision-train-r3). Inheriting the text side's --max-steps
+    would quietly add half an hour to the leg."""
+    src = (PAYLOAD / "run_t4_smoke.py").read_text(encoding = "utf-8")
+    spawn = src[src.index('"run_vision_t4.py"'):]
+    spawn = spawn[: spawn.index("subprocess.run(vision_cmd)")]
+    assert '"--max-steps", "3",' in spawn
+    assert "args.max_steps" not in spawn, "the text step count must not reach the vision run"

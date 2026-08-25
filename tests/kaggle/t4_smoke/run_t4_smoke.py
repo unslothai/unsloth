@@ -1676,6 +1676,18 @@ def main() -> int:
         help = "record which fast kernels loaded and where each resolved from",
     )
     ap.add_argument(
+        # A SEPARATE PROCESS, like the plain-TRL control and for a related
+        # reason: the vision run loads a second model, and two 4bit models
+        # resident at once on a 14.56GB T4 is how a leg becomes an OOM blamed
+        # on the thing it was testing. It also runs AFTER the cycles, so a
+        # vision failure cannot be mistaken for a text-training one.
+        "--vision-run",
+        dest = "vision_run",
+        action = "store_true",
+        default = False,
+        help = "also drive run_vision_t4.py and fold its verdict into this report",
+    )
+    ap.add_argument(
         # Only for models the control arm demonstrably cannot LOAD on the card.
         # An OOM during training stays a failure either way.
         "--control-oom-is-ok",
@@ -1867,6 +1879,40 @@ def main() -> int:
         else:
             naive = {"error": "the plain-TRL process wrote no report"}
 
+    vision = None
+    if args.vision_run:
+        vision_dir = outdir / "vision"
+        vision_dir.mkdir(parents = True, exist_ok = True)
+        _log("=== vision training run (fresh process, after the cycles) ===")
+        vision_cmd = [
+            sys.executable,
+            str(Path(__file__).resolve().parent / "run_vision_t4.py"),
+            "--outdir", str(vision_dir),
+            "--model", args.model,
+            "--max-seq-length", str(args.max_seq_length),
+            # Deliberately small and stated here rather than inherited. The
+            # text side runs 10-20 steps in seconds; a vision step on a T4 is
+            # ~100s (317.9s for three, kernel unsloth-probe-vision-train-r3),
+            # so inheriting --max-steps would quietly add half an hour to the
+            # leg. Three steps is what the pixel, adapter and export claims
+            # need; more of them prove nothing extra.
+            "--max-steps", "3",
+            "--samples", "8",
+        ]
+        if args.export_gguf:
+            # The merged-export half of the vision claim. Same flag the text
+            # side uses, so a leg cannot end up exporting on one path only.
+            vision_cmd.append("--export")
+        # rc is not consulted, for the same reason as the control arm: the
+        # child writes a report on every path including its own crash, and
+        # reading rc as well would give two sources of truth for one outcome.
+        subprocess.run(vision_cmd)
+        vision_file = vision_dir / "vision_report.json"
+        if vision_file.exists():
+            vision = json.loads(vision_file.read_text(encoding = "utf-8"))
+        else:
+            vision = {"error": "the vision process wrote no report"}
+
     report: dict = {
         "label": args.label,
         "model": args.model,
@@ -1906,6 +1952,20 @@ def main() -> int:
     # measured transformers 5.5.0 and 5.15.1 disagreeing at step 1 on identical
     # weights, data and seed -- so the rules are "it ran" and "it converged",
     # which are the same rules the unsloth arm is held to.
+    if args.vision_run:
+        report["vision"] = vision
+        if not vision:
+            report["vision_failures"] = ["the vision run produced no report at all"]
+        else:
+            # The child already ruled on itself against the same pure function
+            # the CPU guards drive. Re-deriving the verdict here would be a
+            # second implementation of one rule, and they would disagree the
+            # first time one moved.
+            report["vision_failures"] = list(vision.get("failures") or [])
+            if vision.get("error"):
+                report["vision_failures"].append(f"the vision run crashed: {vision['error']}"[:400])
+        failures += report["vision_failures"]
+
     if args.compare_naive_trl:
         report["naive_trl"] = naive
         naive_broken = comparison_failures(

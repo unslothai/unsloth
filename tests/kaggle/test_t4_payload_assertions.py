@@ -2237,6 +2237,11 @@ PARENT_ONLY_DESTS = {
     # name/value pairs this check walks; asserted separately in
     # test_kernel_provenance.py.
     "kernel_provenance",
+    # The vision run is spawned BY the parent, after the cycles and in a
+    # process of its own: it loads a second model, and two 4bit models resident
+    # at once on a 14.56GB T4 is how a leg becomes an OOM blamed on the thing
+    # it was testing.
+    "vision_run",
 }
 
 
