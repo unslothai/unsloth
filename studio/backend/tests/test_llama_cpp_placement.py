@@ -2444,6 +2444,7 @@ def test_a_fit_derived_load_mode_is_recorded_too(tmp_path, monkeypatch):
         is False
     )
 
+
 # ── Tensor parallelism keeps the requested KV cache type ─────────────
 
 
