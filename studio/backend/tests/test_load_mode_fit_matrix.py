@@ -1608,13 +1608,9 @@ def test_the_draft_whole_offload_threshold_matches_the_main_model():
 
     # The boundary itself, from both spellings and the env twin.
     assert _draft_is_split_across_host(["-ngld", "28"], {}, n_draft_layers = 28) is True
+    assert _draft_is_split_across_host(["--spec-draft-ngl=12"], {}, n_draft_layers = 12) is True
     assert (
-        _draft_is_split_across_host(["--spec-draft-ngl=12"], {}, n_draft_layers = 12) is True
-    )
-    assert (
-        _draft_is_split_across_host(
-            [], {"LLAMA_ARG_N_GPU_LAYERS_DRAFT": "28"}, n_draft_layers = 28
-        )
+        _draft_is_split_across_host([], {"LLAMA_ARG_N_GPU_LAYERS_DRAFT": "28"}, n_draft_layers = 28)
         is True
     )
     # One above it clears the whole drafter onto the card, so a real fit survives.
@@ -1921,7 +1917,6 @@ def test_adapter_flags_really_reach_the_child():
     pass-through layer lets them through. It is a denylist, and none of the four
     adapter flags is on it."""
     from core.inference.llama_server_args import validate_extra_args
-
     for flag in ("--lora", "--lora-scaled", "--control-vector", "--control-vector-scaled"):
         assert validate_extra_args([flag, "/a.gguf:0.5"]) == [flag, "/a.gguf:0.5"]
 
