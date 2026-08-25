@@ -2932,6 +2932,9 @@ class MLXInferenceBackend:
         elif _rep_active:
             vlm_kwargs["repetition_penalty"] = float(repetition_penalty)
         if self._draft_model is not None:
+            # Known gap: mlx_vlm's speculative rounds take the sampler but not the processors,
+            # so the penalties and logit_bias above score only the token before the handoff.
+            # Left alone: they default off, and refusing to draft would be the larger regression.
             vlm_kwargs.update(
                 draft_model = self._draft_model,
                 draft_kind = self._draft_kind,
