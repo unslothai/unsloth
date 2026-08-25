@@ -1597,9 +1597,7 @@ def test_a_load_still_in_flight_at_the_cap_does_not_auto_load_over_it():
     assert _downloads_started(out) == []
     assert out["result"]["loaded"] is False
     assert out["result"]["loadFailureReported"] is True
-    assert [t["msg"] for t in _toasts(out, "toast.error")] == [
-        "The model is still loading"
-    ]
+    assert [t["msg"] for t in _toasts(out, "toast.error")] == ["The model is still loading"]
     # The wait announced itself, so the refusal is the end of a visible wait.
     assert [t["msg"] for t in _toasts(out, "toast.info")] == [
         "Waiting for model to finish loading\u2026"
