@@ -1715,9 +1715,6 @@ function PromptListDetail({
   onRefresh: () => void;
   onDeleted: (deletedId: string) => void;
 }): ReactElement {
-  const pinnedListIds = usePlusMenuPrefsStore((s) => s.pinnedListIds);
-  const togglePinnedList = usePlusMenuPrefsStore((s) => s.togglePinnedList);
-  const isPinned = pinnedListIds.includes(entry.id);
   const [preview, setPreview] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
@@ -1835,19 +1832,6 @@ function PromptListDetail({
         )}
       </div>
       <div className="flex shrink-0 flex-wrap items-center gap-1 border-t border-border/50 pt-3">
-        <button
-          type="button"
-          onClick={() => togglePinnedList(entry.id)}
-          className={cn(
-            "flex h-8 w-8 items-center justify-center rounded-lg transition-colors",
-            isPinned
-              ? "text-primary hover:bg-primary/10"
-              : "text-muted-foreground hover:bg-muted hover:text-foreground",
-          )}
-          title={isPinned ? "Unpin from + menu" : "Pin to + menu"}
-        >
-          <BookmarkIcon className={cn("size-4", isPinned && "fill-primary")} />
-        </button>
         <button
           type="button"
           onClick={() => onExport(exportValue)}
@@ -2001,7 +1985,6 @@ export function PromptStorageDialog({
   const [exportCtx, setExportCtx] = useState<ExportModalCtx | null>(null);
   const importRef = useRef<HTMLInputElement>(null);
   const pinnedPromptIds = usePlusMenuPrefsStore((s) => s.pinnedPromptIds);
-  const pinnedListIds = usePlusMenuPrefsStore((s) => s.pinnedListIds);
 
   const [promptEntries, setPromptEntries] = useState<PromptEntry[]>([]);
   const [promptLists, setPromptLists] = useState<PromptListEntry[]>([]);
@@ -2405,11 +2388,6 @@ export function PromptStorageDialog({
                       selected={!showNewList && entry.id === selectedListId}
                       current={entry.id === selectedListId}
                       dirty={listDrafts.has(entry.id)}
-                      leading={
-                        pinnedListIds.includes(entry.id) ? (
-                          <BookmarkIcon className="size-3 shrink-0 fill-primary text-primary" />
-                        ) : null
-                      }
                       onSelect={() => {
                         setShowNewList(false);
                         setSelectedListId(entry.id);
