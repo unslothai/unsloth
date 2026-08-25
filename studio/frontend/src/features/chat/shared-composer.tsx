@@ -2223,15 +2223,16 @@ export function SharedComposer({
           setCompositionState(false);
         }}
         placeholder="Send to both models..."
+        // dir="auto" detects RTL (Arabic/Hebrew/Persian/Urdu) from the first
+        // strong character; no effect on LTR scripts. Kept next to the
+        // placeholder: the IME smoke reads this pair out of the source.
+        dir="auto"
         // aui-composer-input carries no styling anywhere; it is the name both
         // composers answer to, so one selector can mean "the composer" whichever
         // of the two is on screen. Escape's decline exception and the dictation
         // foreground check both rely on it.
         className="composer-input aui-composer-input"
         rows={1}
-        // dir="auto" detects RTL (Arabic/Hebrew/Persian/Urdu) from the first
-        // strong character; no effect on LTR scripts.
-        dir="auto"
       />
       <div className="composer-action-wrapper">
         <div
