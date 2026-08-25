@@ -91,7 +91,11 @@ class ReplayResult:
         return len(self.capture.events)
 
 
-def _app_returning(status: int, duration_ms: float = 0.0, clock: "FakeClock | None" = None):
+def _app_returning(
+    status: int,
+    duration_ms: float = 0.0,
+    clock: "FakeClock | None" = None,
+):
     async def app(scope, receive, send):
         # Advance BEFORE responding: the middleware stamps its window on the end time, so
         # a duration added afterwards would be invisible to the very rule under test.
@@ -177,10 +181,14 @@ def replay(
         elapsed = clock.now - started_at
         for path, (period, _provenance) in polled.items():
             if elapsed + 1e-9 >= next_due[path]:
-                send_request(Request(
-                    method = "GET", path = path, status = 200,
-                    duration_ms = durations.get(path, 0.0) if durations else 0.0,
-                ))
+                send_request(
+                    Request(
+                        method = "GET",
+                        path = path,
+                        status = 200,
+                        duration_ms = durations.get(path, 0.0) if durations else 0.0,
+                    )
+                )
                 next_due[path] = elapsed + period
         clock.advance(tick)
 

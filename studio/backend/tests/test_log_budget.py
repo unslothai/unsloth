@@ -225,7 +225,10 @@ class TestDegradedVolume:
     def test_a_degraded_session_stays_inside_its_envelope(self, monkeypatch):
         durations = {path: session.DEGRADED_RESPONSE_MS for path in session.IDLE_POLLS}
         result = replay.replay(
-            hmod, monkeypatch, session.IDLE_POLLS, session.STEADY_IDLE_SECONDS,
+            hmod,
+            monkeypatch,
+            session.IDLE_POLLS,
+            session.STEADY_IDLE_SECONDS,
             durations = durations,
         )
         if result.emitted > session.DEGRADED_LINE_ENVELOPE:
@@ -257,7 +260,10 @@ class TestDegradedVolume:
         """
         durations = {path: session.DEGRADED_RESPONSE_MS for path in session.IDLE_POLLS}
         result = replay.replay(
-            hmod, monkeypatch, session.IDLE_POLLS, session.STEADY_IDLE_SECONDS,
+            hmod,
+            monkeypatch,
+            session.IDLE_POLLS,
+            session.STEADY_IDLE_SECONDS,
             durations = durations,
         )
         slow = [kw for _lvl, _ev, kw in result.capture.events if kw.get("slow")]

@@ -48,7 +48,14 @@ class _Capture:
         self.events.append(kw)
 
 
-def _drive(monkeypatch, path, status, duration_ms, count = 1, gap_s = 0.0):
+def _drive(
+    monkeypatch,
+    path,
+    status,
+    duration_ms,
+    count = 1,
+    gap_s = 0.0,
+):
     clock = _Clock()
     monkeypatch.setattr(hmod, "time", clock)
     capture = _Capture()
@@ -68,15 +75,18 @@ def _drive(monkeypatch, path, status, duration_ms, count = 1, gap_s = 0.0):
         return {"type": "http.disconnect"}
 
     for _ in range(count):
-        asyncio.run(middleware(
-            {"type": "http", "path": path, "method": "GET", "query_string": b""},
-            receive, send,
-        ))
+        asyncio.run(
+            middleware(
+                {"type": "http", "path": path, "method": "GET", "query_string": b""},
+                receive,
+                send,
+            )
+        )
         clock.advance(gap_s)
     return capture.events
 
 
-SILENT_PATH = "/api/export/status"     # quiet_success: a fast 2xx writes nothing
+SILENT_PATH = "/api/export/status"  # quiet_success: a fast 2xx writes nothing
 
 
 def test_a_slow_success_is_logged_with_its_reason(monkeypatch):
@@ -112,16 +122,14 @@ def test_an_excluded_path_never_produces_a_slow_line(monkeypatch):
 def test_a_slow_failure_still_logs_once_per_request(monkeypatch):
     """Failures were never de-duplicated, and the exemption must not start doing so."""
     events = _drive(monkeypatch, SILENT_PATH, 503, hmod._SLOW_REQUEST_MS + 500, count = 4)
-    assert len(events) == 4, (
-        f"four slow failures produced {len(events)} lines; failures must never collapse"
-    )
+    assert (
+        len(events) == 4
+    ), f"four slow failures produced {len(events)} lines; failures must never collapse"
 
 
 def test_the_slow_line_does_not_reset_the_paths_own_heartbeat(monkeypatch):
     """A slow line is extra, not a replacement: the path's ordinary window keeps its
     rhythm rather than being pushed back by one slow call."""
     path = "/api/health"
-    slow_then_fast = _drive(
-        monkeypatch, path, 200, hmod._SLOW_REQUEST_MS + 500, count = 1
-    )
+    slow_then_fast = _drive(monkeypatch, path, 200, hmod._SLOW_REQUEST_MS + 500, count = 1)
     assert slow_then_fast, "a slow /api/health should log"

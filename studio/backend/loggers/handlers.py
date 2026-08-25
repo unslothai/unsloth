@@ -394,7 +394,10 @@ class LoggingMiddleware:
                         scope["method"], path, status_code, not self._auth_refreshed
                     )
                     and not self._is_redundant_repeat(
-                        scope["method"], path, scope.get("query_string", b""), status_code,
+                        scope["method"],
+                        path,
+                        scope.get("query_string", b""),
+                        status_code,
                         end_time,
                     )
                 )

@@ -46,9 +46,7 @@ def _drive(
     middleware = LoggingMiddleware(replay._app_returning(200))
 
     for request in requests:
-        middleware.app = replay._app_returning(
-            request.status, request.duration_ms, clock
-        )
+        middleware.app = replay._app_returning(request.status, request.duration_ms, clock)
         scope = {
             "type": "http",
             "path": request.path,
@@ -287,29 +285,31 @@ class TestSlowSuccessIsSignal:
 
     SLOW_MS = 30_000.0
 
-    def _slow(self, monkeypatch, path, count, gap_s = 0.0):
+    def _slow(
+        self,
+        monkeypatch,
+        path,
+        count,
+        gap_s = 0.0,
+    ):
         capture = _drive(
             monkeypatch,
-            [
-                replay.Request("GET", path, 200, duration_ms = self.SLOW_MS)
-                for _ in range(count)
-            ],
+            [replay.Request("GET", path, 200, duration_ms = self.SLOW_MS) for _ in range(count)],
             gap_s = gap_s,
         )
         return capture.records_for(path)
 
     def test_a_slow_success_logs_even_where_a_fast_one_is_silent(self, monkeypatch):
         silent = sorted(
-            p for p in session.ALL_POLLS
-            if policy.classify(hmod, p) == policy.QUIET_SUCCESS
+            p for p in session.ALL_POLLS if policy.classify(hmod, p) == policy.QUIET_SUCCESS
         )
         assert silent, "no quiet-success paths configured; this guard would be vacuous"
         path = silent[0]
 
         fast = _drive(monkeypatch, [replay.Request("GET", path, 200)], gap_s = 0.0)
-        assert fast.records_for(path) == [], (
-            f"{path} is quiet-success: a FAST 200 must still write nothing"
-        )
+        assert (
+            fast.records_for(path) == []
+        ), f"{path} is quiet-success: a FAST 200 must still write nothing"
 
         records = self._slow(monkeypatch, path, count = 1)
         assert len(records) == 1, (
@@ -330,8 +330,7 @@ class TestSlowSuccessIsSignal:
         assert is therefore per WINDOW, not per run.
         """
         path = sorted(
-            p for p in session.ALL_POLLS
-            if policy.classify(hmod, p) == policy.QUIET_SUCCESS
+            p for p in session.ALL_POLLS if policy.classify(hmod, p) == policy.QUIET_SUCCESS
         )[0]
         duration_ms = hmod._SLOW_REQUEST_MS + 1000.0
         count = 20
@@ -341,10 +340,7 @@ class TestSlowSuccessIsSignal:
 
         capture = _drive(
             monkeypatch,
-            [
-                replay.Request("GET", path, 200, duration_ms = duration_ms)
-                for _ in range(count)
-            ],
+            [replay.Request("GET", path, 200, duration_ms = duration_ms) for _ in range(count)],
             gap_s = 0.0,
         )
         records = capture.records_for(path)
@@ -361,8 +357,7 @@ class TestSlowSuccessIsSignal:
     def test_the_slow_heartbeat_reopens(self, monkeypatch):
         """Bounded, not silenced: a still-degraded endpoint must say so again later."""
         path = sorted(
-            p for p in session.ALL_POLLS
-            if policy.classify(hmod, p) == policy.QUIET_SUCCESS
+            p for p in session.ALL_POLLS if policy.classify(hmod, p) == policy.QUIET_SUCCESS
         )[0]
         window_s = hmod._SLOW_REQUEST_DEDUP_MS / 1000.0
         records = self._slow(monkeypatch, path, count = 3, gap_s = window_s + 1.0)
