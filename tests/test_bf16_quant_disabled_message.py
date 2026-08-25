@@ -3,10 +3,9 @@
 
 """The '-bf16' notice must not claim 16bit when a quantization_config survives.
 
-A `-bf16` name drops the plain load_in_4bit / 8bit / fp8 flags, so the notice is
-accurate for those. A user-supplied `quantization_config` is only read into the
-local flags: it stays in `**kwargs`, both loaders forward it, and Transformers
-quantizes anyway, so there the notice would say the opposite of what happens.
+A `-bf16` name drops the plain load_in_4bit / 8bit / fp8 flags, but a user
+`quantization_config` stays in `**kwargs` and still quantizes, so there the
+notice would say the opposite of what happens.
 
 Source-level, because reaching the branch needs a real checkpoint download.
 """
@@ -70,10 +69,8 @@ def test_the_flags_are_still_cleared():
 
 @pytest.mark.parametrize("index", [0, 1, 2, 3])
 def test_the_notice_never_calls_the_load_requested(index):
-    """`load_in_4bit` defaults to True in both loaders, so a set flag is not a
-    request: a bare `from_pretrained("org/model-bf16")` reaches this branch with
-    the default still on, and calling that "requested" tells the caller their
-    request was refused when they made none."""
+    """`load_in_4bit` defaults to True, so a bare `from_pretrained("org/model-bf16")`
+    reaches this branch with the flag set without the caller requesting anything."""
     guards = _bf16_notice_guards()
     assert len(guards) == 4, "the notice moved; update this test"
     text = ast.get_source_segment(SRC, guards[index].body[0]) or ""
@@ -86,8 +83,7 @@ def test_the_notice_never_calls_the_load_requested(index):
 @pytest.mark.parametrize("index", [0, 1, 2, 3])
 def test_an_explicit_16bit_request_is_not_told_its_quant_was_dropped(index):
     """`load_in_16bit` defaults to False and nothing sets it True before this
-    branch, so True here is the caller's own word: they asked for the 16bit load
-    they are about to get, and a 'quantization disabled' line is wrong there."""
+    branch, so True here is the caller's own word: they asked for this load."""
     guards = _bf16_notice_guards()
     assert len(guards) == 4, "the notice moved; update this test"
     test_src = ast.get_source_segment(SRC, guards[index].test) or ""
@@ -126,11 +122,8 @@ print("PROBE_OK")
 
 
 def test_the_notice_on_a_real_bare_call():
-    """The source checks above pin the shape; this one runs the actual call.
-
-    Out of process: importing unsloth patches the interpreter, and the probe
-    needs an offline environment that must not leak into the rest of the suite.
-    """
+    """Out of process: importing unsloth patches the interpreter, and the probe
+    needs an offline environment that must not leak into the rest of the suite."""
     import subprocess
 
     env = dict(os.environ, PYTHONPATH = str(ROOT), HF_HUB_OFFLINE = "1")

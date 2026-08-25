@@ -654,11 +654,9 @@ class FastLanguageModel(FastLlamaModel):
         if model_name.lower().endswith("-bf16") and (
             load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
         ):
-            # Only the plain flags are dropped; a user quantization_config stays
-            # in **kwargs and still quantizes, so stay quiet in that case.
-            # `load_in_4bit` defaults to True, so a set flag is not proof the caller
-            # asked for 4bit: report what happens, never what was "requested". An
-            # explicit `load_in_16bit` IS a request for exactly this, so stay quiet.
+            # A user quantization_config stays in **kwargs and still quantizes.
+            # `load_in_4bit` defaults to True, so a set flag is not proof of a
+            # request; an explicit `load_in_16bit` IS one, for exactly this load.
             if (
                 not load_in_16bit
                 and (load_in_4bit or load_in_8bit or load_in_fp8 != False)
@@ -854,11 +852,9 @@ class FastLanguageModel(FastLlamaModel):
             if model_name.lower().endswith("-bf16") and (
                 load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
             ):
-                # Only the plain flags are dropped; a user quantization_config stays
-                # in **kwargs and still quantizes, so stay quiet in that case.
-                # `load_in_4bit` defaults to True, so a set flag is not proof the caller
-                # asked for 4bit: report what happens, never what was "requested". An
-                # explicit `load_in_16bit` IS a request for exactly this, so stay quiet.
+                # A user quantization_config stays in **kwargs and still quantizes.
+                # `load_in_4bit` defaults to True, so a set flag is not proof of a
+                # request; an explicit `load_in_16bit` IS one, for exactly this load.
                 if (
                     not load_in_16bit
                     and (load_in_4bit or load_in_8bit or load_in_fp8 != False)
@@ -1465,11 +1461,9 @@ class FastModel(FastBaseModel):
         if model_name.lower().endswith("-bf16") and (
             load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
         ):
-            # Only the plain flags are dropped; a user quantization_config stays
-            # in **kwargs and still quantizes, so stay quiet in that case.
-            # `load_in_4bit` defaults to True, so a set flag is not proof the caller
-            # asked for 4bit: report what happens, never what was "requested". An
-            # explicit `load_in_16bit` IS a request for exactly this, so stay quiet.
+            # A user quantization_config stays in **kwargs and still quantizes.
+            # `load_in_4bit` defaults to True, so a set flag is not proof of a
+            # request; an explicit `load_in_16bit` IS one, for exactly this load.
             if (
                 not load_in_16bit
                 and (load_in_4bit or load_in_8bit or load_in_fp8 != False)
@@ -1870,11 +1864,9 @@ class FastModel(FastBaseModel):
             if model_name.lower().endswith("-bf16") and (
                 load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
             ):
-                # Only the plain flags are dropped; a user quantization_config stays
-                # in **kwargs and still quantizes, so stay quiet in that case.
-                # `load_in_4bit` defaults to True, so a set flag is not proof the caller
-                # asked for 4bit: report what happens, never what was "requested". An
-                # explicit `load_in_16bit` IS a request for exactly this, so stay quiet.
+                # A user quantization_config stays in **kwargs and still quantizes.
+                # `load_in_4bit` defaults to True, so a set flag is not proof of a
+                # request; an explicit `load_in_16bit` IS one, for exactly this load.
                 if (
                     not load_in_16bit
                     and (load_in_4bit or load_in_8bit or load_in_fp8 != False)
