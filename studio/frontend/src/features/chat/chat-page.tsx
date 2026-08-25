@@ -2859,6 +2859,12 @@ export function ChatPage({
   // The job the pending auto-load is waiting on, read by the context-change effect
   // below. Written from an effect, never during render.
   const pendingAutoLoadKeyRef = useRef<string | null>(null);
+  // The live context, so a start still in flight can be asked whether the thread it
+  // was requested from is still the one on screen.
+  const chatContextKeyRef = useRef(chatContextKey);
+  useEffect(() => {
+    chatContextKeyRef.current = chatContextKey;
+  }, [chatContextKey]);
   useEffect(() => {
     const pending = pendingHubAutoLoad;
     if (!pending) {
@@ -2885,6 +2891,11 @@ export function ChatPage({
           title: "Downloading model",
           description: "It'll load automatically once the download finishes.",
           noticeOnly: true,
+          // Asked again when the toast is finally raised, which can be several round
+          // trips later. The cleanup below only dismisses a toast that already exists;
+          // a raise still in flight would otherwise promise an auto-load that
+          // onComplete refuses, since the contextKey it was staged for has changed.
+          stillValid: () => chatContextKeyRef.current === pending.contextKey,
         },
       });
       if (!active) return;

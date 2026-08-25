@@ -26,6 +26,7 @@ const { calls } = await import("./helpers/toast-stub.mjs");
 const {
   dismissStartToast,
   dismissStartToasts,
+  liveCallerToast,
   showCallerToast,
   showStartToast,
   startToastId,
@@ -128,6 +129,27 @@ test("a noticeOnly caller is folded in or not shown at all", () => {
   });
   assert.equal(calls.length, 1);
   assert.equal(calls[0].title, "Downloading in the background");
+});
+
+test("a caller line that has gone stale is dropped", () => {
+  // Chat moved to another thread while the start was still in flight, so nothing
+  // auto-loads any more. The transfer is still running, so the notice it would have
+  // been folded into stays true; only the caller's promise goes.
+  reset();
+  let context = "thread-a";
+  const caller = {
+    title: "Downloading model",
+    description: "It'll load automatically once the download finishes.",
+    stillValid: () => context === "thread-a",
+  };
+  assert.equal(liveCallerToast(caller), caller);
+
+  context = "thread-b";
+  assert.equal(liveCallerToast(caller), undefined);
+
+  // No predicate means always valid, which is every other surface.
+  assert.equal(liveCallerToast(MESSAGE), MESSAGE);
+  assert.equal(liveCallerToast(undefined), undefined);
 });
 
 test("a caller with nothing to say is silent", () => {

@@ -54,6 +54,14 @@ export function showStartToast(
   });
 }
 
+/** The caller's message if it still describes something true, else nothing. */
+export function liveCallerToast(
+  message: CallerToast | undefined,
+): CallerToast | undefined {
+  if (!message) return undefined;
+  return (message.stillValid?.() ?? true) ? message : undefined;
+}
+
 /** The caller's own message, when the notice is not carrying it: HTTP transport,
  * the three spent, an attached job, or a lost reservation. A Hub start passes
  * nothing and stays silent, and so does a `noticeOnly` caller. */

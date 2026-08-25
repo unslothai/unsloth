@@ -73,6 +73,7 @@ import { reserveXetNoticeFromServer } from "@/features/settings/api/xet-notice";
 import {
   currentRoute,
   dismissStartToast,
+  liveCallerToast,
   showCallerToast,
   showStartToast,
 } from "./start-toast";
@@ -750,7 +751,14 @@ export async function startJob(
     // A cancel can land while this start is in flight, and the reissue above is
     // the giveaway. Neither message is true of a start that is already stopping.
     const stopping = rt.cancelRequested;
+    // Everything above this point was round trips the user could navigate during.
+    // Checked BEFORE reserving, not only when the toast is raised: a reservation is
+    // one of three for the life of the install, and spending it on a toast that will
+    // be discarded on arrival is how starting a download and going to look at it
+    // burns all three unseen.
+    const onOriginRoute = currentRoute() === startRoute;
     if (
+      onOriginRoute &&
       shouldShowXetNotice({
         kind: req.kind,
         transport: started,
@@ -766,21 +774,25 @@ export async function startJob(
         // cancelled job claiming to be running for another 8s, or hand a restarted
         // job on the same key the old request's message.
         if (!isCurrent(key, epoch) || rt.cancelRequested) return;
+        // The caller's line can go stale on its own while the notice stays true: chat
+        // moved to another thread, so nothing auto-loads, but the transfer is still
+        // running and still needs the 0% explained.
+        const caller = liveCallerToast(req.callerToast);
         if (granted) {
           showStartToast(
             key,
             {
               title: XET_NOTICE_TITLE,
-              description: composeNoticeDescription(req.callerToast),
+              description: composeNoticeDescription(caller),
             },
             startRoute,
           );
           return;
         }
-        showCallerToast(key, req.callerToast, startRoute);
+        showCallerToast(key, caller, startRoute);
       });
-    } else if (!stopping) {
-      showCallerToast(key, req.callerToast, startRoute);
+    } else if (!stopping && onOriginRoute) {
+      showCallerToast(key, liveCallerToast(req.callerToast), startRoute);
     }
     // An adopted job can already have fallen back from Xet to HTTP, which
     // keeps its original cancel marker and so its stop control.

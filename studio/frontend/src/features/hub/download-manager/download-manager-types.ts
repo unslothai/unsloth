@@ -81,6 +81,11 @@ export interface CallerToast {
    * worth carrying inside the notice, but showing it alone would put the removed
    * toast back on every HTTP start. */
   noticeOnly?: boolean;
+  /** Asked again just before the toast is raised, which can be several round trips
+   * after the start was requested. False drops this line: the state it describes is
+   * gone (chat moved to another thread, so nothing auto-loads), even though the
+   * transfer it was attached to is still running. Absent means always valid. */
+  stillValid?: () => boolean;
 }
 
 /** The variant slot a scoped job occupies. Mirrors the backend's `_scope_variant`: no GGUF quant label starts with "@", so a scope collides with neither a real variant nor the repo's full snapshot. */
