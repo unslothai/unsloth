@@ -1205,16 +1205,19 @@ class TestDrafterAccounting:
         assert on_cpu.weights_bytes == on_gpu.weights_bytes
         assert on_cpu.gpu_bytes < on_gpu.gpu_bytes
 
-    def test_the_drafter_runtime_reports_its_own_gpu_share(
-        self, config, gqa_gguf, monkeypatch
-    ):
+    def test_the_drafter_runtime_reports_its_own_gpu_share(self, config, gqa_gguf, monkeypatch):
         # The panel used to label this line from kv_on_gpu, the TARGET cache's
         # placement, which is set by a different flag. Wrong in both directions: silent
         # about a genuinely host-resident draft cache, and claiming host RAM for one
         # this same call had just charged to gpu_bytes. So the share is reported.
         drafter_bytes = os.path.getsize(config.gguf_mtp_file)
 
-        def _files(cfg, *, llama_extra_args = None, **kw):
+        def _files(
+            cfg,
+            *,
+            llama_extra_args = None,
+            **kw,
+        ):
             pinned = _draft_on_cpu(list(llama_extra_args or ()))
             return 1.0 + (0.0 if pinned else drafter_bytes / 1024**3)
 
