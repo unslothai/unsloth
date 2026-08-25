@@ -615,7 +615,11 @@ def _decode_h3_video_trim_by_ordinal(
         source_fps = float(stream.average_rate or stream.guessed_rate or H3_FPS)
         if source_fps <= 0:
             source_fps = float(H3_FPS)
-        start_source_frame = math.ceil(trim[0] * source_fps - 1e-6)
+        # The frame on screen at t is the last one that started at or before it, so the start
+        # floors where the exclusive end ceils. Ceiling both would skip the frame straddling a
+        # fractional start and shift the whole selection forward, which is the one place this
+        # fallback could disagree with the timestamp path on identical media.
+        start_source_frame = math.floor(trim[0] * source_fps + 1e-6)
         end_source_frame = math.ceil(trim[1] * source_fps - 1e-6)
         target_count = int(round((trim[1] - trim[0]) * H3_FPS))
         frames = []
@@ -727,11 +731,6 @@ def _decode_audio_stream(
         else None
     )
     end_sample = math.floor(trim[1] * sample_rate + 1e-6) if trim else untrimmed_end_sample
-    # Allow two codec frames of padding, or one video frame when the codec does not declare one.
-    padding_samples = max(
-        2 * int(getattr(stream.codec_context, "frame_size", 0) or 0),
-        math.ceil(sample_rate / H3_FPS),
-    )
     chunks = []
     source_total = 0
 
@@ -746,19 +745,15 @@ def _decode_audio_stream(
                 f"MiniMax-H3 reference audio runs up to {H3_REF_VIDEO_MAX_SECONDS:g} seconds; "
                 f"this one is longer. Trim it first."
             )
-        if (
-            untrimmed_end_sample is not None
-            and source_total > untrimmed_end_sample + padding_samples
-        ):
-            raise ValueError(
-                "The reference soundtrack extends past the video. Trim it or provide a "
-                "replacement soundtrack."
-            )
         take_start = max(block_start, start_sample)
         take_end = min(block_end, end_sample) if end_sample is not None else block_end
         if take_start < take_end:
             chunks.append(block[take_start - block_start : take_end - block_start])
-        return trim is not None and end_sample is not None and block_end >= end_sample
+        # A soundtrack that runs past its video is clamped to the video, not refused: encoder
+        # padding routinely overshoots by tens of milliseconds, and whole-file references with
+        # a longer track decoded fine before trimming existed. Stopping here also spares the
+        # decode of a tail no engine would receive.
+        return end_sample is not None and block_end >= end_sample
 
     stopped = False
     for frame in container.decode(audio = 0):

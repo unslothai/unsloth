@@ -6175,17 +6175,29 @@ def test_h3_reference_video_without_trim_discards_aac_padding(duration):
     assert waveform is not None and waveform.shape[0] == round(duration * sample_rate)
 
 
-def test_h3_reference_video_without_trim_rejects_audio_materially_past_the_video():
+@pytest.mark.parametrize("audio_seconds", [15.05, 15.1, 16.0])
+def test_h3_reference_video_without_trim_clamps_audio_past_the_video(audio_seconds):
+    """A soundtrack longer than its video is clamped to the video, not refused.
+
+    Whole-file references decoded fine before trimming existed, and a track that overshoots
+    by a codec frame or two is ordinary encoder padding rather than a mismatched pairing, so
+    refusing one would reject media that already worked.
+    """
     pytest.importorskip("av")
     import base64
 
     from core.inference.video_minimax_h3 import decode_h3_reference_video
 
     blob = base64.b64decode(
-        _reference_video_data_url(seconds = 15.0, fps = 24, audio_seconds = 15.1).split(",", 1)[1]
+        _reference_video_data_url(
+            seconds = 15.0, fps = 24, audio_seconds = audio_seconds
+        ).split(",", 1)[1]
     )
-    with pytest.raises(ValueError, match = "soundtrack extends past the video"):
-        decode_h3_reference_video(blob)
+    frames, waveform, sample_rate = decode_h3_reference_video(blob)
+
+    assert len(frames) == round(15.0 * 24)
+    assert waveform is not None
+    assert waveform.shape[0] == round(15.0 * sample_rate)
 
 
 def test_h3_reference_video_trim_seeks_and_stops_both_decoders(monkeypatch):
@@ -6256,6 +6268,122 @@ def test_h3_reference_video_trim_must_be_complete_bounded_and_inside_the_source(
         decode_h3_reference_video(blob, trim_start_seconds = 0.0, trim_end_seconds = 1.0)
     with pytest.raises(ValueError, match = "after the source video"):
         decode_h3_reference_video(blob, trim_start_seconds = 2.0, trim_end_seconds = 5.0)
+
+
+def _frame_index_video(seconds = 10.0, fps = 24, width = 256, height = 64, bar = 4):
+    """An MP4 whose every frame encodes its own index as the position of a white bar.
+
+    A flat grey level per frame does not survive the colourspace round trip -- limited-range
+    YUV folds 0..255 into 16..235, so neighbouring indices collide -- and frame identity is
+    the whole point of a fencepost test. A bar position does survive.
+    """
+    av = pytest.importorskip("av")
+    np = pytest.importorskip("numpy")
+    import io
+
+    buf = io.BytesIO()
+    with av.open(buf, mode = "w", format = "mp4") as out:
+        video = out.add_stream("libx264", rate = fps)
+        video.width, video.height = width, height
+        video.pix_fmt = "yuv420p"
+        # Every frame a keyframe, so a backward seek lands where it was asked to and the two
+        # decoders differ only in how they select, never in what they can reach.
+        video.options = {"g": "1", "crf": "0", "tune": "zerolatency"}
+        for index in range(int(seconds * fps)):
+            plane = np.zeros((height, width, 3), dtype = np.uint8)
+            plane[:, index:index + bar] = 255
+            for packet in video.encode(
+                av.VideoFrame.from_ndarray(plane, format = "rgb24")
+            ):
+                out.mux(packet)
+        for packet in video.encode():
+            out.mux(packet)
+    return buf.getvalue()
+
+
+def _decoded_frame_index(image, width = 256):
+    """Recover the source frame index from the bar's left edge."""
+    np = pytest.importorskip("numpy")
+
+    plane = np.asarray(image.convert("L"), dtype = "float64")
+    columns = plane.mean(axis = 0)
+    lit = np.flatnonzero(columns > columns.max() / 2)
+    assert lit.size, "no bar found in the decoded frame"
+    return int(round(lit[0] * width / plane.shape[1]))
+
+
+def test_h3_reference_video_ordinal_fallback_selects_the_same_frames_as_timestamps():
+    """The fallback for streams whose frames carry no presentation timestamps.
+
+    Nothing else reaches this path, so without this test its frame selection is unverified.
+    A fractional start is the case that separates the two rules: the frame on screen at t is
+    floor(t*fps), and ceiling it instead would drift the whole selection forward by a frame.
+    """
+    av = pytest.importorskip("av")
+
+    from core.inference.video_minimax_h3 import (
+        _decode_h3_video_trim_by_ordinal,
+        _decode_h3_video_trim_by_timestamp,
+    )
+
+    blob = _frame_index_video()
+
+    # A start that lands on a frame boundary, and one that falls between two.
+    for start, end in ((2.0, 8.0), (2.02, 8.02)):
+        ordinal, _ = _decode_h3_video_trim_by_ordinal(blob, av, (start, end))
+        timestamp, _ = _decode_h3_video_trim_by_timestamp(blob, av, (start, end))
+        assert len(ordinal) == len(timestamp) == round((end - start) * 24)
+        assert _decoded_frame_index(ordinal[0]) == _decoded_frame_index(timestamp[0])
+
+    ordinal, _ = _decode_h3_video_trim_by_ordinal(blob, av, (2.02, 8.02))
+    assert _decoded_frame_index(ordinal[0]) == 48
+
+
+def test_h3_reference_video_falls_back_when_timestamps_are_missing(monkeypatch):
+    """Prove the dispatcher reaches the ordinal decoder at all, rather than raising."""
+    av = pytest.importorskip("av")
+
+    import core.inference.video_minimax_h3 as h3
+
+    blob = _frame_index_video()
+    calls = []
+    original = h3._decode_h3_video_trim_by_ordinal
+    monkeypatch.setattr(
+        h3,
+        "_decode_h3_video_trim_by_ordinal",
+        lambda *args: (calls.append(1), original(*args))[1],
+    )
+
+    real_open = av.open
+
+    class _PtsLess:
+        """PyAV container attributes are read-only, so the generator is replaced from outside."""
+
+        def __init__(self, container):
+            self._container = container
+
+        def decode(self, *args, **kwargs):
+            for frame in self._container.decode(*args, **kwargs):
+                frame.pts = None
+                yield frame
+
+        def __getattr__(self, name):
+            return getattr(self._container, name)
+
+        def __enter__(self):
+            self._container.__enter__()
+            return self
+
+        def __exit__(self, *exc):
+            return self._container.__exit__(*exc)
+
+    monkeypatch.setattr(av, "open", lambda *a, **k: _PtsLess(real_open(*a, **k)))
+
+    frames, _, _ = h3.decode_h3_reference_video(
+        blob, trim_start_seconds = 2.0, trim_end_seconds = 8.0, decode_audio = False
+    )
+    assert calls == [1]
+    assert len(frames) == round(6.0 * 24)
 
 
 def test_h3_replacement_audio_bypasses_a_short_embedded_soundtrack():
