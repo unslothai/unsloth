@@ -6476,7 +6476,9 @@ class ExternalProviderClient:
         if self.provider_type == "llama_cpp":
             key = model_id or ""
             if key not in self._probed_llama_cpp_templates:
-                self._probed_llama_cpp_templates[key] = await self._probe_llama_cpp_chat_template(key)
+                self._probed_llama_cpp_templates[key] = await self._probe_llama_cpp_chat_template(
+                    key
+                )
             return self._probed_llama_cpp_templates[key]
         return None
 
@@ -6485,7 +6487,7 @@ class ExternalProviderClient:
         # Router mode names each served model, so ask for the specific one first;
         # a single-model server ignores the query param (or has no matching
         # entry), so fall back to the bare endpoint, which is what it answers.
-        candidates = [f"{root}/props?model={quote(model_id, safe='')}"] if model_id else []
+        candidates = [f"{root}/props?model={quote(model_id, safe = '')}"] if model_id else []
         candidates.append(f"{root}/props")
         for url in candidates:
             try:

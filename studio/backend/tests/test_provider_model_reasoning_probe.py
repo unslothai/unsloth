@@ -128,7 +128,11 @@ def test_llama_cpp_probe_falls_back_to_bare_props(monkeypatch):
     # returns no template and the bare endpoint answers.
     fake = _FakeAsyncClient()
 
-    def dispatch(url, headers = None, timeout = None):
+    def dispatch(
+        url,
+        headers = None,
+        timeout = None,
+    ):
         fake.get_calls.append((url, headers, timeout))
         if "model=" in url:
             return _FakeResponse(200, {"chat_template": ""})
