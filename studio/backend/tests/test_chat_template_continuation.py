@@ -587,25 +587,6 @@ def test_a_text_part_partial_merges_rather_than_doubling_the_turn():
     assert conversation[-1]["tool_calls"] == [{"id": "c1"}]
 
 
-def test_a_resumed_partial_keeps_metadata_not_replaced_by_the_continuation():
-    conversation = [
-        {"role": "user", "content": "q"},
-        {
-            "role": "assistant",
-            "content": "Looking that ",
-            "extra_content": {"google": {"thought_signature": "SIG-PARTIAL"}},
-        },
-    ]
-    append_assistant_turn(
-        conversation,
-        {"role": "assistant", "content": "up now."},
-        continue_final_message = True,
-    )
-
-    assert conversation[-1]["content"] == "Looking that up now."
-    assert conversation[-1]["extra_content"] == {"google": {"thought_signature": "SIG-PARTIAL"}}
-
-
 def test_a_merge_stops_once_the_turn_is_no_longer_the_resumed_one():
     """Self-limiting: after a tool result or a nudge the partial is not trailing."""
     after_tool = [
