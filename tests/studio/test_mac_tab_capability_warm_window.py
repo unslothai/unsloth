@@ -416,6 +416,7 @@ def test_the_forced_verdict_check_is_wired_into_the_public_entry_point():
     assert "assert_row_never_greyed_while_unmeasured" in called.get("main", set())
 
 
+
 # --------------------------------------------------------------------------------
 # What the survival poller fails on, now that it no longer replays the watchdog.
 # --------------------------------------------------------------------------------
@@ -432,7 +433,6 @@ def _timeline(duration_s, stalls = ()):
     Probes are sequential and a timeout costs the whole budget before the next route is
     tried, which is what the real poller does.
     """
-
     def lifts_at(t):
         for start, end in stalls:
             if start <= t < end:
@@ -450,32 +450,22 @@ def _timeline(duration_s, stalls = ()):
             else:
                 took, kind = BUDGET_S, "timeout"
             now += took
-            samples.append(
-                {
-                    "t": round(now, 3),
-                    "path": path,
-                    "kind": kind,
-                    "status": 200 if kind == "ok" else 0,
-                    "ms": round(took * 1000, 1),
-                    "inference_active": None,
-                    "hardware_detecting": None,
-                    "torch_warm_in_progress": None,
-                }
-            )
+            samples.append({
+                "t": round(now, 3), "path": path, "kind": kind,
+                "status": 200 if kind == "ok" else 0,
+                "ms": round(took * 1000, 1), "inference_active": None,
+                "hardware_detecting": None, "torch_warm_in_progress": None,
+            })
         now += POLL_S
     return samples
 
 
-def _verdict(
-    mod,
-    samples,
-    final_kind = "ok",
-    final_status = 200,
-    final_wait_s = 0.0,
-):
+def _verdict(mod, samples, final_kind = "ok", final_status = 200, final_wait_s = 0.0):
     poller = mod.BackendSurvivalPoller()
     poller.samples = samples
-    poller.report(final_kind = final_kind, final_status = final_status, final_wait_s = final_wait_s)
+    poller.report(
+        final_kind = final_kind, final_status = final_status, final_wait_s = final_wait_s
+    )
     return list(mod._failed)
 
 
@@ -501,9 +491,7 @@ def test_a_backend_that_never_answers_again_fails(tmp_path, monkeypatch):
     watchdog arithmetic: the backend stopped answering and was still not answering when
     the run ended, confirmed by the final probe."""
     mod = _load(tmp_path, monkeypatch)
-    failed = _verdict(
-        mod, _timeline(150, stalls = [(60, 9999)]), final_kind = "timeout", final_status = 0
-    )
+    failed = _verdict(mod, _timeline(150, stalls = [(60, 9999)]), final_kind = "timeout", final_status = 0)
     assert len(failed) == 1, failed
     assert "never answered again" in failed[0], failed
 
@@ -563,26 +551,10 @@ def test_an_answer_from_either_route_closes_a_stall(tmp_path, monkeypatch):
     from either is proof the backend was serving and ends the span."""
     mod = _load(tmp_path, monkeypatch)
     samples = [
-        {
-            "t": 10.0,
-            "path": "/api/liveness",
-            "kind": "timeout",
-            "status": 0,
-            "ms": 10000.0,
-            "inference_active": None,
-            "hardware_detecting": None,
-            "torch_warm_in_progress": None,
-        },
-        {
-            "t": 10.1,
-            "path": "/api/health",
-            "kind": "ok",
-            "status": 200,
-            "ms": 5.0,
-            "inference_active": None,
-            "hardware_detecting": None,
-            "torch_warm_in_progress": None,
-        },
+        {"t": 10.0, "path": "/api/liveness", "kind": "timeout", "status": 0, "ms": 10000.0,
+         "inference_active": None, "hardware_detecting": None, "torch_warm_in_progress": None},
+        {"t": 10.1, "path": "/api/health", "kind": "ok", "status": 200, "ms": 5.0,
+         "inference_active": None, "hardware_detecting": None, "torch_warm_in_progress": None},
     ]
     spans = mod._stall_windows(samples)
     assert len(spans) == 1, spans
@@ -692,12 +664,9 @@ def test_the_post_run_watch_is_wired_into_the_public_entry_point():
     }
     assert "await_recovery" in called
     reports = [
-        sub
-        for sub in ast.walk(main)
-        if isinstance(sub, ast.Call)
-        and isinstance(sub.func, ast.Attribute)
-        and sub.func.attr == "report"
-        and sub.keywords
+        sub for sub in ast.walk(main)
+        if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
+        and sub.func.attr == "report" and sub.keywords
     ]
     assert reports, "main() no longer hands a post-run verdict to report()"
     passed = {kw.arg for call in reports for kw in call.keywords}
@@ -709,14 +678,12 @@ def test_the_post_run_watch_is_wired_into_the_public_entry_point():
 # --------------------------------------------------------------------------------
 
 
-def _serve(
-    handler_body,
-    trickle = False,
-    huge = False,
-):
-    """A one-shot HTTP server on a free port. Returns (base_url, shutdown)."""
+def _serve(handler_body, trickle = False, huge = False):
+    """A one-shot HTTP server on a free port. Returns (base_url, state, shutdown)."""
     import http.server
     import threading
+
+    state = {"chunks": 0, "payload": 0}
 
     class H(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -732,11 +699,13 @@ def _serve(
                     while True:
                         self.wfile.write(b"x")
                         self.wfile.flush()
+                        state["chunks"] += 1
                         time.sleep(0.02)
                 except Exception:
                     pass
                 return
             payload = b"x" * (4 << 20) if huge else handler_body
+            state["payload"] = len(payload)
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(payload)))
@@ -748,50 +717,41 @@ def _serve(
 
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
     threading.Thread(target = srv.serve_forever, daemon = True).start()
-    return f"http://127.0.0.1:{srv.server_port}", srv.shutdown
+    return f"http://127.0.0.1:{srv.server_port}", state, srv.shutdown
 
 
 def test_a_trickling_response_cannot_outlive_the_probe_budget(tmp_path, monkeypatch):
     """urllib's timeout is per socket operation, so a peer that dribbles bytes resets it
     forever and read() never returns. That would outlive the script's wall watchdog and
     hang the job, which reports nothing at all. The read carries its own deadline."""
-    import threading
-
     mod = _load(tmp_path, monkeypatch)
-    base, shutdown = _serve(b"{}", trickle = True)
+    base, state, shutdown = _serve(b"{}", trickle = True)
     monkeypatch.setattr(mod, "BASE", base)
-    # Driven from a daemon thread so that a build without the deadline fails this in five
-    # seconds instead of hanging the suite. A hang is the failure mode under test; it must
-    # not also be this test's own failure mode.
-    result = {}
-
-    def probe():
-        result["kind"] = mod._get_json("/api/liveness", timeout = 0.5)[2]
-
-    worker = threading.Thread(target = probe, daemon = True)
     try:
-        began = time.monotonic()
-        worker.start()
-        worker.join(timeout = 5.0)
-        elapsed = time.monotonic() - began
+        returned, value, elapsed = _probe_bounded(mod, "/api/liveness", timeout = 0.5, wait = 5.0)
     finally:
         shutdown()
-    assert not worker.is_alive(), "the probe never returned: a read with no deadline hangs the job"
-    assert result.get("kind") == "timeout"
-    assert elapsed < 5.0, f"probe ran {elapsed:.1f}s against a 0.5s budget"
+    assert state["chunks"] >= 3, f"fixture stopped dribbling after {state['chunks']} chunks"
+    assert returned, "the probe never returned: a read with no deadline hangs the job"
+    assert value[2] == "timeout", value
+    assert 0.4 <= elapsed < 5.0, f"probe ran {elapsed:.2f}s against a 0.5s budget"
 
 
 def test_an_oversized_body_does_not_get_read_to_the_end(tmp_path, monkeypatch):
     """The other way to sit on a socket indefinitely. A health reply is a few hundred
     bytes, so a body this size is a fault and reading it all is not the way to find out."""
     mod = _load(tmp_path, monkeypatch)
-    base, shutdown = _serve(b"", huge = True)
+    base, state, shutdown = _serve(b"", huge = True)
     monkeypatch.setattr(mod, "BASE", base)
     try:
-        _, _, kind = mod._get_json("/api/liveness", timeout = 30.0)
+        returned, value, _ = _probe_bounded(mod, "/api/liveness", timeout = 30.0, wait = 30.0)
     finally:
         shutdown()
-    assert kind == "timeout"
+    assert state["payload"] > mod._MAX_BODY_BYTES, (
+        f"fixture body {state['payload']}B no longer exceeds the {mod._MAX_BODY_BYTES}B cap"
+    )
+    assert returned, "the probe never returned"
+    assert value[2] == "timeout", value
 
 
 def test_immediate_failures_are_paced_during_recovery(tmp_path, monkeypatch):
@@ -831,23 +791,18 @@ def test_the_wall_watchdog_stays_armed_through_recovery_and_reporting():
     tree = ast.parse(SCRIPT.read_text(encoding = "utf-8"))
     main = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "main")
     cancels = [
-        n.lineno
-        for n in ast.walk(main)
-        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "cancel"
+        n.lineno for n in ast.walk(main)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "cancel"
     ]
     reports = [
-        n.lineno
-        for n in ast.walk(main)
-        if isinstance(n, ast.Call)
-        and isinstance(n.func, ast.Attribute)
-        and n.func.attr == "report"
-        and n.keywords
+        n.lineno for n in ast.walk(main)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "report" and n.keywords
     ]
     recoveries = [
-        n.lineno
-        for n in ast.walk(main)
-        if isinstance(n, ast.Call)
-        and isinstance(n.func, ast.Name)
+        n.lineno for n in ast.walk(main)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
         and n.func.id == "await_recovery"
     ]
     assert cancels and reports and recoveries
@@ -895,3 +850,119 @@ def test_pacing_never_sleeps_past_the_end_of_the_window(tmp_path, monkeypatch):
     mod.await_recovery(window_s = 0.3, spacing_s = 5.0)
     elapsed = time.monotonic() - began
     assert elapsed < 2.0, f"slept past the window: {elapsed:.2f}s for a 0.3s window"
+
+
+def _serve_trickling_headers():
+    """A listener that accepts, then dribbles response HEADERS and never finishes them.
+
+    Deliberately raw sockets rather than http.server: the point is to stall inside
+    urlopen's header parsing, which is before any body-level bound can run, and a
+    BaseHTTPRequestHandler writes its headers in one go.
+    """
+    import socket as socket_mod
+    import threading
+
+    srv = socket_mod.socket(socket_mod.AF_INET, socket_mod.SOCK_STREAM)
+    srv.setsockopt(socket_mod.SOL_SOCKET, socket_mod.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(4)
+    srv.settimeout(0.25)
+    port = srv.getsockname()[1]
+    state = {"accepted": 0, "lines": 0}
+    stop = threading.Event()
+
+    def drip(conn):
+        try:
+            conn.recv(4096)
+            # One header line that is never terminated, a byte at a time. Whole header
+            # LINES would hit http.client's own _MAXHEADERS cap of 100 and end the call
+            # on their own at about two seconds, which would make this fixture pass
+            # against a build that has no deadline at all. An unterminated line has no
+            # such cap and blocks urlopen for as long as the peer keeps dribbling.
+            conn.sendall(b"HTTP/1.1 200 OK\r\nX-Pad: ")
+            while not stop.is_set():
+                conn.sendall(b"x")
+                state["lines"] += 1
+                time.sleep(0.02)
+        except Exception:
+            pass
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def accept_loop():
+        while not stop.is_set():
+            try:
+                conn, _ = srv.accept()
+            except Exception:
+                continue
+            state["accepted"] += 1
+            threading.Thread(target = drip, args = (conn,), daemon = True).start()
+
+    threading.Thread(target = accept_loop, daemon = True).start()
+
+    def shutdown():
+        stop.set()
+        try:
+            srv.close()
+        except Exception:
+            pass
+
+    return f"http://127.0.0.1:{port}", state, shutdown
+
+
+def _probe_bounded(mod, path, timeout, wait):
+    """Call mod._get_json on a daemon thread and join for *wait*.
+
+    No test here may detect its own mutation by hanging: a hang reports nothing and
+    burns the runner, which is the failure these tests are about. A build whose probe
+    cannot end fails the assertion below instead of stopping the suite.
+    """
+    import threading
+
+    box = {}
+
+    def run():
+        box["value"] = mod._get_json(path, timeout = timeout)
+
+    worker = threading.Thread(target = run, daemon = True)
+    began = time.monotonic()
+    worker.start()
+    worker.join(wait)
+    return (not worker.is_alive()), box.get("value"), time.monotonic() - began
+
+
+def test_trickling_response_headers_cannot_outlive_the_probe_budget(tmp_path, monkeypatch):
+    """The body deadline does not cover this. While response headers are still arriving,
+    urlopen has not returned, so nothing inside it is running yet and only urllib's
+    per-socket-operation timeout applies, which a peer resets by dribbling. The budget is
+    whole-request for that reason: connect, headers and body under one deadline."""
+    mod = _load(tmp_path, monkeypatch)
+    base, state, shutdown = _serve_trickling_headers()
+    monkeypatch.setattr(mod, "BASE", base)
+    try:
+        returned, value, elapsed = _probe_bounded(mod, "/api/liveness", timeout = 0.5, wait = 6.0)
+    finally:
+        shutdown()
+    # Fixture preconditions first, so a server that stopped trickling fails loudly
+    # instead of letting the probe return fast and passing for free.
+    assert state["accepted"] >= 1, "fixture never accepted a connection"
+    assert state["lines"] >= 3, f"fixture stopped trickling headers after {state['lines']} bytes"
+    assert state["lines"] < 100, (
+        "fixture is sending whole header lines again; http.client's _MAXHEADERS would "
+        "end the call by itself and this would pass without any deadline"
+    )
+    assert returned, "probe never returned: urlopen is outside the deadline again"
+    assert value[2] == "timeout", value
+    assert 0.4 <= elapsed < 4.0, f"probe took {elapsed:.2f}s against a 0.5s whole-request budget"
+
+
+def test_the_deadline_covers_the_whole_request_not_one_layer():
+    """Stated so the next reader does not swap it back for a per-layer bound. Each layer
+    bounded on its own just moves the hole: the body cap left headers open, and a header
+    cap would leave the redirect chain or the handshake."""
+    source = SCRIPT.read_text(encoding = "utf-8")
+    assert "WHOLE-REQUEST deadline" in source
+    assert "worker.join(timeout)" in source

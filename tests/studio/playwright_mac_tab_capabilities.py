@@ -230,8 +230,8 @@ def _read_within(resp, deadline: float) -> str:
     return b"".join(chunks).decode("utf-8", "replace")
 
 
-def _get_json(path: str, timeout: float = PROBE_TIMEOUT_S) -> tuple[int, dict | None, str]:
-    """GET *path*, returning (status, body, kind).
+def _probe_once(path: str, timeout: float) -> tuple[int, dict | None, str]:
+    """One GET attempt. Do not call directly; _get_json is what bounds it.
 
     ``kind`` keeps apart the outcomes the desktop watchdog keeps apart, because they
     are different failures and only one of them means the process is gone:
@@ -271,8 +271,49 @@ def _get_json(path: str, timeout: float = PROBE_TIMEOUT_S) -> tuple[int, dict | 
         return 0, None, _transport_kind(exc)
 
 
+def _get_json(path: str, timeout: float = PROBE_TIMEOUT_S) -> tuple[int, dict | None, str]:
+    """GET *path* under a WHOLE-REQUEST deadline, returning (status, body, kind).
+
+    *timeout* bounds the entire probe: DNS, connect, response headers and body. It is
+    not a per-socket-operation timeout, and it must not be turned back into one.
+
+    That distinction is the whole reason this wrapper exists. urllib's own timeout
+    applies to each socket operation separately, so any peer that keeps sending
+    something, anything, more often than the timeout holds the call open forever. Each
+    layer was bounded in turn and the hole simply moved: capping the body read left
+    urlopen able to block indefinitely while response HEADERS trickled, because urlopen
+    has not returned yet at that point and the body deadline never gets to run. Bounding
+    the next layer down would only move it again, to the redirect chain or the TLS
+    handshake. A deadline outside all of them cannot be outflanked by any of them.
+
+    The probe therefore runs on a daemon thread and this joins it for at most *timeout*.
+    A join that expires is a timeout, and the thread is abandoned rather than waited on:
+    it is a daemon, so it cannot hold up interpreter exit, and _probe_once carries its
+    own body deadline and size cap so an abandoned one still lets go of its socket
+    instead of buffering forever. Those inner bounds are hygiene for the abandoned case;
+    the join is what actually enforces the budget.
+
+    Abandoning a thread per hung probe is affordable here because a backend that hangs
+    probes is one this script is about to report on and exit.
+    """
+    outcome: list[tuple[int, dict | None, str]] = []
+
+    def attempt() -> None:
+        outcome.append(_probe_once(path, timeout))
+
+    worker = threading.Thread(target = attempt, name = f"probe-{path}", daemon = True)
+    worker.start()
+    worker.join(timeout)
+    if outcome:
+        return outcome[0]
+    # Either still running, or it died without recording anything. Both are "no answer
+    # inside the budget", which is exactly what a timeout means here.
+    return 0, None, "timeout"
+
+
 def await_recovery(
-    window_s: float = RECOVERY_WINDOW_S, spacing_s: float = RECOVERY_PROBE_SPACING_S
+    window_s: float = RECOVERY_WINDOW_S,
+    spacing_s: float = RECOVERY_PROBE_SPACING_S,
 ) -> tuple[str, int, float]:
     """Watch the backend after sampling stops, until it answers or *window_s* elapses.
 
@@ -459,10 +500,8 @@ class BackendSurvivalPoller:
         # the last sample understates the one stall a reader most needs the size of, and
         # the whole point of warning rather than failing is that a human reads the number.
         longest = max(
-            (
-                (end - start) + (final_wait_s if still_open else 0.0)
-                for start, end, still_open in spans
-            ),
+            ((end - start) + (final_wait_s if still_open else 0.0)
+             for start, end, still_open in spans),
             default = 0.0,
         )
 
