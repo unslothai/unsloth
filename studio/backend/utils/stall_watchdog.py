@@ -1,0 +1,256 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Dump every thread's stack while the event loop is stalled, from inside the process.
+
+#9712: the backend stops answering every route for 10-33s on macOS CI, then recovers.
+The stalls are too rare to sit next to with py-spy (once in 1711 runs) and over before
+anyone could attach, so the dump has to come from the stalled process itself, taken
+while the stall is still in progress.
+
+A stall has two shapes, and they need different capture mechanisms:
+
+- The event loop is stuck but the GIL is free (a blocking call that slipped onto the
+  loop, a syscall that will not return). Python threads still run, so a watchdog
+  thread can time a no-op scheduled onto the loop and dump from Python after enough
+  consecutive slow probes.
+- Something is holding the GIL. No Python thread runs at all, the watchdog included,
+  so counting slow probes observes nothing until the stall is already over. For this
+  shape the watchdog re-arms ``faulthandler.dump_traceback_later`` on every beat: a
+  dead man's switch. faulthandler's timeout thread is C code that dumps without
+  acquiring the GIL, so when the beats stop, it fires mid-stall and writes the frame
+  every thread is actually in -- including the one sitting on the GIL.
+
+Dumps go to stderr, which every launch path already captures: the CI workflow
+redirects the backend to ``logs/*.log`` and the desktop launcher collects child
+stdio. A dump is a few KB of text and fires at most once per cooldown window.
+
+Suppressed while the coordinated warm is running: its ``import torch`` holds the
+GIL for tens of seconds on a healthy process, which is a known stall with a known
+frame. The launcher's health watchdog holds its startup grace open over the same
+window for the same reason.
+
+Not a replacement for the launcher-side health watchdog in commands.rs: that one
+decides whether to kill the process from outside. This one only ever writes
+diagnostics, from inside.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import faulthandler
+import os
+import threading
+import time
+from concurrent.futures import TimeoutError as FutureTimeoutError
+from typing import Callable, Optional, TextIO
+
+import structlog
+
+logger = structlog.get_logger(__name__)
+
+DISABLE_ENV_VAR = "UNSLOTH_STUDIO_DISABLE_STALL_WATCHDOG"
+
+BEAT_INTERVAL_S = 5.0
+# Passing runs of the mac smoke report worst-case route latency around 50ms, with
+# outliers to ~3.4s on a saturated instance. 1s flags a probe as slow without
+# counting those single-probe outliers as a stall on their own.
+PROBE_SLOW_S = 1.0
+# Three slow beats in a row is ~11s of continuously unresponsive loop, the low end
+# of the observed stalls and past anything a healthy run has shown.
+SLOW_PROBES_BEFORE_DUMP = 3
+# The dead man's switch fires this long after the last re-arm. Also the width of a
+# GIL hold the watchdog tolerates before it considers its own silence a stall.
+DEAD_MAN_TIMEOUT_S = 10.0
+# One dump per stall is the useful number; a host that stalls chronically should
+# not fill its log with them.
+DUMP_COOLDOWN_S = 600.0
+
+
+async def _noop() -> None:
+    return None
+
+
+class StallWatchdog:
+    """One daemon thread beating against the event loop. start() / stop()."""
+
+    def __init__(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        *,
+        suppress: Optional[Callable[[], bool]] = None,
+        dump_file: Optional[TextIO] = None,
+        beat_interval_s: float = BEAT_INTERVAL_S,
+        probe_slow_s: float = PROBE_SLOW_S,
+        slow_probes_before_dump: int = SLOW_PROBES_BEFORE_DUMP,
+        dead_man_timeout_s: float = DEAD_MAN_TIMEOUT_S,
+        dump_cooldown_s: float = DUMP_COOLDOWN_S,
+    ) -> None:
+        import sys
+
+        self._loop = loop
+        self._suppress = suppress or (lambda: False)
+        self._dump_file = dump_file if dump_file is not None else sys.stderr
+        self._beat_interval_s = beat_interval_s
+        self._probe_slow_s = probe_slow_s
+        self._slow_probes_before_dump = slow_probes_before_dump
+        self._dead_man_timeout_s = dead_man_timeout_s
+        self._dump_cooldown_s = dump_cooldown_s
+
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._slow_streak = 0
+        self._stall_started: Optional[float] = None
+        self._last_dump: Optional[float] = None
+        self._dead_man_armed = False
+
+    def start(self) -> None:
+        self._thread = threading.Thread(
+            target = self._run,
+            daemon = True,
+            name = "stall-watchdog",
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        self._cancel_dead_man()
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout = 2.0)
+
+    # -- the beat ---------------------------------------------------------------
+
+    def _run(self) -> None:
+        last_beat = time.monotonic()
+        while not self._stop_event.is_set():
+            beat_started = time.monotonic()
+            # The watchdog going quiet is itself the signal in the GIL-held shape:
+            # the switch fired while this thread could not run. Say so on recovery,
+            # with the one number the raw dump cannot carry.
+            gap = beat_started - last_beat
+            if self._dead_man_armed and gap > self._dead_man_timeout_s:
+                logger.warning(
+                    "stall watchdog was itself blocked for %.1fs; if the GIL was held, "
+                    "faulthandler wrote a thread dump to stderr (system sleep also lands here)",
+                    gap,
+                )
+            last_beat = beat_started
+
+            if self._suppress_now():
+                self._stop_event.wait(self._beat_interval_s)
+                continue
+
+            self._arm_dead_man()
+            self._probe(beat_started)
+
+            elapsed = time.monotonic() - beat_started
+            self._stop_event.wait(max(0.0, self._beat_interval_s - elapsed))
+        self._cancel_dead_man()
+
+    def _suppress_now(self) -> bool:
+        try:
+            suppressed = bool(self._suppress())
+        except Exception:
+            suppressed = False
+        if suppressed:
+            self._cancel_dead_man()
+            self._slow_streak = 0
+            self._stall_started = None
+        return suppressed
+
+    def _probe(self, beat_started: float) -> None:
+        try:
+            future = asyncio.run_coroutine_threadsafe(_noop(), self._loop)
+        except RuntimeError:
+            # Loop closed; shutdown is racing us. The stop() call will land shortly.
+            self._stop_event.wait(self._beat_interval_s)
+            return
+        try:
+            future.result(timeout = self._probe_slow_s)
+        except FutureTimeoutError:
+            # Left to finish on its own once the loop recovers: cancelling a task
+            # that never started leaves a never-awaited coroutine warning behind.
+            self._slow_streak += 1
+            if self._stall_started is None:
+                self._stall_started = beat_started
+            if self._slow_streak >= self._slow_probes_before_dump:
+                self._dump_from_python()
+            return
+        except Exception:
+            # A failed no-op means the loop answered; that is all the probe asks.
+            pass
+        if self._slow_streak:
+            stalled_for = time.monotonic() - (self._stall_started or beat_started)
+            logger.warning(
+                "event loop answering again after %.1fs (%d consecutive slow probes)",
+                stalled_for,
+                self._slow_streak,
+            )
+        self._slow_streak = 0
+        self._stall_started = None
+
+    # -- dumps ------------------------------------------------------------------
+
+    def _arm_dead_man(self) -> None:
+        try:
+            faulthandler.dump_traceback_later(
+                self._dead_man_timeout_s,
+                repeat = False,
+                file = self._dump_file,
+                exit = False,
+            )
+            self._dead_man_armed = True
+        except Exception:
+            # No usable fileno (a replaced stderr). The Python-side path still works.
+            self._dead_man_armed = False
+
+    def _cancel_dead_man(self) -> None:
+        if self._dead_man_armed:
+            faulthandler.cancel_dump_traceback_later()
+            self._dead_man_armed = False
+
+    def _dump_from_python(self) -> None:
+        now = time.monotonic()
+        if self._last_dump is not None and now - self._last_dump < self._dump_cooldown_s:
+            return
+        self._last_dump = now
+        stalled_for = now - (self._stall_started or now)
+        try:
+            self._dump_file.write(
+                f"\nstall watchdog: event loop unresponsive for {stalled_for:.1f}s "
+                f"({self._slow_streak} consecutive slow probes), dumping all threads\n"
+            )
+            self._dump_file.flush()
+            faulthandler.dump_traceback(file = self._dump_file, all_threads = True)
+        except Exception as exc:
+            logger.warning("stall watchdog could not write a thread dump: %s", exc)
+
+
+_watchdog: Optional[StallWatchdog] = None
+_watchdog_lock = threading.Lock()
+
+
+def start_stall_watchdog(
+    loop: asyncio.AbstractEventLoop,
+    *,
+    suppress: Optional[Callable[[], bool]] = None,
+) -> Optional[StallWatchdog]:
+    """Start the process-wide watchdog. Returns None when disabled by env."""
+    if os.environ.get(DISABLE_ENV_VAR) == "1":
+        return None
+    global _watchdog
+    with _watchdog_lock:
+        if _watchdog is not None:
+            _watchdog.stop()
+        _watchdog = StallWatchdog(loop, suppress = suppress)
+        _watchdog.start()
+        return _watchdog
+
+
+def stop_stall_watchdog() -> None:
+    global _watchdog
+    with _watchdog_lock:
+        if _watchdog is not None:
+            _watchdog.stop()
+            _watchdog = None
