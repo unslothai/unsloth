@@ -1000,9 +1000,13 @@ class TestEstimateMemoryRoute:
         assert callable(raw)
 
         config = SimpleNamespace(
-            identifier = "local/model", gguf_file = gqa_gguf, is_gguf = True,
-            gguf_mmproj_file = None, gguf_mtp_file = None,
-            gguf_dspark_file = None, gguf_dflash_file = None,
+            identifier = "local/model",
+            gguf_file = gqa_gguf,
+            is_gguf = True,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
         )
         monkeypatch.setattr(ri, "_cached_estimate_config", lambda *a, **kw: config)
         monkeypatch.setattr(ri, "_gguf_resident_file_gb", lambda cfg, **kw: 2.0)
