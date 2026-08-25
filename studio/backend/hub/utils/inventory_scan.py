@@ -32,6 +32,7 @@ from hub.utils.gguf import (
     gguf_variant_key,
     is_big_endian_gguf_path,
     is_gguf_filename,
+    is_imatrix_filename,
     is_mmproj_filename,
     is_mtp_drafter_path,
 )
@@ -252,13 +253,12 @@ def _read_refs_by_commit(refs_dir: Path) -> Optional[dict[str, set[str]]]:
     return refs_by_commit
 
 
-def _recover_repo_hidden_by_dangling_refs(repo_dir: Path) -> Optional[_RecoveredRepoInfo]:
-    """Rebuild the scan entry for a repo dropped *solely* over leftover refs.
+def _recover_repo_dropped_by_scan(repo_dir: Path) -> Optional[_RecoveredRepoInfo]:
+    """Recover readable revisions from a repo omitted by ``scan_cache_dir``.
 
-    ``scan_cache_dir`` omits an intact repo when a ``refs/<branch>`` names a commit with no
-    ``snapshots/<commit>/`` dir, which ``snapshot_download`` creates by writing ``refs/main`` before
-    fetching the first file, hiding the repo from every inventory endpoint. Read-only: pruning the
-    ref cannot be race-free. None whenever anything other than leftover refs failed the scan.
+    Dangling refs, broken snapshot links, and stray snapshot files can hide an otherwise usable
+    repo. Skip those bad entries and rebuild a read-only row from the intact files. Return None
+    when nothing remains or the on-disk state does not explain the omission.
     """
     identity = _hf_repo_identity(repo_dir.name)
     if identity is None:
@@ -278,16 +278,20 @@ def _recover_repo_hidden_by_dangling_refs(repo_dir: Path) -> Optional[_Recovered
     blob_stats: dict[Path, object] = {}
     revisions: set[_RecoveredRevisionInfo] = set()
     dangling = dict(refs_by_commit)
+    # Entries that explain why upstream dropped the repo.
+    skipped = 0
     for snapshot in snapshot_entries:
         if snapshot.name in _CACHE_ENTRIES_TO_IGNORE:
             continue
         try:
             if not snapshot.is_dir():
-                # Upstream treats a file here as corruption; defer to it.
-                return None
+                # A stray file is not a revision.
+                skipped += 1
+                continue
             entries = drop_appledouble_metadata(sorted(snapshot.rglob("*")))
         except OSError:
-            return None
+            skipped += 1
+            continue
         files: set[_RecoveredFileInfo] = set()
         for entry in entries:
             try:
@@ -296,8 +300,9 @@ def _recover_repo_hidden_by_dangling_refs(repo_dir: Path) -> Optional[_Recovered
                 blob_path = entry.resolve()
                 stat = blob_stats.get(blob_path) or blob_path.stat()
             except OSError:
-                # Broken symlink / unreadable blob: upstream raises here too.
-                return None
+                # Keep the revision; broken links remain a separate partial signal.
+                skipped += 1
+                continue
             blob_stats[blob_path] = stat
             files.add(
                 _RecoveredFileInfo(
@@ -314,7 +319,8 @@ def _recover_repo_hidden_by_dangling_refs(repo_dir: Path) -> Optional[_Recovered
                 max(f.blob_last_modified for f in files) if files else snapshot.stat().st_mtime
             )
         except OSError:
-            return None
+            skipped += 1
+            continue
         revisions.add(
             _RecoveredRevisionInfo(
                 commit_hash = snapshot.name,
@@ -328,8 +334,8 @@ def _recover_repo_hidden_by_dangling_refs(repo_dir: Path) -> Optional[_Recovered
     # Nothing fetched yet, so the repo is not on disk.
     if not revisions:
         return None
-    # Every ref resolved, so upstream dropped this repo for some other reason.
-    if not dangling:
+    # Nothing here explains why upstream omitted the repo.
+    if not dangling and not skipped:
         return None
     try:
         repo_stats = repo_dir.stat()
@@ -351,8 +357,8 @@ def _recover_repo_hidden_by_dangling_refs(repo_dir: Path) -> Optional[_Recovered
     )
 
 
-def _with_repos_hidden_by_dangling_refs(scan, cache_root: Path):
-    """Add back the repos ``scan_cache_dir`` dropped over a dangling ref."""
+def _with_repos_dropped_by_scan(scan, cache_root: Path):
+    """Add back the repos ``scan_cache_dir`` dropped over one bad entry."""
     try:
         repo_dirs = sorted(entry for entry in cache_root.iterdir() if "--" in entry.name)
     except OSError:
@@ -369,14 +375,15 @@ def _with_repos_hidden_by_dangling_refs(scan, cache_root: Path):
         try:
             if str(repo_dir.resolve(strict = False)) in scanned:
                 continue
-            entry = _recover_repo_hidden_by_dangling_refs(repo_dir)
+            entry = _recover_repo_dropped_by_scan(repo_dir)
         except (OSError, RuntimeError, ValueError):
             continue
         if entry is None:
             continue
         logger.info(
-            "Recovered HF cache repo %s hidden by a dangling ref (%d revision(s) on disk)",
+            "Recovered HF cache repo %s hidden by %s (%d revision(s) on disk)",
             entry.repo_id,
+            "a dangling ref" if _repo_has_a_dangling_ref(repo_dir) else "an unreadable entry",
             len(entry.revisions),
         )
         recovered.append(entry)
@@ -404,7 +411,7 @@ def _compute_all_hf_cache_scans() -> list:
             scan = scan_cache_dir(cache_dir = str(cache_root))
             # Only a warned-about scan can hide a repo, so never walk a healthy cache twice.
             if getattr(scan, "warnings", None):
-                scan = _with_repos_hidden_by_dangling_refs(scan, cache_root)
+                scan = _with_repos_dropped_by_scan(scan, cache_root)
             scans.append(scan)
         except Exception as exc:
             logger.warning("Could not scan HF cache %s: %s", cache_root, exc)
@@ -615,9 +622,8 @@ def default_ref_offers_no_whole_quant(repo_cache_dir: Path) -> bool:
 def _repo_has_a_dangling_ref(repo_cache_dir: Path) -> bool:
     """Whether ANY ref under ``refs/`` names a commit with no snapshot dir.
 
-    ``_default_ref_names_an_absent_snapshot`` only checks ``refs/main``, but the recovery admits a
-    repo over a leftover ref of any name, so the two must agree or a repo recovered over
-    ``refs/stale`` is judged as though upstream had published it.
+    Check every ref because recovery is not limited to ``refs/main``. Repos recovered only for
+    unreadable entries correctly return False.
     """
     refs_by_commit = _read_refs_by_commit(repo_cache_dir / "refs")
     if refs_by_commit is None:
@@ -778,7 +784,12 @@ def _completed_gguf_variants(snapshot_dir: Optional[Path]) -> set[str]:
         except OSError:
             continue
         rel = path.relative_to(snapshot_dir).as_posix()
-        if not is_gguf_filename(rel) or is_mmproj_filename(rel) or is_mtp_drafter_path(rel):
+        if (
+            not is_gguf_filename(rel)
+            or is_mmproj_filename(rel)
+            or is_mtp_drafter_path(rel)
+            or is_imatrix_filename(rel)
+        ):
             continue
         # Metadata vouching for a quant marks a torn snapshot ready: a set whose sidecars are
         # all present but whose weights are not answers the shard count exactly as the real
@@ -1291,6 +1302,9 @@ def _recovered_snapshot_cannot_serve(
     manifest and ``.incomplete``/broken-symlink all read false and a snapshot short a shard looks
     runnable; its contents are the only evidence left. Scoped to the dangling case: where the ref
     resolves, upstream already publishes the row.
+
+    Other recovered cases retain their own evidence: broken links mark the repo partial, while a
+    stray snapshot file never represented a revision.
     """
     if repo_cache_dir is None or snapshot_dir is None:
         return False

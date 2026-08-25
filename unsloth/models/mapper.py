@@ -1116,14 +1116,14 @@ __INT_TO_FLOAT_MAPPER = \
             "unsloth/Magistral-Small-2509-bnb-4bit",
         ),
     },
+    # No Unsloth 16bit repo exists at this size, so this is a 1-tuple naming the
+    # real upstream, same as the other 70B and 405B rows.
     "unsloth/Apertus-70B-Instruct-2509-unsloth-bnb-4bit" : (
-        "unsloth/Apertus-70B-Instruct-2509",
-        "swiss-ai/Apertus-70B-2509",
-        "unsloth/Apertus-70B-Instruct-2509-unsloth-bnb-4bit",
+        "swiss-ai/Apertus-70B-Instruct-2509",
     ),
     "unsloth/Apertus-8B-Instruct-2509-unsloth-bnb-4bit" : (
         "unsloth/Apertus-8B-Instruct-2509",
-        "swiss-ai/Apertus-8B-2509",
+        "swiss-ai/Apertus-8B-Instruct-2509",
         "unsloth/Apertus-8B-Instruct-2509-unsloth-bnb-4bit",
     ),
     "unsloth/granite-4.0-micro-unsloth-bnb-4bit" : (

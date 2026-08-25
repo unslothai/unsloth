@@ -157,6 +157,19 @@ export function StudioPage(): ReactElement {
   // verdict is unknown and writes it to this same store, so no second poll is needed here.
   const showTrainingHydrating =
     capabilitiesUnknown || (!hasHydratedRuntime && isHydratingRuntime);
+  const reloadReadySent = useRef(false);
+  useEffect(() => {
+    if (
+      capabilitiesUnknown ||
+      !hasHydratedRuntime ||
+      isHydratingRuntime ||
+      reloadReadySent.current
+    ) {
+      return;
+    }
+    reloadReadySent.current = true;
+    window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+  }, [capabilitiesUnknown, hasHydratedRuntime, isHydratingRuntime]);
   // Two waits share this panel. Hardware detection is a cold `import torch` that can run for
   // minutes and says so, the way the Video page does; a hydrating runtime is quick and keeps
   // the runtime wording, which on a machine still being measured just reads as a hang.

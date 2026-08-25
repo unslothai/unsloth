@@ -239,6 +239,80 @@ jobs:
           python scripts/verify_import_hoist.py \
             --before "$MERGE_BASE" --after "$HEAD_SHA" "${CHANGED[@]}"
 
+      - name: Duplicate-definition verifier self-test
+        # scripts/lint_duplicate_definitions.py refuses a name bound twice in one
+        # scope: two top-level copies of a def / class / constant, or a name
+        # imported twice. That is what a bad merge resolution leaves behind, and
+        # every other check here passes it -- compileall parses both copies, the
+        # ruff rule set (E9 / F63 / F7 / F82) has no F811, and the two copies
+        # usually differ only in their comments.
+        # Runs the tool's self-test cases, positive and negative, so a regression in the
+        # rule fails before we trust it on a diff. Stdlib-only, sub-second.
+        run: |
+          python scripts/lint_duplicate_definitions.py --self-test
+
+      - name: Duplicate definitions (changed Python files)
+        # Same merge-base reasoning as the import-hoist step above: diff the merge
+        # base against the PR head SHA so the range is the PR's own commits and
+        # not every base commit since the branch point.
+        #
+        # --diff-filter=ACMRT, not M: a bad resolution can just as easily land in a
+        # file the PR adds, and a rename that also edits the file is reported as R
+        # (R093 and so on), which an ACM filter would drop. T is there because a path
+        # that changes TYPE -- a symlink replaced by a regular .py file -- is reported
+        # as neither M nor A, so the newly active source reached the verifier as no
+        # path at all and the step passed having checked nothing.
+        #
+        # The verifier scans BOTH revisions and compares findings by identity, so a
+        # duplicate that was already in the file is printed and ignored while one
+        # this PR introduced fails. Comparing added LINES instead would miss the
+        # case where the new copy is inserted ABOVE the old one, since the finding
+        # is reported at the second, unchanged definition. There are 37 pre-existing
+        # findings on main today; they are a separate cleanup, not a reason to leave
+        # the gate off. Four of those are only visible once each control-flow branch is
+        # scanned on its own: a repeated `from unsloth import is_bfloat16_supported`
+        # inside one `if __name__ == "__main__":` block in four of the saving tests.
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          MERGE_BASE=$(gh api \
+            "repos/${{ github.repository }}/compare/${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}" \
+            --jq .merge_base_commit.sha)
+          git fetch --no-tags --depth=1 origin "$MERGE_BASE"
+          # refs/pull/N/head moves. On a rerun of an older run, or if the branch
+          # advanced since the event, that ref is no longer $HEAD_SHA, and a depth-1
+          # clone would not have the pinned commit at all. Fetch the ref first (it is
+          # what makes the SHA reachable on a fork PR), then the SHA itself, then
+          # REFUSE to continue if it is still missing. The old shape hid exactly this:
+          # git diff failed, the pipeline's `|| true` produced an empty file list, and
+          # the step reported success having checked nothing.
+          git fetch --no-tags --depth=1 origin \
+            "refs/pull/${{ github.event.pull_request.number }}/head"
+          git fetch --no-tags --depth=1 origin "$HEAD_SHA" 2>/dev/null || true
+          if ! git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
+            echo "::error::head commit $HEAD_SHA is not available locally; refusing to skip the check"
+            exit 1
+          fi
+          # -z / -d '', because core.quotePath defaults on: a non-ASCII path comes out of a
+          # line-oriented git diff as "caf\303\251.py", whose suffix is .py" rather than
+          # .py, so the verifier would skip it and report success having checked nothing.
+          mapfile -d '' -t CHANGED < <(
+            git diff -z --name-only --diff-filter=ACMRT \
+              "$MERGE_BASE" "$HEAD_SHA" -- '*.py' \
+              | grep -zvE '(^|/)(unsloth_compiled_cache|node_modules|build|dist)/' || true
+          )
+          if [ "${#CHANGED[@]}" -eq 0 ]; then
+            echo "no changed Python files to check"
+            exit 0
+          fi
+          printf 'merge base: %s\n' "$MERGE_BASE"
+          printf 'pr head:    %s\n' "$HEAD_SHA"
+          printf 'checking %d file(s)\n' "${#CHANGED[@]}"
+          python scripts/lint_duplicate_definitions.py \
+            --before "$MERGE_BASE" --after "$HEAD_SHA" "${CHANGED[@]}"
+
       - name: No silent llama-server parallel-slot downgrades
         # #7717 clamped --parallel to 1 whenever MTP resolved, costing batched
         # callers 4x throughput. Launch fewer slots only for a real capability

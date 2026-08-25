@@ -26,12 +26,20 @@ import {
   createConfiguredUtterance,
   curateSystemVoices,
   fetchSttStatus,
+  generateCustomTtsAudio,
   generateStudioTtsAudio,
   loadSttModel,
+  releaseTtsAudioUrl,
   startSttDownload,
   unloadSttModel,
+  useExternalProvidersStore,
   validateSttModel,
 } from "@/features/chat";
+import {
+  type TransferSample,
+  appendSample,
+  computeTransferStats,
+} from "@/lib/transfer-stats";
 import {
   DownloadProgressBar,
   hfApiToken,
@@ -74,6 +82,7 @@ import {
   isSttModelLanguageCompatible,
   sttModelName,
   sttModelSize,
+  type TtsEngine,
   useVoiceSettingsStore,
 } from "../stores/voice-settings-store";
 
@@ -404,6 +413,12 @@ export function VoiceTab() {
   const setDictationEngine = useVoiceSettingsStore((s) => s.setDictationEngine);
   const sttModel = useVoiceSettingsStore((s) => s.sttModel);
   const setSttModel = useVoiceSettingsStore((s) => s.setSttModel);
+  const sttProviderId = useVoiceSettingsStore((s) => s.sttProviderId);
+  const setSttProviderId = useVoiceSettingsStore((s) => s.setSttProviderId);
+  const sttProviderModel = useVoiceSettingsStore((s) => s.sttProviderModel);
+  const setSttProviderModel = useVoiceSettingsStore(
+    (s) => s.setSttProviderModel,
+  );
   const dictationLanguage = useVoiceSettingsStore((s) => s.dictationLanguage);
   const setDictationLanguage = useVoiceSettingsStore(
     (s) => s.setDictationLanguage,
@@ -414,12 +429,34 @@ export function VoiceTab() {
   const setTtsEngine = useVoiceSettingsStore((s) => s.setTtsEngine);
   const ttsVoiceURI = useVoiceSettingsStore((s) => s.ttsVoiceURI);
   const setTtsVoiceURI = useVoiceSettingsStore((s) => s.setTtsVoiceURI);
+  const ttsProviderId = useVoiceSettingsStore((s) => s.ttsProviderId);
+  const setTtsProviderId = useVoiceSettingsStore((s) => s.setTtsProviderId);
+  const ttsProviderModel = useVoiceSettingsStore((s) => s.ttsProviderModel);
+  const setTtsProviderModel = useVoiceSettingsStore(
+    (s) => s.setTtsProviderModel,
+  );
+  const ttsProviderVoice = useVoiceSettingsStore((s) => s.ttsProviderVoice);
+  const setTtsProviderVoice = useVoiceSettingsStore(
+    (s) => s.setTtsProviderVoice,
+  );
+  const ttsConnections = useExternalProvidersStore((s) => s.providers);
+  const hasSelectedTtsConnection = ttsConnections.some(
+    (connection) => connection.id === ttsProviderId,
+  );
   const ttsRate = useVoiceSettingsStore((s) => s.ttsRate);
   const setTtsRate = useVoiceSettingsStore((s) => s.setTtsRate);
   const ttsPitch = useVoiceSettingsStore((s) => s.ttsPitch);
   const setTtsPitch = useVoiceSettingsStore((s) => s.setTtsPitch);
   const ttsVolume = useVoiceSettingsStore((s) => s.ttsVolume);
   const setTtsVolume = useVoiceSettingsStore((s) => s.setTtsVolume);
+  const sttConnections = useExternalProvidersStore((s) => s.providers);
+  const connectionsEnabled = useExternalProvidersStore(
+    (s) => s.connectionsEnabled,
+  );
+  const hasSttConnections = sttConnections.length > 0;
+  const hasSelectedSttConnection = sttConnections.some(
+    (connection) => connection.id === sttProviderId,
+  );
 
   const navigate = useNavigate();
   const { devices, hasLabels, requestAccess } = useAudioInputDevices();
@@ -439,11 +476,26 @@ export function VoiceTab() {
     null,
   );
 
+  useEffect(() => {
+    if (sttProviderId && !hasSelectedSttConnection) {
+      setSttProviderId("");
+    }
+  }, [hasSelectedSttConnection, setSttProviderId, sttProviderId]);
+
+  // A deleted connection would otherwise stay selected and every read aloud would
+  // post the stale id, so drop it the way the dictation selection does.
+  useEffect(() => {
+    if (ttsProviderId && !hasSelectedTtsConnection) {
+      setTtsProviderId("");
+    }
+  }, [hasSelectedTtsConnection, setTtsProviderId, ttsProviderId]);
+
   const modelSttSupported = StudioModelDictationAdapter.isSupported();
   const ttsSupported = StudioSpeechSynthesisAdapter.isSupported();
   const systemTtsSupported =
     StudioSpeechSynthesisAdapter.systemVoicesSupported();
-  const effectiveTtsEngine = systemTtsSupported ? ttsEngine : "studio";
+  const effectiveTtsEngine: TtsEngine =
+    ttsEngine === "system" && !systemTtsSupported ? "studio" : ttsEngine;
 
   // Local STT stays on-demand. Track its phase without fetching model weights.
   type SttPhase =
@@ -465,6 +517,7 @@ export function VoiceTab() {
   const [sttDownloadCancelling, setSttDownloadCancelling] = useState(false);
   const [sttUnloading, setSttUnloading] = useState(false);
   const isLocalEngine = dictationEngine === "model";
+  const isCustomEngine = dictationEngine === "custom";
   // The model decides the backend: curated ids run GGML through whisper.cpp,
   // custom repos run through Transformers.
   const isMtmdModel = MTMD_STT_MODELS.has(sttModel);
@@ -474,10 +527,10 @@ export function VoiceTab() {
     null,
   );
   const [downloadBytesPerSec, setDownloadBytesPerSec] = useState(0);
-  // Last observed (bytes, time) so successive polls yield a transfer rate.
-  const downloadRateSampleRef = useRef<{ bytes: number; at: number } | null>(
-    null,
-  );
+  const [downloadEtaSeconds, setDownloadEtaSeconds] = useState(0);
+  // Was a bare two-sample delta over ~800ms with no window or stability gate,
+  // so one throttled timer or bursty poll set the displayed speed outright.
+  const downloadSamplesRef = useRef<TransferSample[]>([]);
   // Model whose download this tab watched; completion auto-loads it.
   const watchedDownloadRef = useRef<string | null>(null);
 
@@ -547,16 +600,30 @@ export function VoiceTab() {
           if (download.model && !isTrackingSttDownload(download.model)) {
             trackSttDownload(download.model);
           }
-          watchedDownloadRef.current = download.model;
           const bytes = download.bytes_done ?? 0;
-          const sample = downloadRateSampleRef.current;
-          const now = Date.now();
-          if (sample && bytes > sample.bytes && now > sample.at) {
-            setDownloadBytesPerSec(
-              ((bytes - sample.bytes) * 1000) / (now - sample.at),
-            );
+          // Compare before adopting: assigning first made this test itself, so
+          // a straight switch priced the new run over the old one's samples.
+          if (download.model !== watchedDownloadRef.current) {
+            // A different model's counter is a different run.
+            downloadSamplesRef.current.length = 0;
           }
-          downloadRateSampleRef.current = { bytes, at: now };
+          watchedDownloadRef.current = download.model;
+          if (typeof document !== "undefined" && document.hidden) {
+            // A hidden tab's timers are clamped to about once a minute, so
+            // these gaps time the poller and would read as the burst cadence.
+            // The hub poll loop drops them the same way.
+            downloadSamplesRef.current.length = 0;
+            setDownloadBytesPerSec(0);
+            setDownloadEtaSeconds(0);
+          } else {
+            appendSample(downloadSamplesRef.current, Date.now() / 1000, bytes);
+            const stats = computeTransferStats(
+              downloadSamplesRef.current,
+              download.bytes_total ?? 0,
+            );
+            setDownloadBytesPerSec(stats.stable ? stats.rateBytesPerSecond : 0);
+            setDownloadEtaSeconds(stats.stable ? stats.etaSeconds : 0);
+          }
           // Keep the download progress fresh.
           window.setTimeout(() => {
             if (!cancelled) setStatusNonce((n) => n + 1);
@@ -564,8 +631,9 @@ export function VoiceTab() {
         } else {
           const finished = watchedDownloadRef.current;
           watchedDownloadRef.current = null;
-          downloadRateSampleRef.current = null;
+          downloadSamplesRef.current.length = 0;
           setDownloadBytesPerSec(0);
+          setDownloadEtaSeconds(0);
           if (
             finished === sttModel &&
             engineStatus.downloaded_models.includes(sttModel) &&
@@ -761,7 +829,9 @@ export function VoiceTab() {
   const releasePreviewAudio = useCallback(() => {
     if (previewAudioRef.current) {
       previewAudioRef.current.pause();
-      previewAudioRef.current.src = "";
+      releaseTtsAudioUrl(previewAudioRef.current.src);
+      // removeAttribute, not `src = ""`: an empty src fires a media error toasting "preview failed".
+      previewAudioRef.current.removeAttribute("src");
       previewAudioRef.current = null;
     }
   }, []);
@@ -786,18 +856,22 @@ export function VoiceTab() {
       stopPreview();
       return;
     }
-    if (effectiveTtsEngine === "studio") {
+    if (effectiveTtsEngine !== "system") {
       const controller = new AbortController();
       previewAbortRef.current = controller;
       ownsSystemPreviewRef.current = false;
       markPreviewing(true);
       setPreparingPreview(true);
       try {
-        const url = await generateStudioTtsAudio(
-          TTS_PREVIEW_TEXT,
-          controller.signal,
-        );
-        if (controller.signal.aborted) return;
+        const generate =
+          effectiveTtsEngine === "custom"
+            ? generateCustomTtsAudio
+            : generateStudioTtsAudio;
+        const url = await generate(TTS_PREVIEW_TEXT, controller.signal);
+        if (controller.signal.aborted) {
+          releaseTtsAudioUrl(url);
+          return;
+        }
         setPreparingPreview(false);
         const audio = new Audio(url);
         audio.playbackRate = ttsRate;
@@ -886,49 +960,108 @@ export function VoiceTab() {
           description={
             dictationEngine === "model"
               ? t("settings.voice.dictation.engineModelDescription")
-              : t("settings.voice.dictation.engineBrowserDescription")
+              : dictationEngine === "custom"
+                ? t("settings.voice.dictation.engineCustomDescription")
+                : t("settings.voice.dictation.engineBrowserDescription")
           }
         >
-          {isTauri ? (
-            <span className="text-sm text-muted-foreground">
-              {t("settings.voice.dictation.engineModel")}
-            </span>
-          ) : (
-            <Select
-              value={dictationEngine}
-              onValueChange={(value) => {
-                const next = value === "model" ? "model" : "browser";
-                if (next !== dictationEngine) {
-                  // Unload whichever backend was resident for the old engine.
+          <Select
+            value={dictationEngine}
+            onValueChange={(value) => {
+              const next =
+                value === "model"
+                  ? "model"
+                  : value === "custom"
+                    ? "custom"
+                    : "browser";
+              if (next !== dictationEngine) {
+                if (dictationEngine === "model") {
                   void unloadSttModel().catch(() => {});
-                  if (next === "model") {
-                    setSttPhase("checking");
-                    setSttDevice(null);
-                    setSttDownload(null);
-                  }
                 }
-                setDictationEngine(next);
-              }}
+                if (next === "model") {
+                  setSttPhase("checking");
+                  setSttDevice(null);
+                  setSttDownload(null);
+                }
+              }
+              setDictationEngine(next);
+            }}
+          >
+            <SelectTrigger
+              data-testid="dictation-engine-trigger"
+              aria-label={t("settings.voice.dictation.engineLabel")}
+              className="w-56"
+              size="sm"
             >
-              <SelectTrigger
-                data-testid="dictation-engine-trigger"
-                aria-label={t("settings.voice.dictation.engineLabel")}
-                className="w-56"
-                size="sm"
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {isTauri ? null : (
                 <SelectItem value="browser">
                   {t("settings.voice.dictation.engineBrowser")}
                 </SelectItem>
-                <SelectItem value="model" data-testid="dictation-engine-model">
-                  {t("settings.voice.dictation.engineModel")}
-                </SelectItem>
-              </SelectContent>
-            </Select>
-          )}
+              )}
+              <SelectItem value="model" data-testid="dictation-engine-model">
+                {t("settings.voice.dictation.engineModel")}
+              </SelectItem>
+              <SelectItem
+                value="custom"
+                data-testid="dictation-engine-custom"
+                disabled={!connectionsEnabled}
+              >
+                {t("settings.voice.dictation.engineCustom")}
+              </SelectItem>
+            </SelectContent>
+          </Select>
         </SettingsRow>
+
+        {isCustomEngine ? (
+          <>
+            <SettingsRow
+              label={t("settings.voice.dictation.connectionLabel")}
+              description={t("settings.voice.dictation.connectionDescription")}
+            >
+              <Select
+                value={hasSelectedSttConnection ? sttProviderId : undefined}
+                onValueChange={setSttProviderId}
+                disabled={!connectionsEnabled || !hasSttConnections}
+              >
+                <SelectTrigger
+                  aria-label={t("settings.voice.dictation.connectionLabel")}
+                  className="w-56"
+                  size="sm"
+                >
+                  <SelectValue
+                    placeholder={t(
+                      hasSttConnections
+                        ? "settings.voice.dictation.connectionPlaceholder"
+                        : "settings.voice.dictation.connectionEmpty",
+                    )}
+                  />
+                </SelectTrigger>
+                <SelectContent>
+                  {sttConnections.map((connection) => (
+                    <SelectItem key={connection.id} value={connection.id}>
+                      {connection.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </SettingsRow>
+            <SettingsRow
+              label={t("settings.voice.dictation.customModelLabel")}
+              description={t("settings.voice.dictation.customModelDescription")}
+            >
+              <Input
+                value={sttProviderModel}
+                onChange={(event) => setSttProviderModel(event.target.value)}
+                placeholder="whisper-1"
+                aria-label={t("settings.voice.dictation.customModelLabel")}
+                className="w-56"
+              />
+            </SettingsRow>
+          </>
+        ) : null}
 
         {isLocalEngine ? (
           modelSttSupported ? (
@@ -978,6 +1111,7 @@ export function VoiceTab() {
                             : 0,
                       }}
                       bytesPerSec={downloadBytesPerSec}
+                      etaSeconds={downloadEtaSeconds}
                     />
                   </div>
                 ) : (
@@ -1151,7 +1285,11 @@ export function VoiceTab() {
               {DICTATION_LANGUAGES.map(({ value, label }) => (
                 <SelectItem key={value} value={value}>
                   {value === "auto"
-                    ? t("settings.voice.dictation.languageAuto")
+                    ? t(
+                        isCustomEngine
+                          ? "settings.voice.dictation.languageAutoDetect"
+                          : "settings.voice.dictation.languageAuto",
+                      )
                     : label}
                 </SelectItem>
               ))}
@@ -1204,13 +1342,19 @@ export function VoiceTab() {
               description={
                 effectiveTtsEngine === "studio"
                   ? t("settings.voice.readAloud.engineStudioDescription")
-                  : t("settings.voice.readAloud.engineSystemDescription")
+                  : effectiveTtsEngine === "custom"
+                    ? t("settings.voice.readAloud.engineCustomDescription")
+                    : t("settings.voice.readAloud.engineSystemDescription")
               }
             >
               <Select
                 value={effectiveTtsEngine}
                 onValueChange={(value) =>
-                  setTtsEngine(value === "studio" ? "studio" : "system")
+                  setTtsEngine(
+                    value === "studio" || value === "custom"
+                      ? value
+                      : "system",
+                  )
                 }
               >
                 <SelectTrigger
@@ -1229,11 +1373,73 @@ export function VoiceTab() {
                   <SelectItem value="studio">
                     {t("settings.voice.readAloud.engineStudio")}
                   </SelectItem>
+                  <SelectItem value="custom">
+                    {t("settings.voice.readAloud.engineCustom")}
+                  </SelectItem>
                 </SelectContent>
               </Select>
             </SettingsRow>
 
-            {effectiveTtsEngine === "studio" ? (
+            {effectiveTtsEngine === "custom" ? (
+              <>
+                <SettingsRow
+                  label={t("settings.voice.readAloud.connectionLabel")}
+                  description={t(
+                    "settings.voice.readAloud.connectionDescription",
+                  )}
+                >
+                  <Select
+                    value={hasSelectedTtsConnection ? ttsProviderId : ""}
+                    onValueChange={setTtsProviderId}
+                    disabled={ttsConnections.length === 0}
+                  >
+                    <SelectTrigger
+                      aria-label={t("settings.voice.readAloud.connectionLabel")}
+                      className="min-w-56 max-w-72"
+                      size="sm"
+                    >
+                      <SelectValue
+                        placeholder={t(
+                          "settings.voice.readAloud.connectionPlaceholder",
+                        )}
+                      />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {ttsConnections.map((connection) => (
+                        <SelectItem key={connection.id} value={connection.id}>
+                          {connection.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </SettingsRow>
+                <SettingsRow
+                  label={t("settings.voice.readAloud.customModelLabel")}
+                >
+                  <Input
+                    value={ttsProviderModel}
+                    onChange={(e) => setTtsProviderModel(e.target.value)}
+                    placeholder="kokoro"
+                    className="h-8 w-56 max-w-72"
+                    aria-label={t("settings.voice.readAloud.customModelLabel")}
+                  />
+                </SettingsRow>
+                <SettingsRow
+                  label={t("settings.voice.readAloud.voiceLabel")}
+                  description={t(
+                    "settings.voice.readAloud.customVoiceDescription",
+                  )}
+                >
+                  <Input
+                    value={ttsProviderVoice}
+                    onChange={(e) => setTtsProviderVoice(e.target.value)}
+                    placeholder="alloy"
+                    className="h-8 w-56 max-w-72"
+                    aria-label={t("settings.voice.readAloud.voiceLabel")}
+                  />
+                </SettingsRow>
+              </>
+            ) : effectiveTtsEngine === "studio" ? (
               <SettingsRow
                 label={t("settings.voice.readAloud.modelLabel")}
                 description={t("settings.voice.readAloud.modelDescription")}

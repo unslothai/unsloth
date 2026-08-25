@@ -40,14 +40,6 @@ import { cn } from "@/lib/utils";
 import { Check, Eye, EyeOff } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
-  EmbeddingModelBlockedError,
-  type EmbeddingModelSettings,
-  EmbeddingModelVerificationError,
-  loadEmbeddingModelSettings,
-  resetEmbeddingModelSettings,
-  updateEmbeddingModelSettings,
-} from "../api/embedding-model";
-import {
   type HelperPrecacheSettings,
   loadHelperPrecacheSettings,
   updateHelperPrecacheSettings,
@@ -71,7 +63,7 @@ import {
   DesktopUpdateControl,
   DesktopUpdateNote,
 } from "../components/desktop-update-control";
-import { EmbeddingModelCombobox } from "../components/embedding-model-combobox";
+import { DocumentsRagSection } from "../components/documents-rag-section";
 import { LanguageSelect } from "../components/language-select";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
@@ -219,16 +211,6 @@ export function GeneralTab() {
     loadError: t("settings.general.startup.loadError"),
     saveError: t("settings.general.startup.closeToTraySaveError"),
   });
-  const [embeddingModel, setEmbeddingModel] =
-    useState<EmbeddingModelSettings | null>(null);
-  const [draftEmbeddingModel, setDraftEmbeddingModel] = useState("");
-  const [embeddingModelError, setEmbeddingModelError] = useState<string | null>(
-    null,
-  );
-  // Set after a 409 (unverifiable model); offers "Save anyway".
-  const [embeddingModelNeedsForce, setEmbeddingModelNeedsForce] =
-    useState(false);
-  const [isSavingEmbeddingModel, setIsSavingEmbeddingModel] = useState(false);
 
   const draftRef = useRef(draftToken);
   useEffect(() => {
@@ -329,26 +311,6 @@ export function GeneralTab() {
     };
   }, [t]);
 
-  useEffect(() => {
-    let cancelled = false;
-    void loadEmbeddingModelSettings()
-      .then((settings) => {
-        if (cancelled) return;
-        setEmbeddingModel(settings);
-        setDraftEmbeddingModel(settings.embeddingModel);
-      })
-      .catch((error) => {
-        if (cancelled) return;
-        setEmbeddingModelError(
-          error instanceof Error
-            ? error.message
-            : t("settings.general.rag.loadError"),
-        );
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [t]);
 
   const saveHelperPrecache = async (enabled: boolean) => {
     setIsSavingHelperPrecache(true);
@@ -403,60 +365,6 @@ export function GeneralTab() {
     }
   };
 
-  const saveEmbeddingModel = async (force: boolean) => {
-    const trimmed = draftEmbeddingModel.trim();
-    if (!trimmed) {
-      setEmbeddingModelError(t("settings.general.rag.emptyError"));
-      return;
-    }
-    setIsSavingEmbeddingModel(true);
-    setEmbeddingModelError(null);
-    try {
-      const settings = await updateEmbeddingModelSettings(trimmed, {
-        hfToken: hfToken || undefined,
-        force,
-      });
-      setEmbeddingModel(settings);
-      setDraftEmbeddingModel(settings.embeddingModel);
-      setEmbeddingModelNeedsForce(false);
-      toast.success(t("settings.general.rag.saved"), {
-        description: t("settings.general.rag.reindexWarning"),
-      });
-    } catch (error) {
-      // A hard security block cannot be forced; keep the "save anyway" action hidden.
-      if (error instanceof EmbeddingModelBlockedError) {
-        setEmbeddingModelNeedsForce(false);
-      } else if (error instanceof EmbeddingModelVerificationError) {
-        setEmbeddingModelNeedsForce(true);
-      }
-      setEmbeddingModelError(
-        error instanceof Error
-          ? error.message
-          : t("settings.general.rag.saveError"),
-      );
-    } finally {
-      setIsSavingEmbeddingModel(false);
-    }
-  };
-
-  const resetEmbeddingModel = async () => {
-    setIsSavingEmbeddingModel(true);
-    setEmbeddingModelError(null);
-    setEmbeddingModelNeedsForce(false);
-    try {
-      const settings = await resetEmbeddingModelSettings();
-      setEmbeddingModel(settings);
-      setDraftEmbeddingModel(settings.embeddingModel);
-    } catch (error) {
-      setEmbeddingModelError(
-        error instanceof Error
-          ? error.message
-          : t("settings.general.rag.saveError"),
-      );
-    } finally {
-      setIsSavingEmbeddingModel(false);
-    }
-  };
 
   const saveUploadLimit = async () => {
     const parsed = Number(draftUploadLimit);
@@ -721,75 +629,7 @@ export function GeneralTab() {
         </SettingsRow>
       </SettingsSection>
 
-      <SettingsSection title={t("settings.general.rag.sectionTitle")}>
-        <SettingsRow
-          label={t("settings.general.rag.embeddingModel")}
-          description={t("settings.general.rag.embeddingModelDescription", {
-            defaultModel: embeddingModel?.defaultEmbeddingModel ?? "",
-          })}
-          className="max-[360px]:flex-col max-[360px]:items-stretch max-[360px]:gap-3"
-        >
-          <div className="flex flex-col items-end gap-1 max-[360px]:w-full">
-            <div className="flex items-center gap-2 max-[360px]:w-full">
-              <EmbeddingModelCombobox
-                value={draftEmbeddingModel}
-                onChange={(next) => {
-                  setDraftEmbeddingModel(next);
-                  setEmbeddingModelNeedsForce(false);
-                  setEmbeddingModelError(null);
-                }}
-                accessToken={hfToken || undefined}
-                disabled={!embeddingModel}
-                placeholder={embeddingModel?.defaultEmbeddingModel ?? ""}
-                ariaLabel={t("settings.general.rag.embeddingModel")}
-                className="w-[220px] max-[360px]:min-w-0 max-[360px]:flex-1"
-              />
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={
-                  !embeddingModel ||
-                  isSavingEmbeddingModel ||
-                  draftEmbeddingModel.trim() === embeddingModel.embeddingModel
-                }
-                onClick={() => void saveEmbeddingModel(false)}
-              >
-                {isSavingEmbeddingModel ? t("common.saving") : t("common.save")}
-              </Button>
-            </div>
-            {embeddingModelError ? (
-              <span className="max-w-[300px] text-right text-xs text-destructive">
-                {embeddingModelError}
-              </span>
-            ) : null}
-            <div className="flex items-center gap-2">
-              {embeddingModelNeedsForce ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={isSavingEmbeddingModel}
-                  onClick={() => void saveEmbeddingModel(true)}
-                >
-                  {t("settings.general.rag.saveAnyway")}
-                </Button>
-              ) : null}
-              {embeddingModel?.isCustom ? (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={isSavingEmbeddingModel}
-                  onClick={() => void resetEmbeddingModel()}
-                >
-                  {t("settings.general.rag.resetAction")}
-                </Button>
-              ) : null}
-            </div>
-            <span className="max-w-[300px] text-right text-xs text-muted-foreground">
-              {t("settings.general.rag.reindexWarning")}
-            </span>
-          </div>
-        </SettingsRow>
-      </SettingsSection>
+      <DocumentsRagSection />
 
       <SettingsSection title={t("settings.general.uploads.sectionTitle")}>
         <SettingsRow

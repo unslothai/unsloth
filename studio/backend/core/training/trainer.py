@@ -1083,6 +1083,7 @@ class UnslothTrainer:
                     model_name = llm_path,
                     max_seq_length = max_seq_length,
                     dtype = torch.float32,  # Spark-TTS requires float32
+                    attn_implementation = "sdpa",  # Flash Attention cannot run float32
                     load_in_4bit = False,
                     device_map = device_map,
                     full_finetuning = full_finetuning,
@@ -1366,6 +1367,7 @@ class UnslothTrainer:
                 peft_kwargs = dict(
                     r = lora_r,
                     target_modules = target_modules,
+                    modules_to_save = modules_to_save,
                     lora_alpha = lora_alpha,
                     lora_dropout = lora_dropout,
                     bias = "none",
@@ -1397,6 +1399,7 @@ class UnslothTrainer:
                     self.model,
                     r = lora_r,
                     target_modules = target_modules,
+                    modules_to_save = modules_to_save,
                     lora_alpha = lora_alpha,
                     lora_dropout = lora_dropout,
                     bias = "none",
@@ -1416,6 +1419,7 @@ class UnslothTrainer:
                     self.model,
                     r = lora_r,
                     target_modules = target_modules,
+                    modules_to_save = modules_to_save,
                     lora_alpha = lora_alpha,
                     lora_dropout = lora_dropout,
                     bias = "none",

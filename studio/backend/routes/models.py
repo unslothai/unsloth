@@ -145,6 +145,7 @@ try:
     from utils.models.model_config import (
         _extract_quant_label,
         _is_big_endian_gguf_path,
+        _is_imatrix_path,
         _is_mtp_drafter,
         is_audio_input_type,
     )
@@ -177,6 +178,7 @@ except ImportError:
     from utils.models.model_config import (
         _extract_quant_label,
         _is_big_endian_gguf_path,
+        _is_imatrix_path,
         _is_mtp_drafter,
         is_audio_input_type,
     )
@@ -218,6 +220,10 @@ from models.responses import (
     EmbeddingCheckResponse,
 )
 from utils.paths.path_utils import is_appledouble_metadata
+from utils.gguf_archs import (
+    SPEECH_GGUF_ARCHS,
+    is_speech_gguf_architecture,
+)
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -248,9 +254,9 @@ def _is_model_directory(d: Path) -> bool:
     """Return ``True`` when *d* looks like a model directory.
 
     Requires both a config (``config.json``/``adapter_config.json``) and
-    weight files. Excludes ``mmproj`` GGUFs (vision projectors) and
-    non-weight ``.bin`` files (``tokenizer.bin`` etc.) to avoid false
-    positives.
+    weight files. Excludes ``mmproj`` GGUFs (vision projectors), calibration
+    imatrices and non-weight ``.bin`` files (``tokenizer.bin`` etc.) to avoid
+    false positives.
     """
 
     def _is_weight_file(f: Path) -> bool:
@@ -260,7 +266,7 @@ def _is_model_directory(d: Path) -> bool:
         if suffix == ".safetensors":
             return True
         if suffix == ".gguf":
-            return "mmproj" not in f.name.lower()
+            return "mmproj" not in f.name.lower() and not _is_imatrix_path(f.name)
         if suffix == ".bin":
             name = f.name.lower()
             return (
@@ -318,6 +324,20 @@ def _local_pipeline_index(d: Path) -> bool:
         return False
 
 
+def _servable_gguf_names(directory: Path) -> list[str]:
+    """The ``.gguf`` names in *directory* that count as a model being present there.
+
+    An imatrix is calibration data, not a model artifact, so it must not make an empty
+    folder look like one. mmproj and MTP drafters DO count: they are companions of a real
+    model, and presence is all they decide (format still asks _is_main_gguf_filename).
+    """
+    return [
+        p.name
+        for p in directory.glob("*.gguf")
+        if not is_appledouble_metadata(p) and not _is_imatrix_path(p.name)
+    ]
+
+
 def _is_gguf_companion_only_dir(path: Path) -> bool:
     """True for a folder whose entire content is GGUF companions -- a lone mmproj adapter, an
     MTP drafter, or both -- with nothing servable beside them.
@@ -368,7 +388,7 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
             if not child.is_dir():
                 continue
 
-            gguf_names = [p.name for p in child.glob("*.gguf") if not is_appledouble_metadata(p)]
+            gguf_names = _servable_gguf_names(child)
             has_gguf = bool(gguf_names)
             # mmproj alone is a vision adapter, not servable weights: decides presence, never format.
             has_main_gguf = any(_is_main_gguf_filename(n) for n in gguf_names)
@@ -619,7 +639,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                 try:
                     if model_dir.is_dir():
                         has_model = (
-                            any(not is_appledouble_metadata(p) for p in model_dir.glob("*.gguf"))
+                            bool(_servable_gguf_names(model_dir))
                             or (model_dir / "config.json").exists()
                             or any(
                                 not is_appledouble_metadata(p)
@@ -1348,7 +1368,11 @@ def _dir_has_downloaded_model(directory: Path, max_entries: int = 4000) -> bool:
                     low = entry.name.lower()
                     if is_appledouble_metadata(entry):
                         continue
-                    if low.endswith((".gguf", ".safetensors")):
+                    # The scanners no longer surface an imatrix-only folder, so counting
+                    # one here would advertise a chip that opens an empty picker.
+                    if low.endswith(".gguf") and not _is_imatrix_path(entry.name):
+                        return True
+                    if low.endswith(".safetensors"):
                         return True
                     # PyTorch checkpoints; gate by name so tokenizer.bin and friends don't count as weights.
                     if _is_weight_bin(entry.name):
@@ -3760,9 +3784,15 @@ def _is_mmproj_filename(name: str) -> bool:
 
 
 def _is_main_gguf_filename(name: str) -> bool:
-    """A primary GGUF weight, not an mmproj vision adapter or an MTP drafter. Same rule as
-    ``hub.services.models.common``; pass a snapshot-relative path to catch ``MTP/`` copies too."""
-    return _is_gguf_filename(name) and not _is_mmproj_filename(name) and not _is_mtp_drafter(name)
+    """A primary GGUF weight, not an mmproj vision adapter, an MTP drafter or a calibration
+    imatrix. Same rule as ``hub.services.models.common``; pass a snapshot-relative path to
+    catch ``MTP/`` copies too."""
+    return (
+        _is_gguf_filename(name)
+        and not _is_mmproj_filename(name)
+        and not _is_mtp_drafter(name)
+        and not _is_imatrix_path(name)
+    )
 
 
 def _recovered_repo_is_unusable_by_repo_id(repo_info) -> bool:
@@ -4056,6 +4086,12 @@ _VIDEO_GEN_TASK = "text-to-video"
 # Task tag for the archs above; mirrored by the frontend NON_CHAT_TASKS gate.
 _UNSUPPORTED_DIFFUSION_TASK = "image-diffusion-unsupported"
 
+# TTS-only GGUF archs llama.cpp cannot load, tagged speech so the chat picker keeps them out of
+# llama-server. One shared definition rather than a copy per layer: the chat gate, this classifier
+# and the media preflight all have to agree.
+_SPEECH_GGUF_ARCHS = SPEECH_GGUF_ARCHS
+_SPEECH_TASK = "text-to-speech"
+
 
 # The two denoiser partitions, by the filename prefix the loader itself validates against
 # (``video_minimax_h3``). These GGUFs carry no architecture metadata, so the NAME is the only
@@ -4166,6 +4202,8 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
                 else _UNSUPPORTED_DIFFUSION_TASK
             )
         return _UNSUPPORTED_DIFFUSION_TASK
+    if is_speech_gguf_architecture(a):
+        return _SPEECH_TASK
     if a in _DIFFUSION_GGUF_ARCHS:
         # Third gate, mirroring the cached-repo picker: a family no engine here can build can only fail.
         if not _gguf_family_buildable(name_hints):
@@ -4288,6 +4326,12 @@ def _gguf_folder_task(
         # Trimmed back to the cap as it fills: a folder holding thousands of GGUFs should not cost
         # a list of thousands of paths to read 64 of them.
         scored: list[tuple[tuple[str, str], Path]] = []
+        # Recorded as the tail is dropped, never inferred from `scored` afterwards: the trimming
+        # branch cuts back to the cap, so a folder that overflows and then ends leaves exactly
+        # `_MAX_TASK_CLASSIFY_GGUFS` entries behind, indistinguishable from a folder that fit.
+        # Reading that as a complete scan is what would let 129 files answer speech off their
+        # first 64 and hide the runnable sibling in the discarded tail.
+        overflowed = False
         for path in _iter_gguf_paths(root, deadline):
             name = path.name
             if _is_mmproj_filename(name) or _is_trailing_split_shard(name):
@@ -4296,29 +4340,61 @@ def _gguf_folder_task(
             if len(scored) > _MAX_TASK_CLASSIFY_GGUFS * 2:
                 scored.sort(key = lambda item: item[0])
                 del scored[_MAX_TASK_CLASSIFY_GGUFS:]
+                overflowed = True
         scored.sort(key = lambda item: item[0])
         paths = [path for _, path in scored[:_MAX_TASK_CLASSIFY_GGUFS]]
+        # Whether every candidate in the folder made it into `paths`. The walk gives up at its own
+        # deadline and the cap drops the tail, so either can leave a sibling unseen.
+        complete = (
+            not overflowed
+            and len(scored) <= _MAX_TASK_CLASSIFY_GGUFS
+            and time.monotonic() < deadline
+        )
     except Exception:
         return None
     unsupported: Optional[str] = None
+    speech: Optional[str] = None
     read_deadline = time.monotonic() + _TASK_CLASSIFY_READ_SECONDS
     for index, path in enumerate(paths):
         # The first read always happens, so a folder still classifies from its first ordered file
         # even where the budget was gone before this loop started.
         if index and time.monotonic() >= read_deadline:
+            complete = False
             break
         try:
             task = _arch_to_task(_gguf_architecture(str(path)), name_hints = id_hints + (path.name,))
         except Exception:
+            # Unread, so unranked: this file might have been the runnable sibling, and speech
+            # cannot rest on a folder we only partly read.
+            complete = False
+            continue
+        if task is None:
+            # Same as the read that raised: a truncated header gives no architecture, and
+            # `_arch_to_task` answers None rather than guessing.
+            complete = False
             continue
         if task in _LOADABLE_MEDIA_GGUF_TASKS:
             return task
-        if task == _UNSUPPORTED_DIFFUSION_TASK:
+        # Speech ranks below everything else runnable, not just below the loadable media archs:
+        # nothing here runs a llama-csm GGUF, so answering speech while a sibling is loadable
+        # hides that sibling. Ranking it with the unsupported diffusion archs saved a runnable
+        # image/video checkpoint but not a chat one -- a chat GGUF lands in `fallback`, which
+        # `unsupported` outranked, so a csm + qwen3 folder answered speech and the arch-task gate
+        # hid the qwen3. Last resort only, so a speech-only folder still tags speech.
+        if task == _SPEECH_TASK:
+            if speech is None:
+                speech = task
+        elif task == _UNSUPPORTED_DIFFUSION_TASK:
             if unsupported is None:
                 unsupported = task
         elif task is not None and fallback is None:
             fallback = task
-    return unsupported or fallback
+    # Speech only when the ranking above saw the whole folder. It is the one answer that HIDES a
+    # row rather than filing it, so a walk that gave up at its deadline, a folder past the cap, or
+    # a read budget spent after the csm quant sorted first would otherwise hide the runnable
+    # sibling it never reached. Every other verdict is safe on a partial read: the worst case is a
+    # row filed on the wrong page, not one the user cannot find at all.
+    return unsupported or fallback or (speech if complete else None)
 
 
 def _repo_gguf_task(repo_info) -> Optional[str]:
