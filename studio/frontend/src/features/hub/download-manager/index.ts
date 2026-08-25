@@ -4,6 +4,11 @@
 export * from "./api";
 export { DownloadManagerPanel } from "./download-manager-panel";
 export {
+  finishExternalJob,
+  startExternalJob,
+  updateExternalJob,
+} from "./external-jobs";
+export {
   DownloadProgressBar,
   type DownloadProgress,
 } from "./download-progress-bar";
@@ -47,6 +52,7 @@ export { scopedVariant } from "./download-manager-types";
 export {
   getTransportMode,
   useDownloadTransportCapabilities,
+  useHttpPartialsResumable,
   useTransportMode,
 } from "./transport-preference";
 export type { TransportConflictInfo } from "./types";

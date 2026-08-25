@@ -174,8 +174,8 @@ run_timed() {  # $1=outfile, rest=command
   # Neither status proves expiry on its own. 137 is also an unrelated SIGKILL,
   # and 124 is also whatever the CLI itself chose to exit with -- timeout(1)
   # otherwise returns "the exit status of COMMAND", and an agent that hit its
-  # own internal request timeout can exit 124 early, after leaving hello.py or
-  # ran.txt behind. So both statuses have to agree with the clock. SECONDS is
+  # own internal request timeout can exit 124 early, after leaving hello.py
+  # behind. So both statuses have to agree with the clock. SECONDS is
   # truncated to whole seconds at both ends, so allow one second of slack;
   # a CLI-originated 124 returns nowhere near the cap.
   local expired=0
@@ -194,7 +194,12 @@ run_timed() {  # $1=outfile, rest=command
     echo "[$AGENT] last 40 lines before timeout:"; tail -40 "$out" 2>/dev/null || true
     [ -s "$out" ] || guide_fail "invoke timed out after ${TIMEOUT}s having printed nothing (headless-TTY hang -- the recipe likely needs a non-interactive/print flag)"
     TIMED_OUT=1
-    echo "::warning::[$AGENT] the CLI printed a transcript but did not exit within ${TIMEOUT}s; judging the turn on its assertions instead of calling it guide drift."
+    # State the fact, not the verdict. Three callers (connection, resume,
+    # attribution-ab) have no assertion that can rescue a partial turn and treat
+    # a cap as fatal on purpose, so promising that the turn will be judged on its
+    # assertions was wrong for exactly the cases most likely to hit it -- and it
+    # is what a reader sees immediately above the error that contradicts it.
+    echo "::warning::[$AGENT] the CLI printed a transcript but did not exit within ${TIMEOUT}s; whether that is fatal is the caller's call."
   fi
   return "$rc"
 }
@@ -391,6 +396,12 @@ invoke_via_connect() {  # $1=outfile, rest=extra args appended to the command
   # CONNECT_ENV_EXTRA / CONNECT_CMD_OVERRIDE let a caller (attribution-ab) flip a
   # session knob without editing the user's config; empty -> use what start.py emitted.
   local cmd="${CONNECT_CMD_OVERRIDE:-$CONNECT_CMD}"
+  # A bare V2 recipe ends in --standalone for the TUI. Once this driver adds the
+  # run subcommand, V2 requires that option after run instead of before it.
+  if [ "$AGENT" = opencode ] && [[ "$cmd" == *" --standalone" ]] && [ "${1:-}" = run ]; then
+    cmd="${cmd% --standalone}"
+    set -- run --standalone "${@:2}"
+  fi
   {
     echo "set -uo pipefail"
     echo "$CONNECT_ENV"
@@ -450,6 +461,17 @@ case "$MODE" in
     # report "connection OK" for a recipe that printed a banner and then blocked
     # on a headless prompt -- the exact failure this job exists to catch.
     rc=$?
+    # Two different failures, and pointing both at start.py costs an
+    # investigation. A cap means the launch command was fine and the turn never
+    # came back: on 2026-08-19 codex printed a correct banner (right provider,
+    # right model) and then sat on `ERROR: Reconnecting... 1/5` for the whole
+    # 600s. Nothing about the documented flow had drifted, and guide_fail said it
+    # had. It is still fatal -- see the note above on why a cap cannot be waived
+    # here -- but it is reported as what it is.
+    if [ "${TIMED_OUT:-0}" = 1 ]; then
+      echo "::error::[$AGENT] the documented launch command started but never completed a turn within ${TIMEOUT}s. The recipe in ${CONNECT_REF} is not implicated: the transcript above shows what the CLI was doing when the cap hit. A connection or model-server failure looks like this; so does a headless prompt, which prints nothing at all." >&2
+      exit 1
+    fi
     [ "$rc" -eq 0 ] || guide_fail "the documented launch command exited non-zero (rc=$rc) -- see the transcript above"
     assert_reply "$OUT"
     echo "[$AGENT] connection OK"
@@ -462,10 +484,10 @@ case "$MODE" in
     OUT1="$LOGS_DIR/${AGENT}-fileedit-turn1.txt"
     OUT2="$LOGS_DIR/${AGENT}-fileedit-turn2.txt"
     T1='Create a file named hello.py in the current directory whose entire contents are a single line: print("Hello"). Do not run it.'
-    # T2 asks for ran.txt as well as the printed output. Only the normal path
-    # is judged on the transcript; ran.txt is what a waived cap falls back on,
-    # because it is the one artifact a narrated answer cannot produce.
-    T2='Run hello.py with python, show me the exact output, and write that output to ran.txt.'
+    # One instruction only. Also asking for a ran.txt copy (#7838) made opencode
+    # narrate the tool call and create no file, where the one-part prompt had run
+    # for real in ~90s every time.
+    T2='Run hello.py with python and show me the exact output.'
 
     # The start.py recipe writers + crosscheck must see the repo; run them
     # from the repo root BEFORE cd-ing into the scratch work dir. opencode/openclaw
@@ -546,26 +568,15 @@ case "$MODE" in
 
     # Turn 2: same cwd + session continuation; assert the agent's run output
     # contains Hello. Narration drift is WARN-only, missing output is a hard fail.
+    # No cap waiver here, unlike turn 1, whose side effect the harness re-runs
+    # itself: turn 1's assertions all ran before this started, so a cap leaves
+    # only the transcript, and 'Hello' is hello.py's source, its stdout and a
+    # narration of it alike. Fatal, as for connection, resume, attribution-ab.
     invoke_turn "$OUT2" continue "$T2"
     rc=$?
-    [ "$rc" -eq 0 ] || [ "${TIMED_OUT:-0}" = 1 ] \
+    [ "$rc" -eq 0 ] \
       || { echo "[$AGENT] turn-2 transcript:"; tail -60 "$OUT2" 2>/dev/null || true; \
       guide_fail "turn 2 (run hello.py) exited non-zero (rc=$rc)"; }
-    # Turn 1's side effects were asserted before turn 2 started, so on a waived
-    # cap nothing below judges this turn but the transcript -- and no transcript
-    # can. 'Hello' is hello.py's own source, the program's stdout, AND a
-    # plausible narration of the answer by a model that never ran anything; the
-    # three are indistinguishable as text. ran.txt is the one thing only an
-    # executed tool call leaves behind, so the waiver hangs off that.
-    if [ "${TIMED_OUT:-0}" = 1 ]; then
-      [ -f ran.txt ] || {
-        echo "[$AGENT] turn-2 transcript:"; tail -60 "$OUT2" 2>/dev/null || true
-        guide_fail "turn 2 timed out without leaving ran.txt, so nothing shows it ran hello.py rather than describing it"
-      }
-      _ran="$(tr -d '[:space:]' < ran.txt)"
-      [ "$_ran" = "Hello" ] || guide_fail "turn 2 timed out and ran.txt holds '$_ran', expected 'Hello'"
-      echo "[$AGENT] turn 2 capped, but ran.txt proves hello.py actually ran"
-    fi
     if grep -q 'Hello' "$OUT2"; then
       echo "[$AGENT] turn 2 OK (run output contains 'Hello')"
     else

@@ -92,8 +92,9 @@ export const SIDEBAR_NAV_ITEM_IDS = [
   "hub",
   "projects",
   "images",
-  // Video sits directly under Images: the two media tabs read as one pair.
+  // Video and Audio sit directly under Images: the media tabs read as one group.
   "video",
+  "audio",
   "train",
   "recipes",
   "export",
@@ -114,6 +115,8 @@ export const SIDEBAR_NAV_DEFAULT_PINNED: Record<SidebarNavItemId, boolean> = {
   projects: true,
   images: true,
   video: true,
+  // Under "More" until a user pins it.
+  audio: false,
   train: true,
   recipes: false,
   export: false,
@@ -121,7 +124,9 @@ export const SIDEBAR_NAV_DEFAULT_PINNED: Record<SidebarNavItemId, boolean> = {
 };
 
 /** Every previously shipped layout, so a migration can tell an untouched install from one the
- *  user arranged themselves. v3 pinned Video under Images; v4 moved Model hub above Projects. */
+ *  user arranged themselves. v3 pinned Video under Images; v4 moved Model hub above Projects;
+ *  v5 put Video back under "More" and later added API before Audio shipped; v6 added Audio;
+ *  v7 pins Video under Images again. */
 const SHIPPED_SIDEBAR_NAV_DEFAULTS: SidebarNavItemPref[][] = [
   [
     { id: "projects", pinned: true },
@@ -140,6 +145,36 @@ const SHIPPED_SIDEBAR_NAV_DEFAULTS: SidebarNavItemPref[][] = [
     { id: "train", pinned: true },
     { id: "recipes", pinned: false },
     { id: "export", pinned: false },
+  ],
+  [
+    { id: "hub", pinned: true },
+    { id: "projects", pinned: true },
+    { id: "images", pinned: true },
+    { id: "video", pinned: true },
+    { id: "train", pinned: true },
+    { id: "recipes", pinned: false },
+    { id: "export", pinned: false },
+  ],
+  [
+    { id: "hub", pinned: true },
+    { id: "projects", pinned: true },
+    { id: "images", pinned: true },
+    { id: "video", pinned: false },
+    { id: "train", pinned: true },
+    { id: "recipes", pinned: false },
+    { id: "export", pinned: false },
+    { id: "api", pinned: false },
+  ],
+  [
+    { id: "hub", pinned: true },
+    { id: "projects", pinned: true },
+    { id: "images", pinned: true },
+    { id: "video", pinned: false },
+    { id: "audio", pinned: false },
+    { id: "train", pinned: true },
+    { id: "recipes", pinned: false },
+    { id: "export", pinned: false },
+    { id: "api", pinned: false },
   ],
 ];
 
@@ -367,6 +402,29 @@ export function sanitizeCustomization(value: unknown): AppearanceCustomization {
   };
 }
 
+/** Adopt the latest default only when the sidebar still matches one we shipped. */
+export function migrateShippedSidebarNavDefault(
+  customization: AppearanceCustomization,
+  storedVersion: number,
+  migrationVersion: number,
+): AppearanceCustomization {
+  // Once this migration version has been persisted, the same layout may be a
+  // deliberate user choice and must never be adopted again.
+  if (storedVersion >= migrationVersion) return customization;
+  const stored = JSON.stringify(customization.sidebarNav);
+  // Sanitize each layout too: the stored one has since gained any ids added
+  // after it was written, so a raw compare would never match.
+  const untouched = SHIPPED_SIDEBAR_NAV_DEFAULTS.some(
+    (layout) => JSON.stringify(sanitizeSidebarNav(layout)) === stored,
+  );
+  return untouched
+    ? {
+        ...customization,
+        sidebarNav: [...DEFAULT_CUSTOMIZATION.sidebarNav],
+      }
+    : customization;
+}
+
 export function isDefaultCustomization(c: AppearanceCustomization): boolean {
   return JSON.stringify(c) === JSON.stringify(DEFAULT_CUSTOMIZATION);
 }
@@ -441,22 +499,15 @@ export const useAppearanceCustomStore = create<AppearanceCustomState>()(
     }),
     {
       name: "unsloth_appearance_customization",
-      version: 4,
+      version: 7,
       storage: createJSONStorage(() => guardedLocalStorage),
       migrate: (persisted, version) => {
         const state = (persisted ?? {}) as Partial<AppearanceCustomState>;
-        const customization = sanitizeCustomization(state.customization);
-        // Adopt the new layout only where the stored one is still a shipped
-        // default, so a user's own arrangement survives.
-        if (version < 4) {
-          const stored = JSON.stringify(customization.sidebarNav);
-          const untouched = SHIPPED_SIDEBAR_NAV_DEFAULTS.some(
-            (layout) => JSON.stringify(layout) === stored,
-          );
-          if (untouched) {
-            customization.sidebarNav = [...DEFAULT_CUSTOMIZATION.sidebarNav];
-          }
-        }
+        const customization = migrateShippedSidebarNavDefault(
+          sanitizeCustomization(state.customization),
+          version,
+          7,
+        );
         return { customization } as AppearanceCustomState;
       },
       // Sanitize on EVERY rehydrate, not just version bumps: a same-version

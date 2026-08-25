@@ -6,6 +6,10 @@
 
 import { getApiMonitor } from "@/features/chat/api/chat-api";
 import type { ApiMonitorEntry } from "@/features/chat/types/api";
+import {
+  useFloatingPanelOrderStore,
+  useFloatingPanelZIndex,
+} from "@/lib/floating-panel-order";
 import { cn } from "@/lib/utils";
 import {
   ArrowExpand01Icon,
@@ -15,7 +19,12 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { XIcon } from "lucide-react";
-import { AnimatePresence, motion, useDragControls } from "motion/react";
+import {
+  AnimatePresence,
+  motion,
+  useDragControls,
+  useMotionValue,
+} from "motion/react";
 import {
   type PointerEvent,
   type ReactElement,
@@ -35,6 +44,7 @@ import {
 } from "./new-traffic";
 import { useApiMonitorOverlayStore } from "./overlay-store";
 import { computeStats } from "./use-api-monitor";
+import { usePanelAnchor } from "./use-panel-anchor";
 
 // Live cadence while the panel is on screen.
 const OPEN_POLL_MS = 1500;
@@ -216,23 +226,82 @@ export function ApiMonitorOverlay(): ReactElement | null {
   );
   const dragControls = useDragControls();
 
+  // Where the panel sits, and whether it is still allowed to move itself. The
+  // panel keeps clear of the resource monitor until the user drags it; after
+  // that it stays where it was put, even if that is on top of the monitor.
+  const [panelElement, setPanelElement] = useState<HTMLDivElement | null>(null);
+  const [placedByUser, setPlacedByUser] = useState(false);
+  // Bumped when the panel has moved without its anchor changing: the entry
+  // animation is a transform, and the box the stack keeps clear of has to be
+  // the one on screen.
+  const [settledAt, setSettledAt] = useState(0);
+  const { anchor, covered, place } = usePanelAnchor(
+    panelElement,
+    placedByUser,
+    settledAt,
+  );
+  // The drag offset, owned here rather than left to motion, so it can be folded
+  // back into the anchor on release. Left as a transform it would be applied on
+  // top of every later clamp, and the published box would stay at the corner
+  // the panel was dragged away from.
+  const dragX = useMotionValue(0);
+  const dragY = useMotionValue(0);
+
+  const zIndex = useFloatingPanelZIndex("api-monitor", covered);
+  const raisePanel = useFloatingPanelOrderStore((state) => state.raise);
+
   function startDrag(event: PointerEvent<HTMLDivElement>): void {
     event.preventDefault();
+    setPlacedByUser(true);
     dragControls.start(event);
+  }
+
+  // Written to the node before the offset is zeroed, in that order, so handing
+  // the drag back to left/top cannot show a frame at the corner it started from.
+  function finishDrag(): void {
+    if (!anchor) {
+      // Dragged before the first measurement landed: nothing to fold into, so
+      // leave motion holding the offset rather than snapping the panel back.
+      return;
+    }
+    const landed = place({
+      left: anchor.left + dragX.get(),
+      top: anchor.top + dragY.get(),
+    });
+    panelElement?.style.setProperty("left", `${landed.left}px`);
+    panelElement?.style.setProperty("top", `${landed.top}px`);
+    dragX.set(0);
+    dragY.set(0);
+    setSettledAt(Date.now());
   }
 
   const visible = isOpen && !onFullPage;
   const serverStatus = data?.status ?? "idle";
+
+  // A panel that has just opened is the one the user is being shown, so it
+  // comes to the front. Touching either panel afterwards brings that one
+  // forward instead, which is the only way out of a resource monitor resized
+  // over the whole viewport.
+  useEffect(() => {
+    if (visible) {
+      raisePanel("api-monitor");
+    }
+  }, [visible, raisePanel]);
 
   return (
     <AnimatePresence>
       {visible && (
         <div
           ref={setConstraintsElement}
-          className="pointer-events-none fixed inset-0 z-50"
+          className="pointer-events-none fixed inset-0"
+          style={{ zIndex }}
         >
           <motion.div
+            ref={setPanelElement}
+            onPointerDownCapture={() => raisePanel("api-monitor")}
             drag={true}
+            onDragEnd={finishDrag}
+            onAnimationComplete={() => setSettledAt(Date.now())}
             dragControls={dragControls}
             dragListener={false}
             dragConstraints={constraintsRef}
@@ -242,7 +311,17 @@ export function ApiMonitorOverlay(): ReactElement | null {
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.94 }}
             /* Panel language from the sidebar menu: soft surface, 20px corner, heading font. */
-            className="menu-soft-surface pointer-events-auto fixed bottom-4 right-4 flex w-[400px] max-w-[calc(100vw-2rem)] cursor-default select-none resize flex-col overflow-hidden rounded-[20px] border-0 p-2.5 font-heading ring-0"
+            className={cn(
+              "menu-soft-surface pointer-events-auto fixed flex w-[400px] max-w-[calc(100vw-2rem)] cursor-default select-none resize flex-col overflow-hidden rounded-[20px] border-0 p-2.5 font-heading ring-0",
+              // The CSS corner until it has been measured, so the first paint
+              // is the corner it has always opened in rather than the top left.
+              anchor ? "top-0 left-0" : "bottom-4 right-4",
+            )}
+            style={
+              anchor
+                ? { left: anchor.left, top: anchor.top, x: dragX, y: dragY }
+                : { x: dragX, y: dragY }
+            }
           >
             <div className="flex items-center justify-between gap-2 px-1.5 pb-2 pt-0.5">
               <div className="flex min-w-0 flex-1 items-center gap-2">

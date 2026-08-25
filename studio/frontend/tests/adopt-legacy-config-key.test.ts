@@ -38,7 +38,10 @@ function config(
     speculativeType: null,
     specDraftNMax: null,
     nParallel: null,
+    nBatch: null,
+    nUbatch: null,
     tensorParallel: false,
+    disableVision: false,
     chatTemplateOverride,
   };
 }

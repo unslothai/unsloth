@@ -25,14 +25,28 @@ on:
   pull_request:
     paths:
       - '.github/workflows/desktop-app-clean-machine-ci.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
+
+      - '.github/scripts/resolve-desktop-release.py'
       - '.github/scripts/clean-machine-env.sh'
       - '.github/scripts/clean-machine-assert.sh'
+      - '.github/workflows/release-desktop.yml'
+      - 'studio/src-tauri/linux/**'
+      - 'studio/src-tauri/src/**'
+      - 'studio/src-tauri/tauri.conf.json'
+      - 'tests/security/test_release_desktop_appimage.py'
+      - 'tests/studio/appimage_test_support.py'
+      - 'tests/studio/appimage_portability_smoke.py'
+      - 'tests/studio/appimage_media_pipeline_probe.py'
+      - 'tests/studio/appimage_model_download_webdriver.py'
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Release tag in the desktop release repo'
+        description: 'Release tag in the desktop release repo (empty resolves the newest)'
         type: string
-        default: 'desktop-v0.1.50-beta'
+        # Empty falls through to the newest SemVer v... release that actually carries
+        # the platform bundle under test. An explicit tag remains an immutable fixture.
+        default: ''
       release_repo:
         description: 'owner/name hosting the desktop release'
         type: string
@@ -47,11 +61,15 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Latest-only on a PR branch. On main this does less than it reads like: it stops
+  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
+  # the moment a newer one is queued, so a merge burst still leaves only the tip.
+  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
-  # Drafts are listed only to a token with push access, and every desktop-v* release here
-  # is a draft, so `contents: read` cannot see the bundle under test at all.
+  # Drafts are listed only to a token with push access. Clean-machine CI intentionally
+  # includes review drafts, so read-only contents permission cannot resolve every candidate.
   contents: write
 
 env:
@@ -60,10 +78,9 @@ env:
   # the schedule kept re-testing the same fixture).
   REL_REPO: ${{ inputs.release_repo || github.repository }}
   # Empty unless dispatched: a pinned tag is an immutable fixture, so a nightly against it
-  # could never catch a newly published broken bundle. Each download step then resolves
-  # the newest desktop-v* release, drafts included -- they are all cut as drafts, so
-  # --exclude-drafts matched nothing and every leg died resolving. releases/tags/<tag>
-  # 404s for a draft, but gh resolves drafts over GraphQL, so the download still works.
+  # could never catch a newly published broken bundle. Each download step resolves the
+  # newest SemVer v... release carrying its required asset, drafts included. gh release
+  # list/download use the draft-aware GraphQL path with this workflow's write token.
   REL_TAG: ${{ inputs.release_tag || '' }}
   UNSLOTH_STUDIO_HOME: ${{ github.workspace }}/.studio-home
   UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK: '1'
@@ -72,48 +89,67 @@ jobs:
   # ── macOS: .dmg, Apple Silicon ────────────────────────────────────────────
   macos:
     # A fork PR's token is read-only whatever this workflow declares, so it cannot list
-    # the drafts every desktop-v* bundle is published as. Skip rather than fail: a
+    # review drafts. Skip rather than fail: a
     # property of the trigger, not a broken release.
     if: github.event.pull_request.head.repo.fork != true
     name: desktop macOS ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     continue-on-error: ${{ matrix.experimental }}
+
+    env:
+      # Force the bundled installer through uv's first managed-Python download rather
+      # than reusing runner state outside the ordinary cache.
+      UV_CACHE_DIR: ${{ github.workspace }}/.clean-machine/uv-cache
+      UV_PYTHON_INSTALL_DIR: ${{ github.workspace }}/.clean-machine/uv-python
     strategy:
       fail-fast: false
       matrix:
         include:
-          - {os: macos-14, experimental: false}
           - {os: macos-15, experimental: false}
           - {os: macos-26, experimental: true}
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
+
+
+      - name: Prepare fresh uv state
+        run: |
+          rm -rf "$UV_CACHE_DIR" "$UV_PYTHON_INSTALL_DIR"
+          mkdir -p "$UV_CACHE_DIR" "$UV_PYTHON_INSTALL_DIR"
 
       - name: Download the shipped .dmg
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p dl logs
-          # Desktop releases are prereleases (never repo-wide "latest") and drafts, so the
-          # newest desktop-v* tag has to be resolved explicitly. See REL_TAG above.
+          # Resolve by both SemVer tag and required asset so historical non-app v... releases
+          # cannot be selected accidentally. Drafts are included for pre-publish review.
           if [ -z "$REL_TAG" ]; then
-            REL_TAG="$(gh release list --repo "$REL_REPO" --limit 100 \
-              --json tagName,createdAt \
-              --jq '[.[] | select(.tagName | startswith("desktop-v"))]
-                    | sort_by(.createdAt) | reverse | .[0].tagName // empty')"
-            # Loud on purpose: there is no bundle to test, so passing would prove nothing.
-            [ -n "$REL_TAG" ] || {
-              echo "::error::no desktop-v* release visible in $REL_REPO -- either none has been cut, or this token cannot list drafts (needs contents: write)"
+            releases_json="$RUNNER_TEMP/desktop-releases.json"
+            if ! gh release list --repo "$REL_REPO" --limit 100 \
+              --json tagName,createdAt,isDraft > "$releases_json"; then
+              echo "::error::could not list desktop releases in $REL_REPO"
               exit 1
-            }
+            fi
+            if ! REL_TAG="$(python3 .github/scripts/resolve-desktop-release.py \
+              --repo "$REL_REPO" --asset-suffix .dmg < "$releases_json")"; then
+              echo "::error::no SemVer v... release with a .dmg is visible in $REL_REPO"
+              exit 1
+            fi
             echo "resolved release tag: $REL_TAG"
             echo "REL_TAG=$REL_TAG" >> "$GITHUB_ENV"
           fi
+          # Match on the extension, not on a filename fragment. The old '*aarch64.dmg'
+          # was the Tauri default bundle name, and the release pipeline moved to its own
+          # scheme at desktop-v0.1.512-beta (Unsloth-Desktop-<ver>-MacOS.dmg), which
+          # silently turned every run red at this line with "no assets match the file
+          # pattern". A release ships exactly one .dmg, and the arm64 assertion below is
+          # what actually checks the architecture, so the fragment bought nothing.
           gh release download "$REL_TAG" --repo "$REL_REPO" \
-            --pattern '*aarch64.dmg' --dir dl
+            --pattern '*.dmg' --dir dl
           ls -la dl
 
       - name: Strip the developer toolchain
@@ -124,7 +160,10 @@ jobs:
         run: |
           bash .github/scripts/clean-machine-env.sh mask --remove
           set -a; . ./clean-machine.env; set +a
-          bash .github/scripts/clean-machine-assert.sh absent
+          [ -n "$UNSLOTH_TOOL_TRACE" ] || { echo "::error::mask mode set no UNSLOTH_TOOL_TRACE"; exit 1; }
+          bash .github/scripts/clean-machine-install-name-tool.sh \
+            verify-sentinel "$UNSLOTH_TOOL_TRACE" desktop
+          bash .github/scripts/clean-machine-assert.sh absent nodylibtool
 
       - name: Mount and install
         run: |
@@ -179,35 +218,35 @@ jobs:
           # for the button, so launching alone sits for 90s without running the bundled
           # installer. Invoke it as src-tauri/src/install.rs does: --tauri, stdin closed,
           # no tty. --tauri rejects a custom studio home (install.sh:102-114).
-          # KNOWN OUTCOME PIN, retire when the desktop release catches up to #7547: REL_TAG
-          # predates it, so the bundle's own install.sh still hard-exits on the Xcode CLT
-          # gate #7547 turned into a warning. Only a new release moves that, not this PR.
-          # _check_macos_deps is the function #7547 added, so finding it retires the pin.
           SH="$APP/Contents/Resources/install.sh"
-          if grep -q '_check_macos_deps' "$SH"; then
-            echo "::error::the bundled install.sh now carries #7547; delete this pin block and let the venv + torch assertions below run unconditionally"
-            exit 1
-          fi
           rc=0
           env -u UNSLOTH_STUDIO_HOME \
             bash "$SH" --tauri \
             < /dev/null 2>&1 | tee logs/bundled-install.log || rc=$?
           echo "bundled installer exit code: $rc"
-          # Exit code AND the exact gate line, so any other non-zero exit still fails.
-          if [ "$rc" -eq 1 ] && grep -qE '^==> Xcode Command Line Tools are required\.[[:space:]]*$' logs/bundled-install.log; then
-            echo "::notice::known pre-#7547 outcome: the shipped bundle's install.sh stopped on the Xcode CLT gate and exited 1. Not a regression here; the next desktop release retires this pin."
-            exit 0
-          fi
           [ "$rc" -eq 0 ] || {
-            echo "::error::bundled installer exited $rc, which is neither success nor the pinned pre-#7547 outcome (exit 1 plus '==> Xcode Command Line Tools are required.')"
+            echo "::error::bundled installer exited $rc"
             exit 1
           }
           PY="$HOME/.unsloth/studio/unsloth_studio/bin/python"
           [ -x "$PY" ] || { echo "::error::bundled installer left no venv at $PY"; exit 1; }
           "$PY" -V
-          # install.rs passes only --tauri, so torch is part of first launch: without this
-          # the venv check passes a bundle whose only failure is the torch install.
-          "$PY" -c "import torch; print('torch', torch.__version__)"
+          # First launch installs the native runtime stack. All representative wheels
+          # must load without uv's developer-only libpython ID patch.
+          "$PY" -c "import numpy, safetensors, tokenizers, torch; print('native wheels loaded', numpy.__version__, torch.__version__)"
+
+          if [ -f ./clean-machine.env ]; then
+            # A successful install alone is insufficient: uv treats install_name_tool
+            # failure as a warning, so a broken guard would still exit zero after opening
+            # Apple's GUI prompt. The sentinel proves the bundled guard won instead.
+            bash .github/scripts/clean-machine-assert.sh absent nodylibtool
+          fi
+          leftovers=$(find "${TMPDIR:-/tmp}" -maxdepth 1 -type d \
+            -name 'unsloth-uv-install-name-tool.*' -print 2>/dev/null || true)
+          [ -z "$leftovers" ] || {
+            echo "::error::bundled installer left temporary uv guard directories: $leftovers"
+            exit 1
+          }
 
       - name: Launch and prove it stays up
         run: |
@@ -225,7 +264,13 @@ jobs:
             echo "app still running after 90s (pid $APP_PID)"
             kill -TERM "$APP_PID" 2>/dev/null || true
           else
-            wait "$APP_PID" 2>/dev/null; rc=$?
+            # `|| rc=$?`, not a bare `wait`: the step runs under `bash -e`, so a
+            # non-zero `wait` aborted the step right here and the two diagnostic lines
+            # below never printed. The failure showed up as a bare "Process completed
+            # with exit code 1" with no annotation and no app output -- which is exactly
+            # the information this branch exists to produce.
+            rc=0
+            wait "$APP_PID" 2>/dev/null || rc=$?
             echo "::error::desktop app exited early with rc=$rc"
             tail -50 logs/app-stdout.log || true
             exit 1
@@ -240,17 +285,39 @@ jobs:
             cp "$f" logs/ 2>/dev/null || true
             tail -60 "$f"
             # The two fields the bug report turned on.
-            grep -E "disposition=|can_auto_repair=|Xcode Command Line|ModuleNotFoundError" "$f" || true
+            # "Managed preflight" is not decoration. The disposition is the symptom;
+            # the reason is the diagnosis, and it is logged on a separate line that
+            # `tail -60` above scrolls away the moment the backend starts chattering.
+            # On 2026-08-19 this went red on all four platforms and printed nothing
+            # but "saw: ManagedStale"; the reason that actually explained it,
+            # studio_install_requirements_changed, had to be recovered by hand from
+            # the uploaded artifact.
+            grep -E "disposition=|can_auto_repair=|Managed preflight|Xcode Command Line|ModuleNotFoundError" "$f" || true
             found=1
             if grep -qE "desktop_preflight completed disposition=" "$f"; then disposition=1; fi
+            dispositions="${dispositions:-} $(grep -oE 'desktop_preflight completed disposition=[A-Za-z]+' "$f" | sed 's/.*disposition=//' | tr '\n' ' ')"
           done
-          # Everything above is `|| true`, so without these two lines the step could not
+          # Everything above is `|| true`, so without these lines the step could not
           # fail while the header sells the disposition as an acceptance criterion.
           # setup_logging (src-tauri/src/main.rs:50-67) opens tauri.log unconditionally at
           # process start, so no log means the binary never got that far, and a process
           # that hangs before preflight must not pass.
           [ "${found:-0}" = "1" ] || { echo "::error::the app wrote no tauri.log; it never reached setup_logging"; exit 1; }
           [ "${disposition:-0}" = "1" ] || { echo "::error::tauri.log records no desktop_preflight disposition; the app never completed preflight"; exit 1; }
+          # A recorded disposition is not enough. A post-#7547 bundle can install a
+          # working venv and still have preflight regress to NotInstalled, and the app
+          # then sits happily on the Install screen: alive, log written, disposition
+          # present, nothing built recognised. Windows has always required a READY
+          # disposition; the reason given for keeping that Windows-only was the install
+          # root, and the source says otherwise -- preflight/managed.rs env_removes
+          # UNSLOTH_STUDIO_HOME and STUDIO_HOME on every platform, not under a
+          # cfg(windows), so all three read the same legacy root.
+          echo "dispositions recorded: ${dispositions:-<none>}"
+          case "${dispositions:-}" in
+            *ManagedReady*|*OwnedReady*|*AttachedReady*) ;;
+            *) echo "::error::preflight never reported a ready disposition (saw: ${dispositions:-<none>}); the app did not recognise the environment the bundled installer just built"
+               exit 1 ;;
+          esac
 
       - name: Restore the runner
         if: always()
@@ -269,7 +336,9 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: desktop-macos-${{ matrix.os }}
-          path: logs/
+          path: |
+            logs/
+            .clean-machine/tool-invocations.log
           retention-days: 7
           if-no-files-found: warn
 
@@ -289,7 +358,7 @@ jobs:
           - {kind: appimage, experimental: false}
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
@@ -298,20 +367,28 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p dl logs
-          # See the macOS job. Loud on purpose: no bundle means nothing to prove.
+          asset_suffix='.deb'
+          pat='*.deb'
+          if [ "${{ matrix.kind }}" = "appimage" ]; then
+            asset_suffix='.AppImage'
+            pat='*.AppImage'
+          fi
+          # See the macOS job. Loud on purpose: no matching bundle means nothing to prove.
           if [ -z "$REL_TAG" ]; then
-            REL_TAG="$(gh release list --repo "$REL_REPO" --limit 100 \
-              --json tagName,createdAt \
-              --jq '[.[] | select(.tagName | startswith("desktop-v"))]
-                    | sort_by(.createdAt) | reverse | .[0].tagName // empty')"
-            [ -n "$REL_TAG" ] || {
-              echo "::error::no desktop-v* release visible in $REL_REPO -- either none has been cut, or this token cannot list drafts (needs contents: write)"
+            releases_json="$RUNNER_TEMP/desktop-releases.json"
+            if ! gh release list --repo "$REL_REPO" --limit 100 \
+              --json tagName,createdAt,isDraft > "$releases_json"; then
+              echo "::error::could not list desktop releases in $REL_REPO"
               exit 1
-            }
+            fi
+            if ! REL_TAG="$(python3 .github/scripts/resolve-desktop-release.py \
+              --repo "$REL_REPO" --asset-suffix "$asset_suffix" < "$releases_json")"; then
+              echo "::error::no SemVer v... release with a $asset_suffix asset is visible in $REL_REPO"
+              exit 1
+            fi
             echo "resolved release tag: $REL_TAG"
             echo "REL_TAG=$REL_TAG" >> "$GITHUB_ENV"
           fi
-          pat='*.deb'; [ "${{ matrix.kind }}" = "appimage" ] && pat='*.AppImage'
           gh release download "$REL_TAG" --repo "$REL_REPO" --pattern "$pat" --dir dl
           ls -la dl
 
@@ -329,12 +406,18 @@ jobs:
           bash .github/scripts/clean-machine-assert.sh absent
 
       - name: Install with NO dev tooling, only runtime libs
+        # The apt preamble below is bounded by the shared helper; the `.deb` install
+        # after it deliberately is not, because whether that package resolves its own
+        # dependencies is the question this job asks. A step budget bounds it anyway,
+        # so a stall there names this step instead of cancelling the job silently.
+        timeout-minutes: 25
         run: |
           # Deliberately no build-essential/cmake/git: a user installing a .deb has none.
           # Xvfb and WebKit are runtime requirements and apt pulls the .deb's declared
           # deps, so a wrong dependency list fails here.
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends xvfb
+          RETRY_ATTEMPTS=2 RETRY_ATTEMPT_TIMEOUT=360 \
+            bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get install -y -qq --no-install-recommends xvfb || { apt-get update -qq && apt-get install -y -qq --no-install-recommends xvfb; }'
           if [ "${{ matrix.kind }}" = "deb" ]; then
             sudo apt-get install -y ./dl/*.deb || {
               echo "::error::the .deb does not declare its runtime dependencies correctly"
@@ -342,8 +425,9 @@ jobs:
             }
             BIN="$(dpkg -L "$(dpkg-deb -f dl/*.deb Package)" | grep -E '/usr/bin/' | head -1)"
           else
-            sudo apt-get install -y -qq --no-install-recommends libfuse2 \
-              libwebkit2gtk-4.1-0 libgtk-3-0 libayatana-appindicator3-1 || true
+            sudo apt-get install -y -qq --no-install-recommends \
+              libfuse2 libgles2 libgl1 libegl1 libgbm1 libwayland-client0 \
+              libharfbuzz0b libnghttp2-14 fontconfig libfribidi0
             chmod +x dl/*.AppImage
             BIN="$(ls dl/*.AppImage | head -1)"
           fi
@@ -378,10 +462,13 @@ jobs:
           # The launch step below only proves the process stayed alive: on a fresh home
           # preflight reports not_installed and the app waits for a click on the install
           # screen (use-tauri-backend.ts:252-254, startup-screen.tsx:388-389), so a bundle
-          # with a missing or broken install.sh passed both Linux rows. tauri.conf.json:56-59
+          # with a missing or broken install.sh passed both Linux rows. tauri.linux.conf.json
           # ships it as a bundle resource, so find it there and run it as install.rs does.
           if [ "${{ matrix.kind }}" = "deb" ]; then
-            SH="$(dpkg -L "$(dpkg-deb -f dl/*.deb Package)" | grep -E '/install\.sh$' | head -1)"
+            # `|| true`: grep exits 1 when it selects nothing, and under the `set -o pipefail`
+            # above plus this step's `bash -e` that aborts the assignment outright, swallowing
+            # the explicit annotation below in favour of a bare exit 1.
+            SH="$(dpkg -L "$(dpkg-deb -f dl/*.deb Package)" | grep -E '/install\.sh$' | head -1 || true)"
           else
             # ls returns a bare filename here, and a command word with no slash resolves
             # through PATH, not the cwd, so this needs the ./ prefix.
@@ -390,29 +477,14 @@ jobs:
           fi
           [ -n "$SH" ] && [ -f "$SH" ] || { echo "::error::the bundle ships no install.sh resource"; exit 1; }
           echo "bundled installer: $SH"
-          # KNOWN OUTCOME PIN, retire when the desktop release catches up to #7547: the
-          # bundle carries its own install.sh and REL_TAG predates it, so on a stripped
-          # runner it still exits 2 at the NEED_SUDO handshake for the optional set rather
-          # than falling through to prebuilt llama.cpp. Only a new release moves that.
-          # _SMART_APT_OPTIONAL is the guard #7547 added, so finding it retires the pin.
-          if grep -q '_SMART_APT_OPTIONAL' "$SH"; then
-            echo "::error::the bundled install.sh now carries #7547; delete this pin block and let the venv + torch assertions below run unconditionally"
-            exit 1
-          fi
           # --tauri rejects a custom studio home (install.sh:102-114), so drop the
           # workspace-scoped override; close stdin as install.rs does.
           rc=0
           env -u UNSLOTH_STUDIO_HOME \
             bash "$SH" --tauri < /dev/null 2>&1 | tee logs/bundled-install.log || rc=$?
           echo "bundled installer exit code: $rc"
-          # Exit code AND the exact optional set, so a different NEED_SUDO list or any other
-          # non-zero exit is still a failure.
-          if [ "$rc" -eq 2 ] && grep -qE '^\[TAURI:NEED_SUDO\] cmake git build-essential libcurl4-openssl-dev[[:space:]]*$' logs/bundled-install.log; then
-            echo "::notice::known pre-#7547 outcome: the shipped bundle's install.sh asked to elevate for the optional set and exited 2. Not a regression here; the next desktop release retires this pin."
-            exit 0
-          fi
           [ "$rc" -eq 0 ] || {
-            echo "::error::bundled installer exited $rc, which is neither success nor the pinned pre-#7547 outcome (exit 2 plus exactly '[TAURI:NEED_SUDO] cmake git build-essential libcurl4-openssl-dev')"
+            echo "::error::bundled installer exited $rc"
             exit 1
           }
           PY="$HOME/.unsloth/studio/unsloth_studio/bin/python"
@@ -422,6 +494,16 @@ jobs:
           "$PY" -c "import torch; print('torch', torch.__version__)"
 
       - name: Launch under Xvfb and prove it stays up
+        env:
+          # Without this a fatal X11 error is completely invisible. GTK3 registers
+          # gdk_x_io_error() as its XSetIOErrorHandler, and that handler reports with
+          # g_debug() and then calls _exit(1) (gtk-3-24 gdk/x11/gdkmain-x11.c; the comment
+          # there says g_warning() was avoided because it could be redirected). g_debug()
+          # output is dropped unless G_MESSAGES_DEBUG names the domain, so the app exits 1
+          # having printed nothing at all and the step reports a bare rc=1 with no cause.
+          # That is exactly what #8062 looked like until this variable was set, at which
+          # point the next line read "Fatal IO error 11 ... on X server".
+          G_MESSAGES_DEBUG: all
         run: |
           set -a; [ -f ./clean-machine.env ] && . ./clean-machine.env; set +a
           # The one platform where a hosted runner can give the app a real display, so this
@@ -437,7 +519,13 @@ jobs:
             echo "app still running after 90s"
             kill -TERM "$APP_PID" 2>/dev/null || true
           else
-            wait "$APP_PID" 2>/dev/null; rc=$?
+            # `|| rc=$?`, not a bare `wait`: the step runs under `bash -e`, so a
+            # non-zero `wait` aborted the step right here and the two diagnostic lines
+            # below never printed. The failure showed up as a bare "Process completed
+            # with exit code 1" with no annotation and no app output -- which is exactly
+            # the information this branch exists to produce.
+            rc=0
+            wait "$APP_PID" 2>/dev/null || rc=$?
             echo "::error::desktop app exited early with rc=$rc"
             tail -60 logs/app-stdout.log || true
             exit 1
@@ -449,14 +537,36 @@ jobs:
           for f in "$UNSLOTH_STUDIO_HOME/tauri.log" "$HOME/.unsloth/studio/tauri.log"; do
             [ -f "$f" ] || continue
             echo "=== $f ==="; cp "$f" logs/ 2>/dev/null || true; tail -60 "$f"
-            grep -E "disposition=|can_auto_repair=|ModuleNotFoundError" "$f" || true
+            # "Managed preflight" is not decoration. The disposition is the symptom;
+            # the reason is the diagnosis, and it is logged on a separate line that
+            # `tail -60` above scrolls away the moment the backend starts chattering.
+            # On 2026-08-19 this went red on all four platforms and printed nothing
+            # but "saw: ManagedStale"; the reason that actually explained it,
+            # studio_install_requirements_changed, had to be recovered by hand from
+            # the uploaded artifact.
+            grep -E "disposition=|can_auto_repair=|Managed preflight|ModuleNotFoundError" "$f" || true
             found=1
             if grep -qE "desktop_preflight completed disposition=" "$f"; then disposition=1; fi
+            dispositions="${dispositions:-} $(grep -oE 'desktop_preflight completed disposition=[A-Za-z]+' "$f" | sed 's/.*disposition=//' | tr '\n' ' ')"
           done
           # Same criterion the macOS rows enforce, same reason: everything above is
           # `|| true` and the loop skips a missing log, so the step could not fail.
           [ "${found:-0}" = "1" ] || { echo "::error::the app wrote no tauri.log; it never reached setup_logging"; exit 1; }
           [ "${disposition:-0}" = "1" ] || { echo "::error::tauri.log records no desktop_preflight disposition; the app never completed preflight"; exit 1; }
+          # A recorded disposition is not enough. A post-#7547 bundle can install a
+          # working venv and still have preflight regress to NotInstalled, and the app
+          # then sits happily on the Install screen: alive, log written, disposition
+          # present, nothing built recognised. Windows has always required a READY
+          # disposition; the reason given for keeping that Windows-only was the install
+          # root, and the source says otherwise -- preflight/managed.rs env_removes
+          # UNSLOTH_STUDIO_HOME and STUDIO_HOME on every platform, not under a
+          # cfg(windows), so all three read the same legacy root.
+          echo "dispositions recorded: ${dispositions:-<none>}"
+          case "${dispositions:-}" in
+            *ManagedReady*|*OwnedReady*|*AttachedReady*) ;;
+            *) echo "::error::preflight never reported a ready disposition (saw: ${dispositions:-<none>}); the app did not recognise the environment the bundled installer just built"
+               exit 1 ;;
+          esac
 
       - name: Restore the runner
         if: always()
@@ -477,6 +587,346 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
+  # Build the PR AppImage once for every artifact test below.
+  appimage-pr-build:
+    if: github.event_name == 'pull_request'
+    name: Build PR AppImage
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install AppImage build dependencies
+        timeout-minutes: 15
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '360'
+        run: |
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get install -y -qq libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf xdg-utils fonts-noto-color-emoji gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav || { apt-get update -qq && apt-get install -y -qq libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf xdg-utils fonts-noto-color-emoji gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav; }'
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: 24
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
+
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          save-if: false
+          workspaces: 'studio/src-tauri -> target'
+
+      - name: Audit lockfiles before package scripts run
+        run: python3 scripts/lockfile_supply_chain_audit.py
+
+      - name: Install pinned Tauri CLI
+        run: npm install --save-dev --prefix studio @tauri-apps/cli@2.10.1 --no-fund --no-audit
+
+      - name: Install frontend dependencies
+        working-directory: studio/frontend
+        run: npm ci --strict-allow-scripts --no-fund --no-audit
+
+      - name: Pin complete AppImage toolchain
+        run: |
+          studio/src-tauri/linux/prepare-complete-appimage-tools.sh \
+            "$RUNNER_TEMP/tauri-tools-cache/tauri"
+
+      - name: Build unsigned AppImage from the PR
+        env:
+          XDG_CACHE_HOME: ${{ runner.temp }}/tauri-tools-cache
+        run: |
+          set -euo pipefail
+          npx --prefix studio tauri build -v --bundles appimage \
+            --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          mapfile -t appimages < <(find studio/src-tauri/target/release/bundle/appimage \
+            -maxdepth 1 -type f -name '*.AppImage' -print)
+          if [[ ${#appimages[@]} -ne 1 ]]; then
+            echo "::error::expected one PR AppImage, got ${#appimages[@]}"
+            printf '%s\n' "${appimages[@]}"
+            exit 1
+          fi
+          studio/src-tauri/linux/verify-complete-appimage.sh "${appimages[0]}"
+          mkdir -p "$RUNNER_TEMP/appimage-pr-build"
+          cp "${appimages[0]}" "$RUNNER_TEMP/appimage-pr-build/Unsloth.AppImage"
+
+      - name: Upload branch-built AppImage
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: appimage-pr-build
+          path: ${{ runner.temp }}/appimage-pr-build/Unsloth.AppImage
+          retention-days: 1
+          if-no-files-found: error
+
+
+  # These images deliberately omit host GTK, WebKitGTK, and AppIndicator.
+  appimage-portability:
+    needs: appimage-pr-build
+    if: >-
+      always() &&
+      (github.event_name != 'pull_request' || needs.appimage-pr-build.result == 'success')
+    name: AppImage ${{ matrix.label }}
+    runs-on: ubuntu-22.04
+    container: ${{ matrix.image }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {label: ubuntu-22.04, image: 'ubuntu:22.04', display_backend: x11, install_gles: true}
+          - {label: ubuntu-22.04-no-gles, image: 'ubuntu:22.04', display_backend: x11, install_gles: false}
+          - {label: ubuntu-24.04-wayland, image: 'ubuntu:24.04', display_backend: wayland, install_gles: true}
+          - {label: debian-12, image: 'debian:12', display_backend: x11, install_gles: true}
+          - {label: fedora-44, image: 'fedora:44', display_backend: x11, install_gles: true}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install only generic display and graphics prerequisites
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          if command -v apt-get >/dev/null 2>&1; then
+            RETRY_ATTEMPTS=2 RETRY_ATTEMPT_TIMEOUT=360 \
+              bash .github/scripts/retry-with-apt-lock.sh bash -c '
+                set -euo pipefail
+                apt-get update -qq
+                alsa_package=libasound2
+                if apt-cache policy "$alsa_package" | grep -q "Candidate: (none)"; then
+                  alsa_package=libasound2t64
+                fi
+                DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+                  ca-certificates python3 xvfb xauth binutils libgl1 libegl1 libgbm1 \
+                  libwayland-client0 libwayland-cursor0 libwayland-egl1 libwayland-server0 \
+                  libx11-6 libx11-xcb1 libxcb1 libxcb-randr0 libxcb-render0 libxcb-shm0 \
+                  libxext6 libxrandr2 libxi6 libxcursor1 libxfixes3 libxrender1 \
+                  libxcomposite1 libxdamage1 libxinerama1 libxau6 libxdmcp6 libxshmfence1 \
+                  "$alsa_package" libpulse0 libharfbuzz0b libnghttp2-14 fontconfig libfribidi0
+                if [[ "${{ matrix.install_gles }}" == "true" ]]; then
+                  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libgles2
+                fi
+                if [[ "${{ matrix.display_backend }}" == "wayland" ]]; then
+                  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends weston
+                fi
+              '
+            forbidden="$(dpkg-query -W -f='${binary:Package}\n' 2>/dev/null | \
+              grep -Ei 'webkit|javascriptcore|appindicator|libgtk-3' || true)"
+          else
+            dnf install -y -q ca-certificates python3 binutils xorg-x11-server-Xvfb xorg-x11-xauth \
+              mesa-libEGL mesa-libgbm mesa-dri-drivers mesa-libGL \
+              libwayland-client libwayland-cursor libwayland-egl libwayland-server \
+              libX11 libX11-xcb libxcb libXext libXrandr libXi libXcursor libXfixes \
+              libXrender libXcomposite libXdamage libXinerama libXau libXdmcp libxshmfence \
+              alsa-lib pulseaudio-libs libnghttp2 harfbuzz fontconfig fribidi procps-ng findutils
+            if [[ "${{ matrix.install_gles }}" == "true" ]]; then
+              dnf install -y -q mesa-libGLES
+            fi
+            forbidden="$(rpm -qa | grep -Ei 'webkit|javascriptcore|appindicator|gtk3' || true)"
+          fi
+          if [[ "${{ matrix.install_gles }}" == "false" ]] && \
+             ldconfig -p | grep -q 'libGLESv2\.so\.2'; then
+            echo "::error::no-GLES portability lane unexpectedly provides libGLESv2.so.2"
+            exit 1
+          fi
+
+          if [ -n "$forbidden" ]; then
+            echo "::error::portability image unexpectedly contains a host desktop runtime"
+            printf '%s\n' "$forbidden"
+            exit 1
+          fi
+
+      - name: Download the AppImage built from this PR
+        if: github.event_name == 'pull_request'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: appimage-pr-build
+          path: dl
+
+
+      - name: Download the shipped AppImage
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REL_REPO: ${{ inputs.release_repo || github.repository }}
+          REL_TAG: ${{ inputs.release_tag || '' }}
+        run: |
+          set -euo pipefail
+          mkdir -p dl logs/appimage-portability
+          python3 - <<'PY'
+          import json
+          import os
+          import pathlib
+          import re
+          import urllib.request
+
+          repo = os.environ["REL_REPO"]
+          requested = os.environ.get("REL_TAG", "").strip()
+          headers = {
+              "Accept": "application/vnd.github+json",
+              "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
+
+          def get(url, *, accept=None):
+              request_headers = dict(headers)
+              if accept:
+                  request_headers["Accept"] = accept
+              with urllib.request.urlopen(
+                  urllib.request.Request(url, headers=request_headers), timeout=60
+              ) as response:
+                  return response.read()
+
+          releases = json.loads(get(f"https://api.github.com/repos/{repo}/releases?per_page=100"))
+          candidates = []
+          for release in releases:
+              tag = release.get("tag_name", "")
+              if requested and tag != requested:
+                  continue
+              match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?", tag)
+              asset = next(
+                  (item for item in release.get("assets", []) if item.get("name", "").endswith(".AppImage")),
+                  None,
+              )
+              if match and asset:
+                  candidates.append((tuple(map(int, match.groups())), release, asset))
+          if not candidates:
+              raise SystemExit(f"No AppImage release found in {repo} for {requested or 'latest SemVer'}")
+          _, release, asset = max(candidates, key=lambda item: item[0])
+          output = pathlib.Path("dl/Unsloth.AppImage")
+          output.write_bytes(get(asset["url"], accept="application/octet-stream"))
+          output.chmod(0o755)
+          print(f"Downloaded {release['tag_name']} {asset['name']} ({output.stat().st_size} bytes)")
+          PY
+
+      - name: Prepare the selected AppImage
+        run: |
+          mkdir -p logs/appimage-portability
+          chmod +x dl/Unsloth.AppImage
+
+
+      - name: Audit and launch the complete AppImage
+        env:
+          APPIMAGE_PATH: ${{ github.workspace }}/dl/Unsloth.AppImage
+          APPIMAGE_SMOKE_ART_DIR: ${{ github.workspace }}/logs/appimage-portability
+
+          APPIMAGE_DISPLAY_BACKEND: ${{ matrix.display_backend }}
+          GALLIUM_DRIVER: llvmpipe
+        run: |
+          set -euo pipefail
+          studio/src-tauri/linux/verify-complete-appimage.sh "$APPIMAGE_PATH"
+          # Check bundled plugin loadability on each target host.
+          python3 tests/studio/appimage_media_pipeline_probe.py
+          python3 tests/studio/appimage_portability_smoke.py
+
+      - name: Upload portability evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: appimage-portability-${{ matrix.label }}
+          path: logs/appimage-portability/
+          retention-days: 7
+          if-no-files-found: warn
+
+
+  # WebDriver uses the same PR artifact to exercise a real model download request.
+  appimage-model-download:
+    needs: appimage-pr-build
+    if: >-
+      always() &&
+      (github.event_name != 'pull_request' || needs.appimage-pr-build.result == 'success')
+    name: AppImage model download E2E
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
+
+      - name: Install WebDriver prerequisites
+        timeout-minutes: 20
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '360'
+        run: |
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get install -y -qq --no-install-recommends python3 xvfb xauth webkit2gtk-driver libgles2 libgl1 libegl1 libgbm1 libwayland-client0 libharfbuzz0b libnghttp2-14 fontconfig libfribidi0 libasound2 libpulse0 || { apt-get update -qq && apt-get install -y -qq --no-install-recommends python3 xvfb xauth webkit2gtk-driver libgles2 libgl1 libegl1 libgbm1 libwayland-client0 libharfbuzz0b libnghttp2-14 fontconfig libfribidi0 libasound2 libpulse0; }'
+          cargo install tauri-driver --version 2.0.6 --locked
+      - name: Fetch the digest-pinned COLRv1 regression font
+        run: |
+          set -euo pipefail
+          url='https://raw.githubusercontent.com/googlefonts/noto-emoji/8998f5dd683424a73e2314a8c1f1e359c19e8742/fonts/Noto-COLRv1.ttf'
+          output="$RUNNER_TEMP/Noto-COLRv1.ttf"
+          curl -fsSL --retry 3 --retry-all-errors "$url" -o "$output"
+          echo '0ae57fe58645638523ba35f388d93739d292539a9acb84df5700c81b1e1a28d2  '"$output" | sha256sum -c -
+
+      - name: Download the AppImage built from this PR
+        if: github.event_name == 'pull_request'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: appimage-pr-build
+          path: dl
+
+
+      - name: Download the shipped AppImage for WebDriver
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p dl logs/appimage-model-download
+          if [ -z "$REL_TAG" ]; then
+            releases_json="$RUNNER_TEMP/desktop-releases.json"
+            gh release list --repo "$REL_REPO" --limit 100 \
+              --json tagName,createdAt,isDraft > "$releases_json"
+            REL_TAG="$(python3 .github/scripts/resolve-desktop-release.py \
+              --repo "$REL_REPO" --asset-suffix .AppImage < "$releases_json")"
+            echo "resolved release tag: $REL_TAG"
+          fi
+          gh release download "$REL_TAG" --repo "$REL_REPO" \
+            --pattern '*.AppImage' --dir dl
+          chmod +x dl/*.AppImage
+
+      - name: Prepare the selected AppImage
+        run: |
+          mkdir -p logs/appimage-model-download
+          chmod +x dl/*.AppImage
+
+
+      - name: Select, download, render progress, and cancel
+        env:
+          APPIMAGE_PATH: ${{ github.workspace }}/dl/Unsloth.AppImage
+          APPIMAGE_E2E_ART_DIR: ${{ github.workspace }}/logs/appimage-model-download
+          APPIMAGE_COLRV1_FONT: ${{ runner.temp }}/Noto-COLRv1.ttf
+          APPIMAGE_COLRV1_FONT_SHA256: 0ae57fe58645638523ba35f388d93739d292539a9acb84df5700c81b1e1a28d2
+        run: |
+          set -euo pipefail
+          appimage="$(find dl -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
+          test -n "$appimage"
+          export APPIMAGE_PATH="$PWD/$appimage"
+          xvfb-run -a --server-args="-screen 0 1440x900x24" \
+            python3 tests/studio/appimage_model_download_webdriver.py
+
+      - name: Upload model-download evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: appimage-model-download
+          path: logs/appimage-model-download/
+          retention-days: 7
+          if-no-files-found: warn
+
+
   # ── Windows: NSIS setup.exe, silent install ──────────────────────────────
   windows:
     # See the macOS job: a fork PR's token cannot list drafts, so skip rather than fail.
@@ -487,7 +937,7 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
@@ -497,20 +947,26 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p dl logs
-          # See the macOS job. Loud on purpose: no bundle means nothing to prove.
+          # See the macOS job. Loud on purpose: no matching bundle means nothing to prove.
           if [ -z "$REL_TAG" ]; then
-            REL_TAG="$(gh release list --repo "$REL_REPO" --limit 100 \
-              --json tagName,createdAt \
-              --jq '[.[] | select(.tagName | startswith("desktop-v"))]
-                    | sort_by(.createdAt) | reverse | .[0].tagName // empty')"
-            [ -n "$REL_TAG" ] || {
-              echo "::error::no desktop-v* release visible in $REL_REPO -- either none has been cut, or this token cannot list drafts (needs contents: write)"
+            releases_json="$RUNNER_TEMP/desktop-releases.json"
+            if ! gh release list --repo "$REL_REPO" --limit 100 \
+              --json tagName,createdAt,isDraft > "$releases_json"; then
+              echo "::error::could not list desktop releases in $REL_REPO"
               exit 1
-            }
+            fi
+            if ! REL_TAG="$(python3 .github/scripts/resolve-desktop-release.py \
+              --repo "$REL_REPO" --asset-suffix .exe < "$releases_json")"; then
+              echo "::error::no SemVer v... release with an .exe is visible in $REL_REPO"
+              exit 1
+            fi
             echo "resolved release tag: $REL_TAG"
             echo "REL_TAG=$REL_TAG" >> "$GITHUB_ENV"
           fi
-          gh release download "$REL_TAG" --repo "$REL_REPO" --pattern '*setup.exe' --dir dl
+          # Extension, not fragment: see the macOS leg. '*setup.exe' was the Tauri NSIS
+          # default; the current asset is Unsloth-Desktop-<ver>-Windows.exe, and a release
+          # ships exactly one .exe.
+          gh release download "$REL_TAG" --repo "$REL_REPO" --pattern '*.exe' --dir dl
           ls -la dl
 
       - name: Strip the developer toolchain
@@ -628,7 +1084,7 @@ jobs:
       - name: Silent install
         shell: pwsh
         run: |
-          $exe = (Get-ChildItem dl/*setup.exe | Select-Object -First 1).FullName
+          $exe = (Get-ChildItem dl/*.exe | Select-Object -First 1).FullName
           # /S is the NSIS silent switch: a user double-clicks, but an installer that cannot
           # run unattended cannot be scripted or MDM-deployed either.
           $p = Start-Process -FilePath $exe -ArgumentList '/S' -Wait -PassThru
@@ -709,7 +1165,9 @@ jobs:
               Write-Host "=== $f ==="
               Copy-Item $f logs/ -ErrorAction SilentlyContinue
               Get-Content $f -Tail 60
-              Select-String -Path $f -Pattern 'disposition=|can_auto_repair=|ModuleNotFoundError' `
+              # See the Linux job: the reason line is what explains a disposition,
+              # and Get-Content -Tail 60 above scrolls it away.
+              Select-String -Path $f -Pattern 'disposition=|can_auto_repair=|Managed preflight|ModuleNotFoundError' `
                 -ErrorAction SilentlyContinue
               $found = $true
               $hits = @(Select-String -Path $f -Pattern 'desktop_preflight completed disposition=(\w+)')
@@ -729,10 +1187,10 @@ jobs:
             Write-Host '::error::tauri.log records no desktop_preflight disposition; the app never completed preflight'
             exit 1
           }
-          # Windows only, and stricter than macOS/Linux: those two accept the bundled
-          # installer's pre-#7547 pinned exit, so no venv exists there and NotInstalled is
-          # the honest answer. Here the installer was required to exit 0, create the venv
-          # and import torch, and the app reads the same default root it wrote
+          # All three legs now require the installer to exit 0, create the venv and import
+          # torch, AND a ready disposition -- the #7547 outcome pins are gone and the
+          # POSIX legs carry the same case check. Kept spelled out here because the app
+          # reads the same default root it wrote
           # (%USERPROFILE%\.unsloth\studio; it ignores UNSLOTH_STUDIO_HOME, which is why
           # the log is found at the second path). So anything but a ready disposition means
           # the app cannot boot what was just installed -- the reported failure, on the very

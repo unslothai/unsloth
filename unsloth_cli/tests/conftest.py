@@ -38,6 +38,7 @@ def stub_tool_policy_state(monkeypatch):
     state_mod = types.ModuleType("state")
     tp_mod = types.ModuleType("state.tool_policy")
     tp_mod.set_tool_policy = lambda *a, **k: None
+    tp_mod.set_tool_policy_default = lambda *a, **k: None
     state_mod.tool_policy = tp_mod
     monkeypatch.setitem(sys.modules, "state", state_mod)
     monkeypatch.setitem(sys.modules, "state.tool_policy", tp_mod)

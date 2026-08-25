@@ -31,6 +31,7 @@ import { Streamdown } from "streamdown";
 import { loadCodingAgents } from "../api/coding-agents";
 import { loadOpenAIAutoSwitchSettings } from "../api/openai-auto-switch";
 import { type OpenAIModel, listOpenAIModels } from "../api/openai-models";
+import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
 import { buildAgentCommand, isLoopbackHost, normalizeHost } from "./agent-command";
 
 type ExampleType =
@@ -57,6 +58,9 @@ const TYPE_TABS: { id: ExampleType; label: string }[] = [
   { id: "pythonAdvanced", label: "Python + advanced" },
   { id: "javascriptAdvanced", label: "JavaScript + advanced" },
 ];
+
+// guards a restored tab against a snippet type dropped in a later release.
+const EXAMPLE_TYPE_IDS = new Set<string>(TYPE_TABS.map((tab) => tab.id));
 
 const TYPE_LABEL_KEY: Partial<Record<ExampleType, TranslationKey>> = {
   curlTools: "settings.apiKeys.exampleCurlTools",
@@ -481,16 +485,21 @@ const codePlugin = createCodePlugin({ themes: SHIKI_THEMES });
 function HighlightedCode({
   code,
   language,
+  redactFromReload,
 }: {
   code: string;
   language: string;
+  redactFromReload: boolean;
 }) {
   const markdown = useMemo(
     () => `\`\`\`${language}\n${code}\n\`\`\``,
     [code, language],
   );
   return (
-    <div className="max-w-full overflow-x-auto p-3 pr-16 text-ui-11 leading-relaxed [&_pre]:!m-0 [&_pre]:!whitespace-pre-wrap [&_pre]:!break-words [&_pre]:!border-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:!text-ui-11 [&_pre]:!leading-relaxed [&_code]:!text-ui-11 [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block]]:!text-ui-11">
+    <div
+      className="max-w-full overflow-x-auto p-3 pr-16 text-ui-11 leading-relaxed [&_pre]:!m-0 [&_pre]:!whitespace-pre-wrap [&_pre]:!break-words [&_pre]:!border-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:!text-ui-11 [&_pre]:!leading-relaxed [&_code]:!text-ui-11 [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block]]:!text-ui-11"
+      data-reload-snapshot-sensitive={redactFromReload ? "" : undefined}
+    >
       <Streamdown
         mode="static"
         plugins={{ code: codePlugin }}
@@ -509,20 +518,41 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
   const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
   const serverUrl = usePlatformStore((s) => s.serverUrl);
   const secure = usePlatformStore((s) => s.secure);
-  const [lang, setLang] = useState<ExampleType>("curl");
+  const setStoredLang = useSettingsPanelPrefsStore((s) => s.setApiExampleLang);
+  const setStoredOs = useSettingsPanelPrefsStore((s) => s.setApiExampleOs);
+  const setStoredAgent = useSettingsPanelPrefsStore(
+    (s) => s.setApiExampleAgent,
+  );
+  // read once: these seed the controls, which write back through the handlers.
+  const [storedPrefs] = useState(() => useSettingsPanelPrefsStore.getState());
+  const [lang, setLang] = useState<ExampleType>(
+    storedPrefs.apiExampleLang && EXAMPLE_TYPE_IDS.has(storedPrefs.apiExampleLang)
+      ? (storedPrefs.apiExampleLang as ExampleType)
+      : "curl",
+  );
+  // an explicit pick wins, since the snippet may target another machine.
   const [os, setOs] = useState<Os>(
-    deviceType === "windows" ? "windows" : "unix",
+    storedPrefs.apiExampleOs === "windows" ||
+      storedPrefs.apiExampleOs === "unix"
+      ? storedPrefs.apiExampleOs
+      : deviceType === "windows"
+        ? "windows"
+        : "unix",
   );
   const [copied, setCopied] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState(false);
   const [copiedAgent, setCopiedAgent] = useState(false);
-  const [agent, setAgent] = useState<string>(DEFAULT_AGENT);
+  const [agent, setAgent] = useState<string>(
+    storedPrefs.apiExampleAgent ?? DEFAULT_AGENT,
+  );
   const [availableAgents, setAvailableAgents] =
     useState<string[]>(DEFAULT_AGENTS);
   const [detectedAgents, setDetectedAgents] = useState<string[]>([]);
+  // set on answer, so a restored agent never validates against the defaults.
+  const [agentsLoaded, setAgentsLoaded] = useState(false);
   // True once the user has picked an agent themselves; guards the detection
   // effect below from clobbering that choice if it resolves afterward.
-  const agentPickedByUserRef = useRef(false);
+  const agentPickedByUserRef = useRef(storedPrefs.apiExampleAgent != null);
   const [useTunnel, setUseTunnel] = useState<boolean>(readUseTunnelPref);
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   const base =
@@ -561,11 +591,24 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
       })
       .catch(() => {
         // Best-effort: keep the default agent list and let the user pick manually.
+      })
+      .finally(() => {
+        if (!cancelled) setAgentsLoaded(true);
       });
     return () => {
       cancelled = true;
     };
   }, [localAgentDetection]);
+
+  // a restored agent this build no longer offers cannot build a command.
+  useEffect(() => {
+    if (!agentPickedByUserRef.current) return;
+    if (localAgentDetection && !agentsLoaded) return;
+    if (availableAgents.includes(agent)) return;
+    agentPickedByUserRef.current = false;
+    setStoredAgent(null);
+    setAgent(DEFAULT_AGENT);
+  }, [agent, agentsLoaded, availableAgents, localAgentDetection, setStoredAgent]);
 
   // Single source of truth for the auto-picked agent, re-derived whenever
   // the detected list or the loaded model's GGUF-ness changes -- in either
@@ -726,7 +769,10 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
                 <button
                   key={tab.id}
                   type="button"
-                  onClick={() => setLang(tab.id)}
+                  onClick={() => {
+                    setLang(tab.id);
+                    setStoredLang(tab.id);
+                  }}
                   aria-pressed={active}
                   className={cn(
                     "rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
@@ -745,7 +791,10 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
           <div className="flex min-w-0 items-center gap-0.5 border-b border-border px-2 py-1.5">
             <button
               type="button"
-              onClick={() => setOs("unix")}
+              onClick={() => {
+                setOs("unix");
+                setStoredOs("unix");
+              }}
               aria-pressed={os === "unix"}
               className={cn(
                 "rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
@@ -758,7 +807,10 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
             </button>
             <button
               type="button"
-              onClick={() => setOs("windows")}
+              onClick={() => {
+                setOs("windows");
+                setStoredOs("windows");
+              }}
               aria-pressed={os === "windows"}
               className={cn(
                 "rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
@@ -791,6 +843,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
               key={snippets[lang]}
               code={snippets[lang]}
               language={shikiLang}
+              redactFromReload={Boolean(apiKey)}
             />
           </div>
         ) : (
@@ -816,6 +869,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
                   onClick={() => {
                     agentPickedByUserRef.current = true;
                     setAgent(id);
+                    setStoredAgent(id);
                   }}
                   aria-pressed={active}
                   title={
@@ -842,7 +896,10 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
             })}
           </div>
           <div className="relative mt-0.5 min-w-0">
-            <code className="block min-w-0 overflow-x-auto rounded border border-border bg-muted/30 px-2 py-1.5 pr-14 font-mono text-ui-11 text-foreground">
+            <code
+              className="block min-w-0 overflow-x-auto rounded border border-border bg-muted/30 px-2 py-1.5 pr-14 font-mono text-ui-11 text-foreground"
+              data-reload-snapshot-sensitive={apiKey ? "" : undefined}
+            >
               {agentCommand}
             </code>
             <button

@@ -23,8 +23,9 @@ from __future__ import annotations
 
 import argparse
 import re
+import shlex
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 try:
     import yaml
@@ -37,7 +38,15 @@ DEFAULT_WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 
 BANNED_TRIGGERS: tuple[str, ...] = ("pull_request_target",)
 RESTRICTED_TRIGGERS: tuple[str, ...] = ("workflow_run",)
-PUBLISH_WORKFLOW_NAMES: tuple[str, ...] = ("release-desktop.yml",)
+# Stem, not filename: `.yaml` is scanned too, and a renamed publisher must
+# still be classified as one.
+PUBLISH_WORKFLOW_STEMS: tuple[str, ...] = ("release-desktop",)
+
+# A workflow running this script is a "host". `pull_request` resolves the
+# workflow file from the PR merge ref, so any narrowing a PR adds to its host
+# applies to that same PR, and the gate misses the change it exists to review.
+# Hence: a bare `pull_request:`, and a step that can fail.
+LINT_SCRIPT_NAME = "lint_workflow_triggers.py"
 
 
 def _normalise_on(on_field):
@@ -66,28 +75,273 @@ def _extract_cache_keys(path: Path) -> list[str]:
     return keys
 
 
-def _trigger_set(yaml_doc) -> set[str]:
-    on = yaml_doc.get(True)
-    if on is None:
+def _on_field(yaml_doc):
+    # PyYAML resolves a bare `on:` key to the boolean True.
+    on = yaml_doc.get(True) if isinstance(yaml_doc, dict) else None
+    if on is None and isinstance(yaml_doc, dict):
         on = yaml_doc.get("on")
-    return _normalise_on(on)
+    return on
+
+
+def _trigger_set(yaml_doc) -> set[str]:
+    return _normalise_on(_on_field(yaml_doc))
+
+
+# A host runs this repo's script as a plain command with no arguments. Each
+# clause below is a way that looked satisfied while nothing was enforced: a
+# decoy path, a fake interpreter, a `|| true` (the default `run:` shell is
+# `bash -e`, no pipefail), or an argument that makes it exit early.
+_PYTHON_BASENAME = re.compile(r"python(3(\.\d+)?)?")
+# Allowlist, not denylist: too many flags skip the file or mask its status
+# (-c, -m, --version, and -i, which exits 0 from the REPL even after
+# sys.exit(1)). Anything unrecognised fails closed.
+_SAFE_OPTS = ("-u", "-E", "-s", "-S", "-B", "-O", "-OO", "-q")
+LINT_SCRIPT_PATH = f"scripts/{LINT_SCRIPT_NAME}"
+# Safe, but they consume the next token, so the script path is not mistaken
+# for their value.
+_OPTS_WITH_VALUE = ("-X", "-W", "--check-hash-based-pycs")
+_SHELL_OPERATORS = ("|", "&", ";", ">", "<", "`", "$(")
+
+
+def _is_trusted_python(token: str) -> bool:
+    """A bare `python3`, or an absolute system path to one.
+
+    A relative `./python3` would resolve inside the checkout, where a PR can
+    add an executable of that name.
+    """
+    if any(op in token for op in _SHELL_OPERATORS):
+        return False  # a substitution runs before the path is used
+    path = PurePosixPath(token)
+    if not _PYTHON_BASENAME.fullmatch(path.name):
+        return False
+    return token == path.name or token.startswith(("/usr/", "/bin/", "/opt/"))
+
+
+def _classify_lint_line(line: str) -> tuple[bool, str | None]:
+    """(is an enforcing invocation, problem) for one line naming the script."""
+    try:
+        tokens = shlex.split(line.strip())
+    except ValueError:
+        return False, None
+    if not tokens or not _is_trusted_python(tokens[0]):
+        return False, None  # `echo <script>`, a decoy interpreter, or not python
+
+    args, i = tokens[1:], 0
+    while i < len(args) and args[i].startswith("-"):
+        if args[i] in _OPTS_WITH_VALUE:
+            value = args[i + 1] if i + 1 < len(args) else ""
+            if any(op in value for op in _SHELL_OPERATORS):
+                return False, None  # a substitution runs before python
+            i += 2
+        elif args[i] in _SAFE_OPTS:
+            i += 1
+        else:
+            return False, None
+
+    rest = args[i:]
+    # Exactly the repo-relative path. A suffix match would accept a decoy at
+    # /tmp/scripts/lint_workflow_triggers.py.
+    if not rest or rest[0] not in (LINT_SCRIPT_PATH, f"./{LINT_SCRIPT_PATH}"):
+        return False, None
+    if len(rest) == 1:
+        return True, None
+
+    trailing = " ".join(rest[1:])
+    if any(op in tok for tok in rest[1:] for op in _SHELL_OPERATORS):
+        return False, (
+            f"its lint command is chained, piped or backgrounded ({trailing}), "
+            "so the step's exit status need not be the lint's"
+        )
+    return False, (
+        f"its lint command passes {trailing}, so it does not gate the live "
+        "workflows with its own checks on"
+    )
+
+
+def _lint_step_report(run: str) -> tuple[bool, list[str]]:
+    """(an enforcing invocation is present, problems with lint-ish commands).
+
+    The step body must be the lint command and nothing else. Judging lines in
+    isolation cannot tell a call from a definition, so an invocation parked in
+    an uncalled function or a here-document would read as enforcing while
+    executing nothing. Requiring a single command sidesteps shell parsing.
+    """
+    lines = [line for line in run.splitlines() if line.strip() and not line.strip().startswith("#")]
+    mentions = [line for line in lines if LINT_SCRIPT_NAME in line]
+    if not mentions:
+        return False, []
+
+    problems = [p for _, p in map(_classify_lint_line, mentions) if p]
+    enforcing = any(ok for ok, _ in map(_classify_lint_line, mentions))
+    if enforcing and len(lines) > 1:
+        return False, problems + [
+            "its lint step runs other shell besides the lint command, so the "
+            "lint need not execute (a function body or here-document is not a "
+            "call)"
+        ]
+    return enforcing, problems
+
+
+# A `shell:` template can wrap the command, e.g. `bash -c '"{0}" || true'`.
+SAFE_SHELLS: tuple[str, ...] = ("bash", "sh")
+
+# Redirect execution without changing the command: bash sources BASH_ENV
+# before the step script, and PATH picks the interpreter.
+UNSAFE_ENV_KEYS: tuple[str, ...] = (
+    "BASH_ENV",
+    "ENV",
+    "PATH",
+    # `sitecustomize.py` on PYTHONPATH is imported before the script runs.
+    "PYTHONPATH",
+    "PYTHONHOME",
+    "PYTHONSTARTUP",
+)
+
+
+def _effective_run_setting(yaml_doc, job: dict, step: dict, key: str) -> str | None:
+    """A step's `run` setting, falling back to job then workflow defaults."""
+    if step.get(key):
+        return str(step[key])
+    for scope in (job, yaml_doc):
+        defaults = scope.get("defaults") if isinstance(scope, dict) else None
+        run = defaults.get("run") if isinstance(defaults, dict) else None
+        if isinstance(run, dict) and run.get(key):
+            return str(run[key])
+    return None
+
+
+def _effective_env(yaml_doc, job: dict, step: dict) -> dict:
+    """Workflow, job and step `env`, merged in precedence order."""
+    merged = {}
+    for scope in (yaml_doc, job, step):
+        env = scope.get("env") if isinstance(scope, dict) else None
+        if isinstance(env, dict):
+            merged.update(env)
+    return merged
+
+
+def _pull_request_config_problem(yaml_doc) -> str | None:
+    """`pull_request:` must be bare or a mapping; GitHub rejects anything else."""
+    on = _on_field(yaml_doc)
+    if not isinstance(on, dict) or "pull_request" not in on:
+        return None
+    pr = on["pull_request"]
+    if pr is None or isinstance(pr, dict):
+        return None
+    return (
+        f"its 'pull_request' value is {pr!r}, which is not a valid event "
+        "configuration, so GitHub will not load the workflow at all"
+    )
+
+
+def _lint_steps(yaml_doc) -> list[tuple[dict, dict, bool, list[str]]]:
+    """(job, step, enforcing, problems) for every step that runs the lint.
+
+    Reads the parsed steps rather than the raw text: a commented-out
+    `# - run: python3 scripts/lint_workflow_triggers.py` executes nothing, and
+    counting it as a host would let a deleted gate look wired.
+    """
+    jobs = yaml_doc.get("jobs") if isinstance(yaml_doc, dict) else None
+    if not isinstance(jobs, dict):
+        return []
+    found = []
+    for job in jobs.values():
+        steps = job.get("steps") if isinstance(job, dict) else None
+        if not isinstance(steps, list):
+            continue
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            enforcing, problems = _lint_step_report(str(step.get("run") or ""))
+            if not (enforcing or problems):
+                continue
+            if job.get("container") is not None:
+                enforcing = False
+                problems.append(
+                    "its lint job runs in a 'container:', a PR-selected image "
+                    "that controls the shell and environment"
+                )
+            shell = _effective_run_setting(yaml_doc, job, step, "shell")
+            if shell is not None and shell not in SAFE_SHELLS:
+                enforcing = False
+                problems.append(
+                    f"its lint step runs under shell {shell!r}, which can wrap "
+                    "the command and drop its exit status"
+                )
+            unsafe_env = sorted(
+                k for k in _effective_env(yaml_doc, job, step) if k in UNSAFE_ENV_KEYS
+            )
+            if unsafe_env:
+                enforcing = False
+                problems.append(
+                    f"its lint step sets {' + '.join(unsafe_env)}, which can "
+                    "redirect the step before the lint runs"
+                )
+            workdir = _effective_run_setting(yaml_doc, job, step, "working-directory")
+            if workdir is not None:
+                enforcing = False
+                problems.append(
+                    f"its lint step runs in working-directory {workdir!r}, so "
+                    "the command resolves to a different file than this "
+                    "repository's script"
+                )
+            found.append((job, step, enforcing, problems))
+    return found
+
+
+def _pull_request_restrictions(yaml_doc) -> list[str]:
+    """Keys narrowing the `pull_request` trigger. A gate wants none of them."""
+    on = _on_field(yaml_doc)
+    pr = on.get("pull_request") if isinstance(on, dict) else None
+    return sorted(pr) if isinstance(pr, dict) else []
+
+
+def _is_truthy(value) -> bool:
+    """YAML truthiness, treating any `${{ ... }}` expression as possibly true."""
+    if isinstance(value, bool):
+        return value
+    return isinstance(value, str) and value.strip().lower() not in ("", "false")
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description = __doc__)
+    # No abbreviations: `--workflows-d` must not silently mean
+    # `--workflows-dir`, or a host could smuggle it past review.
+    parser = argparse.ArgumentParser(description = __doc__, allow_abbrev = False)
     parser.add_argument(
         "--workflows-dir",
         type = Path,
         default = DEFAULT_WORKFLOWS_DIR,
         help = "Override the workflows directory (used by tests).",
     )
+    parser.add_argument(
+        "--require-host",
+        action = "store_true",
+        default = None,
+        help = "Require a workflow that runs this script on unfiltered "
+        "`pull_request`. Defaults on for the live tree, off for a "
+        "fixture directory.",
+    )
+    parser.add_argument(
+        "--no-require-host",
+        dest = "require_host",
+        action = "store_false",
+        help = "Skip the host-wiring check.",
+    )
     args = parser.parse_args()
     workflows_dir = args.workflows_dir
 
+    require_host = args.require_host
+    if require_host is None:
+        require_host = workflows_dir.resolve() == DEFAULT_WORKFLOWS_DIR.resolve()
+
     findings: list[str] = []
-    workflows = sorted(workflows_dir.glob("*.yml"))
+    # GitHub Actions loads BOTH `.yml` and `.yaml` from .github/workflows/, so
+    # scanning only `*.yml` leaves a rename-away bypass: `evil.yaml` with
+    # `pull_request_target` would run for real and lint clean.
+    workflows = sorted(list(workflows_dir.glob("*.yml")) + list(workflows_dir.glob("*.yaml")))
     pr_triggered: list[tuple[Path, list[str]]] = []
     publish_triggered: list[tuple[Path, list[str]]] = []
+    unfiltered_hosts: list[Path] = []
 
     for path in workflows:
         doc = _load_workflow(path)
@@ -112,13 +366,65 @@ def main() -> int:
                         "comment somewhere in the file, with a justification."
                     )
 
+        lint_steps = _lint_steps(doc)
+        if lint_steps:
+            problems = []
+            restrictions = _pull_request_restrictions(doc)
+            if restrictions:
+                problems.append(
+                    f"its 'pull_request' trigger is narrowed by "
+                    f"{' + '.join(restrictions)}, so a PR adding that skips "
+                    "this workflow for its own PR"
+                )
+            config_problem = _pull_request_config_problem(doc)
+            if config_problem:
+                problems.append(config_problem)
+            if any(
+                _is_truthy(job.get("continue-on-error"))
+                or _is_truthy(step.get("continue-on-error"))
+                for job, step, _, _ in lint_steps
+            ):
+                problems.append(
+                    "its lint step is continue-on-error, so findings cannot fail the run"
+                )
+            if any(
+                job.get("if") is not None or step.get("if") is not None
+                for job, step, _, _ in lint_steps
+            ):
+                problems.append(
+                    "its lint step is gated by an 'if:' condition, so the gate "
+                    "can be skipped while the run still succeeds"
+                )
+            if any(job.get("needs") is not None for job, _, _, _ in lint_steps):
+                problems.append(
+                    "its lint job declares 'needs:', so a skipped prerequisite "
+                    "skips the gate without failing the run"
+                )
+            for _, _, _, step_problems in lint_steps:
+                problems.extend(step_problems)
+            if problems:
+                findings.append(
+                    f"{path.name}: runs {LINT_SCRIPT_NAME} but "
+                    + ", and ".join(problems)
+                    + ". The gate must run, and be able to fail, on every PR."
+                )
+            elif "pull_request" in triggers and any(enforcing for _, _, enforcing, _ in lint_steps):
+                unfiltered_hosts.append(path)
+
         if "pull_request" in triggers:
             pr_triggered.append((path, _extract_cache_keys(path)))
         is_dispatch_only = "workflow_dispatch" in triggers and not (
             "push" in triggers or "pull_request" in triggers
         )
-        if path.name in PUBLISH_WORKFLOW_NAMES or is_dispatch_only:
+        if path.stem in PUBLISH_WORKFLOW_STEMS or is_dispatch_only:
             publish_triggered.append((path, _extract_cache_keys(path)))
+
+    if require_host and not unfiltered_hosts:
+        findings.append(
+            f"no workflow runs {LINT_SCRIPT_NAME} on an unfiltered "
+            "'pull_request' trigger, so this gate does not cover every PR. "
+            "Restore the workflow-trigger-lint workflow."
+        )
 
     pr_keys = {key for _, keys in pr_triggered for key in keys}
     for pub_path, pub_keys in publish_triggered:

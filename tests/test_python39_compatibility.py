@@ -40,11 +40,71 @@ def declared_floor():
     return int(floor.group(1)), int(floor.group(2))
 
 
+def guarded_floor(init_path):
+    """The floor an ``__init__.py`` refuses to import below, if it declares one.
+
+    The shape a vendored package uses to state its own requirement:
+
+        if sys.version_info < (3, 10):
+            raise ImportError("truststore requires Python 3.10 or later")
+
+    Returns ``(3, 10)`` there, ``None`` when no such guard exists.
+    """
+    try:
+        tree = ast.parse(init_path.read_text(encoding = "utf-8"), filename = str(init_path))
+    except (OSError, SyntaxError):
+        return None
+    for node in tree.body:
+        if not isinstance(node, ast.If):
+            continue
+        test = node.test
+        if not (
+            isinstance(test, ast.Compare)
+            and len(test.ops) == 1
+            and isinstance(test.ops[0], ast.Lt)
+            and "version_info" in ast.dump(test.left)
+            and isinstance(test.comparators[0], ast.Tuple)
+        ):
+            continue
+        if not any(isinstance(stmt, ast.Raise) for stmt in node.body):
+            continue
+        parts = [e.value for e in test.comparators[0].elts if isinstance(e, ast.Constant)]
+        if len(parts) >= 2 and all(isinstance(v, int) for v in parts[:2]):
+            return (parts[0], parts[1])
+    return None
+
+
+def floor_guarded_dirs(root):
+    """Package directories that refuse to import below a floor above ours.
+
+    `studio/backend/vendor/truststore` is vendored third-party code whose
+    `__init__.py` raises on anything under 3.10, so the PEP 604 type aliases in
+    its `_api.py` can never evaluate on our 3.9 floor: the package is gone
+    before that module is reached, and its one caller wraps `import truststore`
+    in try/except. Scanning those files reports a break that cannot happen.
+
+    Keyed on the guard, not the path, so unguarded code dropped into the same
+    vendor directory is still scanned. A blanket `vendor/` exclusion would have
+    covered that silently.
+    """
+    guarded = []
+    for init in root.rglob("__init__.py"):
+        if "__pycache__" in init.parts:
+            continue
+        floor = guarded_floor(init)
+        if floor and floor > declared_floor():
+            guarded.append(init.parent)
+    return guarded
+
+
 def package_files(root = PACKAGE_ROOT, minimum = 50):
+    skip = floor_guarded_dirs(root)
     files = sorted(
         p
         for p in root.rglob("*.py")
-        if "__pycache__" not in p.parts and "node_modules" not in p.parts
+        if "__pycache__" not in p.parts
+        and "node_modules" not in p.parts
+        and not any(d in p.parents for d in skip)
     )
     assert len(files) >= minimum, f"only found {len(files)} files under {root}, glob is wrong"
     return files
@@ -329,3 +389,54 @@ def test_no_pep604_unions_are_evaluated_on_the_declared_floor():
         "import annotations`; type aliases need typing.Union, which that import does NOT "
         "defer:\n  " + "\n  ".join(sorted(set(offenders)))
     )
+
+
+# ---- the exemption itself ------------------------------------------------
+#
+# The skip above is the kind of thing that rots into a blanket `vendor/`
+# exclusion. These pin it to the guard.
+
+
+def test_the_truststore_guard_is_what_exempts_it():
+    """Not the path. If upstream drops the version guard, the files come back
+    into the scan and this gate goes red again -- which is correct, because at
+    that point `import truststore` really can reach `_api.py` on 3.9."""
+    init = REPO_ROOT / "studio/backend/vendor/truststore/__init__.py"
+    if not init.exists():
+        pytest.skip("truststore is not vendored in this checkout")
+    assert guarded_floor(init) == (3, 10)
+    assert init.parent in floor_guarded_dirs(REPO_ROOT / "studio")
+
+
+def test_unguarded_code_in_the_same_vendor_directory_is_still_scanned(tmp_path):
+    vendor = tmp_path / "vendor"
+    (vendor / "guarded").mkdir(parents = True)
+    (vendor / "plain").mkdir()
+    (vendor / "guarded" / "__init__.py").write_text(
+        "import sys\nif sys.version_info < (3, 10):\n    raise ImportError('nope')\n"
+    )
+    (vendor / "plain" / "__init__.py").write_text("")
+    skipped = floor_guarded_dirs(tmp_path)
+    assert vendor / "guarded" in skipped
+    assert vendor / "plain" not in skipped
+
+
+def test_a_guard_at_or_below_our_floor_does_not_exempt(tmp_path):
+    """A package that merely requires 3.9 is a package we ship on. Exempting it
+    would hide real breakage."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text(
+        "import sys\nif sys.version_info < (3, 9):\n    raise ImportError('nope')\n"
+    )
+    assert floor_guarded_dirs(tmp_path) == []
+
+
+def test_a_guard_that_does_not_raise_does_not_exempt(tmp_path):
+    """`if sys.version_info < (3, 10): warnings.warn(...)` still imports."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text(
+        "import sys, warnings\nif sys.version_info < (3, 10):\n    warnings.warn('old')\n"
+    )
+    assert floor_guarded_dirs(tmp_path) == []

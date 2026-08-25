@@ -164,12 +164,15 @@ export function buildCachedInventoryRow(
     repo_id: string;
     size_bytes: number;
     cache_path?: string;
+    load_cache_path?: string;
     partial?: boolean;
     partial_transport?: string | null;
+    partial_resumable?: boolean;
     has_variant_state?: boolean;
     pipeline_tag?: string | null;
     task?: string | null;
     single_file?: boolean;
+    companion?: boolean;
     tags?: string[];
     library_name?: string | null;
     quant_method?: string | null;
@@ -219,6 +222,7 @@ export function buildCachedInventoryRow(
     capabilities,
     bytes: row.size_bytes,
     cachePath: row.cache_path ?? null,
+    loadCachePath: row.load_cache_path ?? null,
     lastModified:
       typeof row.last_modified === "number" &&
       Number.isFinite(row.last_modified) &&
@@ -227,10 +231,12 @@ export function buildCachedInventoryRow(
         : null,
     partial: row.partial ?? false,
     partialTransport: row.partial_transport ?? null,
+    partialResumable: row.partial_resumable === true,
     hasVariantState: row.has_variant_state ?? false,
     pipelineTag: row.pipeline_tag ?? null,
     task: row.task ?? null,
     singleFile: row.single_file ?? false,
+    companion: row.companion ?? false,
     tags: row.tags,
     libraryName: row.library_name ?? null,
     quantMethod: row.quant_method ?? null,
@@ -307,6 +313,7 @@ export function buildLocalInventoryRows(
         updatedAt: normalizeTimestamp(model.updated_at),
         partial: model.partial ?? false,
         partialTransport: model.partial_transport ?? null,
+        partialResumable: model.partial_resumable === true,
         activeCache: model.active_cache ?? null,
         pipelineTag: model.pipeline_tag ?? null,
         task: model.task ?? null,

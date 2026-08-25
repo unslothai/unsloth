@@ -15,10 +15,12 @@ import {
   useHubInventory,
 } from "@/features/hub";
 import { useMemo } from "react";
+import { allowedHiddenModelIdMatches } from "../components/model-selector/audio-picker-policy";
 
 const PICKER_LOCAL_SOURCES: ReadonlySet<LocalSource> = new Set([
   "lmstudio",
   "models_dir",
+  "ollama",
   "custom",
 ]);
 
@@ -49,6 +51,8 @@ function toCachedModelRepo(row: CachedInventoryRow): CachedModelRepo {
     size_bytes: row.bytes,
     last_modified: row.lastModified ?? undefined,
     task: row.task ?? null,
+    tags: row.tags,
+    library_name: row.libraryName,
     // Carried through: the diffusion picker drops single-file checkpoint repos (loading one as a pipeline fails after the handoff), and undefined reads as "full pipeline".
     single_file: row.singleFile ?? false,
   };
@@ -73,10 +77,15 @@ export interface ChatPickerInventory {
   cachedReady: boolean;
   localModels: LocalModelInfo[];
   refreshInventory: () => Promise<void>;
+  refreshInventoryIfOlderThan: (maxAgeMs: number) => Promise<void>;
 }
 
 export function useChatPickerInventory(
-  options: { enabled?: boolean } = {},
+  options: {
+    enabled?: boolean;
+    /** Exact task-page artifacts that may bypass chat's hidden-model list. */
+    allowedHiddenModelIds?: ReadonlySet<string>;
+  } = {},
 ): ChatPickerInventory {
   const inventory = useHubInventory({
     kind: "models",
@@ -91,10 +100,14 @@ export function useChatPickerInventory(
           (row) =>
             row.modelFormat === "gguf" &&
             isCompleteCachedRow(row) &&
-            !isHiddenModelId(row.repoId),
+            (!isHiddenModelId(row.repoId) ||
+              allowedHiddenModelIdMatches(
+                options.allowedHiddenModelIds,
+                row.repoId,
+              )),
         )
         .map(toCachedGgufRepo),
-    [inventory.cachedRows],
+    [inventory.cachedRows, options.allowedHiddenModelIds],
   );
   const cachedModels = useMemo(
     () =>
@@ -103,10 +116,18 @@ export function useChatPickerInventory(
           (row) =>
             row.modelFormat !== "gguf" &&
             isCompleteCachedRow(row) &&
-            !isHiddenModelId(row.repoId),
+            // An sd.cpp companion mirror holds a VAE / text encoders and no denoiser. It has no
+            // task, and a task of null is what every unclassified CHAT repo carries, so without
+            // this it lands in the chat On Device list as a load that cannot succeed.
+            !row.companion &&
+            (!isHiddenModelId(row.repoId) ||
+              allowedHiddenModelIdMatches(
+                options.allowedHiddenModelIds,
+                row.repoId,
+              )),
         )
         .map(toCachedModelRepo),
-    [inventory.cachedRows],
+    [inventory.cachedRows, options.allowedHiddenModelIds],
   );
   const localModels = useMemo(
     () =>
@@ -117,11 +138,17 @@ export function useChatPickerInventory(
             // Skip non-chat rows (a folder with only config.json classifies "unknown" -> canChat false); selecting one would load a weightless path.
             // toLocalModelInfo drops capabilities, so this is the only place the guard can live. A row the backend classified as a generation task is
             // exempt: canChat is about the chat loader, and dropping it here hid every on-device diffusion model from the pickers that CAN load it.
-            (row.capabilities.canChat || studioPageForTask(row.task) !== undefined) &&
-            !isHiddenModelId(row.modelId, row.repoId, row.path),
+            (row.capabilities.canChat ||
+              studioPageForTask(row.task) !== undefined) &&
+            (!isHiddenModelId(row.modelId, row.repoId, row.path) ||
+              allowedHiddenModelIdMatches(
+                options.allowedHiddenModelIds,
+                row.modelId,
+                row.repoId,
+              )),
         )
         .map(toLocalModelInfo),
-    [inventory.localRows],
+    [inventory.localRows, options.allowedHiddenModelIds],
   );
 
   return {
@@ -130,5 +157,6 @@ export function useChatPickerInventory(
     cachedReady: inventory.downloadedReady,
     localModels,
     refreshInventory: inventory.refreshInventory,
+    refreshInventoryIfOlderThan: inventory.refreshInventoryIfOlderThan,
   };
 }

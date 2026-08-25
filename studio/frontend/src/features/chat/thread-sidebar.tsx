@@ -46,6 +46,7 @@ import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "sonner";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import type { ChatView } from "./types";
+import { CONVERSATION_MARKDOWN_LABEL } from "./utils/conversation-markdown";
 import {
   deleteChatItem,
   renameChatItem,
@@ -56,6 +57,7 @@ import {
   exportConversationRawJsonl,
   exportConversationCsv,
   exportConversationShareGPT,
+  exportConversationMarkdown,
   exportBulkConversationsMerged,
   exportBulkConversationsSeparate,
   EXPORT_FORMATS_LIST,
@@ -69,6 +71,7 @@ const EXPORT_FORMATS = [
   { label: "Raw JSONL", fn: exportConversationRawJsonl },
   { label: "CSV", fn: exportConversationCsv },
   { label: "ShareGPT JSONL", fn: exportConversationShareGPT },
+  { label: CONVERSATION_MARKDOWN_LABEL, fn: exportConversationMarkdown },
 ] as const;
 
 async function getThreadIdsForItem(item: SidebarItem): Promise<string[]> {

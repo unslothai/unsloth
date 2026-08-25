@@ -417,7 +417,11 @@ class TextPreprocessor:
         # Calculate average length
         if text_lengths:
             stats["avg_length"] = sum(text_lengths) / len(text_lengths)
-            stats["min_length"] = stats["min_length"] if stats["min_length"] != float("inf") else 0
+
+        # No sample had content, so min_length is still its float("inf") seed. Report 0,
+        # like max_length and avg_length beside it, rather than handing back an infinity.
+        if stats["min_length"] == float("inf"):
+            stats["min_length"] = 0
 
         # Generate warnings
         if stats["empty_samples"] > 0:
@@ -429,7 +433,9 @@ class TextPreprocessor:
         if stats["encoding_issues"] > 0:
             stats["warnings"].append(f"Found {stats['encoding_issues']} encoding issues")
 
-        if stats["min_length"] < 10:
+        # Guard on text_lengths, not on min_length: with nothing measured it is now 0,
+        # and zero measured samples is not "some samples are very short".
+        if text_lengths and stats["min_length"] < 10:
             stats["warnings"].append("Some samples are very short (< 10 characters)")
 
         return stats

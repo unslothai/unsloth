@@ -46,12 +46,18 @@ def _load_real_index_env_scrub():
     ns: dict = {"os": _os}
     for anchor, end, keep in (
         ("_UV_INDEX_ENV_VARS = (", "\n)\n", 2),
+        # _install_env_for_cmd calls both of these, and they resolve from this namespace
+        # at CALL time, so omitting either only shows up as a NameError once a test
+        # actually invokes the scrub.
+        ("_PM_POLICY_ENV_VARS = (", "\n)\n", 2),
+        ("def _relaxed_pip_policy_env(", "\n\ndef ", 0),
         ("def _is_pinned_index_cmd(", "\n\ndef ", 0),
         ("def _install_env_for_cmd(", "\n\ndef ", 0),
     ):
         start = src.index(anchor)
         exec(compile(src[start : src.index(end, start) + keep], str(STACK), "exec"), ns)
     assert "PIP_NO_INDEX" in ns["_UV_INDEX_ENV_VARS"], "extraction lost the pip vars"
+    assert "PIP_REQUIRE_HASHES" in ns["_PM_POLICY_ENV_VARS"], "extraction lost the policy vars"
     return ns["_install_env_for_cmd"]
 
 
@@ -84,6 +90,9 @@ def _load(
     body = src[start:end]
     assert "_ensure_xpu_triton" in body, "extraction lost the swap"
     assert "_ensure_venv_pip" in body, "extraction lost the pip bootstrap"
+    # The WARN assertions need the stub wired to the name the slice actually calls;
+    # a rename would leave them silently dead.
+    assert "_safe_print(" in body, "extraction lost the print helper the WARN stub hooks"
 
     import glob as _glob
     import importlib.util as _importlib_util
@@ -185,7 +194,11 @@ def _load(
         "pip_install_try": fake_pip_install_try,
         "pip_install": fake_pip_install,
         "_red": lambda s: s,
-        "print": lambda *a, **k: log.append("WARN") if a and "left in place" in str(a[0]) else None,
+        # _safe_print, not print: the slice calls it by name, so stubbing "print"
+        # would leave _safe_print undefined at exec time.
+        "_safe_print": (
+            lambda *a, **k: log.append("WARN") if a and "left in place" in str(a[0]) else None
+        ),
     }
     exec(compile(body, str(STACK), "exec"), ns)
     mod.__dict__.update(ns)
@@ -429,20 +442,21 @@ class TestADeadDriverIsNotAFlavourMismatch:
         assert mod.__dict__["_xpu_wheel_supported_on_disk"]() is supported
 
     def test_the_disk_check_and_the_probe_agree_on_the_bounds(self):
-        # Two copies of the range in different languages; a drifted floor installs an
+        # Two copies of the range in different places; a drifted floor installs an
         # environment that raises at import.
         src = STACK.read_text(encoding = "utf-8")
-        assert src.count("(2, 6) <= n < (2, 11)") == 1, "the probe's range moved"
+        assert src.count("(2, 6) <= _n < (2, 11)") == 1, "the probe's range moved"
         assert src.count("(2, 6) <= nums < (2, 11)") == 1, "the disk check's range moved"
 
     def test_a_timeout_on_a_supported_wheel_reinstalls_nothing(self):
         # Asserted on the source because _ensure_xpu_torch sits above the extracted slice: the
-        # early return must come BEFORE probe is set to None, or the repair runs anyway.
+        # early return must come BEFORE the repair reason is set, or the repair runs anyway.
         src = STACK.read_text(encoding = "utf-8")
         start = src.index("def _ensure_xpu_torch() -> None:")
         body = src[start : src.index("def _installed_torch_version_label", start)]
         guard = body.index("_xpu_wheel_supported_on_disk()")
-        assert guard < body.index("probe = None"), "the guard runs after the repair is armed"
+        armed = body.index('_why = "torch could not be probed"')
+        assert guard < armed, "the guard runs after the repair is armed"
         assert "return" in body[guard : guard + 400], "the guard does not return"
 
 
@@ -522,16 +536,28 @@ class TestCpuRepairSeesAnXpuWheel:
         hip = "",
     ):
         src = STACK.read_text(encoding = "utf-8")
-        # The probe body is a concatenation of string literals inside the subprocess call.
         start = src.index("def _ensure_cpu_torch() -> None:")
         seg = src[start : src.index("\n\ndef ", start)]
-        line = next(l for l in seg.splitlines() if l.strip().startswith('"gpu = '))
-        expr = line.strip().removeprefix('"gpu = ').removesuffix('; "')
+        # Read the predicate from the module source, so an edit to it is what this test
+        # sees rather than a copy that can drift.
+        marker = "_is_gpu_build = ("
+        begin = seg.index(marker) + len(marker)
+        depth, end = 1, begin
+        for i in range(begin, len(seg)):
+            if seg[i] == "(":
+                depth += 1
+            elif seg[i] == ")":
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+        # Re-wrapped in parentheses: the predicate spans several indented lines.
+        expr = "(" + seg[begin:end] + ")"
         import re as _re
 
         return (
             "gpu"
-            if eval(expr, {"re": _re, "hip": hip, "cuda": cuda, "ver": ver.lower()})
+            if eval(expr, {"re": _re, "_hip": hip, "_cuda": cuda, "_ver": ver.lower()})
             else "cpu"
         )
 
@@ -594,12 +620,14 @@ class TestCpuPinSurvivesAWedgedImport:
         src = STACK.read_text(encoding = "utf-8")
         start = src.index("def _ensure_cpu_torch() -> None:")
         body = src[start : src.index("\n\ndef ", start)]
-        exc = body.index("except (OSError, subprocess.TimeoutExpired):")
-        guard = body.index("_is_gpu_torch_label(_installed_torch_label_on_disk())", exc)
-        # ...and the repair below must accept the probe-less path, or the fall-through
-        # dereferences None instead of reinstalling.
-        assert "probe = None" in body[guard : guard + 300]
-        assert "if probe is None or probe.returncode != 0:" in body
+        stalled = body.index("if not _ran:")
+        guard = body.index("_is_gpu_torch_label(_installed_torch_label_on_disk())", stalled)
+        # A merely slow CPU-only host returns; a GPU label on disk falls through...
+        assert "return" in body[guard : guard + 200]
+        # ...and the repair below must accept the probe-less path, or the one host that
+        # needs the pin enforced is the one host that never gets it.
+        repair = body.index("if not _ran or not _importable:")
+        assert repair > guard
 
     def test_the_disk_read_launches_no_interpreter(self):
         # An interpreter here would reintroduce the hang the disk read exists to avoid.

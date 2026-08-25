@@ -332,7 +332,7 @@ def _stub_unsloth_load_over_a_resident_gguf(route, monkeypatch, *, teardown):
     monkeypatch.setattr(
         route,
         "_resolve_model_identifier_for_request",
-        lambda request, operation: (request.model_path, request.model_path, False),
+        lambda request, operation, **_kwargs: (request.model_path, request.model_path, False),
     )
     monkeypatch.setattr(
         route,

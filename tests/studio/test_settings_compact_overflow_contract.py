@@ -8,7 +8,9 @@ SETTINGS_DIALOG = REPO / "studio/frontend/src/features/settings/settings-dialog.
 # The monitor has its own page and Settings links to it; the shrink contract covers both.
 API_MONITOR_PAGE = REPO / "studio/frontend/src/features/api-monitor/api-monitor-page.tsx"
 MONITOR_LINK = REPO / "studio/frontend/src/features/settings/components/monitor-link.tsx"
+REMOTE_ACCESS = REPO / "studio/frontend/src/features/settings/components/remote-access-section.tsx"
 GENERAL_TAB = REPO / "studio/frontend/src/features/settings/tabs/general-tab.tsx"
+SETTINGS = REPO / "studio/frontend/src/features/settings"
 
 
 def test_dialog_content_can_shrink_inside_the_dialog_grid():
@@ -35,9 +37,35 @@ def test_settings_monitor_link_can_shrink():
     assert '<span className="truncate text-xs text-muted-foreground">' in source
 
 
+def test_remote_access_card_can_shrink():
+    source = REMOTE_ACCESS.read_text(encoding = "utf-8")
+    # The heading and its status sit beside a button, so they need to shrink.
+    assert '<div className="flex min-w-0 items-start gap-3">' in source
+    assert '<div className="flex min-w-0 flex-col gap-0.5">' in source
+    # A tunnel URL has no spaces to wrap on, so it needs break-all.
+    assert "block w-full break-all rounded-md" in source
+    assert "<RemoteUrlPanel url={status?.url ?? null} />" in source
+
+
 def test_embedding_model_controls_stack_on_the_narrowest_viewports():
-    source = GENERAL_TAB.read_text(encoding = "utf-8")
-    assert (
-        'className="max-[360px]:flex-col max-[360px]:items-stretch max-[360px]:gap-3"'
-    ) in source
-    assert 'className="w-[220px] max-[360px]:min-w-0 max-[360px]:flex-1"' in source
+    # The picker has already moved once, from the General tab to Documents & RAG, and
+    # pinning the filename turned that move into a red build even though both responsive
+    # classes came along untouched. Follow whichever settings surface renders the picker.
+    # Dropping the classes still fails; relocating them no longer does.
+    owners = [
+        path
+        for path in sorted(SETTINGS.rglob("*.tsx"))
+        if "<EmbeddingModelCombobox" in path.read_text(encoding = "utf-8")
+    ]
+    assert owners, "no settings surface renders EmbeddingModelCombobox"
+
+    missing = [
+        str(path.relative_to(REPO))
+        for path in owners
+        if not (
+            'className="max-[360px]:flex-col max-[360px]:items-stretch max-[360px]:gap-3"'
+            in (source := path.read_text(encoding = "utf-8"))
+            and 'className="w-[220px] max-[360px]:min-w-0 max-[360px]:flex-1"' in source
+        )
+    ]
+    assert missing == []

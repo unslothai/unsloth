@@ -7,6 +7,9 @@ Off by default (idle seconds = 0). When enabled, a background loop unloads the
 loaded GGUF once it has been idle for the configured TTL, freeing VRAM. A
 pure-ASGI middleware tracks in-flight inference requests so a long stream that
 outlives the TTL is never unloaded mid-response.
+
+The same loop and the same middleware drive the image/video side (media_keepwarm),
+so Studio has one idle mechanism rather than one per backend.
 """
 
 from __future__ import annotations
@@ -80,6 +83,7 @@ _INFERENCE_SUFFIXES = (
     "/responses",
     "/generate/stream",  # Unsloth's own streaming route on the same llama-server
     "/audio/generate",  # direct GGUF TTS; can outlive the idle TTL
+    "/audio/speech",  # /v1/audio/speech (+ /api/inference/audio/speech); same TTS core as /audio/generate
     # Image generation holds a multi-GB pipeline for the whole request; tracking it lets other_inference_request_count() see
     # an in-flight generation so an API-key training start is refused (409). endswith avoids matching *-progress / */cancel.
     "/images/generate",  # /api/inference/images/generate
@@ -484,6 +488,34 @@ def sweep_slot_save_dir() -> None:
         pass
 
 
+def _as_bytes(value) -> bytes:
+    return value if isinstance(value, bytes) else str(value).encode("utf-8", "replace")
+
+
+def _carries_bearer_credentials(scope) -> bool:
+    """Whether this request carries the ``Authorization: Bearer`` its route demands.
+
+    Every tracked media route depends on ``get_current_subject`` (HTTPBearer), so a request
+    without one is refused before any handler runs. Counting it anyway would still pin the
+    pipeline: the count is taken here, ahead of FastAPI parsing the body, and a client that
+    opens the POST and then withholds its body produces no response status either, so the
+    401/403 exclusion below never gets to run. One such connection, replaced as it times
+    out, would keep a multi-GB pipeline resident for good. Real clients always send the
+    header, so requiring it costs a legitimate generation nothing.
+    """
+    headers = scope.get("headers")
+    if headers is None:
+        # A real ASGI server always populates headers; a caller that does not is not a
+        # client to second-guess, so keep the protection.
+        return True
+    for name, value in headers:
+        if _as_bytes(name).lower() != b"authorization":
+            continue
+        scheme, _, token = _as_bytes(value).partition(b" ")
+        return scheme.lower() == b"bearer" and bool(token.strip())
+    return False
+
+
 class LlamaKeepWarmMiddleware:
     """Pure ASGI: count in-flight inference requests and stamp activity on completion."""
 
@@ -493,51 +525,65 @@ class LlamaKeepWarmMiddleware:
     async def __call__(self, scope, receive, send):
         # Inference endpoints are all POST; skipping non-POST avoids counting CORS
         # preflight (OPTIONS). ``or ""`` guards an explicit None path.
-        if (
-            scope.get("type") != "http"
-            or scope.get("method") != "POST"
-            or not _is_inference_path(scope.get("path") or "")
-        ):
+        path = scope.get("path") or ""
+        if scope.get("type") != "http" or scope.get("method") != "POST":
+            await self.app(scope, receive, send)
+            return
+        # An image/video generation gets the same bookkeeping against ITS backend, so the
+        # media idle unload cannot free the pipeline this request is about to generate on
+        # -- or the load it is about to start. The media load routes are tracked HERE only:
+        # they do not use the chat GGUF, so they must not stamp chat activity nor count
+        # towards other_inference_request_count().
+        from core.inference import media_keepwarm
+
+        media_owner = media_keepwarm.owner_for_path(path)
+        if media_owner is not None and not _carries_bearer_credentials(scope):
+            # Cannot reach the backend, so it must not hold it warm (see the helper). The
+            # chat count keeps its own rule: /p/{run}/v1/chat/completions is public by
+            # design, so a missing bearer there is not proof of anything.
+            media_owner = None
+        chat_tracked = _is_inference_path(path)
+        if not chat_tracked and media_owner is None:
             await self.app(scope, receive, send)
             return
         # Always track in-flight on inference paths, even when the feature is off, so a
         # stream that starts before idle-unload is enabled can't be unloaded mid-response if
         # the operator turns it on. Mark pending before the gate so the idle loop (which
         # holds the gate while unloading) can't free the model while this request waits.
-        path = scope.get("path") or ""
         is_preview = _is_preview_path(path)
-        # Expose this scope to deep streaming error helpers (same task, so the contextvar
-        # reaches the body generators) so a post-200 SSE error can flag the response failed.
-        set_current_response_scope(scope)
-        _note_pending(is_preview)
-        # Snapshot the swap state before the gate: the counter advances if a swap
-        # completes while this request is blocked, and the in-progress flag catches a
-        # swap already underway (counter bumped, gate not yet released). Either rejects.
-        swap_gen_at_entry = _preview_swap_gen()
-        swap_active_at_entry = _preview_swap_active()
-        # Store the entry generation so local-inference admission can reject a request
-        # that passed the gate before a later swap (it never waits on the gate, so the
-        # block below won't flag it) yet is still pre-auth when the preview swaps in.
-        if isinstance(scope, dict):
-            scope[_SWAP_GEN_AT_ENTRY_KEY] = swap_gen_at_entry
-        started = False
-        try:
-            async with _unload_gate():
-                _note_start(is_preview)
-                started = True
-                # A preview swapped in a different checkpoint while this request waited on
-                # the gate. Flag the scope so _maybe_auto_switch_model rejects it before
-                # running against the preview's model. Deferred to the route (not a 503 here)
-                # so an external-provider request that untracks before that check isn't rejected.
-                if (
-                    not is_preview
-                    and (_preview_swap_gen() != swap_gen_at_entry or swap_active_at_entry)
-                    and isinstance(scope, dict)
-                ):
-                    scope[_PREVIEW_SWAP_REJECT_SCOPE_KEY] = True
-        finally:
-            if not started:
-                _note_unpending(is_preview)
+        if chat_tracked:
+            set_current_response_scope(scope)
+            _note_pending(is_preview)
+            swap_gen_at_entry = _preview_swap_gen()
+            swap_active_at_entry = _preview_swap_active()
+            if isinstance(scope, dict):
+                scope[_SWAP_GEN_AT_ENTRY_KEY] = swap_gen_at_entry
+            started = False
+            try:
+                async with _unload_gate():
+                    _note_start(is_preview)
+                    started = True
+                    if (
+                        not is_preview
+                        and (_preview_swap_gen() != swap_gen_at_entry or swap_active_at_entry)
+                        and isinstance(scope, dict)
+                    ):
+                        scope[_PREVIEW_SWAP_REJECT_SCOPE_KEY] = True
+            finally:
+                if not started:
+                    _note_unpending(is_preview)
+        if media_owner is not None:
+            try:
+                await media_keepwarm.begin_request(media_owner)
+            except BaseException:
+                # The generate routes are tracked on both sides, and this gate can be held
+                # for the length of a teardown. A client that disconnects while waiting on
+                # it never reaches the _finish below, so balance the chat count here or it
+                # stays positive for the life of the process: chat idle unload would never
+                # fire again and every training start would see an inference request.
+                if chat_tracked:
+                    _note_untracked_end(is_preview)
+                raise
         ended = {"done": False}
         status = {"code": None}
         # Set once the terminal body frame (more_body False) is sent: only a response that
@@ -553,6 +599,10 @@ class LlamaKeepWarmMiddleware:
                 return
             ended["done"] = True
             code = status["code"]
+            if media_owner is not None:
+                media_keepwarm.end_request(media_owner, counted = code not in (401, 403))
+            if not chat_tracked:
+                return
             # A non-preview 2xx that completed cleanly ran against the local model and adopts
             # it for Studio, so clear preview ownership. Skip on a per-route 4xx/5xx (never
             # strand a preview-owned model), count_tokens (tokenize only), a failed/cancelled
@@ -646,15 +696,30 @@ def _note_idle_unload_event(freed) -> None:
 async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
     """Unload the loaded GGUF once idle past the configured TTL. Inert when off."""
     from utils.openai_auto_switch_settings import (
+        get_auto_unload_api_only,
         get_auto_unload_idle_seconds,
         get_auto_unload_keep_kv,
     )
 
+    def _user_pinned(b) -> bool:
+        """Whether the setting spares this model. Re-read like the other
+        settings: a KV save can outlive the user turning this on. getattr keeps
+        a foreign backend (tests, MLX) on the old unload-everything path."""
+        return get_auto_unload_api_only() and getattr(b, "_loaded_by_user_action", False)
+
     seen_model = None
     while True:
         await asyncio.sleep(poll_seconds)
+        # The image/video half of the tick, in its own guard so neither side can cost the
+        # other an iteration. Inert unless the media TTL is set.
         try:
-            ttl = get_auto_unload_idle_seconds()
+            from core.inference.media_keepwarm import idle_unload_step
+            await idle_unload_step()
+        except Exception as exc:
+            logger.debug("media idle_unload_step failed: %s", exc)
+        try:
+            # Keep SQLite-backed setting reads off the event loop.
+            ttl = await asyncio.to_thread(get_auto_unload_idle_seconds)
             if ttl <= 0:
                 continue
             from routes.inference import get_llama_cpp_backend
@@ -671,10 +736,14 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                     if current is not None:
                         _note_activity()
                         _set_last_unloaded(None)  # a model is loaded; drop stale stash
+                if backend.is_loaded and await asyncio.to_thread(_user_pinned, backend):
+                    # Loaded from the UI, so the user wants it resident; only
+                    # models the API loaded are freed.
+                    continue
                 if backend.is_loaded and _is_idle(ttl):
                     freed = _loaded_identity(backend)
                     manifest = None
-                    if get_auto_unload_keep_kv():
+                    if await asyncio.to_thread(get_auto_unload_keep_kv):
                         try:
                             manifest = await asyncio.to_thread(
                                 backend.save_slots_for_resume,
@@ -683,14 +752,24 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                         except Exception as exc:
                             logger.debug("slot save before idle unload failed: %s", exc)
                     # Re-read settings: the save can outlive a settings change.
-                    ttl = get_auto_unload_idle_seconds()
-                    if ttl <= 0 or not _is_idle(ttl):
+                    ttl = await asyncio.to_thread(get_auto_unload_idle_seconds)
+                    if (
+                        ttl <= 0
+                        or not _is_idle(ttl)
+                        or await asyncio.to_thread(_user_pinned, backend)
+                    ):
                         if manifest:
                             _delete_resume_files(manifest)
                         continue
-                    if manifest and not get_auto_unload_keep_kv():
+                    if manifest and not await asyncio.to_thread(get_auto_unload_keep_kv):
                         _delete_resume_files(manifest)
                         manifest = None
+                    # A request may register _pending while an off-loop setting read runs.
+                    # Recheck idleness before unloading.
+                    if not _is_idle(ttl):
+                        if manifest:
+                            _delete_resume_files(manifest)
+                        continue
                     try:
                         await asyncio.to_thread(backend.unload_model)
                     except Exception:

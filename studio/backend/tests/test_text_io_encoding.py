@@ -309,9 +309,14 @@ def _offenders(path: Path) -> list[str]:
 def test_text_io_names_its_encoding(path: Path) -> None:
     offenders = _offenders(path)
     assert not offenders, (
-        "Text I/O without an explicit encoding falls back to the Windows ANSI "
-        'codepage and corrupts non-ASCII (ä ö ü → 世). Pass encoding = "utf-8":\n  '
-        + "\n  ".join(offenders)
+        "Text I/O without an explicit encoding falls back to locale.getencoding(), "
+        "which is the ANSI codepage on Windows (cp1252, cp932, cp1251, ... by system "
+        "locale) and ASCII under a C or POSIX locale on Linux, as containers and CI "
+        "runners routinely have. Either way non-ASCII (ä ö ü → 世) mojibakes or raises "
+        "UnicodeDecodeError.\n\n"
+        "A platform guard above the call does NOT make this safe: the Windows codepage "
+        "is only one of the two ways to get the wrong decoder, and a linux-only path "
+        'still meets the C-locale one. Pass encoding = "utf-8":\n  ' + "\n  ".join(offenders)
     )
 
 
@@ -601,6 +606,10 @@ def test_a_corrupt_pid_file_does_not_abort_shutdown(tmp_path: Path, monkeypatch)
     pid_file = tmp_path / "studio.pid"
     pid_file.write_bytes(b"\x80\xff")
     monkeypatch.setattr(studio_run, "_PID_FILE", pid_file)
+    # _legacy_heir scans the real Studio root, so without this the last assertion asks whether
+    # a server happens to be running on the machine: with one, the record is handed over rather
+    # than unlinked. The handoff has its own test below.
+    monkeypatch.setattr(studio_run, "_legacy_heir", lambda: None)
     studio_run._remove_pid_file()
     # Not this process's PID, so the file stays; the point is that it returned.
     assert pid_file.exists()
@@ -608,6 +617,26 @@ def test_a_corrupt_pid_file_does_not_abort_shutdown(tmp_path: Path, monkeypatch)
     pid_file.write_text(str(os.getpid()), encoding = "utf-8")
     studio_run._remove_pid_file()
     assert not pid_file.exists()
+
+
+def test_the_legacy_pid_record_is_handed_to_a_live_sibling(tmp_path: Path, monkeypatch) -> None:
+    """Only one server owns studio.pid, so deleting it while a sibling still serves would leave
+    that sibling unstoppable from an older CLI that reads no other file."""
+    import sys
+
+    backend = str(Path(__file__).resolve().parent.parent)
+    if backend not in sys.path:
+        sys.path.insert(0, backend)
+    import run as studio_run
+
+    pid_file = tmp_path / "studio.pid"
+    pid_file.write_text(str(os.getpid()), encoding = "utf-8")
+    monkeypatch.setattr(studio_run, "_PID_FILE", pid_file)
+    monkeypatch.setattr(studio_run, "_legacy_heir", lambda: 4242)
+
+    studio_run._remove_pid_file()
+
+    assert pid_file.read_text(encoding = "utf-8") == "4242"
 
 
 def test_the_kwargs_guard_only_judges_dicts_that_reach_a_call(tmp_path: Path) -> None:

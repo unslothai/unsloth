@@ -65,6 +65,7 @@ import {
 } from "./download-card";
 import { PathInfoButton } from "./path-info-button";
 import { TransportConflictDialog } from "./transport-conflict-dialog";
+import { DeleteImpactSummary, useDeleteImpact } from "./delete-impact";
 import { useCardDelete } from "./use-card-delete";
 import { useGgufVariantFetchState } from "./use-gguf-variant-fetch-state";
 
@@ -263,6 +264,7 @@ export function LocalOnDeviceCard({
   // Update availability is derived from the GGUF variant metadata; offline rows
   // keep the button hidden because there is no remote revision to fetch.
   const online = useOnlineStatus();
+  const deleteImpact = useDeleteImpact(deleteOpen && Boolean(repoId), repoId ?? "");
   const { deleting, runDelete } = useCardDelete({
     action: async () => {
       if (!repoId) return;
@@ -322,6 +324,11 @@ export function LocalOnDeviceCard({
         ...variant,
         download_size_bytes:
           remoteVariant.download_size_bytes || variant.download_size_bytes,
+        // Both sides measure the same cache; keep the local reading and let the
+        // remote one cover a row the local listing could not price.
+        download_remaining_bytes:
+          variant.download_remaining_bytes ??
+          remoteVariant.download_remaining_bytes,
         update_available: remoteVariant.update_available === true,
       };
     });
@@ -714,12 +721,16 @@ export function LocalOnDeviceCard({
         }}
         title="Delete cached model?"
         deleting={deleting}
+        // Same gate the model row menu applies: when an installed image model still needs these
+        // assets the summary says so, and leaving Delete enabled only bought the user a 400.
+        blocked={(deleteImpact?.blocked_by.length ?? 0) > 0}
         onConfirm={() => void runDelete()}
         description={
           <>
             This will remove{" "}
             <span className="font-medium text-foreground">{repoId}</span> and
             its downloaded files from disk. You can re-download it later.
+            <DeleteImpactSummary impact={deleteImpact} />
           </>
         }
       />

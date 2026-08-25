@@ -36,6 +36,7 @@ from transformers import __version__ as transformers_version
 from unsloth.models._utils import TorchAOConfig
 from unsloth_zoo.utils import Version, get_quant_type
 import gc
+import traceback as _traceback
 
 transformers_version = Version(transformers_version)
 SUPPORTS_FOURBIT = transformers_version >= Version("4.37")
@@ -1180,6 +1181,85 @@ def _restore_progress_bars(were_disabled):
             pass
 
 
+# Every way a cache miss reaches the caller once offline mode has skipped Transformers'
+# own "does not appear to have a file named" raise: the resolved path stays None and the
+# next line dereferences it, so the message names the None and never the cache. Same set
+# the Studio training worker matches (studio/backend/core/training/worker.py, #7845):
+# weights come out as `endswith`, tokenizers/processors as any of the other four.
+_EMPTY_CACHE_ARTIFACTS = (
+    "'nonetype' object has no attribute 'endswith'",
+    "'nonetype' object has no attribute 'readlines'",
+    "argument should be a str or an os.pathlike object",
+    "expected str, bytes or os.pathlike object",
+    "stat: path should be string, bytes, os.pathlike or integer",
+    "can't find a vocabulary file at path 'none'",
+)
+
+
+def _empty_cache_artifact(exc):
+    """True if exc, or something it wraps, is offline mode's empty-cache artifact.
+
+    The one family of retry failure that says nothing useful.
+
+    Named positively, rather than asking "is this an OOM": every other retry
+    failure is real news and must reach the user, and enumerating the ways an
+    accelerator spells OOM cannot be complete (accelerate re-raises it as a bare
+    RuntimeError, XPU has its own class). Asking for the artifact instead is
+    complete by construction.
+    """
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        text = str(exc).lower()
+        # Gate on the None: the same TypeError wording about a real path (`not 'int'`)
+        # is a caller bug, not an empty cache.
+        if ("nonetype" in text or "path 'none'" in text) and any(
+            artifact in text for artifact in _EMPTY_CACHE_ARTIFACTS
+        ):
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
+def _release_traceback_locals(error):
+    """Drop the frame locals along an exception chain, keeping file and line.
+
+    An exception we keep past its handler keeps its frames alive, and a failed load's
+    frames still own whatever the attempt had already built, so a retained error can pin
+    a model's GPU tensors for as long as the caller holds it. Clearing the locals beats
+    dropping the traceback: the memory goes either way, but the origin stays printable,
+    which for a network failure inside `trust_remote_code` is the only clue there is.
+    """
+    seen = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        # The frame we are running in cannot be cleared; clear_frames skips it for us.
+        _traceback.clear_frames(error.__traceback__)
+        error = error.__cause__ or error.__context__
+
+
+def _note_offline_retry(error, retry_error):
+    """Record the failed cache retry on the online error we are about to surface.
+
+    A note is the only place it can go that survives: the online error usually
+    already has a cause, and Python prints a cause INSTEAD of a context, so
+    chaining the retry on would hide it (and would cost the chain that makes the
+    online error classifiable). Notes are 3.11+; below that this is a no-op and
+    the attribute is all there is."""
+    text = f"Unsloth: retrying from the local cache also failed: {type(retry_error).__name__}: {retry_error}"
+    try:
+        error._unsloth_offline_retry_error = retry_error
+    except Exception:
+        pass
+    add_note = getattr(error, "add_note", None)
+    if add_note is None:
+        return
+    try:
+        add_note(text)
+    except Exception:
+        pass
+
+
 def _offline_aware_load(fn):
     """Decide offline ONCE (local_files_only kwarg or env) and force it around the
     whole load. If we started online and hit a network error, retry once forced-offline.
@@ -1201,6 +1281,12 @@ def _offline_aware_load(fn):
             # (else outer layers reload the whole model again).
             if not _is_offline_related_error(e) or getattr(e, "_unsloth_offline_retried", False):
                 raise
+            # Holding `e` holds its frames, and those frames hold the half-built model,
+            # so the collect below could not free it and a large VLM OOMed on the reload
+            # the retry exists to make. A wrapper's cause/context carries tracebacks over
+            # the SAME frames, so the whole chain has to be released, not just the top.
+            online_error = e
+            _release_traceback_locals(online_error)
         # Retry OUTSIDE the except so the failed attempt's traceback (a partial model)
         # is freed before reallocating, else a large VLM can OOM on the second load.
         try:
@@ -1218,12 +1304,36 @@ def _offline_aware_load(fn):
             with _force_hf_offline():
                 return fn(*args, **kwargs)
         except Exception as e:
-            # Tag so an enclosing _offline_aware_load skips its own redundant retry.
-            try:
-                e._unsloth_offline_retried = True
-            except Exception:
-                pass
-            raise
+            # A real retry failure (corrupt checkpoint, OOM) is news and goes out as
+            # itself; only the empty-cache artifact is worth replacing.
+            if not _empty_cache_artifact(e):
+                # Tag so an enclosing _offline_aware_load skips its own redundant retry.
+                try:
+                    e._unsloth_offline_retried = True
+                except Exception:
+                    pass
+                raise
+            # The retry can load a whole cached model and only then trip over a missing
+            # tokenizer file, and this error outlives the call on the online one, so its
+            # frames would keep that model resident for as long as the caller holds it.
+            _release_traceback_locals(e)
+            retry_error = e
+        # Report the ONLINE error: this retry only runs because of it, and its own
+        # failure names an empty cache badly (offline mode skips Transformers'
+        # "does not appear to have a file named" raise, so the user saw
+        # `AttributeError: 'NoneType' ... 'endswith'`).
+        try:
+            online_error._unsloth_offline_retried = True
+        except Exception:
+            pass
+        # Raise OUTSIDE the handler above: inside it, Python would overwrite
+        # `__context__` with the cache miss, and that chain is often the only thing
+        # that still makes the online error classifiable as network-related.
+        if online_error.__cause__ is None and online_error.__context__ is None:
+            # No chain to lose, so chain the retry on where it also prints.
+            raise online_error from retry_error
+        _note_offline_retry(online_error, retry_error)
+        raise online_error
 
     return _wrapper
 

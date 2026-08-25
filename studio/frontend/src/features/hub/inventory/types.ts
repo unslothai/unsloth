@@ -47,17 +47,22 @@ export interface CachedInventoryRow {
   capabilities: ModelInventoryCapabilities;
   bytes: number;
   cachePath?: string | null;
+  loadCachePath?: string | null;
   lastModified?: number | null;
   partial?: boolean;
   partialTransport?: string | null;
-  /** A download manifest or cancel marker exists for some quant. Moves when a
-   *  sibling is cancelled, which changes neither bytes nor mtime. */
+  /** This partial can be continued byte for byte. */
+  partialResumable?: boolean;
+  /** A download manifest or cancel marker exists for some quant; moves on a sibling cancel, which changes neither bytes nor mtime. */
   hasVariantState?: boolean;
   pipelineTag?: string | null;
   // Inferred pipeline task from the backend. The task-scoped pickers filter On Device rows on it.
   task?: string | null;
   // Diffusion repo with no pipeline index: loadable only via from_single_file + a filename, so the task pickers must not offer it as a pipeline load.
   singleFile?: boolean;
+  // sd.cpp companion mirror: VAE / text encoders with no denoiser. Still listed, because these
+  // run to tens of GB and the row is how they are seen and deleted, but never a pick.
+  companion?: boolean;
   tags?: string[];
   libraryName?: string | null;
   quantMethod?: string | null;
@@ -74,6 +79,7 @@ export interface LocalInventoryRow {
   title: string;
   source: LocalSource;
   sourceLabel: string;
+  datasetSource?: "recipe" | "upload";
   modelId?: string | null;
   displayName?: string;
   path: string;
@@ -91,6 +97,8 @@ export interface LocalInventoryRow {
   updatedAt: number | null;
   partial?: boolean;
   partialTransport?: string | null;
+  /** This partial can be continued byte for byte. */
+  partialResumable?: boolean;
   activeCache?: boolean | null;
   pipelineTag?: string | null;
   tags?: string[];

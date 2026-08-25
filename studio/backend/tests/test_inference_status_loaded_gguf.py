@@ -116,3 +116,111 @@ def test_a_local_path_load_without_a_lease_is_still_local(status_route):
     status = status_route(_StatusBackend(local, native_grant_backed = False))
     assert status.is_gguf is True
     assert status.is_local_model is True
+
+
+def test_a_model_cached_behind_the_gguf_is_still_reported(status_route, monkeypatch):
+    # Loading a GGUF unloads only the ACTIVE Unsloth model, so a Transformers
+    # model cached behind it keeps its weights. Reporting only the GGUF left
+    # that memory invisible to every client, and unreleasable from the UI.
+    monkeypatch.setattr(
+        inference_route,
+        "_peek_inference_backend",
+        lambda: type("_Reg", (), {"models": {"org/Cached": {}}})(),
+    )
+    status = status_route(_StatusBackend("org/A-GGUF", native_grant_backed = False))
+    assert status.active_model == "org/A-GGUF"
+    assert status.loaded == ["org/A-GGUF", "org/Cached"]
+
+
+def test_the_gguf_is_not_listed_twice_when_the_registry_names_it(status_route, monkeypatch):
+    monkeypatch.setattr(
+        inference_route,
+        "_peek_inference_backend",
+        lambda: type("_Reg", (), {"models": {"org/A-GGUF": {}}})(),
+    )
+    status = status_route(_StatusBackend("org/A-GGUF", native_grant_backed = False))
+    assert status.loaded == ["org/A-GGUF"]
+
+
+def test_no_orchestrator_leaves_the_gguf_alone(status_route, monkeypatch):
+    # Peek returns None before anything built one; the branch must not construct it.
+    monkeypatch.setattr(inference_route, "_peek_inference_backend", lambda: None)
+    status = status_route(_StatusBackend("org/A-GGUF", native_grant_backed = False))
+    assert status.loaded == ["org/A-GGUF"]
+
+
+def test_the_users_chat_template_override_wins_over_the_runtime_projection(status_route):
+    # The field is on the shared runtime fields, so the projection carries it too.
+    # It must be overridden, not passed alongside, or the call is a TypeError.
+    backend = _StatusBackend("org/A-GGUF")
+    backend.chat_template_override = "user-template"
+    status = status_route(backend)
+    assert status.chat_template_override == "user-template"
+
+
+def test_an_auto_applied_chat_template_is_not_reported_as_the_users(status_route, monkeypatch):
+    # A bundled family template is not a user override; re-sending it would pin
+    # it onto the next, unrelated model.
+    monkeypatch.setattr(
+        inference_route,
+        "resolve_effective_chat_template_override",
+        lambda **k: "bundled-template",
+    )
+    backend = _StatusBackend("org/A-GGUF")
+    backend.chat_template_override = "bundled-template"
+    assert status_route(backend).chat_template_override is None
+
+
+def test_status_publishes_the_running_pass_through_arguments(status_route):
+    # A tab opened while a model is already running never saw the load, so the only
+    # place it can learn what the server was invoked with is here. Without it, a
+    # rollback after a failed switch restores the previous model without them, and
+    # the omitted field cannot inherit either: the failed target is left resident,
+    # and the route refuses to carry arguments across models.
+    backend = _StatusBackend("org/A-GGUF")
+    backend.requested_extra_args = ["--numa", "distribute"]
+    status = status_route(backend)
+    assert status.requested_llama_extra_args == ["--numa", "distribute"]
+
+
+def test_an_explicit_empty_list_is_not_a_missing_one(status_route):
+    # A rollback resends this field only when it has one, and omitting it is what
+    # makes /load inherit. A model that was running with no extras must come back
+    # with none, not with the arguments of the load that just failed.
+    backend = _StatusBackend("org/A-GGUF")
+    backend.requested_extra_args = []
+    assert status_route(backend).requested_llama_extra_args == []
+    # None is the one case where nothing was ever set, and inheriting is right.
+    backend.requested_extra_args = None
+    assert status_route(backend).requested_llama_extra_args is None
+
+
+def test_status_publishes_mmproj_cpu_recovery(status_route):
+    backend = _StatusBackend("org/Vision-GGUF")
+    backend.is_vision = True
+    backend.mmproj_fallback_reason = "cpu_offload"
+
+    status = status_route(backend)
+
+    assert status.is_vision is True
+    assert status.mmproj_fallback_reason == "cpu_offload"
+
+
+def test_status_publishes_an_explicit_text_only_mmproj_fallback(status_route):
+    backend = _StatusBackend("org/Vision-GGUF")
+    backend.is_vision = False
+    backend.mmproj_fallback_reason = "projector_startup_failure"
+
+    status = status_route(backend)
+
+    assert status.is_vision is False
+    assert status.mmproj_fallback_reason == "projector_startup_failure"
+
+
+def test_the_diffusion_runner_reports_none(status_route):
+    # It appends none of them, so publishing a list would describe a command that
+    # does not exist.
+    backend = _StatusBackend("org/A-GGUF")
+    backend.is_diffusion = True
+    backend.requested_extra_args = ["--numa", "distribute"]
+    assert status_route(backend).requested_llama_extra_args is None

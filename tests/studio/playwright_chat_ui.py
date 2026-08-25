@@ -29,6 +29,7 @@ from _playwright_robust import (  # noqa: E402
     recover_or_replace_page,
     robust_evaluate,
     wait_for_health,
+    click_forced,
 )
 
 BASE = os.environ["BASE_URL"]
@@ -48,6 +49,10 @@ STRICT = os.environ.get("STUDIO_UI_STRICT", "0") == "1"
 # Per-turn assistant-bubble wait. The free macos-14 runner is ~3-5x
 # slower at gemma-3-270m CPU inference; this lets it bump the timeout.
 TURN_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_TURN_TIMEOUT_MS", "180000"))
+# How long the rapid-submit step holds the first turn's response. Only needs to
+# outlast the 100 ms follow-up wait; kept well clear of it so a loaded runner
+# cannot close the gap, and paid once per run.
+RAPID_FIRST_TURN_HOLD_S = 3.0
 
 # Wall-clock cap for the whole script (healthy run is 5-9 min).
 WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "720"))
@@ -146,6 +151,63 @@ def exercise_permission_mode_controls(page, shoot):
         expect(item).to_be_visible()
         item.click()
 
+    def set_legacy_confirm(legacy_value):
+        page.evaluate(
+            """(legacyValue) => {
+                localStorage.removeItem("unsloth_chat_permission_mode");
+                if (legacyValue === null) {
+                    localStorage.removeItem("unsloth_chat_confirm_tool_calls");
+                } else {
+                    localStorage.setItem(
+                        "unsloth_chat_confirm_tool_calls",
+                        legacyValue,
+                    );
+                }
+            }""",
+            legacy_value,
+        )
+
+    # The level is an installation setting, mirrored through /api/chat/settings,
+    # so "fresh profile" is no longer "fresh browser": the cross-browser step
+    # runs this block three times against ONE install, and runs two and three
+    # would otherwise open on the level run one left behind. Refuse the
+    # hydrating GET, with no local level either, which is the state a first-ever
+    # browser on a never-configured install is in. Everything up to the end of
+    # the migration loop reads the level, so the whole stretch is held there.
+    def refuse_settings_hydration(route):
+        if route.request.method == "GET":
+            route.fulfill(
+                status = 503,
+                content_type = "application/json",
+                body = json.dumps({"detail": "hydration disabled for this step"}),
+            )
+        else:
+            route.continue_()
+
+    # Every reload in this block used to be followed by a bare
+    # `expect(pill).to_be_visible()` on the default 5s expect timeout.
+    # `domcontentloaded` fires long before React has mounted the composer, and on
+    # a 3-core macOS runner with a paravirtual GPU that gap is regularly wider
+    # than 5s. That is the failure that took studio-mac-ui-smoke red at 35672fc9b
+    # and again at bfcaea465, both times on this exact locator, with green runs on
+    # either side -- a race, not a regression.
+    #
+    # The composer-mount step already settles the network before waiting, for the
+    # same reason and with the same note about macOS. This does the same after
+    # each reload. It asserts exactly what it asserted before; it just stops
+    # asking before the answer can exist.
+    def reload_and_wait_for_pill():
+        page.reload(wait_until = "domcontentloaded")
+        try:
+            page.wait_for_load_state("networkidle", timeout = 30_000)
+        except Exception:
+            pass  # best-effort -- proceed even if network never idles
+        expect(pill).to_be_visible(timeout = 30_000)
+
+    page.route("**/api/chat/settings", refuse_settings_hydration)
+    set_legacy_confirm(None)
+    reload_and_wait_for_pill()
+
     # Fresh profiles default to Approve for me.
     expect_mode("Approve for me")
     menu = open_menu()
@@ -176,30 +238,34 @@ def exercise_permission_mode_controls(page, shoot):
         fail(f"permission pill is clipped in compact layout: {box!r}")
     page.set_viewport_size({"width": 1280, "height": 900})
 
-    # Legacy setting migration: true -> ask, false -> off, absent -> auto.
+    # Legacy setting migration: true -> ask, false -> off, absent -> auto. Still
+    # under the refused hydration above: a stored level wins over the local
+    # derivation, so without it the second reload would assert against the level
+    # the first one seeded and read as a migration bug.
     migration_cases = (
         ("true", "Ask for approval"),
         ("false", "Run automatically"),
         (None, "Approve for me"),
     )
-    for legacy_value, expected_label in migration_cases:
-        page.evaluate(
-            """(legacyValue) => {
-                localStorage.removeItem("unsloth_chat_permission_mode");
-                if (legacyValue === null) {
-                    localStorage.removeItem("unsloth_chat_confirm_tool_calls");
-                } else {
-                    localStorage.setItem(
-                        "unsloth_chat_confirm_tool_calls",
-                        legacyValue,
-                    );
-                }
-            }""",
-            legacy_value,
-        )
-        page.reload(wait_until = "domcontentloaded")
-        expect(pill).to_be_visible()
-        expect_mode(expected_label)
+    try:
+        for legacy_value, expected_label in migration_cases:
+            set_legacy_confirm(legacy_value)
+            reload_and_wait_for_pill()
+            expect_mode(expected_label)
+    finally:
+        page.unroute("**/api/chat/settings", refuse_settings_hydration)
+
+    # The other half of that contract: with a level stored for the install, a
+    # browser holding only the legacy key gets the installation's level back
+    # rather than its own derivation.
+    choose("Ask for approval")
+    expect_mode("Ask for approval")
+    set_legacy_confirm("false")
+    reload_and_wait_for_pill()
+    expect_mode("Ask for approval")
+    cached = page.evaluate("() => localStorage.getItem('unsloth_chat_permission_mode')")
+    if cached != "ask":
+        fail(f"hydration left the local cache at {cached!r}, expected 'ask'")
 
     choose("Run automatically")
     expect_mode("Run automatically")
@@ -234,8 +300,7 @@ def exercise_permission_mode_controls(page, shoot):
     if stored != "off":
         fail(f"Full access overwrote persisted mode with {stored!r}")
 
-    page.reload(wait_until = "domcontentloaded")
-    expect(pill).to_be_visible()
+    reload_and_wait_for_pill()
     expect_mode("Run automatically")
 
     # Leave the full chat smoke in the fresh-install default.
@@ -564,8 +629,8 @@ with sync_playwright() as p:
         ),
     )
     page = ctx.new_page()
-    # 60s default (was 30s): macos-14 under --single-process Chromium is
-    # slow enough that renders/webfonts/lazy routes routinely crowd 30s.
+    # 60s default (was 30s): the macos-14 runners are slow enough that
+    # renders/webfonts/lazy routes routinely crowd 30s.
     page.set_default_timeout(60_000)
     page_errors = []
     page.on("pageerror", lambda e: page_errors.append(str(e)))
@@ -950,7 +1015,13 @@ with sync_playwright() as p:
         page.wait_for_timeout(300)
 
     # ─────────────────────────────────────────────────────
-    # 4. Five chat turns, all non-empty.
+    # 4. A follow-up submitted 100 ms after a normal send must queue behind it.
+    # This targets the interval before assistant-ui paints isRunning: without a
+    # synchronous per-thread reservation the second submit starts immediately,
+    # cancels the first turn, and leaves its assistant bubble empty.
+    # ─────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────
+    # 4b. Five chat turns, all non-empty.
     # ─────────────────────────────────────────────────────
     prompts = [
         "Reply with exactly: hello",
@@ -1050,6 +1121,210 @@ with sync_playwright() as p:
         except Exception:
             shoot(f"04-turn-{idx}-still-streaming")
             raise
+
+    step("rapid submit: 100 ms follow-up queues behind the first turn")
+    rapid_bubbles_before = _bubble_count()
+    composer_form = page.locator('form:has(textarea[aria-label="Message input"])').first
+    # How long a reply takes is not ours to decide: sampling settings, whatever
+    # GGUF_REPO points at and an early EOS all move it, and a short answer can
+    # finish inside the follow-up delay on a fast runner, leaving nothing to
+    # queue behind. So hold the first turn's response open rather than hope it
+    # is slow.
+    #
+    # The follow-up and the observation both run in the page, not here. The sync
+    # Playwright route handler runs on this thread, so a wait inside it blocks
+    # the test: the handler would fire during a wait_for_timeout, finish, and
+    # release the request before a Python-side second submit could happen, which
+    # puts the hold entirely before the follow-up instead of across it. Page
+    # timers keep running while this thread is parked in the handler.
+    # Everything here runs in the page. Playwright's sync route handler runs on
+    # this thread, so holding a request there blocks the test itself and the
+    # follow-up cannot be sent while the hold is in effect; and the page cannot
+    # observe a Playwright interception, so no in-page timer can be aligned with
+    # one. Wrapping fetch solves both: the page sees the exact moment the first
+    # turn's request goes out, sends the follow-up then, and delays the response
+    # itself, so the turn is provably still running with no timing assumption.
+    page.evaluate(
+        """(args) => {
+            const [secondPrompt, holdMs] = args;
+            window.__unslothRapid = {
+                intercepted: false, submitted: false, queueSeen: false,
+                observed: false, error: null, seen: [], holdUntil: 0,
+            };
+            const state = window.__unslothRapid;
+            const realFetch = window.fetch;
+            const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+            const sendFollowUp = (deadline) => {
+                if (state.submitted || state.error) return;
+                // Re-query, and retry: this is the chat's first message, so
+                // sending it swaps the welcome composer for the dock composer.
+                // A node captured earlier is detached, and for a short window
+                // there is no connected composer at all.
+                const composer = document.querySelector(
+                    'textarea[aria-label="Message input"]'
+                );
+                if (!composer || !composer.isConnected || !composer.form) {
+                    if (deadline === undefined) deadline = Date.now() + 5000;
+                    // Never retry past the hold. The response is released when
+                    // it expires, so a submit after that races a buffered reply
+                    // finishing first and would report a queue failure for an
+                    // application that behaved correctly.
+                    if (state.holdUntil) {
+                        deadline = Math.min(deadline, state.holdUntil - 250);
+                    }
+                    if (Date.now() > deadline) {
+                        state.error = "no connected composer for the follow-up";
+                        return;
+                    }
+                    setTimeout(() => sendFollowUp(deadline), 25);
+                    return;
+                }
+                // React tracks the value on the node, so a plain assignment is
+                // reverted on the next render.
+                const setValue = Object.getOwnPropertyDescriptor(
+                    window.HTMLTextAreaElement.prototype, "value"
+                ).set;
+                setValue.call(composer, secondPrompt);
+                composer.dispatchEvent(new Event("input", { bubbles: true }));
+                composer.form.requestSubmit();
+                state.submitted = true;
+            };
+
+            window.fetch = async (...a) => {
+                const url = String(
+                    (a[0] && a[0].url) ? a[0].url : a[0]
+                );
+                const isTurn = url.includes("chat/completions");
+                if (isTurn && !state.intercepted) {
+                    state.intercepted = true;
+                    state.holdUntil = Date.now() + holdMs;
+                    state.seen.push(url);
+                    const response = realFetch(...a);
+                    // The request is out and the turn is running. Send the
+                    // follow-up now, then keep the response pending so it
+                    // cannot complete first.
+                    setTimeout(() => sendFollowUp(), 0);
+                    await sleep(holdMs);
+                    return response;
+                }
+                return realFetch(...a);
+            };
+
+            // Always restore. A wrapper left in place for the rest of the
+            // run is a monkeypatch with no teardown, and every later turn would
+            // pay for it.
+            window.__unslothRapidArm = () => setTimeout(() => sendFollowUp(), 100);
+
+            window.__unslothRapidRestore = () => {
+                window.fetch = realFetch;
+                clearInterval(poll);
+            };
+
+            const poll = setInterval(() => {
+                if (document.querySelector(
+                    'button[aria-label="Remove queued prompt 1"]'
+                )) {
+                    state.queueSeen = true;
+                    clearInterval(poll);
+                }
+            }, 25);
+            setTimeout(() => {
+                clearInterval(poll);
+                if (!state.queueSeen && !state.error) {
+                    // Resolve the wait rather than let it die on a generic
+                    // Playwright timeout. That path is the regression this step
+                    // exists to catch, and leaving it unresolved makes the
+                    // screenshot, the explicit message and the fetch teardown
+                    // below unreachable in exactly that case.
+                    state.observed = true;
+                }
+            }, 20000);
+        }""",
+        ["Reply with exactly: rapid-second", int(RAPID_FIRST_TURN_HOLD_S * 1000)],
+    )
+
+    composer.fill("Reply with exactly: rapid-first")
+    composer_form.evaluate("form => form.requestSubmit()")
+    # Arm the 100 ms path now that the first turn has been submitted. Whichever
+    # fires first wins and the other is a no-op, so this still covers the
+    # pre-render interval the step is named after, while the fetch path keeps
+    # the guarantee when persistence delays the request.
+    page.evaluate("() => window.__unslothRapidArm && window.__unslothRapidArm()")
+
+    page.wait_for_function(
+        """() => window.__unslothRapid
+            && (window.__unslothRapid.queueSeen
+                || window.__unslothRapid.observed
+                || window.__unslothRapid.error)""",
+        timeout = 60_000,
+    )
+    state = page.evaluate("() => window.__unslothRapid")
+    page.evaluate("() => { if (window.__unslothRapidRestore) window.__unslothRapidRestore(); }")
+    if state["error"]:
+        shoot("04-rapid-submit-no-composer")
+        fail(f"could not send the follow-up: {state['error']}")
+    # queueSeen is the property under test; the hold is only the means of
+    # guaranteeing the first turn was still running. If the queue formed, it
+    # formed, whether or not the hold was needed. Only demand the interception
+    # when it did not, so an unheld run cannot report a silent pass.
+    if not state["queueSeen"] and not state["intercepted"]:
+        fail(
+            "the first turn's request was never seen, so it was never held, "
+            f"and no queue formed; saw {state['seen']}"
+        )
+    # The follow-up went out after the first turn's request was issued and while
+    # its response was still held, so that turn was necessarily running. A
+    # missing queue control is therefore a real regression, not timing.
+    if not state["queueSeen"]:
+        shoot("04-rapid-submit-no-queue")
+        fail(
+            "follow-up sent during a held first turn did not appear as queued "
+            f"work (submitted={state['submitted']}, intercepted="
+            f"{state['intercepted']})"
+        )
+
+    # Settle before the five-turn sequence below: two bubbles, nothing streaming,
+    # nothing queued. That is the whole job of this wait. What the turns SAID is
+    # not checked here and never was; the queue behaviour this step exists to
+    # prove is `state.queueSeen` above.
+    #
+    # This used to also require every reply's innerText to be non-empty, which
+    # measured the action bar, not the reply. innerText of a message root spans
+    # the whole subtree, and the assistant action bar sits inside it, so the
+    # clause was satisfied by button labels ("Copy Edit response Refresh Delete
+    # message Read aloud More" plus the tok/s readout) whatever the model
+    # returned. Instrumented at this exact point on the CI runners, comparing the
+    # message content element against the message root, two passing runs read:
+    #
+    #   content=[0, 0]   innerText=[73, 73]  -> clause held, both replies empty
+    #   content=[0, 19]  innerText=[73, 89]  -> clause held, first reply empty
+    #
+    # gemma-3-270m-it answers "Reply with exactly: rapid-first" with an empty
+    # completion often enough to appear in 3 of 8 sampled runs, and the clause
+    # held anyway every time, so it never had the coverage its wording implies.
+    # A content-based replacement would be flakier than what it replaces, because
+    # an empty completion is the model's behaviour, not a defect in Studio.
+    #
+    # It matters now because the assistant action bar autohides on every reply but
+    # the newest, so for the older of the two this reads, the labels are no longer in
+    # the subtree and the clause finally started reporting what it was actually
+    # measuring: a hidden hover affordance.
+    page.wait_for_function(
+        """(want) => {
+            const replies = Array.from(
+                document.querySelectorAll('[data-role="assistant"]')
+            ).slice(-2);
+            return replies.length === 2 &&
+                document.querySelectorAll('[data-role="assistant"]').length >= want &&
+                !document.querySelector('button[aria-label="Stop generating"]') &&
+                !document.querySelector('button[aria-label="Remove queued prompt 1"]');
+        }""",
+        arg = rapid_bubbles_before + 2,
+        timeout = TURN_TIMEOUT_MS * 2,
+    )
+    shoot("04-rapid-submit-queued")
+    info("OK 100 ms follow-up waited and both assistant turns completed")
 
     for i, p_ in enumerate(prompts, start = 1):
         step(f"turn {i}: {p_!r}")
@@ -1333,7 +1608,7 @@ with sync_playwright() as p:
             opened = False
             for attempt in range(2):
                 try:
-                    acct.click(force = True)
+                    click_forced(acct)
                 except Exception as exc:
                     if attempt == 1:
                         soft_fail(f"theme cycle {cycle + 1}: account-menu click failed ({exc!r})")
@@ -1367,10 +1642,10 @@ with sync_playwright() as p:
             for click_attempt in range(3):
                 try:
                     if click_attempt == 0:
-                        theme_item.click(force = True, timeout = 3_000)
+                        click_forced(theme_item, timeout = 3_000)
                     elif click_attempt == 1:
                         theme_item.scroll_into_view_if_needed(timeout = 2_000)
-                        theme_item.click(force = True, timeout = 3_000)
+                        click_forced(theme_item, timeout = 3_000)
                     else:
                         theme_item.evaluate("el => el.click()")
                     click_err = None
@@ -1465,7 +1740,7 @@ with sync_playwright() as p:
                 page.wait_for_timeout(500)
                 item = page.get_by_role("menuitem", name = re.compile(label, re.I)).first
                 if item.count() == 0:
-                    more_btn.click(force = True)
+                    click_forced(more_btn)
                     page.wait_for_timeout(500)
                     item = page.get_by_role("menuitem", name = re.compile(label, re.I)).first
                 if item.count() > 0:
@@ -1478,7 +1753,7 @@ with sync_playwright() as p:
         # though the button is visible + enabled (belt-and-suspenders
         # atop the startViewTransition neutraliser).
         try:
-            btn.click(force = True, timeout = 5_000)
+            click_forced(btn, timeout = 5_000)
         except Exception as exc:
             soft_fail(f"nav '{label}' click failed: {exc!r}")
             return False
@@ -1496,7 +1771,7 @@ with sync_playwright() as p:
     # Compare moved into the composer "Tools and attachments" menu.
     plus_btn = page.get_by_role("button", name = re.compile(r"Tools and attachments", re.I)).first
     if plus_btn.count() > 0:
-        plus_btn.click(force = True)
+        click_forced(plus_btn)
         page.wait_for_timeout(400)
         compare_item = page.get_by_role("menuitem", name = re.compile(r"Compare chat", re.I)).first
         if compare_item.count() == 0:
@@ -1510,13 +1785,13 @@ with sync_playwright() as p:
                     "menuitem", name = re.compile(r"Compare chat", re.I)
                 ).first
                 if compare_item.count() == 0:
-                    more_trigger.click(force = True)
+                    click_forced(more_trigger)
                     page.wait_for_timeout(400)
                     compare_item = page.get_by_role(
                         "menuitem", name = re.compile(r"Compare chat", re.I)
                     ).first
         if compare_item.count() > 0:
-            compare_item.click(force = True)
+            click_forced(compare_item)
             page.wait_for_timeout(800)
             if not re.search(r"/chat\?", page.url):
                 soft_fail(f"'Compare chat' didn't open compare; current: {page.url}")
@@ -1805,7 +2080,7 @@ with sync_playwright() as p:
     try:
         refresh_status = int(refresh_proc.stdout.strip())
     except ValueError:
-        fail(f"curl refresh-token check returned invalid status: " f"{refresh_proc.stdout!r}")
+        fail(f"curl refresh-token check returned invalid status: {refresh_proc.stdout!r}")
     if refresh_status == 200:
         fail(f"/api/auth/refresh should fail after CLI rotation; got 200")
     info(
@@ -1819,10 +2094,10 @@ with sync_playwright() as p:
     # ─────────────────────────────────────────────────────
     step("persisted monitor stays dormant on /login and resumes after auth")
     # Start fresh after the CLI rotation invalidates this browser session.
-    # Stay in the SAME context: macOS Chromium runs --single-process, where
-    # closing the last context kills the browser and a second context cannot
-    # be created. Open the new page before closing the old one; the context
-    # init script covers the new page.
+    # Stay in the SAME context: it keeps the init script and costs nothing to
+    # reuse. This used to be forced, because macOS ran --single-process Chromium,
+    # which allows only one context; that flag is gone now. Open the new page
+    # before closing the old one; the context init script covers the new page.
     try:
         ctx.clear_cookies()
     except Exception as exc:

@@ -327,12 +327,13 @@ def test_studio_default_rejects_secure_with_subcommand():
     assert "--secure" in combined, combined
 
 
-# ── secure resolves tools against the loopback bind (tools stay ON) ──
+# ── secure resolves tools against the loopback bind (no flag -> no override) ──
 
 
 def test_run_secure_resolves_tools_against_loopback(monkeypatch):
     # --secure is a loopback bind behind an authenticated tunnel, so tools resolve
-    # against 127.0.0.1 (ON): the child gets --enable-tools, not --disable-tools.
+    # against 127.0.0.1. With no flag the resolver returns None, and the child gets
+    # neither --enable-tools nor --disable-tools (per-request enable_tools decides).
     studio_mod = _studio()
     monkeypatch.setattr(sys, "prefix", "/nonexistent/outer/venv")
     fake_venv = Path("/fake/studio/venv/unsloth_studio")
@@ -357,7 +358,7 @@ def test_run_secure_resolves_tools_against_loopback(monkeypatch):
 
     def rec(host, flag, yes, silent):
         calls.append(host)
-        return True if flag is None else bool(flag)  # default ON everywhere
+        return flag  # no flag -> None -> no process-wide override
 
     monkeypatch.setattr(_tp_mod, "resolve_tool_policy", rec)
 
@@ -380,7 +381,8 @@ def test_run_secure_resolves_tools_against_loopback(monkeypatch):
     # Resolved against the forced-loopback bind, not the public 0.0.0.0 exposure.
     assert calls and calls[0] == "127.0.0.1", calls
     assert len(captured) == 1, captured
-    assert "--enable-tools" in captured[0] and "--disable-tools" not in captured[0], captured[0]
+    assert "--enable-tools" not in captured[0], captured[0]
+    assert "--disable-tools" not in captured[0], captured[0]
 
 
 def test_run_secure_enable_tools_no_auto_yes(monkeypatch):
@@ -437,12 +439,13 @@ def test_studio_default_rejects_enable_tools_with_subcommand():
 
 
 def test_run_tool_help_reflects_default_on_everywhere():
-    # Help must match the new policy (tools on everywhere, no prompt).
+    # Help must match the policy (tools on by default everywhere, no prompt).
     import inspect
 
     params = inspect.signature(_studio().run).parameters
     tools_help = params["enable_tools"].default.help or ""
     assert "on for every bind" in tools_help, tools_help
+    assert "enable_tools: false" in tools_help, tools_help
     assert "0.0.0.0" not in tools_help, tools_help
 
     yes_help = params["yes"].default.help or ""

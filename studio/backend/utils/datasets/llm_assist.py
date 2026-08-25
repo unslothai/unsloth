@@ -52,14 +52,23 @@ def precache_helper_gguf():
     if os.environ.get("UNSLOTH_HELPER_MODEL_DISABLE", "").strip() in ("1", "true"):
         return
 
+    _bars_were_off = False
     repo = os.environ.get("UNSLOTH_HELPER_MODEL_REPO", DEFAULT_HELPER_MODEL_REPO)
     variant = os.environ.get("UNSLOTH_HELPER_MODEL_VARIANT", DEFAULT_HELPER_MODEL_VARIANT)
 
     try:
         from huggingface_hub import HfApi, hf_hub_download
-        from huggingface_hub.utils import disable_progress_bars, enable_progress_bars
+        from huggingface_hub.utils import (
+            are_progress_bars_disabled,
+            disable_progress_bars,
+            enable_progress_bars,
+        )
         from utils.hf_cache_settings import active_hf_hub_cache
 
+        # Remember whether bars were already off. Studio turns them off for the whole
+        # server, so enabling them unconditionally on the way out would undo that for
+        # every later in-process download.
+        _bars_were_off = bool(are_progress_bars_disabled())
         disable_progress_bars()
         logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
 
@@ -89,8 +98,9 @@ def precache_helper_gguf():
         logger.warning(f"Failed to pre-cache helper GGUF: {e}")
     finally:
         try:
-            enable_progress_bars()
-        except Exception as e:
+            if not _bars_were_off:
+                enable_progress_bars()
+        except Exception:
             pass
 
 

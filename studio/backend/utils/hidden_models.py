@@ -32,11 +32,13 @@ _DEFAULT_EMBEDDING_REPO_IDS = {
 # fallback for Studio's static default embedder only; configured custom repos
 # remain exact-match-only.
 _DEFAULT_EMBEDDING_PATH_BASENAMES = {"bge-small-en-v1.5"}
-# Curated Whisper dictation checkpoints (STT, never chat), hidden from the chat
+# Curated dictation checkpoints (STT, never chat), hidden from the chat
 # inventory and pickers: Transformers safetensors repos (unsloth/whisper-*) and
 # their GGUF companions (unslothai/whisper-*-GGUF). Custom checkpoints are caught
 # by config below, but the GGUF companions carry a raw .bin (no config.json), so
-# they must be listed here by id or they leak into chat pickers.
+# they must be listed here by id or they leak into chat pickers. The Qwen3-ASR
+# GGUFs are listed for the same reason: llama.cpp will happily load one as a
+# chat model, where it only answers with transcripts.
 _HIDDEN_STT_REPO_IDS = frozenset(
     {
         "unsloth/whisper-tiny",
@@ -49,8 +51,20 @@ _HIDDEN_STT_REPO_IDS = frozenset(
         "unslothai/whisper-small-GGUF",
         "unslothai/whisper-large-v3-turbo-GGUF",
         "unslothai/whisper-large-v3-GGUF",
+        "unslothai/Qwen3-ASR-0.6B-GGUF",
+        "unslothai/Qwen3-ASR-1.7B-GGUF",
     }
 )
+_HIDDEN_STT_REPO_IDS_LOWER = frozenset(repo_id.lower() for repo_id in _HIDDEN_STT_REPO_IDS)
+
+
+def is_curated_stt_repo_id(value: str | None) -> bool:
+    """True only for Studio's exact curated STT Hub repositories.
+
+    Still hidden from chat, but task-scoped inventory consumers need the real cache rows
+    so the Audio page need not reimplement size, format, variants and lifecycle.
+    """
+    return bool(value and value.strip().lower() in _HIDDEN_STT_REPO_IDS_LOWER)
 
 
 def _config_is_whisper(path: Path) -> bool:
@@ -153,7 +167,7 @@ def is_hidden_model(*values: str | None) -> bool:
     hidden_repo_ids = {
         _PROBE_REPO_ID.lower(),
         *(repo_id.lower() for repo_id in _DEFAULT_EMBEDDING_REPO_IDS),
-        *(repo_id.lower() for repo_id in _HIDDEN_STT_REPO_IDS),
+        *_HIDDEN_STT_REPO_IDS_LOWER,
     }
     exact_paths: list[str] = []
     for model in {

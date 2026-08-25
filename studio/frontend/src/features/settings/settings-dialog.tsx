@@ -2,6 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { FloatingMonitor } from "@/components/floating-monitor";
+import { getClientPlatform } from "@/components/tauri/window-titlebar";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -9,16 +11,21 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { type TranslationKey, useT } from "@/i18n";
-import { cn } from "@/lib/utils";
+import { isTauri } from "@/lib/api-base";
 import { MicIcon } from "@/lib/mic-icon";
+import { cn } from "@/lib/utils";
+import { scheduleIdleTask } from "@/lib/schedule-idle-task";
 import {
   BotIcon,
   Cancel01Icon,
   CloudIcon,
+  ComputerTerminal01Icon,
   CpuIcon,
   DatabaseSettingIcon,
+  EnergyRectangleIcon,
   Globe02Icon,
   HelpCircleIcon,
+  HomeWifiIcon,
   Message01Icon,
   PaintBrush02Icon,
   Search01Icon,
@@ -28,7 +35,12 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { motion, useReducedMotion } from "motion/react";
 import {
+  Component,
+  type ComponentType,
   type FC,
+  type ReactNode,
+  Suspense,
+  lazy,
   useDeferredValue,
   useEffect,
   useMemo,
@@ -36,24 +48,109 @@ import {
   useState,
 } from "react";
 import {
-  SETTINGS_SEARCH_INDEX,
   SETTINGS_SEARCH_KEYWORDS,
+  createSettingsSearchIndex,
 } from "./settings-search";
 import {
   type SettingsTab,
   useSettingsDialogStore,
 } from "./stores/settings-dialog-store";
-import { AboutTab } from "./tabs/about-tab";
-import { AgentsTab } from "./tabs/agents-tab";
-import { ApiKeysTab } from "./tabs/api-keys-tab";
-import { AppearanceTab } from "./tabs/appearance-tab";
-import { ChatTab } from "./tabs/chat-tab";
-import { ConnectionsTab } from "./tabs/connections-tab";
-import { DataTab } from "./tabs/data-tab";
-import { GeneralTab } from "./tabs/general-tab";
-import { ProfileTab } from "./tabs/profile-tab";
-import { ResourcesTab } from "./tabs/resources-tab";
-import { VoiceTab } from "./tabs/voice-tab";
+// Statically imported, every panel ran before first paint even though the dialog
+// starts closed. Load each on first view instead; this map also drives the prefetch.
+const TAB_LOADERS = {
+  general: () => import("./tabs/general-tab").then((m) => ({ default: m.GeneralTab })),
+  profile: () => import("./tabs/profile-tab").then((m) => ({ default: m.ProfileTab })),
+  appearance: () =>
+    import("./tabs/appearance-tab").then((m) => ({ default: m.AppearanceTab })),
+  resources: () =>
+    import("./tabs/resources-tab").then((m) => ({ default: m.ResourcesTab })),
+  chat: () => import("./tabs/chat-tab").then((m) => ({ default: m.ChatTab })),
+  voice: () => import("./tabs/voice-tab").then((m) => ({ default: m.VoiceTab })),
+  connections: () =>
+    import("./tabs/connections-tab").then((m) => ({ default: m.ConnectionsTab })),
+  data: () => import("./tabs/data-tab").then((m) => ({ default: m.DataTab })),
+  "keyboard-shortcuts": () =>
+    import("./tabs/keyboard-shortcuts-tab").then((m) => ({
+      default: m.KeyboardShortcutsTab,
+    })),
+  "api-keys": () => import("./tabs/api-keys-tab").then((m) => ({ default: m.ApiKeysTab })),
+  "remote-lan": () =>
+    import("./tabs/remote-lan-tab").then((m) => ({ default: m.RemoteLanTab })),
+  agents: () => import("./tabs/agents-tab").then((m) => ({ default: m.AgentsTab })),
+  debugging: () =>
+    import("./tabs/debugging-tab").then((m) => ({ default: m.DebuggingTab })),
+  about: () => import("./tabs/about-tab").then((m) => ({ default: m.AboutTab })),
+} satisfies Record<SettingsTab, () => Promise<{ default: FC }>>;
+
+function lazyTabs<T extends Record<string, () => Promise<{ default: FC }>>>(
+  loaders: T,
+): Record<keyof T, ComponentType> {
+  const out = {} as Record<keyof T, ComponentType>;
+  for (const id of Object.keys(loaders) as (keyof T)[]) {
+    out[id] = lazy(loaders[id]);
+  }
+  return out;
+}
+
+const LAZY_TABS = lazyTabs(TAB_LOADERS);
+
+interface PanelBoundaryProps {
+  tab: SettingsTab;
+  message: string;
+  reloadLabel: string;
+  children: ReactNode;
+}
+
+interface PanelBoundaryState {
+  tab: SettingsTab;
+  failed: boolean;
+}
+
+/**
+ * A panel fetch can fail (offline, or an entry bundle naming chunks a `dist/` rewrite
+ * replaced). Nothing above this root-mounted dialog catches, so unguarded that unmounts
+ * all of Studio rather than one panel.
+ *
+ * Reload rather than retry: React and the browser's module map both cache the failed
+ * import, so re-importing rethrows with no new request (whatwg/html#6768), while
+ * index.html is no-store and a reload does pick up the current chunk names.
+ */
+class SettingsPanelBoundary extends Component<
+  PanelBoundaryProps,
+  PanelBoundaryState
+> {
+  state: PanelBoundaryState = { tab: this.props.tab, failed: false };
+
+  static getDerivedStateFromError(): Partial<PanelBoundaryState> {
+    return { failed: true };
+  }
+
+  // A different tab is a different chunk, so one panel's failure must not hold the rest.
+  static getDerivedStateFromProps(
+    props: PanelBoundaryProps,
+    state: PanelBoundaryState,
+  ): Partial<PanelBoundaryState> | null {
+    return props.tab === state.tab ? null : { tab: props.tab, failed: false };
+  }
+
+  render() {
+    if (!this.state.failed) return this.props.children;
+    return (
+      <div className="flex min-h-40 flex-1 flex-col items-center justify-center gap-3 text-center">
+        <p className="text-muted-foreground text-sm">{this.props.message}</p>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => {
+            window.location.reload();
+          }}
+        >
+          {this.props.reloadLabel}
+        </Button>
+      </div>
+    );
+  }
+}
 
 interface TabDef {
   id: SettingsTab;
@@ -70,7 +167,6 @@ const TABS: TabDef[] = [
     id: "profile",
     labelKey: "settings.tabs.profile",
     icon: UserIcon,
-    badgeKey: "common.new",
   },
   {
     id: "appearance",
@@ -93,6 +189,12 @@ const TABS: TabDef[] = [
     icon: Globe02Icon,
   },
   {
+    id: "remote-lan",
+    labelKey: "settings.tabs.remoteLan",
+    icon: HomeWifiIcon,
+    badgeKey: "common.new",
+  },
+  {
     id: "connections",
     labelKey: "settings.tabs.connections",
     icon: CloudIcon,
@@ -101,48 +203,44 @@ const TABS: TabDef[] = [
     id: "agents",
     labelKey: "settings.tabs.agents",
     icon: BotIcon,
-    badgeKey: "common.new",
   },
   {
     id: "voice",
     labelKey: "settings.tabs.voice",
     iconComponent: MicIcon,
-    badgeKey: "common.new",
   },
   {
     id: "data",
     labelKey: "settings.tabs.data",
     icon: DatabaseSettingIcon,
+  },
+  {
+    id: "keyboard-shortcuts",
+    labelKey: "settings.tabs.keyboardShortcuts",
+    icon: EnergyRectangleIcon,
     badgeKey: "common.new",
+  },
+  {
+    id: "debugging",
+    labelKey: "settings.tabs.debugging",
+    icon: ComputerTerminal01Icon,
   },
   { id: "about", labelKey: "settings.tabs.about", icon: HelpCircleIcon },
 ];
 
+const clientPlatform = getClientPlatform();
+const SETTINGS_SEARCH_INDEX = createSettingsSearchIndex({
+  desktop: isTauri,
+  closeToTray:
+    isTauri &&
+    (clientPlatform.startsWith("win") ||
+      clientPlatform.includes("windows") ||
+      clientPlatform.includes("linux")),
+});
+
 function renderTab(tab: SettingsTab) {
-  switch (tab) {
-    case "general":
-      return <GeneralTab />;
-    case "profile":
-      return <ProfileTab />;
-    case "appearance":
-      return <AppearanceTab />;
-    case "resources":
-      return <ResourcesTab />;
-    case "chat":
-      return <ChatTab />;
-    case "voice":
-      return <VoiceTab />;
-    case "connections":
-      return <ConnectionsTab />;
-    case "data":
-      return <DataTab />;
-    case "api-keys":
-      return <ApiKeysTab />;
-    case "agents":
-      return <AgentsTab />;
-    case "about":
-      return <AboutTab />;
-  }
+  const Tab = LAZY_TABS[tab];
+  return <Tab />;
 }
 
 export function SettingsDialog() {
@@ -158,6 +256,19 @@ export function SettingsDialog() {
   // from a deferred value so the nav updates first.
   const panelTab = useDeferredValue(activeTab);
   const [query, setQuery] = useState("");
+
+  // Once opened, pull the other panels in on idle so a tab click never waits on the
+  // network. Nothing runs while closed, which is its state for the whole launch.
+  useEffect(() => {
+    if (!open) return;
+    return scheduleIdleTask(() => {
+      for (const load of Object.values(TAB_LOADERS)) {
+        // Warming a panel nobody asked for must not surface as an unhandled rejection;
+        // the boundary above speaks for the panel the user does open.
+        void load().catch(() => undefined);
+      }
+    });
+  }, [open]);
 
   const results = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -249,9 +360,12 @@ export function SettingsDialog() {
     chat: null,
     voice: null,
     connections: null,
+    "keyboard-shortcuts": null,
     data: null,
     "api-keys": null,
+    "remote-lan": null,
     agents: null,
+    debugging: null,
     about: null,
   });
 
@@ -282,11 +396,14 @@ export function SettingsDialog() {
             // Cap at 960px but shrink to the viewport so it doesn't clip on
             // iPad-portrait widths where a fixed width overflows. Height caps
             // the same way so short viewports don't get a clipped dialog.
-            "settings-surface !max-w-[min(960px,calc(100vw-2rem))] h-[min(680px,calc(100dvh-2rem))] w-[min(960px,calc(100vw-2rem))] p-0 overflow-hidden",
+            "settings-surface !max-w-[min(960px,calc(100vw-2rem))] h-[min(820px,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))] w-[min(960px,calc(100vw-2rem))] p-0 overflow-hidden",
             // Soft shadow, no outline ring. Pin --radius to the light value so
             // corner rounding matches in dark mode.
             "shadow-border rounded-xl ring-0 [--radius:1.1rem]",
-            "max-sm:h-dvh max-sm:w-dvw max-sm:!max-w-none max-sm:rounded-none",
+            // Same chrome-subtracted height the shared DialogContent uses at this
+            // breakpoint: a plain h-dvh wins tailwind-merge and would hang the surface
+            // (and its overflow-hidden bottom edge) below the window. 0px on web.
+            "max-sm:h-[calc(100dvh-var(--studio-window-chrome-top,0px))] max-sm:w-dvw max-sm:!max-w-none max-sm:rounded-none",
           )}
         >
           <DialogTitle className="sr-only">
@@ -389,6 +506,8 @@ export function SettingsDialog() {
                   return (
                     <button
                       key={tab.id}
+                      // Stable handle for UI tests: the label is translated.
+                      data-testid={`settings-tab-${tab.id}`}
                       ref={(node) => {
                         tabButtonRefs.current[tab.id] = node;
                       }}
@@ -457,7 +576,23 @@ export function SettingsDialog() {
                 ref={mainScrollRef}
                 className="hover-scrollbar flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto p-6 [scrollbar-gutter:stable]"
               >
-                {renderTab(panelTab)}
+                {/* Only a panel's first view waits, so the fallback is delayed and a
+                    promptly arriving panel never flashes it. */}
+                <SettingsPanelBoundary
+                  tab={panelTab}
+                  message={t("settings.dialog.panelFailed")}
+                  reloadLabel={t("settings.dialog.panelReload")}
+                >
+                  <Suspense
+                    fallback={
+                      <div className="fade-in fill-mode-both flex flex-1 animate-in items-center justify-center text-muted-foreground text-sm delay-300 duration-150">
+                        {t("common.loading")}
+                      </div>
+                    }
+                  >
+                    {renderTab(panelTab)}
+                  </Suspense>
+                </SettingsPanelBoundary>
               </div>
             </main>
           </div>

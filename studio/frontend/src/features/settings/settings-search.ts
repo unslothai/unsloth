@@ -14,8 +14,6 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.general.account",
     "settings.general.password",
     "settings.general.huggingFaceToken",
-    "settings.general.gettingStarted",
-    "settings.general.startOnboarding",
     "settings.appearance.language.title",
     "settings.appearance.language.label",
     "settings.general.notifications.sectionTitle",
@@ -76,6 +74,9 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.resources.liveMonitor.vram",
     "settings.resources.liveMonitor.disk",
     "settings.resources.gpu.title",
+    "settings.resources.modelMemory.title",
+    "settings.resources.modelMemory.keepResident",
+    "settings.resources.modelMemory.noRamReserve",
     "settings.resources.storage.title",
     "settings.resources.storage.modelsFolder",
     "settings.resources.storage.futureDownloads",
@@ -90,11 +91,17 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
   chat: [
     "settings.general.chatDefaults",
     "settings.general.autoTitleNewChats",
+    "settings.chat.projectAttachments",
+    "settings.chat.rememberParamsPerModel",
     "settings.profile.greetingSloth",
+    "settings.chat.thinking.collapseByDefault",
     "settings.chat.artifacts.title",
     "settings.chat.artifacts.collapseHtmlBlocks",
     "settings.chat.artifacts.allowNetworkAccess",
+    "settings.chat.webSearch.title",
+    "settings.chat.webSearch.images",
     "settings.chat.modelDisclaimer",
+    "settings.chat.projectsSection",
   ],
   // Chat data management moved to the Data tab; keep these rows findable there.
   data: [
@@ -102,6 +109,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.data.archivedChats",
     "settings.data.archiveAllChats",
     "settings.data.confirmBeforeDeleting",
+    "settings.data.alwaysDeleteFiles",
     "settings.data.uploadedFiles",
     "settings.chat.exportHistory",
     "settings.chat.exportConversations",
@@ -113,6 +121,9 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.apiKeys.description",
     "settings.apiKeys.accessTokens",
   ],
+  // The two cards label themselves in English in every locale, so keys naming them
+  // would never match their own anchor. The header carries both entries instead.
+  "remote-lan": ["settings.remoteLan.title", "settings.remoteLan.description"],
   agents: [
     // Every key needs a rendered data-settings-label, or a hit has nothing to scroll to.
     "settings.agents.title",
@@ -144,6 +155,26 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.voice.readAloud.volumeLabel",
     "settings.voice.readAloud.previewLabel",
   ],
+  "keyboard-shortcuts": [
+    // Both the section titles and each action label, so searching "sidebar" or
+    // "new chat" from the settings search lands on the row itself.
+    "settings.keyboardShortcuts.title",
+    "settings.keyboardShortcuts.groups.general",
+    "settings.keyboardShortcuts.groups.chat",
+    "settings.keyboardShortcuts.actions.newChat.label",
+    "settings.keyboardShortcuts.actions.searchChats.label",
+    "settings.keyboardShortcuts.actions.toggleSidebar.label",
+    "settings.keyboardShortcuts.actions.openSettings.label",
+    "settings.keyboardShortcuts.actions.openKeyboardShortcuts.label",
+  ],
+  debugging: [
+    "settings.debugging.logSection",
+    "settings.debugging.source",
+    "settings.debugging.path",
+    "settings.debugging.refreshSection",
+    "settings.debugging.mode",
+    "settings.debugging.keywords",
+  ],
   about: [
     "settings.about.updates",
     "settings.about.releaseNotes",
@@ -157,6 +188,31 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
   ],
 };
 
+export function createSettingsSearchIndex({
+  desktop,
+  closeToTray,
+}: {
+  desktop: boolean;
+  closeToTray: boolean;
+}): Record<SettingsTab, TranslationKey[]> {
+  if (!desktop) {
+    return SETTINGS_SEARCH_INDEX;
+  }
+  return {
+    ...SETTINGS_SEARCH_INDEX,
+    general: [
+      ...SETTINGS_SEARCH_INDEX.general,
+      "settings.about.updates",
+      "settings.general.startup.sectionTitle",
+      "settings.general.startup.launchAtLogin",
+      ...(closeToTray ? (["settings.general.startup.closeToTray"] as const) : []),
+    ],
+    about: SETTINGS_SEARCH_INDEX.about.filter(
+      (key) => key !== "settings.about.updates",
+    ),
+  };
+}
+
 /**
  * Extra terms a row matches on, beyond its own label. The value is a
  * translation key holding space-separated synonyms; it is never rendered.
@@ -167,4 +223,12 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
 > = {
   "settings.resources.storage.modelsFolder":
     "settings.resources.storage.modelsFolderKeywords",
+  // mlock, vram, ulimit and pin are in none of these labels, so search
+  // missed the rows the feature is named after.
+  "settings.resources.modelMemory.title":
+    "settings.resources.modelMemory.modelMemoryKeywords",
+  "settings.resources.modelMemory.keepResident":
+    "settings.resources.modelMemory.modelMemoryKeywords",
+  "settings.resources.modelMemory.noRamReserve":
+    "settings.resources.modelMemory.modelMemoryKeywords",
 };

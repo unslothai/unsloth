@@ -46,6 +46,7 @@ on:
       - '.github/scripts/interrupt-install.ps1'
       - '.github/scripts/interrupted_install_probe.py'
       - '.github/workflows/interrupted-install-ci.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
   workflow_dispatch:
 
 concurrency:
@@ -86,7 +87,7 @@ jobs:
           # killed install cannot report itself healthy.
           #
           # The exact reported case: killed during the sub-step that installs structlog.
-          - {os: macos-14, label: studio-deps, marker: 'studio deps'}
+          - {os: macos-15, label: studio-deps, marker: 'studio deps'}
           # Coarse phases, earliest to latest -- each leaves a different partial venv.
           # No venv cell: "Creating virtual environment" ran 0.107s in staging run
           # 30419729244 (03:31:07.371 -> 07.478 to "Installing PyTorch"), shorter than any
@@ -95,31 +96,44 @@ jobs:
           # different label. Lost with it: a venv caught half-written, not reachable by
           # interruption at this resolution, and the only loss -- the torch leg lands at the
           # top of the PyTorch step, so it leaves a complete venv with nothing in it.
-          - {os: macos-14, label: torch,       marker: '\[TAURI:STEP\] Installing PyTorch'}
-          - {os: macos-14, label: unsloth,     marker: '\[TAURI:STEP\] Installing Unsloth'}
-          - {os: macos-14, label: setup,       marker: '\[TAURI:STEP\] Running Unsloth setup'}
+          - {os: macos-15, label: torch,       marker: '\[TAURI:STEP\] Installing PyTorch'}
+          - {os: macos-15, label: unsloth,     marker: '\[TAURI:STEP\] Installing Unsloth'}
+          - {os: macos-15, label: setup,       marker: '\[TAURI:STEP\] Running Unsloth setup'}
           # Other dependency-pass sub-steps around the named one. No pip-bootstrap cell, same
           # reason as venv: "1/10 pip bootstrap" is over before a poll can see it, so in both
           # 30419729244 and 30424366953 the signal landed in "2/10 unsloth extras", the next
           # cell down. No base-packages cell either: --local sets skip_base, so
           # install_python_stack returns before "base packages" prints and that leg ran to
           # completion, proving nothing.
-          - {os: macos-14, label: unsloth-extras, marker: 'unsloth extras'}
-          - {os: macos-14, label: data-designer,  marker: 'data designer deps'}
+          - {os: macos-15, label: unsloth-extras, marker: 'unsloth extras'}
+          - {os: macos-15, label: data-designer,  marker: 'data designer deps'}
           # Linux: same teardown path, different package manager and process semantics.
           - {os: ubuntu-latest, label: studio-deps, marker: 'studio deps'}
           - {os: ubuntu-latest, label: torch, marker: '\[TAURI:STEP\] Installing PyTorch'}
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
       - name: Linux system deps
         if: runner.os == 'Linux'
+        # Bounded and retried through the shared helper: an unbounded apt step does
+        # not fail, it spends the job's whole budget and is reported as "cancelled"
+        # with no reason and every later step skipped. update and install go as one
+        # unit, since retrying the install after a stalled update re-reads the same
+        # broken package list.
+        # Two long attempts, not three short ones. 150s killed apt mid-`update`
+        # against a mirror that was degraded rather than dead, and every attempt
+        # then hit the same wall -- three kills and no result. The bound exists to
+        # stop an infinite hang, not to race a slow mirror.
+        timeout-minutes: 15
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '360'
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends cmake git build-essential libcurl4-openssl-dev
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get install -y -qq --no-install-recommends cmake git build-essential libcurl4-openssl-dev || { apt-get update -qq && apt-get install -y -qq --no-install-recommends cmake git build-essential libcurl4-openssl-dev; }'
 
       - name: Install, interrupted at "${{ matrix.label }}"
         env:
@@ -285,7 +299,7 @@ jobs:
           - {label: torch, marker: 'Installing PyTorch', installArgs: '--tauri --local'}
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 

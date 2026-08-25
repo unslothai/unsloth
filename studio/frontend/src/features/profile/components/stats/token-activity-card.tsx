@@ -318,7 +318,7 @@ export function TokenActivityCard({ daily }: { daily: ProfileStatsDay[] }) {
           visibleTotal,
           "token",
           locale,
-          formatCompactNumber(visibleTotal),
+          formatCompactNumber(visibleTotal, locale),
         ),
         weeks: formatProfileCount(grid.length, "week", locale),
       })}

@@ -105,6 +105,10 @@ from ._utils import (
     process_vision_info,
     unsloth_compile_transformers,
     fast_inference_setup,
+    _requested_float32,
+    _mark_requested_float32,
+    _mark_forced_float32,
+    _mark_full_finetuning,
     _get_text_only_config,
     resolve_model_class,
     _is_family_text_decoder,
@@ -271,7 +275,9 @@ def _maybe_advise_fla_install(model_types):
 
     The kernels ship with Unsloth (no install needed); this fires only when they
     could not be enabled on this platform (e.g. no CUDA, torch < 2.7 or
-    triton < 3.3), i.e. exactly when transformers uses the slow pure PyTorch path.
+    triton < 3.3), or when Unsloth deliberately disabled them because they are
+    known-broken on this GPU / Triton combination, i.e. exactly when transformers
+    uses the slow pure PyTorch path.
     """
     global _fla_advised
     if _fla_advised:
@@ -291,6 +297,19 @@ def _maybe_advise_fla_install(model_types):
     except Exception:
         return
     _fla_advised = True
+    # Prefer unsloth_zoo's specific reason when it disabled the kernels on purpose.
+    # The generic text below blames CUDA / torch / triton minimums, all of which are
+    # satisfied on e.g. an H100 that hit the fla #640 Triton miscompile, so it would
+    # send that user looking in the wrong place. try/except keeps an unsloth pinned
+    # against an older unsloth_zoo working.
+    try:
+        from unsloth_zoo.temporary_patches.fla_vendor import fla_unavailable_reason
+        reason = fla_unavailable_reason()
+    except Exception:
+        reason = None
+    if reason:
+        print(reason)
+        return
     print(
         "Unsloth: This model uses gated-deltanet linear attention layers. Unsloth\n"
         "bundles the flash-linear-attention kernels, but they could not be enabled\n"
@@ -437,6 +456,9 @@ class FastLanguageModel(FastLlamaModel):
                 load_in_4bit = False
 
         # Login to allow private models
+        # Before normalization: dtype is also derived below from a 4bit config's
+        # compute dtype, which is not a request for the whole model.
+        user_float32 = _requested_float32(dtype)
         token = hf_login(token)
         # Align dtype with bnb_4bit_compute_dtype if provided and dtype is unset.
         if dtype is None and quantization_config is not None:
@@ -463,7 +485,7 @@ class FastLanguageModel(FastLlamaModel):
 
         # @_offline_aware_load already forced offline when needed; delegations inherit it.
         if load_in_8bit or full_finetuning or qat_scheme is not None:
-            return FastModel.from_pretrained(
+            delegated, tokenizer = FastModel.from_pretrained(
                 model_name = model_name,
                 max_seq_length = max_seq_length,
                 dtype = dtype,
@@ -498,6 +520,7 @@ class FastLanguageModel(FastLlamaModel):
                 *args,
                 **kwargs,
             )
+            return _mark_requested_float32(delegated, user_float32), tokenizer
 
         if isinstance(dtype, str) and dtype in ["float16", "bfloat16"]:
             dtype = getattr(torch, dtype)
@@ -881,7 +904,7 @@ class FastLanguageModel(FastLlamaModel):
         # elif model_type == "granite":
         #     dispatch_model = FastGraniteModel
         else:
-            return FastModel.from_pretrained(
+            delegated, tokenizer = FastModel.from_pretrained(
                 model_name = old_model_name,
                 max_seq_length = max_seq_length,
                 dtype = dtype,
@@ -916,6 +939,7 @@ class FastLanguageModel(FastLlamaModel):
                 *args,
                 **kwargs,
             )
+            return _mark_requested_float32(delegated, user_float32), tokenizer
 
         # Apply gradient checkpointing with smart heuristics
         use_gradient_checkpointing = apply_unsloth_gradient_checkpointing(
@@ -1088,7 +1112,12 @@ class FastLanguageModel(FastLlamaModel):
 
         model = _fix_rope_inv_freq(model)
         model = _exclude_rope_inv_freq_from_ddp(model)
-        return model, tokenizer
+        # This path never sets UNSLOTH_FORCE_FLOAT32, so answer False rather than
+        # leave the trainer reading whatever a later load writes to the environment.
+        model = _mark_forced_float32(model, False)
+        # Full finetuning delegates to FastModel above, so this path is always LoRA.
+        model = _mark_full_finetuning(model, False)
+        return _mark_requested_float32(model, user_float32), tokenizer
 
 
 from ..kernels import (
@@ -1193,6 +1222,9 @@ class FastModel(FastBaseModel):
                 load_in_4bit = False
 
         # Login to allow private models
+        # Before normalization: dtype is also derived below from a 4bit config's
+        # compute dtype, which is not a request for the whole model.
+        user_float32 = _requested_float32(dtype)
         token = hf_login(token)
         if whisper_language is not None:
             assert type(whisper_language) is str
@@ -1411,7 +1443,7 @@ class FastModel(FastBaseModel):
         # Text-diffusion slow-path dispatch, factored so both the normal route (below) and the
         # legacy-config fallback (in the AutoConfig except handler) share one call site.
         def _dispatch_diffusion():
-            return FastDiffusionModel.from_pretrained(
+            model, tokenizer = FastDiffusionModel.from_pretrained(
                 model_name = model_name,
                 max_seq_length = max_seq_length,
                 dtype = dtype,
@@ -1425,6 +1457,12 @@ class FastModel(FastBaseModel):
                 revision = base_revision,
                 **kwargs,
             )
+            # Returns before the FORCE_FLOAT32 scan and no diffusion type is on that
+            # list, so False. Stamped, not left unset, or the trainer reads whatever
+            # UNSLOTH_FORCE_FLOAT32 an earlier load wrote.
+            model = _mark_forced_float32(model, False)
+            model = _mark_full_finetuning(model, full_finetuning)
+            return _mark_requested_float32(model, user_float32), tokenizer
 
         try:
             model_config = user_config
@@ -1778,6 +1816,7 @@ class FastModel(FastBaseModel):
                 or disable_name.lower() in model_types_all
             ) and ((dtype == torch.float16) or not SUPPORTS_BFLOAT16):
                 os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
+                do_forced_float32 = True
                 dtype = torch.bfloat16  # Change to bfloat16 loading
                 break
         # Apply gradient checkpointing with smart heuristics
@@ -2133,7 +2172,9 @@ class FastModel(FastBaseModel):
 
         model = _fix_rope_inv_freq(model)
         model = _exclude_rope_inv_freq_from_ddp(model)
-        return model, tokenizer
+        model = _mark_forced_float32(model, do_forced_float32)
+        model = _mark_full_finetuning(model, full_finetuning)
+        return _mark_requested_float32(model, user_float32), tokenizer
 
 
 class FastVisionModel(FastModel):

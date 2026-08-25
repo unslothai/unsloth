@@ -73,14 +73,20 @@ def _engine_config() -> tuple[str, str, bool]:
     return forced, sd_cpp, mps
 
 
-def get_active_diffusion_engine() -> Any:
-    """The engine object the active selection points at (defaults to diffusers)."""
-    if _active_engine_name == ENGINE_SD_CPP:
+def engine_for(name: str) -> Any:
+    """The engine object a name refers to, WITHOUT activating it: activating unloads the resident
+    model, so /images/load's gated-repo preflight needs the pending engine before the switch."""
+    if name == ENGINE_SD_CPP:
         from core.inference.sd_cpp_backend import get_sd_cpp_backend
         return get_sd_cpp_backend()
     from core.inference.diffusion import get_diffusion_backend
 
     return get_diffusion_backend()
+
+
+def get_active_diffusion_engine() -> Any:
+    """The engine object the active selection points at (defaults to diffusers)."""
+    return engine_for(_active_engine_name)
 
 
 def active_engine_name() -> str:
@@ -220,6 +226,20 @@ def select_and_activate_engine(
     return _activate(ENGINE_DIFFUSERS, reason)
 
 
+def native_binary_installed() -> bool:
+    """Whether a RUNNABLE sd.cpp binary is already on disk, installing nothing to find out.
+
+    Separated from the prediction because the two answers differ where it matters: prediction
+    counts an absent binary as available whenever installing one is allowed, and a caller that
+    must know whether selection could still fall back to diffusers needs the unassumed answer.
+    """
+    server_binary = ensure_sd_server_binary(allow_install = False)
+    if server_binary and _server_binary_runnable(server_binary):
+        return True
+    binary = ensure_sd_cpp_binary(allow_install = False)
+    return bool(binary and SdCppEngine(binary = binary).version() is not None)
+
+
 def predict_engine(fam: DiffusionFamily, *, model_kind: Optional[str] = None) -> str:
     """The engine a load of ``fam`` would select on this host, WITHOUT any side effect.
 
@@ -250,13 +270,7 @@ def predict_engine(fam: DiffusionFamily, *, model_kind: Optional[str] = None) ->
     if not (policy_eligible and family_sd_cpp_supported(fam)):
         return ENGINE_DIFFUSERS
 
-    server_binary = ensure_sd_server_binary(allow_install = False)
-    if server_binary and not _server_binary_runnable(server_binary):
-        server_binary = None
-    binary = ensure_sd_cpp_binary(allow_install = False)
-    if binary and SdCppEngine(binary = binary).version() is None:
-        binary = None
-    native_available = bool(binary or server_binary) or _install_allowed()
+    native_available = native_binary_installed() or _install_allowed()
     return select_diffusion_engine(
         backend, native_available = native_available, prefer_native = prefer_native
     )

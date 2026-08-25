@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import itertools
 
+from pathlib import Path
+
 import pytest
 import torch
 from fastapi import FastAPI
@@ -248,9 +250,15 @@ def test_service_stop_save_flag():
     assert svc.stop(save = False) is True
     assert q.items[-1] == {"save": False}
 
-    # The default (save) path keeps the bare-True wire format.
-    assert svc.stop() is True
-    assert q.items[-1] is True
+    # The default (save) path keeps the bare-True wire format. A SECOND stop on the same job no
+    # longer reaches the child (see test_a_second_stop_does_not_change_what_the_child_was_told),
+    # so this is a fresh one.
+    other = DiffusionTrainingService()
+    other._proc = _AliveProc()
+    other_q = _StopQueue()
+    other._stop_queue = other_q
+    assert other.stop() is True
+    assert other_q.items[-1] is True
 
 
 # ── preparing / warning events + stopped completion messages ──────────────────
@@ -456,3 +464,387 @@ def test_sdxl_cache_force_bypasses_gate(monkeypatch):
     cache = _build_fake_sdxl_cache(monkeypatch, num_images = 3, latent_shape = (1, 4, 8, 8))
     assert cache is not LATENT_CACHE_OVER_BUDGET and cache is not None
     assert len(cache) == 3
+
+
+def test_a_no_save_stop_survives_a_child_that_dies_before_reporting_it():
+    """The trainer reports the discard on its completion event, but a child that OOMs or is
+    killed after the request never emits one. The unexpected-exit path then recorded a plain
+    error run with the last periodic checkpoint intact, so the history offered Resume from the
+    very bundle the user asked to throw away. The intent is remembered in the parent."""
+
+    class _DeadProc:
+        def is_alive(self) -> bool:
+            return False
+
+    svc = DiffusionTrainingService()
+    svc._proc = _AliveProc()
+    svc._stop_queue = _StopQueue()
+    svc._apply_event(
+        {"type": "checkpoint_saved", "checkpoint_path": "/o/checkpoint-40", "step": 40}
+    )
+    assert svc.status()["resume_blocked_reason"] is None
+
+    assert svc.stop(save = False) is True
+    # ...and the child dies without a completion event.
+    dead = _DeadProc()
+    svc._proc = dead
+
+    class _EmptyQueue:
+        def get(self, timeout = None):
+            raise RuntimeError("empty")
+
+        def get_nowait(self):
+            raise RuntimeError("empty")
+
+    svc._pump_loop(_EmptyQueue(), dead)
+
+    state = svc.status()
+    assert state["status"] == "error"
+    assert "stopped without saving" in (state["resume_blocked_reason"] or "")
+
+
+def test_a_fresh_job_forgets_the_previous_no_save_stop():
+    """The flag is per job. Carrying it across would block a resume the next run legitimately
+    offers."""
+    import inspect
+
+    svc = DiffusionTrainingService()
+    assert svc._discard_requested is False
+    svc._proc = _AliveProc()
+    svc._stop_queue = _StopQueue()
+    assert svc.stop(save = False) is True
+    assert svc._discard_requested is True
+    # start() clears it for the next job, so a discarded run cannot block the next one's resume.
+    assert "_discard_requested = False" in inspect.getsource(DiffusionTrainingService.start)
+
+
+def test_a_discard_is_applied_to_a_terminal_error_too(tmp_path, monkeypatch):
+    """An exception on the current step is a terminal `error`, and the pump returns on that path
+    rather than through the dead-process branch -- so a stop-without-saving followed by a crash
+    left the periodic checkpoint resumable in history."""
+    import core.training.diffusion_checkpoint as dc
+
+    bundle = tmp_path / "checkpoint-40"
+    bundle.mkdir()
+    (bundle / "keep.bin").write_bytes(b"x")
+
+    class _Proc:
+        def is_alive(self) -> bool:
+            return True
+
+    class _OneEvent:
+        def __init__(self, ev):
+            self._events = [ev]
+
+        def get(self, timeout = None):
+            if self._events:
+                return self._events.pop(0)
+            raise RuntimeError("empty")
+
+    svc = DiffusionTrainingService()
+    proc = _Proc()
+    svc._proc = proc
+    svc._stop_queue = _StopQueue()
+    svc._apply_event({"type": "checkpoint_saved", "checkpoint_path": str(bundle), "step": 40})
+    assert svc.stop(save = False) is True
+    monkeypatch.setattr(svc, "_persist_run_record", lambda **_kw: None)
+
+    svc._pump_loop(_OneEvent({"type": "error", "message": "CUDA out of memory"}), proc)
+
+    state = svc.status()
+    assert state["status"] == "error"
+    assert "stopped without saving" in (state["resume_blocked_reason"] or "")
+    # And the bundles the run wrote are gone: they hold optimizer state and the UI offers no
+    # delete path once the run is marked discarded.
+    assert not bundle.exists()
+    assert dc is not None
+
+
+def test_a_killed_discard_removes_only_this_runs_bundles(tmp_path):
+    """The parent knows exactly which bundles it saw checkpoint_saved for, so an earlier run's
+    leftovers in the same directory are untouched."""
+
+    class _Dead:
+        def is_alive(self) -> bool:
+            return False
+
+    class _Empty:
+        def get(self, timeout = None):
+            raise RuntimeError("empty")
+
+        def get_nowait(self):
+            raise RuntimeError("empty")
+
+    earlier = tmp_path / "checkpoint-99"
+    earlier.mkdir()
+    mine = tmp_path / "checkpoint-40"
+    mine.mkdir()
+
+    svc = DiffusionTrainingService()
+    svc._proc = _AliveProc()
+    svc._stop_queue = _StopQueue()
+    svc._apply_event({"type": "checkpoint_saved", "checkpoint_path": str(mine), "step": 40})
+    assert svc.stop(save = False) is True
+    dead = _Dead()
+    svc._proc = dead
+    svc._pump_loop(_Empty(), dead)
+
+    assert not mine.exists(), "this run's bundle must go"
+    assert earlier.is_dir(), "an earlier run's bundle is not this run's to delete"
+
+
+def test_an_epoch_mode_target_does_not_fall_back_to_the_unused_step_count():
+    """num_epochs overrides train_steps, which then still carries the request model's default of
+    500. Using it for a run that died before its `resumed` event reported a 600-step checkpoint
+    as 600/500 and refused the resume."""
+    from core.training.diffusion_training_service import _resolved_total_steps
+
+    assert (
+        _resolved_total_steps({"total_steps": 1000}, {"num_epochs": 4, "train_steps": 500}) == 1000
+    )
+    assert _resolved_total_steps({}, {"num_epochs": 4, "train_steps": 500}) == 0
+    # Step mode is unchanged: the configured count is the target.
+    assert _resolved_total_steps({}, {"num_epochs": 0, "train_steps": 500}) == 500
+
+
+def test_the_read_time_refresh_uses_the_same_epoch_rule():
+    """The persisted record may carry the right target, but every read recomputes it -- and the
+    read side was still falling back to the request model's unused train_steps in epoch mode,
+    so a 600-step checkpoint of a run resolved to 1000 read as 600/500 and Resume was
+    disabled again the moment the run was listed."""
+    import inspect
+
+    from core.training.diffusion_training_service import _refresh_resume_state
+
+    source = inspect.getsource(_refresh_resume_state)
+    assert "_resolved_total_steps(" in source, "the read side must use the shared rule"
+    assert 'config.get("train_steps")' not in source, "and not the raw fallback it replaced"
+
+
+def test_the_source_identity_is_seeded_before_the_child_starts():
+    """The route has already validated and pinned a source bundle, so a resume that dies during
+    the model load -- before the trainer can emit `resumed` -- still needs the timestamp its
+    fallback is checked against, or the pathname alone offers back whatever later occupies the
+    slot."""
+    import inspect
+
+    from core.training.diffusion_training_service import DiffusionTrainingService
+
+    start = inspect.getsource(DiffusionTrainingService.start)
+    assert "_seed_source_identity(config)" in start
+    seeded = start.index("_seed_source_identity(config)")
+    # AFTER the state reset, which replaces the whole dict and would drop the seed...
+    assert seeded > start.index("self._state = _idle_state()")
+    # ...and before the pump thread starts, which is the only other writer of that state.
+    assert seeded < start.index("self._pump.start()")
+
+
+def test_seeding_reads_the_bundles_own_timestamp(tmp_path, monkeypatch):
+    import json as _json
+
+    from core.training.diffusion_training_service import DiffusionTrainingService
+
+    bundle = tmp_path / "checkpoint-10"
+    bundle.mkdir()
+    svc = DiffusionTrainingService()
+    monkeypatch.setattr(
+        "core.training.diffusion_checkpoint.read_checkpoint",
+        lambda path: {"created_at": 1234.5} if Path(path) == bundle else None,
+    )
+    svc._seed_source_identity({"resume_from_checkpoint": str(bundle)})
+    assert svc._state["resumed_source_created_at"] == 1234.5
+    # An unreadable or absent bundle simply records nothing rather than raising.
+    svc._seed_source_identity({"resume_from_checkpoint": str(tmp_path / "checkpoint-99")})
+    assert _json.dumps(svc._state["resumed_source_created_at"]) in ("1234.5", "null")
+
+
+def test_a_child_that_cleaned_up_is_not_cleaned_up_again(tmp_path, monkeypatch):
+    """The trainer's own discard hands a displaced slot back to the bundle it replaced, so the
+    path this run wrote to now holds ANOTHER run's checkpoint. The parent cleanup knows only
+    pathnames, and repeating it deleted that restored original -- cancelling one branch
+    destroyed a different run's resume point."""
+    from core.training.diffusion_training_service import DiffusionTrainingService
+
+    class _Proc:
+        def is_alive(self) -> bool:
+            return True
+
+    class _OneEvent:
+        def __init__(self, ev):
+            self._events = [ev]
+
+        def get(self, timeout = None):
+            if self._events:
+                return self._events.pop(0)
+            raise RuntimeError("empty")
+
+    # What the child restored into the slot this run had written over.
+    restored = tmp_path / "checkpoint-10"
+    restored.mkdir()
+    (restored / "adapter.safetensors").write_bytes(b"other run")
+
+    svc = DiffusionTrainingService()
+    proc = _Proc()
+    svc._proc = proc
+    svc._stop_queue = _StopQueue()
+    svc._apply_event({"type": "checkpoint_saved", "checkpoint_path": str(restored), "step": 10})
+    assert svc.stop(save = False) is True
+    monkeypatch.setattr(svc, "_persist_run_record", lambda **_kw: None)
+
+    svc._pump_loop(
+        _OneEvent(
+            {"type": "complete", "output_dir": str(tmp_path), "stopped": True, "discarded": True}
+        ),
+        proc,
+    )
+
+    assert restored.exists(), "the bundle the child handed back is not this run's to delete"
+    # The state half of the discard still applies.
+    state = svc.status()
+    assert "stopped without saving" in (state["resume_blocked_reason"] or "")
+    assert state["checkpoint_path"] is None
+
+
+def test_a_checkpoint_makes_the_run_recoverable_before_it_ends(tmp_path, monkeypatch):
+    """Previous runs is built from the run JSONs and nothing else, and only a terminal event
+    wrote one. Studio being killed after a periodic save therefore left a resumable bundle on
+    disk with no entry and no Resume action for it."""
+    import inspect
+    import json as _json
+
+    from core.training import diffusion_training_service as svc_mod
+
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    monkeypatch.setattr(svc_mod, "_runs_dir", lambda: runs)
+
+    svc = svc_mod.DiffusionTrainingService()
+    svc._state.update(job_id = "a" * 32, output_dir = str(tmp_path / "out"), status = "running")
+
+    # A landed checkpoint asks for the record...
+    svc._apply_event(
+        {"type": "checkpoint_saved", "checkpoint_path": str(tmp_path / "checkpoint-40"), "step": 40}
+    )
+    assert svc._persist_interim is True
+    # ...and the pump writes it, rather than waiting for a terminal event that may never come.
+    assert "_persist_run_record(interim = True)" in inspect.getsource(
+        svc_mod.DiffusionTrainingService._pump_loop
+    )
+
+    svc._persist_run_record(interim = True)
+    written = runs / f"{'a' * 32}.json"
+    assert written.exists(), "the checkpoint landed but nothing recorded the run"
+    record = _json.loads(written.read_text(encoding = "utf-8"))
+    assert record["job_id"] == "a" * 32
+    # Interrupted is what it IS until the run ends; the terminal write replaces this file.
+    assert record["status"] == "error"
+
+    # ...and while the process is still on that job, the reader says so rather than offering a
+    # Resume for a directory the live run is writing into.
+    svc_mod._service = svc
+    try:
+        assert svc_mod._restate_live_job(dict(record))["status"] == "running"
+    finally:
+        svc_mod._service = None
+
+
+def test_a_failed_checkpoint_write_is_recorded_too(tmp_path, monkeypatch):
+    """The failure is sticky in memory, but only a successful write asked for a record. Studio
+    exiting after one left the last persisted record advertising the OLDER checkpoint as
+    resumable -- the one the service has just decided is stale -- and resuming it rolls the run
+    back past everything after it."""
+    import json as _json
+
+    from core.training import diffusion_training_service as svc_mod
+
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    monkeypatch.setattr(svc_mod, "_runs_dir", lambda: runs)
+
+    svc = svc_mod.DiffusionTrainingService()
+    svc._state.update(job_id = "b" * 32, output_dir = str(tmp_path / "out"), status = "running")
+    svc._apply_event(
+        {"type": "checkpoint_saved", "checkpoint_path": str(tmp_path / "checkpoint-40"), "step": 40}
+    )
+    svc._persist_interim = False
+
+    svc._apply_event({"type": "checkpoint_failed", "message": "disk full"})
+    assert svc._persist_interim is True
+
+    svc._persist_run_record(interim = True)
+    record = _json.loads((runs / f"{'b' * 32}.json").read_text(encoding = "utf-8"))
+    assert record["checkpoint_write_error"] == "disk full"
+    assert record["can_resume"] is False
+
+
+def test_the_live_job_is_not_offered_as_resumable(tmp_path, monkeypatch):
+    """The interim record is written with an error status, so the resume fields are derived as
+    though the run were over. _UNRESUMABLE_STATUS rejects a running job for a reason: its output
+    directory is being written right now, and a Resume offered there can only race it."""
+    from core.training import diffusion_training_service as svc_mod
+
+    svc = svc_mod.DiffusionTrainingService()
+    svc._state.update(job_id = "c" * 32, status = "running", message = "Training...")
+
+    record = {
+        "job_id": "c" * 32,
+        "status": "error",
+        "can_resume": True,
+        "checkpoint_path": str(tmp_path / "checkpoint-40"),
+    }
+    svc_mod._service = svc
+    try:
+        restated = svc_mod._restate_live_job(dict(record))
+    finally:
+        svc_mod._service = None
+
+    assert restated["status"] == "running"
+    assert restated["can_resume"] is False
+    assert restated["checkpoint_path"] is None
+
+
+def test_one_bad_record_does_not_take_the_history_with_it(tmp_path, monkeypatch):
+    """Every other kind of corruption here is skipped per record. A valid-JSON record with the
+    required job_id and status but a nonnumeric counter reached the refresh and raised out of
+    the listing, so one hand-edited or older file blanked the whole Previous runs panel."""
+    import json as _json
+
+    from core.training import diffusion_training_service as svc_mod
+
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    monkeypatch.setattr(svc_mod, "_runs_dir", lambda: runs)
+
+    (runs / f"{'d' * 32}.json").write_text(
+        _json.dumps({"job_id": "d" * 32, "status": "completed", "total_steps": "many"}),
+        encoding = "utf-8",
+    )
+    (runs / f"{'e' * 32}.json").write_text(
+        _json.dumps({"job_id": "e" * 32, "status": "completed", "total_steps": 500}),
+        encoding = "utf-8",
+    )
+
+    listed = svc_mod.list_diffusion_runs()
+    assert [r["job_id"] for r in listed] == ["e" * 32]
+    # ...and the detail endpoint answers with the stored record rather than a 500.
+    assert svc_mod.get_diffusion_run("d" * 32)["job_id"] == "d" * 32
+
+
+def test_a_second_stop_does_not_change_what_the_child_was_told(tmp_path):
+    """The child consumes the FIRST signal and acts on it. A later stop-without-saving cannot
+    un-export an adapter it has already written, so honouring it set a parent discard the child
+    never carried out: the run was marked discarded and its checkpoints deleted while the
+    adapter and catalog entry it published stayed on disk."""
+    from core.training.diffusion_training_service import DiffusionTrainingService
+
+    svc = DiffusionTrainingService()
+    svc._proc = _AliveProc()
+    queue = _StopQueue()
+    svc._stop_queue = queue
+
+    assert svc.stop(save = True) is True
+    assert svc._discard_requested is False
+    # Still "a stop is in flight", but the disposition is whichever one the child actually got.
+    assert svc.stop(save = False) is True
+    assert svc._discard_requested is False
+    assert len(queue.items) == 1

@@ -117,6 +117,7 @@ def test_page_renders_with_csp(client):
     assert "base-uri 'none'" in csp
     # Token rides in the query string; keep it out of the Referer header.
     assert r.headers.get("referrer-policy") == "no-referrer"
+    assert "messages: msgs,\n              stream: true," in r.text
 
 
 def test_page_renders_friendly_busy_message(client):
@@ -784,7 +785,7 @@ def test_studio_noop_load_reclaims_preview_marker(slot_state, monkeypatch):
     monkeypatch.setattr(
         inference,
         "_resolve_model_identifier_for_request",
-        lambda req, operation: ("mymodel", "mymodel", False),
+        lambda req, operation, resolved_ollama_path = None: ("mymodel", "mymodel", False),
     )
     monkeypatch.setattr(inference, "resolve_effective_chat_template_override", lambda **kw: None)
     monkeypatch.setattr(inference, "load_inference_config", lambda name: {})
@@ -1736,7 +1737,11 @@ def test_responses_stream_disconnect_and_error_chunk_mark_failed():
     # The chunk loop detects an upstream error payload and converts it to response.failed.
     assert "_monitor_openai_error_message(chunk_data)" in src
     err_idx = src.index("_monitor_openai_error_message(chunk_data)")
-    err_branch = src[err_idx : src.index('_apply_usage(chunk_data.get("usage"))', err_idx)]
+    err_branch = src[
+        err_idx : src.index(
+            '_apply_usage(chunk_data.get("usage"), chunk_data.get("timings"))', err_idx
+        )
+    ]
     assert "_failed_response_payload(RuntimeError(error_message)" in err_branch
     assert "return" in err_branch
 
@@ -1851,7 +1856,7 @@ def test_non_streaming_tool_cancel_marks_response_failed():
     while (j := src.find(sentinel, pos)) != -1:
         pos = j + len(sentinel)
         # The non-streaming finalizes are the ones whose next statement returns a JSON body.
-        if "return _model_json_response(response)" in src[j : j + 700]:
+        if "return _model_json_response" in src[j : j + 1400]:
             assert "mark_current_response_failed()" in src[max(0, j - 400) : j]
             non_streaming += 1
     assert non_streaming >= 2  # GGUF tool drain + safetensors tool drain

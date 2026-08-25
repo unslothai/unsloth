@@ -26,7 +26,12 @@ import time
 import uuid
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Generator, Optional, Tuple, Union
+from typing import Any, Generator, Optional, Sequence, Tuple, Union
+from core.inference.audio_errors import (
+    AUDIO_UNSUPPORTED_CODE,
+    AudioBackendUnsupportedError,
+    AudioGenerationCancelledError,
+)
 from utils.hardware import get_device, prepare_gpu_selection
 from utils.utils import hf_env_offline
 
@@ -56,9 +61,62 @@ _DISPATCH_STOP_TIMEOUT = 5.0
 _DISPATCH_IDLE_TIMEOUT = 30.0
 _DISPATCH_DRAIN_TIMEOUT = 5.0
 
+# Only bounds the Transformers subprocess path; llama.cpp TTS never reaches here.
+# 120s was tuned against GGUF speeds and killed real work: a safetensors LoRA on a
+# mid-range GPU needs minutes for the same clip a GGUF returns in seconds. A dead
+# worker is already caught every second by _ensure_subprocess_alive, so this only
+# has to bound one that is alive and wedged, and a generous value costs nothing.
+_AUDIO_GENERATION_TIMEOUT = 900.0
+_AUDIO_GENERATION_BASE_TOKENS = 2048
+AUDIO_GENERATION_MAX_TOKENS = 8192
+_AUDIO_CANCEL_DRAIN_TIMEOUT = 5.0
+# Before audio_started there is nobody to receive the cancel, and a prefill pass (a 3B TTS
+# model on CPU, or OuteTTS's per-token Python repetition penalty) routinely outlasts the
+# drain window. Tearing down on that budget unloads the model the user just loaded.
+_AUDIO_CANCEL_TEARDOWN_TIMEOUT = 30.0
+
 # Max wait for a cancelled generation to release _gen_lock before unload_model
 # tears the subprocess down. Only bounds a wedged worker.
 _UNLOAD_GEN_LOCK_TIMEOUT = 15.0
+
+
+def _audio_generation_timeout(max_new_tokens: int, base: Optional[float] = None) -> float:
+    """Scale a floor by the requested token count.
+
+    ``base`` differs per backend by an order of magnitude: the Transformers subprocess
+    needs minutes for a clip llama.cpp returns in seconds, so llama_cpp.py passes its
+    own. Sharing one base silently gave every GGUF read the Transformers budget, which
+    holds other_inference_request_count() up and blocks idle auto-unload for that long.
+
+    Resolved at call time, not bound as a default: a default is evaluated once at import,
+    so reassigning the module constant afterwards had no effect.
+    """
+    if base is None:
+        base = _AUDIO_GENERATION_TIMEOUT
+    max_new_tokens = min(AUDIO_GENERATION_MAX_TOKENS, max(1, int(max_new_tokens)))
+    token_scale = max(1.0, max_new_tokens / _AUDIO_GENERATION_BASE_TOKENS)
+    return base * token_scale
+
+
+_MLX_RUNTIME_MIRROR_FIELDS = (
+    "mlx_kv_bits",
+    "mlx_kv_bits_requested",
+    "mlx_kv_quant_eligibility",
+    "mlx_kv_quant_reason",
+    "mlx_kv_quant_note",
+    "chat_template_override_requested",
+    "chat_template_override_reason",
+)
+
+
+def _mlx_runtime_mirror_fields(model_info: dict) -> dict:
+    """MLX runtime state the parent mirrors, omitting what was not reported.
+
+    Only the MLX backend sends these. Creating the keys for every backend would
+    make the reload comparison see a None the backend never stored, and reload
+    on every identical request.
+    """
+    return {key: model_info[key] for key in _MLX_RUNTIME_MIRROR_FIELDS if key in model_info}
 
 
 class GenStreamError(str):
@@ -97,6 +155,59 @@ class GenStreamErrorRaised(RuntimeError):
         self.public = bool(public)
 
 
+def _summed_tool_loop_stats(total, turn):
+    """Fold one tool-loop turn's report into the loop's running total.
+
+    Every turn spends its tokens on the same request, so the reply reports their
+    sum, as the llama.cpp tool loop does; reporting only the last turn hides the
+    tokens that produced the tool call. The prompt count is the last turn's to
+    report one, which already contains the tool results the earlier turns produced.
+    """
+    if not isinstance(turn, dict):
+        return total
+    if not isinstance(total, dict):
+        return turn
+    prior_usage = total.get("usage") or {}
+    usage = dict(turn.get("usage") or {})
+    completion = (usage.get("completion_tokens") or 0) + (prior_usage.get("completion_tokens") or 0)
+    usage["completion_tokens"] = completion
+    # The prompt is the loop's, not one turn's, so a turn that ended before
+    # reporting keeps the last count that arrived. Its details describe that same
+    # count and move with it, or cached tokens could outnumber prompt tokens.
+    if not usage.get("prompt_tokens"):
+        usage["prompt_tokens"] = prior_usage.get("prompt_tokens") or 0
+        usage.pop("prompt_tokens_details", None)
+        if prior_usage.get("prompt_tokens_details") is not None:
+            usage["prompt_tokens_details"] = prior_usage["prompt_tokens_details"]
+    usage["total_tokens"] = usage["prompt_tokens"] + completion
+    # Details describe the completion, so they sum with it rather than describing
+    # one turn against every turn's tokens.
+    details = dict(prior_usage.get("completion_tokens_details") or {})
+    for field, value in (usage.get("completion_tokens_details") or {}).items():
+        details[field] = (details.get(field) or 0) + (value or 0)
+    if details:
+        usage["completion_tokens_details"] = details
+    summed = dict(turn)
+    summed["usage"] = usage
+    timings = dict(turn.get("timings") or {})
+    prior = total.get("timings") or {}
+    # Seeded from the turn but folded unconditionally, as the llama.cpp loop does:
+    # a turn reporting no timings must not take the loop's totals with it.
+    if timings or prior:
+        for field in ("predicted_ms", "predicted_n"):
+            timings[field] = (timings.get(field) or 0) + (prior.get(field) or 0)
+        # Rates describe the totals above, not the turn they arrived with: leaving
+        # the last turn's would report a speed the summed counts contradict.
+        predicted_ms = timings.get("predicted_ms") or 0
+        predicted_n = timings.get("predicted_n") or 0
+        timings["predicted_per_token_ms"] = (predicted_ms / predicted_n) if predicted_n else 0.0
+        timings["predicted_per_second"] = (
+            (predicted_n / (predicted_ms / 1000.0)) if predicted_ms else 0.0
+        )
+        summed["timings"] = timings
+    return summed
+
+
 class InferenceOrchestrator:
     """
     Inference backend orchestrator — subprocess-based.
@@ -110,6 +221,7 @@ class InferenceOrchestrator:
         self._proc: Optional[mp.Process] = None
         self._cmd_queue: Any = None
         self._resp_queue: Any = None
+        self._subprocess_shutdown_lock = threading.Lock()
         self._cancel_event: Any = None  # mp.Event — set to cancel generation
         # Set for the whole unload; the worker never clears it (unlike _cancel_event),
         # so a generate queued behind the cancelled one is skipped, not run.
@@ -126,6 +238,11 @@ class InferenceOrchestrator:
         # Set during a switch so a generation winning the _gen_lock handoff bails
         # instead of starting on the outgoing model.
         self._unload_pending = False
+        # Blocking TTS has no token response that can safely establish worker ownership
+        # while it is queued behind compare-mode work. Reserve the dispatcher admission
+        # lane for the whole TTS request so its shared cancel event cannot hit a sibling.
+        # Mutated under _dispatcher_lifecycle_lock while holding _gen_lock.
+        self._exclusive_tts_pending = False
 
         # Dispatcher state for compare mode (adapter-controlled requests):
         # bypass _gen_lock, send commands directly, read from per-request
@@ -342,6 +459,10 @@ class InferenceOrchestrator:
         return proc is not None and proc.is_alive()
 
     def _shutdown_subprocess(self, timeout: float = 10.0) -> bool:
+        with self._subprocess_shutdown_lock:
+            return self._shutdown_subprocess_locked(timeout)
+
+    def _shutdown_subprocess_locked(self, timeout: float) -> bool:
         """Gracefully shut down the inference subprocess.
 
         Returns True only once the worker is confirmed dead. If it survives
@@ -377,17 +498,25 @@ class InferenceOrchestrator:
         if self._proc is not None and self._proc.is_alive():
             logger.warning("Inference subprocess did not exit gracefully, terminating")
             try:
-                self._proc.terminate()
+                from utils.process_lifetime import terminate_pid
+                terminate_pid(self._proc.pid, timeout = 5)
                 self._proc.join(timeout = 5)
             except Exception:
                 pass
             if self._proc is not None and self._proc.is_alive():
-                logger.warning("Subprocess still alive after terminate, killing")
+                logger.warning("Process-tree shutdown failed, terminating the worker directly")
                 try:
-                    self._proc.kill()
-                    self._proc.join(timeout = 3)
+                    self._proc.terminate()
+                    self._proc.join(timeout = 5)
                 except Exception:
                     pass
+                if self._proc is not None and self._proc.is_alive():
+                    logger.warning("Subprocess still alive after terminate, killing")
+                    try:
+                        self._proc.kill()
+                        self._proc.join(timeout = 3)
+                    except Exception:
+                        pass
 
         if self._proc is not None and self._proc.is_alive():
             # Survived SIGKILL (uninterruptible syscall): keep the handle so callers
@@ -615,17 +744,23 @@ class InferenceOrchestrator:
                     return None
             return resp
 
-        def drain(timeout: float = 5.0) -> None:
+        def drain(timeout: float = 5.0) -> bool:
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:
                 resp = read_one(timeout = min(0.5, deadline - time.monotonic()))
                 if resp is None:
                     if not self._ensure_subprocess_alive():
-                        return
+                        return True
                     continue
-                if resp.get("type", "") in ("gen_done", "gen_error"):
-                    return
-            logger.warning("Timed out waiting for gen_done after cancel")
+                if resp.get("type", "") in (
+                    "gen_done",
+                    "gen_error",
+                    "audio_done",
+                    "audio_error",
+                ):
+                    return True
+            logger.warning("Timed out waiting for terminal response after cancel")
+            return False
 
         def release() -> None:
             with self._mailbox_lock:
@@ -673,7 +808,12 @@ class InferenceOrchestrator:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
+        continue_final_message: bool = False,
         presence_penalty: float = 0.0,
+        seed: Optional[int] = None,
+        frequency_penalty: float = 0.0,
+        logit_bias: Optional[dict] = None,
+        stop: Optional[list] = None,
     ) -> dict:
         """Build the 'generate' command shared by the locked and dispatched paths."""
         cmd = {
@@ -689,7 +829,13 @@ class InferenceOrchestrator:
             "max_new_tokens": max_new_tokens,
             "repetition_penalty": repetition_penalty,
             "presence_penalty": presence_penalty,
+            "frequency_penalty": frequency_penalty,
+            "logit_bias": logit_bias,
         }
+        if seed is not None:
+            cmd["seed"] = seed
+        if stop:
+            cmd["stop"] = stop
         # Only forward template kwargs the caller set, for older worker compat.
         if use_adapter is not None:
             cmd["use_adapter"] = use_adapter
@@ -701,6 +847,8 @@ class InferenceOrchestrator:
             cmd["reasoning_effort"] = reasoning_effort
         if preserve_thinking is not None:
             cmd["preserve_thinking"] = preserve_thinking
+        if continue_final_message:
+            cmd["continue_final_message"] = True
         return cmd
 
     def _consume_token_stream(
@@ -805,7 +953,7 @@ class InferenceOrchestrator:
             # after the stop, become the resp_queue reader, and consume the
             # worker's "unloaded" reply (unroutable, so dropped) before
             # unload_model's _wait_response sees it -- hanging the unload 300s.
-            if self._unload_pending:
+            if self._unload_pending or self._exclusive_tts_pending:
                 return False
             if self._dispatcher_thread is not None and self._dispatcher_thread.is_alive():
                 return False
@@ -904,8 +1052,13 @@ class InferenceOrchestrator:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
+        continue_final_message: bool = False,
         stats_holder: Optional[dict] = None,
         presence_penalty: float = 0.0,
+        seed: Optional[int] = None,
+        frequency_penalty: float = 0.0,
+        logit_bias: Optional[dict] = None,
+        stop: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Dispatched generation — sends command without holding _gen_lock.
 
@@ -930,6 +1083,9 @@ class InferenceOrchestrator:
         # outgoing model and delay the switch.
         if self._unload_pending:
             yield GenStreamError("Error: model is being unloaded", public = True)
+            return
+        if self._exclusive_tts_pending:
+            yield GenStreamError("Error: audio generation is in progress", public = True)
             return
 
         # Ensure the dispatcher runs. _start_dispatcher serializes concurrent starters under
@@ -960,11 +1116,16 @@ class InferenceOrchestrator:
             max_new_tokens = max_new_tokens,
             repetition_penalty = repetition_penalty,
             presence_penalty = presence_penalty,
+            frequency_penalty = frequency_penalty,
+            logit_bias = logit_bias,
+            stop = stop,
             use_adapter = use_adapter,
             tools = tools,
             enable_thinking = enable_thinking,
             reasoning_effort = reasoning_effort,
             preserve_thinking = preserve_thinking,
+            continue_final_message = continue_final_message,
+            seed = seed,
         )
 
         # Create the mailbox BEFORE sending, rechecking _unload_pending under
@@ -987,14 +1148,16 @@ class InferenceOrchestrator:
                 or self.active_model_name != expected_model
                 or not dispatcher_alive
             )
-            if not unloading:
+            tts_reserved = self._exclusive_tts_pending
+            blocked = unloading or tts_reserved
+            if not blocked:
                 self._mailboxes[request_id] = mailbox
                 if cancel_event is not None:
                     self._request_cancel_events[request_id] = cancel_event
             # When bailing without a mailbox, note whether any OTHER compare request still
             # routes through the dispatcher; if none and this call started it, stop it below.
-            orphaned_dispatcher = unloading and not dispatcher_preexisting and not self._mailboxes
-        if unloading:
+            orphaned_dispatcher = blocked and not dispatcher_preexisting and not self._mailboxes
+        if blocked:
             # A racing unload can pass its _wait_dispatcher_idle() while the dispatcher was
             # stopped, then set _unload_pending. The one we just started would otherwise
             # linger with no mailboxes, race unload_model's _wait_response for the "unloaded"
@@ -1003,7 +1166,12 @@ class InferenceOrchestrator:
             # _stop_dispatcher joins the dispatcher, which itself takes that lock.
             if orphaned_dispatcher:
                 self._stop_dispatcher()
-            yield GenStreamError("Error: model is being unloaded", public = True)
+            detail = (
+                "Error: audio generation is in progress"
+                if tts_reserved
+                else "Error: model is being unloaded"
+            )
+            yield GenStreamError(detail, public = True)
             return
 
         # Claim before sending, like the locked path: dispatched runs are concurrent by design,
@@ -1066,15 +1234,15 @@ class InferenceOrchestrator:
                 return
         logger.warning("Timed out draining mailbox after cancel")
 
-    def _wait_dispatcher_idle(self) -> bool:
+    def _wait_dispatcher_idle(self, cancel_event = None) -> bool:
         """Wait for all dispatched requests to complete, then stop dispatcher.
 
         Returns True if the dispatcher was stopped (all mailboxes drained, or no
         dispatcher was running), and False if it was left running because compare
         requests were still active after _DISPATCH_IDLE_TIMEOUT.
 
-        Called before the _gen_lock path so the dispatcher thread isn't competing
-        for resp_queue reads.
+        Callers must reserve admission before using this as an exclusive handoff;
+        TTS does so under _gen_lock, while older direct paths call it before the lock.
         """
         if self._dispatcher_thread is None or not self._dispatcher_thread.is_alive():
             return True
@@ -1082,10 +1250,15 @@ class InferenceOrchestrator:
         # Wait for all mailboxes to be emptied (dispatched requests complete)
         deadline = time.monotonic() + _DISPATCH_IDLE_TIMEOUT
         while time.monotonic() < deadline:
+            if cancel_event is not None and cancel_event.is_set():
+                return False
             with self._mailbox_lock:
                 if not self._mailboxes:
                     break
             time.sleep(0.1)
+
+        if cancel_event is not None and cancel_event.is_set():
+            return False
 
         # Only stop dispatcher if all mailboxes drained. If compare requests
         # are still active, leave it running so their token routing isn't
@@ -1179,6 +1352,9 @@ class InferenceOrchestrator:
         subject: Optional[str] = None,
         tensor_parallel: bool = False,
         mlx_distributed: bool = False,
+        mlx_kv_bits: Optional[int] = None,
+        chat_template_override: Optional[str] = None,
+        load_cancel_event: Optional[threading.Event] = None,
     ) -> bool:
         """Load a model for inference.
 
@@ -1192,6 +1368,10 @@ class InferenceOrchestrator:
 
         model_name = config.identifier
         self.loading_models.add(model_name)
+        if load_cancel_event is not None and load_cancel_event.is_set():
+            self.loading_models.discard(model_name)
+            logger.info("Load cancelled before worker start: %s", model_name)
+            return False
 
         try:
             needed_major = "5" if needs_transformers_5(model_name) else "4"
@@ -1212,6 +1392,8 @@ class InferenceOrchestrator:
                 "mlx_parallel_mode": ("tensor" if tensor_parallel else "pipeline")
                 if mlx_distributed
                 else None,
+                "mlx_kv_bits": mlx_kv_bits,
+                "chat_template_override": chat_template_override,
             }
             resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
                 gpu_ids,
@@ -1358,6 +1540,9 @@ class InferenceOrchestrator:
                         "has_audio_input": model_info.get("has_audio_input", False),
                         "context_length": model_info.get("context_length"),
                     }
+                    self.models[self.active_model_name].update(
+                        _mlx_runtime_mirror_fields(model_info)
+                    )
                     # Mirror chat_template_info so routes can classify caps
                     # without re-entering the subprocess.
                     _tpl_info = model_info.get("chat_template_info")
@@ -1369,7 +1554,6 @@ class InferenceOrchestrator:
                 else:
                     # Worker reports failures (consent gate included) under "message".
                     error = resp.get("message") or resp.get("error") or "Failed to load model"
-                    self.loading_models.discard(model_name)
                     self.active_model_name = None
                     self.models.clear()
                     raise Exception(error)
@@ -1385,6 +1569,12 @@ class InferenceOrchestrator:
                 raise
             self.active_model_name = None
             self.models.clear()
+            # Reap workers after any failed load, including inactivity timeouts
+            # that leave installs and GPU memory alive (#9398).
+            try:
+                self._shutdown_subprocess(timeout = 5)
+            except Exception as teardown_exc:
+                logger.warning("Could not shut the failed load's worker down: %s", teardown_exc)
             raise
 
     def cancel_load(self, model_name: str) -> bool:
@@ -1431,6 +1621,40 @@ class InferenceOrchestrator:
         self.active_model_name = None
         self.models.clear()
         return True
+
+    # --- Dictation models -------------------------------------------------
+    # These run in the STT sidecars (whisper-server, llama-server, and the
+    # Transformers spawn child), not the chat worker. Their lifecycle goes
+    # through here all the same, so one object knows everything that is
+    # resident and Voice settings and Model Hub cannot report different things
+    # about one model.
+
+    def load_stt_model(
+        self,
+        model: Optional[str],
+        engine: str,
+        request_cancel_event: Optional[threading.Event] = None,
+    ) -> None:
+        """Make a dictation model resident on its sidecar."""
+        from core.inference import stt_registry
+        stt_registry.load(model, engine, request_cancel_event)
+
+    def unload_stt_model(
+        self,
+        engines: Optional[Sequence[str]] = None,
+        expected_model: Optional[str] = None,
+    ) -> list:
+        """Release dictation models (all engines by default); returns refusals.
+
+        ``expected_model`` scopes the release to a sidecar still holding that model.
+        """
+        from core.inference import stt_registry
+        return stt_registry.unload(engines, expected_model = expected_model)
+
+    def resident_stt_model(self) -> dict:
+        """What dictation holds, alongside active_model_name for chat."""
+        from core.inference import stt_registry
+        return stt_registry.resident()
 
     def unload_model(self, model_name: str) -> bool:
         """Unload a model from the subprocess."""
@@ -1527,6 +1751,17 @@ class InferenceOrchestrator:
                     self.active_model_name = None
 
                 logger.info("Model '%s' unloaded from subprocess", model_name)
+                # empty_cache in the child cannot return the accelerator context, so an
+                # idle worker keeps its high-water mark -- VRAM the GGUF backend cannot
+                # see and gpu_arbiter never evicts (both are chat-owned). Nothing left
+                # to serve, so drop it; load_model respawns a fresh worker regardless.
+                if not self.models and not self.loading_models:
+                    logger.info("No models left resident; shutting the inference subprocess down")
+                    # The unload already succeeded: a failed teardown must not report it failed.
+                    try:
+                        self._shutdown_subprocess(timeout = 5)
+                    except Exception as exc:
+                        logger.warning("Could not shut the idle inference subprocess down: %s", exc)
                 return True
 
             except Exception as exc:
@@ -1559,8 +1794,13 @@ class InferenceOrchestrator:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
+        continue_final_message: bool = False,
         stats_holder: Optional[dict] = None,
         presence_penalty: float = 0.0,
+        seed: Optional[int] = None,
+        frequency_penalty: float = 0.0,
+        logit_bias: Optional[dict] = None,
+        stop: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Generate response, streaming tokens from subprocess.
 
@@ -1569,7 +1809,8 @@ class InferenceOrchestrator:
         schemas and reasoning controls.
 
         ``stats_holder``: caller-owned dict; on gen_done its "stats" key gets
-        the worker's usage/timings. Request-scoped to avoid cross-stream reads.
+        the worker's usage, timings and terminal reason. Request-scoped to avoid
+        cross-stream reads.
 
         ``presence_penalty`` matches the GGUF sampling path (0 disables it).
         """
@@ -1589,8 +1830,13 @@ class InferenceOrchestrator:
             enable_thinking = enable_thinking,
             reasoning_effort = reasoning_effort,
             preserve_thinking = preserve_thinking,
+            continue_final_message = continue_final_message,
             stats_holder = stats_holder,
             presence_penalty = presence_penalty,
+            seed = seed,
+            frequency_penalty = frequency_penalty,
+            logit_bias = logit_bias,
+            stop = stop,
         )
 
     def generate_chat_completion_with_tools(
@@ -1608,6 +1854,7 @@ class InferenceOrchestrator:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
+        continue_final_message: bool = False,
         max_tool_iterations: int = 25,
         auto_heal_tool_calls: bool = True,
         nudge_tool_calls: Optional[bool] = None,
@@ -1621,7 +1868,11 @@ class InferenceOrchestrator:
         use_adapter: Optional[Union[bool, str]] = None,
         stats_holder: Optional[dict] = None,
         presence_penalty: float = 0.0,
+        frequency_penalty: float = 0.0,
+        logit_bias: Optional[dict] = None,
+        stop: Optional[list] = None,
         reasoning_prefilled: bool = False,
+        seed: Optional[int] = None,
         **_unused,
     ):
         """Run the safetensors agentic tool loop in the parent process,
@@ -1640,6 +1891,7 @@ class InferenceOrchestrator:
             # run_safetensors_tool_loop drop one-shot tools (e.g. render_html) from
             # later same-response prompts.
             turn_tools = active_tools if active_tools is not None else tools
+            turn_stats: dict = {}
             common_kwargs = dict(
                 messages = conv,
                 system_prompt = "",
@@ -1655,9 +1907,17 @@ class InferenceOrchestrator:
                 enable_thinking = enable_thinking,
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
-                # last turn wins, like the GGUF tool loop
-                stats_holder = stats_holder,
+                # Self-limiting: after a tool call the conversation ends on a tool
+                # result, so later turns render as ordinary new turns.
+                continue_final_message = continue_final_message,
+                # Reported per turn and summed below, since the whole loop answers
+                # one request.
+                stats_holder = turn_stats,
                 presence_penalty = presence_penalty,
+                seed = seed,
+                frequency_penalty = frequency_penalty,
+                logit_bias = logit_bias,
+                stop = stop,
             )
             if use_adapter is not None:
                 stream = self.generate_with_adapter_control(
@@ -1681,6 +1941,12 @@ class InferenceOrchestrator:
                             close()
                         except Exception:
                             logger.debug("failed to close errored generation stream", exc_info = True)
+                # A turn that never reported -- one a cancel interrupted -- folds in
+                # as nothing, leaving the turns that did.
+                if stats_holder is not None:
+                    stats_holder["stats"] = _summed_tool_loop_stats(
+                        stats_holder.get("stats"), turn_stats.get("stats")
+                    )
 
         initial = list(messages)
         if system_prompt:
@@ -1725,6 +1991,10 @@ class InferenceOrchestrator:
             bypass_permissions = bypass_permissions,
             permission_mode = permission_mode,
             reasoning_prefilled = reasoning_prefilled,
+            continue_final_message = continue_final_message,
+            # So a conversation search can be sized against what this model can hold.
+            context_length = _model_info.get("context_length"),
+            max_tokens = max_new_tokens,
         )
 
     def generate_with_adapter_control(
@@ -1777,8 +2047,13 @@ class InferenceOrchestrator:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
+        continue_final_message: bool = False,
         stats_holder: Optional[dict] = None,
         presence_penalty: float = 0.0,
+        seed: Optional[int] = None,
+        frequency_penalty: float = 0.0,
+        logit_bias: Optional[dict] = None,
+        stop: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Inner generation logic — sends command to subprocess, yields tokens.
 
@@ -1828,11 +2103,16 @@ class InferenceOrchestrator:
                 max_new_tokens = max_new_tokens,
                 repetition_penalty = repetition_penalty,
                 presence_penalty = presence_penalty,
+                frequency_penalty = frequency_penalty,
+                logit_bias = logit_bias,
+                stop = stop,
                 use_adapter = use_adapter,
                 tools = tools,
                 enable_thinking = enable_thinking,
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
+                continue_final_message = continue_final_message,
+                seed = seed,
             )
 
             # Claim the worker BEFORE sending, so a Stop on some OTHER chat -- still queued on the
@@ -1946,6 +2226,7 @@ class InferenceOrchestrator:
         max_new_tokens: int = 2048,
         repetition_penalty: float = 1.0,
         use_adapter: Optional[Union[bool, str]] = None,
+        cancel_event = None,
     ) -> Tuple[bytes, int]:
         """Generate TTS audio. Returns (wav_bytes, sample_rate).
 
@@ -1957,70 +2238,162 @@ class InferenceOrchestrator:
             raise RuntimeError("No active model")
         expected_model = self.active_model_name
 
-        # Serialize under _gen_lock (sole resp_queue reader) and refuse to start on the
-        # outgoing model once an unload is pending, like the text and audio-input paths.
-        # Without this a concurrent /audio/generate could run TTS on a model being switched.
+        # Serialize under _gen_lock and reserve dispatcher admission before waiting for
+        # compare work to drain. A bare idle wait is racy: a compare request can register
+        # between the wait and this command, leaving TTS queued without safe ownership of
+        # the worker's single shared cancel event.
         with self._gen_lock:
-            # Recheck under the lock (see _generate_inner): a raced unload/switch may have
-            # cleared or swapped the model while we waited.
-            if self._unload_pending or self.active_model_name != expected_model:
-                raise RuntimeError("model is being unloaded")
-
-            request_id = str(uuid.uuid4())
-
-            cmd = {
-                "type": "generate_audio",
-                "request_id": request_id,
-                "text": text,
-                "temperature": temperature,
-                "top_p": top_p,
-                "top_k": top_k,
-                "min_p": min_p,
-                "max_new_tokens": max_new_tokens,
-                "repetition_penalty": repetition_penalty,
-            }
-            if use_adapter is not None:
-                cmd["use_adapter"] = use_adapter
-
-            # Same shared-queue hazard as _generate_inner: see _direct_reader.
-            read_one, _drain, release_mailbox = self._direct_reader(request_id)
+            with self._dispatcher_lifecycle_lock:
+                self._exclusive_tts_pending = True
             try:
-                self._send_cmd(cmd)
+                dispatcher_idle = self._wait_dispatcher_idle(cancel_event = cancel_event)
+                if cancel_event is not None and cancel_event.is_set():
+                    raise AudioGenerationCancelledError("Audio generation cancelled")
+                if not dispatcher_idle:
+                    raise RuntimeError(
+                        "Cannot start audio generation while compare requests are active"
+                    )
 
-                deadline = time.monotonic() + 120.0
-                while time.monotonic() < deadline:
-                    remaining = max(0.1, deadline - time.monotonic())
-                    resp = read_one(timeout = min(remaining, 1.0))
+                # Recheck after the dispatcher wait: unload can set its flag without
+                # _gen_lock, and a switch may have completed while this call was queued.
+                if self._unload_pending or self.active_model_name != expected_model:
+                    raise AudioGenerationCancelledError("model is being unloaded")
 
-                    if resp is None:
-                        if not self._ensure_subprocess_alive():
-                            raise RuntimeError(self._subprocess_crash_message("audio generation"))
-                        continue
+                # Bound public API integers before either enqueuing work or
+                # calculating the floating-point watchdog deadline.
+                max_new_tokens = min(
+                    AUDIO_GENERATION_MAX_TOKENS,
+                    max(1, int(max_new_tokens)),
+                )
+                generation_timeout = _audio_generation_timeout(max_new_tokens)
+                request_id = str(uuid.uuid4())
 
-                    rtype = resp.get("type", "")
+                cmd = {
+                    "type": "generate_audio",
+                    "request_id": request_id,
+                    "text": text,
+                    "temperature": temperature,
+                    "top_p": top_p,
+                    "top_k": top_k,
+                    "min_p": min_p,
+                    "max_new_tokens": max_new_tokens,
+                    "repetition_penalty": repetition_penalty,
+                }
+                if use_adapter is not None:
+                    cmd["use_adapter"] = use_adapter
 
-                    if rtype == "audio_done":
-                        wav_bytes = base64.b64decode(resp["wav_base64"])
-                        sample_rate = resp["sample_rate"]
-                        return wav_bytes, sample_rate
+                # Same shared-queue hazard as _generate_inner: see _direct_reader.
+                read_one, _drain, release_mailbox = self._direct_reader(request_id)
+                try:
+                    # Claim before enqueueing so request-scoped reset ownership follows the same
+                    # discipline as text and audio-input generation.
+                    with self._send_order_lock:
+                        self._claim_worker(cancel_event)
+                        self._send_cmd(cmd)
 
-                    if rtype == "audio_error":
-                        raise RuntimeError(resp.get("error", "Audio generation failed"))
+                    deadline = time.monotonic() + generation_timeout
+                    cancel_signalled = False
+                    cancel_deadline = None
+                    worker_started = False
+                    while time.monotonic() < deadline:
+                        if (
+                            cancel_event is not None
+                            and cancel_event.is_set()
+                            and cancel_deadline is None
+                        ):
+                            cancel_deadline = time.monotonic() + _AUDIO_CANCEL_TEARDOWN_TIMEOUT
+                            deadline = min(deadline, cancel_deadline)
+                        if (
+                            worker_started
+                            and cancel_event is not None
+                            and cancel_event.is_set()
+                            and not cancel_signalled
+                            and self._owns_worker(cancel_event)
+                        ):
+                            # audio_started is emitted after the worker clears stale state,
+                            # so this signal cannot be erased or hit an earlier request.
+                            self._cancel_generation()
+                            cancel_signalled = True
+                            # The cancel is delivered now, so hold the worker to the drain
+                            # window from here rather than from when the caller asked.
+                            cancel_deadline = time.monotonic() + _AUDIO_CANCEL_DRAIN_TIMEOUT
+                            deadline = min(deadline, cancel_deadline)
+                        remaining = max(0.1, deadline - time.monotonic())
+                        resp = read_one(timeout = min(remaining, 1.0))
 
-                    if rtype == "error":
-                        raise RuntimeError(resp.get("error", "Unknown error"))
+                        if resp is None:
+                            if not self._ensure_subprocess_alive():
+                                raise RuntimeError(
+                                    self._subprocess_crash_message("audio generation")
+                                )
+                            continue
 
-                    if rtype == "status":
-                        continue
+                        rtype = resp.get("type", "")
+                        if rtype == "audio_started":
+                            self._mark_worker_started(cancel_event)
+                            worker_started = True
+                            continue
 
-                raise RuntimeError("Timeout waiting for audio generation (120s)")
+                        if rtype == "audio_done":
+                            if cancel_event is not None and cancel_event.is_set():
+                                raise AudioGenerationCancelledError("Audio generation cancelled")
+                            wav_bytes = base64.b64decode(resp["wav_base64"])
+                            sample_rate = resp["sample_rate"]
+                            return wav_bytes, sample_rate
+
+                        if rtype == "audio_error":
+                            if resp.get("cancelled") or (
+                                cancel_event is not None and cancel_event.is_set()
+                            ):
+                                raise AudioGenerationCancelledError("Audio generation cancelled")
+                            # Tagged code = no path for this task, not a failure.
+                            if resp.get("code") == AUDIO_UNSUPPORTED_CODE:
+                                raise AudioBackendUnsupportedError(
+                                    resp.get("error", "This backend cannot generate audio."),
+                                    hint = resp.get("hint"),
+                                )
+                            raise RuntimeError(resp.get("error", "Audio generation failed"))
+
+                        if rtype == "error":
+                            if cancel_event is not None and cancel_event.is_set():
+                                raise AudioGenerationCancelledError("Audio generation cancelled")
+                            raise RuntimeError(resp.get("error", "Unknown error"))
+
+                        if rtype == "status":
+                            continue
+
+                    # A caller cancellation already spent the drain window polling this
+                    # request's mailbox. Tear down an unresponsive worker now instead of
+                    # waiting out the much longer generation watchdog or draining twice.
+                    if cancel_deadline is not None:
+                        if self._shutdown_subprocess(timeout = _AUDIO_CANCEL_DRAIN_TIMEOUT):
+                            self.active_model_name = None
+                            self.models.clear()
+                        raise AudioGenerationCancelledError("Audio generation cancelled")
+
+                    # Do not release worker ownership or dispatcher exclusivity over a
+                    # command that may still be generating. Cancel, consume its terminal
+                    # response, and tear down a worker that does not acknowledge promptly.
+                    self._cancel_generation()
+                    if not _drain(timeout = _AUDIO_CANCEL_DRAIN_TIMEOUT):
+                        if self._shutdown_subprocess(timeout = _AUDIO_CANCEL_DRAIN_TIMEOUT):
+                            self.active_model_name = None
+                            self.models.clear()
+                    raise RuntimeError(
+                        f"Timeout waiting for audio generation ({generation_timeout:g}s)"
+                    )
+                finally:
+                    self._release_worker(cancel_event)
+                    release_mailbox()
             finally:
-                release_mailbox()
+                with self._dispatcher_lifecycle_lock:
+                    self._exclusive_tts_pending = False
 
     def generate_whisper_response(
         self,
         audio_array,
         cancel_event = None,
+        stats_holder: Optional[dict] = None,
     ) -> Generator[str, None, None]:
         """Whisper ASR — sends audio to subprocess, yields text."""
         yield from self._generate_audio_input_inner(
@@ -2029,6 +2402,7 @@ class InferenceOrchestrator:
             messages = [],
             system_prompt = "",
             cancel_event = cancel_event,
+            stats_holder = stats_holder,
         )
 
     def generate_audio_input_response(
@@ -2044,6 +2418,8 @@ class InferenceOrchestrator:
         repetition_penalty: float = 1.0,
         use_adapter: Optional[Union[bool, str]] = None,
         cancel_event = None,
+        stats_holder: Optional[dict] = None,
+        stop = None,
     ) -> Generator[str, None, None]:
         """Audio input generation (e.g. Gemma 3n) — streams text tokens."""
         yield from self._generate_audio_input_inner(
@@ -2059,6 +2435,8 @@ class InferenceOrchestrator:
             repetition_penalty = repetition_penalty,
             use_adapter = use_adapter,
             cancel_event = cancel_event,
+            stats_holder = stats_holder,
+            stop = stop,
         )
 
     def _generate_audio_input_inner(
@@ -2075,8 +2453,14 @@ class InferenceOrchestrator:
         repetition_penalty: float = 1.0,
         use_adapter: Optional[Union[bool, str]] = None,
         cancel_event = None,
+        stats_holder: Optional[dict] = None,
+        stop = None,
     ) -> Generator[str, None, None]:
-        """Shared inner logic for audio input generation (Whisper + ASR)."""
+        """Shared inner logic for audio input generation (Whisper + ASR).
+
+        ``stats_holder``: as in generate_chat_response — caller-owned, filled on
+        gen_done with the worker's usage / budget report.
+        """
         if not self._ensure_subprocess_alive():
             yield GenStreamError("Error: Inference subprocess is not running", public = True)
             return
@@ -2119,6 +2503,8 @@ class InferenceOrchestrator:
             # As in the text path: key stays absent unless the caller selected one.
             if use_adapter is not None:
                 cmd["use_adapter"] = use_adapter
+            if stop:
+                cmd["stop"] = stop
 
             # Same shared-queue hazard as _generate_inner: see _direct_reader.
             read_one, drain, release_mailbox = self._direct_reader(request_id)
@@ -2138,6 +2524,7 @@ class InferenceOrchestrator:
                     lambda: drain(timeout = 5.0),
                     crash_context = "audio input generation",
                     cancel_event = cancel_event,
+                    stats_holder = stats_holder,
                 )
             finally:
                 self._release_worker(cancel_event)

@@ -6,8 +6,8 @@ import {
   CHAT_HISTORY_UPDATED_EVENT,
   notifyChatHistoryUpdated,
 } from "../api/chat-api";
-import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { useChatArtifactsStore } from "../artifacts/store";
+import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { ThreadRecord } from "../types";
 import {
   deleteStoredChatThreads,
@@ -17,11 +17,14 @@ import {
   updateStoredChatThread,
 } from "../utils/chat-history-storage";
 import { clearComposerDraft } from "../utils/composer-draft";
+import { offerToDeleteKeptSandboxes } from "../utils/offer-kept-sandbox-files";
 import { stopChatThread } from "../utils/stop-chat-thread";
 import {
   markChatThreadsDeleted,
   removeChatThreadTombstones,
 } from "../utils/chat-thread-tombstones";
+import { requestPromptQueueStop } from "../utils/prompt-queue-boundary";
+import { repairLegacyChatTitles } from "../utils/repair-legacy-chat-titles";
 
 export interface SidebarItem {
   type: "single" | "compare";
@@ -58,6 +61,7 @@ export function groupThreads(
     if (t.pairId) {
       const existing = pairItems.get(t.pairId);
       if (existing) {
+        existing.createdAt = Math.max(existing.createdAt, t.createdAt);
         existing.updatedAt = Math.max(existing.updatedAt, lastActivityAt(t));
         existing.threadIds?.push(t.id);
         continue;
@@ -77,6 +81,7 @@ export function groupThreads(
       items.push({
         type: "single",
         id: t.id,
+        threadIds: [t.id],
         title: t.title,
         createdAt: t.createdAt,
         updatedAt: lastActivityAt(t),
@@ -128,6 +133,9 @@ export function useChatSidebarItems(options?: {
         if (cancelled || seq !== requestSeq) return;
         setAllThreads(threads);
         setLoaded(true);
+        // Pre-cut legacy titles cannot grow with the sidebar. The repair reads
+        // its own messages, as late as it can, not this list's.
+        void repairLegacyChatTitles(threads).catch(() => undefined);
       } catch (error) {
         if (isExpectedBackgroundChatStorageError(error)) {
           return;
@@ -192,33 +200,55 @@ export async function renameChatItem(
   );
 }
 
-export async function archiveChatItem(
-  item: SidebarItem,
+async function collectItemThreadIds(
+  items: SidebarItem[],
+  args: { includeArchived?: boolean } = {},
+): Promise<string[]> {
+  const ids = new Set<string>();
+  for (const item of items) {
+    if (item.type === "single") {
+      ids.add(item.id);
+      continue;
+    }
+    const pair = await listStoredChatThreads({ pairId: item.id, ...args });
+    for (const thread of pair) ids.add(thread.id);
+  }
+  return Array.from(ids);
+}
+
+export async function archiveChatItems(
+  items: SidebarItem[],
   activeId: string | undefined,
   onSelect: (view: { mode: "single"; newThreadNonce: string }) => void,
 ): Promise<void> {
-  const threadIds: string[] =
-    item.type === "single"
-      ? [item.id]
-      : (
-          await listStoredChatThreads({
-            pairId: item.id,
-            includeArchived: true,
-          })
-        ).map((t) => t.id);
+  const threadIds = await collectItemThreadIds(items, {
+    includeArchived: true,
+  });
 
-  for (const id of threadIds) cancelIfRunning(id);
+  requestPromptQueueStop(threadIds);
+
+  for (const id of threadIds) {
+    cancelIfRunning(id);
+  }
 
   await Promise.all(
     threadIds.map((id) => updateStoredChatThread(id, { archived: true })),
   );
 
-  if (activeId === item.id) {
+  if (activeId !== undefined && items.some((item) => item.id === activeId)) {
     useChatRuntimeStore.getState().setActiveThreadId(null);
     onSelect({ mode: "single", newThreadNonce: crypto.randomUUID() });
   }
 
   notifyChatHistoryUpdated();
+}
+
+export async function archiveChatItem(
+  item: SidebarItem,
+  activeId: string | undefined,
+  onSelect: (view: { mode: "single"; newThreadNonce: string }) => void,
+): Promise<void> {
+  return archiveChatItems([item], activeId, onSelect);
 }
 
 export async function archiveAllChatItems(
@@ -231,6 +261,7 @@ export async function archiveAllChatItems(
   const toArchive = threads.filter((t) => !t.archived);
   if (toArchive.length === 0) return 0;
 
+  requestPromptQueueStop(toArchive.map((thread) => thread.id));
   for (const t of toArchive) cancelIfRunning(t.id);
 
   await Promise.all(
@@ -273,19 +304,20 @@ export async function unarchiveChatItem(item: SidebarItem): Promise<void> {
   notifyChatHistoryUpdated();
 }
 
-export async function deleteChatItem(
-  item: SidebarItem,
+export async function deleteChatItems(
+  items: SidebarItem[],
   activeId: string | undefined,
   onSelect: (view: { mode: "single"; newThreadNonce: string }) => void,
+  args: { deleteFiles?: boolean } = {},
 ) {
-  const threadIds: string[] =
-    item.type === "single"
-      ? [item.id]
-      : (await listStoredChatThreads({ pairId: item.id })).map((t) => t.id);
+  const threadIds = await collectItemThreadIds(items);
 
-  // Stop any in-flight streams before deleting, so the model doesn't keep
-  // generating against a thread that no longer exists.
-  for (const id of threadIds) cancelIfRunning(id);
+  // Stop queued prompts and in-flight streams before deleting.
+  requestPromptQueueStop(threadIds);
+
+  for (const id of threadIds) {
+    cancelIfRunning(id);
+  }
 
   // Drop saved composer drafts so deleted threads leave no orphan keys.
   for (const id of threadIds) clearComposerDraft(id);
@@ -298,16 +330,29 @@ export async function deleteChatItem(
   markChatThreadsDeleted(threadIds);
   notifyChatHistoryUpdated();
 
-  if (activeId === item.id) {
+  if (activeId !== undefined && items.some((item) => item.id === activeId)) {
     useChatRuntimeStore.getState().setActiveThreadId(null);
     onSelect({ mode: "single", newThreadNonce: crypto.randomUUID() });
   }
 
   try {
-    await deleteStoredChatThreads(threadIds);
+    const kept = await deleteStoredChatThreads(threadIds, args);
+    // Whether or not deletion was asked for: a sandbox that could not be
+    // removed leaves files with no card left to reach them from, and the chat
+    // is already gone, so this offer is the only notice and the only retry.
+    offerToDeleteKeptSandboxes(kept);
   } catch (error) {
     removeChatThreadTombstones(threadIds);
     notifyChatHistoryUpdated();
     throw error;
   }
+}
+
+export async function deleteChatItem(
+  item: SidebarItem,
+  activeId: string | undefined,
+  onSelect: (view: { mode: "single"; newThreadNonce: string }) => void,
+  args: { deleteFiles?: boolean } = {},
+) {
+  return deleteChatItems([item], activeId, onSelect, args);
 }

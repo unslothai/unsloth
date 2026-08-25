@@ -19,13 +19,14 @@
 # caller's own assertions, and neither disposition touches the non-timeout
 # exit paths.
 #
-# Three call sites deliberately do NOT get the waiver. `connection` has no
+# Four call sites deliberately do NOT get the waiver. `connection` has no
 # assertion that can tell a completed reply from a startup banner (assert_reply
 # checks for non-empty text without the connection/auth error strings, not for
 # the requested "pong"), `resume` reads a session-store delta that a partial turn
-# would corrupt, and `attribution-ab` judges by a llama-server log slice. Only
-# the two file-edit turns qualify, and turn 2 falls back on ran.txt rather than
-# its transcript.
+# would corrupt, `attribution-ab` judges by a llama-server log slice, and
+# file-edit turn 2 has only its transcript, which cannot separate the program's
+# stdout from a narration of it. Turn 1 is the only site that qualifies, because
+# the harness re-runs hello.py itself.
 #
 # Expiry is read off the wall clock, not the exit status: --kill-after bounds a
 # TERM-resistant CLI but makes it exit 137, which is also what an unrelated
@@ -166,15 +167,28 @@ assert_eq "rc preserved"                "$(field "$OUT" RC)" 3
 assert_eq "TIMED_OUT cleared"           "$(field "$OUT" TIMED_OUT)" 0
 assert_eq "no guide_fail"               "$(count "$OUT" 'GUIDE_FAIL')" 0
 
-echo "6. only the file-edit turns rescue a soft timeout"
-# Both file-edit turns judge the turn on real side effects: turn 1 on hello.py
-# (which the harness runs itself), turn 2 on ran.txt. connection, resume and
-# attribution-ab have no such assertion, so a cap stays fatal for them.
-# Count every waiver regardless of how the statement is wrapped: an escape
+echo "6. only file-edit turn 1 rescues a soft timeout"
+# Turn 1 is judged on a side effect the harness verifies itself (it runs
+# hello.py and compares the output). Everything else -- turn 2, connection,
+# resume, attribution-ab -- has only text or a partial store to go on, so a cap
+# stays fatal there.
+# This heading says "only turn 1 RESCUES", so count rescues, not mentions. The
+# previous form counted every consultation of TIMED_OUT and pinned the total at
+# 3, which conflated the one waiver with the fatal checks beside it -- so adding
+# a fourth site that makes a cap MORE explicitly fatal failed a guard named for
+# waivers. Splitting them enforces the sentence above instead of a magic number,
+# and keeps the real power: a new waiver anywhere still fails.
+#
+# The waiver is the `||` form, and it is the only shape that lets execution
+# continue past a cap. Read as a whole statement, not per line: an escape
 # rewritten onto one line must still be counted, or this guard checks nothing.
-RESCUERS="$(grep -c 'TIMED_OUT:-0}" = 1 \]' "$DRIVE_SH" || true)"
-# 2 file-edit turn guards + turn 2's ran.txt branch + resume + attribution-ab.
-assert_eq "exactly the expected TIMED_OUT sites" "$RESCUERS" 5
+WAIVERS="$(grep -c '|| \[ "${TIMED_OUT:-0}" = 1 \]' "$DRIVE_SH" || true)"
+assert_eq "exactly one TIMED_OUT waiver (file-edit turn 1)" "$WAIVERS" 1
+
+# The rest must consult it only to STOP: resume, attribution-ab and connection.
+# Counted separately so a waiver can never masquerade as one of them.
+TOTAL_SITES="$(grep -c 'TIMED_OUT:-0}" = 1 \]' "$DRIVE_SH" || true)"
+assert_eq "every other TIMED_OUT site is a fatal check" "$((TOTAL_SITES - WAIVERS))" 3
 assert_eq "resume keeps a hang fatal" \
     "$(grep -c 'a resume pass cannot be judged from a partial turn' "$DRIVE_SH" || true)" 1
 assert_eq "attribution-ab keeps a hang fatal" \
@@ -192,22 +206,22 @@ assert_eq "connection guard has no TIMED_OUT escape" \
 assert_eq "connection guard still fails on a bare rc" \
     "$(echo "$CONN_STMT" | grep -c '\[ "\$rc" -eq 0 \] || guide_fail' || true)" 1
 
-echo "7. a waived file-edit turn 2 is judged on a real artifact, not on text"
-# 'Hello' is hello.py's own source, the program's stdout, and a plausible
-# narration of the answer all at once, so no transcript grep can separate them.
-# ran.txt can only exist if a tool call actually ran.
-assert_eq "T2 asks for the artifact" \
-    "$(grep -c "write that output to ran.txt" "$DRIVE_SH" || true)" 1
-# Grep the guard itself, not its message: the message survives inside a block
-# that has been short-circuited, so it proves nothing on its own.
-assert_eq "the waived path requires it" \
-    "$(grep -c '^ *\[ -f ran.txt \] || {' "$DRIVE_SH" || true)" 1
-assert_eq "and says so when it is missing" \
-    "$(grep -c 'without leaving ran.txt' "$DRIVE_SH" || true)" 1
-assert_eq "and checks its contents" \
-    "$(grep -c "_ran\" = \"Hello" "$DRIVE_SH" || true)" 1
-assert_eq "no transcript-only fallback survives" \
-    "$(grep -c "hello.py's output on a line of its own" "$DRIVE_SH" || true)" 0
+echo "7. file-edit turn 2 keeps a cap fatal, and asks one thing"
+# The two-part T2 that would have made a waived turn 2 verifiable degraded the
+# agents: opencode narrated the tool call instead of running it and created no
+# file, having executed the one-part prompt for real on every prior run.
+assert_eq "T2 is a single instruction" \
+    "$(grep -c "T2='Run hello.py with python and show me the exact output.'" "$DRIVE_SH" || true)" 1
+# Only the comment explaining why it was dropped may mention it; no live line
+# may ask for it or read it.
+assert_eq "no ran.txt artifact in live code" \
+    "$(grep -v '^[[:space:]]*#' "$DRIVE_SH" | grep -c 'ran.txt' || true)" 0
+TURN2_LINE="$(grep -n 'turn 2 (run hello.py) exited non-zero' "$DRIVE_SH" | cut -d: -f1)"
+TURN2_STMT="$(sed -n "$((TURN2_LINE - 2)),${TURN2_LINE}p" "$DRIVE_SH")"
+assert_eq "turn 2 has no TIMED_OUT escape" \
+    "$(echo "$TURN2_STMT" | grep -c 'TIMED_OUT' || true)" 0
+assert_eq "turn 2 still fails on a bare rc" \
+    "$(echo "$TURN2_STMT" | grep -c '\[ "\$rc" -eq 0 \] \\' || true)" 1
 
 echo "8. the cap keeps a finite kill fallback, but expiry comes from the clock"
 # Cases 3b/3c/3d prove the behaviour; these pin the shape, so a refactor cannot

@@ -15,9 +15,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 
 import httpx
 import pytest
+
+from fastapi import HTTPException
 
 from core.inference import external_provider as ep_mod
 from core.inference.external_provider import ExternalProviderClient
@@ -156,6 +159,241 @@ def test_delete_propagates_openai_4xx(monkeypatch):
         _drive(_make_client().delete_openai_container("cntr_missing"))
 
 
+def test_external_chat_route_resolves_saved_provider_key(monkeypatch):
+    from routes import inference as inf_mod
+    from models.inference import ChatCompletionRequest
+
+    class ResolverReached(Exception):
+        pass
+
+    monkeypatch.setattr(
+        inf_mod.providers_db,
+        "get_provider",
+        lambda _provider_id: {
+            "provider_type": "mistral",
+            "base_url": "https://api.mistral.ai/v1",
+            "display_name": "Mistral",
+            "is_enabled": True,
+        },
+    )
+
+    def resolve(provider_id, encrypted_api_key, **kwargs):
+        raise ResolverReached(provider_id, encrypted_api_key, kwargs)
+
+    monkeypatch.setattr(inf_mod, "resolve_provider_api_key_or_400", resolve)
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "hello"}],
+        provider_id = "provider-1",
+        external_model = "mistral-large-latest",
+    )
+
+    with pytest.raises(ResolverReached) as reached:
+        _drive(inf_mod._proxy_to_external_provider(payload, None, current_subject = "alice"))
+    assert reached.value.args == ("provider-1", None, {"allow_saved_key": True})
+
+
+def test_external_chat_api_keys_cannot_use_saved_provider_key(monkeypatch):
+    from routes import inference as inf_mod
+    from models.inference import ChatCompletionRequest
+
+    class ResolverReached(Exception):
+        pass
+
+    monkeypatch.setattr(
+        inf_mod.providers_db,
+        "get_provider",
+        lambda _provider_id: {
+            "provider_type": "mistral",
+            "base_url": "https://api.mistral.ai/v1",
+            "display_name": "Mistral",
+            "is_enabled": True,
+        },
+    )
+
+    def resolve(provider_id, encrypted_api_key, **kwargs):
+        raise ResolverReached(provider_id, encrypted_api_key, kwargs)
+
+    monkeypatch.setattr(inf_mod, "resolve_provider_api_key_or_400", resolve)
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "hello"}],
+        provider_id = "provider-1",
+        external_model = "mistral-large-latest",
+    )
+    request = httpx.Request(
+        "POST",
+        "http://test/v1/chat/completions",
+        headers = {"Authorization": "Bearer sk-unsloth-internal-workflow"},
+    )
+
+    with pytest.raises(ResolverReached) as reached:
+        _drive(inf_mod._proxy_to_external_provider(payload, request))
+    assert reached.value.args == ("provider-1", None, {"allow_saved_key": False})
+
+
+def test_external_chat_explicit_key_honors_edited_target(monkeypatch):
+    from routes import inference as inf_mod
+    from models.inference import ChatCompletionRequest
+
+    class ClientReached(Exception):
+        pass
+
+    monkeypatch.setattr(
+        inf_mod.providers_db,
+        "get_provider",
+        lambda _provider_id: (_ for _ in ()).throw(
+            AssertionError("explicit keys must not bind saved metadata")
+        ),
+    )
+    monkeypatch.setattr(
+        inf_mod,
+        "resolve_provider_api_key_or_400",
+        lambda *_args, **_kwargs: "replacement-key",
+    )
+
+    def client(**kwargs):
+        raise ClientReached(kwargs)
+
+    monkeypatch.setattr(inf_mod, "ExternalProviderClient", client)
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "hello"}],
+        provider_id = "provider-1",
+        provider_type = "custom",
+        provider_base_url = "https://new.example/v1",
+        encrypted_api_key = "encrypted-replacement",
+        external_model = "new-model",
+    )
+
+    request = SimpleNamespace(headers = {}, state = SimpleNamespace(skip_api_monitor = True))
+    with pytest.raises(ClientReached) as reached:
+        _drive(inf_mod._proxy_to_external_provider(payload, request))
+    assert reached.value.args[0] == {
+        "provider_type": "custom",
+        "base_url": "https://new.example/v1",
+        "api_key": "replacement-key",
+    }
+
+
+def test_container_client_explicit_key_honors_request_target(monkeypatch):
+    from routes import inference as inf_mod
+    from models.inference import OpenAIContainerRequest
+
+    monkeypatch.setattr(
+        inf_mod.providers_db,
+        "get_provider",
+        lambda _provider_id: (_ for _ in ()).throw(
+            AssertionError("explicit keys must not bind saved metadata")
+        ),
+    )
+    monkeypatch.setattr(
+        inf_mod,
+        "resolve_provider_api_key_or_400",
+        lambda *_args, **_kwargs: "replacement-key",
+    )
+    client = inf_mod._resolve_openai_cloud_client(
+        OpenAIContainerRequest(
+            provider_id = "provider-1",
+            encrypted_api_key = "encrypted-replacement",
+            provider_base_url = "https://api.openai.com/v1",
+        ),
+        allow_saved_key = False,
+    )
+    assert client.api_key == "replacement-key"
+    assert client.base_url == "https://api.openai.com/v1"
+    _drive(client.close())
+
+
+def test_container_client_uses_saved_provider_key(monkeypatch):
+    from routes import inference as inf_mod
+    from models.inference import OpenAIContainerRequest
+
+    calls: list[tuple[str | None, str | None, bool]] = []
+
+    def resolve(
+        provider_id,
+        encrypted_api_key,
+        *,
+        allow_saved_key = True,
+    ):
+        calls.append((provider_id, encrypted_api_key, allow_saved_key))
+        return "saved-key"
+
+    monkeypatch.setattr(inf_mod, "resolve_provider_api_key_or_400", resolve)
+
+    monkeypatch.setattr(
+        inf_mod.providers_db,
+        "get_provider",
+        lambda _provider_id: {
+            "provider_type": "openai",
+            "base_url": "https://api.openai.com/v1",
+            "display_name": "OpenAI",
+            "is_enabled": True,
+        },
+    )
+    client = inf_mod._resolve_openai_cloud_client(
+        OpenAIContainerRequest(
+            provider_id = "provider-1",
+            provider_base_url = "https://attacker.invalid/v1",
+        ),
+        allow_saved_key = True,
+    )
+
+    assert client.api_key == "saved-key"
+
+    assert client.base_url == "https://api.openai.com/v1"
+    assert calls == [("provider-1", None, True)]
+    _drive(client.close())
+
+
+def test_container_route_blocks_saved_keys_for_internal_api_key(monkeypatch):
+    from routes import inference as inf_mod
+    from models.inference import OpenAIContainerRequest
+
+    class ResolverReached(Exception):
+        pass
+
+    def fake_resolve(_body, *, allow_saved_key):
+        raise ResolverReached(allow_saved_key)
+
+    monkeypatch.setattr(inf_mod, "_resolve_openai_cloud_client", fake_resolve)
+    request = httpx.Request(
+        "POST",
+        "http://test/api/external/openai/containers/list",
+        headers = {"Authorization": "Bearer sk-unsloth-internal-workflow"},
+    )
+    with pytest.raises(ResolverReached) as reached:
+        _drive(
+            inf_mod.list_openai_containers(
+                OpenAIContainerRequest(provider_id = "provider-1"),
+                request,
+                current_subject = "u",
+            )
+        )
+    assert reached.value.args == (False,)
+
+
+def test_container_client_rejects_openai_lookalike_host(monkeypatch):
+    from routes import inference as inf_mod
+    from models.inference import OpenAIContainerRequest
+
+    monkeypatch.setattr(
+        inf_mod.providers_db,
+        "get_provider",
+        lambda _provider_id: {
+            "provider_type": "openai",
+            "base_url": "https://api.openai.com.attacker.example/v1",
+            "display_name": "OpenAI",
+            "is_enabled": True,
+        },
+    )
+
+    with pytest.raises(HTTPException) as error:
+        inf_mod._resolve_openai_cloud_client(
+            OpenAIContainerRequest(provider_id = "provider-1"),
+            allow_saved_key = True,
+        )
+    assert error.value.status_code == 400
+
+
 def test_list_route_filters_expired_containers(monkeypatch):
     """OpenAI keeps containers in /v1/containers with status="expired"
     after their idle TTL passes — unusable but still listed. The list
@@ -177,7 +415,8 @@ def test_list_route_filters_expired_containers(monkeypatch):
 
     _mock_http_client(monkeypatch, handler)
 
-    def fake_resolve(_body):
+    def fake_resolve(_body, *, allow_saved_key):
+        assert allow_saved_key is True
         return _make_client()
 
     monkeypatch.setattr(inf_mod, "_resolve_openai_cloud_client", fake_resolve)
@@ -186,7 +425,8 @@ def test_list_route_filters_expired_containers(monkeypatch):
         encrypted_api_key = "enc",
         provider_base_url = "https://api.openai.com/v1",
     )
-    response = _drive(inf_mod.list_openai_containers(body, current_subject = "u"))
+    request = httpx.Request("POST", "http://test/api/external/openai/containers/list")
+    response = _drive(inf_mod.list_openai_containers(body, request, current_subject = "u"))
     ids = [c.id for c in response.containers]
     assert "cntr_active" in ids
     assert "cntr_unknown" in ids  # missing status is treated as usable
