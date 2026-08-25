@@ -1242,11 +1242,19 @@ def _load_payload():
 
 
 def _session(module, tmp_path, **overrides):
-    args = argparse.Namespace(
-        repo_root = str(tmp_path / "repo"),
-        studio_home = str(tmp_path / "home"),
-        **overrides,
+    # Built from the REAL parser rather than a hand-listed Namespace. A
+    # hand-listed one carries exactly the attributes someone remembered, so
+    # every new flag breaks these tests with an AttributeError that says
+    # nothing about the flag -- which is what --studio-password did.
+    args = module.parse_args(
+        [
+            "--outdir", str(tmp_path / "out"),
+            "--repo-root", str(tmp_path / "repo"),
+            "--studio-home", str(tmp_path / "home"),
+        ]
     )
+    for key, value in overrides.items():
+        setattr(args, key, value)
     session = module.Payload.__new__(module.Payload)
     session.repo_root = Path(args.repo_root)
     session.studio_home = Path(args.studio_home)

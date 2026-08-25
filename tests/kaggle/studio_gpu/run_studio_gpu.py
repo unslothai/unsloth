@@ -66,6 +66,7 @@ import base64
 import io
 import json
 import os
+import secrets as secrets_module
 import shutil
 import subprocess
 import sys
@@ -322,6 +323,14 @@ class Payload:
         # artifact", so every log that leaves this machine is scrubbed of it.
         self.secrets: set[str] = set()
 
+        # Resolved and registered HERE, before anything can log it. `auto`
+        # mints a fresh one per run rather than carrying a constant, because a
+        # constant in a repo is a credential whether or not it is ever reachable.
+        if self.args.studio_password == "auto":
+            self.args.studio_password = "ci-" + secrets_module.token_urlsafe(18)
+        if self.args.studio_password:
+            self.secrets.add(self.args.studio_password)
+
     # ---------------------------------------------------------------- report
 
     def record(self, name: str, passed: bool, detail: dict) -> bool:
@@ -431,7 +440,24 @@ class Payload:
                 break
         else:
             head = [sys.executable, "-c", "from unsloth_cli import app; app()"]
-        return head + ["studio", "-H", "127.0.0.1", "-p", str(self.args.port)]
+        cmd = head + ["studio", "-H", "127.0.0.1", "-p", str(self.args.port)]
+        if self.args.studio_password:
+            # The HEADLESS path, and it is a feature rather than a convenience
+            # here: `--password` sets the INITIAL admin password when none is
+            # set yet, which is exactly the shape a server started by a script
+            # is in. Without it the only way in is the bootstrap password
+            # Studio seeds into a file and prints to its own log, and a
+            # deployment that has to read a log to log in is not one anybody
+            # scripts twice.
+            #
+            # The value is generated per run and registered as a secret before
+            # this is ever called, so it is scrubbed out of every log and
+            # evidence bundle that leaves the machine. It is still visible in
+            # this session's process list, which the flag's own help says; that
+            # is acceptable for a single-tenant CI kernel and would not be on a
+            # shared host.
+            cmd += ["--password", self.args.studio_password]
+        return cmd
 
     def start_server(self) -> bool:
         # An absent auth directory is what re-seeds the bootstrap password;
@@ -504,8 +530,25 @@ class Payload:
         return self.scrub(" | ".join(text.splitlines()[-lines:]))
 
     def authenticate(self) -> bool:
-        path = self.studio_home / "auth" / ".bootstrap_password"
         failures: list[str] = []
+        if self.args.studio_password:
+            # Log in with the password we PASSED, which is the assertion: if
+            # --password had been ignored, Studio would have seeded a bootstrap
+            # password instead and this login would fail. A run that fell back
+            # to the bootstrap on failure would pass while proving the flag does
+            # nothing, so there is deliberately no fallback.
+            try:
+                self.studio.login(self.args.studio_password)
+            except StudioError as exc:
+                failures.append(
+                    f"--password was passed to `unsloth studio` and logging in "
+                    f"with it failed, so the flag did not take effect: {exc}"
+                )
+            return self.record(
+                "authenticate", not failures, {"source": "--password", "failures": failures}
+            )
+
+        path = self.studio_home / "auth" / ".bootstrap_password"
         if not path.is_file():
             failures.append(f"no bootstrap password was seeded at {path}")
             return self.record("authenticate", False, {"failures": failures})
@@ -517,7 +560,9 @@ class Payload:
             self.studio.login(password)
         except StudioError as exc:
             failures.append(str(exc))
-        return self.record("authenticate", not failures, {"failures": failures})
+        return self.record(
+            "authenticate", not failures, {"source": "bootstrap", "failures": failures}
+        )
 
     def server_alive(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
@@ -1298,6 +1343,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--repo-root", required = True, help = "the unsloth checkout under test")
     ap.add_argument("--studio-home", required = True, help = "UNSLOTH_STUDIO_HOME for this run")
     ap.add_argument("--port", type = int, default = 18902)
+    ap.add_argument(
+        # Empty means "use the bootstrap password", which is the behaviour this
+        # payload had before. A caller passes `auto` to have one generated.
+        "--studio-password",
+        default = "",
+        help = "start Studio with --password and log in with it; 'auto' generates one",
+    )
     ap.add_argument("--chat-model", default = "unsloth/Qwen3.5-2B-GGUF")
     ap.add_argument("--chat-variant", default = "UD-Q4_K_XL")
     ap.add_argument("--train-model", default = "unsloth/Qwen2.5-0.5B-Instruct")
