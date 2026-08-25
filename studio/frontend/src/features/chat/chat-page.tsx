@@ -3506,9 +3506,7 @@ export function ChatPage({
   const cliLoadPollControllerRef = useRef<AbortController | null>(null);
   const refreshDeferredModelInventories = useCallback(() => {
     inventoryRefreshStartedRef.current = true;
-    // The mount poll already fetched both catalogs before it started waiting.
-    // Do not supersede that status loop just because deferred local inventory
-    // or the model selector became active.
+    // Do not let deferred refreshes supersede the mount poll.
     if (!cliLoadPollControllerRef.current) {
       void refresh({ includeLoras: true });
     }
@@ -3517,18 +3515,15 @@ export function ChatPage({
 
   useEffect(() => {
     if (getTrainingCompareHandoff()) return;
-    // On a fresh mount with no checkpoint, poll for a CLI-loaded model
-    // (studio run -m) so the UI adopts it instead of auto-loading another.
+    // Adopt a CLI-loaded model on fresh mounts before auto-loading another.
     const pollUntilActiveModel = !useChatRuntimeStore.getState().params.checkpoint;
-    // Abort the CLI-load poll on unmount so it cannot keep polling in the
-    // background (the poll otherwise runs up to CLI_LOAD_POLL_MAX_MS).
+    // Stop the bounded mount poll on unmount.
     const controller = new AbortController();
     if (pollUntilActiveModel) {
       cliLoadPollControllerRef.current = controller;
     }
     void refresh({
-      // Both catalogs are committed before polling, so the selector stays
-      // complete even when the deferred refresh is intentionally skipped.
+      // Populate both catalogs before polling.
       includeLoras: true,
       signal: controller.signal,
       ...(pollUntilActiveModel ? { pollUntilActiveModel: true } : {}),

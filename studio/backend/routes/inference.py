@@ -11897,15 +11897,12 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
         _installed_tag = _freshness.get("installed_tag")
         _latest_tag = _freshness.get("latest_tag")
 
-        # The tracked attempt starts before model resolution, while the llama
-        # lock covers direct GGUF callers and the later launch phase. Surface
-        # either window without hiding a model that is still serving.
+        # Track preflight before the llama lock, but keep any resident model visible.
         with _scoped_load_attempts_lock:
             _tracked_loading_id = (
                 _running_load_attempt.model_path if _running_load_attempt is not None else ""
             )
-        # _serial_load_lock is an RLock, so probe it with a non-blocking acquire
-        # rather than .locked(), which is unavailable on older supported Python.
+        # RLock lacks locked() on supported Python versions; probe non-blockingly.
         _serial_load_lock = getattr(llama_backend, "_serial_load_lock", None)
         _lock_acquired = True
         if _serial_load_lock is not None:
@@ -11923,8 +11920,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             return InferenceStatusResponse(
                 active_model = None,
                 model_identifier = None,
-                # Before config resolution the tracked attempt does not yet
-                # know its runtime. Once llama owns the lock this is GGUF.
+                # Preflight has no runtime yet; holding the llama lock identifies GGUF.
                 is_gguf = not _lock_acquired,
                 loading = [_reported_loading_id],
                 loaded = [],

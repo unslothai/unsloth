@@ -376,8 +376,7 @@ function getTransformersUpgradeRequiredMessage(modelName: string): string {
  * is a thin wrapper over it. External selections are left untouched since they
  * have no backend mirror.
  */
-// Bumped by every refresh. Two status reads can be in flight at once, so a
-// superseded call must not write its older answer after the newer call lands.
+// Prevent older concurrent status reads from overwriting newer results.
 let syncGeneration = 0;
 let activeCliLoadPoll: {
   signal?: AbortSignal;
@@ -418,8 +417,7 @@ async function syncInferenceStatusToStore(options?: {
       !selectedAtStart &&
       !isExternalModelId(selectedAtStart);
 
-    // Populate inventory before polling so the selector remains usable while a
-    // slow CLI-started load is still downloading or warming llama-server.
+    // Keep the selector usable while a CLI-started load is pending.
     const [listRes, lorasRes] = await Promise.all([
       listModels(),
       includeLoras ? listLoras() : Promise.resolve(null),
@@ -466,9 +464,7 @@ async function syncInferenceStatusToStore(options?: {
       }
     }
 
-    // A send-path adoption can set the checkpoint while this refresh is still
-    // waiting on inventory. Re-read once so the catalog write above is followed
-    // by live capability hydration when the new checkpoint is the same model.
+    // Re-read after concurrent send-path adoption to hydrate live capabilities.
     if (
       shouldPollForCliLoad &&
       !useChatRuntimeStore.getState().modelLoading &&
@@ -478,8 +474,7 @@ async function syncInferenceStatusToStore(options?: {
       try {
         statusRes = await readStatus();
       } catch {
-        // The send path already hydrated the runtime. A later refresh can retry
-        // the catalog capability sync if this final read is transiently down.
+        // The send path already hydrated; a later refresh can retry.
       }
     }
 
@@ -487,8 +482,7 @@ async function syncInferenceStatusToStore(options?: {
       statusRes = await readStatus();
     }
 
-    // Cancellation can land while a request is in flight. A newer status read
-    // also wins, regardless of which enclosing refresh began first.
+    // Cancellation or a newer read invalidates this result.
     if (aborted() || superseded()) return;
 
     const selectedCheckpoint =
@@ -575,8 +569,7 @@ async function syncInferenceStatusToStore(options?: {
       }
     }
   } catch (error) {
-    // A superseded refresh reports nothing, or a stale failure would raise a
-    // toast about a read whose answer would have been discarded anyway.
+    // Discard failures from cancelled or superseded reads.
     if (aborted() || superseded()) return;
     const message =
       error instanceof Error ? error.message : "Failed to load models";

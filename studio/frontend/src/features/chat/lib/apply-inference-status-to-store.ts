@@ -134,8 +134,7 @@ export type ApplyInferenceStatusOptions = {
    * status -- without it a variant-only switch underneath the tab reads as
    * steady state and the hydration reseed keeps the old quant's baselines. */
   previousGgufVariant?: string | null;
-  /** Hydrate the running model's load settings even while this caller owns
-   * the model-loading lifecycle lease. */
+  /** Seed settings while the caller holds the model-loading lease. */
   seedLoadParams?: boolean;
 };
 
@@ -688,14 +687,9 @@ export function applyActiveModelStatusToStore(
   }
 }
 
-/**
- * Adopt the model already loaded on the inference server (e.g. via
- * ``unsloth studio run -m``) into the chat UI checkpoint without
- * triggering a new /api/inference/load.
- */
+/** Adopt a server-loaded model without issuing another inference load. */
 export async function tryAdoptServerActiveModel(options?: {
-  /** The caller owns the model-loading lifecycle lease, so modelLoading is not
-   * evidence of a competing user selection. */
+  /** Ignore modelLoading because the caller owns that lease. */
   allowWhileModelLoading?: boolean;
 }): Promise<boolean> {
   const store = useChatRuntimeStore.getState();
@@ -722,9 +716,8 @@ export async function tryAdoptServerActiveModel(options?: {
     return false;
   }
 
-  // Re-check after the await: keep a checkpoint the user picked meanwhile, and
-  // do not adopt a server model over a UI-initiated load. The queued send path
-  // explicitly opts out because it owns the lifecycle lease itself.
+  // Preserve a concurrent UI selection or load; the queued send path owns the
+  // lease and opts out.
   const latest = useChatRuntimeStore.getState();
   const previousCheckpoint = latest.params.checkpoint;
   if (

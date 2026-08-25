@@ -2086,7 +2086,7 @@ async function serverLoadEvidence(): Promise<boolean | null> {
     const progress = await getLoadProgress();
     if (progress.phase != null) return true;
   } catch {
-    // A transient progress failure is not evidence that the server is idle.
+    // A failed probe does not prove the server is idle.
   }
   try {
     const status = await getInferenceStatus();
@@ -2096,16 +2096,12 @@ async function serverLoadEvidence(): Promise<boolean | null> {
   }
 }
 
-// Slow downloads and llama-server warm-up can exceed the idle mount poll. The
-// evidence check below still exits immediately when the server is genuinely
-// idle, and this cap only bounds a load that remains stuck indefinitely.
+// Slow downloads and llama-server warm-up need a long cap; confirmed idle exits early.
 const CLI_LOAD_ADOPT_MAX_MS = 600_000;
 
 /**
- * The queued empty-model resolver owns the model-loading lifecycle lease while
- * this runs. Adopt a CLI/API model that is already active, or wait while the
- * backend explicitly reports that such a load is in flight, before starting a
- * competing automatic load.
+ * With the empty-model load lease held, adopt or await a server-started load
+ * before automatic loading.
  */
 async function adoptInFlightServerLoad(
   abortSignal?: AbortSignal,
