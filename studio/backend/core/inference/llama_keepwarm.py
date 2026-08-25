@@ -293,11 +293,14 @@ def _carries_bearer_credentials(scope, path: str = "") -> bool:
     401/403 exclusion below never gets to run. One such connection, replaced as it times
     out, would keep a multi-GB pipeline resident for good. Real clients always send the
     header, so requiring it costs a legitimate generation nothing. Keyless API access is
-    the one case where a route demands no bearer at all, so a path it covers passes too.
+    the one case where a route demands no bearer at all. Its outer admission middleware
+    records that decision before keep-warm runs, so reuse the snapshot instead of
+    repeating settings, listener, and DNS work on this loop.
     """
-    from utils.keyless_api_access import asgi_request_is_keyless
+    from utils.keyless_api_access import KEYLESS_ADMISSION_STATE_KEY
 
-    if path and asgi_request_is_keyless(scope):
+    state = scope.get("state")
+    if path and isinstance(state, dict) and state.get(KEYLESS_ADMISSION_STATE_KEY) is True:
         return True
     headers = scope.get("headers")
     if headers is None:

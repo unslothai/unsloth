@@ -390,7 +390,7 @@ function sameBaseModelId(a: string, b: string): boolean {
 }
 
 // The model the examples name: always an id /v1 resolves against, null when there is none.
-function useExampleModelName(): string | null {
+function useExampleModelName(keylessOnly: boolean): string | null {
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const ggufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   // null until /v1/models answers: "not asked yet" must not read as "holds nothing".
@@ -453,7 +453,7 @@ function useExampleModelName(): string | null {
     const fromCatalog = (): string | null => {
       const pick =
         catalog?.find((m) => m.loaded) ??
-        (autoSwitch ? catalog?.[0] : undefined);
+        (!keylessOnly && autoSwitch ? catalog?.[0] : undefined);
       if (!pick) {
         return null;
       }
@@ -467,8 +467,8 @@ function useExampleModelName(): string | null {
     // /v1/models has not answered, which is not evidence against it.
     const entry = catalog?.find((m) => sameBaseModelId(m.id, checkpoint ?? ""));
     const backed =
-      catalog === null ||
-      (!!entry && (entry.loaded || autoSwitch || idleReload));
+      (!keylessOnly && catalog === null) ||
+      (!!entry && (entry.loaded || (!keylessOnly && autoSwitch) || idleReload));
     if (usableCheckpoint && checkpoint && backed) {
       if (checkpoint.includes(":")) {
         return checkpoint;
@@ -486,6 +486,7 @@ function useExampleModelName(): string | null {
     checkpoint,
     ggufVariant,
     idleReload,
+    keylessOnly,
     usableCheckpoint,
   ]);
 }
@@ -743,8 +744,8 @@ export function UsageExamples({
     ggufContextLength,
   ]);
 
-  const model = useExampleModelName();
   const keylessBase = keylessBaseEligible(base, keylessScope, keylessExposure);
+  const model = useExampleModelName(keylessBase && !apiKey);
   // The approved SDK dummy is printed only for a transport the backend can admit.
   const key =
     apiKey || (keylessBase ? KEYLESS_KEY_PLACEHOLDER : KEY_PLACEHOLDER);

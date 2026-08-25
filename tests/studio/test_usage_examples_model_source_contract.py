@@ -19,12 +19,12 @@ def test_examples_name_a_model_the_server_can_serve():
     # A hardcoded repo id made copied curls 404; read the servable ids from /v1/models.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     assert 'from "../api/openai-models"' in src
-    assert "function useExampleModelName(): string" in src
+    assert "function useExampleModelName(keylessOnly: boolean): string" in src
     hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
     assert "listOpenAIModels()" in hook
     # Precedence: live checkpoint, then a loaded entry, then any entry if switching is on.
     assert "catalog?.find((m) => m.loaded) ??" in hook
-    assert "(autoSwitch ? catalog?.[0] : undefined)" in hook
+    assert "(!keylessOnly && autoSwitch ? catalog?.[0] : undefined)" in hook
     # The snippet pins the quant so the request names the file on disk.
     assert "`${pick.id}:${pick.quant}`" in hook
 
@@ -39,7 +39,7 @@ def test_examples_never_print_a_hardcoded_model_id():
     assert "MODEL_FALLBACK" not in src
     # No repo-shaped literal anywhere: a snippet may only name what /v1 returns.
     assert re.search(r'"unsloth/[^"]+"', src) is None
-    assert "function useExampleModelName(): string | null" in src
+    assert "function useExampleModelName(keylessOnly: boolean): string | null" in src
     assert "useState<OpenAIModel[] | null>(null)" in src
     # Nothing servable means nothing is built, so there is nothing to copy.
     assert "(model ? buildSnippets(base, key, toolsKey, model, os) : null)" in src
@@ -75,7 +75,7 @@ def test_a_stored_checkpoint_needs_catalog_evidence():
     hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
     assert 'const entry = catalog?.find((m) => sameBaseModelId(m.id, checkpoint ?? ""));' in hook
     # Resident, or downloaded with something able to reload it. Never the setting alone.
-    assert "(!!entry && (entry.loaded || autoSwitch || idleReload))" in hook
+    assert "entry.loaded || (!keylessOnly && autoSwitch) || idleReload" in hook
     assert "autoSwitch ||\n" not in hook
 
 
@@ -89,7 +89,7 @@ def test_standalone_idle_unload_still_names_the_stored_checkpoint():
     assert "setIdleReload(settings[1])" in hook
     assert "s.idleUnloadActive" in hook
     # fromCatalog stays gated on auto-switch alone.
-    assert "(autoSwitch ? catalog?.[0] : undefined)" in hook
+    assert "(!keylessOnly && autoSwitch ? catalog?.[0] : undefined)" in hook
     assert "idleReload ? catalog" not in hook
 
 
@@ -232,7 +232,9 @@ def test_keyless_examples_match_transport_tool_and_full_scope_policy():
     assert 'exposure === "colab" || exposure === "public_url"' in src
     assert "if (isLoopbackHost(host)) return true;" in src
     assert 'exposure === "private_lan"' in src
+    assert "useExampleModelName(keylessBase && !apiKey)" in src
     section = KEYLESS_SECTION_TSX.read_text(encoding = "utf-8")
+    assert "[cloudflareUrl, onSettingsChange]" in section
     assert "delete" in section[section.find("  full: {") : section.find("  tools: {")]
     assert "including on localhost" in section
     assert "read the files and settings in Unsloth" not in section

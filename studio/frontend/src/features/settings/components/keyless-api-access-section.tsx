@@ -11,6 +11,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
+import { usePlatformStore } from "@/config/env";
 import {
   type KeylessApiAccessScope,
   type KeylessApiAccessSettings,
@@ -75,6 +76,7 @@ export function KeylessApiAccessSection({
     exposure: KeylessApiAccessSettings["exposure"];
   }) => void;
 }) {
+  const cloudflareUrl = usePlatformStore((state) => state.cloudflareUrl);
   const [settings, setSettings] = useState<KeylessApiAccessSettings | null>(
     null,
   );
@@ -108,7 +110,7 @@ export function KeylessApiAccessSection({
     return () => {
       cancelled = true;
     };
-  }, [onSettingsChange]);
+  }, [cloudflareUrl, onSettingsChange]);
 
   const save = async (next: KeylessApiAccessScope, tools?: boolean) => {
     setSaving(true);
