@@ -891,18 +891,22 @@ class Payload:
         # reliably over it.
         long_messages = []
         for i in range(40):
-            long_messages.append({
-                "role": "user",
-                "content": f"Fact {i}: the {i}th token of this transcript is "
-                           + " ".join(f"w{i}x{j}" for j in range(40)),
-            })
+            long_messages.append(
+                {
+                    "role": "user",
+                    "content": f"Fact {i}: the {i}th token of this transcript is "
+                    + " ".join(f"w{i}x{j}" for j in range(40)),
+                }
+            )
             long_messages.append({"role": "assistant", "content": f"Noted fact {i}."})
         long_messages.append({"role": "user", "content": "Reply with one word."})
 
         code, body = self.chat(long_messages, max_tokens = 32)
         detail["long_status"] = code
         detail["long_messages"] = len(long_messages)
-        detail["long_truncation"] = (body or {}).get("context_truncated") if isinstance(body, dict) else None
+        detail["long_truncation"] = (
+            (body or {}).get("context_truncated") if isinstance(body, dict) else None
+        )
         long_dropped = _dropped(body)
         if code != 200:
             failures.append(
@@ -918,9 +922,7 @@ class Payload:
 
         # The negative control, and it is not optional: without it a server
         # that always claims truncation passes the check above.
-        code, body = self.chat(
-            [{"role": "user", "content": "Say hi."}], max_tokens = 16
-        )
+        code, body = self.chat([{"role": "user", "content": "Say hi."}], max_tokens = 16)
         detail["short_status"] = code
         short_dropped = _dropped(body)
         detail["short_dropped"] = short_dropped

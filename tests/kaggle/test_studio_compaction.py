@@ -64,16 +64,17 @@ def test_it_runs_after_the_window_is_pinned():
 def test_the_over_length_case_must_report_dropped_messages():
     func = _func("assert_compaction")
     tests = [ast.unparse(n.test) for n in ast.walk(func) if isinstance(n, ast.If)]
-    assert any("long_dropped" in t for t in tests), (
-        "nothing depends on the long conversation having been shortened"
-    )
+    assert any(
+        "long_dropped" in t for t in tests
+    ), "nothing depends on the long conversation having been shortened"
 
 
 def test_the_short_control_is_present_and_is_the_opposite_claim():
     """Without it, a server that always claims truncation passes."""
     func = _func("assert_compaction")
     short = [
-        n for n in ast.walk(func)
+        n
+        for n in ast.walk(func)
         if isinstance(n, ast.If) and "short_dropped" in ast.unparse(n.test)
     ]
     assert short, "there is no negative control"
@@ -96,8 +97,10 @@ def test_a_refusal_is_a_failure_rather_than_a_pass():
     """
     func = _func("assert_compaction")
     refusals = [
-        n for n in ast.walk(func)
-        if isinstance(n, ast.If) and ast.unparse(n.test) == "code != 200"
+        n
+        for n in ast.walk(func)
+        if isinstance(n, ast.If)
+        and ast.unparse(n.test) == "code != 200"
         and any(
             isinstance(c, ast.Call)
             and isinstance(c.func, ast.Attribute)
