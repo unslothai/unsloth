@@ -18168,6 +18168,16 @@ class LlamaCppBackend:
                         # pipeline reserve already stands in for it, and charging
                         # it twice would only spill more.
                         "extra_gpu_bytes": (mmproj_size + _shared_pool_mmproj + _mtp_reserve_bytes),
+                        # A draft engaging is what turns the trailing nextn/MTP
+                        # blocks from skipped bytes into resident ones in the
+                        # TARGET's own load, so the planner has to charge them
+                        # back. Any engaged draft counts, not just an embedded
+                        # head: llama.cpp derives load_mtp from the spec type
+                        # (common/common.cpp:1713), and a separate drafter that
+                        # is itself an MTP head selects that same type
+                        # (common/speculative.cpp:2257-2261). Over-charging only
+                        # spills more.
+                        "mtp_will_engage": bool(_mtp_will_engage),
                         # The planner reads the real tensor table rather than a
                         # bucket total, so it can spill the MINIMUM set of blocks
                         # instead of the whole FFN.
@@ -22627,6 +22637,19 @@ class LlamaCppBackend:
                 for a in (extra_args or ())
             )
             or str(source_env.get("LLAMA_ARG_FIT", "")).strip()
+            # KV placement is placement too. -nkvo (or a false LLAMA_ARG_KV_OFFLOAD)
+            # sends the WHOLE cache to host RAM whatever -ngl says: offload is one
+            # scalar for the cache object and the buft falls back to
+            # ggml_backend_cpu_buffer_type() for every layer
+            # (llama-kv-cache.cpp:210-219), with the same branch in the recurrent
+            # and DSV4 caches. This planner charges the cache against VRAM
+            # (kv_bytes_floor below), so it would spill FFN blocks to cover a
+            # deficit the child never has, and spilled decode runs on the CPU
+            # backend. --fit on gets this right for free, because it measures
+            # buffer types rather than modelling them and books a host-resident
+            # cache into the host bucket (common/fit.cpp:74-79), which the
+            # per-device fitting loop then ignores (common/fit.cpp:326-347).
+            or not _kv_offload_from_args(extra_args, env = source_env)
         ):
             logger.debug("Tensor spill: declined, pass-through arguments own the placement")
             return None
@@ -22666,6 +22689,17 @@ class LlamaCppBackend:
         if avail_mib is None:
             return None
 
+        # The trailing nextn/MTP blocks the layout dropped, charged back when a
+        # draft will engage. Studio's own budget already assumed they were paid
+        # for -- an embedded head contributes 0 to _mtp_draft_weights precisely
+        # because its weights sit inside model_size -- but the planner rebuilds
+        # the model from the tensor table, where they are gone. Without this the
+        # deficit is short by the whole MTP head on exactly the huge-MoE models
+        # this planner exists for, which is the optimistic direction.
+        extra_gpu_bytes = int(inputs.get("extra_gpu_bytes") or 0)
+        if inputs.get("mtp_will_engage") and layout.excluded_block_bytes:
+            extra_gpu_bytes += layout.excluded_block_bytes
+
         return plan_placement(
             layout,
             vram_per_device,
@@ -22683,7 +22717,7 @@ class LlamaCppBackend:
                 # that produced the use_fit verdict this arm is answering, so
                 # leaving them out here makes the deficit too small on exactly the
                 # loads Studio already judged not to fit.
-                extra_resident_bytes = int(inputs.get("extra_gpu_bytes") or 0),
+                extra_resident_bytes = extra_gpu_bytes,
                 # Spilled decode runs on the CPU backend (ggml migrates an op to
                 # the GPU only at batch >= 32, and decode is batch 1), so the
                 # penalty tracks core count. Reading the real count keeps a small

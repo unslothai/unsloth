@@ -75,6 +75,19 @@ class ModelLayout:
     # load_block_mtp), so the unbounded ^blk\.\d+\. spill pattern WOULD match
     # them once a draft is loaded. The planner uses this to stay bounded.
     has_excluded_blocks: bool = False
+    # Total bytes of those dropped blocks, kept so a caller that knows a draft
+    # WILL engage can charge them back. Dropping them is right for the ordinary
+    # load -- llama.cpp gives every trailing block TENSOR_SKIP unless load_mtp
+    # is set (models/glm4-moe.cpp:42-44 and the same gate in every embedded-MTP
+    # arch), and TENSOR_SKIP returns before a tensor is even created
+    # (llama-model-loader.cpp:1123-1131), so they cost nothing. But
+    # ``--spec-type draft-mtp`` sets load_mtp on the TARGET's own model params
+    # (common/common.cpp:1713), the whole trailing block is then materialised at
+    # its layer's buffer type, and because i_gpu_start counts backwards from
+    # n_layer_all (llama-model.cpp:1449) those blocks are the FIRST ones placed
+    # on a GPU. llama.cpp's own fitter widens its offloadable-layer count the
+    # same way (common/fit.cpp:139-142). Zero when nothing was dropped.
+    excluded_block_bytes: int = 0
     # False when a needed quantity could not be read. The planner abstains.
     complete: bool = False
 
@@ -229,6 +242,27 @@ def _layout_from_reader(reader) -> ModelLayout:
     if not spill and not resident:
         return ModelLayout()
 
+    # Tied embeddings do not SAVE the vocabulary matrix, they duplicate it. A
+    # GGUF that omits output.weight makes llama.cpp re-create the output tensor
+    # from token_embd with TENSOR_DUPLICATED (models/llama.cpp:41-45,
+    # models/qwen3.cpp:22-25, models/gemma3.cpp:43-47, and ~60 more), and the
+    # loader routes a duplicated TOKEN_EMBD through the OUTPUT buffer list
+    # (llama-model-loader.cpp:1113-1114). dev_input is pinned to the CPU while
+    # dev_output follows the layer split (llama-model.cpp:1465, 1474), so the
+    # two resolve to different buffer-type contexts, the same-context reuse
+    # check misses (llama-model-loader.cpp:1309-1314), and ggml_dup_tensor
+    # allocates a second full matrix (llama-model-loader.cpp:1318) that
+    # load_all_data fills by name with a real host to device copy (:1542,
+    # :1583). Counting the one stored tensor as host-only therefore understates
+    # VRAM by a whole vocabulary matrix, which is the optimistic direction: too
+    # few blocks spill and the launch path pins that with --fit off.
+    #
+    # Resident, not lm_head: the duplicate keeps the name token_embd.weight, so
+    # LM_HEAD_PATTERN can never match it and the lm_head rung would credit a
+    # spill that moves nothing.
+    if not lm_head and token_embd:
+        other_resident += token_embd
+
     # The trailing nextn/MTP blocks are NOT part of the target model. llama.cpp
     # does not load them unless a draft is engaged, so an -ot pattern naming them
     # moves nothing: measured, spilling only blk.<nextn> leaves the host buffer at
@@ -239,6 +273,9 @@ def _layout_from_reader(reader) -> ModelLayout:
     all_block_indices = set(spill) | set(resident)
     block_indices = sorted(i for i in all_block_indices if i < n_layers)
     has_excluded = any(i >= n_layers for i in all_block_indices)
+    excluded_bytes = sum(
+        spill.get(i, 0) + resident.get(i, 0) for i in all_block_indices if i >= n_layers
+    )
     blocks = tuple(
         BlockLayout(
             index = i,
@@ -263,6 +300,7 @@ def _layout_from_reader(reader) -> ModelLayout:
         n_expert = n_expert,
         n_expert_used = n_expert_used,
         has_excluded_blocks = has_excluded,
+        excluded_block_bytes = excluded_bytes,
         complete = True,
     )
 

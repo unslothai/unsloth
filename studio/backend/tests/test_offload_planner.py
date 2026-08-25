@@ -361,11 +361,51 @@ def test_a_device_smaller_than_its_own_overhead_abstains():
 
 def test_every_device_pays_the_fixed_overhead():
     """A layer split puts a CUDA context and scratch on each card, so two 8 GiB
-    cards are not one 16 GiB card."""
+    cards are not one 16 GiB card. Read through max_context_for, which is the
+    budget arithmetic without the ladder: the same 16 GiB split in two credits
+    one overhead less, so it holds strictly less cache."""
     layout = q4_layout()
-    one_big = plan_placement(layout, [16 * GIB], 64 * GIB, 8192)
-    two_small = plan_placement(layout, [8 * GIB, 8 * GIB], 64 * GIB, 8192)
-    assert len(two_small.spilled_blocks) > len(one_big.spilled_blocks)
+    one_big = max_context_for(layout, [16 * GIB], spill_all_ffn = True)
+    two_small = max_context_for(layout, [8 * GIB, 8 * GIB], spill_all_ffn = True)
+    assert one_big > 0 and two_small > 0
+    assert two_small < one_big
+
+
+def test_a_partial_spill_across_two_gpus_abstains():
+    """A pooled budget is not a per-device fit test for a partial spill.
+
+    llama.cpp fixes the layer split from free memory BEFORE any override exists
+    (llama-model.cpp:1416-1447) and hands each device a contiguous layer-index
+    range (:1457), while -ot only swaps one tensor's buffer type inside
+    create_tensor (llama-model-loader.cpp:1177-1203) and never touches
+    dev_layer(il) (:1467-1474). So a subset of block indices can relieve one
+    card while another keeps its whole share: the aggregate deficit reads
+    covered, one device is still over, and --fit off means nothing rebalances
+    (a per-device shortfall throws, llama-model.cpp:1731-1733). The same layout
+    on ONE card of the same pooled size still plans, which is what makes this
+    about device COUNT and not about the budget.
+    """
+    layout = q4_layout()
+    one_card = plan_placement(layout, [16 * GIB], 64 * GIB, 8192)
+    assert one_card.spilled_blocks
+    assert len(one_card.spilled_blocks) < len(layout.blocks), "partial, not everything"
+
+    two_cards = plan_placement(layout, [8 * GIB, 8 * GIB], 64 * GIB, 8192)
+    assert two_cards.spilled_blocks == ()
+    assert two_cards.ot_patterns == ()
+    assert two_cards.changed is False
+
+
+def test_a_full_spill_across_two_gpus_still_plans():
+    """The abstain above is scoped to PARTIAL spills. When every spillable block
+    goes, what each device still holds is its layer share, and the split hands
+    out layers in proportion to the same free memory the budget was built from,
+    so the pooled test tracks the per-device one."""
+    layout = _layout_from_reader(_StubReader(_shard_fields(), _shard_tensors(range(64))))
+    half = _ALL_SPILL_VRAM // 2
+    plan = plan_placement(layout, [half, half], 256 * GIB, 4096, opts = _NO_OVERHEAD)
+    assert len(plan.spilled_blocks) == len(layout.blocks)
+    assert plan.changed is True
 
 
 def test_multi_gpu_credit_sums():
@@ -777,6 +817,83 @@ def _nextn_reader(nextn: int, total_blocks: int = 66):
         **{"llama.block_count": total_blocks, "llama.nextn_predict_layers": nextn}
     )
     return _StubReader(fields, _shard_tensors(range(total_blocks)))
+
+
+def _tied_reader(*, with_output: bool):
+    """The 64-block stub plus a vocabulary matrix, tied or untied."""
+    tensors = list(_shard_tensors(range(64)))
+    tensors.append(_StubTensor("token_embd.weight", GIB))
+    if with_output:
+        tensors.append(_StubTensor("output.weight", GIB))
+    return _StubReader(_shard_fields(), tensors)
+
+
+def test_a_tied_embedding_gguf_still_charges_a_vocabulary_matrix_to_vram():
+    """Omitting output.weight does not save the matrix, it duplicates it.
+
+    Every tying architecture re-creates the output tensor from token_embd with
+    TENSOR_DUPLICATED (models/llama.cpp:41-45, models/qwen3.cpp:22-25,
+    models/gemma3.cpp:43-47), and the loader routes a duplicated TOKEN_EMBD
+    through the OUTPUT buffer list (llama-model-loader.cpp:1113-1114). dev_input
+    is pinned to the CPU while dev_output follows the layer split
+    (llama-model.cpp:1465, 1474), so the same-context reuse check misses
+    (llama-model-loader.cpp:1309-1314), ggml_dup_tensor allocates a second full
+    matrix (:1318) and load_all_data fills it by name over PCIe (:1542, :1583).
+    Charging it to host RAM only understated VRAM by a whole vocabulary, which
+    is the optimistic direction: too few blocks spill, and --fit off pins that.
+    """
+    tied = _layout_from_reader(_tied_reader(with_output = False))
+    untied = _layout_from_reader(_tied_reader(with_output = True))
+    assert tied.complete and untied.complete
+    assert tied.lm_head_bytes == 0, "there is no output.weight to spill"
+
+    # The VRAM floor is the same either way: a vocabulary matrix is resident in
+    # both, it just arrives as a duplicate in the tied case.
+    assert resident_floor_bytes(tied, 4096) == resident_floor_bytes(untied, 4096)
+    assert all_resident_bytes(tied, 4096) == all_resident_bytes(untied, 4096)
+
+    # And it reaches the decision: the same card spills the same blocks.
+    opts = PlanOptions(overhead_bytes_per_device = 0)
+    tied_plan = plan_placement(tied, [10 * GIB], 256 * GIB, 4096, opts = opts)
+    untied_plan = plan_placement(untied, [10 * GIB], 256 * GIB, 4096, opts = opts)
+    assert tied_plan.spilled_blocks, "a partial spill, so lm_head is not in play"
+    assert len(tied_plan.spilled_blocks) == len(untied_plan.spilled_blocks)
+
+    # Never as lm_head: the duplicate keeps the name token_embd.weight, so
+    # LM_HEAD_PATTERN cannot match it and spilling it would move nothing.
+    assert tied_plan.spilled_lm_head is False
+    assert LM_HEAD_PATTERN not in tied_plan.ot_patterns
+
+    # token_embd itself is still host RAM the plan pays for, counted once.
+    assert tied_plan.host_bytes - untied_plan.host_bytes == 0
+
+
+def test_excluded_mtp_block_bytes_are_kept_so_a_draft_can_be_charged():
+    """Dropping the trailing blocks is right for an ordinary load -- llama.cpp
+    gives them TENSOR_SKIP unless load_mtp is set (models/glm4-moe.cpp:42-44)
+    and TENSOR_SKIP returns before a tensor exists
+    (llama-model-loader.cpp:1123-1131). But --spec-type draft-mtp sets load_mtp
+    on the TARGET's model params (common/common.cpp:1713), so the whole trailing
+    block becomes resident, and i_gpu_start counting backwards from n_layer_all
+    (llama-model.cpp:1449) puts it on a GPU first. The seam charges it through
+    extra_resident_bytes, so the total has to survive the drop."""
+    layout = _layout_from_reader(_nextn_reader(2))
+    assert layout.has_excluded_blocks is True
+
+    per_block = layout.blocks[0].spillable_bytes + layout.blocks[0].resident_bytes
+    assert layout.excluded_block_bytes == 2 * per_block
+
+    plain = _layout_from_reader(_StubReader(_shard_fields(), _shard_tensors(range(64))))
+    assert plain.excluded_block_bytes == 0
+
+    # Charging it shrinks the budget, so more blocks spill.
+    base = PlanOptions(overhead_bytes_per_device = 0)
+    charged = PlanOptions(
+        overhead_bytes_per_device = 0, extra_resident_bytes = layout.excluded_block_bytes
+    )
+    without = plan_placement(layout, [10 * GIB], 256 * GIB, 4096, opts = base)
+    with_mtp = plan_placement(layout, [10 * GIB], 256 * GIB, 4096, opts = charged)
+    assert len(with_mtp.spilled_blocks) > len(without.spilled_blocks)
 
 
 def test_a_nextn_gguf_is_marked_as_having_excluded_blocks():

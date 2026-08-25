@@ -404,8 +404,11 @@ def plan_placement(
                 ),
             )
 
+    n_devices = len(vram_bytes_per_device)
     for quantised in _kv_modes(opts):
-        plan = _plan_at(layout, opts, n_ctx, budget, host_ram_bytes, quantised, kv_bytes_floor)
+        plan = _plan_at(
+            layout, opts, n_ctx, budget, host_ram_bytes, quantised, kv_bytes_floor, n_devices
+        )
         if plan is not None:
             return plan
 
@@ -423,7 +426,14 @@ def plan_placement(
             shrunk = min(shrunk, n_ctx)
             if shrunk >= opts.min_ctx:
                 plan = _plan_at(
-                    layout, opts, shrunk, budget, host_ram_bytes, quantised, kv_bytes_floor
+                    layout,
+                    opts,
+                    shrunk,
+                    budget,
+                    host_ram_bytes,
+                    quantised,
+                    kv_bytes_floor,
+                    n_devices,
                 )
                 if plan is not None:
                     return plan
@@ -456,6 +466,7 @@ def _plan_at(
     host_ram_bytes: Optional[int],
     quantised: bool,
     kv_bytes_floor: int = 0,
+    n_devices: int = 1,
 ) -> Optional[Plan]:
     """One pass of the ladder at a fixed context and cache dtype."""
     needed = all_resident_bytes(
@@ -480,6 +491,38 @@ def _plan_at(
     deficit = needed - budget
     chosen, freed = _select_blocks(layout.blocks, deficit, opts.spill_order)
     if freed >= deficit:
+        spillable = [b for b in layout.blocks if b.spillable_bytes > 0]
+        if n_devices > 1 and len(chosen) < len(spillable):
+            # A pooled budget is not a per-device fit test for a PARTIAL spill.
+            # llama.cpp fixes the split before any override exists -- free memory
+            # per device at llama-model.cpp:1425-1433, prefix-summed at :1439-1447,
+            # then upper_bound on the normalised LAYER INDEX at :1457, so each
+            # device owns a contiguous index range -- and -ot only swaps one
+            # tensor's buffer type inside llama_model_loader::create_tensor
+            # (llama-model-loader.cpp:1177-1203), leaving dev_layer(il) untouched
+            # (llama-model.cpp:1467-1474, never written again). Nothing rebalances
+            # afterwards, and with --fit off common/fit.cpp does not run at all,
+            # so a subset of block indices that happens to sit in one device's
+            # range relieves only that device while the others keep their whole
+            # share. The aggregate deficit is then covered while a single card is
+            # still over, and a per-device shortfall is a hard throw
+            # (llama-model.cpp:1731-1733), not a fallback. Abstain: --fit on is
+            # per-device aware (common/fit.cpp:646-651, :687, :705) and is exactly
+            # what this arm did before the planner existed.
+            #
+            # Only the partial case. When every spillable block goes, what each
+            # device still holds is its layer share, and the split hands out
+            # layers in proportion to the same free memory the budget was built
+            # from, so the pooled test tracks the per-device one.
+            return Plan(
+                n_ctx = n_ctx,
+                reason = (
+                    f"a partial spill ({len(chosen)} of {len(spillable)} blocks) across "
+                    f"{n_devices} devices cannot be checked against a pooled budget, "
+                    "because llama.cpp assigns contiguous layer ranges per device and "
+                    "-ot does not move a layer; leaving llama.cpp's own fitter to place it"
+                ),
+            )
         return _finish(
             layout,
             opts,

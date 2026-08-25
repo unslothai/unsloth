@@ -38,6 +38,9 @@ class _Stub:
     # Discrete by default, so every existing case here is a discrete host. The
     # unified answer is the APU's, and it is exercised deliberately below.
     _unified = False
+    # Bytes of trailing nextn/MTP blocks the layout dropped. 0 = an ordinary
+    # model, which is every existing case here.
+    _excluded_bytes = 0
 
     def _amd_apu_wants_unified_memory(self, gpu_indices = None):
         return self._unified
@@ -90,6 +93,8 @@ class _Stub:
             is_moe = bool(self.n_moe_layers),
             n_expert = 256 if self.n_moe_layers else 0,
             n_expert_used = 8 if self.n_moe_layers else 0,
+            has_excluded_blocks = bool(self._excluded_bytes),
+            excluded_block_bytes = self._excluded_bytes,
             complete = True,
         )
 
@@ -101,6 +106,7 @@ def _inputs(
     indices = None,
     usable_mib = None,
     extra_gpu = 0,
+    mtp = None,
 ):
     return {
         "model_size": model_size,
@@ -113,6 +119,7 @@ def _inputs(
         "model_path": "/models/stub.gguf",
         "n_ctx": 32768,
         "shared_gpu_ids": set(),
+        **({} if mtp is None else {"mtp_will_engage": mtp}),
     }
 
 
@@ -606,3 +613,81 @@ def test_the_layout_cache_notices_a_gguf_replaced_in_place(tmp_path, monkeypatch
     second = backend._tensor_spill_layout(str(gguf))
     assert len(reads) == 2, "a replaced file is re-read"
     assert second.n_layers != first.n_layers
+
+
+# ------------------------------------------------- KV placement is placement too
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    [["-nkvo"], ["--no-kv-offload"]],
+)
+def test_a_forced_cpu_kv_cache_declines(extra_args):
+    """-nkvo sends the WHOLE cache to host RAM whatever -ngl says: offload is a
+    single scalar on the cache object and the buffer type falls back to
+    ggml_backend_cpu_buffer_type() for every layer (llama-kv-cache.cpp:210-219),
+    with the same branch in the recurrent and DSV4 caches.
+
+    This planner charges the cache against VRAM via kv_bytes_floor, so it would
+    spill FFN blocks to cover a deficit the child never has, and a spilled block
+    is read by the CPU backend on every token. --fit on gets it right for free
+    because it measures buffer types rather than modelling them: a host-resident
+    cache lands in the host bucket (common/fit.cpp:74-79), which the per-device
+    fitting loop then ignores (common/fit.cpp:326-347).
+    """
+    assert _plan(_Stub(), extra_args = extra_args) is None
+    # Not vacuous: the same load DOES plan without the argument.
+    assert _plan(_Stub()) is not None
+
+
+@pytest.mark.parametrize(
+    "env", [{"LLAMA_ARG_KV_OFFLOAD": "0"}, {"LLAMA_ARG_KV_OFFLOAD": "false"}]
+)
+def test_an_inherited_kv_offload_env_declines(env):
+    assert _plan(_Stub(), env = env) is None
+
+
+def test_the_positive_kv_offload_form_still_plans():
+    """-kvo / --kv-offload is the enabling half of the same paired argument
+    (common/arg.cpp:2402-2409) and argv is last-wins, so a re-enable must not be
+    read as a decline."""
+    assert _plan(_Stub(), extra_args = ["-kvo"]) is not None
+    assert _plan(_Stub(), extra_args = ["-nkvo", "--kv-offload"]) is not None
+    assert _plan(_Stub(), env = {"LLAMA_ARG_KV_OFFLOAD": "1"}) is not None
+
+
+# --------------------------------------------- embedded MTP blocks when drafting
+
+
+def test_an_engaged_draft_charges_the_excluded_mtp_blocks():
+    """The layout drops the trailing nextn/MTP blocks, which is right until a
+    draft engages.
+
+    --spec-type draft-mtp sets load_mtp on the TARGET's own model params
+    (common/common.cpp:1713), which clears the TENSOR_SKIP those blocks
+    otherwise carry (models/glm4-moe.cpp:42-44,
+    llama-model-loader.cpp:1123-1131), and i_gpu_start counting backwards from
+    n_layer_all (llama-model.cpp:1449) places them on a GPU first. Studio's own
+    budget already paid for them -- an embedded head contributes 0 to the draft
+    weights precisely because they sit inside model_size -- so leaving them out
+    here makes the deficit too small, which is the optimistic direction.
+    """
+    stub = _Stub()
+    stub._excluded_bytes = 3 * GIB
+
+    idle = _plan(stub, free_mib = 15 * 1024, mtp = False)
+    drafting = _plan(stub, free_mib = 15 * 1024, mtp = True)
+
+    assert idle is not None and drafting is not None
+    assert idle.spills_anything and drafting.spills_anything
+    assert len(drafting.spilled_blocks) > len(idle.spilled_blocks)
+
+
+def test_an_ordinary_model_is_unaffected_by_the_draft_flag():
+    """No excluded blocks, nothing to charge: the flag must not move a plan on a
+    model that has no MTP head."""
+    stub = _Stub()
+    assert stub._excluded_bytes == 0
+    idle = _plan(stub, free_mib = 15 * 1024, mtp = False)
+    drafting = _plan(stub, free_mib = 15 * 1024, mtp = True)
+    assert idle.spilled_blocks == drafting.spilled_blocks
