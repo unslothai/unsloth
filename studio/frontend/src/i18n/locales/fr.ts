@@ -284,6 +284,17 @@ export const fr = {
         engineModel: "Transcription locale",
         engineModelDescription:
           "Exécute un modèle de reconnaissance vocale (STT) en local et fonctionne hors ligne. Téléchargez-le, chargez-le ; il se décharge après une période d'inactivité.",
+        engineCustom: "Point de terminaison personnalisé",
+        engineCustomDescription:
+          "Envoie l'audio enregistré à un serveur STT compatible avec OpenAI depuis vos connexions.",
+        connectionLabel: "Connexion",
+        connectionDescription:
+          "Ajoutez un serveur compatible avec OpenAI et éventuellement une clé API dans Connexions.",
+        connectionPlaceholder: "Sélectionner une connexion",
+        connectionEmpty: "Aucune connexion disponible",
+        customModelLabel: "Modèle",
+        customModelDescription:
+          "Nom du modèle envoyé à /v1/audio/transcriptions.",
         sttModelLabel: "Modèle de reconnaissance vocale",
         sttModelDescription:
           "Choisissez ou recherchez un modèle STT à exécuter en local.",
@@ -346,6 +357,7 @@ export const fr = {
         languageLabel: "Langue de la dictée",
         languageDescription: "Langue à reconnaître",
         languageAuto: "Auto (langue du navigateur)",
+        languageAutoDetect: "Auto (détecter la langue)",
       },
       dictionary: {
         sectionTitle: "Dictionnaire de dictée",
@@ -410,6 +422,16 @@ export const fr = {
           "Utilise le modèle audio chargé (par exemple Orpheus)",
         engineSystem: "Voix du système",
         engineStudio: "Charger un modèle TTS",
+        engineCustom: "Endpoint personnalisé",
+        engineCustomDescription:
+          "Un serveur TTS compatible OpenAI parmi vos connexions (p. ex. Kokoro)",
+        connectionLabel: "Connexion",
+        connectionDescription:
+          "Ajoutez un serveur compatible OpenAI dans l'onglet Connexions",
+        connectionPlaceholder: "Sélectionner une connexion",
+        customModelLabel: "Modèle",
+        customVoiceDescription:
+          "Nom de la voix attendu par l'endpoint ; alloy par défaut",
         modelLabel: "Modèle TTS",
         modelDescription:
           "Chargez un modèle audio depuis le sélecteur de modèles (par exemple Orpheus TTS)",
@@ -524,7 +546,7 @@ export const fr = {
           "Enregistrer le cache KV avant un déchargement en cas d'inactivité, afin qu'une discussion reprise n'ait pas à relire l'historique. Jusqu'à 10 Go sur le disque.",
         apiOnly: "Décharger uniquement les modèles chargés par l'API",
         apiOnlyDescription:
-          "Le déchargement en cas d'inactivité laisse en mémoire un modèle que vous avez chargé depuis Studio et ne libère que ceux chargés par une requête API.",
+          "Le déchargement en cas d'inactivité laisse en mémoire un modèle que vous avez chargé depuis Unsloth et ne libère que ceux chargés par une requête API.",
       },
       previewSharing: {
         sectionTitle: "Partage de l'aperçu",
@@ -571,6 +593,29 @@ export const fr = {
         saveError:
           "Impossible de mettre à jour le réglage de lancement à la connexion.",
       },
+      downloads: {
+        sectionTitle: "Téléchargements",
+        transport: "Transport de téléchargement",
+        transportDescription:
+          "Comment les fichiers de modèles et de jeux de données arrivent depuis Hugging Face. HTTPS reprend là où il s'est arrêté ; Xet est souvent plus rapide au premier téléchargement mais recommence le fichier en cas d'annulation.",
+        transportHint:
+          "HTTPS, c'est du TLS classique : tous les réseaux, proxys et VPN l'autorisent, un transfert annulé ou coupé reprend à partir des octets déjà écrits et la mémoire reste stable. Xet récupère des blocs dédupliqués, donc un dépôt partageant des données avec un autre déjà présent peut arriver bien plus vite, mais il exige hf_xet, consomme plus de RAM, et une annulation jette le fichier en cours. Auto décide selon la machine : il pèse la RAM et les blocages récents de Xet ici, puis se rabat sur HTTPS.",
+        https: "HTTPS",
+        xet: "Xet",
+        auto: "Auto",
+        httpsHint:
+          "TLS standard. Reprend après une annulation, fonctionne sur tous les réseaux, mémoire stable.",
+        transportDescriptionNoResume:
+          "Comment les fichiers de modèles et de jeux de données sont téléchargés depuis Hugging Face. Sur cette installation, aucun transport ne peut reprendre : un téléchargement annulé recommence ; Xet est souvent plus rapide au premier téléchargement.",
+        httpsHintNoResume:
+          "TLS standard. Fonctionne sur tous les réseaux, consommation mémoire stable. Cette installation ne peut pas reprendre un téléchargement annulé.",
+        xetHint:
+          "Transfert par blocs dédupliqués. Souvent plus rapide sur un premier téléchargement, recommence le fichier si vous annulez, demande plus de mémoire.",
+        autoHint:
+          "Choisit selon la machine et passe à HTTPS si Xet se bloque ou échoue ici.",
+        autoCurrently: "Auto utilise {transport} sur cette machine.",
+        xetMissing: "Xet est indisponible car hf_xet n'est pas installé.",
+      },
       uploads: {
         sectionTitle: "Téléversements",
         maxUploadSize: "Limite de téléversement du jeu de données d'entraînement",
@@ -581,6 +626,7 @@ export const fr = {
         embeddingModel: "Modèle d'embedding",
         embeddingModelDescription:
           "Modèle Hugging Face ou chemin local utilisé pour indexer et rechercher vos documents. La valeur par défaut est {defaultModel}.",
+        searchPlaceholder: "Rechercher des modèles d'embedding",
         reindexWarning:
           "N'affecte que les documents nouvellement indexés. Téléversez à nouveau les documents existants après avoir changé de modèle.",
         emptyError:
@@ -862,6 +908,8 @@ export const fr = {
         title: "Périphériques GPU",
         ggufInference: "Inférence GGUF",
         unavailable: "indisponible",
+        detecting: "Recherche de GPU...",
+        unreadable: "Impossible de lire le matériel de ce serveur.",
         noGpu:
           "Aucun GPU visible n'a été détecté. Seules les ressources du CPU sont affichées ci-dessus.",
         unknownDevice: "GPU inconnu",
@@ -1022,7 +1070,7 @@ export const fr = {
       quickstart: {
         title: "Construire une commande",
         description:
-          "Lancez un agent sur le modèle actuellement chargé dans Studio. Chargez d'abord un modèle, puis remplacez claude par n'importe quel agent pris en charge ci-dessous.",
+          "Lancez un agent sur le modèle actuellement chargé dans Unsloth. Chargez d'abord un modèle, puis remplacez claude par n'importe quel agent pris en charge ci-dessous.",
         noneDetected:
           "Aucune CLI d'agent prise en charge n'a été trouvée dans votre PATH.",
         installed: "Installé",
@@ -1044,7 +1092,7 @@ export const fr = {
         description:
           "Les options Unsloth sont analysées en premier ; tout ce qu'Unsloth ne reconnaît pas est transmis tel quel à l'agent.",
         model:
-          "Sélectionne un modèle. Sans --model, unsloth start utilise le modèle actuellement chargé dans Studio et échoue si aucun modèle n'est chargé.",
+          "Sélectionne un modèle. Sans --model, unsloth start utilise le modèle actuellement chargé dans Unsloth et échoue si aucun modèle n'est chargé.",
         contextLength:
           "Définit la longueur de contexte demandée (alias : --max-seq-length).",
         ggufVariant: "Choisit la variante de quantification GGUF.",
@@ -1061,13 +1109,17 @@ export const fr = {
           "Garde l'agent parent sur son modèle actuel et enregistre Unsloth comme sous-agent local (Claude Code, Codex et OpenCode).",
         apiKey:
           "Fournit votre clé API Unsloth, ou lit la variable UNSLOTH_API_KEY.",
+        reasoning:
+          "Utiliser le raisonnement dans le chat : on, off ou auto. Auto suit le modèle de chat du modèle, ce qui veut généralement dire on.",
+        reasoningEffort:
+          "Effort de raisonnement transmis au modèle de chat du modèle, par exemple medium. Les niveaux dépendent du modèle, utilisez-en un qu'il accepte. Sans valeur, le niveau du modèle de chat s'applique.",
         yolo:
           "Ignore les demandes d'autorisation. À n'utiliser que dans des environnements de confiance.",
       },
       remote: {
-        title: "Se connecter à un Studio distant",
+        title: "Se connecter à un Unsloth Studio distant",
         description:
-          "Faites pointer unsloth start vers un Studio exécuté ailleurs en définissant ces variables avant le lancement (ou passez --api-key directement) :",
+          "Faites pointer unsloth start vers un Unsloth Studio exécuté ailleurs en définissant ces variables avant le lancement (ou passez --api-key directement) :",
       },
       passthrough: {
         title: "Transmettre des arguments à l'agent",
@@ -1106,7 +1158,7 @@ export const fr = {
         exportChat: "Exporter le chat",
       },
       pastedTextThreshold: "Condenser les collages longs",
-      pastedTextThresholdDescription: "Le texte collé plus long que cette valeur devient une pièce jointe .txt au lieu de remplir le champ de message.",
+      pastedTextThresholdDescription: "Le texte collé plus long que cette valeur devient une pièce jointe .txt au lieu de remplir le champ de message. Appuyez sur {shortcut} pour coller quand même dans le champ de message.",
       pastedTextThresholdOff: "Désactivé",
       showResponseModel: "Afficher le modèle de réponse",
       showResponseModelDescription:
@@ -1124,6 +1176,12 @@ export const fr = {
         collapseByDefault: "Replier la réflexion par défaut",
         collapseByDefaultDescription:
           "Garde la réflexion repliée pendant que le modèle réfléchit, au lieu de l’ouvrir automatiquement. Dépliez un bloc pour le lire.",
+      },
+      webSearch: {
+        title: "Recherche web",
+        images: "Afficher les images de la recherche web",
+        imagesDescription:
+          "Permet à la recherche web de renvoyer des images et en récupère une pour chaque élément listé dans une réponse. Studio télécharge et redimensionne les vignettes : le navigateur ne contacte jamais les hébergeurs d'images.",
       },
       artifacts: {
         title: "Canvas",
@@ -1580,8 +1638,8 @@ export const fr = {
         "Ce modèle présent sur l'appareil ne peut pas être entraîné.",
       reasonUnsupportedFormat:
         "Ce format de modèle n'est pas pris en charge pour l'entraînement.",
-      vramNeeds: "Nécessite environ {est} Go de VRAM (GPU : {total} Go)",
-      vramTight: "Environ {est} Go de VRAM (limite sur {total} Go)",
+      vramNeeds: "Nécessite environ {est} Go de VRAM (GPU : {total} Gio)",
+      vramTight: "Environ {est} Go de VRAM (limite sur {total} Gio)",
       vramApprox: "Environ {est} Go de VRAM",
       sourceModelsFolder: "Dossier des modèles",
       sourceHfCache: "Cache HF",

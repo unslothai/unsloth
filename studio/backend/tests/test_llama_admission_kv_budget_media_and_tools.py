@@ -81,9 +81,7 @@ class TestMediaIsCharged:
                     capacity = 4,
                     config = config,
                     budget = 2048,
-                    tokens = _openai_llama_admission_tokens(
-                        payload, budget = 2048, capacity = 4
-                    ),
+                    tokens = _openai_llama_admission_tokens(payload, budget = 2048, capacity = 4),
                 )
                 leases.append(reservation.lease_nowait())
             return leases
@@ -116,10 +114,7 @@ class TestTheToolLoopReservesTheWholeCache:
         )
         assert getattr(payload, "tools", None) is None
         assert (
-            _openai_llama_admission_tokens(
-                payload, budget = 4096, capacity = 4, tool_loop = True
-            )
-            == 4096
+            _openai_llama_admission_tokens(payload, budget = 4096, capacity = 4, tool_loop = True) == 4096
         )
 
     def test_a_passthrough_forwarding_tools_is_charged_its_own_round(self):
@@ -149,7 +144,6 @@ class TestTheBudgetIsTheWholeCacheNotOneSlot:
 
     def test_the_partitioned_total_wins_over_one_slot(self):
         from routes.inference import _openai_llama_admission_budget
-
         backend = _Payload(context_length = 4096, _kv_cache_context_total = 16384)
         assert _openai_llama_admission_budget(backend) == 16384
 
@@ -169,5 +163,4 @@ class TestTheBudgetIsTheWholeCacheNotOneSlot:
 
     def test_a_backend_that_cannot_say_keeps_slot_only_admission(self):
         from routes.inference import _openai_llama_admission_budget
-
         assert _openai_llama_admission_budget(_Payload()) is None

@@ -282,6 +282,16 @@ export const en = {
         engineModel: "Local transcription",
         engineModelDescription:
           "Runs a speech-to-text (STT) model locally and works offline. Download, load, then unloads after inactivity.",
+        engineCustom: "Custom endpoint",
+        engineCustomDescription:
+          "Sends recorded audio to an OpenAI-compatible STT server from your Connections.",
+        connectionLabel: "Connection",
+        connectionDescription:
+          "Add an OpenAI-compatible server and optional API key in Connections.",
+        connectionPlaceholder: "Select a connection",
+        connectionEmpty: "No connections available",
+        customModelLabel: "Model",
+        customModelDescription: "Model name sent to /v1/audio/transcriptions.",
         sttModelLabel: "Speech recognition model",
         sttModelDescription: "Choose or search a STT model to run locally.",
         sttModelSearchPlaceholder: "Search any model on HF",
@@ -339,6 +349,7 @@ export const en = {
         languageLabel: "Dictation language",
         languageDescription: "Language to recognize",
         languageAuto: "Auto (browser language)",
+        languageAutoDetect: "Auto (detect language)",
       },
       dictionary: {
         sectionTitle: "Dictation dictionary",
@@ -401,6 +412,15 @@ export const en = {
         engineStudioDescription: "Uses the loaded audio model (e.g. Orpheus)",
         engineSystem: "System voices",
         engineStudio: "Load TTS model",
+        engineCustom: "Custom endpoint",
+        engineCustomDescription:
+          "An OpenAI-compatible TTS server from your connections (e.g. Kokoro)",
+        connectionLabel: "Connection",
+        connectionDescription:
+          "Add an OpenAI-compatible server in the Connections tab",
+        connectionPlaceholder: "Select a connection",
+        customModelLabel: "Model",
+        customVoiceDescription: "Voice name the endpoint expects; defaults to alloy",
         modelLabel: "TTS model",
         modelDescription:
           "Load an audio model from the model selector (e.g. Orpheus TTS)",
@@ -505,7 +525,7 @@ export const en = {
           "Save the KV cache before an idle unload so resumed chats skip re-reading history. Up to 10 GB on disk.",
         apiOnly: "Only unload models loaded by the API",
         apiOnlyDescription:
-          "Idle unload leaves a model you loaded from Studio in memory, and frees only the ones an API request loaded.",
+          "Idle unload leaves a model you loaded from Unsloth in memory, and frees only the ones an API request loaded.",
       },
       previewSharing: {
         sectionTitle: "Preview sharing",
@@ -554,6 +574,29 @@ export const en = {
         loadError: "Failed to load the launch at login setting.",
         saveError: "Failed to update the launch at login setting.",
       },
+      downloads: {
+        sectionTitle: "Downloads",
+        transport: "Download transport",
+        transportDescription:
+          "How model and dataset files come down from Hugging Face. HTTPS resumes where it stopped; Xet is often faster on a first download but starts the file again if you cancel.",
+        transportHint:
+          "HTTPS is plain TLS: every network, proxy and VPN allows it, a cancelled or dropped transfer resumes from the bytes already on disk, and memory use stays flat. Xet fetches deduplicated chunks, so a repo sharing data with one you already have can arrive much faster, but it needs hf_xet, uses more RAM, and a cancel discards the file in flight. Auto asks this machine: it weighs RAM and whether Xet has been stalling here, and falls back to HTTPS.",
+        https: "HTTPS",
+        xet: "Xet",
+        auto: "Auto",
+        httpsHint:
+          "Standard TLS. Resumes after a cancel, works on any network, steady memory use.",
+        transportDescriptionNoResume:
+          "How model and dataset files come down from Hugging Face. Neither transport can resume on this install, so a cancelled download starts again; Xet is often faster on a first download.",
+        httpsHintNoResume:
+          "Standard TLS. Works on any network, steady memory use. This install cannot resume a cancelled download.",
+        xetHint:
+          "Deduplicated chunk transfer. Often faster on a fresh download, restarts the file if you cancel, needs more memory.",
+        autoHint:
+          "Picks per machine and switches to HTTPS if Xet stalls or fails here.",
+        autoCurrently: "Auto is using {transport} on this machine.",
+        xetMissing: "Xet is unavailable because hf_xet is not installed.",
+      },
       uploads: {
         sectionTitle: "Uploads",
         maxUploadSize: "Training dataset upload cap",
@@ -564,6 +607,7 @@ export const en = {
         embeddingModel: "Embedding model",
         embeddingModelDescription:
           "Hugging Face model or local path used to index and search your documents. Default is {defaultModel}.",
+        searchPlaceholder: "Search embedding models",
         reindexWarning:
           "Only affects newly indexed documents. Re-upload existing ones after changing the model.",
         emptyError: "Enter a Hugging Face model id or local path.",
@@ -834,6 +878,8 @@ export const en = {
         title: "GPU devices",
         ggufInference: "GGUF inference",
         unavailable: "unavailable",
+        detecting: "Checking for GPUs...",
+        unreadable: "Could not read this server's hardware.",
         noGpu: "No visible GPU detected. CPU-only resources are shown above.",
         unknownDevice: "Unknown GPU",
         deviceWithIndex: "GPU {index}",
@@ -993,7 +1039,7 @@ export const en = {
       quickstart: {
         title: "Build a command",
         description:
-          "Launch an agent against the model currently loaded in Studio. Load a model first, then swap claude for any supported agent below.",
+          "Launch an agent against the model currently loaded in Unsloth. Load a model first, then swap claude for any supported agent below.",
         noneDetected: "No supported agent CLIs were found on your PATH.",
         installed: "Installed",
       },
@@ -1014,7 +1060,7 @@ export const en = {
         description:
           "Unsloth flags are parsed first; anything it doesn't recognize is passed straight through to the agent.",
         model:
-          "Select a model. Without --model, unsloth start uses the model currently loaded in Studio and errors if none is loaded.",
+          "Select a model. Without --model, unsloth start uses the model currently loaded in Unsloth and errors if none is loaded.",
         contextLength:
           "Set the requested context length (alias: --max-seq-length).",
         ggufVariant: "Choose the GGUF quantization variant.",
@@ -1026,12 +1072,16 @@ export const en = {
         asSubagent:
           "Keep the parent on its current model and register Unsloth as a local subagent (Claude Code, Codex, and OpenCode).",
         apiKey: "Provide your Unsloth API key (or set UNSLOTH_API_KEY).",
+        reasoning:
+          "Use reasoning in the chat: on, off, or auto. Auto follows the model's chat template, which usually means on.",
+        reasoningEffort:
+          "Reasoning effort passed to the model's chat template, e.g. medium. Levels are per model, so use one that model accepts. Unset keeps the template's own.",
         yolo: "Skip approval prompts. Use only in trusted environments.",
       },
       remote: {
-        title: "Connect to a remote Studio",
+        title: "Connect to a remote Unsloth Studio",
         description:
-          "Point unsloth start at a Studio running elsewhere by setting these before launching (or pass --api-key directly):",
+          "Point unsloth start at an Unsloth Studio running elsewhere by setting these before launching (or pass --api-key directly):",
       },
       passthrough: {
         title: "Passing agent arguments",
@@ -1070,7 +1120,7 @@ export const en = {
         exportChat: "Export chat",
       },
       pastedTextThreshold: "Condense long pastes",
-      pastedTextThresholdDescription: "Pasted text longer than this becomes a .txt attachment instead of filling the message box.",
+      pastedTextThresholdDescription: "Pasted text longer than this becomes a .txt attachment instead of filling the message box. Press {shortcut} to paste into the message box anyway.",
       pastedTextThresholdOff: "Off",
       showResponseModel: "Show response model",
       showResponseModelDescription:
@@ -1088,6 +1138,12 @@ export const en = {
         collapseByDefault: "Collapse Thinking by default",
         collapseByDefaultDescription:
           "Keep reasoning collapsed while the model thinks instead of streaming it open. Expand any block to read it.",
+      },
+      webSearch: {
+        title: "Web search",
+        images: "Show images from web search",
+        imagesDescription:
+          "Let web search return pictures, and fetch one for each thing an answer lists. Thumbnails are downloaded and resized by Studio, so the browser never contacts image hosts.",
       },
       artifacts: {
         title: "Canvas",
@@ -1526,8 +1582,8 @@ export const en = {
       sourceLocalModel: "Local model",
       vramOomBadge: "OOM",
       vramTightBadge: "Tight",
-      vramNeeds: "Needs ~{est}GB VRAM (GPU: {total}GB)",
-      vramTight: "~{est}GB VRAM (tight on {total}GB)",
+      vramNeeds: "Needs ~{est}GB VRAM (GPU: {total}GiB)",
+      vramTight: "~{est}GB VRAM (tight on {total}GiB)",
       vramApprox: "~{est}GB VRAM",
     },
     methods: {

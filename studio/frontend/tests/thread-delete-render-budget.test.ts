@@ -32,11 +32,13 @@ test("the message list is rendered through a render prop, not a components map",
   // assistant-ui only skips a message subtree when the render prop's element has no props, and
   // the map form returns <ThreadMessageComponent components={...} />, whose props object is
   // freshly allocated per render.
-  assert.match(
-    thread,
-    /<ThreadPrimitive\.Messages>\s*\{renderThreadMessage\}\s*<\/ThreadPrimitive\.Messages>/,
-  );
-  assert.doesNotMatch(thread, /<ThreadPrimitive\.Messages[^>]*\scomponents=/s);
+  //
+  // The list is ProgressiveMessages, not ThreadPrimitive.Messages (#9058), so what is pinned here
+  // is that the slot still reaches the row map. That list renders this same propless element in
+  // each MessageByIndexProvider, so the bail-out is unchanged.
+  assert.match(thread, /renderMessage=\{renderThreadMessage\}/);
+  assert.doesNotMatch(thread, /<ThreadPrimitive\.Messages\b/);
+  assert.doesNotMatch(thread, /<ProgressiveMessages[^>]*\scomponents=/s);
 });
 
 test("the render prop is built once, at module scope", () => {

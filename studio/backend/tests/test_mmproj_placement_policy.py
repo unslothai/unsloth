@@ -25,6 +25,7 @@ import pytest
 from core.inference.llama_cpp import (
     GgufLoadIntent,
     LlamaCppBackend,
+    _AUTO_OFFLOAD_CTX,
     _resolved_mmproj_offload,
 )
 from models.inference import InferenceStatusResponse, LoadResponse
@@ -670,7 +671,11 @@ def test_a_user_demanding_gpu_offload_still_pays_for_it(tmp_path):
 
     cmd = _launch(backend, gguf, extra_args = ["--mmproj-offload"])["cmd"]
 
-    assert cmd[cmd.index("-c") + 1] == "4096"
+    # Charging the projector leaves nothing that fits, so this lands on the Auto
+    # offload fallback. The value is that constant, not a literal: the point of the
+    # assertion is that the context shrank to pay for the projector, and pinning the
+    # number here only records which release the test was written in.
+    assert cmd[cmd.index("-c") + 1] == str(_AUTO_OFFLOAD_CTX)
 
 
 def test_the_last_placement_spelling_is_what_gets_budgeted(tmp_path):
@@ -1547,3 +1552,71 @@ def test_both_cpu_recovery_call_sites_pass_the_vision_state(tmp_path):
     )
     assert keyword_uses == calls
     assert source.count("disable_vision = disable_vision,") == calls
+
+
+@pytest.mark.parametrize("cache_type_kv", [None, "q8_0"])
+def test_a_tensor_load_downgraded_to_layer_split_still_gives_the_projector_up(
+    tmp_path, cache_type_kv
+):
+    """The corner the probe's TP exclusion used to leave at main's behaviour.
+
+    Tensor parallelism is requested, so the probe withholds its answer: layer-split
+    numbers cannot price a per-device tensor buffer. The pooled weight-budget check
+    then gives tensor mode up anyway -- and it prices weights PLUS projector, so it
+    downgrades exactly the loads moving the encoder would have rescued. Once that
+    downgrade is final the load is layer split, the probe's answer applies, and the
+    projector goes to the CPU instead of the model spilling layers around it.
+
+    Both cache types, because the downgrade leaves the requested one alone: the probe
+    prices the cache that actually loads, so the verdict holds for either.
+
+    Two cards too small to pool the 6 GiB model with its 1 GiB projector, but large
+    enough to hold the model alone once the encoder moves.
+    """
+    backend, gguf = _backend(tmp_path, memory = [(0, 4_400, 8_192), (1, 4_400, 8_192)])
+
+    cmd = _launch(backend, gguf, tensor_parallel = True, cache_type_kv = cache_type_kv)["cmd"]
+
+    # Reachable ONLY through the deferred application: with tensor_parallel requested
+    # the probe never applies its verdict at the probe site.
+    assert "--no-mmproj-offload" in cmd
+    assert "--mmproj" in cmd
+    # And the trade was paid for: every layer stays resident.
+    assert cmd[cmd.index("--fit") + 1] == "off"
+
+
+def test_a_surviving_tensor_load_keeps_its_projector(tmp_path):
+    """The other side of the deferral, and why the verdict is withheld rather than
+    applied early: these numbers are layer-split numbers.
+
+    Two cards that pool enough for tensor mode, so the weight-budget check keeps it.
+    The layer-split probe would refuse the same footprint (it charges a per-device
+    pipeline reserve and a replicated compute buffer that tensor mode allocates
+    differently), so applying its answer here would move the encoder off a load that
+    had room for it.
+    """
+    backend, gguf = _backend(tmp_path, memory = [(0, 4_800, 16_384), (1, 4_800, 16_384)])
+
+    cmd = _launch(backend, gguf, tensor_parallel = True)["cmd"]
+
+    assert cmd[cmd.index("--split-mode") + 1] == "tensor"
+    assert "--no-mmproj-offload" not in cmd
+
+
+def test_a_gpu_drafter_holds_the_deferred_pin_back(tmp_path):
+    """The drafter-drop probe is gated off under tensor parallelism, so it has not
+    run. The documented order is projector first and drafter second; pinning without
+    being able to re-ask the second half pays the encoder cost and still reaches
+    --fit on."""
+    backend, gguf = _drafter_backend(tmp_path, [(0, 4_400, 8_192), (1, 4_400, 8_192)])
+
+    cmd = _launch(
+        backend,
+        gguf,
+        tensor_parallel = True,
+        mtp_draft_path = str(tmp_path / "mtp.gguf"),
+        speculative_type = "auto",
+    )["cmd"]
+
+    assert "--mmproj" in cmd
+    assert "--no-mmproj-offload" not in cmd

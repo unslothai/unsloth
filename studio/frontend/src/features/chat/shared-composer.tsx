@@ -156,6 +156,7 @@ import {
 import {
   type CompositionEvent,
   type ClipboardEvent,
+  type DragEvent as ReactDragEvent,
   type FC,
   type KeyboardEvent,
   type MutableRefObject,
@@ -465,7 +466,10 @@ function PendingImageThumb({
   if (!src)
     return <div className="size-14 animate-pulse rounded-[14px] bg-muted" />;
   return (
-    <div className="relative size-14 shrink-0 overflow-hidden rounded-[14px] border border-foreground/20 bg-muted">
+    <div
+      data-reload-snapshot-sensitive
+      className="relative size-14 shrink-0 overflow-hidden rounded-[14px] border border-foreground/20 bg-muted"
+    >
       <img src={src} alt={file.name} className="h-full w-full object-cover" />
       <button
         type="button"
@@ -510,6 +514,13 @@ function PillGlyph({ children }: { children: ReactNode }) {
       <XIcon className="composer-pill-x" />
     </span>
   );
+}
+
+/** True when a drop reached this composer from a portaled child, such as a
+ * dialog and its overlay, which React routes through here but which owns it. */
+function isPortaledDrop(event: ReactDragEvent): boolean {
+  const target = event.target as Element | null;
+  return !target?.closest?.(".chat-composer-surface");
 }
 
 export function SharedComposer({
@@ -2047,7 +2058,7 @@ export function SharedComposer({
     <div
       className="chat-composer-surface"
       onDragOver={(e) => {
-        if (isTauri) return;
+        if (isTauri || isPortaledDrop(e)) return;
         e.preventDefault();
         setDragging(true);
       }}
@@ -2055,7 +2066,7 @@ export function SharedComposer({
       onDrop={(e) => {
         // Phase 1 native model drops own Tauri local-path drops. Restore
         // browser attachment drops in Tauri once Phase 1d adds token bridging.
-        if (isTauri) return;
+        if (isTauri || isPortaledDrop(e)) return;
         e.preventDefault();
         setDragging(false);
         addFiles(e.dataTransfer.files);
@@ -2119,7 +2130,9 @@ export function SharedComposer({
           {pendingAudio && (
             <div className="flex items-center gap-2 rounded-lg border border-foreground/20 bg-muted px-3 py-1.5 text-xs">
               <HeadphonesIcon className="size-3.5 text-muted-foreground" />
-              <span className="max-w-48 truncate">{pendingAudio.name}</span>
+              <span data-reload-snapshot-sensitive className="max-w-48 truncate">
+                {pendingAudio.name}
+              </span>
               <button
                 type="button"
                 onClick={() => {
