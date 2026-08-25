@@ -97,26 +97,45 @@ BEHAVIOUR_PROBE = r"""
 import contextlib, io, os, sys
 os.environ["HF_HUB_OFFLINE"] = "1"  # the notice prints before any download
 from unsloth import FastLanguageModel, FastModel
+# Without bitsandbytes both loaders clear `load_in_4bit` before the branch, so
+# there is no quant left to disable and the notice correctly stays silent.
+from unsloth.models.loader import ALLOW_BITSANDBYTES
 
 NAME = "unslothtestorg/Definitely-Not-A-Real-Repo-bf16"
 
 def notice(cls, **kwargs):
     buf = io.StringIO()
+    err = ""
     try:
         with contextlib.redirect_stdout(buf):
             cls.from_pretrained(NAME, **kwargs)
-    except BaseException:
-        pass  # the fake repo cannot resolve; the notice prints long before that
+    except BaseException as e:
+        err = f"{type(e).__name__}: {e}"  # the fake repo cannot resolve, and the
+        # notice prints long before that -- but the mode check does not.
+    # FastModel rejects mutually exclusive modes before the '-bf16' branch, so an
+    # empty result from that raise means the call never reached the code under
+    # test and an assertion on it would pass without exercising anything.
+    assert "Can only load in" not in err, f"{cls.__name__} {kwargs}: never reached the branch: {err}"
     lines = [l for l in buf.getvalue().splitlines() if "(-bf16) checkpoint" in l]
     return lines[0] if lines else ""
 
 for cls in (FastLanguageModel, FastModel):
     name = cls.__name__
     bare = notice(cls)
-    assert bare, f"{name}: bare call printed no notice"
-    assert "request" not in bare.lower(), f"{name}: bare call was told it requested 4bit: {bare}"
-    assert not notice(cls, load_in_16bit = True), f"{name}: explicit 16bit call got a notice"
+    if ALLOW_BITSANDBYTES:
+        assert bare, f"{name}: bare call printed no notice"
+        assert "request" not in bare.lower(), f"{name}: bare call was told it requested 4bit: {bare}"
+    else:
+        assert not bare, f"{name}: 4bit was already off, but the notice still ran: {bare}"
     assert not notice(cls, load_in_4bit = False), f"{name}: 4bit-off call got a notice"
+
+# `load_in_16bit = True` on its own leaves the default `load_in_4bit = True` set:
+# the one combination where the notice is suppressed by the caller's 16bit word
+# rather than by there being no quant to drop. FastLanguageModel takes that pair,
+# so it is the half that pins the gate; FastModel raises on it, and there the
+# explicit 16bit call can only be spelled with 4bit off.
+assert not notice(FastLanguageModel, load_in_16bit = True), "FastLanguageModel: explicit 16bit call got a notice"
+assert not notice(FastModel, load_in_4bit = False, load_in_16bit = True), "FastModel: explicit 16bit call got a notice"
 print("PROBE_OK")
 """
 
