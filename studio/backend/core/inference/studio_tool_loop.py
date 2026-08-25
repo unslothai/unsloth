@@ -1043,25 +1043,31 @@ async def stream_with_studio_tools(
             # gets one nudge to actually do it, the same recovery the local loops
             # give a stalled small model, then the answer stands as written.
             visible_answer = "".join(turn.text)
+            # Classify the same text the retry replays. Markup this loop will not
+            # send back must not decide whether to nudge either: a turn whose whole
+            # visible content is an unpromotable call block strips to "", so there
+            # is no promise to continue from and no assistant turn to append, and
+            # nudging it anyway left the retry as user -> user again. The local
+            # loops likewise classify prepared text (_reprompt_intent_text).
+            leading_whitespace = visible_answer[
+                : len(visible_answer) - len(visible_answer.lstrip())
+            ]
+            replayable_answer = leading_whitespace + strip_tool_markup(
+                visible_answer,
+                final = True,
+                enabled_tool_names = allowed_tool_names,
+            )
             if (
                 tools_available
                 and nudge_enabled(policy.nudge_tool_calls)
                 and not controller.force_final_answer
                 and reprompts < max_reprompts
-                and is_short_intent_without_action(visible_answer)
-                and not is_reprompt_repeat(visible_answer, last_reprompt_text)
+                and is_short_intent_without_action(replayable_answer)
+                and not is_reprompt_repeat(replayable_answer, last_reprompt_text)
             ):
                 reprompts += 1
-                last_reprompt_text = visible_answer
+                last_reprompt_text = replayable_answer
                 stalled_hosted = turn.hosted_replay_text()
-                leading_whitespace = visible_answer[
-                    : len(visible_answer) - len(visible_answer.lstrip())
-                ]
-                replayable_answer = leading_whitespace + strip_tool_markup(
-                    visible_answer,
-                    final = True,
-                    enabled_tool_names = allowed_tool_names,
-                )
                 stalled_content = (
                     f"{replayable_answer}\n\n{stalled_hosted}"
                     if replayable_answer and stalled_hosted

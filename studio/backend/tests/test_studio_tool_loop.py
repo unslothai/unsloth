@@ -975,6 +975,27 @@ def test_truncated_tool_markup_is_not_replayed_during_a_nudge(executed):
     assert assistant["content"] == "I'll search now."
 
 
+def test_a_markup_only_stall_is_not_nudged(executed):
+    """Nothing to continue from, so the retry would have been user -> user.
+
+    An intent phrase buried in an unpromotable call block reads as a stall to the
+    classifier but strips to nothing, so there is no assistant turn to append and
+    the nudge would merge into the user's own message. Easiest to reach on a
+    transport that does not heal text-form calls, which is the Codex shape.
+    """
+    markup = '<tool_call>{"name": "nope", "arguments": {"q": "I will look this up now"}}</tool_call>'
+    transport = FakeTransport(
+        [
+            [_sse({"content": markup}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "SHOULD NOT APPEAR"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    _run(transport, auto_heal = False, nudge_tool_calls = True)
+
+    assert len(transport.requests) == 1
+
+
 def test_conversation_roles_stay_alternating_for_a_strict_server(executed):
     """A no-op only turn must not leave two user turns in a row."""
     transport = FakeTransport(
