@@ -454,6 +454,7 @@ def test_discovery_prefers_an_appimage_that_can_actually_be_started(monkeypatch,
     downloaded.write_text("#!/bin/sh\n")
     downloaded.chmod(0o644)
     import os as _os
+
     _os.utime(downloaded, (2_000_000_000, 2_000_000_000))
     monkeypatch.setattr(freeze, "HOME", tmp_path)
     monkeypatch.setattr(freeze.shutil, "which", lambda name: None)
