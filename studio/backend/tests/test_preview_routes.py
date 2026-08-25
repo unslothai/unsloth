@@ -600,6 +600,27 @@ def test_preview_load_allowed_when_checkpoint_already_loaded_and_idle(fake_slot)
     assert not inference._is_preview_resident("/outputs/run/ckpt")  # stays Studio-owned
 
 
+def test_preview_does_not_borrow_studio_owned_lora(fake_slot, tmp_path):
+    checkpoint = tmp_path / "lora-checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / "adapter_config.json").write_text("{}", encoding = "utf-8")
+    fake_slot["ident"] = str(checkpoint)
+
+    async def _run():
+        with pytest.raises(HTTPException) as exc:
+            await inference.load_model_for_preview(
+                LoadRequest(model_path = str(checkpoint)),
+                SimpleNamespace(app = None),
+                "admin",
+            )
+        return exc.value
+
+    exc = asyncio.run(_run())
+    assert exc.status_code == 503
+    assert fake_slot["loads"] == []
+    assert not inference._is_preview_resident(str(checkpoint))
+
+
 def test_preview_load_refused_on_same_checkpoint_when_studio_busy(fake_slot):
     # same_target doesn't guarantee a no-op reload (GGUF settings can force a restart),
     # so busy Studio traffic blocks even a same-checkpoint request.
@@ -707,6 +728,8 @@ def test_preview_maps_atomic_gpu_refusal_to_503(fake_slot, monkeypatch):
     from core.inference import gpu_arbiter
 
     monkeypatch.setattr(gpu_arbiter, "current_owner", lambda: None)
+    swap_notes = []
+    monkeypatch.setattr(llama_keepwarm, "note_preview_swap", lambda: swap_notes.append(True))
 
     async def _lose_gpu_ownership(*args, **kwargs):
         assert kwargs["allow_gpu_owner_eviction"] is False
@@ -727,6 +750,7 @@ def test_preview_maps_atomic_gpu_refusal_to_503(fake_slot, monkeypatch):
     assert exc.status_code == 503
     assert "image or video" in exc.detail
     assert inference._get_preview_resident() is None
+    assert swap_notes == []
 
 
 def test_load_impl_preserves_atomic_gpu_refusal(monkeypatch):

@@ -7182,7 +7182,14 @@ async def load_model_for_preview(
                 )
 
                 def _refuse_studio_owned_model() -> None:
-                    if loaded is None or same_target or _is_preview_resident(loaded):
+                    if loaded is None or _is_preview_resident(loaded):
+                        return
+                    # A LoRA preview forces adapters on. Borrowing a Studio-owned LoRA
+                    # would mutate its shared adapter state, so require an unload instead.
+                    if (
+                        same_target
+                        and not (Path(request.model_path) / "adapter_config.json").is_file()
+                    ):
                         return
                     untrack_current_request(scope)
                     raise HTTPException(
@@ -7294,23 +7301,22 @@ async def load_model_for_preview(
                         headers = {"Retry-After": "10"},
                     ) from exc
                 finally:
+                    resident_after = _loaded_slot_ident()
                     # Base ownership on what is actually resident now: the load can make
                     # this preview's checkpoint resident and then raise while assembling
                     # the load response, leaving loaded_ok false. If the slot now holds
                     # this preview's model, mark it preview-owned (it was loaded only by
                     # this preview); only when the resident model was not replaced do we
                     # restore the prior owner.
-                    if loaded_ok or _loaded_slot_ident() == request.model_path:
+                    if loaded_ok or resident_after == request.model_path:
                         _set_preview_resident(request.model_path)
                     else:
                         _set_preview_resident(prior_marker)
-                    # The shared model slot was touched (a partial failure can also
-                    # unload/replace it), so bump the swap counter -- still inside the
-                    # lifecycle gate, before it is released. A non-preview request that
-                    # was blocked on the gate through this load then sees the counter
-                    # advance and is rejected by the middleware rather than running
-                    # against the swapped-in preview checkpoint.
-                    note_preview_swap()
+                    # A failed atomic GPU acquisition changes no chat model state. Only
+                    # publish a swap when a load succeeded or the resident identifier
+                    # actually changed during a partial failure.
+                    if loaded_ok or resident_after != loaded:
+                        note_preview_swap()
         finally:
             # Cleared only here, after the lifecycle gate above has been released, so a
             # non-preview request that arrived in the post-bump/pre-release window still
