@@ -2323,7 +2323,6 @@ def _mark_cancelled_json_response_failed(request: Request, cancel_event: threadi
     """Keep a partial JSON response from claiming a preview-owned resident model."""
     if cancel_event.is_set():
         from core.inference.llama_keepwarm import mark_response_failed
-
         mark_response_failed(getattr(request, "scope", None))
 
 
