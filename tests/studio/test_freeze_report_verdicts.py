@@ -562,6 +562,235 @@ def test_a_stall_watched_for_exactly_stale_after_is_a_freeze():
     assert "90s" in got
 
 
+class _Clock:
+    """A monotonic clock that only moves when the code under test sleeps, so a run that
+    takes four minutes of wall time takes none here and its sample times are exact."""
+
+    def __init__(self):
+        self.t = 0.0
+
+    def monotonic(self):
+        return self.t
+
+    def sleep(self, seconds):
+        self.t += seconds
+
+
+class _FakeApp:
+    """A launched app that answers `poll()` alive for the first `dies_after` asks."""
+
+    pid = 4242
+
+    def __init__(self, dies_after, code = 9):
+        self.polls, self.dies_after, self.code = 0, dies_after, code
+        self.returncode = None
+
+    def poll(self):
+        self.polls += 1
+        if self.polls > self.dies_after:
+            self.returncode = self.code
+            return self.code
+        return None
+
+    def wait(self, timeout = None):
+        return self.returncode
+
+
+def _drive_candidate(monkeypatch, tmp_path, log_at_sample, dies_after = 10_000):
+    """One real run_candidate() over a scripted access log, one entry per 15s sample.
+
+    Everything outside the script is faked and nothing is launched, so what is exercised is
+    the loop, the cleanup and the handoff to classify() as they are actually written, rather
+    than an argument list a test made up.
+    """
+    proc = _FakeApp(dies_after)
+    # Before anything else: the cleanup SIGTERMs proc.pid's process group, and a fake pid is
+    # a real pid to the kernel. Unpatched, a run that ends with the app still alive signals
+    # whatever process group happens to own that number, which on this machine was the test
+    # runner itself.
+    signalled = []
+    monkeypatch.setattr(freeze.os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(freeze.os, "killpg", lambda pgid, sig: signalled.append((pgid, sig)))
+    monkeypatch.setattr(freeze, "time", _Clock())
+    monkeypatch.setattr(freeze, "WARMUP", 0)
+    monkeypatch.setattr(freeze, "WINDOW", 15 * len(log_at_sample))
+    monkeypatch.setattr(freeze, "POLL_EVERY", 15)
+    monkeypatch.setattr(freeze, "stop_leftover_backend", lambda: None)
+    monkeypatch.setattr(freeze, "wait_for_leftover_backend_to_stop", lambda *a, **k: True)
+    monkeypatch.setattr(freeze, "backend_offsets", lambda: {})
+    monkeypatch.setattr(freeze, "exec_env", lambda pid: {})
+    monkeypatch.setattr(freeze.subprocess, "Popen", lambda *a, **k: proc)
+    calls = {"n": 0}
+
+    def tail(_before):
+        text = log_at_sample[min(calls["n"], len(log_at_sample) - 1)]
+        calls["n"] += 1
+        return text
+
+    monkeypatch.setattr(freeze, "backend_tail", tail)
+    monkeypatch.chdir(tmp_path)
+    return freeze.run_candidate("control (no override)", {}, "baseline", ["/bin/true"])
+
+
+def _log(heartbeats, watchdogs, session = 0):
+    """A cumulative access log with that many of each request in it."""
+    return (
+        '127.0.0.1 "GET /api/export/status" 200\n' * heartbeats
+        + '127.0.0.1 "GET /api/liveness" 200\n' * watchdogs
+        + '127.0.0.1 "POST /api/auth/logout" 200\n' * session
+    )
+
+
+def test_an_exit_seen_only_by_the_cleanup_poll_is_still_recorded(monkeypatch, tmp_path):
+    """The app can die in the gap between the loop's last poll and the cleanup's.
+
+    That gap is seconds wide and the difference in meaning is the whole report: the samples
+    up to it look like a healthy run, because they are the samples of a run that was healthy
+    until it crashed. The cleanup saw the dead process, killed nothing, and left `exited` as
+    None, so the classifier skipped both exit branches and judged the samples on their own,
+    and the crash came back as "OK: the interface kept polling for the whole run".
+    """
+    # A log growing at a healthy rate throughout, so nothing in the samples hints at the
+    # crash and the verdict has to come from the exit itself.
+    healthy = [_log(3 * n, 3 * n) for n in range(1, 5)]
+    result = _drive_candidate(monkeypatch, tmp_path, healthy, dies_after = 4)
+    assert result["samples"], "the loop must have run, or this proves nothing"
+    assert result["exit_code"] == 9, "the cleanup poll saw it dead; that must be recorded"
+    assert not result["verdict"].startswith("OK"), result["verdict"]
+    assert "9" in result["verdict"]
+
+
+def test_signing_out_midway_is_not_reported_as_a_freeze():
+    """Losing the session stops the heartbeat as thoroughly as a freeze does.
+
+    pollStatus() in use-export-runtime-lifecycle.ts opens with `if (!hasAuthToken()) return;`
+    (:156) and the interval that calls it (:192) keeps firing regardless, so a session
+    cleared mid-run stops /api/export/status while the native watchdog carries on. Round 2's
+    fix does not help here: the heartbeat WAS heard first, and then stopped, which is exactly
+    the shape the FROZE arm was narrowed to. A perfectly healthy login screen was reported
+    as a freeze, for every candidate after the sign-out.
+
+    What separates the two is that the webview went on making requests. It cannot do that if
+    it is frozen.
+    """
+    samples = [
+        (0, 0, 0),
+        (15, 3, 3),
+        (30, 6, 6),
+        (45, 9, 9),
+        (60, 12, 12),
+        (75, 15, 15),
+        (90, 15, 18),  # signed out here, so the heartbeat stops
+        (105, 15, 21),
+        (120, 15, 24),
+        (135, 15, 27),
+    ]
+    frozen = verdict(samples, warmup = 0)
+    assert frozen.startswith("FROZE"), "the stall itself is real and still reads as a freeze"
+    got = verdict(samples, warmup = 0, session_at = 90)
+    assert not got.startswith("FROZE"), got
+    assert got.startswith("SIGNED OUT"), got
+    assert "90s" in got
+
+
+def test_sign_in_traffic_from_before_the_stall_does_not_clear_a_freeze():
+    """The evidence is a request the webview made AFTER it went quiet. Every run has auth
+    traffic at startup, and if that counted, the FROZE arm would never fire again."""
+    samples = [
+        (0, 0, 0),
+        (15, 3, 3),
+        (30, 6, 6),
+        (45, 9, 9),
+        (60, 12, 12),
+        (75, 15, 15),
+        (90, 15, 18),
+        (105, 15, 21),
+        (120, 15, 24),
+        (135, 15, 27),
+    ]
+    got = verdict(samples, warmup = 0, session_at = 30)
+    assert got.startswith("FROZE"), got
+    # And a session cleared without any request reaching the backend is still indistinguishable
+    # from a freeze, which is what the absence of evidence is allowed to mean.
+    assert verdict(samples, warmup = 0, session_at = None).startswith("FROZE")
+
+
+def test_the_session_signal_is_the_webview_talking_not_the_shell():
+    """/api/auth/desktop-login is posted by the native shell itself
+    (src-tauri/src/desktop_auth.rs:194), so counting it would let the shell vouch for a
+    webview that is not running, which is the one thing this signal must never do."""
+    assert freeze.SESSION.findall('127.0.0.1 "POST /api/auth/logout" 200')
+    assert freeze.SESSION.findall('127.0.0.1 "POST /api/auth/refresh" 401')
+    assert freeze.SESSION.findall('127.0.0.1 "GET /api/auth/status" 200')
+    assert freeze.SESSION.findall('127.0.0.1 "POST /api/auth/login" 200')
+    assert not freeze.SESSION.findall('127.0.0.1 "POST /api/auth/desktop-login" 200')
+    # And it is not a heartbeat: it must not be swept into the interface count, or a run
+    # sitting on the login screen would count as an interface that was polling.
+    assert not freeze.INTERFACE.findall('127.0.0.1 "GET /api/auth/status" 200')
+
+
+def test_the_run_records_when_the_session_was_last_asked_about(monkeypatch, tmp_path):
+    """The classifier cannot use a signal the run does not collect. This is the loop and the
+    handoff to classify() as written, not an argument list invented by a test."""
+    # Heartbeat for the first four samples, then a sign-out at 75s and silence after it,
+    # while the watchdog keeps going to the end.
+    scripted = [
+        _log(3, 3),
+        _log(6, 6),
+        _log(9, 9),
+        _log(12, 12),
+        _log(12, 15, session = 1),
+        _log(12, 18, session = 1),
+        _log(12, 21, session = 1),
+        _log(12, 24, session = 1),
+    ]
+    result = _drive_candidate(monkeypatch, tmp_path, scripted)
+    assert result["session_seen_at"] == 75, result["samples"]
+    assert result["verdict"].startswith("SIGNED OUT"), result["verdict"]
+
+
+def test_an_interface_first_heard_as_the_window_closes_is_not_a_measured_run():
+    """The start of the series, the same way the end of it was wrong three times over.
+
+    The backend can take most of the window to come up on a first run, and the interface
+    cannot poll before it has a session either, so a reporter who signs in near the end
+    produces a run whose heartbeat first moves in the last few samples. There is no flat
+    interval anywhere (the counter only ever rises), nothing went quiet at the end, and the
+    handful of polls from those last samples clear the ratio test, so the bottom line said
+    the interface "kept polling for the whole run" about an interface watched for 30s.
+    """
+    samples, mon, live = [], 0, 0
+    for t in range(15, 241, 15):
+        live += 1
+        if t >= 210:
+            mon += 3
+        samples.append((t, mon, live))
+    assert samples[-1][1] * 3 >= samples[-1][2], "must clear the ratio test, as the real run did"
+    got = verdict(samples, warmup = 0)
+    assert not got.startswith("OK"), got
+    assert got.startswith("SUSPECT"), got
+    assert "210s" in got and "30s" in got
+
+
+def test_an_interface_heard_early_enough_is_still_allowed_to_be_healthy():
+    """The other side of it, so the check above cannot be satisfied by never saying OK.
+
+    Warmup lag is normal: the native watchdog answers while the webview is still loading.
+    Once the heartbeat has been watched for STALE_AFTER a delayed freeze would have shown,
+    so a run that keeps polling to the end is what OK is for.
+    """
+    assert verdict(healthy_samples()).startswith("OK")
+    late, mon, live = [], 0, 0
+    for t in range(15, 241, 15):
+        live += 1
+        if t >= 195:
+            mon += 3
+        late.append((t, mon, live))
+    assert freeze._first_heard(late, 1) == 195
+    assert late[-1][0] - 195 == freeze.STALE_AFTER
+    assert verdict(late, warmup = 0).startswith("OK"), verdict(late, warmup = 0)
+
+
 def test_a_launch_that_fails_at_execve_does_not_end_the_whole_run(monkeypatch, tmp_path):
     """The execute bit says the kernel may try, not that the try works.
 

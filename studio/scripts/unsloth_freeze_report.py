@@ -28,7 +28,10 @@ A freeze is the specific pattern where the watchdog keeps ticking and the interf
 silent AFTER having been heard. An interface that was never heard from at all is reported
 as NO SIGNAL rather than as a freeze: a count of zero is what a real freeze looks like,
 but it is also what a missing session token looks like, and guessing between them is how
-this script would tell somebody their app froze when it did not.
+this script would tell somebody their app froze when it did not. For the same reason, an
+interface that went silent but went on asking the backend about the session is reported as
+SIGNED OUT: the heartbeat needs a session token, so signing out stops it without anything
+having frozen.
 
 That is measured here rather than guessed at, which is why this is worth running even
 though you can already see the freeze with your own eyes: it distinguishes "the interface
@@ -94,6 +97,30 @@ INTERFACE = re.compile(
     r"|inference/images/status|inference/video/status|inference/audio/stt/status)"
 )
 LIVENESS = re.compile(r"/api/liveness")
+# The webview's sign-in traffic, which is NOT a heartbeat and is never counted as one: it
+# is how this script tells a sign-out apart from a freeze.
+#
+# The heartbeat above stops for a reason that has nothing to do with rendering:
+# `if (!hasAuthToken()) return;` in use-export-runtime-lifecycle.ts (:156). The interval
+# keeps firing, the request stops being made, and a session cleared mid-run (a sign-out, or
+# a refresh that failed) therefore produces exactly the pattern this script calls a freeze,
+# on an app whose login screen is drawing perfectly.
+#
+# Nothing in the counters can separate those two, but the log can, because clearing a
+# session is not silent. A sign-out POSTs /api/auth/logout (features/auth/api.ts:296), an
+# expired session POSTs /api/auth/refresh (:174) and gets a 401, and the redirect to the
+# login screen that follows either one GETs /api/auth/status (app/auth-guards.ts:42). All
+# three are requests, and a frozen webview cannot make a request: one of them landing at or
+# after the moment the heartbeat stopped is positive evidence that the interface was alive.
+#
+# /api/auth/desktop-login is excluded deliberately. It is the one auth route the NATIVE
+# shell posts by itself (src-tauri/src/desktop_auth.rs:194), so counting it would let the
+# shell vouch for a webview that is not running. The rest of /api/auth is webview-only.
+#
+# All of these are logged verbatim under this script's MEASUREMENT_ENV: the dedup windows
+# are zero, which sets _VERBOSE_ACCESS_LOG in studio/backend/loggers/handlers.py and turns
+# the 2xx poll suppressor off, and the mutations were never suppressed to begin with.
+SESSION = re.compile(r"/api/auth/(?:status|login|logout|refresh)\b")
 # Printed by the desktop shell (main.rs) before anything else, through a stderr logger, so
 # it lands in the captured shell output. Distinguishes "the shell never started" from "the
 # shell started and its backend did not".
@@ -485,6 +512,23 @@ def _last_rise(samples: list, column: int) -> int | None:
     return last
 
 
+def _first_heard(samples: list, column: int) -> int | None:
+    """Elapsed time of the earliest sample that proves that counter was moving.
+
+    A rise between two samples proves it, and so does a first sample that is already above
+    zero: that count was accumulated during the interval before it. None means the counter
+    never moved while the run was being watched.
+    """
+    if not samples:
+        return None
+    if samples[0][column] > 0:
+        return samples[0][0]
+    for i in range(1, len(samples)):
+        if samples[i][column] > samples[i - 1][column]:
+            return samples[i][0]
+    return None
+
+
 def classify(
     samples: list,
     n_mon: int,
@@ -496,6 +540,7 @@ def classify(
     shell_started: bool,
     has_display: bool,
     warmup: int = None,
+    session_at: int = None,
 ) -> str:
     """One candidate's verdict. Pure, so the wrong ones can be caught by a test rather than
     by a reporter following them down a false path."""
@@ -621,6 +666,26 @@ def classify(
             if resumed_at is not None and resumed_at >= post[i][0]:
                 continue
             stalled_at = post[i][0]
+            if session_at is not None and session_at >= stalled_at:
+                # The heartbeat is gated on holding a session token, so losing the session
+                # stops it just as thoroughly as a freeze does, and the counters look
+                # identical. What separates them is that the webview went on making
+                # requests: it asked the backend about the session at or after the moment
+                # the heartbeat stopped, and a frozen webview cannot ask anything. So this
+                # is the app falling back to its login screen, not a freeze.
+                #
+                # This is a positive signal rather than a doubt, which is why it does not
+                # narrow the FROZE arm any further: a stall with no sign-in traffic after it
+                # is still called a freeze, exactly as before. A session cleared without a
+                # single request reaching the backend would still be indistinguishable, and
+                # would still be reported as a freeze.
+                return (
+                    f"SIGNED OUT: the interface stopped polling at about {stalled_at}s, but "
+                    f"it was still asking the backend about your session at about "
+                    f"{session_at}s, and a frozen interface cannot ask anything. The app "
+                    f"signed out, which stops the heartbeat on its own, so this candidate "
+                    f"was not measured. Sign in and re-run it, staying signed in throughout"
+                )
             sustained = (watchdog_last if watchdog_last is not None else stalled_at) - stalled_at
             if sustained >= STALE_AFTER:
                 return (
@@ -659,6 +724,28 @@ def classify(
                 f"neither from the interface nor from the watchdog, so the backend stopped "
                 f"answering or stopped being logged before the window ended"
             )
+
+    # How long was the interface actually watched? Everything above reasons about the
+    # INTERIOR of the sample series; this is its start. The run begins when the app is
+    # launched, but the interface cannot be observed until it has a backend to talk to and a
+    # session to talk with, and neither is guaranteed to arrive early: a slow first install,
+    # a backend that takes most of the window to come up, or a reporter who signs in near
+    # the end all produce a run whose counters first move in the last few samples. There is
+    # then no flat interval to find, the totals from those last samples pass the ratio test
+    # below, and the bottom line says the interface "kept polling for the whole run" about
+    # an interface that was seen for seconds. A freeze that takes a minute to arrive cannot
+    # be ruled out in that time, so this is the same unsettled case as a stall that begins
+    # as the window closes, and it gets the same answer rather than a false OK.
+    heard_from = _first_heard(samples, 1)
+    watched = (end - heard_from) if heard_from is not None else 0
+    if heard_from is not None and watched < STALE_AFTER:
+        return (
+            f"SUSPECT: the interface was not heard from until about {heard_from}s, so it "
+            f"was only watched for {watched}s before the run ended, short of the "
+            f"{STALE_AFTER}s a stall has to last to be called one. This candidate is "
+            f"unsettled rather than healthy: sign in and let the app finish starting "
+            f"before the next run, or re-run it with UNSLOTH_FREEZE_WINDOW above {WINDOW}"
+        )
 
     if n_live >= 3 and n_mon * 3 < n_live:
         return "SUSPECT: the interface polled far less than the watchdog"
@@ -720,6 +807,7 @@ def run_candidate(label, extra, why, cmd) -> dict:
             "env_at_exec": {},
             "interface_polls": 0,
             "watchdog_polls": 0,
+            "session_seen_at": None,
             "exit_code": None,
             "samples": [],
             "backend_log_excerpt": "",
@@ -727,6 +815,10 @@ def run_candidate(label, extra, why, cmd) -> dict:
     started = time.monotonic()
     at_exec, samples, exited, ran_for = {}, [], None, 0
     interrupted = False
+    # When the webview was last seen asking about the session, and how many such requests
+    # that was. Kept beside the samples rather than in them: it is not a heartbeat, it is
+    # the one thing that can tell a sign-out apart from a freeze. See SESSION.
+    session_seen, session_at = 0, None
 
     print(f"    launching, then watching for {_span(WARMUP + WINDOW)}.", flush = True)
     print("    Use the window normally while this runs.", flush = True)
@@ -746,7 +838,11 @@ def run_candidate(label, extra, why, cmd) -> dict:
                 at_exec = exec_env(proc.pid)
             text = backend_tail(before)
             n_mon, n_live = len(INTERFACE.findall(text)), len(LIVENESS.findall(text))
-            samples.append((round(time.monotonic() - started), n_mon, n_live))
+            elapsed = round(time.monotonic() - started)
+            samples.append((elapsed, n_mon, n_live))
+            n_session = len(SESSION.findall(text))
+            if n_session > session_seen:
+                session_seen, session_at = n_session, elapsed
             if len(samples) % 2 == 0:
                 print(
                     f"    t={samples[-1][0]:4}s  interface={n_mon:3}  watchdog={n_live:3}",
@@ -758,6 +854,18 @@ def run_candidate(label, extra, why, cmd) -> dict:
         print("    interrupted; this candidate is recorded as skipped", flush = True)
     finally:
         alive = proc.poll() is None
+        if not alive and exited is None:
+            # It died between the loop's last poll and this one, which is a narrow gap in
+            # seconds and a wide one in meaning: an app that crashes right at the end of the
+            # window still crashed. Without recording it here the cleanup saw a dead process
+            # and left `exited` as None, so classify() skipped both exit branches and judged
+            # the run on its samples alone, which look healthy right up to the moment the
+            # app disappeared. The crash the reporter ran this to catch was then reported
+            # back to them as OK.
+            exited = proc.returncode
+            if not ran_for:
+                ran_for = round(time.monotonic() - started)
+            print(f"    the app EXITED (code {exited}) during cleanup", flush = True)
         if alive:
             try:
                 os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
@@ -791,6 +899,7 @@ def run_candidate(label, extra, why, cmd) -> dict:
         preflight = preflight,
         shell_started = bool(SHELL_STARTED.search(shell_out)) or bool(applied),
         has_display = _has_display(env),
+        session_at = session_at,
     )
 
     print(f"    VERDICT: {verdict}", flush = True)
@@ -808,6 +917,9 @@ def run_candidate(label, extra, why, cmd) -> dict:
         "env_at_exec": at_exec,
         "interface_polls": n_mon,
         "watchdog_polls": n_live,
+        # When the webview last asked about the session, so a reader can see for
+        # themselves why a stall was or was not read as a sign-out. See SESSION.
+        "session_seen_at": session_at,
         "exit_code": exited,
         "samples": samples,
         "backend_log_excerpt": scrub("\n".join(text.splitlines()[-40:])),
