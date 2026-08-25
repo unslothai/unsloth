@@ -118,3 +118,20 @@ def test_the_failure_fires_when_nothing_executed():
 
 def test_the_cpu_fallback_records_the_assertion_rather_than_omitting_it():
     assert '"web_search",' in _body("execute")
+
+
+def test_the_search_tool_call_is_FORCED_rather_than_hoped_for():
+    """Otherwise this measures a model's judgement, not Studio's plumbing.
+
+    On kernel unsloth-probe-studio-full2-815a0c the 2B model answered "The
+    current version of the Linux kernel is 6.10" straight from parametric
+    knowledge, never emitted a call, and the assertion reported that Studio had
+    offered web_search and not run it. Studio had done nothing wrong.
+
+    `assert_tool_calling` already forces its own tool the same way. The claim
+    here is that Studio EXECUTES the call, and the `execute_tool` log check
+    still decides that, so forcing the call narrows the assertion onto the
+    thing it is about rather than weakening it.
+    """
+    body = _body()
+    assert 'tool_choice = "required"' in body

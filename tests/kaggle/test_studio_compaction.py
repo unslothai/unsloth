@@ -153,3 +153,61 @@ def _tuple_names(node: ast.Assign) -> set:
         if isinstance(target, ast.Tuple):
             out.update(e.id for e in target.elts if isinstance(e, ast.Name))
     return out
+
+
+def test_compaction_is_REQUESTED_rather_than_expected_by_default():
+    """Measured on kernel unsloth-probe-studio-full2-815a0c, where this
+    assertion failed a documented default.
+
+    `context_overflow` defaults to "error": an over-length conversation comes
+    back 400 with code=context_length_exceeded, so a client's own trim loop can
+    see it. Compaction is a policy you ASK for. "truncate_oldest" is the one
+    that applies to a plain chat; "truncate_middle" is limited to client-tool
+    and response_format passthrough
+    (studio/backend/models/inference.py:context_overflow).
+    """
+    body = _body()
+    assert 'context_overflow = "truncate_oldest"' in body
+    assert 'context_overflow = "truncate_middle"' not in body, (
+        "truncate_middle does not apply to a plain chat, so it would report a "
+        "policy that never ran"
+    )
+
+
+def test_the_default_policy_control_is_present_and_expects_a_refusal():
+    """The half that stops the request field from being decorative.
+
+    Without it, the check above passes on a server that compacts everything
+    regardless of what was asked for, and naming the policy proves nothing.
+    """
+    func = _func("assert_compaction")
+    refusals = [
+        node
+        for node in ast.walk(func)
+        if isinstance(node, ast.Compare) and "400" in ast.unparse(node)
+    ]
+    assert refusals, "nothing asserts the default policy still refuses"
+    assert "long_status_default_policy" in _body()
+
+
+def test_the_over_length_conversation_is_sent_twice_under_two_policies():
+    """One request cannot compare two policies. Both calls have to exist, and
+    they have to send the SAME messages, or the pair compares a policy against
+    a different conversation."""
+    func = _func("assert_compaction")
+    calls = [
+        node
+        for node in ast.walk(func)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "chat"
+        and "long_messages" in ast.unparse(node)
+    ]
+    assert len(calls) == 2, f"expected two long-conversation calls, found {len(calls)}"
+    overflow = [
+        call for call in calls if any(kw.arg == "context_overflow" for kw in call.keywords)
+    ]
+    assert len(overflow) == 1, (
+        "exactly one of the two must name the policy: both naming it removes "
+        "the control, neither naming it removes the feature under test"
+    )

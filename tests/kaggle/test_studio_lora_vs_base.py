@@ -135,3 +135,40 @@ def test_both_models_are_driven_with_the_same_prompt():
     assert (
         _body().count("self.chat(prompt)") == 1
     ), "one call site, reached by every arm, or the arms can drift apart"
+
+
+def test_the_exported_gguf_picked_is_a_model_and_not_an_mmproj_sidecar():
+    """Driven through the REAL `newest_gguf`, because this is a selection bug
+    and a rule fed a path proves nothing about the selector.
+
+    A vision export writes two files, and the projector is often the newer.
+    Handing `Qwen3.5-2B.F16-mmproj.gguf` to llama.cpp as a model is not an
+    error: the server starts, reports gpu_layers=-1, offloads nothing and still
+    returns text. On kernel unsloth-probe-studio-full2-815a0c that failed both
+    the export assertion and this one, as a GPU fallback that never happened.
+    """
+    import sys as _sys  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+    import time as _time  # noqa: PLC0415
+    from pathlib import Path as _Path  # noqa: PLC0415
+
+    _sys.path.insert(0, str(ROOT / "tests" / "kaggle" / "studio_gpu"))
+    from studio_client import newest_gguf  # noqa: PLC0415
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _Path(tmp)
+        model = root / "Qwen3.5-2B.Q8_0.gguf"
+        model.write_bytes(b"GGUF")
+        _time.sleep(0.01)
+        # Written LAST, so "newest" alone would pick it.
+        sidecar = root / "Qwen3.5-2B.F16-mmproj.gguf"
+        sidecar.write_bytes(b"GGUF")
+
+        assert newest_gguf(root) == model
+
+        # And with only a sidecar present, the answer is None rather than the
+        # sidecar: no model was exported, and saying so is the point.
+        sidecar_only = root / "sub"
+        sidecar_only.mkdir()
+        (sidecar_only / "x.F16-mmproj.gguf").write_bytes(b"GGUF")
+        assert newest_gguf(sidecar_only) is None

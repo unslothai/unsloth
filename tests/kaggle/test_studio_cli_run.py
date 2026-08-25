@@ -128,3 +128,23 @@ def test_the_child_is_always_torn_down():
     finals = "\n".join(ast.unparse(n) for t in tries for n in t.finalbody)
     assert "proc.terminate()" in finals
     assert "proc.kill()" in finals, "terminate alone leaves a hung server running"
+
+
+def test_the_vram_sample_comes_AFTER_a_served_completion():
+    """`unsloth run` prints its API key while it is still starting.
+
+    Sampling there read 0.0 MiB of growth on kernel
+    unsloth-probe-studio-full2-815a0c, on a launch whose own log says
+    `Starting llama-server: ... -ngl -1 --fit off` -- Studio asking for every
+    layer on the card. A completion that came back is the cheap proof the
+    weights are resident, so the ruler has to go after it or the check measures
+    a race.
+    """
+    func = _func("assert_cli_run")
+    src = ast.get_source_segment(SRC, func) or ""
+    sample_at = src.index("detail[\"vram_after_mib\"]")
+    completion_at = src.index("detail[\"completion_status\"]")
+    assert completion_at < sample_at, (
+        "VRAM is sampled before a completion has been served, so a slow load "
+        "reads as a CPU fallback"
+    )

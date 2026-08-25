@@ -902,7 +902,19 @@ class Payload:
             long_messages.append({"role": "assistant", "content": f"Noted fact {i}."})
         long_messages.append({"role": "user", "content": "Reply with one word."})
 
-        code, body = self.chat(long_messages, max_tokens = 32)
+        # `context_overflow` defaults to "error", and that default is CORRECT:
+        # a conversation past the window comes back 400 with
+        # code=context_length_exceeded so a client's own trim loop can see it.
+        # Compaction is a policy you ask for, and asking for it is the thing
+        # under test. Measured the hard way on kernel
+        # unsloth-probe-studio-full2-815a0c, where this assertion failed a
+        # documented default. "truncate_oldest" is the policy that applies to a
+        # plain chat; "truncate_middle" is limited to client-tool and
+        # response_format passthrough (studio/backend/models/inference.py).
+        code, body = self.chat(
+            long_messages, max_tokens = 32, context_overflow = "truncate_oldest"
+        )
+        detail["context_overflow"] = "truncate_oldest"
         detail["long_status"] = code
         detail["long_messages"] = len(long_messages)
         detail["long_truncation"] = (
@@ -921,8 +933,24 @@ class Payload:
                 f"compaction happened and the reply used a prompt nobody sized"
             )
 
-        # The negative control, and it is not optional: without it a server
-        # that always claims truncation passes the check above.
+        # The POLICY control: the same over-length conversation with the
+        # default `context_overflow` must be REFUSED. Without this, the check
+        # above passes on a server that compacts everything regardless of what
+        # was asked for, and the field name in the request would be decorative.
+        code, body = self.chat(long_messages, max_tokens = 32)
+        detail["long_status_default_policy"] = code
+        if code != 400:
+            failures.append(
+                f"with the default context_overflow the same over-length "
+                f"conversation returned HTTP {code} rather than 400. The "
+                f"documented default is to refuse with "
+                f"code=context_length_exceeded so a client's own trim loop can "
+                f"see it, and if everything is compacted anyway then asking "
+                f"for truncate_oldest above proved nothing"
+            )
+
+        # The LENGTH control, and it is not optional either: without it a
+        # server that always claims truncation passes the first check.
         code, body = self.chat([{"role": "user", "content": "Say hi."}], max_tokens = 16)
         detail["short_status"] = code
         short_dropped = _dropped(body)
@@ -1191,6 +1219,15 @@ class Payload:
             enable_tools = True,
             enabled_tools = ["web_search"],
             permission_mode = "off",
+            # FORCED, the same way assert_tool_calling forces the weather tool.
+            # Without it this measures whether a 2B model DECIDES to search,
+            # which is a model property and not a Studio one: on kernel
+            # unsloth-probe-studio-full2-815a0c it answered "The current
+            # version of the Linux kernel is 6.10" from parametric knowledge,
+            # never called the tool, and the assertion read as a broken search.
+            # The claim that matters is that Studio EXECUTES the call it emits,
+            # and the log check below is still what decides that.
+            tool_choice = "required",
             max_tokens = 512,
         )
         detail["http_status"] = code
@@ -2088,20 +2125,6 @@ class Payload:
                     "did not reach the point where it mints a key"
                 )
 
-            settled = nvidia_used_mib()
-            detail["vram_after_mib"] = settled
-            if baseline is None or settled is None:
-                failures.append("nvidia-smi did not answer, so GPU use is unmeasured")
-            else:
-                delta = settled - baseline
-                detail["vram_delta_mib"] = round(delta, 1)
-                if delta < 200.0:
-                    failures.append(
-                        f"device VRAM grew by {delta:.1f} MiB across the launch, "
-                        f"which is not a model on the card -- `unsloth run` "
-                        f"served from the CPU"
-                    )
-
             if api_key:
                 client.token = api_key
                 code, body = client.post(
@@ -2146,6 +2169,30 @@ class Payload:
                     failures.append(
                         f"a corrupted API key was accepted ({code}), so the "
                         f"check above passes whatever is sent"
+                    )
+
+            # AFTER a completion has come back, not after the API-key banner.
+            # `unsloth run` prints the key while it is still starting, and on
+            # kernel unsloth-probe-studio-full2-815a0c the sample landed before
+            # llama-server had the weights anywhere: 0.0 MiB of growth on a
+            # launch whose own log says
+            # `Starting llama-server: ... -ngl -1 --fit off`, which is Studio
+            # asking for every layer on the card. A served completion is the
+            # only cheap proof the weights are resident, so the ruler goes
+            # after it.
+            settled = nvidia_used_mib()
+            detail["vram_after_mib"] = settled
+            detail["compute_apps"] = nvidia_compute_apps()
+            if baseline is None or settled is None:
+                failures.append("nvidia-smi did not answer, so GPU use is unmeasured")
+            else:
+                delta = settled - baseline
+                detail["vram_delta_mib"] = round(delta, 1)
+                if delta < 200.0:
+                    failures.append(
+                        f"device VRAM grew by {delta:.1f} MiB across the launch "
+                        f"and a served completion, which is not a model on the "
+                        f"card -- `unsloth run` served from the CPU"
                     )
         except BaseException as exc:  # noqa: BLE001
             failures.append(f"driving `unsloth run` raised: {type(exc).__name__}: {exc}"[:300])
@@ -2431,6 +2478,17 @@ class Payload:
                 exported_gguf = entry.get("gguf")
         self.assert_lora_vs_base(exported_gguf)
 
+        # BEFORE the UI driver, because assert_chat_ui ends by stopping the
+        # server and every request below it would then be refused at the
+        # socket. Measured on kernel unsloth-probe-studio-full2-815a0c, where
+        # this assertion reported `URLError: Connection refused` and read as a
+        # broken image path on a server that had simply been shut down.
+        # Placed after all the language work regardless: a diffusion pipeline
+        # is the largest single thing this payload puts on a T4, and it is
+        # unloaded in a finally either way.
+        if self.args.image_generation:
+            self.assert_image_generation()
+
         if not self.args.skip_ui:
             self.assert_chat_ui()
 
@@ -2445,12 +2503,6 @@ class Payload:
         # internet. Its own launch rather than a flag on the one above,
         # because the tunnel needs a WILDCARD bind and assert_cli_run's claim
         # is about a loopback server.
-        # Before the tunnel, and after everything that needs the card for
-        # language work: a diffusion pipeline is the largest single thing this
-        # payload puts on a T4, and it is unloaded in a finally either way.
-        if self.args.image_generation:
-            self.assert_image_generation()
-
         if self.args.cloudflare_check:
             self.assert_cloudflare()
         else:

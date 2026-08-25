@@ -138,3 +138,20 @@ def test_a_load_or_generate_error_is_a_failure_rather_than_a_skip():
     assert any(
         isinstance(n, ast.If) and "code >= 400" in ast.unparse(n.test) for n in ast.walk(func)
     )
+
+
+def test_it_runs_while_the_server_is_still_up():
+    """`assert_chat_ui` ends by clicking Stop server and asserting the port
+    closes, so every request after it is refused at the socket.
+
+    On kernel unsloth-probe-studio-full2-815a0c this assertion reported
+    `URLError: Connection refused` and read as a broken image path on a server
+    that had simply been shut down. Ordering, not the image pipeline.
+    """
+    run = _body("execute")
+    image_at = run.index("self.assert_image_generation()")
+    ui_at = run.index("self.assert_chat_ui()")
+    assert image_at < ui_at, (
+        "image generation is driven after the UI driver stops the server, so "
+        "it can only ever report a connection error"
+    )
