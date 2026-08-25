@@ -30,12 +30,10 @@ type ApiDownloadTransportSettings = {
 
 let cachedTransport: DownloadTransportSettings | null = null;
 let inFlightTransport: Promise<DownloadTransportSettings> | null = null;
-// Whether the request in flight was itself a refresh. A refreshing caller cannot ride on a
-// GET that was already answered before it asked: that response predates whatever change it
-// is refreshing to find.
+// A refreshing caller cannot ride on a GET answered before it asked: that response predates
+// whatever change it is refreshing to find.
 let inFlightIsRefresh = false;
-// Newest request wins. Starting a second GET while an older one is in flight would otherwise
-// let the older response land last and cache the value we just went to replace.
+// Newest request wins, or an older overlapping GET lands last and re-caches what it replaced.
 let latestRequest = 0;
 
 export function subscribeDownloadTransportSettings(
@@ -87,9 +85,9 @@ async function fetchDownloadTransportSettings(): Promise<DownloadTransportSettin
   return fromApi(await res.json());
 }
 
-/** The install's setting. `refresh` skips the cache, for a caller that must not act on a
- * value another browser may have changed since this tab loaded it. Refreshing callers share
- * one GET with each other, but never with a plain hydration already in flight. */
+/** The install's setting. `refresh` skips the cache, for a caller that must not act on a value
+ * another browser may since have changed. Refreshing callers share a GET with each other, never
+ * with a plain hydration already in flight. */
 export async function loadDownloadTransportSettings(
   opts: { refresh?: boolean } = {},
 ) {
@@ -106,9 +104,8 @@ export async function loadDownloadTransportSettings(
       if (request === latestRequest) {
         return cacheTransport(settings);
       }
-      // Superseded. Keeping the stale payload out of the cache is not enough: callers read
-      // the resolved value straight into their own state, so handing it back would let this
-      // response revert the write that superseded it. Answer with what the cache now holds.
+      // Superseded. Callers read the resolved value straight into their own state, so handing
+      // back the stale payload would revert the write that superseded it.
       return cachedTransport ?? settings;
     })
     .finally(() => {

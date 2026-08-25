@@ -129,10 +129,9 @@ def get_download_transport_capabilities(
             # Ordinary UI polls are read-only and must not load Zoo. `probe=True` is different:
             # the frontend sends it only while resolving Auto for a download, then submits the
             # concrete answer as xet/http, so this is the actual first-download decision.
-            # `ram_gate` loads it too, without probing: on a fresh backend the cache is empty
-            # and reads as the optimistic Xet, so the settings row promised Xet while the next
-            # download loaded a persisted unhealthy verdict and chose HTTP. Still `probe=probe`,
-            # so only a real download start does the live check.
+            # `ram_gate` loads it too, without probing: an empty cache reads as the optimistic
+            # Xet, so the row promised Xet while the next download loaded an unhealthy verdict
+            # and chose HTTP. Still `probe=probe`, so only a download start probes live.
             health_fn = xet_health if (probe or ram_gate) else cached_xet_health
             health = health_fn(probe = probe)
             if health is not None:

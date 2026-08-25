@@ -1,13 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Which transport downloads run on was a toggle on the Hub page and nothing else, so the choice
-// lived in one browser and most people never found it. It is a row in Settings > General now,
-// saved for the install.
-//
-// The rules pinned here: this browser's own choice wins, the install's setting is next, the
-// default is unchanged at Auto, and the row offers both transports with the difference spelled
-// out.
+// The transport choice was a Hub-page toggle living in one browser; it is a Settings > General
+// row saved for the install now. Pinned here: this browser's own choice wins, the install's
+// setting is next, the default is still Auto, and the row spells out the difference.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -51,16 +47,15 @@ test("with no choice of its own the install setting decides", () => {
 });
 
 test("junk on either side leaves the default alone", () => {
-  // Auto, as before this row existed: adding a setting must not move an install nobody has
-  // opened it on.
+  // Auto, as before this row existed: a new setting must not move an untouched install.
   assert.equal(pickTransportMode("ftp", "torrent"), TRANSPORT.AUTO);
   assert.equal(pickTransportMode(null, null), DEFAULT_TRANSPORT_MODE);
   assert.equal(DEFAULT_TRANSPORT_MODE, TRANSPORT.AUTO);
 });
 
 test("a download waits for the install setting before picking a transport", () => {
-  // getTransportMode() answers from what is already known, so a download that read it before the
-  // settings fetch landed would miss a transport picked in another browser.
+  // getTransportMode() answers from what is known, so reading it before the settings fetch
+  // landed missed a transport picked in another browser.
   for (const source of [
     read("features/hub/download-manager/poll-loop.ts"),
     read("features/hub/download-manager/transport-conflict.ts"),
@@ -110,14 +105,13 @@ test("the copy explains the difference, not just the names", () => {
 });
 
 
-// The four below are source assertions, in the idiom of this file. They pin the shape of a
-// fix rather than its behaviour, so they would not catch a rewrite that keeps the wording
-// and breaks the rule; each names the failure it exists for.
+// The four below are source assertions, in this file's idiom: they pin the shape of a fix
+// rather than its behaviour, so each names the failure it exists for.
 
 test("the Hub's automatic fallback is not stored at all", () => {
-  // TransportToggle drops a stored "xet" to "http" by itself when hf_xet is missing. Writing
-  // that install-wide replaced everyone's choice; writing it locally was no better, since a
-  // local value outranks the install one, so repairing hf_xet later never brought Xet back.
+  // TransportToggle drops a stored "xet" to "http" when hf_xet is missing. Written install-wide
+  // that replaced everyone's choice; written locally it outranked the install setting and
+  // survived hf_xet being repaired.
   assert.match(TOGGLE, /setMode\("http",\s*\{\s*persist:\s*false\s*\}\)/);
   assert.match(PREFERENCE, /opts\.persist === false/);
   // Reflected and returned BEFORE either write.
@@ -129,22 +123,22 @@ test("the Hub's automatic fallback is not stored at all", () => {
 });
 
 test("a download re-reads the install setting instead of trusting the cache", () => {
-  // The point of an install-level setting is that another browser can change it. A value
-  // cached for the life of the tab kept downloading on the old transport until a reload.
+  // Another browser can change it, and a value cached for the life of the tab kept downloading
+  // on the old transport until a reload.
   assert.match(PREFERENCE, /hydrateInstallMode\(true\)/);
   assert.match(API, /opts\.refresh/);
 });
 
 test("install-wide writes are serialized", () => {
-  // Two quick selections raced, and the earlier PUT landing last left the database on the
-  // mode the user did not pick while this browser showed the one they did.
+  // Two quick selections raced: the earlier PUT landing last left the database on the mode the
+  // user did not pick while this browser showed the one they did.
   assert.match(API, /writeQueue/);
   assert.match(API, /writeQueue\s*=\s*next\.catch/);
 });
 
 test("the copy stops promising a resume the install cannot do", () => {
-  // huggingface_hub 1.18 made the HTTP writer process-unique, so an interrupted transfer is
-  // refetched from zero. Someone picking HTTPS to keep their progress was told the opposite.
+  // huggingface_hub 1.18 refetches an interrupted transfer from zero, so someone picking HTTPS
+  // to keep their progress was told the opposite.
   assert.match(ROW, /useHttpPartialsResumable\(\)/);
   assert.match(ROW, /transportDescriptionNoResume/);
   assert.match(ROW, /httpsHintNoResume/);
@@ -153,15 +147,15 @@ test("the copy stops promising a resume the install cannot do", () => {
 });
 
 test("the Xet-missing reason is the translated one", () => {
-  // The backend has one reason for Xet being unavailable and it is English prose. Preferring
-  // it made the translated key unreachable, so every non-English locale read English.
+  // The backend's one reason is English prose, and preferring it made the translated key
+  // unreachable for every other locale.
   assert.match(ROW, /hf_xet is not installed/);
   assert.match(ROW, /t\("settings\.general\.downloads\.xetMissing"\)/);
 });
 
 test("a blocked localStorage still saves the setting for the install", () => {
-  // Private mode, storage disabled or over quota used to return before the server write,
-  // so those browsers could not change the transport at all even with a healthy backend.
+  // Private mode, disabled storage and over quota used to return before the server write, so
+  // those browsers could not change the transport at all.
   assert.match(PREFERENCE, /savedLocally/);
   assert.doesNotMatch(
     PREFERENCE,
@@ -170,43 +164,41 @@ test("a blocked localStorage still saves the setting for the install", () => {
 });
 
 test("the untranslated health reason is not folded into a translated sentence", () => {
-  // settings.autoReason is free-form English from the Xet health check. Interpolating it
-  // gave every non-English locale half a sentence in its own language and half in English,
-  // so it gets its own line and the key that interpolated it is gone.
+  // settings.autoReason is free-form English, and interpolating it gave other locales half a
+  // sentence in each language. It has its own line now, and the key that folded it in is gone.
   assert.match(ROW, /statusReason/);
   assert.doesNotMatch(ROW, /autoCurrentlyReason/);
   assert.doesNotMatch(EN, /autoCurrentlyReason/);
 });
 
 test("a failed refresh keeps the install mode already loaded", () => {
-  // Falling back to null sent the next download to Auto even though this browser still knew
-  // the install's choice, so a blip on the settings route silently changed transport.
+  // Falling back to null sent the next download to Auto even though the install's choice was
+  // still known here, so a blip on the settings route silently changed transport.
   assert.match(PREFERENCE, /\.catch\(\(\) => installMode\)/);
 });
 
 test("adopting an existing job does not wait on the settings route", () => {
   // The adopt branch ignores requestedMode, and suspending there let the two concurrent
-  // adoptJob callers replace each other's runtime, leaving duplicate poll timers behind.
+  // adoptJob callers replace each other's runtime and leave duplicate poll timers.
   assert.match(POLL_LOOP, /opts\.adopt\s*\n?\s*\? TRANSPORT\.HTTP/);
 });
 
 test("Xet cannot be chosen before its availability is known", () => {
-  // Clicking it in that window stored a Xet preference, locally and install-wide, that every
-  // later download silently ignored on a machine without hf_xet.
+  // Clicking it in that window stored a Xet preference every later download silently ignored.
   assert.match(ROW, /capabilityPending \|\| settings\?\.xetAvailable === false/);
   // But a load that FAILED must not disable it for good, so pending is its own state.
   assert.match(ROW, /setCapabilityPending\(false\)/);
 });
 
 test("a failed install-wide write is reported, not just logged", () => {
-  // The row calls this setting install-wide. A browser that kept the choice locally while the
-  // install did not is a mismatch the user cannot otherwise see, and reload hides it further.
+  // The row calls this setting install-wide, so a local-only save is a mismatch nobody can
+  // otherwise see.
   assert.match(PREFERENCE, /Saved for this browser, but not for this install\./);
 });
 
 test("the transport row is reachable from Settings search", () => {
-  // The whole reason it moved here is that nobody found it on the Hub. Leaving it out of the
-  // index means searching for "transport", "Xet" or "HTTPS" still finds nothing.
+  // It moved here because nobody found it on the Hub, so an unindexed row leaves searches for
+  // "transport", "Xet" or "HTTPS" finding nothing.
   for (const key of [
     "settings.general.downloads.sectionTitle",
     "settings.general.downloads.transport",
@@ -218,8 +210,8 @@ test("the transport row is reachable from Settings search", () => {
 });
 
 test("a refresh does not ride on a request that predates it", () => {
-  // The hydration GET may already have been answered with the old mode while still pending
-  // here, so sharing it would hand a download exactly the value the refresh went to replace.
+  // A hydration GET still pending here may already have been answered with the old mode, so
+  // sharing it hands back exactly the value the refresh went to replace.
   assert.match(API, /inFlightIsRefresh/);
   assert.match(API, /!opts\.refresh \|\| inFlightIsRefresh/);
   // And the older of two overlapping responses must not land last and re-cache the old value.
@@ -227,8 +219,8 @@ test("a refresh does not ride on a request that predates it", () => {
 });
 
 test("the Hub toggle also waits to know whether Xet can run", () => {
-  // Same window as the settings row: clicking Xet before the capability lands stored it
-  // locally and install-wide on a machine that cannot run it.
+  // Same window as the settings row: clicking Xet before the capability lands stored it on a
+  // machine that cannot run it.
   assert.match(TOGGLE, /const xetUnavailable = isLoading \|\| xetKnownUnavailable/);
 });
 
@@ -239,9 +231,8 @@ test("each indexed option has somewhere for search to scroll to", () => {
 });
 
 test("the display only falls back once Xet is known unavailable", () => {
-  // Disabling on unknown and falling back on unknown are different rules. Conflating them
-  // showed HTTP for a stored Xet during the capability check, with nothing to restore it if
-  // Xet turned out to be fine.
+  // Disabling on unknown and falling back on unknown are different rules: conflating them
+  // showed HTTP for a stored Xet that turned out to be fine, with nothing to restore it.
   assert.match(TOGGLE, /xetKnownUnavailable = capabilities\?\.xet\.available === false/);
   assert.match(TOGGLE, /mode === "xet" && xetKnownUnavailable/);
   assert.match(TOGGLE, /isLoading \|\| xetKnownUnavailable/);
@@ -257,27 +248,26 @@ test("a refresh is not swallowed by the hydration wrapper", () => {
 });
 
 test("resetting local preferences clears the transport override", () => {
-  // It outranks the install-wide setting, so leaving it behind means the reset browser keeps
-  // ignoring transport changes made anywhere else on the install.
+  // It outranks the install setting, so a reset that left it behind would keep ignoring
+  // transport changes made elsewhere.
   assert.match(PREFERENCE, /export const TRANSPORT_MODE_STORAGE_KEY/);
   assert.match(GENERAL_TAB_SRC, /TRANSPORT_MODE_STORAGE_KEY/);
 });
 
 test("a completed write outranks a read issued before it", () => {
-  // Ordering GETs against each other is not enough: a GET taken before the PUT could still
-  // land after it and republish the mode the user had just replaced.
+  // Ordering GETs against each other is not enough: one taken before the PUT could still land
+  // after it and republish the mode just replaced.
   assert.match(API, /latestRequest \+= 1;/);
 });
 
 test("the settings row re-reads the install setting when it opens", () => {
-  // Otherwise reopening Settings shows whatever is cached: a mode changed in another browser,
-  // and an Auto verdict from before RAM pressure or a recorded Xet failure.
+  // Otherwise reopening Settings shows whatever is cached: a mode another browser changed, or
+  // a stale Auto verdict.
   assert.match(ROW, /loadDownloadTransportSettings\(\{ refresh: true \}\)/);
 });
 
 test("a superseded read answers with the current value, not its own", () => {
-  // Keeping the stale payload out of the cache only protects later readers. The caller of the
-  // superseded GET writes the resolved value into its own state, so returning it there undoes
-  // the write that superseded it in every browser where localStorage is unavailable.
+  // Keeping the stale payload out of the cache only protects later readers: the caller writes
+  // the resolved value into its own state, undoing the write that superseded it.
   assert.match(API, /return cachedTransport \?\? settings;/);
 });

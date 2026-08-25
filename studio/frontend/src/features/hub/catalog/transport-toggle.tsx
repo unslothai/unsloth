@@ -35,10 +35,8 @@ const OPTIONS: { value: "auto" | "http" | "xet"; label: string; hint: string }[]
 export function TransportToggle() {
   const [mode, setMode] = useTransportMode();
   const { capabilities, isLoading } = useDownloadTransportCapabilities();
-  // Two different questions. Xet cannot be CHOSEN until we know it runs here, since clicking
-  // it in that window stored a preference every later download quietly ignored. But the
-  // fallback below may only fire once we know it does NOT: firing it while still loading
-  // showed HTTP for a stored Xet that turned out to be fine, with nothing to restore it.
+  // Two questions. Xet cannot be CHOSEN until we know it runs here; the fallback may only fire
+  // once we know it does NOT, or a loading tab shows HTTP for a stored Xet that was fine.
   const xetKnownUnavailable = capabilities?.xet.available === false;
   const xetUnavailable = isLoading || xetKnownUnavailable;
   const autoResolvesTo = capabilities?.auto_resolves_to ?? "xet";
@@ -46,8 +44,7 @@ export function TransportToggle() {
 
   useEffect(() => {
     if (mode === "xet" && xetKnownUnavailable) {
-      // Reflected, never stored. It is a fallback for what this machine can do, not a choice
-      // the user made: storing it would outrank the install-wide setting in this browser and
+      // Reflected, never stored: a fallback stored here would outrank the install setting and
       // survive hf_xet being installed later.
       setMode("http", { persist: false });
     }

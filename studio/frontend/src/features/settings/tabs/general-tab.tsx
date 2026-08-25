@@ -97,8 +97,8 @@ const PREFS_KEYS: string[] = [
   // asked to throw away, and a chord bound to something unusable has no
   // escape hatch from this button.
   KEYBOARD_SHORTCUTS_STORAGE_KEY,
-  // This browser's transport override, which outranks the install-wide setting: leaving it
-  // behind means a reset browser keeps ignoring transport changes made elsewhere.
+  // Outranks the install-wide setting, so a reset that left it behind would keep ignoring
+  // transport changes made elsewhere.
   TRANSPORT_MODE_STORAGE_KEY,
   // Chat runtime prefs
   CHAT_PROJECT_ATTACHMENT_TARGET_KEY,

@@ -46,8 +46,8 @@ def store(monkeypatch):
 
 def test_nothing_picked_means_auto(store):
     assert transport_settings.get_download_transport_mode() == "auto"
-    # Read-only: seeding a value here would be this setting deciding for an install that never
-    # opened it, which is the one thing it must not do.
+    # Read-only: seeding a value would be this setting deciding for an install that never
+    # opened it.
     assert store == {}
 
 

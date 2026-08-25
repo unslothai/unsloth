@@ -19,10 +19,9 @@ export const TRANSPORT_MODES = [
   TRANSPORT.XET,
 ] as const;
 export type TransportMode = (typeof TRANSPORT_MODES)[number];
-// Auto until someone picks otherwise: the backend picks per machine (RAM, hf_xet build, recent
-// Xet failures), and effectiveTransportMode() resolves that to a concrete transport before any
-// download starts. Only a floor now, since the install's setting arrives from
-// /api/settings/download-transport.
+// Auto until someone picks otherwise: the backend chooses per machine (RAM, hf_xet build,
+// recent Xet failures) and effectiveTransportMode() resolves it before any download starts.
+// Only a floor, since the install's setting arrives from /api/settings/download-transport.
 export const DEFAULT_TRANSPORT_MODE: TransportMode = TRANSPORT.AUTO;
 
 /** The preference in force: this browser's own choice, else the install's setting, else Auto. */

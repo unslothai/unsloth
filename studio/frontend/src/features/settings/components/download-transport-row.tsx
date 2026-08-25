@@ -46,26 +46,23 @@ const OPTIONS: {
 export function DownloadTransportRow() {
   const t = useT();
   const [mode, setMode] = useTransportMode();
-  // huggingface_hub 1.18 made the HTTP writer process-unique, so an interrupted transfer is
-  // refetched from zero unless the resumable writer is restored. Saying HTTPS "resumes where
-  // it stopped" there is exactly backwards for someone picking it to keep their progress.
+  // huggingface_hub 1.18 refetches an interrupted transfer from zero, so promising HTTPS
+  // "resumes where it stopped" there is backwards.
   const partialsResumable = useHttpPartialsResumable();
   const [settings, setSettings] = useState<DownloadTransportSettings | null>(
     null,
   );
-  // Distinct from "settings is null": a load that FAILED leaves us with no capability, and
-  // refusing Xet for good on a flaky settings route would be worse than the race below.
+  // Distinct from "settings is null": a FAILED load must not disable Xet for good.
   const [capabilityPending, setCapabilityPending] = useState(true);
 
   useEffect(() => {
-    // The subscription is the only teardown: an in-flight load resolves into a cached value and
-    // the unsubscribed setter is never called again.
+    // The only teardown: an in-flight load resolves into the cache, not into this setter.
     const unsubscribe = subscribeDownloadTransportSettings((next) => {
       setSettings(next);
       setCapabilityPending(false);
     });
-    // Refreshed on mount: the cache can hold a mode another browser has since changed, and an
-    // Auto verdict from before RAM pressure or a recorded Xet failure.
+    // Refreshed on mount: the cache can hold a mode another browser changed, or a stale
+    // Auto verdict.
     loadDownloadTransportSettings({ refresh: true })
       .then(setSettings)
       .catch(() => undefined)
@@ -73,24 +70,19 @@ export function DownloadTransportRow() {
     return unsubscribe;
   }, []);
 
-  // Unknown counts as unavailable WHILE the first load is in flight. Xet used to be clickable
-  // in that window on a machine without hf_xet, and the click stored a Xet preference locally
-  // and install-wide that every later download then silently ignored.
+  // Unknown counts as unavailable while the first load is in flight: clicking Xet there
+  // stored a preference every later download silently ignored.
   const xetUnavailable = capabilityPending || settings?.xetAvailable === false;
-  // The localized string first. The backend has exactly one reason for Xet being
-  // unavailable and it is English prose, so preferring it made the translated key
-  // unreachable and showed English to every other locale. A future backend reason we
-  // do not have a translation for still gets through.
+  // The localized string first: the backend's one reason is English prose, and preferring it
+  // showed English to every other locale. An unknown future reason still gets through.
   const serverReason = settings?.xetUnavailableReason;
   const xetReason =
     !serverReason || /hf_xet is not installed/i.test(serverReason)
       ? t("settings.general.downloads.xetMissing")
       : serverReason;
 
-  // Xet is selected but cannot run here: say so, rather than leaving a selected
-  // option that silently downloads over HTTPS.
-  // Only once we KNOW: while the capability is still pending the option is disabled, but
-  // claiming hf_xet is missing would be asserting something we have not been told yet.
+  // Xet selected but unable to run here: say so rather than silently using HTTPS. Only once
+  // known, since while pending we have not been told hf_xet is missing.
   const status =
     !capabilityPending && xetUnavailable && mode === "xet"
       ? xetReason
@@ -103,11 +95,9 @@ export function DownloadTransportRow() {
           })
         : null;
 
-  // The backend's own words for WHY, on their own line rather than interpolated into the
-  // sentence above. It comes from the Xet health check as free-form English, and there is
-  // no translation to give it, so folding it into a translated sentence produced half a
-  // sentence in the reader's language and half in English.
-  // Only under Auto, which is the only branch above that has a reason to explain.
+  // The health check's own words, on their own line: free-form English, so folding it into a
+  // translated sentence produced half a sentence in each language. Auto is the only branch
+  // with a reason to explain.
   const statusReason = mode === "auto" ? (settings?.autoReason ?? null) : null;
 
   return (
