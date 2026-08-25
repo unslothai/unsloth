@@ -1116,6 +1116,8 @@ def patch_project(
                 event = "chat_history.update_external_workspace_failed",
                 log = logger,
             ) from exc
+        except ProjectWorkspaceConflictError as exc:
+            raise HTTPException(status_code = 409, detail = str(exc)) from exc
         if not changed:
             raise HTTPException(
                 status_code = 409,

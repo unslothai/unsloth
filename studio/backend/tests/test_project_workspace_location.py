@@ -251,6 +251,42 @@ def test_busy_project_does_not_consume_the_workspace_grant(monkeypatch):
     assert resolved == []
 
 
+def test_busy_orphan_workspace_returns_conflict(monkeypatch):
+    from fastapi import HTTPException
+
+    from core.inference import tools
+    from routes import chat_history
+    from storage.studio_db import ProjectWorkspaceConflictError
+
+    monkeypatch.setattr(
+        chat_history,
+        "_resolve_project_workspace_path",
+        lambda lease: "/selected/project",
+    )
+    monkeypatch.setattr(
+        tools,
+        "update_project_workspace_when_idle",
+        lambda project_id, update: (True, update()),
+    )
+
+    def reject_busy_workspace(project_id, path):
+        raise ProjectWorkspaceConflictError(
+            "Wait for active tool calls in the selected folder to finish"
+        )
+
+    monkeypatch.setattr(chat_history, "set_chat_project_workspace", reject_busy_workspace)
+    payload = chat_history.ChatProjectPatch(
+        workspaceKind = "external",
+        nativePathLease = "signed",
+    )
+
+    with pytest.raises(HTTPException) as caught:
+        chat_history.patch_project("project-1", payload, current_subject = "tester")
+
+    assert caught.value.status_code == 409
+    assert "active tool calls" in str(caught.value.detail)
+
+
 def test_unavailable_external_project_does_not_break_the_project_list(monkeypatch):
     from routes import chat_history
 
