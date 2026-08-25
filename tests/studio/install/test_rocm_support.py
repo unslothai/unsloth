@@ -1345,6 +1345,42 @@ Agent 4
         assert self._probe_gfx(flat, False) == ["gfx1100", "gfx1151"]
         assert self._probe_gfx(flat, True) == ["gfx1100", "gfx1151"]
 
+    _AMD_SMI_ASIC = """GPU: 0
+    ASIC:
+        MARKET_NAME: Radeon RX 7900 XTX
+        TARGET_GRAPHICS_VERSION: gfx1100
+GPU: 1
+    ASIC:
+        MARKET_NAME: Radeon RX 7900 XTX
+        TARGET_GRAPHICS_VERSION: gfx1100
+GPU: 2
+    ASIC:
+        MARKET_NAME: Radeon RX 9060
+        TARGET_GRAPHICS_VERSION: gfx1200
+"""
+
+    @staticmethod
+    def _probe_gfx_amd_smi(out, dedup):
+        which = lambda n: "/usr/bin/amd-smi" if n == "amd-smi" else None  # noqa: E731
+        with patch("shutil.which", side_effect = which):
+            with patch.object(stack_mod, "_amd_smi_allowed", return_value = True):
+                with patch("subprocess.run", return_value = MagicMock(returncode = 0, stdout = out)):
+                    return stack_mod._detect_amd_gfx_codes(dedup = dedup)
+
+    def test_gfx_probe_splits_amd_smi_gpu_headers(self):
+        """amd-smi heads each device with "GPU: N", so duplicate arches stay separate."""
+        assert self._probe_gfx_amd_smi(self._AMD_SMI_ASIC, False) == [
+            "gfx1100",
+            "gfx1100",
+            "gfx1200",
+        ]
+        assert self._probe_gfx_amd_smi(self._AMD_SMI_ASIC, True) == ["gfx1100", "gfx1200"]
+
+    def test_gfx_probe_splits_amd_smi_bracket_headers(self):
+        """The "GPU[N] : gfx" one-line form keeps its token on the header line."""
+        bracket = "GPU[0]  : gfx1100\nGPU[1]  : gfx1100\nGPU[2]  : gfx1200\n"
+        assert self._probe_gfx_amd_smi(bracket, False) == ["gfx1100", "gfx1100", "gfx1200"]
+
     def test_gfx_probe_records_which_tool_answered(self):
         # Only rocminfo is mask-filtered, and only by ROCR, so the reroute needs this.
         self._probe_gfx(self._ROCMINFO, False)
@@ -2030,6 +2066,417 @@ class TestGfx906LegacyReroute:
         assert 'setdefault("TORCHDYNAMO_DISABLE", "1")' in gate_body
         assert 'setdefault("TORCH_COMPILE_DISABLE", "1")' in gate_body
         assert 'setdefault("UNSLOTH_COMPILE_DISABLE", "1")' in gate_body
+
+
+class TestGfx1102Rocm64Floor:
+    """Navi 33 / RDNA 4 need generic PyTorch ROCm 6.4 wheels, not rocm6.1."""
+
+    @staticmethod
+    def _ensure_for_gfx(
+        gfx: str,
+        monkeypatch,
+        *,
+        pinned: bool = False,
+        rocm_ver: tuple = (6, 1),
+        probe_stdout: str = "\n",  # CPU torch -> repair
+    ):
+        m = stack_mod
+        for name in (
+            "HIP_VISIBLE_DEVICES",
+            "ROCR_VISIBLE_DEVICES",
+            "UNSLOTH_ROCM_GFX_ARCH",
+            "UNSLOTH_TORCH_INDEX_FAMILY",
+            "UNSLOTH_TORCH_INDEX_URL",
+        ):
+            monkeypatch.delenv(name, raising = False)
+        if pinned:
+            monkeypatch.setenv(
+                "UNSLOTH_TORCH_INDEX_URL", "https://download.pytorch.org/whl/rocm6.1"
+            )
+        probe = MagicMock(returncode = 0, stdout = probe_stdout)
+        with (
+            patch.object(m, "IS_WINDOWS", False),
+            patch.object(m, "IS_MACOS", False),
+            patch.object(m, "_TORCH_RUNTIME_PROBE", None),
+            patch.object(m, "_TORCH_BACKEND", ""),
+            patch.object(m, "_LAST_AMD_GFX_PROBE", None),
+            patch.object(m, "pip_install") as pip,
+            patch.object(m, "pip_install_try", return_value = True),
+            patch.object(m, "_has_usable_nvidia_gpu", return_value = False),
+            patch.object(m, "_has_rocm_gpu", return_value = True),
+            patch.object(m, "_infer_linux_amd_gfx_arch", return_value = None),
+            patch.object(m, "_detect_rocm_version", return_value = rocm_ver),
+            patch.object(m, "_detect_amd_gfx_codes", return_value = [gfx]),
+            patch("platform.machine", return_value = "x86_64"),
+            patch("subprocess.run", return_value = probe),
+        ):
+            _ensure_rocm_torch()
+        return pip
+
+    def test_floor_helper_covers_only_the_affected_generic_leaves(self):
+        assert stack_mod._gfx_needs_rocm64_generic_index((6, 0)) is True
+        assert stack_mod._gfx_needs_rocm64_generic_index((6, 3)) is True
+        assert stack_mod._gfx_needs_rocm64_generic_index((6, 4)) is False
+        assert stack_mod._gfx_needs_rocm64_generic_index((7, 2)) is False
+        assert stack_mod._gfx_needs_rocm64_generic_index((5, 7)) is False
+
+    def test_debian_split_gfx1100_keeps_rocm61(self, monkeypatch):
+        """A Debian split host resolving rocm6.1 must leave gfx1100 on rocm6.1."""
+        torch_call = str(self._ensure_for_gfx("gfx1100", monkeypatch).call_args_list[0])
+        assert "rocm6.1" in torch_call
+        assert "rocm6.4" not in torch_call
+
+    @pytest.mark.parametrize("gfx", ("gfx1102", "gfx1200", "gfx1201"))
+    def test_debian_split_affected_gfx_floors_to_rocm64(self, gfx, monkeypatch):
+        """A resolved Debian rocm6.1 host cannot install a kernel-less generic wheel."""
+        torch_call = str(self._ensure_for_gfx(gfx, monkeypatch).call_args_list[0])
+        assert "rocm6.4" in torch_call
+        assert "rocm6.1" not in torch_call
+
+    def test_explicit_rocm61_pin_remains_authoritative(self, monkeypatch):
+        """The narrow auto-floor never overwrites an explicit user index pin."""
+        torch_call = str(
+            self._ensure_for_gfx("gfx1102", monkeypatch, pinned = True).call_args_list[0]
+        )
+        assert "rocm6.1" in torch_call
+        assert "rocm6.4" not in torch_call
+
+    @pytest.mark.parametrize("host_ver", ((6, 4), (7, 2)))
+    def test_installed_pre64_wheel_repaired_on_newer_host(self, host_ver, monkeypatch):
+        """A host reading 6.4+ still carries a kernel-less wheel after an ROCm upgrade.
+
+        `_gfx_needs_rocm64_generic_index` is False here, so gating the repair on it
+        left the installed +rocm6.1 build in place and `studio update` was a no-op.
+        """
+        pip = self._ensure_for_gfx(
+            "gfx1200",
+            monkeypatch,
+            rocm_ver = host_ver,
+            probe_stdout = _MARK + "2.8.0+rocm6.1|6.1.40093|\n",
+        )
+        torch_call = str(pip.call_args_list[0])
+        assert f"rocm{host_ver[0]}.{host_ver[1]}" in torch_call
+        assert "rocm6.1" not in torch_call
+
+    def test_installed_64_wheel_left_alone_on_newer_host(self, monkeypatch):
+        """The widened repair must not reinstall a wheel that already has the kernels."""
+        pip = self._ensure_for_gfx(
+            "gfx1200",
+            monkeypatch,
+            rocm_ver = (6, 4),
+            probe_stdout = _MARK + "2.8.0+rocm6.4|6.4.43482|\n",
+        )
+        pip.assert_not_called()
+
+    def test_unaffected_arch_not_repaired_on_newer_host(self, monkeypatch):
+        """gfx1100 has kernels in the older families, so its wheel stays untouched."""
+        pip = self._ensure_for_gfx(
+            "gfx1100",
+            monkeypatch,
+            rocm_ver = (6, 4),
+            probe_stdout = _MARK + "2.8.0+rocm6.1|6.1.40093|\n",
+        )
+        pip.assert_not_called()
+
+    def test_install_sh_floors_resolved_rocm61_by_runtime_gfx(self):
+        """Exercise install.sh's existing generic-routing block with a resolved leaf.
+
+        This models the Debian split detector handing the already-resolved rocm6.1
+        leaf to architecture routing: gfx1100 stays there, while gfx1102/RDNA4
+        move to the wheel family that ships their kernels.
+        """
+        shell = shutil.which("bash")
+        if not shell:
+            pytest.skip("bash needed to execute install.sh architecture routing")
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        leaf_helper = _extract_sh_function_body(source, "_rocm_leaf_below")
+        start = source.find('case "$_torch_index_leaf" in\n    rocm[0-9]*)')
+        end = source.find("\nfi  # _torch_index_pinned guard", start)
+        assert leaf_helper and start >= 0 and end >= 0
+        routing_block = source[start:end]
+        floor_pos = routing_block.find("_amd_rocm64_base")
+        pin_start = source.rfind('if [ "$_torch_index_pinned" = false ]; then', 0, start)
+        assert floor_pos >= 0 and pin_start >= 0 and pin_start < start
+
+        for gfx, expected in (
+            ("gfx1100", "rocm6.1"),
+            ("gfx1102", "rocm6.4"),
+            ("gfx1200", "rocm6.4"),
+            ("gfx1201", "rocm6.4"),
+        ):
+            script = (
+                "set -euo pipefail\n"
+                + leaf_helper
+                + "\n"
+                + 'TORCH_INDEX_URL="https://download.pytorch.org/whl/rocm6.1"\n'
+                + '_torch_index_leaf="rocm6.1"\n'
+                + "_torch_index_pinned=false\nSKIP_TORCH=false\n_amd_gpu_radeon=false\n"
+                + f'UNSLOTH_ROCM_GFX_ARCH="{gfx}"\n'
+                + "unset HSA_OVERRIDE_GFX_VERSION HIP_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES UNSLOTH_PYTORCH_MIRROR\n"
+                + routing_block
+                + '\nprintf "URL:%s LEAF:%s\\n" "$TORCH_INDEX_URL" "$_torch_index_leaf"\n'
+            )
+            result = subprocess.run([shell, "-c", script], capture_output = True, text = True)
+            assert result.returncode == 0, result.stderr
+            assert result.stdout.strip().endswith(f"/{expected} LEAF:{expected}"), result.stdout
+
+    @staticmethod
+    def _install_sh_routing_result(
+        preamble: str,
+        leaf: str = "rocm6.1",
+        radeon_in: str = "false",
+    ) -> tuple:
+        """Run install.sh's architecture-routing block, returning (leaf, floor-target flag)."""
+        shell = shutil.which("bash")
+        if not shell:
+            pytest.skip("bash needed to execute install.sh architecture routing")
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        leaf_helper = _extract_sh_function_body(source, "_rocm_leaf_below")
+        gfx_helper = _extract_sh_function_body(source, "_gfx_targets_per_device")
+        start = source.find('case "$_torch_index_leaf" in\n    rocm[0-9]*)')
+        end = source.find("\nfi  # _torch_index_pinned guard", start)
+        assert leaf_helper and gfx_helper and start >= 0 and end >= 0
+        script = (
+            "set -euo pipefail\n"
+            + leaf_helper
+            + "\n"
+            + gfx_helper
+            + "\n"
+            + f'TORCH_INDEX_URL="https://download.pytorch.org/whl/{leaf}"\n'
+            + f'_torch_index_leaf="{leaf}"\n'
+            + f"_torch_index_pinned=false\nSKIP_TORCH=false\n_amd_gpu_radeon={radeon_in}\n"
+            + "_gfx_rocm64_target=false\n"
+            + "unset HSA_OVERRIDE_GFX_VERSION HIP_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES\n"
+            + "unset CUDA_VISIBLE_DEVICES UNSLOTH_ROCM_GFX_ARCH UNSLOTH_PYTORCH_MIRROR\n"
+            + preamble
+            + "\n"
+            + source[start:end]
+            + '\nprintf "LEAF:%s TARGET:%s RADEON:%s\\n" '
+            '"$_torch_index_leaf" "$_gfx_rocm64_target" "$_amd_gpu_radeon"\n'
+        )
+        result = subprocess.run([shell, "-c", script], capture_output = True, text = True)
+        assert result.returncode == 0, result.stderr
+        tail = result.stdout.strip().rsplit("LEAF:", 1)[-1]
+        _leaf, _rest = tail.split(" TARGET:")
+        _target, _radeon = _rest.split(" RADEON:")
+        return _leaf, _target, _radeon
+
+    @classmethod
+    def _run_install_sh_routing(cls, preamble: str) -> str:
+        return cls._install_sh_routing_result(preamble)[0]
+
+    @pytest.mark.parametrize(
+        ("mask", "expected"),
+        (
+            ("CUDA_VISIBLE_DEVICES=1", "rocm6.4"),
+            ("HIP_VISIBLE_DEVICES=1", "rocm6.4"),
+            ("CUDA_VISIBLE_DEVICES=0", "rocm6.1"),
+            # a set-but-empty hip mask selects no gpu instead of deferring to cuda
+            ("HIP_VISIBLE_DEVICES= CUDA_VISIBLE_DEVICES=1", "rocm6.1"),
+        ),
+    )
+    def test_install_sh_runtime_target_honors_cuda_visible_devices(self, mask, expected):
+        """HIP exposes devices through CUDA_VISIBLE_DEVICES too, so it must select the target."""
+        preamble = "rocminfo() { printf 'Name: gfx1100\\nName: gfx1200\\n'; }\n" + "".join(
+            f"export {assignment}\n" for assignment in mask.split()
+        )
+        assert self._run_install_sh_routing(preamble) == expected
+
+    @staticmethod
+    def _rocminfo_stub(*arches: str) -> str:
+        """A rocminfo stub whose agents repeat their gfx token across Name and ISA."""
+        blocks = [
+            "Agent 1",
+            "  Name:                    AMD Ryzen 9 7950X",
+            "  Device Type:             CPU",
+        ]
+        for n, gfx in enumerate(arches, start = 2):
+            blocks += [
+                "*******",
+                f"Agent {n}",
+                "*******",
+                f"  Name:                    {gfx}",
+                "  Marketing Name:          AMD Radeon Graphics",
+                f"      Name:                amdgcn-amd-amdhsa--{gfx}",
+            ]
+        body = "\\n".join(blocks)
+        return f"rocminfo() {{ printf '{body}\\n'; }}\n"
+
+    @pytest.mark.parametrize(
+        ("mask", "expected"),
+        (
+            ("HIP_VISIBLE_DEVICES=2", "rocm6.4"),
+            ("CUDA_VISIBLE_DEVICES=2", "rocm6.4"),
+            ("HIP_VISIBLE_DEVICES=1", "rocm6.1"),
+            ("HIP_VISIBLE_DEVICES=0", "rocm6.1"),
+        ),
+    )
+    def test_install_sh_mask_indexes_devices_not_arches(self, mask, expected):
+        """A visible-device mask is a device ordinal, so duplicate arches each count."""
+        preamble = self._rocminfo_stub("gfx1100", "gfx1100", "gfx1200") + f"export {mask}"
+        assert self._run_install_sh_routing(preamble) == expected
+
+    @pytest.mark.parametrize(
+        ("rocr", "arches", "expected"),
+        (
+            # rocminfo reports the rocr selection in runtime order, so index 0 is the target
+            ("1,0", ("gfx1200", "gfx1100"), "rocm6.4"),
+            ("1", ("gfx1200",), "rocm6.4"),
+            ("0,1", ("gfx1100", "gfx1200"), "rocm6.1"),
+        ),
+    )
+    def test_install_sh_does_not_reapply_a_rocr_mask_rocminfo_already_applied(
+        self, rocr, arches, expected
+    ):
+        """rocminfo output is already filtered and ordered by ROCR_VISIBLE_DEVICES."""
+        preamble = self._rocminfo_stub(*arches) + f"export ROCR_VISIBLE_DEVICES={rocr}"
+        assert self._run_install_sh_routing(preamble) == expected
+
+    @pytest.mark.parametrize(
+        ("mask", "expected"),
+        (("HIP_VISIBLE_DEVICES=2", "rocm6.4"), ("HIP_VISIBLE_DEVICES=1", "rocm6.1")),
+    )
+    def test_install_sh_splits_amd_smi_gpu_headers(self, mask, expected):
+        """amd-smi heads each device with "GPU: N", so two gfx1100 cards stay two entries."""
+        asic = "\\n".join(
+            [
+                "GPU: 0",
+                "        TARGET_GRAPHICS_VERSION: gfx1100",
+                "GPU: 1",
+                "        TARGET_GRAPHICS_VERSION: gfx1100",
+                "GPU: 2",
+                "        TARGET_GRAPHICS_VERSION: gfx1200",
+            ]
+        )
+        preamble = f"rocminfo() {{ return 1; }}\namd-smi() {{ printf '{asic}\\n'; }}\nexport {mask}"
+        assert self._run_install_sh_routing(preamble) == expected
+
+    def test_install_sh_still_indexes_amd_smi_output_under_a_rocr_mask(self):
+        """amd-smi ignores ROCR_VISIBLE_DEVICES, so its flat output still needs indexing."""
+        preamble = (
+            "rocminfo() { return 1; }\n"
+            "amd-smi() { printf 'gfx1200\\ngfx1100\\n'; }\n"
+            "export ROCR_VISIBLE_DEVICES=1"
+        )
+        assert self._run_install_sh_routing(preamble) == "rocm6.1"
+
+    @pytest.mark.parametrize(
+        ("gfx", "leaf", "expected_leaf", "expected_target"),
+        (
+            # already at or above the floor: no reroute, but the arch still needs it
+            ("gfx1200", "rocm6.4", "rocm6.4", "true"),
+            ("gfx1200", "rocm7.2", "rocm7.2", "true"),
+            ("gfx1200", "rocm6.1", "rocm6.4", "true"),
+            ("gfx1100", "rocm6.4", "rocm6.4", "false"),
+            ("gfx1100", "rocm6.1", "rocm6.1", "false"),
+        ),
+    )
+    def test_install_sh_marks_the_floor_target_independently_of_the_leaf(
+        self, gfx, leaf, expected_leaf, expected_target
+    ):
+        """The migrated repair keys off the arch, so the flag cannot depend on a reroute."""
+        result = self._install_sh_routing_result(f'export UNSLOTH_ROCM_GFX_ARCH="{gfx}"', leaf)
+        assert result[:2] == (expected_leaf, expected_target)
+
+    @pytest.mark.parametrize(
+        ("gfx", "leaf", "expected_radeon"),
+        (
+            # The floor picks an index that ships this arch's kernels, so the Radeon
+            # branch must not substitute repo.radeon.com wheels for it: rocm-rel-6.4's
+            # newest pairing trio (torch 2.6.0+rocm6.4.0) has no gfx1102 Tensile
+            # libraries, and rocm-rel-7.2 carries neither gfx1102 nor gfx1100.
+            ("gfx1102", "rocm6.1", "false"),
+            ("gfx1200", "rocm6.1", "false"),
+            ("gfx1201", "rocm6.1", "false"),
+            # Cleared even when the leaf already satisfies the floor and the reroute
+            # is a no-op, exactly as the gfx906 branch below does.
+            ("gfx1102", "rocm6.4", "false"),
+            ("gfx1102", "rocm7.2", "false"),
+            # Every other Radeon keeps the branch.
+            ("gfx1100", "rocm6.1", "true"),
+            ("gfx1101", "rocm6.4", "true"),
+        ),
+    )
+    def test_install_sh_floor_arches_leave_the_radeon_branch(self, gfx, leaf, expected_radeon):
+        """A floored arch must not be handed repo.radeon.com wheels lacking its kernels."""
+        result = self._install_sh_routing_result(
+            f'export UNSLOTH_ROCM_GFX_ARCH="{gfx}"', leaf, radeon_in = "true"
+        )
+        assert result[2] == expected_radeon, result
+
+    @staticmethod
+    def _run_migrated_rocm_repair(torch_version: str, hip: str, gfx_target: str) -> str:
+        """Execute install.sh's migrated-environment ROCm repair with a stubbed venv torch."""
+        shell = shutil.which("bash")
+        if not shell:
+            pytest.skip("bash needed to execute the migrated repair block")
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        start = source.find("        # Repair ROCm torch if overwritten during migrated install")
+        end = source.find("        _gfx906_bnb_prune", start)
+        assert start >= 0 and end >= 0
+        with tempfile.TemporaryDirectory() as d:
+            venv_py = os.path.join(d, "python")
+            with open(venv_py, "w", encoding = "utf-8") as fh:
+                fh.write(
+                    "#!/bin/sh\n"
+                    f'exec {sys.executable} -c "\n'
+                    "import sys, types\n"
+                    "t = types.ModuleType('torch')\n"
+                    f"t.__version__ = '{torch_version}'\n"
+                    "v = types.ModuleType('torch.version')\n"
+                    f"v.hip = '{hip}'\n"
+                    "t.version = v\n"
+                    "sys.modules['torch'] = t\n"
+                    "sys.modules['torch.version'] = v\n"
+                    "exec(sys.argv[1])\n"
+                    '" "$2"\n'
+                )
+            os.chmod(venv_py, 0o755)
+            script = (
+                "set -euo pipefail\n"
+                + _extract_sh_function_body(source, "_rocm_leaf_below")
+                + "\n"
+                + _extract_sh_function_body(source, "_venv_torch_rocm_below")
+                + "\n"
+                + "substep() { :; }\n"
+                + '_install_torch_default_index() { printf "REINSTALL\\n"; }\n'
+                + f'_VENV_PY="{venv_py}"\n'
+                + f"_gfx_rocm64_target={gfx_target}\n"
+                + '_torch_index_leaf="rocm6.4"\n'
+                + source[start:end]
+                + '\nprintf "DONE\\n"\n'
+            )
+            r = subprocess.run([shell, "-c", script], capture_output = True, text = True)
+            assert r.returncode == 0, r.stderr
+            return r.stdout
+
+    @pytest.mark.parametrize(
+        ("torch_version", "hip", "gfx_target", "reinstalls"),
+        (
+            # the gap: a migrated venv keeps its hip torch, so a pre-6.4 wheel survived
+            ("2.5.1+rocm6.1", "6.1.40093", "true", True),
+            ("2.7.0+rocm6.3", "6.3.42131", "true", True),
+            ("2.8.0+rocm6.4", "6.4.43482", "true", False),
+            ("2.11.0+rocm7.13.0", "7.13.0", "true", False),
+            ("2.5.1+rocm6.1", "6.1.40093", "false", False),
+            ("2.5.1+cpu", "", "false", True),
+        ),
+    )
+    def test_install_sh_migrated_repair_honors_the_rocm64_floor(
+        self, torch_version, hip, gfx_target, reinstalls
+    ):
+        out = self._run_migrated_rocm_repair(torch_version, hip, gfx_target)
+        assert "DONE" in out, out
+        assert ("REINSTALL" in out) is reinstalls, out
+
+    @pytest.mark.parametrize(
+        "override",
+        ("gfx1200:xnack-", "GFX1200:XNACK-", " gfx1200 ", "gfx1201:sramecc+:xnack-"),
+    )
+    def test_install_sh_normalizes_gcn_arch_name_override(self, override):
+        """UNSLOTH_ROCM_GFX_ARCH copied from a HIP gcnArchName still matches the floor."""
+        preamble = f'export UNSLOTH_ROCM_GFX_ARCH="{override}"'
+        assert self._run_install_sh_routing(preamble) == "rocm6.4"
 
 
 # TEST: install_python_stack.py -- torch-index MARKER mechanism (PR #6692)
@@ -6012,6 +6459,8 @@ class TestStrixRocm71Override:
                 os.chmod(p, 0o755)
             script = (
                 'set -euo pipefail\nHIP_VISIBLE_DEVICES=""\nROCR_VISIBLE_DEVICES=""\n'
+                + _extract_sh_function_body(source, "_gfx_targets_per_device")
+                + "\n"
                 + block.group(0)
                 + '\nprintf "OK:%s\\n" "$_gfx_all"\n'
             )
@@ -6055,7 +6504,11 @@ class TestStrixRocm71Override:
                     f.write(body)
                 os.chmod(p, 0o755)
             script = (
-                "set -euo pipefail\n" + block.group(0) + '\nprintf "OK:%s\\n" "$_runtime_gfx"\n'
+                "set -euo pipefail\n"
+                + _extract_sh_function_body(source, "_gfx_targets_per_device")
+                + "\n"
+                + block.group(0)
+                + '\nprintf "OK:%s\\n" "$_runtime_gfx"\n'
             )
 
             def run(**extra):
