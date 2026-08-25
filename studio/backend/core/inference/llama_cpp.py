@@ -4141,8 +4141,7 @@ def _draft_is_split_across_host(
     try:
         count = int(str(raw).strip())
     except (TypeError, ValueError):
-        # llama.cpp's std::stoi would throw and the child would never start, so
-        # there is no placement to misprice.
+        # std::stoi would throw and the child never starts: nothing to misprice.
         return False
     if count <= 0:
         return False
@@ -4195,8 +4194,7 @@ def _sidecar_adapter_paths(extra_args: Optional[Iterable[str]]) -> list[str]:
                 paths.append(entry)
                 priced += 1
                 continue
-            # string_split(item, ':') demanding exactly 2 parts, so a bare path or a
-            # drive-lettered one is upstream's own throw, not a load to price.
+            # Upstream demands exactly 2 parts, so a bare or drive-lettered path throws.
             head, colon, tail = entry.partition(":")
             if not (colon and head) or ":" in tail:
                 continue
@@ -5134,9 +5132,8 @@ class LlamaCppBackend:
         # False when a launch is fully offloaded to a discrete GPU, where
         # page-locking host RAM is skipped on purpose.
         self._memory_mlock_applicable: bool = True
-        # The exact "--load-mode none" tokens the FIT emitted, if any, so the
-        # paths that replace the placement it was derived from can take them
-        # back out. Empty for a mode the user asked for, which is theirs to keep.
+        # The "--load-mode none" tokens the FIT emitted, so paths that replace the
+        # placement can take them back out. Empty for a mode the user asked for.
         self._fit_load_mode_flags: list[str] = []
         # True between recording a launch's placement and the child being
         # spawned, so a save landing in that window still has a launch to
@@ -8958,16 +8955,15 @@ class LlamaCppBackend:
             if row[0] not in shared and (pinned is None or row[0] in pinned)
         )
         free_vram_bytes = int(free_vram_mib * 1024 * 1024)
-        # What VRAM may pay for, then what host RAM is left holding: the spill of the
-        # GPU-eligible part PLUS every byte that could only ever be host resident.
+        # VRAM covers the GPU-eligible part; its spill plus the host-only bytes hit RAM.
         spill = max(0, max(0, footprint_bytes - host_only) - free_vram_bytes) + host_only
         if spill <= 0:
             return True
         avail = self._available_system_memory_mib() if avail_mib is None else avail_mib
         if avail is None:
             return None
-        # Same headroom the host-offload refusal keeps free for the rest of the system:
-        # filling RAM to the last byte is the paging case this is trying to avoid.
+        # Same headroom the host-offload refusal keeps free: a RAM filled to the last
+        # byte is the paging case this is trying to avoid.
         return spill <= max(0, avail - headroom_mib) * 1024 * 1024
 
     def _fit_derived_load_mode(
@@ -9064,44 +9060,31 @@ class LlamaCppBackend:
 
         if not model_size or not kv_sized or mtp_unsized or is_apple_silicon():
             return None
-        # Pass-through adapters are resident weights this footprint never started
-        # from: model_size is the base GGUF alone. They are not a placement override,
-        # so the VRAM-credit guard below is the wrong instrument -- they are a TERM,
-        # and an unreadable one abstains like every other.
+        # Pass-through adapters are resident weights model_size (the base GGUF alone)
+        # never carried. A TERM, not a placement override, so an unreadable one abstains.
         sidecar_bytes = _sidecar_adapter_bytes(extra_args)
         if sidecar_bytes is None:
             return None
         rows = list(gpus or ())
         source_env = os.environ if env is None else env
-        # A --device naming FEWER devices than this fit is about to charge leaves
-        # the credit paying for cards the child never opens. llama.cpp REPLACES
-        # the list on every occurrence (common/arg.cpp: params.devices =
-        # parse_device_list(value)) and reads LLAMA_ARG_DEVICE before argv, so the
-        # effective selection is the last of the two, and the extras are appended
-        # after this launch's own flags. Counted, not matched by name: CUDA/ROCm
-        # ordinals are assigned AFTER the visibility mask this launch has not
-        # written yet, so there is no name->index map to be had here, and the
-        # count is enough to tell a narrowing from a restatement.
+        # A --device naming FEWER devices than this fit charges leaves the credit
+        # paying for cards the child never opens. llama.cpp REPLACES the list on every
+        # occurrence (parse_device_list) and reads LLAMA_ARG_DEVICE before argv, so the
+        # last of the two wins. Counted, not name-matched: CUDA/ROCm ordinals are
+        # assigned after a visibility mask this launch has not written yet.
         _dev_value = _extra_args_main_device(extra_args)
         if _dev_value is None:
             _dev_value = source_env.get("LLAMA_ARG_DEVICE")
         _dev_names = [d.strip() for d in str(_dev_value or "").split(",") if d.strip()]
         _credited = len(list(gpu_indices)) if gpu_indices is not None else len(rows)
-        # DISTINCT names, not raw entries. Comparing names to each other needs no
-        # ordinal map, so this is the one narrowing a count CAN see: llama.cpp
-        # appends every comma-separated entry without deduplicating
-        # (parse_device_list, common/arg.cpp) and llama_prepare_model_devices keeps
-        # the list verbatim (src/llama.cpp), so "CUDA0,CUDA0" is ONE physical pool
-        # listed twice -- both entries resolve through ggml_backend_dev_by_name to
-        # the same device and allocate out of the same VRAM. Counting it as two
-        # would leave the pooled credit paying for a card that is not there.
+        # DISTINCT names: llama.cpp appends every entry without deduplicating and
+        # keeps the list verbatim, so "CUDA0,CUDA0" is ONE physical pool listed twice,
+        # and counting it as two leaves the credit paying for a card that is not there.
         _device_narrows = bool(_dev_names) and len(set(_dev_names)) < _credited
-        # Vulkan is the one backend where the names ARE comparable: the pin this
-        # launch emits is built straight from the credited ordinals
-        # (_vulkan_device_pin -> "Vulkan<i>"), so a surviving --device can be held
-        # to an exact match instead of a count. That catches the two cases a count
-        # cannot -- a same-sized list naming DIFFERENT cards, and a longer one that
-        # adds devices this footprint never charged compute or overhead for.
+        # Vulkan is the one backend where names ARE comparable (_vulkan_device_pin ->
+        # "Vulkan<i>"), so hold a surviving --device to an exact match. That catches
+        # what a count cannot: a same-sized list naming DIFFERENT cards, and a longer
+        # one adding devices this footprint never charged for.
         _vulkan_pin_replaced = bool(
             is_vulkan_backend
             and gpu_indices is not None
@@ -9111,24 +9094,18 @@ class LlamaCppBackend:
         )
         if (
             _extra_args_set_any_flag(extra_args, _GPU_LAYER_FLAGS)
-            # And its env twin, which on the fitting path is the ONLY layer count
-            # the child sees: that arm emits "--fit on" and no -ngl at all, and
-            # nothing clears LLAMA_ARG_N_GPU_LAYERS on an automatic load (only
-            # Manual mode owns it, via _clear_manual_placement_env). llama.cpp's
-            # fitter will not lower a count it did not set (common/fit.cpp), so an
-            # inherited one stands and loads a prefix out of host RAM.
+            # And its env twin, the ONLY layer count the fitting path leaves: it
+            # emits no -ngl, only Manual mode clears LLAMA_ARG_N_GPU_LAYERS, and the
+            # fitter will not lower a count it did not set, so an inherited one stands
+            # and loads a prefix out of host RAM.
             or _env_fixes_gpu_layers(source_env)
-            # With the env twin: on an automatic load nothing clears
-            # LLAMA_ARG_DEVICE (only an explicit gpu_ids pin does, via
-            # _clear_device_placement_env), so an inherited "none" reaches the
-            # child and puts the whole load in host RAM.
+            # With the env twin: only an explicit gpu_ids pin clears LLAMA_ARG_DEVICE,
+            # so an inherited "none" puts the whole load in host RAM.
             or _device_selection_is_cpu(extra_args, source_env)
             or _device_narrows
             or _vulkan_pin_replaced
-            # The split policy is pass-through under auto-select and lands after
-            # this launch's flags, so --split-mode none (one GPU holds everything)
-            # or a --tensor-split that zeroes a device leaves the pooled credit
-            # paying for cards the child puts no weights on.
+            # Pass-through and last-wins: --split-mode none, or a --tensor-split that
+            # zeroes a device, leaves the pooled credit paying for cards held empty.
             or split_policy_starves_devices(extra_args, _credited, source_env)
             or _args_place_tensors_on_cpu(extra_args)
             or _env_places_tensors_on_cpu(source_env)
@@ -9140,66 +9117,52 @@ class LlamaCppBackend:
             rows, gpu_indices = [], None
         footprint = (
             model_size
-            # LoRA adapters and control vectors the extras passed through, allocated
-            # alongside the base tensors they patch rather than merged into them.
+            # Pass-through LoRA / control vectors, allocated alongside the base tensors.
             + max(0, sidecar_bytes)
-            # Left model_size when the projector was pinned to the CPU, but it is
-            # still resident, and this is a footprint rather than a VRAM budget.
+            # A CPU-pinned projector left model_size but is still resident, and this
+            # is a footprint rather than a VRAM budget.
             + max(0, mmproj_pinned_bytes)
             + max(0, kv_cache_bytes)
             # Carries the drafter's own weights and KV.
             + max(0, mtp_bytes)
-            # Resident, but only ever in host RAM: priced whole here and charged to
-            # the RAM term alone below.
+            # Resident, but only ever in host RAM; charged to the RAM term alone below.
             + max(0, host_only_bytes)
             + max(0, compute_buffer_flat)
             + max(0, compute_buffer_ctx)
-            # A layer split puts a fixed CUDA context and scratch on EVERY device.
-            # compute_buffer_flat is one lump covering one of them and the CUDA
-            # reserve inside soft_overhead is charged once, so the extra devices'
-            # share is a term of its own, the same one the placement reserves
-            # (_subset_model_size). 0 on a single GPU.
+            # A layer split puts a fixed CUDA context and scratch on EVERY device, and
+            # the lumps above cover one, so the rest is a term of its own (the same one
+            # _subset_model_size reserves). 0 on a single GPU.
             + max(0, pipeline_overhead_bytes)
             + max(0, soft_overhead)
         )
-        # Unified memory is ONE pool: an APU's reported free VRAM is the same host RAM
-        # the spill would come out of, so adding both would fit a model twice over into
-        # memory that holds it once. shared_gpu_ids already names Vulkan iGPUs; the
-        # ROCm APUs it cannot see are added here, off the same predicate the rest of
-        # the launch uses. Both end up priced against host RAM alone.
+        # Unified memory is ONE pool: an APU's free VRAM IS the host RAM the spill
+        # comes out of, so adding both fits a model twice into memory that holds it
+        # once. shared_gpu_ids already names Vulkan iGPUs; the ROCm APUs it cannot see
+        # are added here. Both end up priced against host RAM alone.
         shared = set(shared_gpu_ids or ())
         pinned = list(gpu_indices) if gpu_indices is not None else [idx for idx, _free in rows]
         if rows and not is_vulkan_backend and self._amd_apu_wants_unified_memory(pinned):
-            # Per device, not blanket. The gate above is the cheap "is any of them
-            # unified" question; on a MIXED host it is also true of a discrete card
-            # sitting next to an APU, and that card's VRAM is its own pool. Dropping
-            # it would forfeit a fit that is really there, so re-ask per row -- the
-            # same scoping _amd_apu_wants_unified_memory documents (PHYSICAL ids, so
-            # a dGPU on a mixed host is not treated as unified-memory).
+            # Per device, not blanket: the gate above is the cheap "is ANY of them
+            # unified" question, and a discrete card next to an APU still has a pool of
+            # its own, so re-ask per row rather than forfeit a fit that is really there.
             shared |= {idx for idx, _free in rows if self._amd_apu_wants_unified_memory([idx])}
-        # --no-kv-offload puts the WHOLE cache in host RAM, whatever the layer
-        # placement says: llama-kv-cache.cpp defaults every layer's buffer type to
-        # ggml_backend_cpu_buffer_type() and only upgrades it to the layer's device
-        # inside `if (offload)`. So on that arm the KV is not a byte free VRAM may
-        # pay for, and pooling it would let a long-context load on a card with room
-        # to spare answer yes without ever asking the RAM that has to hold it.
-        # Resolved off the same effective views the placement overrides above use.
+        # --no-kv-offload puts the WHOLE cache in host RAM whatever the layer placement
+        # says (llama-kv-cache.cpp upgrades a layer's buffer type only inside
+        # `if (offload)`), so free VRAM may not pay for it. Resolved off the same
+        # effective views the placement overrides above use.
         _kv_on_host = not _kv_offload_from_args(extra_args, env = source_env)
         if self._fits_without_paging(
             footprint,
             rows,
             gpu_indices = gpu_indices,
             shared_gpu_ids = shared,
-            # A CPU-pinned projector is host-resident, so it belongs in the term
-            # free VRAM may NOT pay for. Priced in the footprint above as its own
-            # line (model_size no longer carries it), and charged to RAM here: a
-            # model that leaves surplus VRAM would otherwise let that surplus
-            # cover the projector and answer True without consulting RAM at all.
+            # A CPU-pinned projector is host-resident: counted once in the footprint
+            # above, and charged here to the term free VRAM may NOT pay for, so surplus
+            # VRAM cannot cover it and answer True without consulting RAM.
             host_only_bytes = (
                 max(0, host_only_bytes)
                 + max(0, mmproj_pinned_bytes)
-                # Charged to RAM alone, but still counted ONCE in the footprint
-                # above, the same split the pinned projector gets.
+                # Same split as the pinned projector: counted once above, charged to RAM.
                 + (max(0, kv_cache_bytes) if _kv_on_host else 0)
             ),
             vram_margin_mib = fit_margin_mib,
@@ -9213,9 +9176,8 @@ class LlamaCppBackend:
             return self._FIT_LOAD_MODE
         return None
 
-    # What a proven fit picks. One name, because the choice is a measurement and
-    # measurements move. Load-to-ready on a B200 over local NVMe, median of 3,
-    # full offload, llama.cpp b10360:
+    # What a proven fit picks. One name, because the choice is a measurement.
+    # Load-to-ready on a B200 over local NVMe, median of 3, full offload, b10360:
     #
     #   Qwen3-4B Q4_K_M (2.5 GB)          cold   warm
     #     mmap (no flag)                  1.81   1.42
@@ -9226,15 +9188,13 @@ class LlamaCppBackend:
     #     none                            5.49   3.21
     #     dio                             2.26   2.30
     #
-    # So "none" is NOT the fast one here: it drops mmap, which does unlock
-    # llama.cpp's async pinned-buffer uploader, but it still reads through the
-    # page cache and pays that copy, and on this storage that costs more than the
-    # uploader wins. "dio" takes the same uploader AND skips the page cache, and
-    # on the model big enough for loading to matter it is 2.4x faster cold.
-    # Upstream's own guidance says the same, that dio is the answer when you were
-    # reaching for --no-mmap. Kept at "none" because that is what was asked for;
-    # this constant is the whole switch. Note dio has no pre-enum spelling, so a
-    # build without --load-mode would emit nothing rather than a legacy flag.
+    # So "none" is NOT the fast one here: it drops mmap and unlocks llama.cpp's async
+    # pinned-buffer uploader, but still pays the page-cache copy, which on this storage
+    # costs more than the uploader wins. "dio" takes that uploader AND skips the cache,
+    # and is 2.4x faster cold on the model big enough for loading to matter, which is
+    # upstream's guidance too. Kept at "none" because that is what was asked for; this
+    # constant is the whole switch. dio has no pre-enum spelling, so a build without
+    # --load-mode would emit nothing rather than a legacy flag.
     _FIT_LOAD_MODE = "none"
 
     METAL_CTX_OVERCOMMIT_ENV = "UNSLOTH_ALLOW_METAL_CTX_OVERCOMMIT"
@@ -10381,12 +10341,9 @@ class LlamaCppBackend:
         )
         if kv is None:
             return None
-        # The drafter gets a llama_context of its own and is decoded through it
-        # like any other model (common/speculative.cpp: ctx_dft, llama_decode),
-        # so its decode graph is allocated wherever the drafter runs -- here, the
-        # host. _soft_overhead charges that constant only while _mtp_reserves_gpu,
-        # which is False for exactly this placement, so unless it is added here it
-        # is absent from the footprint altogether.
+        # The drafter has a llama_context of its own, so its decode graph is allocated
+        # wherever it runs -- here, the host. _soft_overhead charges that constant only
+        # while _mtp_reserves_gpu, which is False for exactly this placement.
         return int(weights) + max(0, int(kv)) + self._MTP_DRAFT_COMPUTE_BYTES
 
     def _estimate_mtp_overhead_bytes(
@@ -15524,10 +15481,9 @@ class LlamaCppBackend:
         )
         if replay is None:
             return None
-        # The replay runs on no GPU at all, so the VRAM half of the fit that
-        # chose "none" is void and the whole model has to live in host RAM. mmap
-        # is what makes that survivable, so hand the CPU attempt llama.cpp's auto
-        # back. Only Unsloth's own tokens; a user's --load-mode is theirs.
+        # The replay runs on no GPU, so the VRAM half of the fit that chose "none" is
+        # void and mmap is what keeps the host-RAM load survivable: hand the CPU attempt
+        # llama.cpp's auto back. Only Unsloth's own tokens; a user's is theirs.
         if self._fit_load_mode_flags:
             replay = _without_subsequence(replay, self._fit_load_mode_flags)
             logger.info(
@@ -16778,8 +16734,7 @@ class LlamaCppBackend:
                 model_size = None  # set in the fit try; used by the APU RAM guard
                 # "none" once the fit proves the load needs no demand paging, else None
                 # for llama.cpp's own default. Bound before the try like the verdict
-                # flags above: the except path (--fit on) falls through to the launch,
-                # which reads it, and a failed fit proves nothing either way.
+                # flags above: the except path falls through to the launch, which reads it.
                 _fit_load_mode: Optional[str] = None
                 # Layer-fallback min GPUs; raised below on a tensor downgrade. Bound
                 # before the try so the --fit-on except path still has it (no UnboundLocal).
@@ -17207,11 +17162,10 @@ class LlamaCppBackend:
                     # drop it from the budget (an embedded head stays in the model).
                     # Consult the env too: the child honors LLAMA_ARG_N_GPU_LAYERS_DRAFT.
                     _draft_on_cpu = _extra_args_draft_offloaded_to_cpu(extra_args, env = os.environ)
-                    # Kept for the load-mode fit, which the nulling below would
-                    # otherwise leave short a whole draft GGUF: dropping the drafter
-                    # from the VRAM budget does not delete those bytes, it moves them
-                    # to host RAM, and --load-mode none allocates them anonymously
-                    # there. See _cpu_resident_draft_bytes.
+                    # Kept for the load-mode fit, which the nulling below would leave
+                    # short a whole draft GGUF: dropping the drafter from the VRAM budget
+                    # moves those bytes to host RAM rather than deleting them. See
+                    # _cpu_resident_draft_bytes.
                     _cpu_draft_path = _mtp_draft_for_budget if _draft_on_cpu else None
                     if _draft_on_cpu:
                         _mtp_draft_for_budget = None
@@ -17325,12 +17279,10 @@ class LlamaCppBackend:
                         )
 
                     def _kv_bytes(ctx: int, ctx_checkpoints: int = 0) -> int:
-                        # Checkpoints default OFF here: the placement paths price the
-                        # SWA snapshots through _fit_context_to_vram / _slots_that_fit,
-                        # which take the count themselves, so charging them a second
-                        # time in this closure would shrink the context they just
-                        # chose. The load-mode fit has no such term of its own and
-                        # passes the effective count in.
+                        # Checkpoints default OFF: the placement paths price the SWA
+                        # snapshots themselves, so charging them again here would shrink
+                        # the context they just chose. The load-mode fit, which has no
+                        # such term, passes the effective count in.
                         return self._estimate_kv_cache_bytes(
                             ctx,
                             cache_type_kv,
@@ -17384,12 +17336,10 @@ class LlamaCppBackend:
                             self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB * 1024 * 1024
                         )
 
-                    # ...and the tensor-mode rate, which _plan_tensor_parallel reserves
-                    # on EVERY selected device: the f32 output/logits buffer and the
-                    # comm staging are replicated rather than split, so the layer lump
-                    # above is a fraction of what a tensor split really allocates (at
-                    # one slot the layer figure drops the vocab-width output buffer
-                    # entirely). Same flat fallback when the dims are missing.
+                    # ...and the tensor-mode rate, reserved on EVERY selected device:
+                    # the f32 output buffer and the comm staging are replicated rather
+                    # than split, so the layer lump above is a fraction of what a tensor
+                    # split allocates. Same flat fallback when the dims are missing.
                     _compute_buffer_tensor = self._estimate_compute_buffer_bytes(
                         n_ubatch = _effective_ubatch,
                         n_parallel = n_parallel,
@@ -17413,9 +17363,9 @@ class LlamaCppBackend:
                     # Per-GPU weight proportions for tensor mode (None lets
                     # llama.cpp split by free VRAM).
                     tp_tensor_split: Optional[list[int]] = None
-                    # Whether the tensor-parallel branch below really planned this
-                    # load. Not readable from tp_tensor_split, which stays None on a
-                    # tensor split llama.cpp is left to size itself.
+                    # Whether the tensor-parallel branch below really planned this load.
+                    # Not readable from tp_tensor_split, which stays None on a tensor
+                    # split llama.cpp is left to size itself.
                     _tp_planned = False
                     explicit_ctx = requested_ctx > 0
                     # Nothing speculative on the GPU: the drafter that launches is the
@@ -18799,25 +18749,16 @@ class LlamaCppBackend:
                     # return or raise above leaves it False.
                     _placement_verdict_partial = bool(_detected_gpus) and bool(use_fit)
 
-                    # Load mode, from the same numbers the placement just used.
-                    # mmap exists to demand-page a footprint the machine cannot
-                    # hold, and llama.cpp builds its async pinned-buffer upload
-                    # path ONLY when mmap is off (llama-model-loader.cpp,
-                    # upload_backend), so a load that fits wants "none": same
-                    # residency, faster load, no model-sized mapping left behind.
-                    # Anything that does not fit -- or that cannot be priced --
-                    # keeps llama.cpp's "auto", where the mapping is what stops
-                    # an over-committed load from being killed outright.
-                    #
-                    # `gpus`, not `_detected_gpus`: the arch gate empties this one
-                    # when it forces the child onto the CPU with "--device none",
-                    # and crediting VRAM the child never reaches would claim a fit
-                    # that has to come from RAM. See _fit_derived_load_mode.
+                    # Load mode, from the same numbers the placement just used: mmap
+                    # exists to demand-page a footprint the machine cannot hold, so a
+                    # load that fits wants "none" and anything else keeps "auto". See
+                    # _fit_derived_load_mode. `gpus`, not `_detected_gpus`: the arch gate
+                    # empties that one on "--device none", and crediting VRAM the child
+                    # never reaches would claim a fit that has to come from RAM.
                     _fit_devices = max(1, len(gpu_indices or ()) or len(gpus))
-                    # A drafter pinned to the CPU is out of the VRAM budget above but
-                    # still resident, in host RAM, so the footprint has to carry it.
-                    # None means it cannot be priced -> abstain, same as the other
-                    # unreadable terms.
+                    # A CPU-pinned drafter is out of the VRAM budget above but still
+                    # resident in host RAM, so the footprint carries it. None means it
+                    # cannot be priced -> abstain, like the other unreadable terms.
                     _cpu_draft_fit_bytes = self._cpu_resident_draft_bytes(
                         effective_ctx,
                         drafter_path = _cpu_draft_path,
@@ -18829,11 +18770,10 @@ class LlamaCppBackend:
                         n_ubatch = _effective_ubatch,
                         flash_attn = planned_flash_attn,
                     )
-                    # The extras as the child really gets them, and the same view of
-                    # the environment: a gpu_ids pin drops the device flags AND their
-                    # env twins below, so classifying on either would void the VRAM
-                    # term for a "--device none" the launch strips. Unpinned, the
-                    # child inherits LLAMA_ARG_DEVICE verbatim.
+                    # The extras and env as the child really gets them: a gpu_ids pin
+                    # drops the device flags AND their env twins, so classifying on
+                    # either would void the VRAM term for a "--device none" the launch
+                    # strips. Unpinned, the child inherits LLAMA_ARG_DEVICE verbatim.
                     _fit_extras = (
                         self._strip_device_extra_args(extra_args)
                         if gpu_ids is not None
@@ -18844,28 +18784,22 @@ class LlamaCppBackend:
                         self._clear_manual_placement_env(_fit_env)
                     if gpu_ids is not None:
                         self._clear_device_placement_env(_fit_env)
-                    # What Unsloth's own placement branch below will emit, so the
-                    # effective (last-wins) fitter state can be read here, where the
-                    # final argv does not exist yet. Every reachable branch is fixed
-                    # by use_fit: manual-with-a-count and the proved path emit
-                    # "--fit off", the fitting path emits "--fit on".
+                    # What the placement branch below will emit, so the effective
+                    # (last-wins) fitter state is readable before the final argv exists.
+                    # Every reachable branch is fixed by use_fit.
                     _fitter_runs = fit_is_effectively_on(
                         ["--fit", "on" if use_fit else "off", *(_fit_extras or [])],
                         _fit_env,
                     )
                     # _ctx_integrity_flags emits --fit-target only while use_fit, so a
                     # fitter the EXTRAS turned back on keeps llama.cpp's own 1024 MiB
-                    # default rather than this launch's budget; neutralise both terms
-                    # on that arm. A pass-through --fit-target then wins over either.
-                    # A drafter the extras SPLIT between the card and the host with a
-                    # fixed positive -ngld. _cpu_draft_path is None there, because that
-                    # predicate is the whole-drafter question, so mtp_bytes below
-                    # carries the drafter WHOLE in the GPU-eligible term while
-                    # llama.cpp pins the layers past the count -- and their KV -- in
-                    # host RAM. Nothing here can say which slice stays on the card, so
-                    # this is the "engaged but unsized" case the fit abstains on rather
-                    # than a term to price. The drafter backend is already cached from
-                    # the KV sizing above, so its block count costs no extra read.
+                    # default; a pass-through --fit-target wins over either (below).
+                    # A drafter the extras SPLIT between card and host with a fixed
+                    # positive -ngld: _cpu_draft_path is None there (that predicate is
+                    # the whole-drafter question), so mtp_bytes carries the drafter WHOLE
+                    # while llama.cpp keeps the layers past the count, and their KV, in
+                    # host RAM. Nothing here says which slice stays on the card, so this
+                    # is the "engaged but unsized" case the fit abstains on.
                     _draft_split_across_host = bool(
                         _mtp_draft_for_budget
                         and _draft_is_split_across_host(
@@ -18891,18 +18825,12 @@ class LlamaCppBackend:
                         if _fitter_runs
                         else 0.0
                     )
-                    # A projector Studio never resolved but the child loads anyway.
-                    # arg.cpp sets params.mmproj.path / .url straight from
-                    # LLAMA_ARG_MMPROJ / LLAMA_ARG_MMPROJ_URL and reads them before
-                    # argv, and nothing on an ordinary vision launch clears either
-                    # (only the vision switch and the paravirtual pin do), which is
-                    # why the audio probe below reads the same var. model_size carries
-                    # none of those bytes: mmproj_size is gated on effective_is_vision,
-                    # itself gated on launch_mmproj_path. A URL names a download that
-                    # has not happened -- and one outranks even the --mmproj this
-                    # launch emits, since its download overwrites mmproj.path -- and an
-                    # unreadable path cannot be sized, so both abstain rather than fit a
-                    # load with a term missing.
+                    # A projector Studio never resolved but the child loads anyway:
+                    # LLAMA_ARG_MMPROJ / _URL are read before argv and only the vision
+                    # switch and the paravirtual pin clear them, while model_size carries
+                    # none of those bytes. A URL names a download that has not happened
+                    # (and outranks even the --mmproj this launch emits), and an
+                    # unreadable path cannot be sized, so both abstain.
                     _fit_env_mmproj_scrubbed = bool(
                         _pv_mmproj_unpinnable or _paravirtual_cpu_forced
                     )
@@ -18913,8 +18841,8 @@ class LlamaCppBackend:
                             or _fit_env_mmproj_scrubbed
                             or (
                                 disable_vision
-                                # The audio-only reprieve the scrub itself gives: that
-                                # projector survives the switch, so it is loaded.
+                                # The scrub's own audio-only reprieve: that projector
+                                # survives the switch, so it is loaded.
                                 and not _mmproj_env_is_audio_only(_fit_env.get("LLAMA_ARG_MMPROJ"))
                             )
                         )
@@ -18930,8 +18858,7 @@ class LlamaCppBackend:
                         bool(_fit_env_mmproj) and _fit_env_mmproj_bytes <= 0
                     )
                     # Host-resident when the resolved offload says CPU, the same split
-                    # the resolved projector gets: free VRAM cannot pay for bytes the
-                    # child only ever allocates on the host.
+                    # the resolved projector gets.
                     _fit_env_mmproj_on_host = (
                         _resolved_mmproj_offload(_fit_extras, _fit_env) is False
                     )
@@ -18949,51 +18876,38 @@ class LlamaCppBackend:
                         model_size = _fit_model_size,
                         mmproj_pinned_bytes = _mmproj_pinned_bytes
                         + (_fit_env_mmproj_bytes if _fit_env_mmproj_on_host else 0),
-                        # Re-read WITH the SWA snapshots --ctx-checkpoints allocates:
-                        # the estimator charges N x window x layer-KV per slot for
-                        # them and the closure leaves them at 0 for the placement
-                        # paths, which price them by their own route. A missing term
-                        # here is the direction that claims a fit that is not there.
+                        # Re-read WITH the SWA snapshots --ctx-checkpoints allocates;
+                        # the closure leaves them at 0 for the placement paths, which
+                        # price them by their own route.
                         kv_cache_bytes = _kv_bytes(effective_ctx, _effective_ctx_checkpoints),
                         kv_sized = self._can_estimate_kv(),
                         mtp_bytes = _mtp_bytes(effective_ctx),
-                        # _flat_mtp_engages whole, not re-narrowed to a missing
-                        # callback: its other arm is _mtp_kv_unsized, where the
-                        # callback exists but prices weights (plus any MLA/Mamba
-                        # target copy) and NO draft KV, because
-                        # _estimate_mtp_overhead_bytes returns that partial total
-                        # rather than None. The placement covers the gap with a flat
-                        # cushion this footprint has no term for, so a long context
-                        # would go missing from it entirely -- exactly the "engaged
-                        # but unsized" case the predicate abstains on.
+                        # _flat_mtp_engages whole: its other arm, _mtp_kv_unsized,
+                        # prices weights but NO draft KV, and the placement covers that
+                        # gap with a flat cushion this footprint has no term for --
+                        # the "engaged but unsized" case the predicate abstains on.
                         mtp_unsized = bool(
                             _flat_mtp_engages
                             or _cpu_draft_fit_bytes is None
                             or _draft_split_across_host
                         ),
-                        # Host-only, not pooled: -ngld 0 puts the drafter in RAM, and
-                        # free VRAM cannot pay for an allocation the child makes on
-                        # the host.
+                        # Host-only, not pooled: -ngld 0 puts the drafter in RAM, which
+                        # free VRAM cannot pay for.
                         host_only_bytes = _cpu_draft_fit_bytes or 0,
-                        # One lump on the layer path, where llama.cpp allocates the
-                        # graph buffer once. A tensor split replicates it on every
-                        # selected device -- _plan_tensor_parallel reserves exactly
-                        # len(gpu_indices) * the per_device_tensor rate -- so pricing
-                        # one device's LAYER-mode buffer there understates a multi-GPU
-                        # load by GiBs, which is the direction that claims a fit that
-                        # is not there. pipeline_overhead_bytes below does not cover
-                        # it: that is a flat per-device CUDA-context constant, blind to
-                        # the vocabulary, the micro-batch and the slot count.
+                        # One lump on the layer path, where the graph buffer is
+                        # allocated once. A tensor split replicates it on every selected
+                        # device, so pricing one LAYER-mode buffer there understates a
+                        # multi-GPU load by GiBs. pipeline_overhead_bytes below is a flat
+                        # per-device constant and cannot cover it.
                         compute_buffer_flat = (
                             _fit_devices * _compute_buffer_tensor
                             if _tp_planned
                             else _compute_buffer_pipeline
                         ),
                         compute_buffer_ctx = _cc_bytes(effective_ctx, _fit_devices),
-                        # Ungated, like the placement's own _subset_model_size: the
-                        # per-device CUDA context and scratch are there whether or
-                        # not llama.cpp keeps the pipeline (_cc_bytes is the term
-                        # that gates on it).
+                        # Ungated, like _subset_model_size: the per-device CUDA context
+                        # and scratch are there whether or not llama.cpp keeps the
+                        # pipeline (_cc_bytes is the term that gates on it).
                         pipeline_overhead_bytes = (
                             max(0, _fit_devices - 1) * _pipeline_overhead_bytes
                         ),
@@ -19001,15 +18915,13 @@ class LlamaCppBackend:
                         gpus = gpus,
                         gpu_indices = gpu_indices,
                         shared_gpu_ids = _shared_gpu_ids,
-                        # A running fitter keeps --fit-target free on every device it
-                        # uses and spills the rest to host RAM rather than dip into
-                        # it. That margin is not VRAM this fit may spend. Zero only
-                        # when the fitter is provably off, which the extras and the
-                        # env get a last-wins say in; see _fitter_runs above.
+                        # A running fitter keeps --fit-target free per device, so that
+                        # margin is not VRAM this fit may spend. Zero only when the
+                        # fitter is provably off; see _fitter_runs above.
                         fit_margin_mib = _fit_margin_mib,
                         is_vulkan_backend = is_vulkan_backend,
-                        # The layer and tensor-placement flags are never stripped,
-                        # and being appended last they beat this launch's own -ngl.
+                        # Never stripped, and appended last, so they beat this
+                        # launch's own -ngl.
                         extra_args = _fit_extras,
                         env = _fit_env,
                     )
@@ -19977,21 +19889,17 @@ class LlamaCppBackend:
                 # defers to those settings: while either one owns host placement
                 # the per-model pick emits nothing at all.
                 #
-                # The fit's "none" only fills in for a model with no pick of its
-                # own. It sits here rather than inside the policy so the whole
-                # precedence chain stays in one place and unchanged: an explicit
-                # per-model mode wins over the fit, the Model Memory settings win
-                # over both, and a hand-typed flag in the extras still wins by
-                # last-arg because the managed block is emitted ahead of them.
+                # The fit's "none" only fills in for a model with no pick of its own,
+                # and sits here rather than inside the policy so the whole precedence
+                # chain stays in one place: the per-model mode wins over the fit, Model
+                # Memory wins over both, and a hand-typed flag still wins by last-arg.
                 #
-                # An INHERITED loader mode is an explicit choice too. llama.cpp reads
+                # An INHERITED loader mode is an explicit choice too: llama.cpp reads
                 # LLAMA_ARG_LOAD_MODE (and the deprecated twins) before argv and both
                 # assign the same params.load_mode, so the managed block below would
-                # beat one silently -- while the hand-typed flag it defers to is argv
-                # and still wins by last-arg. Only the FIT's mode stands aside: a
-                # per-model pick is a choice made for THIS model. Asked of the child's
-                # environment AFTER the same scrub it gets, so a var a Model Memory
-                # toggle drops vetoes nothing.
+                # beat one silently. Only the FIT's mode stands aside, since a per-model
+                # pick is a choice made for THIS model. Asked AFTER the same scrub the
+                # child gets, so a var a Model Memory toggle drops vetoes nothing.
                 _fit_load_mode_env_view = dict(_mem_env)
                 scrub_memory_env(_fit_load_mode_env_view)
                 if (
@@ -20005,18 +19913,13 @@ class LlamaCppBackend:
                         _fit_load_mode,
                     )
                     _fit_load_mode = None
-                # And a mode the EXTRAS pick, for a reason the comment above only
-                # half covers. The hand-typed flag does win by last-arg, so emitting
-                # the fit's pair ahead of it changes nothing about the launch -- but
-                # the retry rungs below strip that pair by VALUE, taking the FIRST
-                # match (_without_subsequence), and a user who typed the same
-                # "--load-mode none" the fit derived leaves two identical pairs in the
-                # argv. One rung then removes the fit's, records the stripped argv in
-                # _last_spawn_cmd, and the next rung respawning from it removes the
-                # user's -- the flag they typed, gone, on a launch that keeps running.
-                # Standing aside here costs nothing (their pair already governs) and
-                # leaves every strip below a no-op, which is what its docstring
-                # already claims to be.
+                # And a mode the EXTRAS pick. Their flag already wins by last-arg, but
+                # the retry rungs below strip the pair by VALUE and take the FIRST match
+                # (_without_subsequence), so a user who typed the same "--load-mode none"
+                # leaves two identical pairs: one rung removes the fit's and records the
+                # stripped argv, and the next, respawning from it, removes theirs.
+                # Standing aside costs nothing and leaves every strip below the no-op
+                # its docstring already claims to be.
                 if _fit_load_mode and not load_mode and extra_args_select_load_mode(_mem_extras):
                     logger.info(
                         "Load mode: the extra arguments already select a loader mode; "
@@ -20031,9 +19934,9 @@ class LlamaCppBackend:
                     weights_in_host_memory = _mem_host_resident,
                     requested_load_mode = _resolved_load_mode,
                 )
-                # Only when the FIT chose it. A user's own pick is theirs and
-                # survives every fallback below; this one is a conclusion about a
-                # placement, and has to go when that placement does.
+                # Only when the FIT chose it: a user's own pick survives every fallback
+                # below, but a conclusion about a placement has to go when that
+                # placement does.
                 self._fit_load_mode_flags = (
                     list(_load_mode_managed) if (_fit_load_mode and not load_mode) else []
                 )
@@ -20163,14 +20066,11 @@ class LlamaCppBackend:
                 # last-wins argv), not just what Unsloth emitted, so the reload
                 # hint also catches a user-supplied --mlock / --no-mmap.
                 #
-                # In argv order, including the load-mode pair: `cmd` carries it
-                # between the Model Memory block and the extras, and "none" holds a
-                # full anonymous host copy (llama-model-loader.cpp sets use_mmap
-                # only for mmap/mmap+mlock/auto). Left out, a launch the fit gave
-                # --load-mode none records as non-reserving, and a later "Don't
-                # reserve system RAM" is judged already satisfied by both the
-                # settings route and the duplicate-load comparator -- so Apply
-                # keeps the reservation instead of relaunching with mmap.
+                # In argv order, including the load-mode pair: "none" holds a full
+                # anonymous host copy (llama-model-loader.cpp sets use_mmap only for
+                # mmap/mmap+mlock/auto), so leaving it out records the launch as
+                # non-reserving and a later "Don't reserve system RAM" is judged already
+                # satisfied, keeping the reservation instead of relaunching with mmap.
                 self._memory_state = resolve_effective_memory_state(
                     list(_mem_managed) + list(_load_mode_managed) + list(_mem_extras), env
                 )
@@ -20627,16 +20527,12 @@ class LlamaCppBackend:
                         return fa_cmd
                     stripped = _without_subsequence(fa_cmd, self._fit_load_mode_flags)
                     if stripped != fa_cmd:
-                        # The record has to follow the argv, as it does on the --fit
-                        # on/off and arch-crash rungs. Without "none" the child is back
-                        # on llama.cpp's auto, which maps (llama-model-loader.cpp sets
-                        # use_mmap for auto), so a record still saying "reserving" makes
-                        # memory_state_satisfies_settings answer a later "Don't reserve
-                        # system RAM" with a full reload the running server does not
-                        # need, and the settings route hint agrees with it. From the
-                        # argv, not _mem_managed + _mem_extras: this one descends from
-                        # _last_spawn_cmd, which carries any page-lock the --fit on
-                        # retry appended to its own argv, and rebuilding would drop it.
+                        # The record follows the argv: without "none" the child is back
+                        # on llama.cpp's auto, which maps, so a record still saying
+                        # "reserving" spends a full reload on the next "Don't reserve
+                        # system RAM". From the argv, not _mem_managed + _mem_extras:
+                        # this descends from _last_spawn_cmd, which carries any page-lock
+                        # the --fit on retry appended, and rebuilding would drop it.
                         self._memory_state = resolve_effective_memory_state(stripped, env)
                         logger.info(
                             "Load mode: dropping the fit's --load-mode none for the "
@@ -20794,20 +20690,16 @@ class LlamaCppBackend:
                             if "--fit" in _run:
                                 _run[_run.index("--fit") + 1] = "on"
                             # Same reasoning as the page-lock below, one step
-                            # earlier: the fit picked "none" BECAUSE it had
-                            # proved the load fits, and that proof is what just
-                            # failed. Handing the retry a loader that cannot page
-                            # is the opposite of what an offloading retry needs,
-                            # so give it back llama.cpp's auto. Only Unsloth's own
-                            # tokens; a user's --load-mode is untouched.
+                            # earlier: the fit picked "none" because it had proved
+                            # the load fits, and that proof is what just failed, so
+                            # give the retry llama.cpp's auto back. Only Unsloth's
+                            # own tokens; a user's --load-mode is untouched.
                             if self._fit_load_mode_flags:
                                 _run = _without_subsequence(_run, self._fit_load_mode_flags)
                                 # The record is NOT cleared: it describes `cmd`, which
-                                # this retry never touched, and the arch-crash and CPU
-                                # fallbacks respawn from `cmd`. A kernel-image crash
-                                # reaches this arm first (it excludes only the split-axis
-                                # and HIP/ROCr cases), so clearing here would leave those
-                                # respawns carrying a --load-mode none they can no longer
+                                # this retry never touched and the arch-crash and CPU
+                                # fallbacks respawn from, so clearing here would leave
+                                # them carrying a --load-mode none they can no longer
                                 # name. Stripping an already-stripped argv is a no-op.
                                 logger.info(
                                     "Load mode: dropping the fit's --load-mode none "
@@ -20966,13 +20858,11 @@ class LlamaCppBackend:
                         self._vram_fraction_pending = None
                         raise RuntimeError(detail)
 
-                    # The replay dropped the fit's --load-mode none, so the record
-                    # taken off the launch argv now describes a reservation this
-                    # child does not make, and a later "Don't reserve system RAM"
-                    # would be judged unsatisfied and demand a pointless reload.
-                    # From _last_spawn_cmd, which is the argv that really started
-                    # (_spawn_and_wait rebinds it, including on its own --fit
-                    # retries), so this cannot undo a record one of those wrote.
+                    # The replay dropped the fit's --load-mode none, so a record taken
+                    # off the launch argv describes a reservation this child does not
+                    # make, and a later "Don't reserve system RAM" would demand a
+                    # pointless reload. From _last_spawn_cmd, the argv that really
+                    # started, so this cannot undo a record a --fit retry wrote.
                     if self._fit_load_mode_flags:
                         self._memory_state = resolve_effective_memory_state(_last_spawn_cmd, env)
                     intent = self._apply_cpu_fallback_state(
@@ -21076,11 +20966,9 @@ class LlamaCppBackend:
                                 "`unsloth studio update` to repair the managed llama.cpp runtime."
                             )
                         cmd, _spawn_cwd = prepared
-                        # Same reason as the crash path: the replay dropped the fit's
-                        # --load-mode none, and the record was taken off the argv that
-                        # still carried it. Recomputed from the stripped `cmd` before
-                        # anything spawns, and the arch-crash rung re-derives it from
-                        # `cmd` too, so the _mem_policy_for_cmd snapshot it restores
+                        # Same reason as the crash path, recomputed from the stripped
+                        # `cmd` before anything spawns. The arch-crash rung re-derives it
+                        # from `cmd` too, so the _mem_policy_for_cmd snapshot it restores
                         # cannot put the stale pair back.
                         if self._fit_load_mode_flags:
                             self._memory_state = resolve_effective_memory_state(cmd, env)
@@ -21267,16 +21155,11 @@ class LlamaCppBackend:
                                 "Arch-crash retry leaves one GPU; dropped tensor "
                                 "parallelism, which needs at least two."
                             )
-                        # The fit chose "none" because the WHOLE footprint -- weights,
-                        # KV and scratch -- fit the devices this launch PINNED, and the
-                        # retry replaces that set with one the proof never covered
-                        # (cards the crashed launch never touched, or the discrete
-                        # survivors of a narrowing). The two guards above cannot
-                        # re-establish it: both are weights-only floors by design, so
-                        # KV and scratch can still push the load past RAM while mmap
-                        # stays off, and host-resident weights loaded without mmap are
-                        # anonymous rather than file-backed, which is an OOM kill where
-                        # the mapping would only have paged. Hand the respawn
+                        # The fit chose "none" because the WHOLE footprint fit the
+                        # devices this launch PINNED, and the retry runs on a set that
+                        # proof never covered. The two guards above are weights-only
+                        # floors and cannot re-establish it, so KV and scratch can still
+                        # push the load past RAM while mmap stays off. Hand the respawn
                         # llama.cpp's auto back, as the --fit on and CPU fallbacks do.
                         # Only Unsloth's own tokens; a user's --load-mode is theirs.
                         _fit_mode_left_cmd = bool(self._fit_load_mode_flags)
@@ -21301,16 +21184,12 @@ class LlamaCppBackend:
                             self._memory_policy_active,
                             self._memory_mlock_applicable,
                         ) = _mem_policy_for_cmd
-                        # ...except for the load-mode pair just removed: the snapshot
-                        # was taken while `cmd` still carried it, and restoring it
-                        # would record a reservation this respawn no longer makes.
-                        # From the stripped argv, like every other rung. NOT rebuilt
-                        # from _mem_managed + _mem_extras: by here `cmd` may be the
-                        # CPU, device-gated, no-tensor-split or arch-retry argv rather
-                        # than the launch one, so those parts no longer add up to it
-                        # and anything memory-relevant those paths added would be
-                        # dropped -- recording an unlocked child that is in fact
-                        # locked, which is the optimistic direction.
+                        # ...except the load-mode pair just removed: the snapshot was
+                        # taken while `cmd` still carried it, so restoring it would
+                        # record a reservation this respawn no longer makes. From the
+                        # stripped argv, NOT rebuilt from _mem_managed + _mem_extras: by
+                        # here `cmd` may be a fallback argv those parts no longer add up
+                        # to, dropping whatever memory-relevant flags they added.
                         if _fit_mode_left_cmd:
                             self._memory_state = resolve_effective_memory_state(cmd, env)
                         # Residency is a property of the DEVICES, which the retry just
@@ -21642,18 +21521,12 @@ class LlamaCppBackend:
 
                         if _cpu_projector_cmd is not None:
                             # The fit priced the projector as GPU-eligible, and this
-                            # retry moves those bytes into host RAM
-                            # (--no-mmproj-offload clears mmproj_use_gpu and clip.cpp
-                            # gates its whole GPU backend on it). A fit proved on VRAM
-                            # alone returned before asking what host RAM holds, and one
-                            # proved on VRAM plus RAM was answered with the projector on
-                            # the card, so neither covers the launch this respawns. The
-                            # weights this launch left in host RAM are anonymous rather
-                            # than file-backed while "none" stands, which is an OOM kill
-                            # where the mapping would only have paged. Only Unsloth's own
-                            # tokens; a user's --load-mode is theirs. The record is NOT
-                            # cleared, like the --fit on and no-flash retries: the
-                            # fallbacks below respawn from an argv that carries these
+                            # retry moves those bytes into host RAM, so neither the
+                            # VRAM-only proof (which never asked what RAM holds) nor the
+                            # VRAM-plus-RAM one (answered with the projector on the card)
+                            # covers the launch this respawns. Only Unsloth's own tokens;
+                            # a user's --load-mode is theirs. The record is NOT cleared:
+                            # the fallbacks below respawn from an argv that carries these
                             # tokens and has to be able to name them.
                             if self._fit_load_mode_flags:
                                 _stripped_cpu_projector_cmd = _without_subsequence(
@@ -21661,9 +21534,7 @@ class LlamaCppBackend:
                                 )
                                 if _stripped_cpu_projector_cmd != _cpu_projector_cmd:
                                     # Same as the no-flash rung: the record follows the
-                                    # argv. Back on llama.cpp's auto the child maps, and
-                                    # a record still saying "reserving" spends a full
-                                    # reload on the next "Don't reserve system RAM" that
+                                    # argv, or a stale "reserving" spends a full reload
                                     # the running server already satisfies.
                                     self._memory_state = resolve_effective_memory_state(
                                         _stripped_cpu_projector_cmd, env

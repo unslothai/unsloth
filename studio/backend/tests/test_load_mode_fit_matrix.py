@@ -64,8 +64,7 @@ class _Stub:
         return self._is_apu
 
     _fits_without_paging = LlamaCppBackend._fits_without_paging
-    # The mode a proven fit picks, read off the backend so flipping the
-    # constant moves the whole matrix with it rather than failing 100 cases.
+    # Read off the backend, so flipping the constant moves the whole matrix.
     _FIT_LOAD_MODE = LlamaCppBackend._FIT_LOAD_MODE
 
 
@@ -469,9 +468,8 @@ def test_the_launch_charges_the_fitters_margin_only_when_fit_stays_on():
     call = compact[compact.index("_fit_margin_mib=(") :]
     call = call[: call.index("exceptExceptionase:")]
     assert "max(self._fit_target_margin_mib(" in call
-    # Not `use_fit`: the extras land after this launch's own --fit and llama.cpp
-    # is last-wins, so only the effective state may zero the margin.
-    # The OUTER gate, i.e. what may zero the whole margin, is the effective state.
+    # Not `use_fit`: the extras land after this launch's own --fit and llama.cpp is
+    # last-wins, so only the effective state may zero the whole margin.
     assert "or0.0,)if_fitter_runselse0.0" in call
     # A fitter the extras turned back on gets llama.cpp's own default, not this
     # launch's budget, which _ctx_integrity_flags never emitted for it.
@@ -523,11 +521,8 @@ def test_the_effective_fitter_state_reads_the_launchs_own_fit_flag():
         # A comma list is one margin per device; the fit credits every device it
         # counts, so the largest is the only safe price.
         (["--fit-target", "512,4096,1024"], None, 4096.0),
-        # Upstream splits this value on both "," and "/" (the same "[,/]+" regex
-        # --tensor-split uses, common/arg.cpp), so a slash list is a well-formed
-        # per-device margin, not an unreadable token. Reading it as one would
-        # abstain and leave the caller on this launch's own smaller margin,
-        # crediting several GiB per device the fitter keeps free.
+        # Upstream splits on both "," and "/" (common/arg.cpp), so a slash list is
+        # a well-formed per-device margin, not an unreadable token.
         (["--fit-target", "4096/4096"], None, 4096.0),
         (["-fitt", "512/4096/1024"], None, 4096.0),
         (["--fit-target", "512,4096/1024"], None, 4096.0),
@@ -540,8 +535,7 @@ def test_the_effective_fitter_state_reads_the_launchs_own_fit_flag():
         # Env twin only when argv sets nothing.
         ([], {"LLAMA_ARG_FIT_TARGET": "2048"}, 2048.0),
         (["--fit-target", "512"], {"LLAMA_ARG_FIT_TARGET": "8192"}, 512.0),
-        # Unreadable abstains rather than pricing a partial read: upstream would
-        # reject the whole list, so no device gets a margin this can name.
+        # Unreadable abstains: upstream would reject the whole list.
         (["--fit-target", "lots"], None, None),
         (["--fit-target", "512,lots"], None, None),
     ],
@@ -798,10 +792,9 @@ def test_the_fit_on_retry_drops_the_fits_load_mode():
     retry = retry[: retry.index("_did_fit_retry = True")]
     assert "_fit_load_mode_flags" in retry
     assert "_without_subsequence" in retry
-    # ...but the RECORD stays: this retry rewrites its own argv, not `cmd`, and a
-    # kernel-image crash reaches it first (it excludes only the split-axis and
-    # HIP/ROCr cases), so the arch-crash respawn below still has to be able to name
-    # the tokens `cmd` is carrying. Clearing here would leave it stripping nothing.
+    # ...but the RECORD stays: this retry rewrites its own argv, not `cmd`, so the
+    # arch-crash respawn below still has to be able to name the tokens `cmd` is
+    # carrying. Clearing here would leave it stripping nothing.
     assert "self._fit_load_mode_flags = []" not in retry
 
 
@@ -900,9 +893,8 @@ def test_the_no_flash_rewrite_really_grows_the_footprint_the_fit_priced():
 # ------------------------------------ pass-through args that move the weights
 
 
-# Every spelling llama.cpp accepts for "run this somewhere the planner did not
-# put it", each of which is appended AFTER Unsloth's own placement flags and so
-# wins by last-arg (common/arg.cpp assigns n_gpu_layers / devices per occurrence).
+# Every spelling llama.cpp accepts for "run this somewhere the planner did not put
+# it", each appended AFTER Unsloth's own placement flags and so winning by last-arg.
 PLACEMENT_OVERRIDES = [
     ["-ngl", "0"],
     ["--gpu-layers", "0"],
@@ -1012,9 +1004,8 @@ def test_the_launch_hands_the_fit_the_extras_the_child_will_get():
     # A gpu_ids pin drops the device flags from the emitted extras, so the fit has
     # to classify on the stripped copy rather than the request.
     assert "_strip_device_extra_args(extra_args)" in call
-    # Every one of those overrides has an env twin llama.cpp reads BEFORE argv,
-    # so the tokens alone are half an answer. The same view the child gets: the
-    # pin that drops the device flags drops their env twins with them.
+    # Every one of those overrides has an env twin read BEFORE argv, so the tokens
+    # alone are half an answer, and the pin drops the twins with the flags.
     assert "env = _fit_env" in call
     assert "_fit_env = dict(os.environ)" in call
     assert "self._clear_device_placement_env(_fit_env)" in call
@@ -1058,11 +1049,9 @@ def test_an_inherited_device_selection_voids_the_vram_credit(monkeypatch):
         ("nvidia_multi", ["-dev", "CUDA1"], None, None),
         # Both named: nothing is left out.
         ("nvidia_multi", ["--device", "CUDA0,CUDA1"], None, FIT_MODE),
-        # Two entries, ONE card: parse_device_list appends every name without
-        # deduplicating and llama_prepare_model_devices keeps the list verbatim,
-        # so both resolve to the same device and allocate from one VRAM pool.
-        # A raw count would call this a restatement and credit a card that is not
-        # there; distinct names see it without needing an ordinal map.
+        # Two entries, ONE card: parse_device_list never deduplicates, so both
+        # resolve to the same device and one VRAM pool. A raw count would call it a
+        # restatement and credit a card that is not there; distinct names do not.
         ("nvidia_multi", ["--device", "CUDA0,CUDA0"], None, None),
         ("nvidia_multi", ["-dev", "CUDA1,CUDA1,CUDA1"], None, None),
         # ...and on a one-card host the same list still names every credited
@@ -1178,8 +1167,7 @@ def test_an_inherited_starving_split_voids_it_too(env_value, monkeypatch):
         # A ratio that starves nobody is a restatement, not an override.
         ["--tensor-split", "1,1"],
         ["--tensor-split", "3,1"],
-        # Upstream throws on this and the child never starts, so nothing is
-        # mispriced; abstaining here would forfeit a real fit.
+        # Upstream throws and the child never starts: nothing to misprice.
         ["--tensor-split", "nonsense"],
     ],
 )
@@ -1520,9 +1508,9 @@ def test_a_tensor_split_charges_the_replicated_compute_buffer():
     assert "per_device_tensor=True,)" in compact
     # ...and the same flat fallback covers missing dims.
     assert "if_compute_buffer_tensor<=0:" in compact
-    # ...and it is what the fit charges, once per selected device, but only when
-    # the tensor-parallel branch really planned this load. tp_tensor_split cannot
-    # answer that: it stays None on a split llama.cpp is left to size itself.
+    # ...and it is what the fit charges per selected device, but only when the
+    # tensor-parallel branch really planned this load (tp_tensor_split cannot say:
+    # it stays None on a split llama.cpp is left to size itself).
     assert "_tp_planned=False" in compact
     assert "use_fit=False_tp_planned=True" in compact
     assert (
@@ -1578,9 +1566,8 @@ def test_the_replicated_buffer_can_decide_the_fit(monkeypatch):
         (["--gpu-layers-draft", "14"], None, 28, True),
         (["--spec-draft-ngl=4"], None, 28, True),
         (["-ngld", "1"], None, None, True),  # unreadable block count says nothing
-        # Equal to the drafter's own block count is still a split: llama.cpp's
-        # i_gpu_start = max(n_layer_all + 1 - n_gpu_layers, 0) is 1 there, so the
-        # first block and its KV stay on the host.
+        # Equal to the block count is still a split: i_gpu_start is 1 there, so
+        # the first block and its KV stay on the host.
         (["-ngld", "28"], None, 28, True),
         # Only a count ABOVE the block count places the drafter whole.
         (["-ngld", "29"], None, 28, False),
@@ -1592,8 +1579,7 @@ def test_the_replicated_buffer_can_decide_the_fit(monkeypatch):
         # Last-wins within argv too.
         (["-ngld", "1", "-ngld", "-1"], None, 28, False),
         (["-ngld", "-1", "-ngld", "1"], None, 28, True),
-        # Upstream's std::stoi throws and the child never starts, so nothing is
-        # mispriced; abstaining here would forfeit a real fit.
+        # Upstream's std::stoi throws and the child never starts.
         (["-ngld", "lots"], None, 28, False),
     ],
 )
@@ -1624,10 +1610,9 @@ def test_the_draft_whole_offload_threshold_matches_the_main_model():
     )
     # One above it clears the whole drafter onto the card, so a real fit survives.
     assert _draft_is_split_across_host(["-ngld", "29"], {}, n_draft_layers = 28) is False
-    # The same threshold the main model uses, asked of the main-model predicate
-    # unbound over a stub that only has to answer ``n_layers``: a count equal to
-    # the block count is partial there too. (Premise test: this arm holds before
-    # the drafter fix as well, and is here to pin the two thresholds together.)
+    # The same threshold the main model uses, asked of its own predicate over a
+    # stub: a count equal to the block count is partial there too. A premise test,
+    # here to pin the two thresholds together.
     stub = SimpleNamespace(n_layers = 28)
     assert B._partially_offloads_layers(stub, ["-ngl", "28"], {}) is True
     assert B._partially_offloads_layers(stub, ["-ngl", "29"], {}) is False
@@ -1781,10 +1766,8 @@ def test_an_inherited_loader_mode_wins_over_the_fits_pick():
     # Asked of the child's environment AFTER the same scrub it gets, so a var a
     # Model Memory toggle drops vetoes nothing.
     assert "scrub_memory_env(_fit_load_mode_env_view)" in arm
-    # Assert the CONDITIONS, not one rendering of them: the formatter is free to
-    # wrap this across lines, which inserts a paren and breaks a single-string
-    # pin. Each clause is asserted on its own, so the guard cannot lose one
-    # without failing here.
+    # Assert the CONDITIONS, not one rendering: the formatter is free to wrap this,
+    # which breaks a single-string pin. Each clause is asserted on its own.
     assert "_fit_load_mode" in arm and "notload_mode" in arm
     assert "memory_env_selects_load_mode(_fit_load_mode_env_view)" in arm
     assert "_fit_load_mode=None" in arm
@@ -2099,10 +2082,9 @@ def test_a_chained_retry_cannot_eat_the_users_own_load_mode():
     assert "extra_args_select_load_mode(_mem_extras)" in compact
     assert "_fit_load_mode" in compact and "notload_mode" in compact
     assert "_fit_load_mode=None" in compact
-    # The view it is asked of is pinned by the call above (_mem_extras, as Model
-    # Memory left them) and deliberately NOT by a second pin spelling out the
-    # apply_load_mode_policy call: that is a multi-token run a reformat can wrap,
-    # which is exactly the brittle shape that broke CI last round.
+    # The view is pinned by the call above (_mem_extras, as Model Memory left them)
+    # and deliberately NOT by a second pin on the apply_load_mode_policy call: that
+    # is a multi-token run a reformat can wrap, the shape that broke CI last round.
 
 
 def test_the_fit_still_emits_when_the_extras_pick_nothing():

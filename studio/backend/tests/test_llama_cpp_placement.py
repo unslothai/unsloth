@@ -2394,7 +2394,7 @@ def test_the_launched_load_mode_is_recorded_in_the_memory_state(tmp_path, monkey
     # (mlock, reserves_ram)
     assert backend._memory_state == (False, True)
 
-    # And the two consumers of that record agree the child contradicts the setting.
+    # Both consumers now see the child contradicting the setting.
     monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: True)
     assert (
         memory_state_satisfies_settings(

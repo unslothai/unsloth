@@ -73,9 +73,8 @@ def test_unsized_footprint_abstains(footprint):
 
 
 def test_shared_igpu_vram_is_not_added_to_host_ram():
-    # The iGPU's 32 GiB IS host RAM. Counted on both sides a 40 GiB load would
-    # "fit" twice over; dropped from the VRAM term it is priced once, and 16 GiB
-    # of RAM (14 after headroom) cannot hold it.
+    # The iGPU's 32 GiB IS host RAM, so it must not count on both sides: priced
+    # once, 16 GiB of RAM (14 after headroom) cannot hold a 40 GiB load.
     assert (
         _fits(
             40 * GIB,
@@ -88,8 +87,7 @@ def test_shared_igpu_vram_is_not_added_to_host_ram():
 
 
 def test_unpinned_cards_hold_nothing():
-    # Two 16 GiB cards, but the launch pins one: only its VRAM counts, and the
-    # 8 GiB spill has to come out of host RAM.
+    # Two 16 GiB cards, but the launch pins one: the 8 GiB spill needs host RAM.
     gpus = [(0, 16 * 1024), (1, 16 * 1024)]
     assert _fits(24 * GIB, gpus, gpu_indices = [0], avail_mib = 4 * 1024) is False
     assert _fits(24 * GIB, gpus, avail_mib = 4 * 1024) is True

@@ -1197,13 +1197,12 @@ def test_the_projector_env_twins_survive_the_scrub():
     [
         ({}, False),
         (None, False),
-        # The enum itself: handler_string, so any value assigns the mode.
+        # The enum itself is handler_string, so any value assigns the mode.
         ({"LLAMA_ARG_LOAD_MODE": "mmap"}, True),
         ({"LLAMA_ARG_LOAD_MODE": "dio"}, True),
         # Set but empty selects nothing; upstream would reject it, not default.
         ({"LLAMA_ARG_LOAD_MODE": "  "}, False),
-        # --mlock takes no value, and arg.cpp runs handler_void only when the
-        # value is truthy, so a falsey one leaves llama.cpp's default in place.
+        # --mlock is handler_void: only a truthy value assigns anything.
         ({"LLAMA_ARG_MLOCK": "1"}, True),
         ({"LLAMA_ARG_MLOCK": "0"}, False),
         # The deprecated boolean twins assign the whole mode either way.
@@ -1213,7 +1212,6 @@ def test_the_projector_env_twins_survive_the_scrub():
         # Negative aliases count by PRESENCE: get_value_from_env forces "0".
         ({"LLAMA_ARG_NO_MMAP": "0"}, True),
         ({"LLAMA_ARG_NO_DIO": ""}, True),
-        # Nothing else in the environment is a loader choice.
         ({"LLAMA_ARG_FIT": "off", "LLAMA_ARG_DEVICE": "none"}, False),
     ],
 )

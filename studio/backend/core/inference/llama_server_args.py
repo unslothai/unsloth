@@ -608,9 +608,8 @@ _SPEC_DRAFT_CACHE_V_FLAGS: frozenset[str] = frozenset(
 )
 _SPEC_DRAFT_CACHE_FLAGS: frozenset[str] = _SPEC_DRAFT_CACHE_K_FLAGS | _SPEC_DRAFT_CACHE_V_FLAGS
 _FIT_FLAGS: frozenset[str] = frozenset({"-fit", "--fit"})
-# The fitter's per-device margin. Never stripped (Unsloth emits its own ahead of
-# the extras and llama.cpp is last-wins), so a pass-through value is what the
-# child really keeps free; see fit_target_margin_in.
+# The fitter's per-device margin. Never stripped (llama.cpp is last-wins), so a
+# pass-through value is what the child really keeps free; see fit_target_margin_in.
 _FIT_TARGET_FLAGS: frozenset[str] = frozenset({"-fitt", "--fit-target"})
 _LAYER_OFFLOAD_FLAGS: frozenset[str] = _GPU_LAYER_FLAGS | _FIT_FLAGS
 _MOE_OFFLOAD_FLAGS: frozenset[str] = frozenset({"-ncmoe", "--n-cpu-moe", "-cmoe", "--cpu-moe"})
@@ -894,11 +893,8 @@ def fit_target_margin_in(
     if raw_value is None:
         return None
     values: list[float] = []
-    # Upstream splits this value on both "," and "/" -- the same `[,/]+` regex
-    # --tensor-split uses (common/arg.cpp) -- so "4096/4096" is a well-formed
-    # two-device margin. Reading it as one unparseable token would abstain and
-    # leave the caller on this launch's own much smaller margin, crediting VRAM
-    # the fitter keeps free and claiming a fit that is not there.
+    # Upstream splits on both "," and "/" (common/arg.cpp), so "4096/4096" is a
+    # well-formed two-device margin; reading it as one token would wrongly abstain.
     for part in str(raw_value).replace("/", ",").split(","):
         part = part.strip()
         if not part:
@@ -906,8 +902,7 @@ def fit_target_margin_in(
         try:
             values.append(float(part))
         except ValueError:
-            # Upstream would reject the whole list, so no device gets a margin
-            # this launch could name. Abstain rather than price a partial read.
+            # Upstream rejects the whole list, so abstain rather than price part of it.
             return None
     return max(values) if values else None
 
@@ -956,8 +951,7 @@ def split_policy_starves_devices(
             if float(part) > 0.0:
                 holding += 1
         except ValueError:
-            # Upstream throws on an unparseable proportion and the child never
-            # starts, so there is no placement to misprice. Leave the credit.
+            # Upstream throws on this and the child never starts: nothing to misprice.
             return False
     return holding < n_credited
 

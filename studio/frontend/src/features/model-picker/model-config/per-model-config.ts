@@ -29,10 +29,8 @@ export interface PerModelConfig {
   nParallel: number | null;
   nBatch: number | null;
   nUbatch: number | null;
-  /** --load-mode; null lets the placement fit decide. It picks `none` when the
-   *  whole load fits in VRAM, or in VRAM plus host RAM, and otherwise emits
-   *  nothing, so a build that redefines its own `auto` is followed rather than
-   *  pinned. Any value set here wins over that. */
+  /** --load-mode; null lets the fit decide: `none` when the load fits in VRAM
+   *  (or VRAM plus host RAM), else no flag. Any value set here wins. */
   loadMode?: string | null;
   /** --ctx-checkpoints; null follows the llama.cpp default (32). */
   ctxCheckpoints?: number | null;
@@ -176,13 +174,9 @@ export const KV_CACHE_DTYPES = [
 export const MLX_KV_BITS: readonly number[] = [8, 6, 5, 4, 3, 2];
 const VALID_KV_CACHE_DTYPES = new Set<string>(KV_CACHE_DTYPES);
 
-// llama-server's --load-mode enum, in --help order. "auto" is the default, so the
-// UI shows it while storage keeps null and the backend emits no flag at all: the
-// fit may then choose "none" for a load that needs no demand paging, and anything
-// else follows whatever auto means in the build that runs. Never sent verbatim,
-// which also spares the builds that predate "auto" being an accepted VALUE (it is
-// rejected outright on the b10360 line Studio ships today, where --help still
-// reads "default: mmap").
+// llama-server's --load-mode enum, in --help order. "auto" is the default: the UI
+// shows it, storage keeps null and the backend emits no flag, so the fit may pick
+// "none". Never sent verbatim; builds like b10360 reject "auto" as a value.
 export const LOAD_MODES = [
   "auto",
   "none",
