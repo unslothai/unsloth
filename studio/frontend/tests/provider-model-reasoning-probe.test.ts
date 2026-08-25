@@ -12,30 +12,25 @@ const { getExternalReasoningCapabilities } = await import(
   "../src/features/chat/provider-capabilities.ts"
 );
 
-const { setProviderModelReasoningCapabilities } = await import(
-  "../src/features/chat/external-providers.ts"
-);
+const {
+  getProviderModelReasoningCapabilities,
+  setProviderModelReasoningCapabilities,
+} = await import("../src/features/chat/external-providers.ts");
 
-// Reasoning capabilities for self-hosted connections are probed from the server's
-// Jinja chat template by the backend and must win over the hardcoded provider
-// tables, so a Qwen3.8 served by llama.cpp surfaces the same effort ladder the
-// local GGUF path derives.
+// Reasoning capabilities for connected llama.cpp models are probed per model on
+// an explicit "Detect reasoning" action and cached. The cached result must win
+// over the hardcoded provider tables, so a Qwen3.8 served by llama.cpp surfaces
+// the same effort ladder the local GGUF path derives.
 
 test("backend-probed enable_thinking_effort ladder wins for llama.cpp", () => {
-  setProviderModelReasoningCapabilities("llama_cpp", [
-    {
-      // Server-reported case; the getter matches case-insensitively.
-      id: "Qwen3.8-14B",
-      display_name: "Qwen3.8-14B",
-      reasoning: {
-        supports_reasoning: true,
-        reasoning_style: "enable_thinking_effort",
-        reasoning_effort_levels: ["low", "medium", "xhigh"],
-        reasoning_always_on: false,
-      },
-    },
-  ]);
+  setProviderModelReasoningCapabilities("llama_cpp", "Qwen3.8-14B", {
+    supports_reasoning: true,
+    reasoning_style: "enable_thinking_effort",
+    reasoning_effort_levels: ["low", "medium", "xhigh"],
+    reasoning_always_on: false,
+  });
 
+  // The getter matches case-insensitively.
   const caps = getExternalReasoningCapabilities("llama_cpp", "qwen3.8-14b");
   assert.equal(caps.supportsReasoning, true);
   assert.equal(caps.reasoningStyle, "enable_thinking_effort");
@@ -44,18 +39,12 @@ test("backend-probed enable_thinking_effort ladder wins for llama.cpp", () => {
 });
 
 test("probed reasoning_effort style has no off switch", () => {
-  setProviderModelReasoningCapabilities("llama_cpp", [
-    {
-      id: "gpt-oss-20b",
-      display_name: "gpt-oss-20b",
-      reasoning: {
-        supports_reasoning: true,
-        reasoning_style: "reasoning_effort",
-        reasoning_effort_levels: ["low", "medium", "high"],
-        reasoning_always_on: false,
-      },
-    },
-  ]);
+  setProviderModelReasoningCapabilities("llama_cpp", "gpt-oss-20b", {
+    supports_reasoning: true,
+    reasoning_style: "reasoning_effort",
+    reasoning_effort_levels: ["low", "medium", "high"],
+    reasoning_always_on: false,
+  });
 
   const caps = getExternalReasoningCapabilities("llama_cpp", "gpt-oss-20b");
   assert.equal(caps.supportsReasoning, true);
@@ -63,10 +52,29 @@ test("probed reasoning_effort style has no off switch", () => {
   assert.deepEqual([...caps.reasoningEffortLevels], ["low", "medium", "high"]);
 });
 
-test("an unprobed self-hosted model keeps today's no-reasoning fallback", () => {
-  setProviderModelReasoningCapabilities("ollama", []);
+test("a probed non-reasoning model is cached as unsupported", () => {
+  setProviderModelReasoningCapabilities("llama_cpp", "plain-model", {
+    supports_reasoning: false,
+    reasoning_style: "enable_thinking",
+    reasoning_effort_levels: [],
+    reasoning_always_on: false,
+  });
 
-  const caps = getExternalReasoningCapabilities("ollama", "plain:latest");
+  assert.ok(
+    getProviderModelReasoningCapabilities("llama_cpp", "plain-model"),
+  );
+  const caps = getExternalReasoningCapabilities("llama_cpp", "plain-model");
+  assert.equal(caps.supportsReasoning, false);
+});
+
+test("clearing a cached entry falls back to no reasoning", () => {
+  setProviderModelReasoningCapabilities("llama_cpp", "qwen3.8-14b", null);
+
+  assert.equal(
+    getProviderModelReasoningCapabilities("llama_cpp", "qwen3.8-14b"),
+    undefined,
+  );
+  const caps = getExternalReasoningCapabilities("llama_cpp", "qwen3.8-14b");
   assert.equal(caps.supportsReasoning, false);
 });
 

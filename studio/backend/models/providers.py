@@ -193,10 +193,24 @@ class ProviderModelInfo(BaseModel):
     display_name: str = Field("", description = "Human-readable model name")
     context_length: Optional[int] = Field(None, description = "Maximum context length in tokens")
     owned_by: Optional[str] = Field(None, description = "Model owner/organization")
-    reasoning: Optional[ProviderModelReasoning] = Field(
-        None,
-        description = "Reasoning capabilities probed from the server's chat template; absent when the provider exposes no template endpoint or the probe failed",
+
+
+class ProviderModelReasoningRequest(BaseModel):
+    """Probe one connected model's reasoning capabilities on demand."""
+
+    provider_id: Optional[str] = Field(
+        None, description = "Saved provider config whose stored key may be used"
     )
+
+    provider_type: str = Field(..., description = "Provider type from the registry")
+    encrypted_api_key: Optional[str] = Field(
+        None,
+        description = "RSA-encrypted, base64-encoded API key (optional for local providers)",
+    )
+    base_url: Optional[str] = Field(
+        None, description = "Custom base URL (overrides registry default)"
+    )
+    model_id: str = Field(..., description = "Model ID to probe, as returned by /models")
 
 
 class ProviderModelsRequest(BaseModel):

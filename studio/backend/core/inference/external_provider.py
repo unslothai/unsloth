@@ -14,7 +14,7 @@ import mimetypes
 import re
 import time
 from typing import Any, AsyncGenerator, Literal, NamedTuple, Optional, Union
-from urllib.parse import urlparse, urlsplit, urlunsplit
+from urllib.parse import quote, urlparse, urlsplit, urlunsplit
 
 import httpx
 import structlog
@@ -902,9 +902,10 @@ class ExternalProviderClient:
         # Generous per-byte read timeout: reasoning models pause tens of seconds
         # between bytes, but a dead upstream must eventually error, not hang forever.
         self._stream_timeout = httpx.Timeout(timeout, connect = 10.0, read = 300.0)
-        # llama.cpp serves a single model, so its chat template is fetched once
-        # per client and reused across every model id in the catalog.
-        self._probed_llama_cpp_template: Optional[str] = None
+        # llama.cpp chat templates are cached per model id on this client: a
+        # single-model server reuses one entry, a router-mode server
+        # (--models-dir / --models-preset) has one per served model.
+        self._probed_llama_cpp_templates: dict[str, Optional[str]] = {}
 
     def _auth_headers(self) -> dict[str, str]:
         """Build authentication headers using the provider's registry config."""
@@ -6460,8 +6461,10 @@ class ExternalProviderClient:
 
         Only llama.cpp exposes its chat template to clients: ``GET /props``
         returns the loaded model's ``chat_template`` (the same Jinja template the
-        local GGUF path classifies). One model is served, so the result is
-        fetched once and cached on this client for every catalog id.
+        local GGUF path classifies). In router mode (``--models-dir`` /
+        ``--models-preset``) the server serves several models and ``/props``
+        selects one via ``?model=<id>``, so the result is fetched and cached per
+        model id; a single-model server falls back to the bare ``/props``.
 
         Every other provider type has no standard Jinja chat-template endpoint
         and returns ``None`` -- notably Ollama, whose ``/api/show`` ``template``
@@ -6471,26 +6474,34 @@ class ExternalProviderClient:
         model listing it decorates.
         """
         if self.provider_type == "llama_cpp":
-            if self._probed_llama_cpp_template is None:
-                self._probed_llama_cpp_template = await self._probe_llama_cpp_chat_template()
-            return self._probed_llama_cpp_template
+            key = model_id or ""
+            if key not in self._probed_llama_cpp_templates:
+                self._probed_llama_cpp_templates[key] = await self._probe_llama_cpp_chat_template(key)
+            return self._probed_llama_cpp_templates[key]
         return None
 
-    async def _probe_llama_cpp_chat_template(self) -> Optional[str]:
+    async def _probe_llama_cpp_chat_template(self, model_id: str) -> Optional[str]:
         root = self.base_url.removesuffix("/v1").rstrip("/")
-        try:
-            response = await _http_client.get(
-                f"{root}/props",
-                headers = self._auth_headers(),
-                timeout = httpx.Timeout(5.0, connect = 5.0),
-            )
-            response.raise_for_status()
-            data = response.json()
-            template = data.get("chat_template") if isinstance(data, dict) else None
-            return template if isinstance(template, str) and template else None
-        except (httpx.HTTPError, ValueError) as exc:
-            logger.debug("llama_cpp /props chat-template probe failed: %s", exc)
-            return None
+        # Router mode names each served model, so ask for the specific one first;
+        # a single-model server ignores the query param (or has no matching
+        # entry), so fall back to the bare endpoint, which is what it answers.
+        candidates = [f"{root}/props?model={quote(model_id, safe='')}"] if model_id else []
+        candidates.append(f"{root}/props")
+        for url in candidates:
+            try:
+                response = await _http_client.get(
+                    url,
+                    headers = self._auth_headers(),
+                    timeout = httpx.Timeout(5.0, connect = 5.0),
+                )
+                response.raise_for_status()
+                data = response.json()
+                template = data.get("chat_template") if isinstance(data, dict) else None
+                if isinstance(template, str) and template:
+                    return template
+            except (httpx.HTTPError, ValueError) as exc:
+                logger.debug("llama_cpp %s chat-template probe failed: %s", url, exc)
+        return None
 
     async def verify_models_endpoint_lightweight(self) -> None:
         """

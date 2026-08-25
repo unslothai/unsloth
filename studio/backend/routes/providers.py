@@ -49,6 +49,7 @@ from models.providers import (
     ProviderCredentialMigration,
     ProviderModelInfo,
     ProviderModelReasoning,
+    ProviderModelReasoningRequest,
     ProviderModelsRequest,
     ProviderResponse,
     ProviderRegistryEntry,
@@ -873,26 +874,87 @@ async def list_provider_models(
         limit = info.get("model_id_limit")
         if isinstance(limit, int) and limit > 0:
             models = models[:limit]
-        reasoning_by_model = await _probe_model_reasoning(client, payload.provider_type, models)
-        result: list[ProviderModelInfo] = []
-        for m in models:
-            model_id = m.get("id", "")
-            result.append(
-                ProviderModelInfo(
-                    id = model_id,
-                    display_name = model_id,
-                    context_length = m.get("context_length") or m.get("context_window"),
-                    owned_by = m.get("owned_by"),
-                    reasoning = reasoning_by_model.get(str(model_id).strip()),
-                )
+        return [
+            ProviderModelInfo(
+                id = m.get("id", ""),
+                display_name = m.get("id", ""),
+                context_length = m.get("context_length") or m.get("context_window"),
+                owned_by = m.get("owned_by"),
             )
-        return result
+            for m in models
+        ]
     except Exception as exc:
         raise log_and_http_error(
             exc,
             502,
             f"Failed to list models from {payload.provider_type}.",
             event = "providers.list_models_failed",
+            log = logger,
+        )
+    finally:
+        await client.close()
+
+
+@router.post("/model-reasoning", response_model = Optional[ProviderModelReasoning])
+async def get_provider_model_reasoning(
+    payload: ProviderModelReasoningRequest,
+    _current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    """Probe one connected model's reasoning controls from its chat template.
+
+    On-demand, single-model companion to ``/models``: llama.cpp reports a model's
+    ``chat_template`` only once it is (lazily) loaded, so a catalog-wide probe
+    would force-load every model. The UI probes exactly the model a user selects
+    and caches the result.
+
+    Returns ``null`` when the provider exposes no template endpoint or the probe
+    cannot obtain one.
+    """
+
+    model_id = (payload.model_id or "").strip()
+    if not model_id:
+        raise HTTPException(status_code = 400, detail = "model_id is required.")
+
+    payload = _bind_saved_provider_target(payload)
+    info = get_provider_info(payload.provider_type)
+    if info is None:
+        raise HTTPException(
+            status_code = 400,
+            detail = f"Unknown provider type: {payload.provider_type}",
+        )
+
+    api_key = resolve_provider_api_key_or_400(
+        payload.provider_id,
+        payload.encrypted_api_key,
+        allow_saved_key = not via_api_key,
+    )
+
+    base_url = payload.base_url or info["base_url"]
+    try:
+        base_url = validate_provider_base_url(base_url)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from None
+
+    client = ExternalProviderClient(
+        provider_type = payload.provider_type,
+        base_url = base_url,
+        api_key = api_key,
+        timeout = 15.0,
+    )
+    try:
+        by_model = await _probe_model_reasoning(
+            client,
+            payload.provider_type,
+            [{"id": model_id}],
+        )
+        return by_model.get(model_id)
+    except Exception as exc:
+        raise log_and_http_error(
+            exc,
+            502,
+            f"Failed to probe model reasoning for {payload.provider_type}.",
+            event = "providers.model_reasoning_failed",
             log = logger,
         )
     finally:

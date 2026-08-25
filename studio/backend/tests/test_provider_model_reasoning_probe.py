@@ -108,7 +108,7 @@ def _run(coro):
 # ── ExternalProviderClient.probe_chat_template ───────────────────────
 
 
-def test_llama_cpp_probe_reads_chat_template(monkeypatch):
+def test_llama_cpp_probe_reads_chat_template_via_model_query(monkeypatch):
     fake = _FakeAsyncClient()
     fake.get_response = _FakeResponse(200, {"chat_template": QWEN38_TEMPLATE})
     monkeypatch.setattr(ep_mod, "_http_client", fake)
@@ -118,20 +118,50 @@ def test_llama_cpp_probe_reads_chat_template(monkeypatch):
     )
 
     assert template == QWEN38_TEMPLATE
-    # /props lives at the server root, not under the OpenAI-compat /v1 prefix.
-    assert fake.get_calls[0][0] == "http://127.0.0.1:8080/props"
+    # Router mode names each served model: /props is addressed per model, and it
+    # lives at the server root, not under the OpenAI-compat /v1 prefix.
+    assert fake.get_calls[0][0] == "http://127.0.0.1:8080/props?model=any"
 
 
-def test_llama_cpp_probe_is_cached_across_models(monkeypatch):
+def test_llama_cpp_probe_falls_back_to_bare_props(monkeypatch):
+    # A single-model server has no per-model /props entry, so the ?model= probe
+    # returns no template and the bare endpoint answers.
+    fake = _FakeAsyncClient()
+
+    def dispatch(url, headers = None, timeout = None):
+        fake.get_calls.append((url, headers, timeout))
+        if "model=" in url:
+            return _FakeResponse(200, {"chat_template": ""})
+        return _FakeResponse(200, {"chat_template": QWEN38_TEMPLATE})
+
+    monkeypatch.setattr(ep_mod, "_http_client", fake)
+    monkeypatch.setattr(fake, "get", dispatch)
+
+    template = _run(
+        _make_client("llama_cpp", "http://127.0.0.1:8080/v1").probe_chat_template("only-model")
+    )
+
+    assert template == QWEN38_TEMPLATE
+    assert [url for url, _, _ in fake.get_calls] == [
+        "http://127.0.0.1:8080/props?model=only-model",
+        "http://127.0.0.1:8080/props",
+    ]
+
+
+def test_llama_cpp_probe_caches_per_model_id(monkeypatch):
     fake = _FakeAsyncClient()
     fake.get_response = _FakeResponse(200, {"chat_template": QWEN38_TEMPLATE})
     monkeypatch.setattr(ep_mod, "_http_client", fake)
 
     client = _make_client("llama_cpp", "http://127.0.0.1:8080/v1")
     assert _run(client.probe_chat_template("model-a")) == QWEN38_TEMPLATE
+    assert _run(client.probe_chat_template("model-a")) == QWEN38_TEMPLATE
     assert _run(client.probe_chat_template("model-b")) == QWEN38_TEMPLATE
-    # One loaded model, one /props read.
-    assert len(fake.get_calls) == 1
+    # One /props read per distinct model id, cached per id.
+    assert [url for url, _, _ in fake.get_calls] == [
+        "http://127.0.0.1:8080/props?model=model-a",
+        "http://127.0.0.1:8080/props?model=model-b",
+    ]
 
 
 def test_unsupported_provider_returns_none_without_http(monkeypatch):
@@ -221,10 +251,10 @@ def test_probe_model_reasoning_requires_probe_method():
     assert out == {}
 
 
-# ── list_provider_models end-to-end ──────────────────────────────────
+# ── routes: listing stays cheap, on-demand probe is explicit ─────────
 
 
-def test_list_provider_models_attaches_reasoning(monkeypatch):
+def test_list_provider_models_does_not_probe_reasoning(monkeypatch):
     from routes import providers as providers_route
     from routes.providers import ProviderModelsRequest, list_provider_models
 
@@ -235,12 +265,10 @@ def test_list_provider_models_attaches_reasoning(monkeypatch):
         async def list_models(self):
             return [{"id": "qwen3.8-14b"}]
 
-        async def probe_chat_template(self, model_id):
-            return QWEN38_TEMPLATE
-
         async def close(self):
             return None
 
+    # No `probe_chat_template` method: a catalog-time probe would AttributeError.
     monkeypatch.setattr(providers_route, "ExternalProviderClient", _FakeClient)
 
     result = _run(
@@ -255,36 +283,97 @@ def test_list_provider_models_attaches_reasoning(monkeypatch):
     )
 
     assert [m.id for m in result] == ["qwen3.8-14b"]
-    assert result[0].reasoning is not None
-    assert result[0].reasoning.reasoning_style == "enable_thinking_effort"
-    assert result[0].reasoning.reasoning_effort_levels == ["low", "medium", "xhigh"]
 
 
-def test_list_provider_models_leaves_reasoning_absent_for_other_providers(monkeypatch):
+def test_get_provider_model_reasoning_probes_single_model(monkeypatch):
     from routes import providers as providers_route
-    from routes.providers import ProviderModelsRequest, list_provider_models
+    from routes.providers import (
+        ProviderModelReasoningRequest,
+        get_provider_model_reasoning,
+    )
 
     class _FakeClient:
         def __init__(self, **kwargs):
             pass
 
-        async def list_models(self):
-            return [{"id": "mistral-small-latest"}]
+        async def probe_chat_template(self, model_id):
+            assert model_id == "qwen3.8-14b"
+            return QWEN38_TEMPLATE
 
         async def close(self):
             return None
 
     monkeypatch.setattr(providers_route, "ExternalProviderClient", _FakeClient)
 
-    result = _run(
-        list_provider_models(
-            ProviderModelsRequest(provider_type = "mistral", base_url = "https://api.mistral.ai/v1"),
+    reasoning = _run(
+        get_provider_model_reasoning(
+            ProviderModelReasoningRequest(
+                provider_type = "llama_cpp",
+                base_url = "http://127.0.0.1:8080/v1",
+                model_id = "qwen3.8-14b",
+            ),
             _current_subject = "alice",
             via_api_key = False,
         )
     )
 
-    assert result[0].reasoning is None
+    assert reasoning is not None
+    assert reasoning.supports_reasoning is True
+    assert reasoning.reasoning_style == "enable_thinking_effort"
+    assert reasoning.reasoning_effort_levels == ["low", "medium", "xhigh"]
+
+
+def test_get_provider_model_reasoning_returns_none_for_other_providers(monkeypatch):
+    from routes import providers as providers_route
+    from routes.providers import (
+        ProviderModelReasoningRequest,
+        get_provider_model_reasoning,
+    )
+
+    class _FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(providers_route, "ExternalProviderClient", _FakeClient)
+
+    reasoning = _run(
+        get_provider_model_reasoning(
+            ProviderModelReasoningRequest(
+                provider_type = "mistral",
+                base_url = "https://api.mistral.ai/v1",
+                model_id = "mistral-small-latest",
+            ),
+            _current_subject = "alice",
+            via_api_key = False,
+        )
+    )
+
+    assert reasoning is None
+
+
+def test_get_provider_model_reasoning_requires_model_id(monkeypatch):
+    from routes import providers as providers_route
+    from routes.providers import (
+        ProviderModelReasoningRequest,
+        get_provider_model_reasoning,
+    )
+
+    with pytest.raises(Exception) as exc:
+        _run(
+            get_provider_model_reasoning(
+                ProviderModelReasoningRequest(
+                    provider_type = "llama_cpp",
+                    base_url = "http://127.0.0.1:8080/v1",
+                    model_id = "   ",
+                ),
+                _current_subject = "alice",
+                via_api_key = False,
+            )
+        )
+    assert "model_id" in str(exc.value)
 
 
 # ── stream_chat_completion forwards reasoning as chat_template_kwargs ─

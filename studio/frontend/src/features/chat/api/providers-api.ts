@@ -69,11 +69,6 @@ export interface ProviderModelInfo {
   owned_by?: string | null;
   /** Only the ChatGPT plan catalog reports this; the registry describes the rest. */
   vision?: boolean | null;
-  /**
-   * Reasoning controls probed from the server's chat template. Present only for
-   * self-hosted providers that expose a Jinja template (llama.cpp).
-   */
-  reasoning?: ProviderModelReasoning | null;
 }
 
 export interface ProviderTestResult {
@@ -327,6 +322,31 @@ export async function listProviderModels(payload: {
       }),
     });
     return parseJsonOrThrow<ProviderModelInfo[]>(response);
+  });
+}
+
+export async function fetchProviderModelReasoning(payload: {
+  providerType: string;
+
+  providerId?: string | null;
+  apiKey: string;
+  baseUrl?: string | null;
+  modelId: string;
+}): Promise<ProviderModelReasoning | null> {
+  return withApiKeyEncryptionRetry(payload.apiKey, async (encryptedApiKey) => {
+    const response = await authFetch("/api/providers/model-reasoning", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider_type: payload.providerType,
+
+        provider_id: payload.providerId ?? null,
+        encrypted_api_key: encryptedApiKey,
+        base_url: payload.baseUrl ?? null,
+        model_id: payload.modelId,
+      }),
+    });
+    return parseJsonOrThrow<ProviderModelReasoning | null>(response);
   });
 }
 

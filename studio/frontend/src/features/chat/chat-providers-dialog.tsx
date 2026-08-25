@@ -70,7 +70,6 @@ import {
   getProviderModelCapabilities,
   providerModelSupportsStudioTools,
   setProviderModelCapabilities,
-  setProviderModelReasoningCapabilities,
   removeExternalProviderApiKey,
   supportsProviderMaxOutputTokens,
   supportsProviderReasoningToggle,
@@ -674,10 +673,6 @@ export function ChatProvidersSettings({
         apiKey: apiKey.trim(),
         baseUrl,
       });
-      // Cache backend-probed reasoning capabilities (llama.cpp /props) so the
-      // composer's Think menu can offer effort levels for self-hosted reasoning
-      // models without a page reload.
-      setProviderModelReasoningCapabilities(backendProviderType, models);
       const registryDefaults = supportsRemoteModelCatalog(providerType)
         ? []
         : (registryByType.get(providerType)?.default_models ?? []);

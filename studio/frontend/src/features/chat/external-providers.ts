@@ -4,7 +4,6 @@
 import type {
   ProviderAuthKind,
   ProviderAuthStatus,
-  ProviderModelInfo,
   ProviderModelReasoning,
 } from "./api/providers-api";
 
@@ -256,26 +255,30 @@ function persistProbedModelReasoning(): void {
   }
 }
 
-/** Record the reasoning capabilities the backend probed for a model catalog.
+/** Record the reasoning capabilities the backend probed for one connected model.
 
- * Entries without a `reasoning` payload are dropped, so re-fetching the catalog
- * converges the map on the server's current truth rather than accumulating
- * stale model ids. */
+ * Called after an explicit "Detect reasoning" action. ``reasoning`` is the
+ * classifier output (which may carry ``supports_reasoning: false`` for a
+ * non-reasoning template, so that a probed negative is also cached and not
+ * re-probed); ``null`` removes any cached entry so a failed probe can be retried. */
 export function setProviderModelReasoningCapabilities(
   providerType: string,
-  models: readonly ProviderModelInfo[],
+  modelId: string,
+  reasoning: ProviderModelReasoning | null,
 ): void {
   hydrateProbedModelReasoning();
   const normalized = providerType.trim().toLowerCase();
-  const next: Record<string, ProviderModelReasoning> = {};
-  for (const model of models) {
-    // Model ids are matched case-insensitively throughout the capability
-    // tables, so store the probe key in the same normalized form the getter
-    // (and `getExternalReasoningCapabilities`) looks up.
-    const id = model.id?.trim().toLowerCase();
-    if (id && model.reasoning) {
-      next[id] = model.reasoning;
-    }
+  // Model ids are matched case-insensitively throughout the capability tables,
+  // so store the probe key in the same normalized form the getter (and
+  // `getExternalReasoningCapabilities`) looks up.
+  const id = modelId.trim().toLowerCase();
+  const next: Record<string, ProviderModelReasoning> = {
+    ...(PROBED_MODEL_REASONING.get(normalized) ?? {}),
+  };
+  if (reasoning) {
+    next[id] = reasoning;
+  } else {
+    delete next[id];
   }
   if (Object.keys(next).length > 0) {
     PROBED_MODEL_REASONING.set(normalized, next);
