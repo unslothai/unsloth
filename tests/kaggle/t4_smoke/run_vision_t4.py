@@ -177,18 +177,30 @@ def vision_lora_evidence(model) -> dict:
     return record
 
 
-def adapter_sum(model) -> float:
-    """Sum of |LoRA B|, which starts at exactly zero and is non-zero only after
-    an optimizer step. The one number that cannot be produced by a run that
-    trained nothing."""
+def adapter_sum(model) -> dict:
+    """Sum of |LoRA B|, and HOW MANY tensors it was summed over.
+
+    The sum starts at exactly zero and is non-zero only after an optimizer
+    step, which is the one number a run that trained nothing cannot produce.
+
+    The count is not decoration. PEFT names these parameters `lora_B`, with a
+    capital B, and a marker matched against the raw name misses every one of
+    them -- measured on `unsloth-probe-vision-train-r2-8ed253`, where a run
+    that trained perfectly well (loss 1.13 -> 0.56, a merged 4.3 GB export)
+    reported `0.0 -> 0.0` and failed. A sum of zero over zero tensors and a sum
+    of zero over 864 tensors are opposite findings and read identically, so the
+    count is carried and the caller refuses the answer when it is zero.
+    """
     import torch
 
     total = 0.0
+    tensors = 0
     with torch.no_grad():
         for name, param in model.named_parameters():
-            if LORA_B_MARKER in name:
+            if LORA_B_MARKER in name.lower():
+                tensors += 1
                 total += float(param.detach().abs().sum())
-    return total
+    return {"sum": total, "tensors": tensors}
 
 
 def vision_failures(result: dict, args) -> list:
@@ -236,7 +248,16 @@ def vision_failures(result: dict, args) -> list:
         failures.append(f"non-finite loss: {losses}")
 
     update = result.get("adapter_update") or {}
-    if not update.get("changed"):
+    if not update.get("tensors"):
+        # Refused rather than answered. A marker that matches nothing sums to
+        # zero before AND after, which is exactly what an untrained adapter
+        # looks like, so reporting "did not move" here would name the wrong
+        # defect -- and did, on the first hardware run of this payload.
+        failures.append(
+            f"no parameter name carried the LoRA B marker {LORA_B_MARKER!r}, so "
+            f"the adapter question was never asked rather than answered no"
+        )
+    elif not update.get("changed"):
         failures.append(
             f"the LoRA B matrices did not move ({update.get('before')} -> "
             f"{update.get('after')}), so the optimizer applied nothing and "
@@ -350,11 +371,12 @@ def run(args) -> dict:
     result["train_seconds"] = round(time.time() - t0, 1)
     after = adapter_sum(model)
     result["adapter_update"] = {
-        "before": before,
-        "after": after,
+        "before": before["sum"],
+        "after": after["sum"],
+        "tensors": after["tensors"],
         # Starts at exactly zero by construction, so any movement is a real
         # optimizer step rather than a tolerance question.
-        "changed": after > before,
+        "changed": after["sum"] > before["sum"],
     }
     result["metrics"] = [
         {"step": e.get("step"), "loss": e.get("loss"), "grad_norm": e.get("grad_norm")}

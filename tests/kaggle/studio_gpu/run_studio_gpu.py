@@ -968,6 +968,97 @@ class Payload:
         detail["failures"] = failures
         return self.record("tool_calling", not failures, detail)
 
+    def assert_code_execution(self) -> bool:
+        """The python tool must RUN, and the proof is a file on disk.
+
+        `assert_tool_calling` above proves the model can EMIT a call. That is a
+        different claim: a weather tool is never executed by Studio at all, the
+        caller is expected to run it. The local `python` tool is executed by
+        Studio itself, in a per-session sandbox, and the interesting failure is
+        the loop offering the tool and never running it -- which looks
+        identical from the response text, because the model will happily
+        narrate a result it never received.
+
+        So the evidence is not the prose. A token is minted here, the model is
+        asked to write it to a file, and this reads it back out of
+        `<studio home>/sandbox`, where `sandbox_root()` puts the per-session
+        working directories. Nothing in the reply can fake that; only an
+        executed `open(...).write(...)` puts those bytes on this disk.
+
+        Two settings are not incidental and must not be "simplified":
+
+        * `permission_mode = "off"`. `routes/inference.py` REJECTS a local
+          python/terminal tool under `ask`, and under `auto` or an omitted
+          default, with a 400 -- there is no confirmation channel here. The
+          run would fail on configuration and look like a broken tool.
+        * `tool_choice` is left alone. Forcing it would prove the schema is
+          reachable, not that the loop runs what it selected, and the file is
+          the claim either way.
+
+        The filename is not asserted, only the CONTENT: a small local model
+        rewording a path is not a Studio defect, and any file carrying the
+        token was written by code that ran.
+        """
+        failures: list[str] = []
+        detail: dict = {}
+
+        token = "unslothcodeexec" + secrets_module.token_hex(8)
+        sandbox = self.studio_home / "sandbox"
+        detail["sandbox_root"] = str(sandbox)
+        before = set(sandbox.rglob("*")) if sandbox.exists() else set()
+
+        code, payload = self.chat(
+            [{
+                "role": "user",
+                "content": (
+                    "Use the python tool to run exactly this code, then reply "
+                    "with the single word done:\n\n"
+                    f"open({token + '.txt'!r}, 'w').write({token!r})"
+                ),
+            }],
+            enable_tools = True,
+            enabled_tools = ["python"],
+            permission_mode = "off",
+            max_tokens = 512,
+        )
+        detail["http_status"] = code
+        if code != 200 or not isinstance(payload, dict):
+            failures.append(
+                f"the code-execution completion returned HTTP {code}: {str(payload)[:300]}"
+            )
+        else:
+            choice = (payload.get("choices") or [{}])[0]
+            message = choice.get("message") or {}
+            detail["finish_reason"] = choice.get("finish_reason")
+            detail["reply"] = (message.get("content") or "")[:300]
+
+        # The claim, read off the filesystem rather than off the reply.
+        written = []
+        if sandbox.exists():
+            for path in sandbox.rglob("*"):
+                if not path.is_file():
+                    continue
+                try:
+                    body = path.read_text(encoding = "utf-8", errors = "replace")
+                except OSError:
+                    continue
+                if token in body or token in path.name:
+                    written.append(str(path.relative_to(sandbox)))
+        detail["files_carrying_the_token"] = written
+        detail["new_sandbox_entries"] = sorted(
+            str(p.relative_to(sandbox))
+            for p in ((set(sandbox.rglob("*")) - before) if sandbox.exists() else set())
+        )[:20]
+
+        if not written:
+            failures.append(
+                "no file under the sandbox carries the token, so the python "
+                "tool was offered but never executed -- whatever the reply says"
+            )
+
+        detail["failures"] = failures
+        return self.record("code_execution", not failures, detail)
+
     # ----------------------------------------------------------- assertion B
 
     def assert_training(self) -> bool:
@@ -1489,11 +1580,17 @@ class Payload:
         gpu_ok = self.assert_gpu_inference()
         if gpu_ok:
             self.assert_tool_calling()
+            self.assert_code_execution()
         else:
             # Tool calling on a CPU fallback would be a green tick for a
             # question nobody asked. Skip it and say so.
             self.record(
                 "tool_calling",
+                False,
+                {"failures": ["skipped: the model was not on the GPU, so this proves nothing"]},
+            )
+            self.record(
+                "code_execution",
                 False,
                 {"failures": ["skipped: the model was not on the GPU, so this proves nothing"]},
             )

@@ -47,7 +47,7 @@ def _good(**over):
         },
         "vision_lora": {"vision_module_count": 48, "language_modules": 112},
         "metrics": [{"step": 1, "loss": 3.0}, {"step": 2, "loss": 2.0}],
-        "adapter_update": {"before": 0.0, "after": 91.2, "changed": True},
+        "adapter_update": {"before": 0.0, "after": 91.2, "tensors": 864, "changed": True},
         "generated": "\\frac{1}{2}",
     }
     result.update(over)
@@ -96,7 +96,8 @@ def test_an_adapter_that_did_not_move_is_a_failure():
     """Starts at exactly zero by construction, so any movement is a real
     optimizer step rather than a tolerance question."""
     broken = vision_failures(
-        _good(adapter_update = {"before": 0.0, "after": 0.0, "changed": False}), _args()
+        _good(adapter_update = {"before": 0.0, "after": 0.0, "tensors": 864, "changed": False}),
+        _args(),
     )
     assert broken and "did not move" in broken[0]
 
@@ -232,3 +233,46 @@ def test_from_list_would_have_corrupted_the_images():
         "from_list now preserves PIL, so the with_transform indirection may no "
         "longer be needed; re-check before simplifying"
     )
+
+
+def test_a_marker_that_matched_nothing_is_refused_rather_than_answered_no():
+    """Measured on `unsloth-probe-vision-train-r2-8ed253`, and it named the
+    wrong defect. PEFT calls these parameters `lora_B`, with a capital B; the
+    marker was matched against the raw name, so it matched none of the 864 of
+    them and summed to zero both before AND after. The run had trained
+    perfectly well -- loss 1.13 -> 0.56, a merged 4.3 GB export -- and the
+    report said the optimizer applied nothing.
+
+    Zero over zero tensors and zero over 864 tensors are opposite findings and
+    read identically, which is why the count is carried.
+    """
+    broken = vision_failures(
+        _good(adapter_update = {"before": 0.0, "after": 0.0, "tensors": 0, "changed": False}),
+        _args(),
+    )
+    assert broken, "a question that was never asked must not pass"
+    assert "never asked" in broken[0], broken
+    assert "did not move" not in broken[0], (
+        "reporting an unmatched marker as an untrained adapter sends the "
+        "reader after the wrong bug, which is what happened on hardware"
+    )
+
+
+def test_adapter_sum_finds_the_capital_b_peft_names():
+    """Drives the REAL function, because every rule above is fed a dict written
+    by hand and none of them execute the code that produces it. That is exactly
+    how the capital-B bug reached hardware."""
+    import torch
+
+    from run_vision_t4 import adapter_sum
+
+    class _Stub:
+        def named_parameters(self):
+            # The names PEFT actually emits, capitals and all.
+            yield "base_model.model.visual.blocks.0.attn.qkv.lora_A.default.weight", torch.ones(2, 2)
+            yield "base_model.model.visual.blocks.0.attn.qkv.lora_B.default.weight", torch.full((2, 2), 3.0)
+            yield "base_model.model.layers.0.self_attn.q_proj.lora_B.default.weight", torch.full((2, 2), 1.0)
+
+    got = adapter_sum(_Stub())
+    assert got["tensors"] == 2, got
+    assert got["sum"] == 16.0, got
