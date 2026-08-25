@@ -40,11 +40,16 @@ from utils.upload_limits import (
     upload_limit_bytes,
     upload_limit_label,
 )
+from utils.xet_notice_settings import reserve_xet_notice
 from utils.helper_precache_settings import (
     DEFAULT_HELPER_PRECACHE_ENABLED,
     get_helper_precache_enabled,
     helper_model_disabled_by_env,
     set_helper_precache_enabled,
+)
+from utils.download_transport_settings import (
+    get_download_transport_mode,
+    set_download_transport_mode,
 )
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES, chat_template_byte_length
 from utils.coding_agents import CODING_AGENTS, detect_installed_coding_agents
@@ -66,6 +71,9 @@ from utils.vram_budget_settings import (
 from utils.openai_auto_switch_settings import (
     BATCH_SIZE_MAX,
     BATCH_SIZE_MIN,
+    CACHE_RAM_MAX_MIB,
+    CACHE_RAM_MIN_MIB,
+    CTX_CHECKPOINTS_MAX,
     DEFAULT_AUTO_UNLOAD_API_ONLY,
     DEFAULT_AUTO_UNLOAD_KEEP_KV,
     DEFAULT_MEDIA_AUTO_SWITCH_ENABLED,
@@ -76,6 +84,7 @@ from utils.openai_auto_switch_settings import (
     PARALLEL_SLOTS_MAX,
     PARALLEL_SLOTS_MIN,
     cached_repo_alias_keys,
+    is_cache_load_path_key,
     get_auto_unload_api_only,
     get_auto_unload_idle_seconds,
     get_auto_unload_keep_kv,
@@ -91,6 +100,11 @@ from utils.openai_auto_switch_settings import (
     idle_unload_is_configured,
     set_model_override,
     set_openai_auto_switch,
+)
+from utils.keyless_api_access import (
+    access_exposure,
+    get_keyless_api_access_settings,
+    set_keyless_api_access,
 )
 from utils.preview_sharing_settings import (
     DEFAULT_PREVIEW_SHARING_ENABLED,
@@ -564,6 +578,32 @@ class HelperPrecacheResponse(BaseModel):
     disabled_by_env: bool
 
 
+class DownloadTransportPayload(BaseModel):
+    mode: Literal["auto", "xet", "http"]
+
+
+class DownloadTransportResponse(BaseModel):
+    mode: str
+    xet_available: bool
+    xet_unavailable_reason: Optional[str] = None
+    # What "auto" resolves to here right now, and why.
+    auto_resolves_to: str
+    auto_reason: Optional[str] = None
+
+
+class XetNoticeReservePayload(BaseModel):
+    # A legacy localStorage count from a client that has not reported one before.
+    # Can only raise the stored count (see reserve_xet_notice), so a client cannot
+    # talk its own way back under the limit with it.
+    seen_hint: int = 0
+
+
+class XetNoticeResponse(BaseModel):
+    granted: bool
+    shown: int
+    limit: int
+
+
 class ModelMemoryPayload(BaseModel):
     # None leaves the stored value untouched, so the switches save independently.
     keep_resident: Optional[bool] = None
@@ -721,6 +761,25 @@ class ModelOverridePayload(BaseModel):
     # prompt batch sizes (--batch-size / --ubatch-size), gguf-only; none = llama.cpp defaults
     n_batch: Optional[int] = Field(default = None, ge = BATCH_SIZE_MIN, le = BATCH_SIZE_MAX)
     n_ubatch: Optional[int] = Field(default = None, ge = BATCH_SIZE_MIN, le = BATCH_SIZE_MAX)
+    # The remaining llama-server tuning the picker remembers. model_override_load_kwargs
+    # already applies all four off a stored row, so a route that drops them leaves the
+    # setting reaching a picker load and nothing else, and the panel reads the gap back
+    # as unset. Load mode is a discrete set, left to the normalizer like the KV dtype.
+    load_mode: Optional[str] = Field(default = None, max_length = 32)
+    spec_draft_cache_type: Optional[str] = Field(default = None, max_length = 32)
+    # Stored on "is not None", not on truth: 0 checkpoints and a 0 or -1 cache are
+    # meaningful values (none kept; cache disabled; no limit). Bounds mirror LoadRequest.
+    ctx_checkpoints: Optional[int] = Field(default = None, ge = 0, le = CTX_CHECKPOINTS_MAX)
+    cache_ram: Optional[int] = Field(default = None, ge = CACHE_RAM_MIN_MIB, le = CACHE_RAM_MAX_MIB)
+    # Does this client know the four above exist? A save REPLACES the entry, so an
+    # omission from a build that predates them is indistinguishable from a user
+    # clearing them, and during an upgrade -- a cached bundle, or another LAN client
+    # still on the old build -- that silently deletes settings it never sent. Only a
+    # client that sets this may clear by omission; for anyone else the stored values
+    # are carried over. Default False so an old payload, which cannot set it, is the
+    # safe case. Not a blanket carry-over: that would make clearing impossible for
+    # everyone, trading a mixed-version window for a permanent bug.
+    mirrors_server_tuning: bool = False
     tensor_parallel: bool = False
     disable_vision: bool = False
     # Validated in bytes below: pydantic counts characters, so a multi-byte template would pass.
@@ -757,6 +816,8 @@ class ModelOverridePayload(BaseModel):
         "n_parallel",
         "n_batch",
         "n_ubatch",
+        "ctx_checkpoints",
+        "cache_ram",
         "gpu_layers",
         "n_cpu_moe",
         "gpu_ids",
@@ -797,6 +858,20 @@ def _helper_precache_response(enabled: bool | None = None) -> HelperPrecacheResp
     return HelperPrecacheResponse(
         enabled = get_helper_precache_enabled() if enabled is None else enabled,
         disabled_by_env = helper_model_disabled_by_env(),
+    )
+
+
+def _download_transport_response(mode: str | None = None) -> DownloadTransportResponse:
+    # No Xet probe: this renders a row, not a download start. The free-RAM gate is asked for
+    # anyway, since the row states what the next download will use.
+    from hub.utils.download_registry import get_download_transport_capabilities
+    caps = get_download_transport_capabilities(ram_gate = True)
+    return DownloadTransportResponse(
+        mode = get_download_transport_mode() if mode is None else mode,
+        xet_available = caps.xet.available,
+        xet_unavailable_reason = caps.xet.reason,
+        auto_resolves_to = caps.auto_resolves_to,
+        auto_reason = caps.auto_reason,
     )
 
 
@@ -1039,6 +1114,48 @@ def update_helper_precache(
             log = logger,
         ) from exc
     return _helper_precache_response(enabled)
+
+
+@router.get("/download-transport", response_model = DownloadTransportResponse)
+def get_download_transport(
+    current_subject: str = Depends(get_current_subject),
+) -> DownloadTransportResponse:
+    return _download_transport_response()
+
+
+@router.put("/download-transport", response_model = DownloadTransportResponse)
+def update_download_transport(
+    payload: DownloadTransportPayload, current_subject: str = Depends(get_current_subject)
+) -> DownloadTransportResponse:
+    try:
+        mode = set_download_transport_mode(payload.mode)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid download transport."),
+            event = "settings.update_download_transport_failed",
+            log = logger,
+        ) from exc
+    return _download_transport_response(mode)
+
+
+@router.post("/xet-notice/reserve", response_model = XetNoticeResponse)
+def post_xet_notice_reserve(
+    payload: XetNoticeReservePayload, current_subject: str = Depends(get_current_subject)
+) -> XetNoticeResponse:
+    """Take one of the remaining notices. POST because it mutates the count."""
+    try:
+        result = reserve_xet_notice(payload.seen_hint)
+    except Exception as exc:
+        raise log_and_http_error(
+            exc,
+            500,
+            safe_error_detail(exc, fallback = "Could not reserve the Xet download notice."),
+            event = "settings.reserve_xet_notice_failed",
+            log = logger,
+        ) from exc
+    return XetNoticeResponse(**result)
 
 
 @router.get("/model-memory", response_model = ModelMemoryResponse)
@@ -1449,10 +1566,17 @@ def update_openai_auto_switch_override(
             raise ValueError("fill_absent_fields cannot be combined with remove.")
         # Only model_id is the documented "remove"; otherwise omitted flags carry over.
         requested_extra_args = payload.llama_extra_args
-        # fill_absent_fields is a write mode, not a saved field: leaving it in would make
-        # every payload look non-empty and break the legacy "no fields means remove".
+        # fill_absent_fields and mirrors_server_tuning are write modes, not saved fields:
+        # leaving either in would make every payload look non-empty (they are bools, so
+        # exclude_none does not drop them) and break the legacy "no fields means remove".
         saved_fields = payload.model_dump(
-            exclude = {"model_id", "llama_extra_args", "remove", "fill_absent_fields"},
+            exclude = {
+                "model_id",
+                "llama_extra_args",
+                "remove",
+                "fill_absent_fields",
+                "mirrors_server_tuning",
+            },
             exclude_none = True,
         )
         if payload.remove is not None:
@@ -1512,6 +1636,51 @@ def update_openai_auto_switch_override(
                 )
         else:
             extra_args = validate_extra_args(requested_extra_args)
+        # Same shape as the extra-args carry-over above, for the same reason: a save
+        # replaces the entry, so a field the caller never knew about must survive it.
+        # A client that declares it mirrors these clears by omission as usual; an
+        # older one keeps whatever is stored. On a remove the whole entry goes, so
+        # there is nothing to preserve.
+        # Gated on is_removal, not on payload.remove: the documented legacy contract is a
+        # payload carrying only model_id, which leaves remove None while is_removal is
+        # true. Carrying anything over there would rebuild a non-empty row and the clear
+        # would silently do nothing.
+        _tuning_fields = ("load_mode", "spec_draft_cache_type", "ctx_checkpoints", "cache_ram")
+        _kept_tuning = {name: getattr(payload, name) for name in _tuning_fields}
+        if not payload.mirrors_server_tuning and not is_removal:
+            # The same spellings the extra-args carry-over walks, and in the same order.
+            # A cached repo is not an ordinary folded match, so a save under the repo id
+            # while the row sits under the snapshot path finds nothing here and then
+            # retires that alias below, taking the tuning with it.
+            _alias_ids = [payload.model_id]
+            for _candidate in (
+                _bare_model_id(payload.model_id),
+                _legacy_standalone_gguf_key(payload.model_id),
+                *cached_repo_alias_keys(payload.model_id),
+            ):
+                if _candidate and _candidate not in _alias_ids:
+                    _alias_ids.append(_candidate)
+            # Load order, not the order they were collected in. A lookup reads the
+            # concrete load path before the advertised repo id, so on a cache upgraded
+            # from a build that keyed rows by path, the snapshot row is the one that
+            # applies and the one the retirement block below clears. Reading the repo
+            # row first would adopt tuning no load has ever used and drop the tuning
+            # that was live. Stable, so every other spelling keeps its position.
+            _alias_ids.sort(key = lambda _key: not is_cache_load_path_key(_key))
+            # Taken as a unit from the first row that exists, not field by field down
+            # the list. A load stops at the first non-empty row (resolve_override_for_load)
+            # rather than merging, so tuning in a row that never wins is dormant, and
+            # filling a gap in the winner from a loser would switch it on as a side effect
+            # of saving something unrelated. Single-valued above, so the distinction only
+            # shows up here.
+            for _alias_id in _alias_ids:
+                _stored_tuning = get_model_override(_alias_id)
+                if not _stored_tuning:
+                    continue
+                for name in _tuning_fields:
+                    if _kept_tuning[name] is None:
+                        _kept_tuning[name] = _stored_tuning.get(name)
+                break
         if payload.remove is True:
             # An explicit remove wins over any other field. Remove the key a load resolves to,
             # not the literal one sent (the browser normalizes casing), and every spelling:
@@ -1584,6 +1753,10 @@ def update_openai_auto_switch_override(
                 n_parallel = payload.n_parallel,
                 n_batch = payload.n_batch,
                 n_ubatch = payload.n_ubatch,
+                load_mode = _kept_tuning["load_mode"],
+                spec_draft_cache_type = _kept_tuning["spec_draft_cache_type"],
+                ctx_checkpoints = _kept_tuning["ctx_checkpoints"],
+                cache_ram = _kept_tuning["cache_ram"],
                 tensor_parallel = payload.tensor_parallel,
                 disable_vision = payload.disable_vision,
                 chat_template_override = payload.chat_template_override,
@@ -1894,6 +2067,17 @@ def rotate_preview_links(
     return PreviewLinkRotateResponse(rotated = True)
 
 
+class KeylessApiAccessPayload(BaseModel):
+    scope: Literal["off", "inference", "full"]
+    tools: Optional[StrictBool] = None
+
+
+class KeylessApiAccessResponse(BaseModel):
+    scope: Literal["off", "inference", "full"]
+    tools: bool
+    exposure: Optional[Literal["colab", "public_url", "private_lan", "network"]] = None
+
+
 class PreviewSharingPayload(BaseModel):
     enabled: bool
 
@@ -2010,6 +2194,9 @@ class LanAccessResponse(BaseModel):
     can_stop: bool
     block_reason: Optional[str] = None
     serves_web_ui: bool = True
+    keyless_lan_eligible: bool = False
+    keyless_scope: Literal["off", "inference", "full"] = "off"
+    keyless_tools: bool = False
 
 
 def _lan_access_response(request: Request) -> LanAccessResponse:
@@ -2095,6 +2282,57 @@ def update_preview_sharing(
         ) from exc
     logger.info("settings.preview_sharing_updated subject=%s enabled=%s", current_subject, enabled)
     return PreviewSharingResponse(enabled = enabled)
+
+
+def _require_ui_session_for_keyless(via_api_key: bool = Depends(authenticated_via_api_key)) -> None:
+    """Only a signed-in UI session may change who needs a key.
+
+    An sk-unsloth key must not be able to switch authentication off for the whole
+    install, and a keyless caller must not be able to widen its own scope; both are
+    ``authenticated_via_api_key``, so one check covers them.
+    """
+    if via_api_key:
+        raise HTTPException(
+            status_code = 403,
+            detail = "Keyless API access can only be changed from the Unsloth UI.",
+        )
+
+
+def _keyless_api_access_response(request: Request) -> KeylessApiAccessResponse:
+    scope, tools = get_keyless_api_access_settings()
+    return KeylessApiAccessResponse(
+        scope = scope,
+        tools = tools,
+        exposure = access_exposure(request.app.state),
+    )
+
+
+@router.get("/keyless-api-access", response_model = KeylessApiAccessResponse)
+def get_keyless_api_access(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session_for_keyless),
+) -> KeylessApiAccessResponse:
+    return _keyless_api_access_response(request)
+
+
+@router.put("/keyless-api-access", response_model = KeylessApiAccessResponse)
+def update_keyless_api_access(
+    request: Request,
+    payload: KeylessApiAccessPayload,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session_for_keyless),
+) -> KeylessApiAccessResponse:
+    """Choose which routes are served without an API key, and whether tools come too."""
+    scope, tools = set_keyless_api_access(payload.scope, tools = payload.tools)
+    logger.info(
+        "settings.keyless_api_access_updated subject=%s scope=%s tools=%s exposure=%s",
+        current_subject,
+        scope,
+        tools,
+        access_exposure(request.app.state),
+    )
+    return _keyless_api_access_response(request)
 
 
 def _is_bundled_avatar_url(value: str) -> bool:

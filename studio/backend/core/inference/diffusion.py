@@ -368,7 +368,13 @@ def resolve_local_single_file(model_path: str) -> Optional[str]:
     return checkpoints[0] if len(checkpoints) == 1 else None
 
 
-def decode_b64_image(data: str, *, mode: str = "RGB") -> Any:
+def decode_b64_image(
+    data: str,
+    *,
+    mode: str = "RGB",
+    max_side: int = 4096,
+    max_pixels: Optional[int] = None,
+) -> Any:
     """Decode a base64 (optionally ``data:`` URL) image string to a PIL image.
 
     The image-conditioned workflows (img2img / inpaint / edit) transport the input
@@ -388,14 +394,17 @@ def decode_b64_image(data: str, *, mode: str = "RGB") -> Any:
         blob = base64.b64decode(raw, validate = False)
     except (binascii.Error, ValueError) as exc:
         raise ValueError(f"Invalid base64 image data: {exc}") from exc
-    # Bound the decoded size: 4096px covers txt2img 2048, upscales and outpaint canvases.
-    max_side = 4096
+    # Preprocessing paths may choose different bounded source limits.
     try:
         img = Image.open(io.BytesIO(blob))
         # Reject from the header before img.load() so a huge-dimension file cannot spike memory.
         w, h = img.size
         if w > max_side or h > max_side:
             raise ValueError(f"Image is too large ({w}x{h}); maximum is {max_side}px per side.")
+        if max_pixels is not None and w * h > max_pixels:
+            raise ValueError(
+                f"Image is too large ({w}x{h}); maximum is {max_pixels:,} source pixels."
+            )
         img.load()
     except ValueError:
         raise  # the size guard's own message; don't wrap it as a decode error

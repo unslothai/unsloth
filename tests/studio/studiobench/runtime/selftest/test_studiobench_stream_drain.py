@@ -197,9 +197,22 @@ class _SceneRunner:
 
 
 def _seed(plan):
-    """What `Seeder.seed` hands back. Zero messages, so the thread wait is the empty-page one."""
+    """What `Seeder.seed` hands back. Zero messages, so the thread wait is the empty-page one.
 
-    return types.SimpleNamespace(thread_id = "t1", seconds = 0.5, messages = 0)
+    The two markers are `None` for the same reason `messages` is 0: the readiness gate takes the
+    empty-page path here, and a marker it never asserts on must not be invented. They are PRESENT
+    rather than absent because `SeededThread` declares them and `_wait_for_thread` reads
+    `last_marker` unconditionally; a stub without them fails on the attribute instead of on the
+    behaviour these tests are about.
+    """
+
+    return types.SimpleNamespace(
+        thread_id = "t1",
+        seconds = 0.5,
+        messages = 0,
+        first_marker = None,
+        last_marker = None,
+    )
 
 
 @pytest.fixture

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Callable
 from typing import Any, Optional
 
@@ -56,6 +57,67 @@ def estimate_messages_tokens_dense(messages: list[dict]) -> int:
             continue
         dense = sum(1 for char in text if ord(char) > 127)
         total += max(1, dense + (len(text) - dense) // 4)
+    return total
+
+
+# ASCII that runs this far without a break is not prose. Measured with Qwen3 over 16-20k
+# character samples, in characters per token: base64 1.35, hex 1.13, minified JSON 2.75,
+# against English prose at 3.27 and Python source at 4.38. The estimate above charges all
+# of them the English four, so a pasted blob is priced at a third of what it costs, and a
+# caller sizing the room LEFT then hands out room that is already occupied.
+#
+# The rule is per RUN rather than per message, so a blob pasted into a sentence is priced
+# as a blob: a run this long is the thing itself. 64 characters rather than a rounder
+# number because base64 is conventionally wrapped at 76, and at a threshold of 80 a
+# wrapped blob scores as ordinary prose. Measured on the samples above, runs of 64+
+# non-space characters cover 100% of an unwrapped blob, 98.6% of a wrapped one, 0% of the
+# Python source and 23.5% of a README -- and that 23.5% is its URLs and table rules, which
+# tokenise near this rate themselves rather than at the prose rate.
+_DENSE_RUN_CHARS = 64
+# Two characters per token, not one. It stays BELOW the measured cost of every sample, so
+# no turn is priced above what it really costs: over-pricing a turn spends the very room
+# this budget exists to hand out, and a result cut to pay for room that was never occupied
+# is the same waste from the other side.
+_DENSE_RUN_CHARS_PER_TOKEN = 2
+_DENSE_RUN_RE = re.compile(r"\S{%d,}" % _DENSE_RUN_CHARS)
+
+
+def estimate_messages_tokens_conservative(
+    messages: list[dict], *, dense_ascii: bool = False
+) -> int:
+    """`estimate_messages_tokens_dense`, with unbroken ASCII runs charged as the blobs
+    they are.
+
+    For the caller with no tokenizer and no rolling fit behind it: the native loop prices
+    what a thread has already spent, and if that number is low the result it then admits
+    is what pushes the next prompt past the window, with nothing downstream to recover.
+    Non-ASCII keeps its token per character, ordinary ASCII keeps the English four, and
+    only the long unbroken runs are charged at `_DENSE_RUN_CHARS_PER_TOKEN`.
+
+    ``dense_ascii`` charges ALL of a message's ASCII at that rate, for the messages that
+    are dense whether or not they hold an unbroken run: a tool result is `hexdump`, `ls
+    -l` or a stack trace as often as it is a blob, and those are space-separated. It
+    applies to the ASCII only, so a CJK result is not charged twice for being a result.
+    """
+    total = 0
+    for message in messages:
+        try:
+            text = json.dumps(message, ensure_ascii = False)
+        except Exception:
+            total += 1
+            continue
+        wide = sum(1 for char in text if ord(char) > 127)
+        if dense_ascii:
+            total += max(1, wide + (len(text) - wide) // _DENSE_RUN_CHARS_PER_TOKEN)
+            continue
+        # ASCII only: a run of CJK is already charged a token a character above, and
+        # charging it here as well would price it twice.
+        runs = sum(
+            sum(1 for char in match.group(0) if ord(char) <= 127)
+            for match in _DENSE_RUN_RE.finditer(text)
+        )
+        plain = len(text) - wide - runs
+        total += max(1, wide + runs // _DENSE_RUN_CHARS_PER_TOKEN + plain // 4)
     return total
 
 
@@ -244,19 +306,187 @@ def retrieval_budget(
     return room
 
 
-def _latest_turn_tokens(messages: list[dict], count_tokens: Callable[[list[dict]], int]) -> int:
-    """Tokens in the newest message, estimated if the template refuses to render it.
+# Headroom against the tokenizer disagreeing with the estimate that sized a result. A
+# result is measured in characters and spent in tokens, so the conversion is the thing
+# that can be wrong; 1% of the budget absorbs that without noticeably shortening output.
+_TOOL_RESULT_BUDGET_BUFFER = 0.99
+
+# What a truncated result costs BESIDES its body: the notice naming the cut, the spill
+# path and the command that resumes it. Measured at 60-85 tokens, held clear of that.
+# Reserved rather than ignored because the body is sized and the notice appended after,
+# so a budget spent entirely on the body overshoots by the notice every time, and at zero
+# room, where the notice IS the message, by the whole of it.
+#
+# Charged by `tools._truncate`, at the point it knows the result really is being cut, and
+# NOT subtracted from the room below. A result that fits carries no notice, so holding
+# this back up front would cut a result that would have fitted whole and then spend more
+# than it saved: 200 tokens of room, a 100-token result, and reserving first leaves 72 for
+# the body and appends ~70 tokens of notice explaining the 28 that were dropped.
+_RESULT_NOTICE_RESERVE = 128
+
+
+def tool_result_budget(
+    context_length: int,
+    max_tokens: Optional[int],
+    prompt_tokens: int,
+    *,
+    buffer: float = _TOOL_RESULT_BUDGET_BUFFER,
+) -> int:
+    """Tokens a tool result may add without pushing the next prompt past its budget.
+
+    The cap before this was a share of the WINDOW, so it never fell as the conversation
+    filled: one result could take half a small context however little was left, and the
+    next fit cannot recover because it protects the newest turn, the very result that does
+    not fit. This prices the same result against the room actually remaining.
+
+    Against ``prompt_budget`` rather than ``context_length``: a result sized to fill the
+    physical window leaves the prompt fitting and nothing to answer in. Room for the reply
+    is not room for the result. The figure covers the whole tool message, notice included:
+    see `_RESULT_NOTICE_RESERVE`, which the truncation charges against this room when it
+    turns out to need one. A caller with several tool calls to serve divides what comes
+    back between them.
+    """
+    target = prompt_budget(context_length, max_tokens)
+    return max(0, int(target * buffer) - int(prompt_tokens or 0))
+
+
+def _latest_turn_count(
+    messages: list[dict], count_tokens: Callable[[list[dict]], int]
+) -> tuple[int, bool]:
+    """`(tokens, exact)` for the newest message, estimated if the template refuses it.
 
     A tool loop can reach the does-not-fit diagnosis with a tool result last, which strict
     templates reject on its own; letting that raise would abort the fit and tell the user
-    nothing. An approximate number beats a diagnosis that never arrives.
+    nothing. An approximate number beats a diagnosis that never arrives -- but the caller
+    has to know which it got, because only the counted one carries the prompt's floor.
     """
     if not messages:
-        return 0
+        return 0, False
     try:
-        return count_tokens(messages[-1:])
+        return int(count_tokens(messages[-1:])), True
     except Exception:
-        return estimate_messages_tokens(messages[-1:])
+        return int(estimate_messages_tokens(messages[-1:])), False
+
+
+def _shared_prompt_tokens(count_tokens: Callable[[list[dict]], int]) -> int:
+    """What a rendered prompt costs before any message at all.
+
+    The counter prices a whole PROMPT, not a bag of messages: the template's own wrapper
+    and, on a request that advertises tools, the entire tool catalogue rendered into the
+    system turn. So that constant sits inside every count the fit takes, including the
+    one-message slice above -- on the GGUF tool loop the counters pass `safe_tools` to
+    `count_chat_tokens`, which puts the schemas in the prompt it measures, and a couple
+    of MCP servers is thousands of tokens of them.
+
+    Measured on the empty prompt rather than estimated: this number is subtracted from
+    the two counts that decide which part of the prompt gets named, and a subtraction
+    that is only roughly right moves the blame instead of removing it. One extra count,
+    taken only on the branch that has already decided to refuse the request.
+    """
+    try:
+        return max(0, int(count_tokens([])))
+    except Exception:
+        # No measurable floor; zero leaves the diagnosis as it was before this existed.
+        return 0
+
+
+def _marginal_turn_count(
+    fitted: list[dict], count_tokens: Callable[[list[dict]], int], irreducible_tokens: int
+) -> Optional[int]:
+    """What the newest turn ADDED to the prompt that was actually measured.
+
+    The one-message slice is unusable when the template renders the newest message as
+    nothing on its own, but the difference against the same prompt WITHOUT it is a real
+    tokenizer count of exactly the turn's contribution, with the floor cancelled on both
+    sides of the subtraction. So the diagnosis keeps a counted turn where it used to fall
+    back to a guess.
+
+    `irreducible_tokens` must be the count of `fitted` itself, which is what both callers
+    pass. One extra count, on a branch that has already decided to refuse the request,
+    next to the one `_shared_prompt_tokens` takes there. None when the counter cannot
+    price the prefix, which is the caller's cue to fall back to the estimate.
+    """
+    try:
+        return int(irreducible_tokens) - int(count_tokens(list(fitted)[:-1]))
+    except Exception:
+        return None
+
+
+def turn_diagnosis(
+    messages: list[dict],
+    count_tokens: Callable[[list[dict]], int],
+    *,
+    irreducible_tokens: int,
+    fitted: Optional[list[dict]] = None,
+) -> dict[str, Any]:
+    """The fields that say WHICH part of a refused prompt is which.
+
+    `shared_prompt_tokens` is the floor both `latest_turn_tokens` and
+    `irreducible_tokens` carry, so a consumer comparing the two can take it off both
+    sides and compare what the turn actually contributed against what the rest of the
+    conversation did. Zero when the turn was estimated rather than counted: that estimate
+    prices the message's own JSON and no catalogue, so it has no floor to remove.
+
+    `latest_turn_exact` says which of the two `latest_turn_tokens` is. It is False only
+    on the fallback below, where nothing could be counted at all, and a consumer must
+    then not compare it against `irreducible_tokens`: that number is a tokenizer count of
+    the rendered prompt while the estimate is four characters to a token over the
+    message's JSON, and the two do not share units. Measured on the bundled gemma-4
+    template with a real Gemma tokenizer, 16,400 characters of newlines estimate 8,207
+    tokens against 557 rendered, 14.8x, which is enough for the estimate alone to clear
+    the dominance ratio against a prompt the turn is 6% of.
+
+    `fitted` is the message list `irreducible_tokens` was counted over. Given it, a turn
+    the template refuses to render alone is still priced by difference rather than
+    guessed.
+    """
+    if not messages:
+        # Vacuously exact: nothing was estimated, and a zero count is ignored anyway.
+        return {
+            "latest_turn_tokens": 0,
+            "latest_turn_role": "",
+            "shared_prompt_tokens": 0,
+            "latest_turn_exact": True,
+        }
+    latest, exact = _latest_turn_count(messages, count_tokens)
+    shared = _shared_prompt_tokens(count_tokens) if exact else 0
+    if exact and latest <= shared:
+        # Counted, and yet no bigger than the empty prompt: the template rendered the turn
+        # as nothing. Both bundled Gemma-4 templates do exactly that to a `role: tool`
+        # message on its own -- `{%- if message['role'] != 'tool' -%}` skips it, and the
+        # result is emitted only while scanning forward from the assistant tool call that
+        # asked for it, which a one-message slice does not contain. So the number is the
+        # floor and nothing else, and subtracting the floor from it would leave the turn
+        # contributing ~0 and blame the conversation.
+        #
+        # Price it by DIFFERENCE against the prompt that was measured instead: the slice
+        # is unrenderable, the contribution is not. Reported floor-inclusive, so the
+        # consumer's existing subtraction of `shared` leaves exactly the marginal and the
+        # ratio still compares two tokenizer counts.
+        marginal = _marginal_turn_count(
+            fitted if fitted is not None else messages, count_tokens, irreducible_tokens
+        )
+        if marginal is not None and marginal > 0:
+            latest = marginal + shared
+        else:
+            # Nothing countable left: same remedy as a template that refuses the slice
+            # outright -- price the message's own JSON, and record no floor, because that
+            # estimate does not carry one.
+            latest = int(estimate_messages_tokens(messages[-1:]))
+            shared = 0
+            # What is REPORTED is now the estimate, and that is what the flag describes.
+            # Leaving it True would be the worse half of the bug.
+            exact = False
+    # Never all of either side: a floor at or above them would leave no ratio to compare.
+    shared = max(0, min(shared, latest - 1, int(irreducible_tokens) - 1))
+    return {
+        "latest_turn_tokens": latest,
+        # Whose message it is: often a tool result the user cannot shorten.
+        "latest_turn_role": str(messages[-1].get("role") or ""),
+        "shared_prompt_tokens": shared,
+        # Whether the number above is a token count or a four-characters-a-token guess.
+        "latest_turn_exact": bool(exact),
+    }
 
 
 def fit_rolling_context(
@@ -366,10 +596,11 @@ def fit_rolling_context(
             # Floor for the conversation, and how much of it is the message just sent:
             # together they say whether the chat or the single message is the problem.
             "irreducible_tokens": current_tokens,
-            "latest_turn_tokens": _latest_turn_tokens(messages, count_tokens),
-            # ...and whose message that is. In a tool loop the last message is often a
-            # tool result, which the user did not write and cannot shorten.
-            "latest_turn_role": str(messages[-1].get("role") or "") if messages else "",
+            # `fitted` is what `current_tokens` prices, so the turn can be counted by
+            # difference against it rather than estimated.
+            **turn_diagnosis(
+                messages, count_tokens, irreducible_tokens = current_tokens, fitted = fitted
+            ),
             "context_length": context_length,
             "prompt_target": prompt_target,
         }

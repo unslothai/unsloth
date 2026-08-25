@@ -422,6 +422,16 @@ export const fr = {
           "Utilise le modèle audio chargé (par exemple Orpheus)",
         engineSystem: "Voix du système",
         engineStudio: "Charger un modèle TTS",
+        engineCustom: "Endpoint personnalisé",
+        engineCustomDescription:
+          "Un serveur TTS compatible OpenAI parmi vos connexions (p. ex. Kokoro)",
+        connectionLabel: "Connexion",
+        connectionDescription:
+          "Ajoutez un serveur compatible OpenAI dans l'onglet Connexions",
+        connectionPlaceholder: "Sélectionner une connexion",
+        customModelLabel: "Modèle",
+        customVoiceDescription:
+          "Nom de la voix attendu par l'endpoint ; alloy par défaut",
         modelLabel: "Modèle TTS",
         modelDescription:
           "Chargez un modèle audio depuis le sélecteur de modèles (par exemple Orpheus TTS)",
@@ -582,6 +592,29 @@ export const fr = {
           "Impossible de charger le réglage de lancement à la connexion.",
         saveError:
           "Impossible de mettre à jour le réglage de lancement à la connexion.",
+      },
+      downloads: {
+        sectionTitle: "Téléchargements",
+        transport: "Transport de téléchargement",
+        transportDescription:
+          "Comment les fichiers de modèles et de jeux de données arrivent depuis Hugging Face. HTTPS reprend là où il s'est arrêté ; Xet est souvent plus rapide au premier téléchargement mais recommence le fichier en cas d'annulation.",
+        transportHint:
+          "HTTPS, c'est du TLS classique : tous les réseaux, proxys et VPN l'autorisent, un transfert annulé ou coupé reprend à partir des octets déjà écrits et la mémoire reste stable. Xet récupère des blocs dédupliqués, donc un dépôt partageant des données avec un autre déjà présent peut arriver bien plus vite, mais il exige hf_xet, consomme plus de RAM, et une annulation jette le fichier en cours. Auto décide selon la machine : il pèse la RAM et les blocages récents de Xet ici, puis se rabat sur HTTPS.",
+        https: "HTTPS",
+        xet: "Xet",
+        auto: "Auto",
+        httpsHint:
+          "TLS standard. Reprend après une annulation, fonctionne sur tous les réseaux, mémoire stable.",
+        transportDescriptionNoResume:
+          "Comment les fichiers de modèles et de jeux de données sont téléchargés depuis Hugging Face. Sur cette installation, aucun transport ne peut reprendre : un téléchargement annulé recommence ; Xet est souvent plus rapide au premier téléchargement.",
+        httpsHintNoResume:
+          "TLS standard. Fonctionne sur tous les réseaux, consommation mémoire stable. Cette installation ne peut pas reprendre un téléchargement annulé.",
+        xetHint:
+          "Transfert par blocs dédupliqués. Souvent plus rapide sur un premier téléchargement, recommence le fichier si vous annulez, demande plus de mémoire.",
+        autoHint:
+          "Choisit selon la machine et passe à HTTPS si Xet se bloque ou échoue ici.",
+        autoCurrently: "Auto utilise {transport} sur cette machine.",
+        xetMissing: "Xet est indisponible car hf_xet n'est pas installé.",
       },
       uploads: {
         sectionTitle: "Téléversements",
@@ -875,6 +908,8 @@ export const fr = {
         title: "Périphériques GPU",
         ggufInference: "Inférence GGUF",
         unavailable: "indisponible",
+        detecting: "Recherche de GPU...",
+        unreadable: "Impossible de lire le matériel de ce serveur.",
         noGpu:
           "Aucun GPU visible n'a été détecté. Seules les ressources du CPU sont affichées ci-dessus.",
         unknownDevice: "GPU inconnu",
@@ -1123,7 +1158,7 @@ export const fr = {
         exportChat: "Exporter le chat",
       },
       pastedTextThreshold: "Condenser les collages longs",
-      pastedTextThresholdDescription: "Le texte collé plus long que cette valeur devient une pièce jointe .txt au lieu de remplir le champ de message.",
+      pastedTextThresholdDescription: "Le texte collé plus long que cette valeur devient une pièce jointe .txt au lieu de remplir le champ de message. Appuyez sur {shortcut} pour coller quand même dans le champ de message.",
       pastedTextThresholdOff: "Désactivé",
       showResponseModel: "Afficher le modèle de réponse",
       showResponseModelDescription:
@@ -1603,8 +1638,8 @@ export const fr = {
         "Ce modèle présent sur l'appareil ne peut pas être entraîné.",
       reasonUnsupportedFormat:
         "Ce format de modèle n'est pas pris en charge pour l'entraînement.",
-      vramNeeds: "Nécessite environ {est} Go de VRAM (GPU : {total} Go)",
-      vramTight: "Environ {est} Go de VRAM (limite sur {total} Go)",
+      vramNeeds: "Nécessite environ {est} Go de VRAM (GPU : {total} Gio)",
+      vramTight: "Environ {est} Go de VRAM (limite sur {total} Gio)",
       vramApprox: "Environ {est} Go de VRAM",
       sourceModelsFolder: "Dossier des modèles",
       sourceHfCache: "Cache HF",

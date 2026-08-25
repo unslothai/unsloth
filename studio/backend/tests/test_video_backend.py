@@ -5920,6 +5920,8 @@ def _reference_video_data_url(
     fps = 24,
     size = (160, 96),
     with_audio = True,
+    audio_seconds = None,
+    audio_start_seconds = 0.0,
 ):
     """A real encoded MP4, so the decode path is exercised rather than stubbed."""
     import base64
@@ -5945,20 +5947,104 @@ def _reference_video_data_url(
                 out.mux(packet)
         if audio is not None:
             written = 0
-            total = int(seconds * 44_100)
+            total = int((seconds if audio_seconds is None else audio_seconds) * 44_100)
+            pts = int(round(audio_start_seconds * 44_100))
             while written < total:
                 count = min(1024, total - written)
                 samples = np.zeros((1, count * 2), dtype = np.int16)
                 frame = av.AudioFrame.from_ndarray(samples, format = "s16", layout = "stereo")
                 frame.sample_rate = 44_100
+                # Placing the track later on the shared timeline, as an offset soundtrack does.
+                frame.pts = pts
                 for packet in audio.encode(frame):
                     out.mux(packet)
                 written += count
+                pts += count
             for packet in audio.encode():
                 out.mux(packet)
         for packet in video.encode():
             out.mux(packet)
     return "data:video/mp4;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+def _vfr_reference_video_data_url():
+    """A four-second VFR clip whose media timeline begins at five seconds."""
+    import base64
+    import io
+    from fractions import Fraction
+
+    av = pytest.importorskip("av")
+    np = pytest.importorskip("numpy")
+
+    timestamps = []
+    elapsed = 0.0
+    while elapsed < 4.0 - 1e-6:
+        timestamps.append(elapsed)
+        elapsed += 0.1 if elapsed < 2.0 - 1e-6 else 1 / 30
+
+    buf = io.BytesIO()
+    with av.open(buf, mode = "w", format = "mp4") as out:
+        video = out.add_stream("libx264", rate = 30)
+        video.width, video.height = (160, 96)
+        video.pix_fmt = "yuv420p"
+        video.time_base = Fraction(1, 1000)
+        video.codec_context.gop_size = 12
+        for elapsed in timestamps:
+            value = min(250, int(round(elapsed * 50)))
+            frame = av.VideoFrame.from_ndarray(
+                np.full((96, 160, 3), value, dtype = np.uint8), format = "rgb24"
+            )
+            frame.pts = 5_000 + int(round(elapsed * 1_000))
+            frame.time_base = Fraction(1, 1000)
+            for packet in video.encode(frame):
+                out.mux(packet)
+        for packet in video.encode():
+            out.mux(packet)
+    return "data:video/mp4;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+def _offset_audio_reference_video_data_url():
+    """A four-second video at t=5 whose three-second soundtrack begins at t=6."""
+    import base64
+    import io
+    from fractions import Fraction
+
+    av = pytest.importorskip("av")
+    np = pytest.importorskip("numpy")
+
+    buf = io.BytesIO()
+    with av.open(buf, mode = "w", format = "matroska") as out:
+        video = out.add_stream("ffv1", rate = 24)
+        video.width, video.height = (64, 64)
+        video.pix_fmt = "yuv444p"
+        video.time_base = Fraction(1, 1000)
+        audio = out.add_stream("pcm_s16le", rate = 44_100)
+        audio.layout = "stereo"
+        audio.time_base = Fraction(1, 44_100)
+        for index in range(4 * 24):
+            frame = av.VideoFrame.from_ndarray(
+                np.zeros((64, 64, 3), dtype = np.uint8), format = "rgb24"
+            )
+            frame.pts = 5_000 + round(index * 1_000 / 24)
+            frame.time_base = Fraction(1, 1000)
+            for packet in video.encode(frame):
+                out.mux(packet)
+        written = 0
+        while written < 3 * 44_100:
+            count = min(1024, 3 * 44_100 - written)
+            samples = np.full((1, count * 2), 10_000, dtype = np.int16)
+            frame = av.AudioFrame.from_ndarray(samples, format = "s16", layout = "stereo")
+            frame.sample_rate = 44_100
+            frame.pts = 6 * 44_100 + written
+            frame.time_base = Fraction(1, 44_100)
+            for packet in audio.encode(frame):
+                out.mux(packet)
+            written += count
+        for packet in audio.encode():
+            out.mux(packet)
+        for packet in video.encode():
+            out.mux(packet)
+    return "data:video/x-matroska;base64," + base64.b64encode(buf.getvalue()).decode()
 
 
 def test_h3_reference_video_decodes_onto_the_models_own_clock():
@@ -5994,10 +6080,584 @@ def test_h3_reference_video_refuses_instead_of_silently_truncating_a_long_clip()
     from core.inference.video_minimax_h3 import decode_h3_reference_video
 
     blob = base64.b64decode(
-        _reference_video_data_url(seconds = 15.1, fps = 24, with_audio = False).split(",", 1)[1]
+        _reference_video_data_url(seconds = 15.1, fps = 24, with_audio = True).split(",", 1)[1]
     )
     with pytest.raises(ValueError, match = "longer than 15s"):
         decode_h3_reference_video(blob)
+
+
+def test_h3_reference_video_decodes_an_explicit_trim_with_matching_audio():
+    pytest.importorskip("av")
+    import base64
+
+    from core.inference.video_minimax_h3 import decode_h3_reference_video
+
+    blob = base64.b64decode(_reference_video_data_url(seconds = 20.0, fps = 24).split(",", 1)[1])
+    frames, waveform, sample_rate = decode_h3_reference_video(
+        blob,
+        trim_start_seconds = 5.0,
+        trim_end_seconds = 15.0,
+    )
+
+    assert len(frames) == 240
+    assert sample_rate == 44_100
+    assert waveform is not None and waveform.shape[0] == 10 * sample_rate
+
+
+def test_h3_reference_video_trim_uses_vfr_pts_relative_to_a_nonzero_stream_start():
+    pytest.importorskip("av")
+    import base64
+    import numpy as np
+
+    from core.inference.video_minimax_h3 import decode_h3_reference_video
+
+    blob = base64.b64decode(_vfr_reference_video_data_url().split(",", 1)[1])
+    frames, waveform, sample_rate = decode_h3_reference_video(
+        blob,
+        trim_start_seconds = 0.5,
+        trim_end_seconds = 2.5,
+    )
+
+    assert len(frames) == 48
+    assert waveform is None and sample_rate is None
+    # Ordinal selection would start near value 50 instead of 25.
+    assert float(np.asarray(frames[0]).mean()) == pytest.approx(25, abs = 8)
+    assert float(np.asarray(frames[-1]).mean()) > 110
+
+
+def test_h3_reference_video_trim_preserves_an_embedded_audio_timeline_offset():
+    pytest.importorskip("av")
+    import base64
+    import numpy as np
+
+    from core.inference.video_minimax_h3 import decode_h3_reference_video
+
+    blob = base64.b64decode(_offset_audio_reference_video_data_url().split(",", 1)[1])
+    frames, waveform, sample_rate = decode_h3_reference_video(
+        blob,
+        trim_start_seconds = 0.5,
+        trim_end_seconds = 2.5,
+    )
+
+    assert len(frames) == 48
+    assert sample_rate == 44_100
+    assert waveform is not None and waveform.shape == (2 * sample_rate, 2)
+    assert np.max(np.abs(waveform[: sample_rate // 2])) == 0
+    assert np.mean(np.abs(waveform[sample_rate // 2 :])) > 0.25
+
+
+@pytest.mark.parametrize("duration", [2.0, 15.0])
+def test_h3_reference_video_trim_keeps_exact_boundary_frame_and_sample_counts(duration):
+    pytest.importorskip("av")
+    import base64
+
+    from core.inference.video_minimax_h3 import decode_h3_reference_video
+
+    blob = base64.b64decode(_reference_video_data_url(seconds = duration, fps = 24).split(",", 1)[1])
+    frames, waveform, sample_rate = decode_h3_reference_video(
+        blob,
+        trim_start_seconds = 0.0,
+        trim_end_seconds = duration,
+    )
+
+    assert len(frames) == round(duration * 24)
+    assert sample_rate == 44_100
+    assert waveform is not None and waveform.shape[0] == round(duration * sample_rate)
+
+
+@pytest.mark.parametrize("duration", [2.0, 15.0])
+def test_h3_reference_video_without_trim_discards_aac_padding(duration):
+    pytest.importorskip("av")
+    import base64
+
+    from core.inference.video_minimax_h3 import decode_h3_reference_video
+
+    blob = base64.b64decode(_reference_video_data_url(seconds = duration, fps = 24).split(",", 1)[1])
+    frames, waveform, sample_rate = decode_h3_reference_video(blob)
+
+    assert len(frames) == round(duration * 24)
+    assert sample_rate == 44_100
+    assert waveform is not None and waveform.shape[0] == round(duration * sample_rate)
+
+
+@pytest.mark.parametrize("audio_seconds", [15.05, 15.1, 16.0])
+def test_h3_reference_video_without_trim_clamps_audio_past_the_video(audio_seconds):
+    """A soundtrack longer than its video is clamped to it, not refused.
+
+    Longer tracks decoded fine before trimming existed, and a codec frame of overshoot is
+    ordinary padding, so refusing one rejects media that already worked.
+    """
+    pytest.importorskip("av")
+    import base64
+
+    from core.inference.video_minimax_h3 import decode_h3_reference_video
+
+    blob = base64.b64decode(
+        _reference_video_data_url(seconds = 15.0, fps = 24, audio_seconds = audio_seconds).split(",", 1)[
+            1
+        ]
+    )
+    frames, waveform, sample_rate = decode_h3_reference_video(blob)
+
+    assert len(frames) == round(15.0 * 24)
+    assert waveform is not None
+    assert waveform.shape[0] == round(15.0 * sample_rate)
+
+
+def test_h3_reference_video_trim_seeks_and_stops_both_decoders(monkeypatch):
+    av = pytest.importorskip("av")
+    import base64
+
+    from core.inference.video_minimax_h3 import decode_h3_reference_video
+
+    blob = base64.b64decode(_reference_video_data_url(seconds = 20.0, fps = 24).split(",", 1)[1])
+    real_open = av.open
+    opened = []
+
+    class _CountingContainer:
+        def __init__(self, *args, **kwargs):
+            self.inner = real_open(*args, **kwargs)
+            self.seek_types = []
+            self.decoded = {"video": 0, "audio": 0}
+            opened.append(self)
+
+        @property
+        def streams(self):
+            return self.inner.streams
+
+        def seek(self, *args, **kwargs):
+            self.seek_types.append(kwargs["stream"].type)
+            return self.inner.seek(*args, **kwargs)
+
+        def decode(self, *args, **kwargs):
+            media_type = "video" if "video" in kwargs else "audio"
+            for frame in self.inner.decode(*args, **kwargs):
+                self.decoded[media_type] += 1
+                yield frame
+
+        def __enter__(self):
+            self.inner.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.inner.__exit__(*args)
+
+    monkeypatch.setattr(av, "open", _CountingContainer)
+    frames, waveform, sample_rate = decode_h3_reference_video(
+        blob,
+        trim_start_seconds = 15.0,
+        trim_end_seconds = 17.0,
+    )
+
+    assert len(frames) == 48
+    assert waveform is not None and waveform.shape[0] == 2 * sample_rate
+    assert any("video" in item.seek_types for item in opened)
+    assert any("audio" in item.seek_types for item in opened)
+    assert sum(item.decoded["video"] for item in opened) < 200
+    assert sum(item.decoded["audio"] for item in opened) < 120
+
+
+def test_h3_reference_video_trim_outlasting_a_short_soundtrack_stays_silent():
+    """A trim the embedded audio does not cover keeps the video and pads the rest silent.
+
+    A video carrying no audio at all is accepted, so one whose track merely ends early must
+    be too; the untrimmed path clamps the same mismatch rather than refusing it.
+    """
+    pytest.importorskip("av")
+    import base64
+
+    from core.inference.video_minimax_h3 import decode_h3_reference_video
+
+    blob = base64.b64decode(
+        _reference_video_data_url(seconds = 10.0, fps = 24, audio_seconds = 6.0).split(",", 1)[1]
+    )
+    frames, waveform, sample_rate = decode_h3_reference_video(
+        blob, trim_start_seconds = 2.0, trim_end_seconds = 8.0
+    )
+
+    assert len(frames) == round(6.0 * 24)
+    assert waveform is not None
+    assert waveform.shape[0] == round(6.0 * sample_rate)
+    # Audio runs out 4s into the interval; everything past that is silence, not a refusal.
+    assert abs(waveform[: round(4.0 * sample_rate)]).max() >= 0.0
+    assert abs(waveform[round(4.0 * sample_rate) + sample_rate // 10 :]).max() == 0.0
+
+
+def test_h3_reference_video_trim_entirely_past_the_soundtrack_drops_the_audio():
+    pytest.importorskip("av")
+    import base64
+
+    from core.inference.video_minimax_h3 import decode_h3_reference_video
+
+    blob = base64.b64decode(
+        _reference_video_data_url(seconds = 12.0, fps = 24, audio_seconds = 3.0).split(",", 1)[1]
+    )
+    frames, waveform, _ = decode_h3_reference_video(
+        blob, trim_start_seconds = 6.0, trim_end_seconds = 10.0
+    )
+
+    assert len(frames) == round(4.0 * 24)
+    assert waveform is None
+
+
+def test_h3_reference_video_trim_before_an_offset_soundtrack_drops_the_audio():
+    """A track starting after the interval is absent from it, not silent within it.
+
+    The mirror of the test above, which ends its soundtrack before the trim. Neither leaves a
+    sample inside the interval, so both must report no soundtrack: a silent waveform would be
+    a fabricated track, and would hide the gap from stage_h3_references' positional pairing.
+    """
+    pytest.importorskip("av")
+    import base64
+
+    from core.inference.video_minimax_h3 import decode_h3_reference_video
+
+    blob = base64.b64decode(
+        _reference_video_data_url(
+            seconds = 15.0, fps = 24, audio_seconds = 5.0, audio_start_seconds = 10.0
+        ).split(",", 1)[1]
+    )
+    frames, waveform, _ = decode_h3_reference_video(
+        blob, trim_start_seconds = 0.0, trim_end_seconds = 5.0
+    )
+
+    assert len(frames) == round(5.0 * 24)
+    assert waveform is None
+
+
+def test_h3_reference_video_trim_reaching_an_offset_soundtrack_keeps_the_audio():
+    """The same offset track is still decoded by a trim that does overlap it."""
+    pytest.importorskip("av")
+    import base64
+
+    from core.inference.video_minimax_h3 import decode_h3_reference_video
+
+    blob = base64.b64decode(
+        _reference_video_data_url(
+            seconds = 15.0, fps = 24, audio_seconds = 5.0, audio_start_seconds = 10.0
+        ).split(",", 1)[1]
+    )
+    frames, waveform, sample_rate = decode_h3_reference_video(
+        blob, trim_start_seconds = 9.0, trim_end_seconds = 13.0
+    )
+
+    assert len(frames) == round(4.0 * 24)
+    assert waveform is not None
+    assert waveform.shape[0] == round(4.0 * sample_rate)
+
+
+def test_h3_reference_video_trim_tolerates_a_container_longer_than_its_video():
+    """A trim taken from the container duration may reach just past the video track.
+
+    A container reports its longest track, so a file whose audio outruns its video reads as
+    longer than it can show, and a browser hands Studio that duration. The last frame is held
+    across the shortfall instead of refusing a clip that decodes fine untrimmed.
+    """
+    pytest.importorskip("av")
+    import base64
+
+    from core.inference.video_minimax_h3 import decode_h3_reference_video
+
+    blob = base64.b64decode(
+        _reference_video_data_url(seconds = 14.9, fps = 24, audio_seconds = 15.2).split(",", 1)[1]
+    )
+    frames, _, _ = decode_h3_reference_video(blob, trim_start_seconds = 0.0, trim_end_seconds = 15.0)
+    assert len(frames) == round(15.0 * 24)
+
+
+def test_h3_reference_video_trim_still_refuses_a_real_overshoot():
+    """The slack covers container metadata, not a range that genuinely is not there."""
+    pytest.importorskip("av")
+    import base64
+
+    from core.inference.video_minimax_h3 import decode_h3_reference_video
+
+    blob = base64.b64decode(
+        _reference_video_data_url(seconds = 6.0, fps = 24, with_audio = False).split(",", 1)[1]
+    )
+    with pytest.raises(ValueError, match = "after the source video"):
+        decode_h3_reference_video(blob, trim_start_seconds = 2.0, trim_end_seconds = 10.0)
+
+
+def test_h3_reference_video_trim_must_be_complete_bounded_and_inside_the_source():
+    pytest.importorskip("av")
+    import base64
+
+    from core.inference.video_minimax_h3 import decode_h3_reference_video
+
+    blob = base64.b64decode(
+        _reference_video_data_url(seconds = 3.0, with_audio = False).split(",", 1)[1]
+    )
+    with pytest.raises(ValueError, match = "provided together"):
+        decode_h3_reference_video(blob, trim_start_seconds = 0.0)
+    with pytest.raises(ValueError, match = "2 to 15 seconds"):
+        decode_h3_reference_video(blob, trim_start_seconds = 0.0, trim_end_seconds = 1.0)
+    with pytest.raises(ValueError, match = "after the source video"):
+        decode_h3_reference_video(blob, trim_start_seconds = 2.0, trim_end_seconds = 5.0)
+
+
+def _frame_index_video(
+    seconds = 10.0,
+    fps = 24,
+    width = 256,
+    height = 64,
+    bar = 4,
+):
+    """An MP4 whose every frame encodes its own index as the position of a white bar.
+
+    A flat grey level per frame would not survive the round trip: limited-range YUV folds
+    0..255 into 16..235, so neighbouring indices collide. A bar position does.
+    """
+    av = pytest.importorskip("av")
+    np = pytest.importorskip("numpy")
+    import io
+
+    buf = io.BytesIO()
+    with av.open(buf, mode = "w", format = "mp4") as out:
+        video = out.add_stream("libx264", rate = fps)
+        video.width, video.height = width, height
+        video.pix_fmt = "yuv420p"
+        # Every frame a keyframe, so seeks land exactly and the two decoders differ only in
+        # how they select, never in what they can reach.
+        video.options = {"g": "1", "crf": "0", "tune": "zerolatency"}
+        for index in range(int(seconds * fps)):
+            plane = np.zeros((height, width, 3), dtype = np.uint8)
+            plane[:, index : index + bar] = 255
+            for packet in video.encode(av.VideoFrame.from_ndarray(plane, format = "rgb24")):
+                out.mux(packet)
+        for packet in video.encode():
+            out.mux(packet)
+    return buf.getvalue()
+
+
+def _decoded_frame_index(image, width = 256):
+    """Recover the source frame index from the bar's left edge."""
+    np = pytest.importorskip("numpy")
+
+    plane = np.asarray(image.convert("L"), dtype = "float64")
+    columns = plane.mean(axis = 0)
+    lit = np.flatnonzero(columns > columns.max() / 2)
+    assert lit.size, "no bar found in the decoded frame"
+    return int(round(lit[0] * width / plane.shape[1]))
+
+
+def test_h3_reference_video_ordinal_fallback_selects_the_same_frames_as_timestamps():
+    """The fallback for streams whose frames carry no presentation timestamps.
+
+    Nothing else reaches this path. A fractional start separates the two rules: the frame on
+    screen at t is floor(t*fps), and ceiling it drifts the selection forward by one.
+    """
+    av = pytest.importorskip("av")
+
+    from core.inference.video_minimax_h3 import (
+        _decode_h3_video_trim_by_ordinal,
+        _decode_h3_video_trim_by_timestamp,
+    )
+
+    blob = _frame_index_video()
+
+    # A start that lands on a frame boundary, and one that falls between two.
+    for start, end in ((2.0, 8.0), (2.02, 8.02)):
+        ordinal, _ = _decode_h3_video_trim_by_ordinal(blob, av, (start, end))
+        timestamp, _ = _decode_h3_video_trim_by_timestamp(blob, av, (start, end))
+        assert len(ordinal) == len(timestamp) == round((end - start) * 24)
+        assert _decoded_frame_index(ordinal[0]) == _decoded_frame_index(timestamp[0])
+
+    ordinal, _ = _decode_h3_video_trim_by_ordinal(blob, av, (2.02, 8.02))
+    assert _decoded_frame_index(ordinal[0]) == 48
+
+
+def test_h3_reference_video_falls_back_when_timestamps_are_missing(monkeypatch):
+    """Prove the dispatcher reaches the ordinal decoder at all, rather than raising."""
+    av = pytest.importorskip("av")
+
+    import core.inference.video_minimax_h3 as h3
+
+    blob = _frame_index_video()
+    calls = []
+    original = h3._decode_h3_video_trim_by_ordinal
+    monkeypatch.setattr(
+        h3,
+        "_decode_h3_video_trim_by_ordinal",
+        lambda *args: (calls.append(1), original(*args))[1],
+    )
+
+    real_open = av.open
+
+    class _PtsLess:
+        """PyAV container attributes are read-only, so the generator is replaced from outside."""
+
+        def __init__(self, container):
+            self._container = container
+
+        def decode(self, *args, **kwargs):
+            for frame in self._container.decode(*args, **kwargs):
+                frame.pts = None
+                yield frame
+
+        def __getattr__(self, name):
+            return getattr(self._container, name)
+
+        def __enter__(self):
+            self._container.__enter__()
+            return self
+
+        def __exit__(self, *exc):
+            return self._container.__exit__(*exc)
+
+    monkeypatch.setattr(av, "open", lambda *a, **k: _PtsLess(real_open(*a, **k)))
+
+    frames, _, _ = h3.decode_h3_reference_video(
+        blob, trim_start_seconds = 2.0, trim_end_seconds = 8.0, decode_audio = False
+    )
+    assert calls == [1]
+    assert len(frames) == round(6.0 * 24)
+
+
+def test_h3_replacement_audio_bypasses_a_short_embedded_soundtrack():
+    pytest.importorskip("av")
+    from core.inference.video import VideoBackend
+    from core.inference.video_families import detect_video_family
+
+    references = VideoBackend._resolve_references(
+        detect_video_family("MiniMaxAI/MiniMax-H3", None),
+        "ref2va",
+        "diffusers",
+        None,
+        [
+            {
+                "video": _reference_video_data_url(
+                    seconds = 5.0, fps = 24, with_audio = True, audio_seconds = 1.0
+                ),
+                "audio": _data_url_wav(seconds = 5.0, rate = 32_000),
+                "trim_start_seconds": 2.0,
+                "trim_end_seconds": 4.0,
+            }
+        ],
+        None,
+        "match",
+        960,
+        544,
+    )
+
+    frames, waveform, sample_rate = references.videos[0]
+    assert len(frames) == 48
+    assert sample_rate == 32_000
+    assert waveform.shape == (64_000, 2)
+
+
+def test_h3_replacement_audio_starts_at_its_own_zero():
+    """A replacement soundtrack is an independent file, not a second cut of the video.
+
+    Its timeline has no relation to the video's, and the picker offers no way to offset it, so
+    it plays the clip from its own start. The video's coordinates dropped its first trim_start
+    seconds, and refused it when it was shorter than that.
+    """
+    pytest.importorskip("av")
+    import numpy as np
+
+    from core.inference.video import VideoBackend
+    from core.inference.video_families import detect_video_family
+
+    # Signal only in the first second, so the decoded offset is recoverable.
+    references = VideoBackend._resolve_references(
+        detect_video_family("MiniMaxAI/MiniMax-H3", None),
+        "ref2va",
+        "diffusers",
+        None,
+        [
+            {
+                "video": _reference_video_data_url(seconds = 12.0, fps = 24, with_audio = False),
+                "audio": _data_url_wav(seconds = 3.0, rate = 32_000, silent_after = 1.0),
+                "trim_start_seconds": 5.0,
+                "trim_end_seconds": 8.0,
+            }
+        ],
+        None,
+        "match",
+        960,
+        544,
+    )
+
+    _, waveform, sample_rate = references.videos[0]
+    assert sample_rate == 32_000
+    # The clip's length, taken from the replacement's start rather than from its 5s mark.
+    assert waveform.shape == (96_000, 2)
+    energy = np.abs(waveform).max(axis = 1)
+    assert energy[: sample_rate // 2].max() > 0.01
+    assert energy[2 * sample_rate :].max() <= 0.01
+
+
+def test_h3_replacement_audio_shorter_than_the_trim_start_is_kept():
+    """The same file, shorter than where the video's trim begins, is padded not refused."""
+    pytest.importorskip("av")
+
+    from core.inference.video import VideoBackend
+    from core.inference.video_families import detect_video_family
+
+    references = VideoBackend._resolve_references(
+        detect_video_family("MiniMaxAI/MiniMax-H3", None),
+        "ref2va",
+        "diffusers",
+        None,
+        [
+            {
+                "video": _reference_video_data_url(seconds = 20.0, fps = 24, with_audio = False),
+                "audio": _data_url_wav(seconds = 2.0, rate = 32_000),
+                "trim_start_seconds": 10.0,
+                "trim_end_seconds": 14.0,
+            }
+        ],
+        None,
+        "match",
+        960,
+        544,
+    )
+
+    _, waveform, sample_rate = references.videos[0]
+    assert waveform.shape == (4 * 32_000, 2)
+    assert sample_rate == 32_000
+
+
+def test_h3_begin_generate_reuses_preflight_resolved_references(monkeypatch):
+    import core.inference.video as video_mod
+
+    backend = _h3_ref_backend(monkeypatch, [])
+    expected = object()
+    resolve_calls = []
+    captured = {}
+
+    def _resolve(*args, **kwargs):
+        resolve_calls.append((args, kwargs))
+        return expected
+
+    class _DeferredThread:
+        def __init__(self, *, target, kwargs, daemon):
+            captured.update(target = target, kwargs = kwargs, daemon = daemon)
+
+        def start(self):
+            return None
+
+    monkeypatch.setattr(backend, "_resolve_references", _resolve)
+    monkeypatch.setattr(backend, "_state_device_target", lambda _state: None)
+    monkeypatch.setattr(video_mod.threading, "Thread", _DeferredThread)
+    monkeypatch.setattr(backend, "_generate_h3_native", lambda **kwargs: kwargs["references"])
+
+    backend.begin_generate(prompt = "p")
+    assert len(resolve_calls) == 1
+
+    original_state = backend._state
+    backend._state = dataclasses.replace(original_state)
+    with pytest.raises(RuntimeError, match = VIDEO_CANCELLED_MSG):
+        backend.generate(**captured["kwargs"])
+    backend._state = original_state
+
+    assert backend.generate(**captured["kwargs"]) is expected
+    assert len(resolve_calls) == 1
+
+    # Direct callers still resolve their own raw inputs.
+    assert backend.generate(prompt = "p") is expected
+    assert len(resolve_calls) == 2
 
 
 def test_h3_native_refuses_a_later_video_soundtrack_after_a_silent_video(monkeypatch):
@@ -6031,6 +6691,75 @@ def test_h3_reference_images_are_fitted_to_the_requested_policy():
     assert fit_h3_reference_image(small, width = 1344, height = 768, policy = "max").size == (128, 128)
     with pytest.raises(ValueError, match = "policy"):
         fit_h3_reference_image(source, width = 960, height = 544, policy = "huge")
+
+
+def test_h3_reference_image_fits_a_phone_photo_before_the_generic_source_limit():
+    pytest.importorskip("PIL.Image")
+    from core.inference.diffusion import decode_b64_image
+    from core.inference.video import VideoBackend
+    from core.inference.video_families import detect_video_family
+
+    source = _data_url(5712, 4284)
+    with pytest.raises(ValueError, match = "maximum is 4096px per side"):
+        decode_b64_image(source)
+
+    references = VideoBackend._resolve_references(
+        detect_video_family("MiniMaxAI/MiniMax-H3", None),
+        "ref2va",
+        "diffusers",
+        [source],
+        None,
+        None,
+        "match",
+        960,
+        544,
+    )
+
+    assert len(references.images) == 1
+    fitted = references.images[0]
+    assert fitted.size[0] * fitted.size[1] <= 960 * 544 * 1.1
+    assert fitted.size[0] / fitted.size[1] == pytest.approx(5712 / 4284, abs = 0.05)
+
+    largest = VideoBackend._resolve_references(
+        detect_video_family("MiniMaxAI/MiniMax-H3", None),
+        "ref2va",
+        "diffusers",
+        [source],
+        None,
+        None,
+        "max",
+        960,
+        544,
+    ).images[0]
+    assert min(largest.size) == 2048
+
+
+def test_h3_reference_image_source_policy_rejects_excessive_area_before_loading(monkeypatch):
+    Image = pytest.importorskip("PIL.Image")
+    from core.inference.diffusion import decode_b64_image
+    from core.inference.video_minimax_h3 import (
+        H3_REF_IMAGE_SOURCE_MAX_PIXELS,
+        H3_REF_IMAGE_SOURCE_MAX_SIDE,
+    )
+
+    loaded = False
+
+    def tracked_load():
+        nonlocal loaded
+        loaded = True
+
+    monkeypatch.setattr(
+        Image,
+        "open",
+        lambda _stream: types.SimpleNamespace(size = (8000, 5000), load = tracked_load),
+    )
+    with pytest.raises(ValueError, match = "source pixels"):
+        decode_b64_image(
+            "eA==",
+            max_side = H3_REF_IMAGE_SOURCE_MAX_SIDE,
+            max_pixels = H3_REF_IMAGE_SOURCE_MAX_PIXELS,
+        )
+    assert loaded is False
 
 
 def test_h3_native_generate_stages_every_reference_kind(monkeypatch, tmp_path):
@@ -6082,7 +6811,12 @@ def test_h3_native_generate_stages_every_reference_kind(monkeypatch, tmp_path):
     assert result["conditioning"] == "ref2va"
 
 
-def _data_url_wav(seconds = 1.0, rate = 32_000):
+def _data_url_wav(
+    seconds = 1.0,
+    rate = 32_000,
+    silent_after = None,
+):
+    """A 440Hz tone; `silent_after` mutes the tail so a decoded offset is recoverable."""
     import base64
     import io
     import math
@@ -6094,8 +6828,9 @@ def _data_url_wav(seconds = 1.0, rate = 32_000):
         handle.setsampwidth(2)
         handle.setframerate(rate)
         frames = bytearray()
+        loud = int(seconds * rate) if silent_after is None else int(silent_after * rate)
         for i in range(int(seconds * rate)):
-            value = int(8000 * math.sin(2 * math.pi * 440 * i / rate))
+            value = int(8000 * math.sin(2 * math.pi * 440 * i / rate)) if i < loud else 0
             frames += int(value).to_bytes(2, "little", signed = True) * 2
         handle.writeframes(bytes(frames))
     return "data:audio/wav;base64," + base64.b64encode(buf.getvalue()).decode()

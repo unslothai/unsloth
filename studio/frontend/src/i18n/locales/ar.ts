@@ -411,6 +411,16 @@ export const ar = {
           "يستخدم النموذج الصوتي المُحمَّل (مثل Orpheus)",
         engineSystem: "أصوات النظام",
         engineStudio: "تحميل نموذج TTS",
+        engineCustom: "نقطة نهاية مخصصة",
+        engineCustomDescription:
+          "خادم TTS متوافق مع OpenAI من اتصالاتك (مثل Kokoro)",
+        connectionLabel: "الاتصال",
+        connectionDescription:
+          "أضف خادمًا متوافقًا مع OpenAI من علامة تبويب الاتصالات",
+        connectionPlaceholder: "اختر اتصالًا",
+        customModelLabel: "النموذج",
+        customVoiceDescription:
+          "اسم الصوت الذي تتوقعه نقطة النهاية؛ القيمة الافتراضية alloy",
         modelLabel: "نموذج TTS",
         modelDescription:
           "حمّل نموذجًا صوتيًا من محدّد النماذج (مثل Orpheus TTS)",
@@ -562,6 +572,29 @@ export const ar = {
         closeToTraySaveError: "تعذّر تحديث إعداد الإغلاق إلى علبة النظام.",
         loadError: "تعذر تحميل إعداد التشغيل عند تسجيل الدخول.",
         saveError: "تعذر تحديث إعداد التشغيل عند تسجيل الدخول.",
+      },
+      downloads: {
+        sectionTitle: "التنزيلات",
+        transport: "طريقة نقل التنزيل",
+        transportDescription:
+          "كيف تصل ملفات النماذج ومجموعات البيانات من Hugging Face. يتابع HTTPS من حيث توقف، أما Xet فغالبًا أسرع في التنزيل الأول لكنه يبدأ الملف من جديد إذا ألغيت.",
+        transportHint:
+          "HTTPS هو TLS عادي: تسمح به كل الشبكات والوكلاء وشبكات VPN، ويتابع النقل الملغى أو المنقطع من البايتات الموجودة على القرص، ويبقى استخدام الذاكرة ثابتًا. يجلب Xet كتلاً منزوعة التكرار، فيمكن أن يصل مستودع يشترك في بيانات مع مستودع لديك أسرع بكثير، لكنه يحتاج hf_xet ويستهلك ذاكرة أكبر، والإلغاء يتخلص من الملف الجاري. يقرر Auto حسب هذا الجهاز: يوازن الذاكرة وما إذا كان Xet قد تعطل هنا، ويعود إلى HTTPS عند الحاجة.",
+        https: "HTTPS",
+        xet: "Xet",
+        auto: "Auto",
+        httpsHint:
+          "TLS قياسي. يتابع بعد الإلغاء، ويعمل على أي شبكة، واستخدام ذاكرة ثابت.",
+        transportDescriptionNoResume:
+          "كيفية تنزيل ملفات النماذج ومجموعات البيانات من Hugging Face. لا يمكن لأي من وسيلتي النقل الاستئناف في هذا التثبيت، لذا يبدأ التنزيل الملغى من جديد؛ وغالبًا ما يكون Xet أسرع في التنزيل الأول.",
+        httpsHintNoResume:
+          "TLS قياسي. يعمل على أي شبكة مع استخدام ثابت للذاكرة. لا يمكن لهذا التثبيت استئناف تنزيل ملغى.",
+        xetHint:
+          "نقل بكتل منزوعة التكرار. أسرع غالبًا في التنزيل الجديد، ويبدأ الملف من جديد عند الإلغاء، ويحتاج ذاكرة أكبر.",
+        autoHint:
+          "يختار حسب الجهاز وينتقل إلى HTTPS إذا تعطل Xet أو فشل هنا.",
+        autoCurrently: "يستخدم Auto على هذا الجهاز {transport}.",
+        xetMissing: "Xet غير متاح لأن hf_xet غير مثبت.",
       },
       uploads: {
         sectionTitle: "عمليات الرفع",
@@ -850,6 +883,8 @@ export const ar = {
         title: "أجهزة GPU",
         ggufInference: "استدلال GGUF",
         unavailable: "غير متاح",
+        detecting: "جارٍ البحث عن وحدات GPU...",
+        unreadable: "تعذّرت قراءة عتاد هذا الخادم.",
         noGpu: "لم يُكتشف أي GPU مرئي. تُعرض موارد CPU فقط أعلاه.",
         unknownDevice: "GPU غير معروف",
         deviceWithIndex: "GPU {index}",
@@ -1090,7 +1125,7 @@ export const ar = {
         exportChat: "تصدير المحادثة",
       },
       pastedTextThreshold: "ضغط النصوص الملصقة الطويلة",
-      pastedTextThresholdDescription: "النص الملصق الأطول من هذا الحد يصبح مرفق \u200e.txt بدلاً من ملء مربع الرسالة.",
+      pastedTextThresholdDescription: "النص الملصق الأطول من هذا الحد يصبح مرفق \u200e.txt بدلاً من ملء مربع الرسالة. اضغط {shortcut} للصق في مربع الرسالة على أي حال.",
       pastedTextThresholdOff: "إيقاف",
       showResponseModel: "إظهار نموذج الاستجابة",
       showResponseModelDescription:
@@ -1552,8 +1587,8 @@ export const ar = {
         "لا يمكن استخدام مخرجات المهايئ كنماذج أساسية للتدريب.",
       reasonNotTrainable: "هذا النموذج الموجود على الجهاز غير قابل للتدريب.",
       reasonUnsupportedFormat: "تنسيق هذا النموذج غير مدعوم للتدريب.",
-      vramNeeds: "يحتاج إلى نحو {est}GB من VRAM (GPU: {total}GB)",
-      vramTight: "نحو {est}GB من VRAM (المساحة ضيقة على {total}GB)",
+      vramNeeds: "يحتاج إلى نحو {est}GB من VRAM (GPU: {total}GiB)",
+      vramTight: "نحو {est}GB من VRAM (المساحة ضيقة على {total}GiB)",
       vramApprox: "نحو {est}GB من VRAM",
       sourceModelsFolder: "مجلد النماذج",
       sourceHfCache: "ذاكرة HF المؤقتة",
