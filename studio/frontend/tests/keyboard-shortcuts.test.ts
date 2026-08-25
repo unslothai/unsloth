@@ -1894,3 +1894,23 @@ test("the rows the selection guard reads keep their identity", async () => {
     );
   }
 });
+
+// The root of the chain the test above pins. groupThreads returns a fresh
+// array, so calling it during render gives every derived sidebar list a new
+// identity on every render, which is what made the selection guard's effect
+// re-run without end.
+test("the sidebar item lists are built once per change, not per render", async () => {
+  const hook = await readFile(
+    new URL("../src/features/chat/hooks/use-chat-sidebar-items.ts", import.meta.url),
+    "utf8",
+  );
+  for (const name of ["items", "archivedItems"]) {
+    const at = hook.indexOf(`const ${name} = `);
+    assert.notEqual(at, -1, `${name} is gone`);
+    assert.match(
+      hook.slice(at, at + name.length + 30),
+      /= useMemo\(/,
+      `${name} is rebuilt every render and feeds a selection effect`,
+    );
+  }
+});

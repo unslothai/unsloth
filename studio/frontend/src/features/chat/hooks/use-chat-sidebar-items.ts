@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   CHAT_HISTORY_UPDATED_EVENT,
   notifyChatHistoryUpdated,
@@ -165,8 +165,16 @@ export function useChatSidebarItems(options?: {
     };
   }, [enabled, options?.projectId, requireMessages]);
 
-  const items = groupThreads(allThreads ?? []);
-  const archivedItems = groupThreads(allThreads ?? [], true);
+  // Memoised for identity as much as for the work. These arrays are the root
+  // of every derived sidebar list, so rebuilding them on each render leaves
+  // each of those with a new identity too, and an effect that depends on one
+  // re-runs every render. Where such an effect also sets state, React
+  // re-renders once to find the bail-out, rebuilds these, and never settles.
+  const items = useMemo(() => groupThreads(allThreads ?? []), [allThreads]);
+  const archivedItems = useMemo(
+    () => groupThreads(allThreads ?? [], true),
+    [allThreads],
+  );
   const canCompare = useChatRuntimeStore((s) => Boolean(s.params.checkpoint));
 
   return { items, archivedItems, canCompare, loaded };
