@@ -84,4 +84,4 @@ def test_the_payload_carries_the_regex_branch():
     src = (PAYLOAD / "run_t4_smoke.py").read_text(encoding = "utf-8")
     assert 'if key == "target_modules" and isinstance(got, str):' in src
     assert "missing = [name for name in (wanted or []) if name not in got]" in src
-    assert "does \\n                    f\"not mention" in src or "not mention" in src
+    assert 'does \\n                    f"not mention' in src or "not mention" in src
