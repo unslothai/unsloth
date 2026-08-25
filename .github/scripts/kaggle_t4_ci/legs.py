@@ -730,28 +730,19 @@ MAX_LEGS_PER_KERNEL = 5
 UNWIRED: dict[str, str] = {
     # A leg belongs here only while a specific unanswered question about it
     # would be answered by a session. "Not tried yet" is not that.
-    "vision_fla_compile": (
-        "STILL UNKNOWN: what Qwen3.5-2B costs on ONE card.\n"
-        "The recon probe (unsloth-probe-vision-recon-c76ea3) settled everything "
-        "else on a real 2xT4: the model loads in 40.0s, it is genuinely vision "
-        "(has_vision_config, Qwen3_5ForConditionalGeneration, Qwen3VLProcessor "
-        "with an image processor), fla resolves to unsloth_zoo/_vendored/fla "
-        "0.5.1 and only AFTER the load, attention resolves to sdpa, flash_attn "
-        "is not importable, and causal_conv1d and mamba_ssm are absent before "
-        "and after -- so this path never calls the ssm_runtime wheel installer "
-        "at all.\n"
-        "What it could NOT settle is vram_gb, and the reason is worth keeping: "
-        "it read 0.92GB peak on cuda:0, but parameters_by_device showed the "
-        "model SPLIT across both cards (897.7MB + 1017.1MB) because a probe "
-        "body sees both T4s where a leg gets one. 0.92 is one card's share of a "
-        "two-card placement. The admission scheduler in build_kernel.py "
-        "schedules against vram_gb, and its own comment records what happens "
-        "when that number is too low: contention that came back as an OOM "
-        "reading like a code failure. So a single-card measurement is required "
-        "before this is wired, not a doubling of a number measured wrong.\n"
-        "Also still to build: the short vision training run itself. This leg "
-        "currently trains text and asserts the kernels; the image path is a "
-        "separate payload."
+    "frontier": (
+        "SUPERSEDED by vision_fla_compile rather than broken. frontier was "
+        "latest transformers and trl on Qwen2.5-0.5B; the vision leg is latest "
+        "transformers and trl on Qwen3.5-2B and asserts everything frontier "
+        "did plus the vendored FLA kernels, the Turing attention choice, a "
+        "real vision training run, the merged vision export, a Q8_0 GGUF with "
+        "its mmproj sidecar and inference on the exported file. Everything "
+        "frontier proved is a subset, so keeping both spends a card on the "
+        "smaller claim against MAX_LEGS_PER_KERNEL = 5.\n"
+        "The definition stays rather than being deleted: it is the cheapest "
+        "latest-everything leg there is, so if the vision leg ever has to come "
+        "out for a reason of its own, this is what goes back in that hour "
+        "instead of being reconstructed from a commit message."
     ),
     "latest_compile": (
         "STILL UNKNOWN: two questions, both needing one T4 session and "
@@ -898,7 +889,23 @@ UNWIRED: dict[str, str] = {
 # variable and one contrasting observation was not enough to blame a shared
 # host. It stays unwired rather than re-paired, since a leg passing one session
 # in three tells CI nothing either way.
-KERNELS: tuple[tuple[str, ...], ...] = (("canary", "control", "gptoss", "frontier", "default"),)
+#
+# `frontier` is REPLACED by `vision_fla_compile` rather than joined by it.
+# frontier was "latest transformers and trl on Qwen2.5-0.5B"; the vision leg is
+# latest transformers and trl on Qwen3.5-2B, and on top of that it asserts the
+# vendored FLA kernels, the attention choice on Turing, a real vision training
+# run with pixels on the card, the merged vision export, a Q8_0 GGUF with its
+# mmproj sidecar and inference on the exported file. Everything frontier proved
+# is a subset of that. Keeping both would spend a card on the smaller claim,
+# and MAX_LEGS_PER_KERNEL is 5.
+#
+# Verified GREEN as a whole leg before wiring, on one T4:
+# unsloth-probe-visleg-final-2b896b reports passed true with failures [],
+# vision_failures [] and kernel_failures [], at 2.84GB peak reserved -- so it
+# co-tenants comfortably rather than displacing anything.
+KERNELS: tuple[tuple[str, ...], ...] = (
+    ("canary", "control", "gptoss", "vision_fla_compile", "default"),
+)
 
 
 # What the prefetch lane warms, in order, into the Kaggle image's default HF

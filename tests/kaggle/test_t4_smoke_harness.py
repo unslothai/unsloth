@@ -1552,6 +1552,11 @@ LEG_NAMES = (
     "default",
     "latest_compile",
     "vision_fla_compile",
+    # Retired in favour of vision_fla_compile and kept buildable: an unwired
+    # leg is unwired because of its install or an open question, not because
+    # the payload rots, and a retirement that stops building is one nobody can
+    # reverse in the hour they need it.
+    "frontier",
 )
 
 
@@ -2420,13 +2425,32 @@ def test_nothing_is_both_wired_and_unwired():
     assert not (wired & set(UNWIRED)), sorted(wired & set(UNWIRED))
 
 
-def test_an_unwired_note_says_what_is_unknown():
+def test_an_unwired_note_says_what_is_unknown_or_what_replaced_it():
     """An unwired leg whose note reads as settled is a leg someone wires without
-    running it. Vacuous while UNWIRED is empty, and correctly so: it has
-    something to check the moment a leg goes back in."""
-    from legs import UNWIRED
+    running it.
+
+    Two reasons a leg is not wired, and they are not the same thing. A leg with
+    an open question says STILL UNKNOWN and names it. A leg that was REPLACED
+    has nothing unknown about it at all -- frontier is retired because
+    vision_fla_compile asserts everything it did and more -- and forcing that
+    note to claim an open question would be a lie in the file that exists to
+    stop lies of exactly that kind.
+
+    So the rule is: say which of the two it is, and if it was superseded, name
+    the leg that superseded it. A bare note passes neither branch.
+    """
+    from legs import LEGS, UNWIRED
     for name, note in UNWIRED.items():
-        assert "STILL UNKNOWN" in note, f"{name} note does not say what is open"
+        if "SUPERSEDED" in note:
+            named = [other for other in LEGS if other != name and other in note]
+            assert named, (
+                f"{name} says it was superseded and does not name what by; a "
+                f"retirement nobody can trace is a deletion with extra steps"
+            )
+            continue
+        assert "STILL UNKNOWN" in note, (
+            f"{name} note says neither what is open nor what replaced it"
+        )
 
 
 def test_grpo_stays_unwired_while_the_illegal_memory_access_is_open():
@@ -4410,38 +4434,41 @@ def test_the_frontier_leg_does_not_carry_the_zoo_requirement():
         )
 
 
-def test_the_frontier_leg_rides_in_the_one_kernel_rather_than_opening_a_session():
-    """frontier must never be the reason a second Kaggle session is opened.
+def test_frontier_is_retired_in_favour_of_the_leg_that_supersedes_it():
+    """frontier no longer runs, and this used to assert that it did.
 
-    This used to read "the seat that costs nothing", on the basis that a
-    session bills its wall clock once rather than per card, so the second
-    kernel's idle T4 carried frontier for free. That is still true about
-    BILLING and is no longer the binding constraint. The account allows two
-    concurrent GPU sessions; two kernels took both, and
-    kaggle-t4-studio-gpu-ci.yml runs on the same account, so the notebook leg
-    locked Studio out for as long as it ran. Everything now packs into one
-    kernel and frontier queues behind the legs ahead of it.
+    The property it pinned was "there is one kernel and frontier is in it",
+    which mattered when frontier was the cheapest way to cover a
+    latest-everything stack. `vision_fla_compile` covers that stack on a bigger
+    model AND asserts the vendored FLA kernels, the Turing attention choice, a
+    real vision training run, the merged vision export, a Q8_0 GGUF with its
+    mmproj sidecar and inference on the exported file. Everything frontier
+    proved is a subset.
 
-    So the property worth pinning is no longer "frontier shares a full kernel"
-    -- that assertion passes just as happily on a two-session layout -- but
-    "there is one kernel and frontier is in it".
-
-    It has passed on real hardware in both layouts: transformers 5.15.0 /
-    trl 1.9.2 paired, and transformers 5.15.1 / trl 1.10.0 on run 32607621452,
-    ten steps, canary emitted, two fresh processes agreeing bitwise.
+    Rewritten rather than deleted, because the thing worth guarding now is that
+    the retirement was DELIBERATE: a leg that quietly falls out of KERNELS with
+    no entry anywhere is indistinguishable from one dropped by a bad merge.
     """
-    sys.path.insert(0, str(CI_DIR))
-    import legs
+    from legs import KERNELS, UNWIRED
 
-    wired = [kernel for kernel in legs.KERNELS if "frontier" in kernel]
-    assert len(wired) == 1, f"frontier appears in {len(wired)} kernels, expected 1"
-    assert len(legs.KERNELS) == 1, (
-        f"{len(legs.KERNELS)} kernels means {len(legs.KERNELS)} concurrent Kaggle "
-        "sessions, and the account only has two. Studio needs one of them."
+    assert "frontier" not in {name for kernel in KERNELS for name in kernel}, (
+        "frontier is back in the wired set; if that is intended, this test and "
+        "its UNWIRED note both need rewriting rather than deleting"
     )
-    assert "frontier" not in legs.UNWIRED
+    assert "frontier" in UNWIRED, (
+        "frontier is in neither KERNELS nor UNWIRED, which is what a leg "
+        "dropped by accident looks like"
+    )
+    assert "SUPERSEDED" in UNWIRED["frontier"], (
+        "the note must say it was replaced, not that it is broken"
+    )
+    assert "vision_fla_compile" in UNWIRED["frontier"], "and by what"
+    # And the leg it names is really carrying the load.
+    assert "vision_fla_compile" in {name for kernel in KERNELS for name in kernel}
 
-
+    # There is still exactly ONE kernel, which is the half of the old
+    # assertion that was never about frontier.
+    assert len(KERNELS) == 1, KERNELS
 def test_the_pinned_kaggle_client_carries_the_calls_this_workflow_makes():
     """The pin is load bearing, and 1.7.4.5 could not do the job at all.
 
