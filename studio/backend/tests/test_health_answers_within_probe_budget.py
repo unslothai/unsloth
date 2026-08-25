@@ -27,12 +27,19 @@ from pathlib import Path
 # What the stubs make detection cost. The regression these tests guard returns after
 # exactly this long, so it is also the number the timing ceiling has to stay clear of.
 _SLOW_DETECT_S = 10.0
-# How much wall clock, on top of the budget, the timed request is allowed to spend.
+# How much wall clock, on top of the budget, the WARM request is allowed to spend.
 #
-# This assertion has to stay under the launcher's own deadline to mean anything: the
-# desktop probe gives up at _desktop_probe_timeout_s() and does not retry, so a response
-# that arrives after it dead-ends the launch. The ceiling is therefore derived from that
-# timeout rather than chosen, and asserted to be below it.
+# There are two bounds here and they guard different things. The cold call, the first one
+# this process serves, is what probe_ownerless_spawned_backend actually gets, so it is
+# bounded against the launcher's own timeout in
+# test_a_cold_health_call_answers_inside_the_launcher_deadline, setup included, because
+# setup counts against that deadline. This constant is the warm one, which is the
+# endpoint with its setup already paid, and it is tight because what remains does not
+# move. Dropping either leaves a hole: cold-only is what made this flaky, warm-only would
+# let a regression that adds a second of first-call import sail through.
+#
+# The warm ceiling still has to stay under the launcher deadline to mean anything, and is
+# asserted to be.
 #
 # It also has to stop flaking. It failed twice, at 1.63s and 1.69s, on two unrelated
 # branches 54 minutes apart, each time as the only failure in a run of about 30,780
@@ -171,19 +178,30 @@ app.add_api_route("/api/health", main.health_check, methods = ["GET"])
 _stack = contextlib.ExitStack()
 client = _stack.enter_context(TestClient(app))
 
-# Warm first, with detection already settled so this call returns at once. It pays the
-# one-time costs that are not part of what is being measured: the lazy imports inside
-# health_check and the anyio threadpool the auth dependency hops onto. Timing the
-# first-ever call folds those into the result, and they are the only part of it that
-# moves on a loaded runner, which is what made this assertion flaky.
-hw.DEVICE = hw.DeviceType.CUDA
-hw.CHAT_ONLY = False
-hw.DETECTION_COMPLETE.set()
-warm_started = time.perf_counter()
-warm_body = client.get("/api/health").json()
-warm_cost = time.perf_counter() - warm_started
+# Two measurements of the same request, because two different things need bounding.
+#
+# COLD is the first call this process ever serves, with detection unset and slow. That
+# is what probe_ownerless_spawned_backend gets: it calls /api/health right after startup
+# with no warm-up, so the lazy imports inside health_check and the anyio threadpool the
+# auth dependency hops onto are on its critical path. Its bound is the launcher's own
+# 2s client timeout, because setup legitimately counts against that deadline.
+#
+# WARM is the same call again with that setup already paid. Its bound is tight, because
+# the only thing left in it is the budget wait, which does not move.
+#
+# Timing only the cold one charges setup to the endpoint and flakes, which is what this
+# file used to do. Timing only the warm one leaves the launcher's actual experience
+# unguarded, so a regression that added a second of first-call import would pass.
+hw.DEVICE = None
+hw.CHAT_ONLY = True
+hw.CHAT_ONLY_REASON = None
+hw.DETECTION_COMPLETE.clear()
 
-# Back to "detection has not run", now that the machinery around it is warm.
+cold_started = time.perf_counter()
+cold_body = client.get("/api/health").json()
+cold_elapsed = time.perf_counter() - cold_started
+
+# Same starting state again, now that the machinery around it is warm.
 hw.DEVICE = None
 hw.CHAT_ONLY = True
 hw.CHAT_ONLY_REASON = None
@@ -208,10 +226,10 @@ authed = client.get("/api/health", headers = {"Authorization": "Bearer probe"}).
 print("RESULT" + json.dumps({
     "status": response.status_code,
     "elapsed": elapsed,
-    "warm_cost": warm_cost,
-    # State, not duration: health only omits this when detection is settled, so a warm
-    # call that had to wait would carry it as True.
-    "warm_hardware_detecting": warm_body.get("hardware_detecting"),
+    "cold_elapsed": cold_elapsed,
+    # State, not duration: the cold call has to have modelled the real case, which is
+    # detection still running. A settled reply would mean it measured nothing useful.
+    "cold_hardware_detecting": cold_body.get("hardware_detecting"),
     # TestClient.portal is None until the client is entered, and _portal_factory then
     # builds a throwaway portal per request. Non-None means both calls shared one, which
     # is the only thing that makes the warm call warm the portal as well.
@@ -328,21 +346,18 @@ def test_health_answers_within_the_budget_while_detection_is_slow():
     result = _probe(_SLOW_DETECT_S)
 
     assert result["status"] == 200
-    # The warm call has to have taken the settled path, or the timed request below is
-    # measuring setup again. Asserted on STATE rather than on its duration: health omits
-    # hardware_detecting only when detection is complete, so a warm call that waited
-    # would carry it as True. A duration check here would be the same subsecond
-    # wall-clock ceiling this change exists to remove, on the same contended runners,
-    # and it would say nothing about whether the call waited, since DETECTION_COMPLETE
-    # is set before it. warm_cost is reported for the failure message, never asserted.
     assert result["portal_shared"], (
         "the TestClient was not entered, so _portal_factory built a separate blocking "
-        "portal for each request and the warm call did not warm the timed one's portal"
+        "portal for each request and the cold call did not warm the timed one's portal"
     )
-    assert result["warm_hardware_detecting"] is not True, (
-        f"the warm call got a provisional reply (it took {result['warm_cost']:.2f}s), so "
-        "it waited on detection rather than warming, and the timed request below is "
-        "measuring one-time setup again"
+    # The cold call has to have modelled the real case, detection still running, or it
+    # warmed nothing that matters and the request timed below is not warm. Asserted on
+    # STATE rather than on a duration: a duration check here would be the same subsecond
+    # wall-clock ceiling this change exists to remove, on the same contended runners,
+    # and it would say nothing about which path the call took.
+    assert result["cold_hardware_detecting"] is True, (
+        "the cold call got a settled reply, so it did not exercise the wait and the "
+        "timed request below is measuring one-time setup again"
     )
     assert result["elapsed"] < ceiling, (
         f"/api/health took {result['elapsed']:.2f}s with detection still running; the "
@@ -524,3 +539,33 @@ def test_a_mid_detection_assignment_is_not_treated_as_finished():
     assert (
         "while _hw_module.DEVICE is None" not in body
     ), "the health wait is keyed on the mid-detection assignment again"
+
+
+def test_a_cold_health_call_answers_inside_the_launcher_deadline():
+    """The launcher never gets the warm path.
+
+    probe_ownerless_spawned_backend calls /api/health immediately after startup, with no
+    warm-up, and does not retry: a response that misses its client timeout falls through
+    to "desktop_owned_backend_starting", a dead end the user has to clear by hand. So the
+    first call this process serves is on that deadline's critical path, lazy imports and
+    threadpool startup included, and it is bounded here against the launcher's own
+    timeout rather than against a subsecond number, because that setup legitimately
+    counts against it.
+
+    The sibling test bounds the same request warm and tightly. Neither replaces the
+    other: warm catches the endpoint regressing, cold catches setup growing until the
+    launch dead-ends. Timing only the warm one is a hole, and timing only the cold one is
+    what made this file flaky.
+    """
+    probe_timeout = _desktop_probe_timeout_s()
+    result = _probe(_SLOW_DETECT_S)
+
+    assert result["cold_hardware_detecting"] is True, (
+        "the cold call got a settled reply, so it never exercised the wait this bound "
+        "is about"
+    )
+    assert result["cold_elapsed"] < probe_timeout, (
+        f"the first /api/health call took {result['cold_elapsed']:.2f}s, past the "
+        f"{probe_timeout}s the desktop probe allows before it gives up and dead-ends "
+        "the launch at desktop_owned_backend_starting"
+    )
