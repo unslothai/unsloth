@@ -116,6 +116,10 @@ _UNTERMINATED_QUOTED_KV_RE = re.compile(
     r"(?P<val>" + _UNTERMINATED_QUOTED_VALUE + r")(?=\r?$)",
     re.MULTILINE,
 )
+_PLAIN_SCALAR_KV_RE = re.compile(
+    r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
+    r"(?P<sep>[\"']?\s*:\s*)(?P<val>[^\"'\s|>,}\]][^\"'\r\n,}\]]*)"
+)
 _KV_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
     r"(?P<sep>[\"']?\s*[:=]\s*)(?P<val>[^\"'\s,}\]]+)"
@@ -142,6 +146,9 @@ _CONTINUED_SECRET_RE = re.compile(
     r"(?P<block>[|>](?:[1-9][+-]?|[+-][1-9]?)?)?\s*(?:#.*)?$"
 )
 _CONTINUED_COOKIE_RE = re.compile(r"(?i)^(?P<indent>[ \t]*)(?:set-)?cookie[\"']?\s*[:=]\s*$")
+_INLINE_COOKIE_RE = re.compile(
+    r"(?i)^(?P<indent>[ \t]*)(?:set-)?cookie[\"']?\s*[:=]\s*[\"']?(?P<value>\S.*)$"
+)
 _UNTERMINATED_QUOTED_SECRET_RE = re.compile(
     r"(?i)^(?P<indent>[ \t]*)" + _KEY_START + r"(?:" + _SECRET_KEYS + r")\b[\"']?\s*[:=]\s*"
     r"(?:(?P<double>\")(?:\\.|[^\"\\])*\\?|(?P<single>')(?:\\.|[^'\\])*\\?)$"
@@ -170,9 +177,13 @@ _SCHEMES = ("bearer", "basic", "digest", "token", "apikey")
 # header dict came back as {"Authorization":"Bearer <redacted> with the request
 # id and status gone with it.
 _CREDENTIAL = r"[^\s\"',}\]]+"
-_AUTH_HEADER_RE = re.compile(
-    r"(?i)((?:proxy-)?authorization[\"']?\s*[:=]\s*[\"']?"
-    r"(?:" + "|".join(_SCHEMES) + r"))(\s+)(" + _CREDENTIAL + r")"
+_QUOTED_AUTH_RE = re.compile(
+    r"(?i)(?P<key>(?:proxy-)?authorization)(?P<sep>[\"']?\s*[:=]\s*)"
+    r"(?P<quote>[\"'])(?P<val>" + _QUOTED_VALUE + r")(?P=quote)"
+)
+_UNQUOTED_AUTH_RE = re.compile(
+    r"(?i)(?P<key>(?:proxy-)?authorization)(?P<sep>[\"']?\s*[:=]\s*)"
+    r"(?P<val>[^\"'\s}\]][^\"'\r\n}\]]*)"
 )
 # Bearer is not an English word that shows up in a log on its own, so it keeps
 # a header-less rule; the shape guard still spares "Bearer credentials expired".
@@ -249,9 +260,15 @@ def _redact_shaped(match: re.Match[str]) -> str:
     return f"{match.group(1)}{match.group(2)}{REDACTED}"
 
 
-def _redact_authorization(match: re.Match[str]) -> str:
-    """An exact Authorization header names credential material unambiguously."""
-    return f"{match.group(1)}{match.group(2)}{REDACTED}"
+def _redact_auth_assignment(match: re.Match[str]) -> str:
+    """Mask every exact Authorization value, preserving only known scheme names."""
+    value = match.group("val").strip()
+    scheme, sep, rest = value.partition(" ")
+    if not sep and scheme.lower() in _SCHEMES:
+        return match.group(0)
+    masked = f"{scheme}{sep}{REDACTED}" if scheme.lower() in _SCHEMES and rest.strip() else REDACTED
+    quote = match.groupdict().get("quote") or ""
+    return f"{match.group('key')}{match.group('sep')}{quote}{masked}{quote}"
 
 
 # A cookie header is name=value pairs. _COOKIE_RE takes the rest of the line, so
@@ -284,13 +301,15 @@ def redact_log_text(text: str) -> str:
         text = _ANSI_RE.sub("", text)
     for pattern, replacement in _PATTERNS:
         text = pattern.sub(replacement, text)
-    # Before the key/value rules: _KV_RE captures "Basic" from "Authorization:
-    # Basic dXNlcjpwdw==", masking the scheme and leaving the credential clear.
-    text = _AUTH_HEADER_RE.sub(_redact_authorization, text)
+    # Exact Authorization assignments are unambiguous even when the scheme is
+    # uncommon (Negotiate, AWS SigV4, or a provider-specific extension).
+    text = _QUOTED_AUTH_RE.sub(_redact_auth_assignment, text)
+    text = _UNQUOTED_AUTH_RE.sub(_redact_auth_assignment, text)
     text = _SCHEME_RE.sub(_redact_shaped, text)
     text = _COOKIE_RE.sub(_redact_cookie, text)
     text = _QUOTED_KV_RE.sub(_redact_quoted_kv, text)
     text = _UNTERMINATED_QUOTED_KV_RE.sub(_redact_unterminated_quoted_kv, text)
+    text = _PLAIN_SCALAR_KV_RE.sub(_redact_kv, text)
     text = _KV_RE.sub(_redact_kv, text)
     text = _QUOTED_FLAG_RE.sub(_redact_quoted_kv, text)
     text = _UNTERMINATED_QUOTED_FLAG_RE.sub(_redact_unterminated_quoted_kv, text)
@@ -413,7 +432,11 @@ class StreamingLogRedactor:
                     self._plain_has_value = False
                 return self._masked_record(redacted)
             if not self._plain_has_value:
-                self._plain_key_indent = None
+                self._plain_explicit_continuation = self._ends_with_unescaped_backslash(physical)
+                if self._plain_explicit_continuation:
+                    self._plain_has_value = True
+                else:
+                    self._plain_key_indent = None
                 return self._masked_record(redacted)
             self._plain_key_indent = None
             self._plain_has_value = False
@@ -432,9 +455,13 @@ class StreamingLogRedactor:
             else:
                 self._cookie_key_indent = None
 
-        quoted = _UNTERMINATED_QUOTED_SECRET_RE.search(physical_context)
-        if quoted:
-            self._quoted_secret = '"' if quoted.group("double") else "'"
+        quoted_assignment = _UNTERMINATED_QUOTED_SECRET_RE.search(physical_context)
+        quoted_flag = _UNTERMINATED_QUOTED_FLAG_RE.search(physical_context)
+        if quoted_assignment:
+            self._quoted_secret = '"' if quoted_assignment.group("double") else "'"
+            return self._masked_record(redacted)
+        if quoted_flag:
+            self._quoted_secret = quoted_flag.group("quote")
             return self._masked_record(redacted)
 
         inline_plain = _INLINE_PLAIN_SECRET_RE.search(physical_context)
@@ -468,5 +495,11 @@ class StreamingLogRedactor:
         cookie = _CONTINUED_COOKIE_RE.search(redacted_context)
         if cookie:
             self._cookie_key_indent = len(cookie.group("indent"))
+            self._cookie_has_value = False
+            return redacted
+
+        inline_cookie = _INLINE_COOKIE_RE.search(physical_context)
+        if inline_cookie and _COOKIE_PAIR_RE.match(inline_cookie.group("value").lstrip("'\"")):
+            self._cookie_key_indent = len(inline_cookie.group("indent"))
             self._cookie_has_value = False
         return redacted

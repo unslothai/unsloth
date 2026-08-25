@@ -46,6 +46,7 @@ SECRETS = [
         "ghp_ABCDEFGHIJKLMNOPQRST0123",
     ),
     ("password: hunter2hunter2", "hunter2hunter2"),
+    ("password: correct horse battery staple", "correct horse battery staple"),
     ("password=1234", "1234"),
     ("api_key=abc", "abc"),
     ('api_key="xy"', "xy"),
@@ -64,6 +65,8 @@ SECRETS = [
     ("Authorization: Basic dXNlcm5hbWU6c3VwZXJzZWNyZXQ=", "dXNlcm5hbWU6c3VwZXJzZWNyZXQ="),
     ("Authorization: Basic dTpw", "dTpw"),
     ("Authorization: Bearer xy", "xy"),
+    ("Authorization: Negotiate YIIF-fake-negotiate-token", "YIIF-fake-negotiate-token"),
+    ("Authorization: Custom short", "short"),
     ("headers={'authorization': 'Basic dXNlcjpwdw=='}", "dXNlcjpwdw=="),
     # Studio's UI session cookie gates these very endpoints.
     ("Cookie: unsloth_session=8f3c9d1ab77e4f0a9c2b3d4e", "8f3c9d1ab77e4f0a9c2b3d4e"),

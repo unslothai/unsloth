@@ -2605,7 +2605,10 @@ def export_debug_logs(
     return StreamingResponse(
         _stream_archive(),
         media_type = "application/zip",
-        headers = {"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers = {
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "private, no-store",
+        },
     )
 
 
