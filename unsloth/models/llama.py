@@ -2640,7 +2640,14 @@ class FastLlamaModel:
         # replaces the `lm_head` the planner named off the repo's config, so `dispatch_model`
         # refuses the map: "does not give any device for ... score.weight".
         _planner_skip_reason = None
-        if num_labels is not None:
+        # The weights load against `user_config`; the planner takes `model_name` and rebuilds
+        # the repo's. A caller who changed `num_hidden_layers` or `vocab_size` gets a map for
+        # a model that is not the one being loaded, which dispatches short or budgets short.
+        if user_config is not None:
+            _planner_skip_reason = (
+                "a caller-supplied config may not describe the repo the planner rebuilds"
+            )
+        if _planner_skip_reason is None and num_labels is not None:
             _planner_skip_reason = (
                 planner_class_mismatch_reason(
                     resolve_model_class(AutoModelForSequenceClassification, model_config),

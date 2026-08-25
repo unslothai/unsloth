@@ -717,7 +717,7 @@ def test_the_planner_is_told_where_the_hub_is(monkeypatch):
     assert ns["planner_hub_kwargs"]({"local_files_only": False}) == {}
 
 
-@pytest.mark.parametrize("name", ["vision.py", "llama.py"])
+@pytest.mark.parametrize("name", ["vision.py", "llama.py", "diffusion.py"])
 def test_every_leaf_planner_call_forwards_the_budget_and_the_hub(name):
     """A leaf that misses either one silently plans against the wrong facts."""
     source = open(os.path.join(MODELS, name), encoding = "utf-8").read()
@@ -763,7 +763,7 @@ def test_a_resize_declines_the_automatic_offload():
     embedding feeding a GPU decoder. An explicit request is left alone."""
     loader = open(os.path.join(MODELS, "loader.py"), encoding = "utf-8").read()
     assert "resize_model_vocab is not None" in loader
-    assert "and offload_embedding is OFFLOAD_EMBEDDING_AUTO" in loader
+    assert "and offload_embedding == OFFLOAD_EMBEDDING_AUTO" in loader
 
 
 def test_a_caller_supplied_config_declines_planning():
@@ -788,4 +788,66 @@ def test_the_optimized_path_says_so_when_it_drops_an_offload_request():
     The `"auto"` default stays quiet, since off is a decision it is entitled to make."""
     source = open(os.path.join(MODELS, "loader.py"), encoding = "utf-8").read()
     assert "does not support it" in source
-    assert "offload_embedding is not OFFLOAD_EMBEDDING_AUTO" in source
+    assert "offload_embedding != OFFLOAD_EMBEDDING_AUTO" in source
+
+
+def test_the_auto_mode_is_recognised_by_value_everywhere():
+    """`_resolve_offload_embedding` asks `== OFFLOAD_EMBEDDING_AUTO`, so a caller who
+    hands in an equal but non-interned `"auto"` (one read out of a JSON config, say) is
+    in automatic mode as far as the resolver is concerned. Any guard elsewhere that asks
+    `is` disagrees with it: the resize guard would leave the offload on and the optimized
+    path would print a notice for a request nobody made. Same question, same operator."""
+    loader = open(os.path.join(MODELS, "loader.py"), encoding = "utf-8").read()
+    for node in ast.walk(ast.parse(loader)):
+        if not isinstance(node, ast.Compare):
+            continue
+        rendered = ast.unparse(node)
+        if "OFFLOAD_EMBEDDING_AUTO" not in rendered:
+            continue
+        assert not any(
+            isinstance(op, (ast.Is, ast.IsNot)) for op in node.ops
+        ), f"loader.py:{node.lineno} compares the auto mode by identity: {rendered}"
+
+
+def test_the_optimized_path_declines_a_caller_supplied_config():
+    """FastLanguageModel leaves `config` in kwargs, so the optimized Llama leaf pops its
+    own `user_config` and loads the weights against it while the planner rebuilds the
+    repo's from `model_name`. A caller who changed `num_hidden_layers` or `vocab_size`
+    would get a map for a different model, so the plan is declined rather than guessed."""
+    llama = open(os.path.join(MODELS, "llama.py"), encoding = "utf-8").read()
+    tree = ast.parse(llama)
+    body = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and ast.unparse(node) == "_planner_skip_reason = None":
+            body = node
+    assert body is not None, "llama.py no longer starts a planner skip reason"
+
+    assert "if user_config is not None:" in llama
+    assert (
+        "a caller-supplied config may not describe the repo the planner rebuilds" in llama
+    ), "the optimized path plans against a config the load does not use"
+
+    # The veto has to come first, or a later branch that finds no other reason overwrites it.
+    veto = llama.index("a caller-supplied config may not describe the repo the planner rebuilds")
+    num_labels = llama.index("num_labels loads a task head the repo config does not describe")
+    assert veto < num_labels, "the caller-config veto is set after another branch clears it"
+    assert "if _planner_skip_reason is None and num_labels is not None:" in llama
+
+
+def test_the_diffusion_leaf_plans_with_the_locality_the_load_uses():
+    """diffusion.py pops `local_files_only` off kwargs and resolves the offline env vars
+    into it before the load, so handing the planner the raw kwargs would tell it nothing.
+    It gets the resolved value, or an offline load reaches the Hub behind the caller's
+    back and, when that lookup fails, silently loses the split the model needs to fit."""
+    source = open(os.path.join(MODELS, "diffusion.py"), encoding = "utf-8").read()
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        if getattr(node.func, "id", None) != "resolve_unsloth_device_map":
+            continue
+        rendered = ast.unparse(node)
+        assert "local_files_only" in rendered and "cache_dir" in rendered, (
+            f"diffusion.py:{node.lineno} plans without the locality the load resolved"
+        )
+        return
+    raise AssertionError("no resolve_unsloth_device_map call in diffusion.py")

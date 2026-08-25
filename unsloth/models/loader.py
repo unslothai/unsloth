@@ -1004,7 +1004,7 @@ class FastLanguageModel(FastLlamaModel):
         # `offload_embedding` parameter, so a request for one is dropped here rather than
         # honoured. Say so instead of leaving the caller to infer it from memory use. The
         # `"auto"` default stays quiet: it promises a decision, and off is a decision.
-        if offload_embedding is not OFFLOAD_EMBEDDING_AUTO and offload_embedding:
+        if offload_embedding != OFFLOAD_EMBEDDING_AUTO and offload_embedding:
             print(
                 "Unsloth: Not offloading embeddings; the optimized path for this "
                 "architecture does not support it. Pass `device_map` or use FastModel "
@@ -2040,7 +2040,7 @@ class FastModel(FastBaseModel):
             # request is left alone, since it was already this caller's to get wrong.
             offload_embedding = (
                 False
-                if resize_model_vocab is not None and offload_embedding is OFFLOAD_EMBEDDING_AUTO
+                if resize_model_vocab is not None and offload_embedding == OFFLOAD_EMBEDDING_AUTO
                 else offload_embedding
             ),
             float32_mixed_precision = float32_mixed_precision,
