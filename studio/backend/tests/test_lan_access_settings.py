@@ -241,6 +241,7 @@ def test_a_loopback_launch_offers_a_startable_off_state():
     assert status["block_reason"] is None
     assert status["can_start"] is True and status["can_stop"] is False
     assert status["urls"] == []
+    assert status["keyless_lan_eligible"] is False
 
 
 def test_lan_status_uses_one_fail_closed_keyless_state(monkeypatch):
@@ -284,6 +285,7 @@ def test_a_specific_host_launch_reports_the_address_it_was_given():
     status = lan_settings.lan_access_status(_app(lan_access_launch_managed = True))
     assert status["state"] == "online" and status["managed_by"] == "launch"
     assert status["urls"] == ["http://192.168.1.24:8888"]
+    assert status["keyless_lan_eligible"] is True
     assert status["can_stop"] is False
 
 
@@ -323,6 +325,7 @@ def test_a_publicly_routable_bind_is_flagged_so_the_ui_can_warn(monkeypatch):
     status = lan_settings.lan_access_status(_app())
     assert status["urls"] == ["http://192.168.1.24:8888", "http://64.227.100.5:8888"]
     assert status["public_urls"] == ["http://64.227.100.5:8888"]
+    assert status["keyless_lan_eligible"] is True
 
 
 @pytest.mark.parametrize(
@@ -348,7 +351,21 @@ def test_a_private_bind_carries_no_public_warning(monkeypatch):
         "lan_listener_status",
         lambda: {"running": True, "addresses": ["192.168.1.24"], "port": 8888, "error": None},
     )
-    assert lan_settings.lan_access_status(_app())["public_urls"] == []
+    status = lan_settings.lan_access_status(_app())
+    assert status["public_urls"] == []
+    assert status["keyless_lan_eligible"] is True
+
+
+def test_a_cgnat_bind_is_not_reported_as_keyless_lan(monkeypatch):
+    monkeypatch.setattr(
+        lan_access,
+        "lan_listener_status",
+        lambda: {"running": True, "addresses": ["100.64.0.10"], "port": 8888, "error": None},
+    )
+    status = lan_settings.lan_access_status(_app())
+    assert status["state"] == "online"
+    assert status["public_urls"] == []
+    assert status["keyless_lan_eligible"] is False
 
 
 def test_api_only_launches_advertise_that_the_web_ui_is_not_served():

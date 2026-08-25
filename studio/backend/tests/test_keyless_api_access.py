@@ -354,7 +354,7 @@ def test_tool_policy_and_api_identity(monkeypatch):
 
 def test_protected_side_effect_guards_remain_wired():
     import inspect
-    from routes import auth, inference, preview, training_history
+    from routes import auth, inference, mcp_servers, preview, rag, training_history, video
 
     auth_source = inspect.getsource(auth)
     assert auth_source.count("_require_a_credential_of_its_own(") >= 6
@@ -372,6 +372,17 @@ def test_protected_side_effect_guards_remain_wired():
             training_history.get_training_run_detail,
             training_history.update_training_run,
         )
+    )
+    assert all(
+        "request_admitted_without_credential" in inspect.getsource(handler)
+        for handler in (video.get_gallery_video_signed_url, rag.document_file_url)
+    )
+    assert "request_admitted_without_credential" in inspect.getsource(
+        inference.openai_image_generations
+    )
+    assert all(
+        "no_credential" in inspect.getsource(handler)
+        for handler in (mcp_servers.list_mcp_servers, mcp_servers.update_mcp_server)
     )
     main_source = (Path(__file__).parents[1] / "main.py").read_text(encoding = "utf-8")
     assert 'app.state.secure = os.environ.get("UNSLOTH_SECURE") == "1"' in main_source

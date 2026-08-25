@@ -52,6 +52,8 @@ test("normalize maps every snake_case field onto its camelCase name", () => {
       block_reason: null,
       // biome-ignore lint/style/useNamingConvention: API schema
       serves_web_ui: true,
+      // biome-ignore lint/style/useNamingConvention: API schema
+      keyless_lan_eligible: true,
     }),
   );
   assert.deepEqual(s, {
@@ -65,6 +67,7 @@ test("normalize maps every snake_case field onto its camelCase name", () => {
     canStop: true,
     blockReason: null,
     servesWebUi: true,
+    keylessLanEligible: true,
     keylessScope: "off",
     keylessTools: false,
   });
@@ -78,6 +81,7 @@ test("normalize defaults the optional fields an older backend may omit", () => {
   assert.equal(s.managedBy, null);
   assert.equal(s.blockReason, null);
   assert.equal(s.servesWebUi, true);
+  assert.equal(s.keylessLanEligible, false);
   assert.equal(s.keylessScope, "off");
   assert.equal(s.keylessTools, false);
 });
@@ -94,9 +98,29 @@ test("keyless state and messaging preserve every security boundary", () => {
     keylessLanAccessDescription(null).includes("Authentication is required"),
   );
   const cases: [Partial<ApiLanAccessStatus>, string][] = [
-    [{ keyless_scope: "inference" }, "active private listener"],
     [
-      { state: "online", public_urls: [PUBLIC], keyless_scope: "inference" },
+      {
+        state: "online",
+        keyless_lan_eligible: false,
+        keyless_scope: "inference",
+      },
+      "active private listener",
+    ],
+    [
+      {
+        state: "online",
+        keyless_lan_eligible: true,
+        keyless_scope: "inference",
+      },
+      "this active private LAN",
+    ],
+    [
+      {
+        state: "online",
+        public_urls: [PUBLIC],
+        keyless_lan_eligible: true,
+        keyless_scope: "inference",
+      },
       "never through the listed public URL",
     ],
     [{ keyless_scope: "full" }, "never granted over LAN or public URLs"],

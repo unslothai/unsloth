@@ -16,6 +16,7 @@ export type LanAccessStatus = {
   canStop: boolean;
   blockReason: string | null;
   servesWebUi: boolean;
+  keylessLanEligible: boolean;
   keylessScope: LanKeylessScope;
   keylessTools: boolean;
 };
@@ -38,6 +39,8 @@ export type ApiLanAccessStatus = {
   block_reason?: string | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   serves_web_ui?: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  keyless_lan_eligible?: boolean | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   keyless_scope?: LanKeylessScope | string | null;
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -64,6 +67,7 @@ export function normalizeLanAccessStatus(
     blockReason: status.block_reason ?? null,
     // absent on a backend that predates the field, where the web UI is served
     servesWebUi: status.serves_web_ui !== false,
+    keylessLanEligible: status.keyless_lan_eligible === true,
     keylessScope,
     keylessTools: keylessScope !== "off" && status.keyless_tools === true,
   };
@@ -84,10 +88,10 @@ export function keylessLanAccessDescription(
   const tools = status.keylessTools
     ? " Agent tools are separately enabled."
     : " Agent tools remain off unless separately granted.";
-  if (status.publicUrls.length > 0) {
+  if (status.keylessLanEligible && status.publicUrls.length > 0) {
     return `Inference can be keyless on localhost and an active private LAN, but never through the listed public URL.${tools}`;
   }
-  if (status.state === "online") {
+  if (status.keylessLanEligible) {
     return `Inference can be keyless on localhost and this active private LAN.${tools}`;
   }
   return `Inference is keyless on localhost; LAN callers require an active private listener.${tools}`;

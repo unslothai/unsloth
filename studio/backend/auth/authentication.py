@@ -112,7 +112,7 @@ def _request_would_use_keyless(request: Any) -> bool:
     return scheme.lower() == "bearer" and token in APPROVED_DUMMY_BEARERS
 
 
-def request_admitted_without_credential(request: Any) -> bool:
+def request_admitted_without_credential(request: Request) -> bool:
     """``admitted_without_credential`` for a caller that holds only the request.
 
     Costs a key validation, so ask it late: past the cheap disqualifiers, next to the

@@ -27236,6 +27236,17 @@ async def openai_image_generations(
                 "Streaming image generation is not supported.", status = 400, param = "stream"
             ),
         )
+    if body.response_format != "b64_json":
+        from auth.authentication import request_admitted_without_credential
+        if request_admitted_without_credential(request):
+            raise HTTPException(
+                status_code = 403,
+                detail = openai_error_body(
+                    "URL image responses require an API key. Use response_format='b64_json' for keyless access.",
+                    status = 403,
+                    param = "response_format",
+                ),
+            )
     try:
         width, height = _parse_openai_image_size(body.size)
     except ValueError as exc:

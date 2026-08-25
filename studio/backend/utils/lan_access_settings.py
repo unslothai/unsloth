@@ -273,6 +273,17 @@ def _public_urls(urls: list[str], resolved_addresses: tuple[str, ...] = ()) -> l
     return public
 
 
+def _has_keyless_lan_url(urls: list[str]) -> bool:
+    from urllib.parse import urlparse
+    for url in urls:
+        parsed = urlparse(url)
+        if parsed.hostname and _all_addresses_are(
+            parsed.hostname, parsed.port or 80, _private_non_loopback
+        ):
+            return True
+    return False
+
+
 def lan_access_status(app) -> dict:
     """Everything Settings > LAN access renders, resolved for the current launch."""
     from lan_access import lan_listener_status
@@ -329,6 +340,7 @@ def lan_access_status(app) -> dict:
         "can_stop": controllable and running,
         "block_reason": block_reason,
         "serves_web_ui": frontend_served,
+        "keyless_lan_eligible": _has_keyless_lan_url(urls),
         "keyless_scope": keyless_scope,
         "keyless_tools": keyless_tools,
     }
