@@ -1675,6 +1675,15 @@ def main() -> int:
         default = False,
         help = "record which fast kernels loaded and where each resolved from",
     )
+    ap.add_argument(
+        # Only for models the control arm demonstrably cannot LOAD on the card.
+        # An OOM during training stays a failure either way.
+        "--control-oom-is-ok",
+        dest = "control_oom_is_ok",
+        action = "store_true",
+        default = False,
+        help = "a plain-TRL OOM before the first step is reported, not failed",
+    )
     ap.add_argument("--label", default = "t4-smoke")
     args = ap.parse_args()
 
@@ -1899,7 +1908,9 @@ def main() -> int:
     # which are the same rules the unsloth arm is held to.
     if args.compare_naive_trl:
         report["naive_trl"] = naive
-        naive_broken = comparison_failures(naive, report["metrics"])
+        naive_broken = comparison_failures(
+            naive, report["metrics"], allow_oom = args.control_oom_is_ok
+        )
         report["naive_trl_failures"] = naive_broken
         failures += naive_broken
 

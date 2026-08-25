@@ -283,6 +283,21 @@ LEGS: dict[str, Leg] = {
             # versions and an equality assertion would be red on drift. What it
             # DOES assert is that both paths train and both converge.
             "--compare-naive-trl",
+            # Measured on kernels unsloth-probe-latestcompile-r4-e67ef2 and
+            # -r5-45cf5b: the plain arm asks for 8.75GiB with 8.96GiB already
+            # resident on a 14.56GiB T4, at LOAD -- `metrics` is absent, so no
+            # step ever ran. Enabling gradient checkpointing changed the number
+            # not at all, which is what ruled out my first explanation.
+            #
+            # E2B is a MatFormer SUBMODEL of E4B and the checkpoint carries the
+            # larger weights, so a loader that does not extract the submodel
+            # materialises all of them. That is a statement about the card and
+            # the checkpoint, not about either training stack, and failing the
+            # leg on it would be failing on a fact.
+            #
+            # An OOM DURING training is still a failure. This only excuses the
+            # load.
+            "--control-oom-is-ok",
         ),
         # No reference, for the frontier/canary reason: two library sets do not
         # produce one fp16 trajectory, and a band here would go red on ordinary

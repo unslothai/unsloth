@@ -2228,6 +2228,15 @@ PARENT_ONLY_DESTS = {
     # The pin check reads the report the cycles produced, in the parent
     # (run_t4_smoke.py:1741), so the children have nothing to do with it.
     "pins",
+    # The plain-TRL control arm is spawned BY the parent, after the cycles, and
+    # ruled on there. A cycle child neither runs it nor judges it.
+    "compare_naive_trl",
+    "control_oom_is_ok",
+    # Kernel provenance IS collected in the child (it needs the loaded model),
+    # but the flag reaches it through the bare-flag block rather than the
+    # name/value pairs this check walks; asserted separately in
+    # test_kernel_provenance.py.
+    "kernel_provenance",
 }
 
 

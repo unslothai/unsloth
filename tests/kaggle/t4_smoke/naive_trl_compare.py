@@ -195,7 +195,23 @@ def run(args) -> dict:
     return result
 
 
-def comparison_failures(naive: dict | None, unsloth_metrics: list[dict] | None) -> list[str]:
+# Substrings that identify an out-of-memory failure, whichever layer raised it.
+# torch says "CUDA out of memory", accelerate and bitsandbytes wrap it, and the
+# exception TYPE is not reliably OutOfMemoryError once it has been re-raised.
+_OOM_MARKERS = ("out of memory", "outofmemoryerror", "cuda oom")
+
+
+def _is_oom(text: str) -> bool:
+    lowered = (text or "").lower()
+    return any(marker in lowered for marker in _OOM_MARKERS)
+
+
+def comparison_failures(
+    naive: dict | None,
+    unsloth_metrics: list[dict] | None,
+    *,
+    allow_oom: bool = False,
+) -> list[str]:
     """The two claims this comparison is entitled to make.
 
     Kept as a pure function of two dicts so the rules are testable on CPU
@@ -207,6 +223,23 @@ def comparison_failures(naive: dict | None, unsloth_metrics: list[dict] | None) 
     if naive is None:
         return ["the plain-TRL arm produced no report at all"]
     if naive.get("error"):
+        if allow_oom and _is_oom(naive["error"]) and not naive.get("metrics"):
+            # An OOM BEFORE a single step is a statement about the card, not
+            # about either training stack, and it is measured: on
+            # gemma-4-E2B-it the plain arm asks for 8.75GiB with 8.96GiB
+            # already resident on a 14.56GiB T4, and it does so at LOAD --
+            # `metrics` is absent, so no step ever ran. Gradient checkpointing
+            # does not touch that, and enabling it changed nothing.
+            #
+            # The likely cause is worth naming rather than implying: E2B is a
+            # MatFormer SUBMODEL of E4B and the checkpoint carries the larger
+            # weights, so a loader that does not extract the submodel
+            # materialises all of them.
+            #
+            # Narrow on purpose. An OOM DURING training is still a failure --
+            # that is a finding about the run, not about the card -- and this
+            # only ever applies when the caller opted in.
+            return []
         return [f"the plain-TRL arm did not run: {naive['error']}"]
 
     failures = []

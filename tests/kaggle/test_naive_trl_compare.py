@@ -137,3 +137,33 @@ def test_the_control_arm_uses_gradient_checkpointing():
     # Non-reentrant, or a PEFT model's inputs carry no grad and the backward
     # fails with "element 0 of tensors does not require grad".
     assert 'gradient_checkpointing_kwargs = {"use_reentrant": False}' in src
+
+
+def test_a_load_time_oom_can_be_reported_rather_than_failed():
+    """Measured: on gemma-4-E2B-it the plain arm asks for 8.75 GiB with 8.96 GiB
+    already resident on a 14.56 GiB T4, at LOAD -- `metrics` is absent, so no
+    step ever ran, and enabling gradient checkpointing changed the number not at
+    all. That is a statement about the card and the checkpoint, not about either
+    training stack."""
+    oom = {"error": "OutOfMemoryError: CUDA out of memory. Tried to allocate 8.75 GiB"}
+    assert comparison_failures(oom, [{"loss": 1.0}], allow_oom = True) == []
+
+
+def test_an_oom_is_still_a_failure_when_the_leg_did_not_opt_in():
+    oom = {"error": "OutOfMemoryError: CUDA out of memory"}
+    assert comparison_failures(oom, [{"loss": 1.0}])
+
+
+def test_an_oom_after_training_started_is_still_a_failure():
+    """The narrowness is the point. An OOM DURING training is a finding about
+    the run; only a failure to load is a fact about the card."""
+    oom = {
+        "error": "OutOfMemoryError: CUDA out of memory",
+        "metrics": [{"step": 1, "loss": 3.0}],
+    }
+    assert comparison_failures(oom, [{"loss": 1.0}], allow_oom = True)
+
+
+def test_a_non_oom_crash_is_never_excused():
+    crash = {"error": "ImportError: no module named trl"}
+    assert comparison_failures(crash, [{"loss": 1.0}], allow_oom = True)
