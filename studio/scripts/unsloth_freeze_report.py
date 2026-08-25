@@ -591,9 +591,17 @@ def classify(
     # `stalled_at` on the startup of a run that then went on to poll happily for four
     # minutes, and no later evidence could clear it: every healthy candidate was reported
     # FROZE at about the moment it finished starting up.
+    # A freeze does not recover. One flat interval is a delayed request, a pause, or a
+    # backend hiccup, and the reported symptom is an interface that stops and stays
+    # stopped, so require that it never polls again rather than reporting the first gap.
+    # STALE_AFTER already applies this reasoning to the both-counters-flat case below
+    # ("a single missed sample is not it"); this arm was the one place it did not.
     post = [s for s in samples if s[0] >= warmup]
+    resumed_at = _last_rise(post, 1)
     for i in range(1, len(post)):
         if post[i][1] == post[i - 1][1] and post[i][2] > post[i - 1][2]:
+            if resumed_at is not None and resumed_at >= post[i][0]:
+                continue
             return (
                 f"FROZE: the interface stopped polling at about {post[i][0]}s "
                 f"while the watchdog kept going"

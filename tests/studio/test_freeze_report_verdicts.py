@@ -403,3 +403,42 @@ def test_the_gate_and_the_cleanup_share_one_attribution_rule():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+def test_one_flat_interval_that_recovers_is_not_a_freeze():
+    """A freeze does not recover.
+
+    The interface polls every 5s and the script samples every 15s, so a healthy window
+    carries about three heartbeats. A delayed request, a pause, or a backend hiccup can
+    still leave one window flat. Reporting FROZE on the first gap made a run that polled
+    normally for the rest of its life unreadable, and no later evidence could clear it.
+    """
+    samples = [
+        (0, 0, 0),
+        (15, 3, 3),
+        (30, 6, 6),
+        (45, 9, 9),
+        (60, 12, 12),
+        (75, 12, 15),   # the gap: interface flat, watchdog carries on
+        (90, 15, 18),   # and it comes straight back
+        (105, 18, 21),
+        (120, 21, 24),
+    ]
+    got = verdict(samples, warmup = 0)
+    assert not got.startswith("FROZE"), got
+
+
+def test_an_interface_that_stops_and_stays_stopped_is_still_a_freeze():
+    """The other direction, so the fix above cannot be satisfied by never reporting."""
+    samples = [
+        (0, 0, 0),
+        (15, 3, 3),
+        (30, 6, 6),
+        (45, 9, 9),
+        (60, 9, 12),    # stops here
+        (75, 9, 15),
+        (90, 9, 18),
+        (105, 9, 21),
+        (120, 9, 24),
+    ]
+    got = verdict(samples, warmup = 0)
+    assert got.startswith("FROZE"), got
