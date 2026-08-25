@@ -156,8 +156,7 @@ def test_the_original_error_is_still_reported():
         # `{e}` renders nothing when the exception carries no args, so the
         # formatter that always leads with the type is equally acceptable here.
         assert any(
-            ("{e}" in w or "_describe_exception(e)" in w)
-            and "_offloaded_parameter_hint" in w
+            ("{e}" in w or "_describe_exception(e)" in w) and "_offloaded_parameter_hint" in w
             for w in windows
         ), anchor
 

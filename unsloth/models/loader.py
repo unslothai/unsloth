@@ -860,9 +860,9 @@ class FastLanguageModel(FastLlamaModel):
                 # A user-supplied `quantization_config` is NOT dropped here: it
                 # stays in **kwargs and is forwarded to Transformers, which still
                 # quantizes. Only the plain flags are dropped, so only say so for those.
-                if (
-                    load_in_4bit or load_in_8bit or load_in_fp8 != False
-                ) and kwargs.get("quantization_config", None) is None:
+                if (load_in_4bit or load_in_8bit or load_in_fp8 != False) and kwargs.get(
+                    "quantization_config", None
+                ) is None:
                     print(
                         f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so the "
                         f"requested 4bit/8bit/fp8 loading is disabled and the model will "
@@ -1874,9 +1874,9 @@ class FastModel(FastBaseModel):
                 # A user-supplied `quantization_config` is NOT dropped here: it
                 # stays in **kwargs and is forwarded to Transformers, which still
                 # quantizes. Only the plain flags are dropped, so only say so for those.
-                if (
-                    load_in_4bit or load_in_8bit or load_in_fp8 != False
-                ) and kwargs.get("quantization_config", None) is None:
+                if (load_in_4bit or load_in_8bit or load_in_fp8 != False) and kwargs.get(
+                    "quantization_config", None
+                ) is None:
                     print(
                         f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so the "
                         f"requested 4bit/8bit/fp8 loading is disabled and the model will "
