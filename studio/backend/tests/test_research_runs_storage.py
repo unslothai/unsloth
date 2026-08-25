@@ -4060,3 +4060,65 @@ def test_a_stopped_worker_does_not_stamp_cancelled_on_the_next_question(research
     new_reply = studio_db.get_chat_message("thread-1", "assistant-2")
     assert (new_reply["metadata"] or {}).get("researchStatus") != "cancelled"
     assert "Research cancelled." not in json.dumps(new_reply["content"])
+
+
+def _attachment_only_message(message_id = "user-img", created_at = 40):
+    """What the composer sends for an image-only turn: attachments, no text."""
+    studio_db.upsert_chat_message(
+        {
+            "id": message_id,
+            "threadId": "thread-1",
+            "role": "user",
+            "content": [],
+            "attachments": [{"id": "att-1", "type": "image", "name": "chart.png", "content": []}],
+            "createdAt": created_at,
+        }
+    )
+    return message_id
+
+
+def _create_via_route(user_message_id, question = None):
+    from fastapi import Request
+    from routes.research_runs import CreateResearchRun, create_research_run
+
+    payload = CreateResearchRun(
+        threadId = "thread-1",
+        userMessageId = user_message_id,
+        assistantMessageId = None,
+        inferenceRequest = {"model": "local-model"},
+        **({"question": question} if question is not None else {}),
+    )
+    request = Request(
+        {
+            "type": "http",
+            "headers": [],
+            "app": SimpleNamespace(state = SimpleNamespace(research_supervisor = None)),
+        }
+    )
+    return create_research_run(payload, request, current_subject = "alice")
+
+
+def test_an_attachment_only_turn_researches_the_handed_off_question(research_home):
+    """A multimodal model reads the image and hands off a question; the message has no text.
+
+    The worker researches config.question, so refusing on the message's own text ends an
+    otherwise complete handoff in "Deep research could not start".
+    """
+    message_id = _attachment_only_message()
+
+    run = _create_via_route(message_id, question = "What does this revenue chart show for Q3?")
+
+    assert run["status"] == "planning"
+    assert run["config"]["question"] == "What does this revenue chart show for Q3?"
+
+
+def test_an_attachment_only_turn_with_no_question_is_still_refused(research_home):
+    """Nothing to research: neither the message nor the handoff carries a question."""
+    import fastapi
+
+    message_id = _attachment_only_message("user-img-2", 41)
+
+    with pytest.raises(fastapi.HTTPException) as excinfo:
+        _create_via_route(message_id)
+    assert excinfo.value.status_code == 400
+    assert "non-empty text" in excinfo.value.detail

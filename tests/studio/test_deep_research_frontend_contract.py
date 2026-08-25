@@ -377,3 +377,29 @@ def test_the_handoff_is_keyed_on_the_result_the_backend_writes() -> None:
     assert max_length is not None
     limit = int(max_length.group(1).replace("_", ""))
     assert f"DEEP_RESEARCH_QUESTION_MAX_CHARS = {limit}" in helper
+
+
+def test_the_handoff_uses_the_turn_that_asked_for_it() -> None:
+    """The handoff runs after the model's stream, and the model selector stays usable.
+
+    Reading the store there researched model A's handoff with whichever model B had since
+    been picked, or failed outright when B runs no Studio tools.
+    """
+    adapter = source("features/chat/api/chat-adapter.ts")
+    # The generator's own body: the main path's re-read after an auto-load is a different
+    # thing, and it happens at send time where reading the store is right.
+    research = adapter.split("const startDeepResearch = async function*", 1)[1].split(
+        "const deepResearchHandoff = newDeepResearchHandoff();", 1
+    )[0]
+    assert "const sendTimeRuntime = runtime;" in research
+    assert "withResolvedModel(sendTimeRuntime)" in research
+    # Only the empty-model resolution, which happens inside this call, may override it.
+    assert "useChatRuntimeStore.getState()" not in research
+
+
+def test_a_tool_that_ran_starts_its_run_even_if_the_reply_never_finished() -> None:
+    """The acknowledgement can error, time out or drop; the run it announced is still owed."""
+    adapter = source("features/chat/api/chat-adapter.ts")
+    stream_error = adapter.split("} catch (streamError) {", 1)[1].split("throw streamError;", 1)[0]
+    assert "deepResearchHandoff.question !== null && !runSignal.aborted" in stream_error
+    assert "yield* startDeepResearch(deepResearchHandoff.question)" in stream_error

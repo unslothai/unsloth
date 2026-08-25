@@ -379,7 +379,11 @@ def create_research_run(
         raise HTTPException(
             status_code = 400, detail = "userMessageId must identify a user message in the thread"
         )
-    if not message_text_with_pastes(user_message).strip():
+    # A handed-off question counts as the text. An image-, audio- or video-only send is a
+    # normal composer turn, and a multimodal model that reads one and calls deep_research
+    # passes the question it wrote; the worker researches config.question, so refusing here
+    # on the message's own (empty) text ends an otherwise complete handoff in a toast.
+    if not message_text_with_pastes(user_message).strip() and not (payload.question or "").strip():
         raise HTTPException(
             status_code = 400,
             detail = "Deep research requires a user message with non-empty text",

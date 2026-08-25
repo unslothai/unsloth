@@ -4022,54 +4022,51 @@ export function createOpenAIStreamAdapter(
             throw new Error("Load a model first.");
           }
         }
-        const liveRuntime = useChatRuntimeStore.getState();
+        // The turn's own settings, not the store's now. This generator runs AFTER the
+        // model's stream, and the model selector stays usable while a turn is streaming: a
+        // live read researched the question model A handed off with whichever model B had
+        // since been picked, or failed outright when B runs no Studio tools. The one thing
+        // that legitimately happened after the send is the empty-model resolution above.
+        const sendTimeRuntime = runtime;
+        const withResolvedModel = <T extends typeof sendTimeRuntime>(base: T): T =>
+          queuedEmptyModelRuntime === null
+            ? base
+            : {
+                ...base,
+                params: {
+                  ...base.params,
+                  checkpoint: queuedEmptyModelRuntime.checkpoint,
+                },
+                supportsTools: queuedEmptyModelRuntime.supportsTools,
+                supportsReasoning: queuedEmptyModelRuntime.supportsReasoning,
+                reasoningAlwaysOn: queuedEmptyModelRuntime.reasoningAlwaysOn,
+                reasoningStyle: queuedEmptyModelRuntime.reasoningStyle,
+                supportsReasoningOff: queuedEmptyModelRuntime.supportsReasoningOff,
+                reasoningEffortLevels: queuedEmptyModelRuntime.reasoningEffortLevels,
+                supportsPreserveThinking:
+                  queuedEmptyModelRuntime.supportsPreserveThinking,
+                preserveThinking: queuedEmptyModelRuntime.preserveThinking,
+                ggufContextLength: queuedEmptyModelRuntime.ggufContextLength,
+                models: mergeQueuedModelCapabilities(
+                  base.models,
+                  queuedEmptyModelRuntime.checkpoint,
+                  queuedEmptyModelRuntime.modelCapabilities,
+                ),
+              };
         runtime = queuedRunSettings
           ? queuedRunSettings.params.checkpoint
-            ? { ...liveRuntime, ...queuedRunSettings }
-            : {
-                ...liveRuntime,
+            ? { ...sendTimeRuntime, ...queuedRunSettings }
+            : withResolvedModel({
+                ...sendTimeRuntime,
                 ...queuedRunSettings,
+                // The queued snapshot carries no model of its own; without a resolution
+                // this turn's own is the answer.
                 params: {
                   ...queuedRunSettings.params,
-                  checkpoint:
-                    queuedEmptyModelRuntime?.checkpoint ??
-                    liveRuntime.params.checkpoint,
+                  checkpoint: sendTimeRuntime.params.checkpoint,
                 },
-                supportsTools:
-                  queuedEmptyModelRuntime?.supportsTools ??
-                  liveRuntime.supportsTools,
-                supportsReasoning:
-                  queuedEmptyModelRuntime?.supportsReasoning ??
-                  liveRuntime.supportsReasoning,
-                reasoningAlwaysOn:
-                  queuedEmptyModelRuntime?.reasoningAlwaysOn ??
-                  liveRuntime.reasoningAlwaysOn,
-                reasoningStyle:
-                  queuedEmptyModelRuntime?.reasoningStyle ??
-                  liveRuntime.reasoningStyle,
-                supportsReasoningOff:
-                  queuedEmptyModelRuntime?.supportsReasoningOff ??
-                  liveRuntime.supportsReasoningOff,
-                reasoningEffortLevels:
-                  queuedEmptyModelRuntime?.reasoningEffortLevels ??
-                  liveRuntime.reasoningEffortLevels,
-                supportsPreserveThinking:
-                  queuedEmptyModelRuntime?.supportsPreserveThinking ??
-                  liveRuntime.supportsPreserveThinking,
-                preserveThinking:
-                  queuedEmptyModelRuntime?.preserveThinking ??
-                  liveRuntime.preserveThinking,
-                ggufContextLength:
-                  queuedEmptyModelRuntime !== null
-                    ? queuedEmptyModelRuntime.ggufContextLength
-                    : liveRuntime.ggufContextLength,
-                models: mergeQueuedModelCapabilities(
-                  liveRuntime.models,
-                  queuedEmptyModelRuntime?.checkpoint ?? "",
-                  queuedEmptyModelRuntime?.modelCapabilities ?? null,
-                ),
-              }
-          : liveRuntime;
+              })
+          : withResolvedModel(sendTimeRuntime);
         if (!resolvedThreadId) throw new Error("Research requires a saved chat.");
         if (!unstable_assistantMessageId) {
           throw new Error(
@@ -6850,6 +6847,23 @@ export function createOpenAIStreamAdapter(
             ) {
               retriedWithRefreshedKey = true;
               continue;
+            }
+            // The tool ran, so the run it announced is owed whatever the acknowledgement
+            // did next: a small model that stalls on the follow-up sentence, a timeout, a
+            // dropped connection. Its card replaces this reply anyway, so nothing the
+            // failed acknowledgement would have said is lost. Not after Stop.
+            if (deepResearchHandoff.question !== null && !runSignal.aborted) {
+              try {
+                yield* startDeepResearch(deepResearchHandoff.question);
+                return;
+              } catch (researchError) {
+                toast.error("Deep research could not start", {
+                  description:
+                    researchError instanceof Error
+                      ? researchError.message
+                      : String(researchError),
+                });
+              }
             }
             throw streamError;
           }
