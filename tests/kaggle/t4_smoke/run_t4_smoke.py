@@ -613,6 +613,27 @@ def _reconstruct_adapter_config(adapter_dir, expected: dict | None) -> dict:
             unchecked.append(key)
             continue
         got = getattr(config, key)
+        if key == "target_modules" and isinstance(got, str):
+            # PEFT allows target_modules to be a REGEX as well as a list, and
+            # unsloth writes one for vision models so the adapter targets the
+            # language tower and not the vision encoder. Measured on
+            # unsloth-probe-vision-leg-r2-793ec0 with Qwen3.5-2B and again on
+            # gemma-4-E2B-it, where the saved value begins
+            #   (?:.*?(?:language|text).*?(?:self_attn|attention|...
+            #
+            # Comparing that string against the list that was REQUESTED reports
+            # a difference on every vision model, which is correct behaviour
+            # being called a defect. The claim worth keeping is narrower and
+            # still falsifiable: every module name asked for must appear in the
+            # pattern, so a silently dropped projection is still caught.
+            missing = [name for name in (wanted or []) if name not in got]
+            same = not missing
+            if not same:
+                differences.append(
+                    f"{key}: trained with {wanted!r}, and the saved regex does "
+                    f"not mention {missing!r}: {got!r}"
+                )
+            continue
         if isinstance(wanted, (list, tuple, set)) or isinstance(got, (list, tuple, set)):
             same = sorted(got or []) == sorted(wanted or [])
         else:
