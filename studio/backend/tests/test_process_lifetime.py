@@ -483,6 +483,12 @@ def _run_nested_child_arm(tmp_path, arm: str) -> tuple[str, bool]:
     return proc.stdout, marker.exists()
 
 
+@pytest.mark.skipif(
+    not __debug__,
+    reason = "CPython's daemonic-children guard is an assert, so -O strips it and a "
+             "daemonic worker spawns freely -- this arm would assert the opposite of "
+             "what it means",
+)
 def test_daemonic_worker_cannot_spawn_children_without_the_shim(tmp_path):
     stdout, grandchild_ran = _run_nested_child_arm(tmp_path, "plain")
     assert "refused AssertionError: daemonic processes are not allowed to have children" in stdout
@@ -510,3 +516,24 @@ def test_allow_child_processes_clears_only_the_daemon_bit(monkeypatch):
 def test_allow_child_processes_survives_a_missing_config(monkeypatch):
     monkeypatch.setattr(multiprocessing.process, "current_process", lambda: type("P", (), {})())
     pl.allow_child_processes()
+
+
+def test_an_older_process_lifetime_still_gets_the_parent_death_binding(monkeypatch):
+    """A tree without `allow_child_processes` must keep the binding that predates it.
+
+    `allow_child_processes` is newer than `bind_current_process_to_parent_lifetime`.
+    Importing both in one statement would make an older process_lifetime.py raise
+    ImportError for the whole block, so a worker would lose the parent-death
+    binding as well -- turning a missing download fix into leaked workers.
+    """
+    from utils import native_path_leases
+
+    calls = []
+    monkeypatch.setattr(
+        pl, "bind_current_process_to_parent_lifetime", lambda: calls.append("bind")
+    )
+    monkeypatch.delattr(pl, "allow_child_processes")
+
+    native_path_leases.run_without_native_path_secret(lambda: None)
+
+    assert calls == ["bind"]
