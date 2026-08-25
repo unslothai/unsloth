@@ -442,33 +442,28 @@ class InferenceOrchestrator:
             pass
 
         # 5. Force kill if still alive
-        descendants = []
         if self._proc is not None and self._proc.is_alive():
             logger.warning("Inference subprocess did not exit gracefully, terminating")
             try:
-                from utils.process_lifetime import collect_descendants
-                descendants = collect_descendants(self._proc.pid)
-            except Exception:
-                pass
-            try:
-                self._proc.terminate()
+                from utils.process_lifetime import terminate_pid
+                terminate_pid(self._proc.pid, timeout = 5)
                 self._proc.join(timeout = 5)
             except Exception:
                 pass
             if self._proc is not None and self._proc.is_alive():
-                logger.warning("Subprocess still alive after terminate, killing")
+                logger.warning("Process-tree shutdown failed, terminating the worker directly")
                 try:
-                    self._proc.kill()
-                    self._proc.join(timeout = 3)
+                    self._proc.terminate()
+                    self._proc.join(timeout = 5)
                 except Exception:
                     pass
-
-        if descendants:
-            try:
-                from utils.process_lifetime import terminate_descendants
-                terminate_descendants(descendants, timeout = 5)
-            except Exception:
-                pass
+                if self._proc is not None and self._proc.is_alive():
+                    logger.warning("Subprocess still alive after terminate, killing")
+                    try:
+                        self._proc.kill()
+                        self._proc.join(timeout = 3)
+                    except Exception:
+                        pass
 
         if self._proc is not None and self._proc.is_alive():
             # Survived SIGKILL (uninterruptible syscall): keep the handle so callers

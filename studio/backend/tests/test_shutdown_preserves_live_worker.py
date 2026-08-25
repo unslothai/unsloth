@@ -110,22 +110,20 @@ class TestInferenceShutdownReturn:
         assert o._shutdown_subprocess(timeout = 0.01) is True
         assert o._proc is None
 
-    def test_forced_shutdown_reaps_worker_descendants(self, monkeypatch):
+    def test_forced_shutdown_reaps_worker_tree(self, monkeypatch):
         from utils import process_lifetime
 
         o = _bare_inference()
         o._proc = _FakeProc(dies_on = "terminate")
-        descendants = [(515151, "start-token")]
         reaped = []
-        monkeypatch.setattr(process_lifetime, "collect_descendants", lambda pid: descendants)
         monkeypatch.setattr(
             process_lifetime,
-            "terminate_descendants",
-            lambda found, timeout: reaped.append((found, timeout)),
+            "terminate_pid",
+            lambda pid, timeout: reaped.append((pid, timeout)),
         )
 
         assert o._shutdown_subprocess(timeout = 0.01) is True
-        assert reaped == [(descendants, 5)]
+        assert reaped == [(424242, 5)]
 
     def test_concurrent_shutdowns_share_one_teardown(self):
         o = _bare_inference()
