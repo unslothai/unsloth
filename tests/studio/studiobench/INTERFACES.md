@@ -372,7 +372,8 @@ and `thread_total` on every parity capture, `mounted_before` / `mounted_after` o
 `reopen_readiness` on `thread_reopen`, `visible` on every action row, `observation_ms` on every
 action row, `stream_samples` / `attached_fraction_of_stream` / `reattachments` on the cell's
 `follow`, `reply_chars_scoreable` / `wire_parse_failures_in_window` /
-`wire_pending_chars_at_close` on every `stream_cost` window, and the gate rows
+`wire_pending_chars_at_close` on every `stream_cost` window, `ordinal_collisions` /
+`collided_ordinals` on every visible-region capture, and the gate rows
 `thread_ready:{mode}`, `thread_complete`, `follows_the_stream` and `windowed_readiness:{arm}`.
 
 **What `thread_reopen` measures.** `reopen_ms` runs from the click on the thread's sidebar row
@@ -444,11 +445,16 @@ limitation next to the passing verdict rather than leaving it in a source commen
 
 ### The policy, and the three claims
 
-All changes must preserve UI and UX idempotency, with two exemptions:
+All changes must preserve UI and UX idempotency, with three exemptions:
 
 1. a UI difference may be accepted DELIBERATELY when performance improves dramatically;
 2. a difference that exists only OFF SCREEN is fine by definition, because rendering only what is
-   visible is an accepted technique rather than a parity violation.
+   visible is an accepted technique rather than a parity violation;
+3. a select-all need not select all, PROVIDED the copy it produces stays complete. Copy may
+   serialise the thread from the message store as markdown or plain text instead of reproducing a
+   DOM selection. Completeness of the copied content is REQUIRED, silent truncation being data
+   loss; visual selection fidelity is NOT. This is what makes deferral and virtualization cheap,
+   because the copy path stops depending on what is mounted.
 
 The whole-document digest cannot express exemption 2. It compares everything in the DOM, so every
 deferred-off-screen technique fails it by construction: virtualization, deferred fence
@@ -458,11 +464,13 @@ rather than giving one, so there is now a mode that gives one.
 `sweep/ui_parity.py --mode auto|digest|visible|behaviour`. Every report prints the CLAIM it is
 making AND the POLICY it is being judged against, because "PARITY OK" has meant three different
 things in this file's history and none of them is "the UI is unchanged". The claim says what was
-compared; the policy says what a pass is worth, and the two exemptions are what decide that. Only
+compared; the policy says what a pass is worth, and the three exemptions are what decide that. Only
 the `visible` mode can GRANT the off-screen exemption, and its policy line says so, together with
-the reminder that the exemption does not remove the floor. `analysis/parity.py` holds both as
-`POLICY` and `POLICY_BY_MODE`, and a test fails if any mode prints a claim without a policy beside
-it -- a constant nothing prints is a constant nobody reads.
+the reminder that the exemption does not remove the floor. No mode grants exemption 3 off a digest:
+`behaviour` is the only one that speaks to it, through `clipboard_carries_the_whole_thread`, and
+where there is no readable `select_all_copy` it records the exemption rather than granting it.
+`analysis/parity.py` holds both as `POLICY` and `POLICY_BY_MODE`, and a test fails if any mode
+prints a claim without a policy beside it -- a constant nothing prints is a constant nobody reads.
 
 | mode | claim | fails on |
 | --- | --- | --- |
@@ -531,6 +539,19 @@ MESSAGES on screen" for a rebuild that was identical. The lookup is kept off the
 only by a batch that mounted a message element, so a stream (text churn inside mounted rows) builds
 none. A row that can be placed by neither route is stamped with no ordinal and counted in
 `unplaced_rows` rather than given a guess.
+
+**Two mounted rows publishing ONE position make the capture unreadable, and it says so.** The
+per-message digests are keyed by that position and `ever_visible` is a set of them, so a second row
+carrying a position a row already holds replaces the first one's digest and adds nothing to the
+set: three rows on screen produce a capture indistinguishable from a capture of two. Which of the
+two survives is DOM order, so the pair reaches MATCH exactly when the survivor happens to agree with
+the other arm. It is counted as `ordinal_collisions` with the positions named in
+`collided_ordinals`, and any nonzero count makes the pair NOT COMPARABLE before `ever_visible` and
+`messages` are read, because both of them are short by a row. The count is taken directly and NOT
+derived from `unmounted_at_capture`: in the renumber case the extra row at one position and the
+vacancy at another cancel, and that reads a clean zero over a live collision. The limit, stated: a
+collision that had resolved to one row by capture time is not visible here, and seeing it would need
+the clash recorded when the position is stamped.
 
 **The visible-region noise floor is keyed by (rung, action), and needs more than one observation.**
 `visible_unstable_set` derives it from a base-vs-base null control. It returned ACTION NAMES, so a

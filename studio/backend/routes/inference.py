@@ -1387,6 +1387,7 @@ try:
         _kv_unified_from_args,
         _metal_device_is_paravirtual,
         _planned_main_cache_types,
+        _planned_scratch_cache_type,
         _swa_full_from_args_or_env,
         detect_reasoning_flags,
         paravirtual_normalized_request,
@@ -1441,6 +1442,7 @@ except ImportError:
         _kv_unified_from_args,
         _metal_device_is_paravirtual,
         _planned_main_cache_types,
+        _planned_scratch_cache_type,
         _swa_full_from_args_or_env,
         detect_reasoning_flags,
         paravirtual_normalized_request,
@@ -7277,26 +7279,12 @@ def _estimate_gguf_kv_gb(
         if ctx <= 0:
             return 0.0
         slots = max(1, n_parallel or 1)
-        planned_cache_types = _planned_main_cache_types(
-            cache_type_kv,
-            llama_extra_args,
-        )
-        if tensor_parallel and any(
-            cache_type not in LlamaCppBackend._TENSOR_PARALLEL_KV_TYPES
-            for cache_type in planned_cache_types
-        ):
-            # Tensor mode strips quantized axes, but a layer fallback restores
-            # the original settings. Size for the larger successful outcome.
-            tensor_cache_types = _planned_main_cache_types(None, None)
-            cache_type_for_budget = max(
-                (*planned_cache_types, *tensor_cache_types, "f16"),
-                key = _kv_bytes_per_elem,
-            )
-        else:
-            cache_type_for_budget = max(
-                planned_cache_types,
-                key = _kv_bytes_per_elem,
-            )
+        planned_cache_types = _planned_main_cache_types(cache_type_kv, llama_extra_args)
+        # KV bytes take the heavier axis (conservative for storage); the dequant
+        # scratch takes the lighter one, because any quantized axis allocates it and
+        # the heavier scalar hides a paired q4_0 behind an f16.
+        cache_type_for_budget = max(planned_cache_types, key = _kv_bytes_per_elem)
+        cache_type_for_scratch = _planned_scratch_cache_type(cache_type_kv, llama_extra_args)
         # the loader raises --batch-size to max(slots, 2) before launch, and llama.cpp
         # caps the micro-batch against it, so budget from the emitted value. Diffusion
         # takes neither flag, and SWA metadata prices the KV against the micro-batch,
@@ -7391,7 +7379,7 @@ def _estimate_gguf_kv_gb(
             # mirrors _plan_tensor_parallel: per-device buffer and ctx growth on every device
             compute = devices * (
                 _flat_buffer(True)
-                + probe._compute_buffer_ctx_bytes(ctx, effective_ubatch, cache_type_for_budget)
+                + probe._compute_buffer_ctx_bytes(ctx, effective_ubatch, cache_type_for_scratch)
             )
         else:
             # mirrors the layer fit: flat buffer once, then per extra device, ctx growth per
@@ -7408,7 +7396,7 @@ def _estimate_gguf_kv_gb(
                 * probe._compute_buffer_ctx_bytes(
                     ctx,
                     effective_ubatch,
-                    cache_type_for_budget,
+                    cache_type_for_scratch,
                     layer_split = devices > 1 and not pipeline_parallel_off,
                 )
             )
