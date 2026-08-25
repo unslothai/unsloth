@@ -184,3 +184,51 @@ def test_the_export_does_not_land_in_the_artifact_volume():
     ]
     assert "args.outdir" not in block, "the merged model is written into the artifact volume"
     assert "model.save_pretrained_merged(export_dir, tokenizer)" in block
+
+
+def test_the_train_dataset_is_a_dataset_and_its_images_stay_pil():
+    """Two failures in one, both measured rather than guessed.
+
+    TRL 1.x rejects a plain list, which is what the notebook passes:
+
+        TypeError: `train_dataset` must be a `Dataset` or `IterableDataset`,
+        got `list`
+
+    And the obvious fix corrupts the data. `Dataset.from_list` Arrow-encodes a
+    nested PIL object into a `{bytes, path}` DICT on the way back out, so the
+    collator receives something that is not an image and nothing says so.
+
+    `with_transform` applies at access time, keeps the column's Image feature,
+    and still satisfies TRL's type check.
+    """
+    from datasets import Dataset as HFDataset
+    from PIL import Image
+
+    from run_vision_t4 import conversation_dataset
+
+    base = HFDataset.from_dict({"image": [Image.new("RGB", (8, 8))], "text": ["x^2"]})
+    built = conversation_dataset(base)
+    assert isinstance(built, HFDataset), "TRL 1.x rejects anything else"
+    image = built[0]["messages"][0]["content"][1]["image"]
+    assert isinstance(image, Image.Image), (
+        f"the image came back as {type(image).__name__}, which is the silent "
+        f"Arrow corruption Dataset.from_list produces"
+    )
+
+
+def test_from_list_would_have_corrupted_the_images():
+    """The negative control. Without it, the test above passes for a
+    `with_transform` that happens to work and says nothing about why the
+    obvious alternative was rejected."""
+    from datasets import Dataset as HFDataset
+    from PIL import Image
+
+    from run_vision_t4 import build_conversations
+
+    rows = build_conversations([{"image": Image.new("RGB", (8, 8)), "text": "x^2"}])
+    naive = HFDataset.from_list(rows)
+    image = naive[0]["messages"][0]["content"][1]["image"]
+    assert not isinstance(image, Image.Image), (
+        "from_list now preserves PIL, so the with_transform indirection may no "
+        "longer be needed; re-check before simplifying"
+    )

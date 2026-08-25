@@ -75,6 +75,39 @@ def build_conversations(dataset) -> list:
     return out
 
 
+def conversation_dataset(dataset):
+    """A `Dataset` of conversations whose images are still PIL at access time.
+
+    Two things force this shape, and both were measured rather than guessed.
+
+    **TRL 1.x rejects a plain list.** The notebook passes
+    `converted_dataset` straight in, which worked on the trl it was written
+    against and raises on trl 1.10.0:
+
+        TypeError: `train_dataset` must be a `Dataset` or `IterableDataset`,
+        got `list`.
+
+    **`Dataset.from_list` corrupts the images silently.** Arrow-encoding a
+    nested PIL object turns it into a `{bytes, path}` DICT on the way back out,
+    so the collator receives something that is not an image and never says so.
+    Verified locally: `type(row["messages"][0]["content"][1]["image"])` is
+    `dict` after `from_list` and `PngImageFile` after `with_transform`.
+
+    `with_transform` applies at ACCESS time rather than at write time, so the
+    column keeps its `Image` feature and decodes to PIL, and the result is
+    still a `Dataset` as far as TRL's type check is concerned.
+    """
+
+    def _transform(batch):
+        rows = [
+            {"image": image, "text": text}
+            for image, text in zip(batch["image"], batch["text"])
+        ]
+        return {"messages": [row["messages"] for row in build_conversations(rows)]}
+
+    return dataset.with_transform(_transform)
+
+
 def pixel_evidence(trainer) -> dict:
     """Whether an image reached the collated batch at all.
 
@@ -256,8 +289,16 @@ def run(args) -> dict:
     from datasets import load_dataset
 
     dataset = load_dataset(args.dataset, split = f"train[:{args.samples}]")
-    conversations = build_conversations(dataset)
+    conversations = conversation_dataset(dataset)
     result["samples"] = len(conversations)
+    # Proof the image survived as a PIL object rather than an Arrow dict. A
+    # dict here is the silent corruption `Dataset.from_list` produces, and the
+    # collator would receive something that is not an image without saying so.
+    try:
+        first_image = conversations[0]["messages"][0]["content"][1]["image"]
+        result["dataset_image_type"] = type(first_image).__name__
+    except Exception as exc:  # noqa: BLE001
+        result["dataset_image_type"] = f"error: {type(exc).__name__}"
 
     from trl import SFTConfig, SFTTrainer
     from unsloth.trainer import UnslothVisionDataCollator
