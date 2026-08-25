@@ -1794,7 +1794,11 @@ PHOENIX_DEDICATED = 7.90 * GB  # plateaued just under the carve-out
 PHOENIX_SHARED = 4.10 * GB  # the overflow
 
 
-def _phoenix_host(monkeypatch, gfx = "gfx1103", name = "AMD Radeon(TM) 780M Graphics"):
+def _phoenix_host(
+    monkeypatch,
+    gfx = "gfx1103",
+    name = "AMD Radeon(TM) 780M Graphics",
+):
     """A lone Windows APU on a pre-6.2 HIP runtime, driven through the counters.
 
     ``_rocm_props_are_positively_unified`` is deliberately NOT patched: what is
