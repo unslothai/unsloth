@@ -8049,6 +8049,44 @@ def _gguf_offloaded_layer_fraction(
     return max(0.0, min(1.0, gpu_layers / float(layer_count + 1)))
 
 
+def _manual_keeps_tensor_split(
+    gpu_memory_mode: Optional[str],
+    gpu_layers: Optional[int],
+    extras: Optional[list[str]] = None,
+) -> bool:
+    """Whether a Manual offload still reaches a tensor launch.
+
+    load_model drops the tensor split twice in Manual mode before anything is
+    budgeted, and neither drop is about how many cards are present:
+
+    * ``gpu_layers == 0`` leaves nothing on the GPU to split, and under the CPU-only
+      mask a ``--split-mode tensor`` survivor aborts the server rather than loading.
+    * Auto layers (the field arrives ``None``, the loader sees ``-1``) hand memory
+      management to llama.cpp ``--fit``, which is incompatible with tensor mode.
+
+    A ``-ngl`` in the extras last-wins into the count first, the way /load translates
+    it into the field before its own drop -- so ``--gpu-layers 0`` with ``-ngl 40``
+    keeps the split, and the field alone would have dropped it. Resolved here rather
+    than by the caller so the panel and the device count cannot disagree: one has
+    already stripped the offload flags by the time it asks, the other has not.
+
+    Auto mode is not ours to downgrade; the planner decides there.
+    """
+    if gpu_memory_mode != "manual":
+        return True
+    from core.inference.llama_server_args import parse_gpu_layers_override
+
+    try:
+        override = parse_gpu_layers_override(extras)
+    except ValueError:
+        # Malformed value: same shrug as _gguf_offloaded_layer_fraction, llama-server
+        # names it better than a guess here would.
+        override = None
+    if override is not None:
+        gpu_layers = override
+    return gpu_layers is not None and gpu_layers >= 1
+
+
 def _estimate_token_fingerprint(hf_token: Optional[str]) -> str:
     """Short non-reversible stand-in for an HF token, for cache keys only.
 
@@ -8508,10 +8546,15 @@ def _gguf_memory_breakdown(
 
     # A --split-mode in the extras last-wins over the toggle, and an inherited tensor
     # LLAMA_ARG_SPLIT_MODE turns it on: the same helper load_model budgets with, so a
-    # launch that runs tensor is not priced as a layer split. Then the downgrade the
-    # loader applies on the way in, so a single card is not priced as one either.
-    tensor_parallel = _effective_tensor_parallel(llama_extra_args, tensor_parallel) and (
-        tensor_split_possible
+    # launch that runs tensor is not priced as a layer split. Then the downgrades the
+    # loader applies on the way in, so a single card is not priced as one either, and
+    # neither are the two Manual shapes that never reach a tensor launch at all.
+    tensor_parallel = (
+        _effective_tensor_parallel(llama_extra_args, tensor_parallel)
+        and tensor_split_possible
+        # The extras are already stripped of -ngl here and the count already carries it,
+        # so the override lookup inside is a no-op and the field is what decides.
+        and _manual_keeps_tensor_split(gpu_memory_mode, gpu_layers, llama_extra_args)
     )
     runtime = _gguf_runtime_bytes(
         gguf_path,
@@ -12324,7 +12367,15 @@ async def estimate_memory(
                 tensor_parallel = _effective_tensor_parallel(
                     request.llama_extra_args, bool(request.tensor_parallel)
                 )
-                and _tensor_split_possible(request.selected_gpu_ids or None),
+                and _tensor_split_possible(request.selected_gpu_ids or None)
+                # And the Manual drops, which are about the layer count rather than the
+                # pool: a tensor count here would size per-device buffers for a launch
+                # that runs a layer split on the CPU.
+                and _manual_keeps_tensor_split(
+                    request.gpu_memory_mode,
+                    request.gpu_layers,
+                    request.llama_extra_args,
+                ),
             ),
             disable_vision = bool(request.disable_vision),
             gpu_memory_mode = request.gpu_memory_mode,

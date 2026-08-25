@@ -73,6 +73,7 @@ import {
   type MemoryEstimate,
   formatMemoryGb,
 } from "../api/memory-estimate";
+import { resolveEstimateContext } from "../model-config/estimate-context";
 import { useMemoryEstimate } from "../hooks/use-memory-estimate";
 import {
   fetchLoadModelOverride,
@@ -2750,7 +2751,13 @@ export function ModelConfigPage({
           ggufVariant: target.ggufVariant ?? null,
           hfToken: hfToken || null,
           nativePathToken,
-          nCtx: contextValue,
+          // The context the Load button sends, not the one the control displays: an
+          // unset length with no header yet shows 32,768 and loads at native.
+          nCtx: resolveEstimateContext(
+            runtimeConfig.customContextLength ?? null,
+            activeLoadedContext,
+            nativeContextLength ?? null,
+          ),
           cacheTypeKv: runtimeConfig.kvCacheDtype,
           nParallel: runtimeConfig.nParallel,
           nBatch: runtimeConfig.nBatch,

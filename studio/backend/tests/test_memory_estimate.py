@@ -1644,9 +1644,13 @@ class TestLaunchShapedPricing:
         assert windowed.drafter_runtime_bytes == windowed.kv_bytes
 
     def test_one_card_is_priced_as_the_layer_load_it_launches(self, spec_config, swa):
-        # Tensor mode needs two usable GPUs. Below that load_model drops it and puts
-        # back the quantized KV the tensor attempt stripped, so pricing tensor charged
-        # an f16 cache and per-device compute buffers for neither.
+        # Tensor mode needs two usable GPUs. Below that load_model drops it, so pricing
+        # tensor charged per-device compute buffers for a launch that runs neither.
+        #
+        # The cache type is no longer part of this: #8939 removed the gate that rewrote
+        # both axes to f16 on a tensor split, so a quantized KV now survives one and the
+        # downgrade cannot move it. Asserted equal rather than dropped, since a
+        # reintroduced gate would put an f16 cache back on the tensor side.
         priced = dict(n_ctx = 32768, cache_type_kv = "q4_0", tensor_parallel = True, n_devices = 1)
         downgraded = ri._gguf_memory_breakdown(
             spec_config, swa, tensor_split_possible = False, **priced
@@ -1655,10 +1659,72 @@ class TestLaunchShapedPricing:
             spec_config, swa, tensor_split_possible = True, **priced
         )
         assert downgraded.cache_type_kv == "q4_0"
-        assert as_tensor.cache_type_kv == "f16"
-        assert downgraded.kv_bytes < as_tensor.kv_bytes
+        assert as_tensor.cache_type_kv == "q4_0"
+        assert downgraded.kv_bytes == as_tensor.kv_bytes
         assert downgraded.compute_bytes < as_tensor.compute_bytes
         assert downgraded.total_bytes < as_tensor.total_bytes
+
+    def test_manual_auto_layers_is_priced_as_the_layer_load_it_launches(
+        self, spec_config, swa
+    ):
+        # Manual with Auto layers hands the budget to llama.cpp --fit, which load_model
+        # says outright is incompatible with tensor parallelism and drops the split for.
+        # Two cards are visible and pinned, so nothing else downgrades it: only the
+        # layer count does. Priced as tensor, the per-device buffers are charged for a
+        # launch that runs a layer split.
+        priced = dict(
+            n_ctx = 32768,
+            cache_type_kv = "q4_0",
+            tensor_parallel = True,
+            n_devices = 2,
+            gpu_memory_mode = "manual",
+            tensor_split_possible = True,
+        )
+        auto_layers = ri._gguf_memory_breakdown(
+            spec_config, swa, gpu_layers = None, **priced
+        )
+        explicit = ri._gguf_memory_breakdown(spec_config, swa, gpu_layers = 40, **priced)
+        assert auto_layers.compute_bytes != explicit.compute_bytes
+        # The layer-split arm, which is what /load runs here.
+        as_layers = ri._gguf_memory_breakdown(
+            spec_config, swa, gpu_layers = None, **{**priced, "tensor_parallel": False}
+        )
+        assert auto_layers.compute_bytes == as_layers.compute_bytes
+
+    def test_manual_zero_layers_is_priced_as_the_cpu_load_it_launches(
+        self, spec_config, swa
+    ):
+        # gpu_layers=0 leaves nothing on the GPU to split. load_model drops the split
+        # rather than let --split-mode tensor abort the server under the CPU-only mask,
+        # so a tensor price here is per-device buffers for a load that takes no VRAM.
+        priced = dict(
+            n_ctx = 32768,
+            cache_type_kv = "q4_0",
+            n_devices = 2,
+            gpu_memory_mode = "manual",
+            gpu_layers = 0,
+            tensor_split_possible = True,
+        )
+        as_tensor = ri._gguf_memory_breakdown(spec_config, swa, tensor_parallel = True, **priced)
+        as_layers = ri._gguf_memory_breakdown(spec_config, swa, tensor_parallel = False, **priced)
+        assert as_tensor.compute_bytes == as_layers.compute_bytes
+        assert as_tensor.total_bytes == as_layers.total_bytes
+
+    def test_an_ngl_in_the_extras_keeps_the_manual_split(self, spec_config, swa):
+        # /load translates the last -ngl into the field before deciding, so a slider at
+        # 0 with -ngl 40 in the extras is a 40-layer load and does reach a tensor
+        # launch. Dropping on the field alone would price it as a layer split.
+        assert ri._manual_keeps_tensor_split("manual", 0, ["-ngl", "40"]) is True
+        assert ri._manual_keeps_tensor_split("manual", 40, ["-ngl", "0"]) is False
+        assert ri._manual_keeps_tensor_split("manual", None, None) is False
+        assert ri._manual_keeps_tensor_split("manual", 0, None) is False
+        assert ri._manual_keeps_tensor_split("manual", 1, None) is True
+        # Auto is the planner's call, not ours, whatever the count says.
+        assert ri._manual_keeps_tensor_split("auto", 0, None) is True
+        assert ri._manual_keeps_tensor_split(None, None, None) is True
+        # A malformed override is shrugged off rather than raised, same as the layer
+        # fraction does with it.
+        assert ri._manual_keeps_tensor_split("manual", 8, ["-ngl", "banana"]) is True
 
     def test_a_one_card_pin_cannot_tensor_split(self):
         # A pin answers for itself and needs no probe, which is the deterministic half
