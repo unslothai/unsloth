@@ -1003,15 +1003,13 @@ class TestExtraArgsMtpDetection:
             )
             == "f32"
         )
-        # Quantized env types launch (tensor no longer drops them) and flip the
-        # compute-scratch pricing -> adopt them, but only when the pair as a whole
-        # is heavier-different from f16. A single quantized axis leaves the other
-        # at the f16 default, so the heavier axis IS f16 and the f16 reserve is
-        # already the safe one; adopting q4_0 there would price the untouched f16
-        # axis as quantized and under-reserve it (worse on an arch with
-        # key_length > value_length, where the cheap type lands on the larger
-        # tensor). The scratch term reads the effective pair per axis, so nothing
-        # is lost by leaving the KV scalar at the default here.
+        # Quantized env types now launch and flip the scratch pricing, so adopt them,
+        # but only when the PAIR is heavier-different from f16. One quantized axis
+        # leaves the other at the f16 default, so the heavier axis IS f16 and its
+        # reserve is already safe; adopting q4_0 would price that untouched axis as
+        # quantized and under-reserve it, worst when key_length > value_length puts
+        # the cheap type on the larger tensor. The scratch term reads the pair per
+        # axis, so leaving the KV scalar at the default loses nothing.
         assert _env_main_cache_type_for_budget(env = {"LLAMA_ARG_CACHE_TYPE_K": "q4_0"}) is None
         assert _env_main_cache_type_for_budget(env = {"LLAMA_ARG_CACHE_TYPE_V": "q8_0"}) is None
         assert (

@@ -1257,12 +1257,11 @@ class TestSplitRateRecheckAfterSelection:
 
 # ── The scratch rate keys off the LIGHTER axis ───────────────────────────────
 #
-# llama.cpp runs a quantized KV cache under --split-mode tensor since
-# ggml-org/llama.cpp#23792, so Studio stopped rewriting the requested type for the
-# tensor attempt. That made an asymmetric pair reachable in the one mode with no
-# --fit valve, and the budget resolves ONE scalar: the heavier axis, for KV bytes.
-# Handing that scalar to _compute_buffer_ctx_bytes prices a q4_0 K cache as if
-# nothing were quantized, because the dequant branch gates on bytes/elem < 2.0.
+# Since ggml-org/llama.cpp#23792 Studio no longer rewrites the requested type for the
+# tensor attempt, so an asymmetric pair is reachable in the one mode with no --fit
+# valve. The budget resolves ONE scalar, the heavier axis, for KV bytes; handing that
+# to _compute_buffer_ctx_bytes prices a q4_0 K cache as if nothing were quantized,
+# because the dequant branch gates on bytes/elem < 2.0.
 
 
 class TestScratchTakesTheLighterAxis:

@@ -2956,12 +2956,10 @@ def _env_main_cache_type_for_budget(env: Optional[Mapping[str, str]] = None) -> 
     dwarfs the banded rate). The caller adopts the type for the reserve only;
     _cache_type_from_env keeps it out of the emitted flags."""
     e = os.environ if env is None else env
-    # An UNSET axis is not absent, it is f16 (llama.cpp's default), so it takes
-    # part in the max. Dropping it lets a single quantized axis carry the whole
-    # scalar: LLAMA_ARG_CACHE_TYPE_V=q4_0 alone would return q4_0, and the caller
-    # then prices K as q4 while the child runs it at f16 -- on an arch with
-    # key_length > value_length that under-reserves the LARGER tensor, and tensor
-    # mode has no --fit valve to absorb it.
+    # An UNSET axis is not absent, it is llama.cpp's f16 default, so it joins the max.
+    # Dropping it let a lone CACHE_TYPE_V=q4_0 return q4_0 and price K as q4 while the
+    # child ran it at f16, under-reserving the larger tensor when key_length >
+    # value_length -- and tensor mode has no --fit valve to absorb that.
     axis_types = [
         (e.get(var) or "").strip().lower() or "f16"
         for var in ("LLAMA_ARG_CACHE_TYPE_K", "LLAMA_ARG_CACHE_TYPE_V")
@@ -3020,9 +3018,9 @@ def _planned_main_cache_types(
     return _effective_main_cache_types(args, env)
 
 
-# KV cache types llama.cpp's kv_cache_type_from_str accepts, so the only ones Studio
-# will emit as --cache-type-k/-v. Module scope because the budget has to know, before
-# the command is assembled, whether the resolved type will actually reach the child.
+# What kv_cache_type_from_str accepts, so the only types Studio emits. Module scope
+# because the budget must know whether a type will reach the child before the command
+# is assembled.
 _VALID_CACHE_TYPES = frozenset(
     {"f16", "bf16", "q8_0", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl", "f32"}
 )
@@ -5635,17 +5633,14 @@ class LlamaCppBackend:
         # Judged on the flag, not on value equality: a caller that deliberately sends the
         # stripped list is clearing the failed drafter and must not read as inheriting it.
         _invoked_extras = self.requested_extra_args if intent.extra_args_inherited else extra_args
-        # Requested against requested, per axis, rather than scalar-against-
-        # scalar -- the same rule the tuning group above uses.
-        # self._cache_type_kv holds only what Studio emitted as a managed flag, so
-        # a cache set through extras or the environment records None on one side
-        # and a type on the other: an identical repeat /load then reads as a
-        # mismatch and tears down a healthy server to relaunch the same thing.
-        # _requested_cache_types is what the live server was ASKED for, resolved
-        # by the same helper, so two loads asking for the same thing match even
-        # when the launch rewrote the cache underneath them. Before
-        # ggml-org/llama.cpp#23792 the tensor gate hid this by rewriting the
-        # cache away; a layer load has always had it.
+        # Requested against requested, per axis, the same rule the tuning group above
+        # uses. The scalar self._cache_type_kv holds only what Studio emitted as a
+        # managed flag, so a cache set through extras or the env records None on one
+        # side and a type on the other, and an identical repeat /load tears down a
+        # healthy server. _requested_cache_types is what the live server was ASKED for,
+        # so two equal requests match even when the launch rewrote the cache underneath
+        # them. Before ggml-org/llama.cpp#23792 the tensor gate hid this by rewriting
+        # the cache away; a layer load has always had it.
         if self._requested_cache_types != _planned_main_cache_types(
             intent.cache_type_kv, _invoked_extras
         ):
@@ -8920,23 +8915,19 @@ class LlamaCppBackend:
     # process (#6415 geometry limit, e.g. MQA n_head_kv=1). Model-keyed so one
     # model's abort doesn't skip tensor for others; tensor is tried by default,
     # recorded only on a real abort.
-    #
-    # KV-type-keyed as well, because since ggml-org/llama.cpp#23792 the cache type
-    # reaches the tensor child instead of being rewritten to f16, so a tensor abort
-    # can now be specific to one cache type. Two live examples: iq4_nl asserts under
-    # a tensor split on b10441 while q4_0 runs on the same binary and model
-    # (ggml-org/llama.cpp#27116), and a pre-b9455 binary refuses every quantized
-    # type while f16 is fine. Keyed only by (binary, model), the first of those
-    # would disable tensor mode for the types that work.
+    # KV-type-keyed too: since ggml-org/llama.cpp#23792 the type reaches the tensor
+    # child rather than being rewritten to f16, so an abort can be specific to one
+    # type. iq4_nl asserts on b10441 where q4_0 runs on the same binary and model
+    # (ggml-org/llama.cpp#27116); keyed only by (binary, model) that would disable
+    # tensor mode for the types that work.
     _tensor_split_abort_keys: set[tuple[str, int, str, tuple[str, str]]] = set()
 
     # (binary, mtime) that refused a quantized KV cache under --split-mode tensor.
-    # Deliberately coarser than _tensor_split_abort_keys: the pre-b9455 rejection is
-    # a missing capability of the BINARY, not a property of one model or one cache
-    # type (llama_init_from_model refuses every quantized type for every model), so
-    # keying it per model+pair would pay another doomed full model load for each new
-    # model and each q8_0 -> q4_0 switch. f16 still gets a tensor split on such a
-    # binary, so this is consulted only when an axis is actually quantized.
+    # Coarser than _tensor_split_abort_keys on purpose: the pre-b9455 rejection is a
+    # missing capability of the BINARY, not of one model or type, so keying it per
+    # model+pair would pay another doomed full load for each new model and each
+    # q8_0 -> q4_0 switch. f16 still splits on such a binary, so this is consulted
+    # only when an axis is actually quantized.
     _tensor_quant_kv_unsupported_binaries: set[tuple[str, int]] = set()
 
     @classmethod
@@ -13351,10 +13342,9 @@ class LlamaCppBackend:
             )
 
         # An older llama.cpp refusing a quantized KV cache under --split-mode tensor.
-        # Naming the build is the whole point: the remedy is an update, and the
-        # generic invalid-GGUF/OOM fallback sends the user to check their file or
-        # buy VRAM instead. Checked after the arch gate above, which is a different
-        # marker for a different (permanent, per-model) limit.
+        # Naming the build is the point: the remedy is an update, where the generic
+        # invalid-GGUF/OOM fallback sends the user to check their file or buy VRAM.
+        # After the arch gate above, a different marker for a permanent per-model limit.
         if LlamaCppBackend._is_tensor_quant_kv_unsupported(lowered):
             return (
                 "This llama.cpp build cannot use a quantized KV cache together "
@@ -13952,12 +13942,10 @@ class LlamaCppBackend:
         # at 262k-1M across 2-4 GPUs), the tensor-mode analog of the layer-split
         # compute bug.
         #
-        # Priced from the LIGHTER axis (scratch_cache_type_kv), not the heavier
-        # budget type: llama.cpp runs a quantized KV under tensor split since
-        # ggml-org/llama.cpp#23792, so an asymmetric -ctk q4_0 -ctv f16 reaches the
-        # child, and the heavier-axis scalar (f16) would drop the dequant scratch
-        # the q4 axis really allocates. Tensor mode has no --fit valve, so that
-        # under-reservation OOMs at startup rather than spilling.
+        # Priced from the LIGHTER axis, not the heavier budget type: since
+        # ggml-org/llama.cpp#23792 an asymmetric -ctk q4_0 -ctv f16 reaches the child,
+        # and the heavier scalar (f16) would drop the dequant scratch the q4 axis
+        # allocates. No --fit valve here, so that under-reservation OOMs at startup.
         n_dev = len(gpu_indices)
         cc_cache_type = (
             scratch_cache_type_kv if scratch_cache_type_kv is not None else cache_type_kv
@@ -14170,11 +14158,10 @@ class LlamaCppBackend:
     #   "simultaneous use of SPLIT_MODE_TENSOR and KV cache quantization not implemented"
     # Unlike the #6415 split-axis abort this is a clean LLAMA_LOG_ERROR + return
     # nullptr (exit 1, no signal), so _should_record_tensor_split_abort cannot see it.
-    # Matched on the distinctive middle of the string so the surrounding log format
-    # is irrelevant. Studio removed its own pre-emptive gate once #23792 shipped, so
-    # this is the marker that keeps an older binary cheap: without it every load
-    # spends two full doomed model-load cycles (the tensor attempt plus the --fit
-    # retry) before the route's layer fallback, on every load, forever.
+    # Matched on the middle of the string, so the surrounding log format is irrelevant.
+    # Studio dropped its own pre-emptive gate once #23792 shipped, so this marker is
+    # what keeps an older binary cheap: without it every load burns two doomed model
+    # loads (tensor attempt plus --fit retry) before the route's layer fallback.
     _TENSOR_QUANT_KV_UNSUPPORTED_MARKER = (
         "split_mode_tensor and kv cache quantization not implemented"
     )
@@ -15954,14 +15941,12 @@ class LlamaCppBackend:
                 _extras_cache = _extra_args_main_cache_type_for_budget(extra_args)
                 cache_type_kv = _extras_cache if _extras_cache is not None else cache_type_kv
                 _cache_type_from_env = False
-                # A type llama.cpp's kv_cache_type_from_str does not know is never
-                # emitted (see _VALID_CACHE_TYPES at the launch below), so the child
-                # falls through to whatever LLAMA_ARG_CACHE_TYPE_K/_V it inherits.
-                # Budgeting the unemittable string instead would price it at
-                # _kv_bytes_per_elem's 2.0 unknown-type default while the child
-                # allocates the inherited type -- a clean 2x under-reservation
-                # against an inherited f32, in the one mode with no --fit valve.
-                # Treat it as unset so the env adoption below sees it.
+                # An unknown type is never emitted (see _VALID_CACHE_TYPES below), so the
+                # child falls through to whatever LLAMA_ARG_CACHE_TYPE_K/_V it inherits.
+                # Budgeting the unemittable string would price it at _kv_bytes_per_elem's
+                # 2.0 unknown default while the child allocates the inherited type: a 2x
+                # under-reservation against an inherited f32, in the mode with no --fit
+                # valve. Treat it as unset so the env adoption below sees it.
                 if cache_type_kv is not None and (
                     cache_type_kv.strip().lower() not in _VALID_CACHE_TYPES
                 ):
@@ -15975,19 +15960,17 @@ class LlamaCppBackend:
                     # _cache_type_from_env keeps it out of the emitted flags.
                     cache_type_kv = _env_main_cache_type_for_budget()
                     _cache_type_from_env = cache_type_kv is not None
-                # The heavier axis above budgets KV BYTES. The compute-buffer dequant
-                # scratch keys off the LIGHTER axis instead: llama.cpp runs a
-                # quantized KV under --split-mode tensor since ggml-org/llama.cpp#23792,
-                # so an asymmetric -ctk q4_0 -ctv f16 now reaches the child and the
-                # heavier scalar (f16) would price the scratch as if nothing were
-                # quantized. Resolved from the same param/extras/env precedence.
+                # The heavier axis above budgets KV BYTES; the dequant scratch keys off
+                # the LIGHTER axis instead. Since ggml-org/llama.cpp#23792 an asymmetric
+                # -ctk q4_0 -ctv f16 reaches the child, where the heavier scalar (f16)
+                # would price the scratch as if nothing were quantized. Same precedence.
                 _scratch_cache_type_kv = _planned_scratch_cache_type(
                     None if _cache_type_from_env else cache_type_kv,
                     extra_args,
                 )
-                # The (K, V) pair this launch will actually run, for the tensor-abort
-                # latch. Since #23792 the type reaches the tensor child, so an abort
-                # can be specific to it and the latch must not generalise across types.
+                # The (K, V) pair this launch will run, for the tensor-abort latch:
+                # since #23792 the type reaches the child, so an abort can be specific
+                # to it and the latch must not generalise across types.
                 _planned_cache_pair = _planned_main_cache_types(
                     None if _cache_type_from_env else cache_type_kv,
                     extra_args,
@@ -16727,8 +16710,8 @@ class LlamaCppBackend:
                         # candidate context so the fit can't over-pin and spill. The
                         # rate depends on the KV cache type (quantized adds a dequant
                         # scratch), so pass it through -- the LIGHTER axis, since any
-                        # quantized axis allocates that scratch and the heavier budget
-                        # scalar hides a paired one. In a layer split this buffer is
+                        # quantized axis allocates it and the heavier scalar hides a
+                        # paired one. In a layer split this buffer is
                         # replicated on EVERY device (measured ~equal per GPU), so scale
                         # by the device count; a large model at high context otherwise
                         # under-reserves ~(n-1)x it (e.g. Qwen3.5-397B on 3 GPUs). The
@@ -16795,20 +16778,18 @@ class LlamaCppBackend:
                     if tensor_parallel and self._tensor_quant_kv_unsupported_binary(
                         binary, _planned_cache_pair
                     ):
-                        # This llama.cpp already refused a quantized KV cache under a
-                        # tensor split; skip straight to layer rather than reload the
-                        # model to be told again. Keeps the quantized cache, which
-                        # layer split has always supported.
+                        # This build already refused a quantized KV cache under a tensor
+                        # split; go straight to layer rather than reload the model to be
+                        # told again. Keeps the quantized cache, which layer supports.
                         logger.info(
                             "Tensor parallelism skipped: this llama.cpp build cannot "
                             "use a quantized KV cache with --split-mode tensor "
                             "(needs b9455+); loading with a layer split."
                         )
                         tensor_parallel = False
-                        # Like the split-axis skip below: the missing capability
-                        # says nothing about capacity, so keep the multi-GPU
-                        # request rather than letting the layer planner settle on
-                        # the first card the model happens to fit.
+                        # Like the split-axis skip below: a missing capability says
+                        # nothing about capacity, so keep the multi-GPU request rather
+                        # than let the layer planner settle on the first card it fits.
                         _layer_min_gpus = max(_layer_min_gpus, len(gpus))
                         extra_args = strip_split_mode_only(extra_args)
                     if tensor_parallel and self._tensor_split_aborts(
@@ -19313,23 +19294,20 @@ class LlamaCppBackend:
                         "Dropped inherited quantized V-cache env: this build has no --flash-attn."
                     )
 
-                # An inherited cache type llama.cpp's kv_cache_type_from_str cannot
-                # parse aborts the child at argument parsing -- and the layer retry
-                # inherits the same env, so BOTH attempts fail and the user is left
-                # with no server. The managed path has been normalised and allow-
-                # listed at emission for a long time (_VALID_CACHE_TYPES); the env
-                # path only stopped being scrubbed here once the tensor-mode gate
-                # went away, so give it the same two protections rather than a
-                # tensor-shaped one. Split-mode independent because llama.cpp parses
-                # it identically either way.
+                # An inherited type kv_cache_type_from_str cannot parse aborts the child
+                # at argument parsing, and the layer retry inherits the same env, so
+                # BOTH attempts fail and the user is left with no server. The managed
+                # path has long been normalised and allow-listed (_VALID_CACHE_TYPES);
+                # the env path only stopped being scrubbed once the tensor gate went
+                # away, so give it the same two protections. Split-mode independent,
+                # since llama.cpp parses it identically either way.
                 for _ct_var in ("LLAMA_ARG_CACHE_TYPE_K", "LLAMA_ARG_CACHE_TYPE_V"):
-                    # Compared against the ORIGINAL value, not a stripped copy:
-                    # common_arg::get_value_from_env hands the raw getenv string
-                    # straight to kv_cache_type_from_str, which does an exact
-                    # ggml_type_name(t) == s compare and throws otherwise. So
-                    # " q8_0 " is as fatal as a typo, and normalising against an
-                    # already-stripped copy would compare equal and write nothing
-                    # back, leaving the whitespace on the child.
+                    # Compared against the ORIGINAL, not a stripped copy:
+                    # common_arg::get_value_from_env hands the raw getenv string to
+                    # kv_cache_type_from_str, which does an exact ggml_type_name(t) == s
+                    # compare and throws otherwise. So " q8_0 " is as fatal as a typo,
+                    # and normalising against an already-stripped copy would compare
+                    # equal, write nothing back, and leave the whitespace on the child.
                     _ct_orig = env.get(_ct_var) or ""
                     _ct_norm = _ct_orig.strip().lower()
                     if not _ct_norm:
@@ -19762,11 +19740,10 @@ class LlamaCppBackend:
                         )
                         # A split-axis abort (#6415) is fit-independent: skip the
                         # --fit off retry and let the caller latch it. So is a
-                        # pre-b9455 build refusing a quantized KV cache in tensor
-                        # mode: it is a capability the binary lacks, and re-spawning
-                        # to let it offload spends a second full model-load cycle on
-                        # a theory unrelated to the failure. Both are latched by the
-                        # caller, so both belong in the same skip.
+                        # pre-b9455 build refusing a quantized KV cache in tensor mode:
+                        # a capability the binary lacks, where re-spawning to let it
+                        # offload spends a second full model load on a theory unrelated
+                        # to the failure. The caller latches both, so both skip alike.
                         _startup_output = "\n".join(self._stdout_lines[-50:])
                         _tensor_capability_crash = self._is_tensor_split_assert(
                             _startup_output
@@ -20135,10 +20112,10 @@ class LlamaCppBackend:
                             "llama-server aborted on --split-mode tensor "
                             "(split-axis geometry); retrying with layer split."
                         )
-                    # Pre-b9455 llama.cpp refusing a quantized KV cache in tensor
-                    # mode. Latched on this first spawn for the same reason as the
-                    # abort above: the retries below cannot fix a capability the
-                    # binary lacks, and only the first spawn carries the marker.
+                    # Pre-b9455 llama.cpp refusing a quantized KV cache in tensor mode.
+                    # Latched on this first spawn for the same reason as the abort
+                    # above: the retries below cannot fix a capability the binary
+                    # lacks, and only the first spawn carries the marker.
                     if self._is_tensor_quant_kv_unsupported(_ts_out):
                         # Binary-wide: one detection spares every later model and
                         # every other quantized type the same doomed startup.
@@ -20785,13 +20762,11 @@ class LlamaCppBackend:
                     _last_spawn_cmd,
                     env,
                 )
-                # The pair the REQUEST resolved to, kept beside the pair that
-                # launched. A launch-time rewrite makes them differ (a build with
-                # no --flash-attn resets a quantized V cache to f16, and so does
-                # the flash-attn crash recovery), and the reload matcher wants the
-                # request: comparing the running pair against an unrewritten
-                # request rejects every identical repeat load and redoes that
-                # normalization instead of reusing it.
+                # The pair the REQUEST resolved to, kept beside the pair that launched.
+                # A launch-time rewrite makes them differ (no --flash-attn resets a
+                # quantized V cache to f16, as does the flash-attn crash recovery), and
+                # the matcher wants the request: comparing the running pair against an
+                # unrewritten request rejects every identical repeat load.
                 self._requested_cache_types = _planned_cache_pair
                 self._kv_cache_context_total = effective_ctx if effective_ctx > 0 else None
 
