@@ -22628,6 +22628,13 @@ class LlamaCppBackend:
             or str(source_env.get("LLAMA_ARG_N_GPU_LAYERS", "")).strip()
             or _extra_args_set_any_flag(extra_args, _DEVICE_FLAGS)
             or str(source_env.get("LLAMA_ARG_DEVICE", "")).strip()
+            # A pinned DRAFT device is placement too, and it is not in
+            # _DEVICE_FLAGS. The drafter's reserve rides in extra_resident_bytes,
+            # which _per_device_shortfall books entirely onto device 0, while
+            # llama.cpp puts the drafter on the card the pin names -- so a plan
+            # would approve a footprint for the wrong device and then pin it with
+            # --fit off. cpu/none do not conflict and are not a pin.
+            or _extra_args_draft_device_pin(extra_args)
             # Split mode and tensor split are placement too, and they are NOT in
             # _DEVICE_FLAGS. Both pass through to the child (the layer path's own
             # comment above says "-sm none/row keep the layer path and pass

@@ -318,3 +318,22 @@ def test_the_cross_host_floor_matches_the_measured_cloud_hosts():
     # Monotone in cores, and a tiny host is charged much more than a big one.
     assert rate(2) > rate(8) > rate(12) > rate(48) > rate(192)
     assert rate(2) > 10 * rate(192)
+
+
+def test_a_host_cache_is_not_free_during_prefill():
+    """generation_penalty_ms charges kv_host_bytes and prefill did not, so a
+    cache-offloaded placement prefilled for free and TIED with a fully resident
+    one at n_generated = 0. The asymmetry was the bug: the cache crosses the same
+    link as the weights."""
+    resident = Placement()
+    kv_host = Placement(kv_host_bytes = int(4 * GIB))
+
+    assert prefill_penalty_ms_per_token(resident) == 0.0
+    assert prefill_penalty_ms_per_token(kv_host) > 0.0
+
+    ordered = rank([kv_host, resident], n_generated = 0, n_prompt = 4096)
+    assert ordered[0][0] is resident, "resident must win a pure-prefill ranking"
+    assert ordered[0][1] < ordered[1][1], "and it must not be a tie"
+
+    # Still zero where moving bytes between two names for one pool is free.
+    assert prefill_penalty_ms_per_token(kv_host, host = HostProfile(unified_memory = True)) == 0.0

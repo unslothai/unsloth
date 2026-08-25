@@ -765,3 +765,17 @@ def test_the_seam_hands_the_planner_raw_free_vram_for_the_split():
     # split weights must be raw on BOTH, and in the same device order.
     assert seen["split_weights_per_device"] == [8 * 1024 * MIB, 16 * 1024 * MIB]
     assert seen["vram"] == [6 * 1024 * MIB, 16 * 1024 * MIB]
+
+
+def test_a_pinned_draft_device_declines_the_plan():
+    """A drafter pinned to a card is placement, and it is not in _DEVICE_FLAGS.
+    Its reserve rides in extra_resident_bytes, which _per_device_shortfall books
+    onto device 0, while llama.cpp puts the drafter where the pin says -- so the
+    plan would approve the wrong device's footprint and emit --fit off. cpu and
+    none are not pins and must not cost a plan."""
+    stub = _Stub()
+    assert _plan(stub, extra_args = ["--spec-draft-device", "CUDA1"]) is None
+    assert _plan(stub, extra_args = ["--device-draft", "CUDA0,CUDA1"]) is None
+    assert _plan(stub, extra_args = ["--spec-draft-device", "cpu"]) is not None
+    assert _plan(stub, extra_args = ["--spec-draft-device", "none"]) is not None
+    assert _plan(stub) is not None

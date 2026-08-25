@@ -260,7 +260,16 @@ def prefill_penalty_ms_per_token(
     host = host or HostProfile()
     if host.unified_memory:
         return 0.0
-    host_bytes = sum(g.bytes_total for g in placement.host_groups)
+    # A host cache is bytes over the same link, so leaving it out made a
+    # cache-offloaded placement PREFILL FOR FREE and tie with a fully resident
+    # one at n_generated = 0 -- while generation_penalty_ms charges it. The
+    # asymmetry was the bug, not the rate. UNCALIBRATED and a lower bound: this
+    # counts the cache as streamed once per ubatch like the weights, whereas
+    # attention re-reads it and the read grows with depth. No production path
+    # reaches it (the planner's whole premise is never to spill the cache, so it
+    # only ever builds kv_host_bytes = 0 placements); it is rank() that has to
+    # stop calling a cache spill free.
+    host_bytes = sum(g.bytes_total for g in placement.host_groups) + placement.kv_host_bytes
     if host_bytes <= 0 or n_ubatch <= 0:
         return 0.0
     per_ubatch_ms = (host_bytes / GIB) / PREFILL_STREAM_GIB_S * 1000.0
