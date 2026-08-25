@@ -130,6 +130,10 @@ import {
   refreshContextUsage,
   setActiveBranchReader,
 } from "./utils/refresh-context-usage";
+import {
+  type RunCheckpointScheduler,
+  createRunCheckpointScheduler,
+} from "./utils/run-checkpoint-scheduler";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
 import { sanitizeThreadScopedSettings } from "./utils/thread-scoped-settings";
 import { VideoAttachmentAdapter } from "./video-attachment-adapter";
@@ -2561,15 +2565,18 @@ function ThreadBackendAutosave({
     [aui, modelType, newThreadSwitchStateRef, pairId],
   );
 
+  // Let checkpoints schedule their next timer after this write settles.
   const queueSave = useCallback(
-    (threadId: string): void => {
-      saveChainRef.current = saveChainRef.current
+    (threadId: string): Promise<void> => {
+      const queued = saveChainRef.current
         .catch(() => {})
         .then(async () => {
           await pendingFirstSavesRef.current.get(threadId);
           await saveThread(threadId);
         })
         .catch(reportAutosaveError);
+      saveChainRef.current = queued;
+      return queued;
     },
     [reportAutosaveError, saveThread],
   );
@@ -2591,11 +2598,73 @@ function ThreadBackendAutosave({
     [reportAutosaveError, saveThread],
   );
 
+  // runEnd only reaches whichever thread is main, so a thread that stops being main
+  // mid-run never gets its own and would checkpoint for the life of the page. Ask the
+  // runtime instead of trusting the event, as CancelRegistrar above already does.
+  const isRunActive = useCallback(
+    (threadId: string): boolean => {
+      const runtime = aui.threads().__internal_getAssistantRuntime?.();
+      if (!runtime) {
+        return false;
+      }
+      try {
+        return runtime.threads.getById(threadId).getState().isRunning === true;
+      } catch {
+        // A deleted or detached thread throws out of getById rather than reporting idle.
+        return false;
+      }
+    },
+    [aui],
+  );
+
+  // Keep one scheduler for the component lifetime so its timers remain stoppable. The refs
+  // give it the latest queueSave and liveness check when dependencies change.
+  const queueSaveRef = useRef(queueSave);
+  useEffect(() => {
+    queueSaveRef.current = queueSave;
+  }, [queueSave]);
+  const isRunActiveRef = useRef(isRunActive);
+  useEffect(() => {
+    isRunActiveRef.current = isRunActive;
+  }, [isRunActive]);
+  const checkpointsRef = useRef<RunCheckpointScheduler | null>(null);
+  const checkpoints = useCallback((): RunCheckpointScheduler => {
+    checkpointsRef.current ??= createRunCheckpointScheduler(
+      (threadId) => queueSaveRef.current(threadId),
+      { isActive: (threadId) => isRunActiveRef.current(threadId) },
+    );
+    return checkpointsRef.current;
+  }, []);
+
+  useEffect(() => {
+    // A hidden renderer may never get its next interval: Chromium throttles chained timers
+    // to a wake a minute and a WebView can be parked outright, so checkpoint on the way
+    // out. No beforeunload, matching flushSettingsOnPageHidden: it does not fire on every
+    // platform and a Tauri quit never fires it at all.
+    const flush = () => {
+      checkpointsRef.current?.flushAll();
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        flush();
+      }
+    };
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      checkpointsRef.current?.stopAll();
+    };
+  }, []);
+
   useAuiEvent("thread.runEnd", ({ threadId }) => {
+    checkpoints().stop(threadId);
     queueSave(threadId);
   });
 
   useAuiEvent("thread.runStart", ({ threadId }) => {
+    checkpoints().start(threadId);
     const runtime = aui.threads().__internal_getAssistantRuntime?.();
     const { remoteId } =
       runtime?.threads.getItemById(threadId).getState() ?? {};
