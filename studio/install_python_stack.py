@@ -149,46 +149,6 @@ def _runtime_target_is_gfx906() -> bool:
     return set(_detect_amd_gfx_codes()) == {"gfx906"}
 
 
-# Navi 33 and RDNA 4 have no kernels in generic PyTorch ROCm 6.0-6.3 wheels.
-# Keep this a narrow generic-wheel floor, distinct from the AMD per-arch Strix
-# route and the inverse gfx906 legacy route below. Mirrors install.sh.
-_GFX_ROCM64_FLOOR_ARCHES: frozenset[str] = frozenset({"gfx1102", "gfx1200", "gfx1201"})
-_GFX_ROCM64_FLOOR_TAG = "rocm6.4"
-
-
-def _gfx_needs_rocm64_generic_index(ver: tuple[int, int]) -> bool:
-    """True when the selected generic tag is below rocm6.4."""
-    key = next((k for k in sorted(_ROCM_TORCH_INDEX, reverse = True) if ver >= k), None)
-    return key is not None and key < (6, 4)
-
-
-def _runtime_target_needs_rocm64_generic_index() -> bool:
-    """Whether the selected runtime GPU needs the generic rocm6.4 floor.
-
-    Match the existing Strix target selection: an explicit arch override wins;
-    otherwise retain rocminfo's already-applied ROCR mask and index only unmasked
-    rocminfo/amd-smi output. This intentionally does not change gfx906's
-    sole-architecture policy.
-    """
-    override = (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower().split(":")[0]
-    if override:
-        return override in _GFX_ROCM64_FLOOR_ARCHES
-    gfx_devices = _detect_amd_gfx_codes(dedup = False)
-    if not gfx_devices:
-        return False
-    rocr_applied = (
-        _LAST_AMD_GFX_PROBE == "rocminfo" and _first_set_visible_mask() == "ROCR_VISIBLE_DEVICES"
-    )
-    runtime_gfx = gfx_devices[0 if rocr_applied else _pick_visible_index(len(gfx_devices))]
-    return runtime_gfx in _GFX_ROCM64_FLOOR_ARCHES
-
-
-def _installed_rocm_wheel_is_below(label: str, floor: tuple[int, int]) -> bool:
-    """Whether a HIP torch label has no identifiable ROCm family at `floor` or newer."""
-    match = re.search(r"rocm(\d+)\.(\d+)", label)
-    return match is None or (int(match.group(1)), int(match.group(2))) < floor
-
-
 # AMD per-arch leaves needing the torch 2.11 floor (the _grouped_mm <2.11 bug).
 # Mirrors *FloorMap in install.ps1 / setup.ps1; other arches ship <2.11 and stay bare.
 _ROCM_GFX_TORCH211_LEAVES: frozenset[str] = frozenset(
@@ -1800,10 +1760,8 @@ def _detect_amd_gfx_codes(
             codes = [f"gfx{c}" for c in re.findall(r"gfx([1-9][0-9a-z]{2,3})", text.lower())]
             return list(dict.fromkeys(codes))
         # One entry per agent section; fall back to dedup for flat output.
-        # amd-smi heads each device with "GPU: N" / "GPU[N]"; install.sh parses the same shapes.
         _sections = re.split(
-            r"(?mi)^\s*\*+\s*$\s*agent\s+\d+\s*$|\bagent\s+\d+\b|\bdevice\s*#\s*\d+\b"
-            r"|^[ \t]*gpu[ \t]*[:\[][ \t]*\d+",
+            r"(?mi)^\s*\*+\s*$\s*agent\s+\d+\s*$|\bagent\s+\d+\b|\bdevice\s*#\s*\d+\b",
             text,
         )
         if len(_sections) > 1:
@@ -3271,29 +3229,6 @@ def _ensure_rocm_torch() -> None:
                     f"   skipping AMD per-gfx index override.\n"
                 )
 
-    # Navi 33 (gfx1102) and RDNA 4 (gfx1200/gfx1201) need generic rocm6.4
-    # wheels. Keep an explicit user pin authoritative, and do not compete with
-    # a selected Strix per-gfx index. A pre-existing older ROCm wheel is actively
-    # repaired just like gfx906's broken generic-wheel combination.
-    _gfx_rocm64_target = (
-        _rocm_pin is None
-        and _strix_override_url is None
-        and _runtime_target_needs_rocm64_generic_index()
-    )
-    _gfx_rocm64_floor = _gfx_rocm64_target and _gfx_needs_rocm64_generic_index(ver)
-    _gfx_rocm64_repair = (
-        _gfx_rocm64_target
-        and has_hip_torch
-        and _installed_rocm_wheel_is_below(_installed_torch_ver, (6, 4))
-    )
-    if _gfx_rocm64_floor or _gfx_rocm64_repair:
-        _safe_print(
-            "   gfx1102/gfx1200/gfx1201 needs the generic rocm6.4 wheel family; "
-            "older generic ROCm wheels lack its kernels."
-        )
-    if _gfx_rocm64_repair:
-        rocm_torch_ready = False
-
     # gfx906 (MI50 / Radeon VII): is this the runtime GPU target? Used below to skip
     # the generic bitsandbytes wheel (no gfx906 kernels). This must hold even under
     # an explicit torch-index pin: a gfx906 host that pins rocm6.3 (without also
@@ -3376,10 +3311,15 @@ def _ensure_rocm_torch() -> None:
         if _override_idx is not None:
             index_url = _override_idx
             tag = _torch_index_leaf(index_url)
-        elif _gfx_rocm64_floor:
-            tag = _GFX_ROCM64_FLOOR_TAG
         else:
-            tag = _generic_pytorch_rocm_tag(ver)
+            tag = next(
+                (
+                    t
+                    for (maj, mn), t in sorted(_ROCM_TORCH_INDEX.items(), reverse = True)
+                    if ver >= (maj, mn)
+                ),
+                None,
+            )
         if tag is None:
             _safe_print(
                 f"   No PyTorch wheel for ROCm {ver[0]}.{ver[1]} -- skipping torch reinstall"

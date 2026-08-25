@@ -3330,30 +3330,6 @@ _kfd_gfx_targets() {
 # reasons), and rerouting a working machine to the wrong wheels is worse than
 # unslothai#7331 itself.
 # Kept in sync with _hsa_spoofed_physical_gfx in studio/install_python_stack.py.
-# one gfx token per device from a probe on stdin, so a visible-device ordinal indexes devices and not arches; rocminfo repeats a device's arch across its Name and ISA lines, so split on agent headers first (mirrors _detect_amd_gfx_codes(dedup=False)) and fall back to first-seen order for flat output such as amd-smi's
-_gfx_targets_per_device() {
-    awk '
-        {
-            _low = tolower($0)
-            if (match(_low, /agent[ \t]+[0-9]+/) || match(_low, /device[ \t]*#[ \t]*[0-9]+/) \
-                || match(_low, /^[ \t]*gpu[ \t]*:[ \t]*[0-9]+/) \
-                || match(_low, /^[ \t]*gpu[ \t]*\[[ \t]*[0-9]+/)) {
-                if (_started && _cur != "") print _cur
-                _started = 1; _cur = ""
-            }
-            if (match(_low, /gfx[1-9][0-9a-z][0-9a-z][0-9a-z]?/)) {
-                _tok = substr(_low, RSTART, RLENGTH)
-                if (_started) { if (_cur == "") _cur = _tok }
-                else if (!_seen[_tok]++) _flat[_nf++] = _tok
-            }
-        }
-        END {
-            if (_started) { if (_cur != "") print _cur }
-            else for (_i = 0; _i < _nf; _i++) print _flat[_i]
-        }
-    '
-}
-
 _hsa_spoofed_physical_gfx() {
     _hsp_inferred="${1:-}"
     _hsp_probed_all="${2:-}"
@@ -4518,8 +4494,6 @@ fi
 # Skipped when the index is pinned: an explicit override must not be rerouted to the
 # Radeon/Strix repos by GPU probing.
 _amd_gpu_radeon=false
-# set when the runtime gpu needs the rocm6.4 floor at all, independent of whether the leaf had to be rerouted
-_gfx_rocm64_target=false
 if [ "$_torch_index_pinned" = false ]; then
 case "$TORCH_INDEX_URL" in
     */rocm*)
@@ -4541,13 +4515,6 @@ _rocm_leaf_below() {
     if [ "$_maj" -eq "$2" ] && [ "$_min" -lt "$3" ]; then return 0; fi
     return 1
 }
-# 0 when the venv's torch has no identifiable rocm family at $2.$3 or newer, mirroring _installed_rocm_wheel_is_below in studio/install_python_stack.py
-_venv_torch_rocm_below() {
-    _vtr_leaf=$("$1" -c 'import re, torch; m = re.search(r"rocm([0-9]+)\.([0-9]+)", getattr(torch, "__version__", "") or ""); print("rocm%s.%s" % m.groups() if m else "")' 2>/dev/null || true)
-    [ -n "$_vtr_leaf" ] || return 0
-    _rocm_leaf_below "$_vtr_leaf" "$2" "$3"
-}
-
 # ── Strix Halo / Strix Point: route to the AMD arch-specific index ───────────
 # gfx1151/gfx1150 need torch 2.11+rocm7.13 from repo.amd.com/rocm/whl/gfx<arch>/,
 # which carries AMD's real fixes (the rocm7.1 _grouped_mm segfault, moe_utils.py:167,
@@ -4567,21 +4534,16 @@ case "$_torch_index_leaf" in
         # runs (now that the case matches every rocm* index, not just rocm7.1).
         # A user-supplied UNSLOTH_ROCM_GFX_ARCH overrides probing (mirrors setup.sh
         # and the display block), so a Strix override still reaches the arch index.
-        _gfx_all=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
-        # strip a copied hip gcnArchName suffix, matching _gfx906_env below and the python helper
-        _gfx_all=${_gfx_all%%:*}
-        # which probe answered: only rocminfo is filtered by an rocr mask, so only it can pre-apply one
-        _gfx_probe=""
+        _gfx_all=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]')
         if [ -z "$_gfx_all" ] && command -v rocminfo >/dev/null 2>&1; then
-            _gfx_all=$(rocminfo 2>/dev/null | _gfx_targets_per_device || true)
-            [ -n "$_gfx_all" ] && _gfx_probe=rocminfo
+            _gfx_all=$(rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
         fi
         if [ -z "$_gfx_all" ] && command -v amd-smi >/dev/null 2>&1; then
-            _gfx_all=$(amd-smi list 2>/dev/null | _gfx_targets_per_device || true)
+            _gfx_all=$(amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
             # PowerShell paths also probe `amd-smi static --asic`; mirror it
             # so a host with hipinfo-less amd-smi reports the gfx target.
             if [ -z "$_gfx_all" ]; then
-                _gfx_all=$(amd-smi static --asic 2>/dev/null | _gfx_targets_per_device || true)
+                _gfx_all=$(amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
             fi
         fi
         # get_torch_index_url reads the arch with ROCR/HIP masks cleared, so a
@@ -4593,12 +4555,12 @@ case "$_torch_index_leaf" in
         # must trigger the re-probe too.
         if [ -z "$_gfx_all" ] && [ -n "${ROCR_VISIBLE_DEVICES+x}${HIP_VISIBLE_DEVICES+x}" ]; then
             if command -v rocminfo >/dev/null 2>&1; then
-                _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; rocminfo 2>/dev/null) | _gfx_targets_per_device || true)
+                _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; rocminfo 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
             fi
             if [ -z "$_gfx_all" ] && command -v amd-smi >/dev/null 2>&1; then
-                _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi list 2>/dev/null) | _gfx_targets_per_device || true)
+                _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi list 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
                 [ -z "$_gfx_all" ] && \
-                    _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi static --asic 2>/dev/null) | _gfx_targets_per_device || true)
+                    _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi static --asic 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
             fi
         fi
         # HSA_OVERRIDE_GFX_VERSION=11.0.0 (the circulated Strix workaround) makes ROCr
@@ -4613,22 +4575,9 @@ case "$_torch_index_leaf" in
         fi
         _runtime_gfx=""
         if [ -n "$_gfx_all" ]; then
-            # first-set-wins over hip/rocr/cuda, mirroring _pick_visible_index in studio/install_python_stack.py
-            _vis_var=""
-            if [ -n "${HIP_VISIBLE_DEVICES+x}" ]; then
-                _vis_var=HIP_VISIBLE_DEVICES; _vis="$HIP_VISIBLE_DEVICES"
-            elif [ -n "${ROCR_VISIBLE_DEVICES+x}" ]; then
-                _vis_var=ROCR_VISIBLE_DEVICES; _vis="$ROCR_VISIBLE_DEVICES"
-            elif [ -n "${CUDA_VISIBLE_DEVICES+x}" ]; then
-                _vis_var=CUDA_VISIBLE_DEVICES; _vis="$CUDA_VISIBLE_DEVICES"
-            else
-                _vis=""
-            fi
+            _vis="${HIP_VISIBLE_DEVICES:-${ROCR_VISIBLE_DEVICES:-}}"
             _idx=0
-            # rocminfo already applied an rocr mask, so its output IS the runtime order and must not be indexed again
-            if [ "$_gfx_probe" = rocminfo ] && [ "$_vis_var" = ROCR_VISIBLE_DEVICES ]; then
-                _idx=0
-            elif [ -n "$_vis" ] && [ "$_vis" != "-1" ]; then
+            if [ -n "$_vis" ] && [ "$_vis" != "-1" ]; then
                 _first=${_vis%%,*}
                 case "$_first" in
                     ''|*[!0-9]*) _idx=0 ;;
@@ -4636,7 +4585,7 @@ case "$_torch_index_leaf" in
                 esac
             fi
             _runtime_gfx=$(printf '%s\n' "$_gfx_all" | awk -v idx="$_idx" '
-                NF { vals[n++] = $0 }
+                NF && !seen[$0]++ { vals[n++] = $0 }
                 END {
                     if (idx < 0 || idx >= n) idx = 0
                     if (n > 0) print vals[idx]
@@ -4700,41 +4649,6 @@ case "$_torch_index_leaf" in
                 echo "  [WARN] (~/.bashrc, ~/.profile) as well, or the next terminal restores it." >&2
             fi
         fi
-        # Navi 33 (gfx1102) and RDNA 4 (gfx1200/gfx1201) need the generic
-        # rocm6.4 wheel family: the older generic rocm6.0-6.3 wheels ship no
-        # kernels for them. This is deliberately beside the existing gfx906
-        # policy, rather than inside the runtime-less */cpu reroute, because a
-        # valid host ROCm reading can otherwise select broken rocm6.1 wheels.
-        # Explicit torch-index pins skip this whole architecture-policy block.
-        case "$_runtime_gfx" in
-            gfx1102|gfx1200|gfx1201)
-                _gfx_rocm64_target=true
-                # These arches train from the PyTorch generic wheels, never the Radeon
-                # repo, so clear the marketing-name flag exactly as the gfx906 branch
-                # below does -- and for the same reason. repo.radeon.com's newest
-                # pairing trio under rocm-rel-6.4/ is torch 2.6.0+rocm6.4.0, whose
-                # rocBLAS Tensile libraries carry gfx1030/1100/1101/1200/1201/908/942
-                # and no gfx1102 at all; rocm-rel-7.2/ is narrower still (gfx120X-all,
-                # gfx90a, gfx942, gfx950). Leaving the flag set sends the very host this
-                # floor exists for to a wheel with no kernels for its arch, because the
-                # index chosen just above is only the Radeon branch's fallback.
-                # Clear it whenever the arch is the runtime target, even when the leaf
-                # already satisfies the floor and the reroute below is a no-op.
-                _amd_gpu_radeon=false
-                if _rocm_leaf_below "$_torch_index_leaf" 6 4; then
-                    echo "" >&2
-                    echo "  [WARN] $_runtime_gfx detected -- routing torch to rocm6.4 because older" >&2
-                    echo "  [WARN] generic ROCm wheel families do not ship $_runtime_gfx kernels." >&2
-                    echo "" >&2
-                    _amd_rocm64_base="${UNSLOTH_PYTORCH_MIRROR:-https://download.pytorch.org/whl}"
-                    while [ "${_amd_rocm64_base%/}" != "$_amd_rocm64_base" ]; do
-                        _amd_rocm64_base="${_amd_rocm64_base%/}"
-                    done
-                    TORCH_INDEX_URL="${_amd_rocm64_base}/rocm6.4"
-                    _torch_index_leaf="rocm6.4"
-                fi
-                ;;
-        esac
         # ── MI50 / Radeon VII (gfx906, Vega 20): legacy community-supported path ──
         # Newer rocm wheel families bundle ROCm libraries whose Tensile kernels
         # dropped gfx906 (rocBLAS "TensileLibrary.dat ... not read for gfx906",
@@ -4746,7 +4660,10 @@ case "$_torch_index_leaf" in
         # Target resolution: an explicit UNSLOTH_ROCM_GFX_ARCH wins (lets a host
         # whose rocminfo/amd-smi emit no gfx token still opt in; _gfx906_env was
         # lowercased above, before the Strix block it suppresses). Otherwise only
-        # treat gfx906 as the target when it is the sole distinct arch present, since a rocm6.3 reroute is a downgrade for every other arch and a mixed host opts in through UNSLOTH_ROCM_GFX_ARCH instead
+        # treat gfx906 as the target when it is the SOLE distinct arch present:
+        # _gfx_all is de-duplicated by visible index, which loses per-device
+        # ordinals on a mixed host, so a non-gfx906 selection must never be
+        # downgraded to rocm6.3 -- such hosts set UNSLOTH_ROCM_GFX_ARCH to opt in.
         _gfx906_target=false
         if [ -n "$_gfx906_env" ]; then
             [ "$_gfx906_env" = "gfx906" ] && _gfx906_target=true
@@ -5122,10 +5039,6 @@ if [ "$_MIGRATED" = true ]; then
         _has_hip=$("$_VENV_PY" -c "import torch; print(getattr(torch.version,'hip','') or '')" 2>/dev/null || true)
         if [ -z "$_has_hip" ]; then
             substep "repairing ROCm torch (overwritten by dependency resolution)..."
-            _install_torch_default_index --force-reinstall
-        elif [ "$_gfx_rocm64_target" = true ] && _venv_torch_rocm_below "$_VENV_PY" 6 4; then
-            # a migrated venv keeps its hip torch, but a pre-6.4 wheel carries no kernels for this gpu
-            substep "reinstalling torch from $_torch_index_leaf (the migrated wheels have no kernels for this GPU)..."
             _install_torch_default_index --force-reinstall
         fi
         _gfx906_bnb_prune
