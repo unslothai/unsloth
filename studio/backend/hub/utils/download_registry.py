@@ -109,7 +109,7 @@ class DownloadTransportCapabilities:
 
 
 def get_download_transport_capabilities(
-    *, probe: bool = False, ram_gate: bool = False,
+    *, probe: bool = False, ram_gate: bool = False
 ) -> DownloadTransportCapabilities:
     """What this machine can do, and what Auto resolves to on it.
 
