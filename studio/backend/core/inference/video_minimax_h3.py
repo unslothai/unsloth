@@ -764,8 +764,7 @@ def _decode_audio_stream(
     if not stopped:
         for resampled in resampler.resample(None):
             _take(resampled)
-    if trim is not None and end_sample is not None and source_total < end_sample:
-        raise ValueError("Reference video trim ends after the source soundtrack.")
+    # Short soundtracks are kept, not refused, as in the timestamp path above.
     if not chunks:
         return None, None
     return np.concatenate(chunks, axis = 0).astype("float32"), sample_rate
@@ -836,8 +835,9 @@ def _decode_audio_trim_by_timestamp(
                 break
     if not decoded_any:
         return None, None
-    if timeline_end + (0.5 / sample_rate) < end:
-        raise ValueError("Reference video trim ends after the source soundtrack.")
+    # A soundtrack ending inside the interval leaves the rest of `output` silent rather than
+    # failing: the video covers the range, embedded audio is optional (a video carrying none
+    # is accepted outright), and the untrimmed path clamps a mismatched track the same way.
     if not copied_any and timeline_end <= start:
         return None, None
     return output, sample_rate

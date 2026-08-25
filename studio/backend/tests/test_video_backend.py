@@ -6252,6 +6252,49 @@ def test_h3_reference_video_trim_seeks_and_stops_both_decoders(monkeypatch):
     assert sum(item.decoded["audio"] for item in opened) < 120
 
 
+def test_h3_reference_video_trim_outlasting_a_short_soundtrack_stays_silent():
+    """A trim the embedded audio does not cover keeps the video and pads the rest silent.
+
+    A video carrying no audio at all is accepted, so one whose track merely ends early must
+    be too; the untrimmed path clamps the same mismatch rather than refusing it.
+    """
+    pytest.importorskip("av")
+    import base64
+
+    from core.inference.video_minimax_h3 import decode_h3_reference_video
+
+    blob = base64.b64decode(
+        _reference_video_data_url(seconds = 10.0, fps = 24, audio_seconds = 6.0).split(",", 1)[1]
+    )
+    frames, waveform, sample_rate = decode_h3_reference_video(
+        blob, trim_start_seconds = 2.0, trim_end_seconds = 8.0
+    )
+
+    assert len(frames) == round(6.0 * 24)
+    assert waveform is not None
+    assert waveform.shape[0] == round(6.0 * sample_rate)
+    # Audio runs out 4s into the interval; everything past that is silence, not a refusal.
+    assert abs(waveform[: round(4.0 * sample_rate)]).max() >= 0.0
+    assert abs(waveform[round(4.0 * sample_rate) + sample_rate // 10 :]).max() == 0.0
+
+
+def test_h3_reference_video_trim_entirely_past_the_soundtrack_drops_the_audio():
+    pytest.importorskip("av")
+    import base64
+
+    from core.inference.video_minimax_h3 import decode_h3_reference_video
+
+    blob = base64.b64decode(
+        _reference_video_data_url(seconds = 12.0, fps = 24, audio_seconds = 3.0).split(",", 1)[1]
+    )
+    frames, waveform, _ = decode_h3_reference_video(
+        blob, trim_start_seconds = 6.0, trim_end_seconds = 10.0
+    )
+
+    assert len(frames) == round(4.0 * 24)
+    assert waveform is None
+
+
 def test_h3_reference_video_trim_must_be_complete_bounded_and_inside_the_source():
     pytest.importorskip("av")
     import base64
