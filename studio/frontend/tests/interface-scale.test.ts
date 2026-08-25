@@ -69,7 +69,10 @@ async function load(tauri: boolean) {
       },
     },
   });
-  const control = { zooms: [] as number[] };
+  const control: {
+    zooms: number[];
+    setZoom?: (zoom: number) => Promise<void>;
+  } = { zooms: [] };
   define("__TAURI_WEBVIEW_STUB__", control);
   generation += 1;
   const mod = (await import(
@@ -98,6 +101,35 @@ test("desktop scale sets native webview zoom", async () => {
     styles.get("--studio-native-traffic-light-inset"),
     `${78 / 0.35}px`,
   );
+});
+
+test("the latest scale wins while an older native update is pending", async () => {
+  const { mod, control, styles } = await load(true);
+  let markFirstStarted: () => void = () => undefined;
+  let releaseFirst: () => void = () => undefined;
+  const firstStarted = new Promise<void>((resolve) => {
+    markFirstStarted = resolve;
+  });
+  control.setZoom = (zoom) => {
+    control.zooms.push(zoom);
+    if (zoom !== 0.35) {
+      return Promise.resolve();
+    }
+    markFirstStarted();
+    return new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+  };
+
+  const first = mod.applyInterfaceScale(35);
+  await firstStarted;
+  const latest = mod.applyInterfaceScale(75);
+  releaseFirst();
+  await Promise.all([first, latest]);
+
+  assert.deepEqual(control.zooms, [0.35, 0.75]);
+  assert.equal(mod.getAppliedInterfaceZoom(), 0.75);
+  assert.equal(styles.get("--studio-native-titlebar-height"), `${34 / 0.75}px`);
 });
 
 test("browser scale never calls the native webview", async () => {

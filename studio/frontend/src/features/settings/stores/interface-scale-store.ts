@@ -87,18 +87,25 @@ export const useInterfaceScaleStore = create<InterfaceScaleState>()(
 );
 
 let appliedInterfaceScale: number | null = null;
+let requestedInterfaceScale: number = INTERFACE_SCALE_RANGE.default;
+let interfaceScaleApplicationQueue = Promise.resolve();
 
-export async function applyInterfaceScale(scale: number): Promise<void> {
+export function applyInterfaceScale(scale: number): Promise<void> {
   if (!isTauri) {
-    return;
+    return Promise.resolve();
   }
-  const nextScale = sanitizeInterfaceScale(scale);
-  if (nextScale === appliedInterfaceScale) {
-    return;
-  }
-  const { getCurrentWebview } = await import("@tauri-apps/api/webview");
-  const zoom = interfaceScaleToZoom(nextScale);
-  await getCurrentWebview().setZoom(zoom);
-  appliedInterfaceScale = nextScale;
-  setAppliedInterfaceZoom(zoom);
+  requestedInterfaceScale = sanitizeInterfaceScale(scale);
+  const application = interfaceScaleApplicationQueue.then(async () => {
+    const nextScale = requestedInterfaceScale;
+    if (nextScale === appliedInterfaceScale) {
+      return;
+    }
+    const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+    const zoom = interfaceScaleToZoom(nextScale);
+    await getCurrentWebview().setZoom(zoom);
+    appliedInterfaceScale = nextScale;
+    setAppliedInterfaceZoom(zoom);
+  });
+  interfaceScaleApplicationQueue = application.catch(() => undefined);
+  return application;
 }
