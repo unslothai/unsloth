@@ -2087,17 +2087,32 @@ html[data-chat-font] .aui-root {
 		cursor: pointer;
 	}
 
-	/* Split Thinking pill: the left half toggles, the right half opens the menu. */
+	/* Split Thinking pill: the left half toggles, the right half opens the menu.
+	   The container paints the one pill background, so hovering either half
+	   lights the whole pill instead of a half-pill wedge. */
 	.unsloth-thinking-split {
-		@apply inline-flex shrink-0 items-center;
+		@apply inline-flex shrink-0 items-center rounded-full transition-colors;
+	}
+
+	.unsloth-thinking-split:hover {
+		@apply bg-primary/10 dark:bg-white/[0.1];
+	}
+
+	.unsloth-thinking-split:has([data-state="open"]) {
+		@apply bg-muted-foreground/10;
+	}
+
+	.unsloth-thinking-split .unsloth-thinking-pill:hover,
+	.unsloth-thinking-split .unsloth-thinking-pill[data-state="open"] {
+		background: transparent;
 	}
 
 	.unsloth-thinking-split-toggle {
-		@apply rounded-r-none pr-1;
+		@apply pr-1;
 	}
 
 	.unsloth-thinking-split-toggle + .unsloth-thinking-pill {
-		@apply rounded-l-none pl-0.5;
+		@apply pl-0.5;
 	}
 
 	.unsloth-thinking-split-icon {
@@ -2122,7 +2137,7 @@ html[data-chat-font] .aui-root {
 		}
 
 		.unsloth-thinking-split-toggle + .unsloth-thinking-pill {
-			@apply rounded-full px-0;
+			@apply px-0;
 		}
 
 		.unsloth-thinking-split-icon {
