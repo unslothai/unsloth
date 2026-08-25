@@ -23,10 +23,8 @@ const sourceFile = (relative: string): ts.SourceFile => {
   );
 };
 
-// A model that answers `{"code": 42}` reaches `code.split("\n")`, and a throw in
-// a card is caught by the router, not by the thread: all of Studio is replaced
-// with "Something went wrong!". The message is persisted, so it reproduces on
-// every reopen. These are the shapes local models actually send.
+// The shapes local models actually send. See tool-arg-text.ts for what a throw
+// in a card costs.
 test("toolArgText renders whatever the model sent as text", () => {
   assert.equal(toolArgText(42), "42");
   assert.equal(toolArgText(0), "0");
@@ -36,10 +34,9 @@ test("toolArgText renders whatever the model sent as text", () => {
   assert.equal(toolArgText("print(1)"), "print(1)");
 });
 
-// `{"code":{"toString":null}}` is valid JSON, and the own property shadows the
-// one on Object.prototype. Coercing such a value throws "Cannot convert object
-// to primitive value" -- the same router-level crash, reached through the very
-// helper meant to prevent it. Arrays reach it too, elementwise.
+// `{"toString":null}` is valid JSON whose own property shadows the callable one
+// on Object.prototype, so coercing it throws through the very helper meant to
+// prevent the crash. Arrays reach it too, elementwise.
 test("toolArgText survives an object that cannot be coerced", () => {
   const hostile = JSON.parse('{"code":{"toString":null}}').code;
   assert.equal(toolArgText(hostile), '{"toString":null}');
@@ -85,8 +82,7 @@ test("a coerced argument survives the calls the cards make on it", () => {
   assert.equal(toolArgText(42).trim(), "42");
 });
 
-// The helper's whole contract. Anything it throws on is a card that takes the
-// application down, so the property is asserted over the shapes JSON can carry.
+// The helper's whole contract, over the shapes JSON can carry.
 test("toolArgText never throws", () => {
   const shapes: unknown[] = [
     undefined,
@@ -114,9 +110,8 @@ test("toolArgText never throws", () => {
 /**
  * Every `const <name> = ...` initializer declared inside `component`.
  *
- * Scoped to the component on purpose: the module-level parsing helpers in
- * tool-ui-web-search.tsx declare a `url` of their own out of a regex match, and
- * that one has nothing to do with what the model sent.
+ * Scoped to the component because tool-ui-web-search.tsx's module-level parsing
+ * helpers declare a `url` of their own out of a regex match.
  */
 function readConsts(
   relative: string,
@@ -154,8 +149,8 @@ function readConsts(
 }
 
 // The argument each card calls a string method on. Asserting the declaration
-// rather than the whole line lets the read be spelled `args`-cast or through a
-// parsed-args object, which is how the cards already differ.
+// rather than the whole line lets a card spell the read either way it already
+// does: an `args` cast, or a parsed-args object.
 const COERCED: ReadonlyArray<
   readonly [file: string, component: string, props: readonly string[]]
 > = [
@@ -199,9 +194,8 @@ test("every card reads its text arguments through toolArgText", () => {
   }
 });
 
-// render_html guards with `typeof === "string"` instead, which is also crash
-// safe: it drops a non-string rather than rendering it. Listed so the closure
-// test below stays exact.
+// render_html is crash safe a different way: `typeof === "string"` drops a
+// non-string rather than rendering it. Listed so the closure test stays exact.
 const TYPEOF_GUARDED: ReadonlyArray<readonly [string, string]> = [
   ["tool-ui-render-html.tsx", "RenderHtmlToolUIImpl"],
 ];

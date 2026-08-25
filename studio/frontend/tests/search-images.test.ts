@@ -906,8 +906,8 @@ test("the web search card survives a query that is not a string", () => {
     cardSource.indexOf("const isUrlFetch ="),
   );
   assert.ok(args.length > 0, "the args derivation moved");
-  // toolArgText is passed in because the derivation now calls it: one coercion is
-  // shared by every tool card (see tool-card-arg-coercion.test.ts).
+  // Passed in because the derivation now calls it: one coercion shared by every
+  // card (see tool-card-arg-coercion.test.ts).
   const derived = new Function(
     "args",
     "toolArgText",
