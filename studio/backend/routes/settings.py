@@ -40,6 +40,11 @@ from utils.upload_limits import (
     upload_limit_bytes,
     upload_limit_label,
 )
+from utils.xet_notice_settings import (
+    XET_NOTICE_LIMIT,
+    get_xet_notice_count,
+    reserve_xet_notice,
+)
 from utils.helper_precache_settings import (
     DEFAULT_HELPER_PRECACHE_ENABLED,
     get_helper_precache_enabled,
@@ -568,6 +573,19 @@ class HelperPrecacheResponse(BaseModel):
     disabled_by_env: bool
 
 
+class XetNoticeReservePayload(BaseModel):
+    # A legacy localStorage count from a client that has not reported one before.
+    # Can only raise the stored count (see reserve_xet_notice), so a client cannot
+    # talk its own way back under the limit with it.
+    seen_hint: int = 0
+
+
+class XetNoticeResponse(BaseModel):
+    granted: bool
+    shown: int
+    limit: int
+
+
 class ModelMemoryPayload(BaseModel):
     # None leaves the stored value untouched, so the switches save independently.
     keep_resident: Optional[bool] = None
@@ -1064,6 +1082,35 @@ def update_helper_precache(
             log = logger,
         ) from exc
     return _helper_precache_response(enabled)
+
+
+@router.get("/xet-notice", response_model = XetNoticeResponse)
+def get_xet_notice(
+    current_subject: str = Depends(get_current_subject),
+) -> XetNoticeResponse:
+    shown = get_xet_notice_count()
+    return XetNoticeResponse(
+        granted = False, shown = shown, limit = XET_NOTICE_LIMIT
+    )
+
+
+@router.post("/xet-notice/reserve", response_model = XetNoticeResponse)
+def post_xet_notice_reserve(
+    payload: XetNoticeReservePayload,
+    current_subject: str = Depends(get_current_subject),
+) -> XetNoticeResponse:
+    """Take one of the remaining notices. POST because it mutates the count."""
+    try:
+        result = reserve_xet_notice(payload.seen_hint)
+    except Exception as exc:
+        raise log_and_http_error(
+            exc,
+            500,
+            safe_error_detail(exc, fallback = "Could not reserve the Xet download notice."),
+            event = "settings.reserve_xet_notice_failed",
+            log = logger,
+        ) from exc
+    return XetNoticeResponse(**result)
 
 
 @router.get("/model-memory", response_model = ModelMemoryResponse)

@@ -11,8 +11,9 @@ import {
   TRANSPORT,
 } from "./constants";
 
-export const XET_NOTICE_LIMIT = 3;
-export const XET_NOTICE_STORAGE_KEY = "unsloth.studio.xetNoticeCount";
+// The 3-use cap and the count both live on the server now (see
+// studio/backend/utils/xet_notice_settings.py). A copy here could only ever drift
+// out of step with the value actually being enforced.
 
 // Longer than the Toaster's 5s default, like the explanatory toasts in chat.
 export const XET_NOTICE_DURATION_MS = 8000;
@@ -41,58 +42,22 @@ export const XET_NOTICE_DESCRIPTION =
   "Xet sends the file in small pieces, so the bar can sit at 0% and then jump to done. Nothing is stuck.";
 export const XET_NOTICE_DESCRIPTION_CLASS = "!text-muted-foreground";
 
-// Carries the count when the write fails (private mode, quota), which would
-// otherwise repeat the toast on every download.
-let sessionShown = 0;
-
-function readStoredCount(): number {
-  if (typeof window === "undefined") return 0;
-  try {
-    const parsed = Number.parseInt(
-      window.localStorage.getItem(XET_NOTICE_STORAGE_KEY) ?? "",
-      10,
-    );
-    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0;
-  } catch {
-    return 0;
-  }
-}
-
-export function xetNoticesShown(): number {
-  return Math.max(sessionShown, readStoredCount());
-}
-
-export function recordXetNoticeShown(): void {
-  const next = xetNoticesShown() + 1;
-  sessionShown = next;
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(XET_NOTICE_STORAGE_KEY, String(next));
-  } catch {
-    // Counted in memory above, so this session still stops at the limit.
-  }
-}
-
-/** Take one of the three, or report that none are left.
+/** The notice, plus whatever the starting surface wanted to say about this download.
  *
- * localStorage has no compare-and-set, so two tabs starting a download at the
- * same moment can both read the same count and both show the toast. Web Locks
- * are cross-tab, so the read and the write happen as one. Browsers without
- * them fall back to the plain check, which is the race above and still bounded
- * at one extra toast. */
-export async function reserveXetNotice(): Promise<boolean> {
-  const take = () => {
-    if (xetNoticesShown() >= XET_NOTICE_LIMIT) return false;
-    recordXetNoticeShown();
-    return true;
-  };
-  const locks = globalThis.navigator?.locks;
-  if (!locks) return take();
-  try {
-    return await locks.request(XET_NOTICE_STORAGE_KEY, take);
-  } catch {
-    return take();
-  }
+ * Chat's picker auto-loads the model when the transfer finishes and wants to say so;
+ * the Hub does not auto-load anything, passes nothing, and gets the short form. That
+ * split is why the caller supplies the sentence rather than this module hard-coding
+ * it: on the Hub "it'll load automatically" would simply be false.
+ *
+ * The budget in the tests applies to XET_NOTICE_DESCRIPTION alone for the same
+ * reason. The short form is the one that renders over the Model hub toolbar, which is
+ * what #9293 reverted; the composed form only ever appears on chat, where there is no
+ * toolbar underneath it. */
+export function composeNoticeDescription(
+  callerToast?: { description: string } | null,
+): string {
+  const extra = callerToast?.description?.trim();
+  return extra ? `${XET_NOTICE_DESCRIPTION} ${extra}` : XET_NOTICE_DESCRIPTION;
 }
 
 /** Only the transport that behaves this way, and only while it is news.
@@ -103,25 +68,21 @@ export async function reserveXetNotice(): Promise<boolean> {
  * start the user already cancelled has nothing to reassure them about.
  * Neither shows the notice nor spends one of the three.
  *
- * `callerExplained` is a surface that already toasted about this start. Chat's
- * model picker says "Downloading model, it'll load automatically once the
- * download finishes", which is the same reassurance in different words, and
- * sonner stacks the two in one corner. One start, one toast: the notice yields
- * to the more specific message, and does not spend one of its three doing so. */
+ * There is deliberately no "the caller already toasted" clause here any more. An
+ * earlier attempt suppressed the notice whenever chat had something to say, which
+ * removed the 0%-explanation exactly where a big first download makes it most
+ * useful. The caller's line is folded into the notice instead, by
+ * composeNoticeDescription, so nothing has to be dropped to avoid a second toast. */
 export function shouldShowXetNotice(args: {
   kind: DownloadKind;
   transport: ResolvedTransport;
   attached: boolean;
   live: boolean;
-  shown: number;
-  callerExplained?: boolean;
 }): boolean {
   return (
     args.kind === DOWNLOAD_KIND.MODEL &&
     args.transport === TRANSPORT.XET &&
     !args.attached &&
-    args.live &&
-    !args.callerExplained &&
-    args.shown < XET_NOTICE_LIMIT
+    args.live
   );
 }

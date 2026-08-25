@@ -2748,16 +2748,16 @@ export function ChatPage({
             repoId: selection.id,
             variant: selection.ggufVariant ?? null,
             expectedBytes: selection.expectedBytes ?? 0,
-            // This surface toasts about the start below, so the Xet notice
-            // stays quiet rather than stacking a second one on top of it.
-            callerExplainsWait: true,
-          });
-          if (outcome === "started") {
-            toast.info("Downloading in the background", {
+            // Hand the message over instead of raising it here. The download
+            // manager folds it into the Xet notice when that fires, so one
+            // start produces one toast carrying both explanations.
+            callerToast: {
+              title: "Downloading in the background",
               description:
                 "It'll be ready to load once the current model finishes.",
-            });
-          } else if (outcome === "conflict") {
+            },
+          });
+          if (outcome === "conflict") {
             toast.info("Resume this download from Models", {
               description:
                 "An earlier partial download used a different transport. Open the Model hub tab to resume or restart it.",
@@ -2865,14 +2865,20 @@ export function ChatPage({
         repoId: pending.selection.id,
         variant: pending.selection.ggufVariant ?? null,
         expectedBytes: pending.selection.expectedBytes ?? 0,
-        // Same reason as the background path: the "Downloading model" toast
-        // below already tells the user the wait is expected.
-        callerExplainsWait: true,
+        // As above: the download manager raises this, folded into the Xet
+        // notice when that fires.
+        callerToast: {
+          title: "Downloading model",
+          description: "It'll load automatically once the download finishes.",
+        },
       });
       if (!active) return;
       if (outcome === "started") {
-        // No toast: the download panel already shows this download. The
-        // auto-load still runs from onComplete.
+        // No toast raised HERE. #9663 dropped the one that used to live on this
+        // line because it duplicated the download panel; its sentence is not
+        // dropped though, it travels as callerToast above and the download
+        // manager folds it into the Xet notice rather than stacking a second
+        // card in the same corner. The auto-load still runs from onComplete.
         return;
       }
       if (outcome === "conflict") {

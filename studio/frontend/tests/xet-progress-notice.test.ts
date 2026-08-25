@@ -12,20 +12,20 @@ import {
   registerBundlerResolver,
 } from "./helpers/kit.ts";
 
-const { store, storage } = installLocalStorageFake();
+installLocalStorageFake();
 registerBundlerResolver();
 
+const noticeModule = await import(
+  "../src/features/hub/download-manager/xet-progress-notice.ts"
+);
 const {
   XET_NOTICE_DESCRIPTION,
   XET_NOTICE_DESCRIPTION_CLASS,
   XET_NOTICE_DURATION_MS,
-  XET_NOTICE_LIMIT,
-  XET_NOTICE_STORAGE_KEY,
   XET_NOTICE_TITLE,
-  recordXetNoticeShown,
+  composeNoticeDescription,
   shouldShowXetNotice,
-  xetNoticesShown,
-} = await import("../src/features/hub/download-manager/xet-progress-notice.ts");
+} = noticeModule;
 
 const XET_MODEL = {
   kind: "model",
@@ -35,94 +35,34 @@ const XET_MODEL = {
 } as const;
 
 test("the notice is for Xet model downloads and nothing else", () => {
-  assert.ok(shouldShowXetNotice({ ...XET_MODEL, shown: 0 }));
+  assert.ok(shouldShowXetNotice({ ...XET_MODEL }));
   // HTTP reports steady progress, so the explanation would be wrong there.
-  assert.ok(
-    !shouldShowXetNotice({ ...XET_MODEL, transport: "http", shown: 0 }),
-  );
-  assert.ok(!shouldShowXetNotice({ ...XET_MODEL, kind: "dataset", shown: 0 }));
-});
-
-test("a caller that already toasted about the start gets no second toast", () => {
-  // Reported on main after this landed: picking a model in chat produced the
-  // Xet notice AND chat's own "Downloading model, it'll load automatically
-  // once the download finishes", stacked in the same corner. Both are true and
-  // both say wait, so the user is told twice for one start.
-  //
-  // The earlier UI evidence never caught it because the scene drove the Hub
-  // download card, and only chat's picker raises a start toast of its own. One
-  // start, one toast.
-  assert.ok(
-    !shouldShowXetNotice({ ...XET_MODEL, callerExplained: true, shown: 0 }),
-  );
-  // Absent or false is the Hub path, which explains nothing on its own.
-  assert.ok(
-    shouldShowXetNotice({ ...XET_MODEL, callerExplained: false, shown: 0 }),
-  );
-  assert.ok(shouldShowXetNotice({ ...XET_MODEL, shown: 0 }));
+  assert.ok(!shouldShowXetNotice({ ...XET_MODEL, transport: "http" }));
+  assert.ok(!shouldShowXetNotice({ ...XET_MODEL, kind: "dataset" }));
 });
 
 test("attaching to someone else's job shows nothing", () => {
-  // The backend accepts the start and reports that job's transport, but this
-  // client began no transfer, so it must not spend one of the three either.
-  assert.ok(!shouldShowXetNotice({ ...XET_MODEL, attached: true, shown: 0 }));
+  // Accepted, and it reports that job's transport, but this user started nothing.
+  assert.ok(!shouldShowXetNotice({ ...XET_MODEL, attached: true }));
 });
 
 test("a start that is already stopping shows nothing", () => {
-  // Cancelling while the start POST is in flight still returns an accepted
-  // start. Promising a running download there would be a lie, and it would
-  // spend one of the three on it.
-  assert.ok(!shouldShowXetNotice({ ...XET_MODEL, live: false, shown: 0 }));
+  // Nothing to reassure the user about if the download is on its way out.
+  assert.ok(!shouldShowXetNotice({ ...XET_MODEL, live: false }));
 });
 
-test("it stops after the first three", () => {
-  assert.equal(XET_NOTICE_LIMIT, 3);
-  assert.ok(shouldShowXetNotice({ ...XET_MODEL, shown: XET_NOTICE_LIMIT - 1 }));
-  assert.ok(!shouldShowXetNotice({ ...XET_MODEL, shown: XET_NOTICE_LIMIT }));
-  // A count already past the limit (an older, larger value) still stops.
-  assert.ok(!shouldShowXetNotice({ ...XET_MODEL, shown: 99 }));
-});
-
-// Before anything is recorded, so the session count cannot mask the read.
-test("a missing or junk stored count reads as none shown", () => {
-  store.clear();
-  assert.equal(xetNoticesShown(), 0);
-  store.set(XET_NOTICE_STORAGE_KEY, "not a number");
-  assert.equal(xetNoticesShown(), 0);
-  store.set(XET_NOTICE_STORAGE_KEY, "-4");
-  assert.equal(xetNoticesShown(), 0);
-});
-
-test("the count persists across sessions", () => {
-  store.clear();
-  recordXetNoticeShown();
-  assert.equal(store.get(XET_NOTICE_STORAGE_KEY), "1");
-  recordXetNoticeShown();
-  assert.equal(store.get(XET_NOTICE_STORAGE_KEY), "2");
-  assert.equal(xetNoticesShown(), 2);
-
-  // What a later session reads back, including one past this session's count.
-  store.set(XET_NOTICE_STORAGE_KEY, "3");
-  assert.equal(xetNoticesShown(), 3);
-  assert.ok(!shouldShowXetNotice({ ...XET_MODEL, shown: xetNoticesShown() }));
-});
-
-test("a storage that refuses writes still advances the count", () => {
-  // Private mode: setItem throws. Without the in-memory carry, every download
-  // would show the toast again.
-  store.clear();
-  const before = xetNoticesShown();
-  const setItem = storage.setItem;
-  storage.setItem = () => {
-    throw new Error("QuotaExceededError");
-  };
-  try {
-    recordXetNoticeShown();
-  } finally {
-    storage.setItem = setItem;
-  }
-  assert.equal(xetNoticesShown(), before + 1);
-  assert.equal(store.get(XET_NOTICE_STORAGE_KEY), undefined);
+test("the predicate does not decide the cap", () => {
+  // The 3-use limit lives on the server (utils/xet_notice_settings.py) because the
+  // browser could not be trusted to remember it: localStorage is per-origin and a
+  // Studio origin moves whenever port 8888 is taken. A second copy of the limit here
+  // could only drift out of step with the one actually being enforced, so the
+  // predicate answers "is this the kind of download worth explaining" and nothing
+  // else. reserveXetNotice is the only thing that can say no on grounds of count.
+  const notice = noticeModule as Record<string, unknown>;
+  assert.equal(notice.XET_NOTICE_LIMIT, undefined);
+  assert.equal(notice.XET_NOTICE_STORAGE_KEY, undefined);
+  assert.equal(notice.xetNoticesShown, undefined);
+  assert.equal(notice.recordXetNoticeShown, undefined);
 });
 
 test("the copy reassures, in plain words", () => {
@@ -152,6 +92,10 @@ test("the copy stays short enough to clear the hub toolbar", () => {
   // to break. Nothing else enforces this, and the failure is invisible to unit
   // tests and to a screenshot taken at the wrong viewport, which is exactly how
   // it shipped the first time.
+  //
+  // This applies to the BASE description only. That is the one the Hub renders
+  // over its own toolbar; the composed form below is chat-only, and chat has no
+  // toolbar under the toast.
   assert.ok(
     XET_NOTICE_TITLE.length <= 32,
     `title is ${XET_NOTICE_TITLE.length} chars, budget 32`,
@@ -166,9 +110,38 @@ test("the copy stays short enough to clear the hub toolbar", () => {
   assert.match(XET_NOTICE_DESCRIPTION_CLASS, /text-muted-foreground/);
 });
 
+test("the caller's line is folded in rather than raised as a second toast", () => {
+  // Reported on main: picking a model in chat produced the Xet notice AND chat's
+  // own "Downloading model / It'll load automatically once the download finishes",
+  // stacked in the same corner. Suppressing one loses information the user wants,
+  // so the caller's sentence joins the notice instead.
+  const composed = composeNoticeDescription({
+    description: "It'll load automatically once the download finishes.",
+  });
+  assert.ok(composed.startsWith(XET_NOTICE_DESCRIPTION));
+  assert.match(composed, /load automatically once the download finishes\.$/);
+  // Exactly one space at the seam, not a double space or a missing one.
+  assert.ok(
+    composed.includes(`${XET_NOTICE_DESCRIPTION} It'll`),
+    `bad seam: ${composed}`,
+  );
+});
+
+test("a caller with nothing to add leaves the notice alone", () => {
+  // The Hub passes no callerToast: nothing auto-loads there, so the extra
+  // sentence would be false rather than merely long.
+  assert.equal(composeNoticeDescription(), XET_NOTICE_DESCRIPTION);
+  assert.equal(composeNoticeDescription(null), XET_NOTICE_DESCRIPTION);
+  assert.equal(
+    composeNoticeDescription({ description: "   " }),
+    XET_NOTICE_DESCRIPTION,
+  );
+});
+
 test("it stays up longer than the Toaster default", () => {
   // Shorter than the first version, but still two sentences a user has to
   // notice while looking at a progress bar, and it appears at most 3 times
-  // ever. 5s is enough to miss entirely.
+  // ever. 5s is enough to miss entirely. This is an upper bound only: the
+  // toast is dismissed as soon as the transfer it describes finishes.
   assert.ok(XET_NOTICE_DURATION_MS > 5000);
 });

@@ -65,14 +65,16 @@ import type {
   Terminal,
 } from "./download-manager-types";
 import {
-  XET_NOTICE_DESCRIPTION,
-  XET_NOTICE_DESCRIPTION_CLASS,
-  XET_NOTICE_DURATION_MS,
   XET_NOTICE_TITLE,
-  reserveXetNotice,
+  composeNoticeDescription,
   shouldShowXetNotice,
-  xetNoticesShown,
 } from "./xet-progress-notice";
+import { reserveXetNoticeFromServer } from "@/features/settings/api/xet-notice";
+import {
+  dismissStartToast,
+  showCallerToast,
+  showStartToast,
+} from "./start-toast";
 import {
   getState,
   hasActiveRepoPeer,
@@ -201,6 +203,12 @@ export function finalize(
 ): void {
   const job = getState().jobs[key];
   teardownRuntime(key);
+  // The start toast describes a transfer that is now over. Its 8s duration is a
+  // cap, not a description of the download: a small model finished, auto-loaded,
+  // and the toast was still saying the download was running. Dismiss on every
+  // terminal outcome, before the early returns below, so a job that finished
+  // between polls or was already in a terminal display state still clears it.
+  dismissStartToast(key);
   if (!job) return;
   if (TERMINAL_DISPLAY_STATES.has(job.state)) return;
   if (job.kind === DOWNLOAD_KIND.MODEL) {
@@ -734,7 +742,9 @@ export async function startJob(
     }
     const started = transportAfterStart(mode, result.transport);
     if (started !== activeTransport) patchJob(key, { transport: started });
-    // Explain the 0%-then-done shape of a Xet transfer, for the first few only.
+    // One start, one toast. This is the ONLY place a start is announced: chat used
+    // to raise its own the moment requestStart resolved, which stacked a second
+    // toast under this one for the same download.
     if (
       shouldShowXetNotice({
         kind: req.kind,
@@ -743,22 +753,23 @@ export async function startJob(
         // A cancel can land while this start is in flight, and the reissue
         // above is the giveaway. Do not promise a download that is stopping.
         live: result.state === "running" && !rt.cancelRequested,
-        // Chat's picker toasts about this same start; two toasts in one corner
-        // is what the user sees, not two explanations.
-        callerExplained: req.callerExplainsWait === true,
-        shown: xetNoticesShown(),
       })
     ) {
-      // Reserving is async (a cross-tab lock), and nothing below waits on a
-      // toast, so let the download get on with it.
-      void reserveXetNotice().then((reserved) => {
-        if (!reserved) return;
-        toast.info(XET_NOTICE_TITLE, {
-          description: XET_NOTICE_DESCRIPTION,
-          duration: XET_NOTICE_DURATION_MS,
-          classNames: { description: XET_NOTICE_DESCRIPTION_CLASS },
-        });
+      // Reserving is async (it asks the backend for one of the three), and
+      // nothing below waits on a toast, so let the download get on with it.
+      // Losing the reservation still leaves the caller owed its message.
+      void reserveXetNoticeFromServer().then(({ granted }) => {
+        if (granted) {
+          showStartToast(key, {
+            title: XET_NOTICE_TITLE,
+            description: composeNoticeDescription(req.callerToast),
+          });
+          return;
+        }
+        showCallerToast(key, req.callerToast);
       });
+    } else {
+      showCallerToast(key, req.callerToast);
     }
     // An adopted job can already have fallen back from Xet to HTTP, which
     // keeps its original cancel marker and so its stop control.
