@@ -197,6 +197,23 @@ def test_audio_only_repo_root_projector_still_triggers_companion_loading(
     assert config.gguf_mmproj_file is None
 
 
+def test_a_repo_root_projector_counts_before_the_quant_verifies(
+    remote_gguf_repo, monkeypatch, hub_cache
+):
+    """Another quant can have created the repo dir, so the requested one is not cached
+    yet. load_model gates companion resolution on the config's vision flag, so without
+    this the projector attaches only on a second Apply."""
+    repo_root = hub_cache / f"models--{REPO.replace('/', '--')}"
+    repo_root.mkdir()
+    (repo_root / "mmproj-F16.gguf").write_bytes(b"mmproj")
+    monkeypatch.setattr(llama_cpp, "cached_gguf_for_load", lambda repo, variant, **kw: None)
+
+    config = ModelConfig.from_identifier(REPO, gguf_variant = "Q8_0")
+
+    assert config.gguf_verified is None
+    assert config.is_vision is True
+
+
 def test_every_shard_of_a_verified_cached_copy_is_measured(
     remote_gguf_repo, monkeypatch, hub_cache
 ):

@@ -991,8 +991,7 @@ def is_vision_model(
         else:
             gguf_file = detect_gguf_model(local_path)
         if gguf_file:
-            companion_root = _local_gguf_companion_search_root(local_path, gguf_file)
-            mmproj_file = detect_mmproj_file(gguf_file, search_root = companion_root)
+            mmproj_file = _detect_local_mmproj(local_path, gguf_file)
             # An audio-only projector serves this model's audio input, never an image.
             is_vision = mmproj_file is not None and (
                 not require_image or mmproj_accepts_image(mmproj_file)
@@ -2620,6 +2619,57 @@ def _local_gguf_companion_search_root(
     return str(search_dir)
 
 
+def _detect_local_mmproj(
+    selected_path: str,
+    gguf_file: str,
+    accept_for: Optional[Callable[[str], Optional[Callable[[str], bool]]]] = None,
+) -> Optional[str]:
+    """The projector for a local GGUF, snapshot first.
+
+    ``detect_mmproj_file`` ranks every candidate it can see against the weight, so
+    scanning the enclosing ``models--<repo>`` dir in the same pass would let a
+    hand-added projector outrank the one shipped beside the selected file. The repo
+    root is therefore a second pass, reached only when the snapshot pairs with none,
+    which is the same published-first order ``_download_mmproj`` uses. ``accept_for``
+    builds the pre-read admission filter for a root (native-grant loads)."""
+    roots: list[str] = []
+    for include_hf_repo_root in (False, True):
+        root = _local_gguf_companion_search_root(
+            selected_path, gguf_file, include_hf_repo_root = include_hf_repo_root
+        )
+        if root in roots:
+            continue
+        roots.append(root)
+        found = detect_mmproj_file(
+            gguf_file,
+            search_root = root,
+            accept = accept_for(root) if accept_for is not None else None,
+        )
+        if found is not None:
+            return found
+    return None
+
+
+def _hf_cache_repo_root_has_mmproj(repo_id: str) -> bool:
+    """Whether ``models--<repo>/`` holds a hand-added projector (#9286).
+
+    Presence only, for the window where no quant of the repo verifies yet: the load
+    pairs the file against the weight it downloads. Without this, a repo that
+    publishes no projector skips companion resolution on the first Apply, and the
+    projector attaches only on a second one.
+    """
+    try:
+        from utils.hf_cache_settings import get_hf_cache_paths
+
+        target = f"models--{repo_id.replace('/', '--')}".lower()
+        for repo_dir in Path(get_hf_cache_paths().hub_cache).iterdir():
+            if repo_dir.is_dir() and repo_dir.name.lower() == target:
+                return detect_mmproj_file(str(repo_dir)) is not None
+    except OSError:
+        pass
+    return False
+
+
 def _snapshot_selection_key(snapshot: Path) -> tuple[float, str]:
     """Order snapshots by mtime, then by resolved path.
 
@@ -3856,8 +3906,12 @@ class ModelConfig:
                     except Exception as e:
                         logger.debug(f"Could not read export metadata: {e}")
 
-                # Direct file selections may point into a quant subdir while mmproj-*.gguf sits at the root.
-                companion_root = _local_gguf_companion_search_root(path, gguf_file)
+                # Direct file selections may point into a quant subdir while mmproj-*.gguf
+                # sits at the root. Drafters stop there; only the projector goes on to
+                # the enclosing HF repo dir, and only when the snapshot pairs with none.
+                drafter_root = _local_gguf_companion_search_root(
+                    path, gguf_file, include_hf_repo_root = False
+                )
 
                 # One accept per companion kind, bound to the file this load opens.
                 # Each kind admits a different companion directory, so they cannot
@@ -3870,22 +3924,16 @@ class ModelConfig:
                         return None
                     return lambda candidate: drafter_accept(candidate, gguf_file, kind, search_root)
 
-                mmproj_file = detect_mmproj_file(
+                mmproj_file = _detect_local_mmproj(
+                    path,
                     gguf_file,
-                    search_root = companion_root,
-                    accept = _companion_accept_for("mmproj", companion_root),
+                    accept_for = lambda root: _companion_accept_for("mmproj", root),
                 )
                 if mmproj_file:
                     gguf_is_vision = True
                     logger.info(f"Detected mmproj for vision: {mmproj_file}")
                 elif base_is_vision:
                     logger.warning(f"Base model is vision but no mmproj file found in {gguf_dir}")
-
-                # Projectors may be hand-added at the HF repo root, while published
-                # drafters remain in the selected snapshot.
-                drafter_root = _local_gguf_companion_search_root(
-                    path, gguf_file, include_hf_repo_root = False
-                )
 
                 # Separate MTP drafter sibling (Gemma 4), mirroring mmproj.
                 mtp_file = detect_mtp_file(
@@ -4020,15 +4068,13 @@ class ModelConfig:
                 # The repo may publish no projector while the user hand-added one at the
                 # HF cache repo root (#9286). load_model only resolves a projector when
                 # the config says vision, so the listing's answer alone would skip it.
-                if not has_vision and verified_file:
+                # Pair it against the weight once one is cached; before that, presence
+                # is enough to make the load resolve companions beside what it downloads.
+                if not has_vision:
                     has_vision = (
-                        detect_mmproj_file(
-                            verified_file,
-                            search_root = _local_gguf_companion_search_root(
-                                verified_file, verified_file
-                            ),
-                        )
-                        is not None
+                        _detect_local_mmproj(verified_file, verified_file) is not None
+                        if verified_file
+                        else _hf_cache_repo_root_has_mmproj(identifier)
                     )
 
                 display_name = f"{identifier.split('/')[-1]} ({variant})"

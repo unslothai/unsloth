@@ -573,6 +573,23 @@ class TestLoadReusesCachedCopy:
 
         assert out == "/remote/image.gguf"
 
+    def test_an_incomplete_split_projector_at_the_repo_root_is_not_reused(self, hf_cache):
+        """Half a hand-copied split set is a --mmproj llama-server opens and then fails on."""
+        backend = LlamaCppBackend()
+        snap = _build_cache(hf_cache, REPO, {MAIN: 4})
+        repo_root = snap.parent.parent
+        first = repo_root / "mmproj-F16-00001-of-00002.gguf"
+        first.write_bytes(b"mmproj")
+
+        with patch.object(backend, "_download_companion_gguf", return_value = None):
+            assert backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN)) is None
+
+            (repo_root / "mmproj-F16-00002-of-00002.gguf").write_bytes(b"mmproj")
+            # Complete, and llama-server is handed shard 1 whichever shard ranked first.
+            assert backend._download_mmproj(
+                hf_repo = REPO, near_path = str(snap / MAIN)
+            ) == str(first)
+
     def test_companion_cancelled_before_scanning_cached_projectors(self, hf_cache):
         backend = LlamaCppBackend()
         snap = _build_cache(hf_cache, REPO, {MAIN: 4})

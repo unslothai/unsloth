@@ -1399,6 +1399,7 @@ def snapshot_has_gguf_projector(snapshot: Optional[Path]) -> bool:
     from hub.utils.gguf import list_local_gguf_variants
     from utils.models.gguf_metadata import mmproj_accepts_image
     from utils.models.model_config import (
+        _detect_local_mmproj,
         _local_gguf_companion_search_root,
         detect_mmproj_file,
     )
@@ -1423,7 +1424,9 @@ def snapshot_has_gguf_projector(snapshot: Optional[Path]) -> bool:
 
         for variant in variants:
             weight = snapshot_path / variant.filename
-            projector = detect_mmproj_file(str(weight), search_root = repo_root)
+            # Same snapshot-first order the load uses, so the row cannot advertise a
+            # repo-root projector the load will pass over for one in the snapshot.
+            projector = _detect_local_mmproj(str(weight), str(weight))
             if projector is not None and mmproj_accepts_image(projector):
                 return True
         return False

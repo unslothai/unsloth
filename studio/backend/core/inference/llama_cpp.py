@@ -11879,17 +11879,24 @@ class LlamaCppBackend:
             return resolved
 
         from utils.models.model_config import (
-            _local_gguf_companion_search_root,
-            detect_mmproj_file,
+            _detect_local_mmproj,
+            _drafter_launch_path,
+            _drafter_split_is_complete,
         )
 
-        cached = detect_mmproj_file(
-            near_path,
-            search_root = _local_gguf_companion_search_root(near_path, near_path),
-        )
-        if cached is not None:
-            logger.info("Reusing hand-added mmproj at the HF cache repo root: %s", cached)
-        return cached
+        cached = _detect_local_mmproj(near_path, near_path)
+        if cached is None:
+            return None
+        # Same whole-set rule _companion_snapshot_sibling applies above: llama-server
+        # resolves the sibling shards from this path's directory, so half a hand-copied
+        # split set is a --mmproj the server opens and then fails on, and shard 1 is the
+        # one it has to be handed.
+        if not _drafter_split_is_complete(Path(cached)):
+            logger.info("Ignoring an incomplete split mmproj beside the cached weight: %s", cached)
+            return None
+        launch_path = _drafter_launch_path(Path(cached))
+        logger.info("Reusing hand-added mmproj at the HF cache repo root: %s", launch_path)
+        return launch_path
 
     def _cached_repo_mtp_drafter(
         self,

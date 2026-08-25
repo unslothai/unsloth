@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from utils.models.model_config import (  # noqa: E402
     ModelConfig,
+    _detect_local_mmproj,
     _local_gguf_companion_search_root,
     detect_mmproj_file,
 )
@@ -33,6 +34,17 @@ def _gguf_with_general(path: Path, fields: dict) -> Path:
     header = struct.pack("<IIQQ", _GGUF_MAGIC, 3, 0, len(fields))
     path.parent.mkdir(parents = True, exist_ok = True)
     path.write_bytes(header + body)
+    return path
+
+
+def _clip_projector(path: Path, *flags: str) -> Path:
+    """A projector GGUF declaring the given ``clip.has_*_encoder`` bools."""
+    body = b"".join(
+        struct.pack("<Q", len(flag)) + flag.encode() + struct.pack("<I", 7) + struct.pack("<?", True)
+        for flag in flags
+    )
+    path.parent.mkdir(parents = True, exist_ok = True)
+    path.write_bytes(struct.pack("<IIQQ", _GGUF_MAGIC, 3, 0, len(flags)) + body)
     return path
 
 
@@ -139,6 +151,46 @@ def test_inventory_does_not_rescan_each_variant_without_a_projector(tmp_path, mo
 
     assert snapshot_has_gguf_projector(weight.parent) is False
     assert calls == [str(repo)]
+
+
+def test_the_snapshots_own_projector_is_not_shadowed_by_the_repo_root(tmp_path):
+    """The repo root is a fallback, not a wider pool: ranking both together lets a
+    hand-added file win the shared-prefix tie-break over the shipped projector."""
+    repo, weight = _hf_repo(tmp_path)
+    shipped = _gguf_with_general(
+        weight.parent / "mmproj-F16.gguf",
+        {"general.type": "mmproj", "general.architecture": "qwen3vl"},
+    )
+    hand_added = _gguf_with_general(
+        repo / "model-Q4_K_M-mmproj.gguf",
+        {"general.type": "mmproj", "general.architecture": "qwen3vl"},
+    )
+
+    # One widened pass over both directories would take the hand-added file.
+    assert detect_mmproj_file(str(weight), search_root = str(repo)) == str(hand_added.resolve())
+
+    assert _detect_local_mmproj(str(weight.parent), str(weight)) == str(shipped.resolve())
+
+
+def test_the_repo_root_still_answers_when_the_snapshot_has_none(tmp_path):
+    repo, weight = _hf_repo(tmp_path)
+    hand_added = _gguf_with_general(
+        repo / "mmproj-kquant.gguf",
+        {"general.type": "mmproj", "general.architecture": "qwen3vl"},
+    )
+
+    assert _detect_local_mmproj(str(weight.parent), str(weight)) == str(hand_added.resolve())
+
+
+def test_an_audio_only_snapshot_projector_keeps_the_row_off_vision(tmp_path):
+    """The row has to answer what the load will open. Snapshot first means the audio
+    encoder wins, so advertising the repo root's image tower would be a button the
+    launch never honours."""
+    repo, weight = _hf_repo(tmp_path)
+    _clip_projector(weight.parent / "mmproj-audio.gguf", "clip.has_audio_encoder")
+    _clip_projector(repo / "mmproj-F16.gguf", "clip.has_vision_encoder")
+
+    assert snapshot_has_gguf_projector(weight.parent) is False
 
 
 def test_a_sibling_repo_s_projector_stays_invisible(tmp_path):
