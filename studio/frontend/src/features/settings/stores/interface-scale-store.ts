@@ -8,6 +8,12 @@ import {
   createJSONStorage,
   persist,
 } from "zustand/middleware";
+import {
+  getAppliedInterfaceZoom,
+  setAppliedInterfaceZoom,
+} from "../lib/interface-scale-runtime.ts";
+
+export { getAppliedInterfaceZoom };
 
 export const INTERFACE_SCALE_STORAGE_KEY = "unsloth_interface_scale";
 export const INTERFACE_SCALE_RANGE = {
@@ -91,6 +97,8 @@ export async function applyInterfaceScale(scale: number): Promise<void> {
     return;
   }
   const { getCurrentWebview } = await import("@tauri-apps/api/webview");
-  await getCurrentWebview().setZoom(interfaceScaleToZoom(nextScale));
+  const zoom = interfaceScaleToZoom(nextScale);
+  await getCurrentWebview().setZoom(zoom);
   appliedInterfaceScale = nextScale;
+  setAppliedInterfaceZoom(zoom);
 }

@@ -4,6 +4,12 @@ import test from "node:test";
 
 const source = (path: string) =>
   readFile(new URL(`../src/${path}`, import.meta.url), "utf8");
+const NATIVE_TITLEBAR_HEIGHT_PATTERN =
+  /const NATIVE_MAC_TITLEBAR_HEIGHT =\s*"var\(--studio-native-titlebar-height, 34px\)"/;
+const NATIVE_TRAFFIC_LIGHT_INSET_PATTERN =
+  /const NATIVE_MAC_TRAFFIC_LIGHT_INSET =\s*"var\(--studio-native-traffic-light-inset, 78px\)"/;
+const PORTALLED_NATIVE_TITLEBAR_PATTERN =
+  /"--studio-window-chrome-top",[\s\S]*?NATIVE_MAC_TITLEBAR_HEIGHT/;
 
 test("mac titlebar navigation shifts buttons with centered glyphs", async () => {
   const [titlebar, provider] = await Promise.all([
@@ -37,4 +43,11 @@ test("mac chat and media headers share the lowered control row", async () => {
   for (const page of [chat, images, video]) {
     assert.match(page, /var\(--studio-chat-header-padding-top,/);
   }
+});
+
+test("mac native chrome clearance stays fixed across interface scales", async () => {
+  const provider = await source("app/provider.tsx");
+  assert.match(provider, NATIVE_TITLEBAR_HEIGHT_PATTERN);
+  assert.match(provider, NATIVE_TRAFFIC_LIGHT_INSET_PATTERN);
+  assert.match(provider, PORTALLED_NATIVE_TITLEBAR_PATTERN);
 });

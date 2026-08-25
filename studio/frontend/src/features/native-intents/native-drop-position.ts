@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Tauri types every drop position as physical, but wry only produces one on
-// WebView2 (ScreenToClient device pixels). macOS reports NSView points and GTK
-// reports widget coordinates, both of which are already CSS pixels.
+import { getAppliedInterfaceZoom } from "../settings/lib/interface-scale-runtime.ts";
+
+// tauri types every drop position as physical, but wry only produces one on
+// webview2. macos and gtk coordinates match css pixels only at 100% page zoom.
 function isPhysicalDropPosition(): boolean {
   return (
     typeof navigator !== "undefined" && navigator.userAgent.includes("Windows")
@@ -25,8 +26,13 @@ function physicalPerCssPx(windowScaleFactor: number): number {
 export function nativeDropPointToCss(
   position: { x: number; y: number },
   windowScaleFactor: number,
+  webviewZoom = getAppliedInterfaceZoom(),
 ): { x: number; y: number } {
-  if (!isPhysicalDropPosition()) return position;
+  if (!isPhysicalDropPosition()) {
+    const scale =
+      Number.isFinite(webviewZoom) && webviewZoom > 0 ? webviewZoom : 1;
+    return { x: position.x / scale, y: position.y / scale };
+  }
   const scale = physicalPerCssPx(windowScaleFactor);
   return { x: position.x / scale, y: position.y / scale };
 }

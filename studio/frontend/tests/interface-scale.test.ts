@@ -34,6 +34,7 @@ const GENERAL_TAB = new URL(
 type InterfaceScaleModule = {
   sanitizeInterfaceScale: (value: unknown) => number;
   interfaceScaleToZoom: (scale: number) => number;
+  getAppliedInterfaceZoom: () => number;
   applyInterfaceScale: (scale: number) => Promise<void>;
 };
 
@@ -48,6 +49,7 @@ function define(name: string, value: unknown) {
 }
 
 async function load(tauri: boolean) {
+  const styles = new Map<string, string>();
   const windowStub: Record<string, unknown> = {
     location: { protocol: tauri ? "tauri:" : "https:" },
     localStorage: {
@@ -60,13 +62,20 @@ async function load(tauri: boolean) {
     windowStub["__TAURI_INTERNALS__"] = {};
   }
   define("window", windowStub);
+  define("document", {
+    documentElement: {
+      style: {
+        setProperty: (name: string, value: string) => styles.set(name, value),
+      },
+    },
+  });
   const control = { zooms: [] as number[] };
   define("__TAURI_WEBVIEW_STUB__", control);
   generation += 1;
   const mod = (await import(
     `${MODULE}?bust=${generation}`
   )) as InterfaceScaleModule;
-  return { mod, control };
+  return { mod, control, styles };
 }
 
 test("interface scale is rounded and clamped to a usable range", async () => {
@@ -79,10 +88,16 @@ test("interface scale is rounded and clamped to a usable range", async () => {
 });
 
 test("desktop scale sets native webview zoom", async () => {
-  const { mod, control } = await load(true);
+  const { mod, control, styles } = await load(true);
   await mod.applyInterfaceScale(35);
   await mod.applyInterfaceScale(35);
   assert.deepEqual(control.zooms, [0.35]);
+  assert.equal(mod.getAppliedInterfaceZoom(), 0.35);
+  assert.equal(styles.get("--studio-native-titlebar-height"), `${34 / 0.35}px`);
+  assert.equal(
+    styles.get("--studio-native-traffic-light-inset"),
+    `${78 / 0.35}px`,
+  );
 });
 
 test("browser scale never calls the native webview", async () => {

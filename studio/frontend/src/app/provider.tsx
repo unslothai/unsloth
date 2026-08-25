@@ -465,17 +465,21 @@ const WEB_UPDATE_HIDDEN_ROUTES = new Set([
   "/signup",
 ]);
 
+const NATIVE_MAC_TITLEBAR_HEIGHT = "var(--studio-native-titlebar-height, 34px)";
+const NATIVE_MAC_TRAFFIC_LIGHT_INSET =
+  "var(--studio-native-traffic-light-inset, 78px)";
+
 const MAC_NATIVE_CHROME_STYLE = {
   "--studio-titlebar-height": "0px",
-  "--studio-mac-titlebar-height": "34px",
-  "--studio-desktop-titlebar-height": "34px",
+  "--studio-mac-titlebar-height": NATIVE_MAC_TITLEBAR_HEIGHT,
+  "--studio-desktop-titlebar-height": NATIVE_MAC_TITLEBAR_HEIGHT,
   "--studio-titlebar-navigation-offset-y": "4px",
-  "--studio-mac-traffic-light-inset": "78px",
-  "--studio-collapsed-chat-controls-inset": "188px",
-  "--studio-startup-top-inset": "58px",
+  "--studio-mac-traffic-light-inset": NATIVE_MAC_TRAFFIC_LIGHT_INSET,
+  "--studio-collapsed-chat-controls-inset": `calc(110px + ${NATIVE_MAC_TRAFFIC_LIGHT_INSET})`,
+  "--studio-startup-top-inset": `calc(24px + ${NATIVE_MAC_TITLEBAR_HEIGHT})`,
   "--studio-content-top-inset": "0px",
-  "--studio-non-chat-content-top-inset": "34px",
-  "--studio-hidden-route-top-inset": "34px",
+  "--studio-non-chat-content-top-inset": NATIVE_MAC_TITLEBAR_HEIGHT,
+  "--studio-hidden-route-top-inset": NATIVE_MAC_TITLEBAR_HEIGHT,
   "--studio-chat-header-height": "44px",
   "--studio-chat-header-padding-top": "9px",
   "--studio-media-header-left-inset": "0.5rem",
@@ -517,13 +521,20 @@ function DesktopChromeVarsEffect({
         ? el.style.removeProperty(name)
         : el.style.setProperty(name, value);
     set("--studio-custom-titlebar-height", usesCustomTitlebar ? "34px" : null);
-    set("--studio-mac-titlebar-height", usesNativeMacTitlebar ? "34px" : null);
+    set(
+      "--studio-mac-titlebar-height",
+      usesNativeMacTitlebar ? NATIVE_MAC_TITLEBAR_HEIGHT : null,
+    );
     set("--studio-window-control-inset", usesCustomTitlebar ? "112px" : null);
     // How far body-portaled surfaces (dialogs, alert dialogs) must stay clear of the
     // top: either titlebar paints over them, and neither inherits the wrapper's style.
     set(
       "--studio-window-chrome-top",
-      usesCustomTitlebar || usesNativeMacTitlebar ? "34px" : null,
+      usesCustomTitlebar
+        ? "34px"
+        : usesNativeMacTitlebar
+          ? NATIVE_MAC_TITLEBAR_HEIGHT
+          : null,
     );
     return () => {
       set("--studio-custom-titlebar-height", null);

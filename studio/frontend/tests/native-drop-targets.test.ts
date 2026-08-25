@@ -26,6 +26,9 @@ Object.assign(globalThis, {
 const { nativeDropTargetAt, registerNativeDropTarget } = await import(
   "../src/features/native-intents/native-drop-targets.ts"
 );
+const { nativeDropPointToCss } = await import(
+  "../src/features/native-intents/native-drop-position.ts"
+);
 
 const asElement = (value: FakeElement) => value as unknown as HTMLElement;
 
@@ -116,6 +119,22 @@ test("a Linux drop position is hit-tested as-is", () => {
     y: 80,
   });
 });
+
+for (const userAgent of [
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X)",
+  "Mozilla/5.0 (X11; Linux x86_64)",
+]) {
+  test(`${userAgent} drop positions follow webview zoom`, () => {
+    Object.defineProperty(globalThis, "navigator", {
+      value: { userAgent },
+      configurable: true,
+    });
+    assert.deepEqual(nativeDropPointToCss({ x: 120, y: 80 }, 2, 0.5), {
+      x: 240,
+      y: 160,
+    });
+  });
+}
 
 test("a Windows drop position is divided by the scale factor", () => {
   assert.deepEqual(pointSeenFor("Mozilla/5.0 (Windows NT 10.0; Win64)"), {
