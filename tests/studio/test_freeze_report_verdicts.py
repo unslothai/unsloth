@@ -262,7 +262,6 @@ def test_the_app_marker_is_recorded_so_a_stale_claim_is_visible():
     variable as its own output or as an instruction, so a report that omits it cannot
     explain a launch that preserved the environment."""
     import inspect
-
     assert "UNSLOTH_WEBKIT_RENDERER_WORKAROUND" in inspect.getsource(freeze.exec_env)
 
 
@@ -366,9 +365,7 @@ def test_a_listener_that_is_not_ours_does_not_refuse_the_run(monkeypatch, tmp_pa
     ran = []
     monkeypatch.setattr(freeze, "studio_backend_pids", lambda: [])
     monkeypatch.setattr(freeze, "port_busy", lambda: True)
-    monkeypatch.setattr(
-        freeze, "confirm_stop_running_studio", lambda: pytest.fail("must not ask")
-    )
+    monkeypatch.setattr(freeze, "confirm_stop_running_studio", lambda: pytest.fail("must not ask"))
     monkeypatch.setattr(freeze, "stop_leftover_backend", lambda: None)
     monkeypatch.setattr(
         freeze,
@@ -378,7 +375,8 @@ def test_a_listener_that_is_not_ours_does_not_refuse_the_run(monkeypatch, tmp_pa
     monkeypatch.setattr(
         freeze,
         "run_candidate",
-        lambda label, extra, why, cmd: ran.append(label) or {"candidate": label, "verdict": "OK: x"},
+        lambda label, extra, why, cmd: ran.append(label)
+        or {"candidate": label, "verdict": "OK: x"},
     )
     app = tmp_path / "unsloth-studio"
     app.write_text("#!/bin/sh\n")
