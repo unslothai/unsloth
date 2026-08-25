@@ -54,9 +54,7 @@ def test_the_nightly_does_not_pile_onto_the_hour_mark():
     """Every scheduled workflow on GitHub asks for :00, and this one has no
     reason to join that queue."""
     minute = TRIGGERS["schedule"][0]["cron"].split()[0]
-    assert minute not in ("0", "00", "30"), (
-        f"minute {minute} is the mark everyone else picks"
-    )
+    assert minute not in ("0", "00", "30"), f"minute {minute} is the mark everyone else picks"
 
 
 def test_the_schedule_runs_the_grpo_leg():
@@ -80,8 +78,7 @@ def test_the_nightly_leg_is_NOT_in_the_per_pr_set():
     would be back in front of every PR and the nightly would be redundant."""
     wired = {name for kernel in legs.KERNELS for name in kernel}
     assert "grpo" not in wired, (
-        "grpo is in the per-PR set, so the nightly is pointless and every PR "
-        "carries a 44% red"
+        "grpo is in the per-PR set, so the nightly is pointless and every PR carries a 44% red"
     )
 
 
@@ -92,9 +89,9 @@ def test_a_leg_list_replaces_all_kernels_rather_than_filtering_after_it():
     assert 'KERNEL_SELECT="--legs $LEG_LIST"' in TEXT
     assert 'KERNEL_SELECT="--all-kernels"' in TEXT
     assert "$KERNEL_SELECT \\" in TEXT
-    assert "--all-kernels \\" not in TEXT, (
-        "--all-kernels is still hardcoded, so the override cannot take effect"
-    )
+    assert (
+        "--all-kernels \\" not in TEXT
+    ), "--all-kernels is still hardcoded, so the override cannot take effect"
 
 
 def test_the_schedule_bypasses_the_sampling_gate():
