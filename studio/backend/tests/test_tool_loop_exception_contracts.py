@@ -46,7 +46,11 @@ BAD_PYTHON = {"code": 42}
 REAL_ERROR = "'int' object has no attribute 'strip'"
 
 
-def _gguf_events(monkeypatch, arguments, tool_name = "python"):
+def _gguf_events(
+    monkeypatch,
+    arguments,
+    tool_name = "python",
+):
     first = _structured_tool_call(tool_name, arguments, "call_bad_arg")
     second = [_sse({"content": "I will fix the argument."}), _done()]
     payloads: list[dict] = []
@@ -64,9 +68,7 @@ def _gguf_events(monkeypatch, arguments, tool_name = "python"):
     "tool_name, arguments",
     [("python", BAD_PYTHON), ("terminal", {"command": 42})],
 )
-def test_a_raising_local_tool_does_not_kill_the_gguf_answer(
-    monkeypatch, tool_name, arguments,
-):
+def test_a_raising_local_tool_does_not_kill_the_gguf_answer(monkeypatch, tool_name, arguments):
     """The GGUF loop must report the tool's failure and keep answering.
 
     Without the guard the enclosing per-iteration handler re-raises, the route
@@ -83,15 +85,17 @@ def test_a_raising_local_tool_does_not_kill_the_gguf_answer(
     assert "Unknown tool" not in ends[0]["result"]
 
     content = "".join(e.get("text", "") for e in events if e.get("type") == "content")
-    assert "I will fix the argument." in content, (
-        "the loop stopped instead of letting the model recover"
-    )
+    assert (
+        "I will fix the argument." in content
+    ), "the loop stopped instead of letting the model recover"
 
 
 def test_the_gguf_loop_still_reports_a_genuinely_unknown_tool(monkeypatch):
     """The unknown-tool contract itself is untouched."""
     events, _payloads = _gguf_events(
-        monkeypatch, {"x": 1}, tool_name = "no_such_tool_at_all",
+        monkeypatch,
+        {"x": 1},
+        tool_name = "no_such_tool_at_all",
     )
     ends = [e for e in events if e.get("type") == "tool_end"]
     assert len(ends) == 1
@@ -102,9 +106,7 @@ def test_the_failing_tool_result_reaches_the_model(monkeypatch):
     """The error must be in the next request, or the model cannot correct it."""
     _events, payloads = _gguf_events(monkeypatch, BAD_PYTHON)
     assert len(payloads) >= 2, "no second turn: the loop did not continue"
-    tool_messages = [
-        m for m in payloads[1]["messages"] if m.get("role") == "tool"
-    ]
+    tool_messages = [m for m in payloads[1]["messages"] if m.get("role") == "tool"]
     assert tool_messages, payloads[1]["messages"]
     assert REAL_ERROR in json.dumps(tool_messages)
 
@@ -240,7 +242,10 @@ def test_a_repeated_failing_call_stays_bounded(monkeypatch):
     # More identical turns scripted than the budget allows.
     transport = studio_h.FakeTransport([list(bad_turn) for _ in range(max_calls + 6)])
     lines = studio_h._run(
-        transport, tools = [studio_h.PY], permission_mode = "off", max_calls = max_calls,
+        transport,
+        tools = [studio_h.PY],
+        permission_mode = "off",
+        max_calls = max_calls,
     )
 
     assert len(executions) <= max_calls, (
@@ -302,6 +307,6 @@ def test_research_only_calls_tools_that_are_not_session_guarded():
         f"research_runs now calls a session-guarded tool: {sorted(named & guarded)}. "
         "It has no enclosing tool-exception handler, so give it one first."
     )
-    assert all(not n.startswith("<dynamic:") for n in named), (
-        f"a research_runs tool name is computed, so this scan cannot vouch for it: {named}"
-    )
+    assert all(
+        not n.startswith("<dynamic:") for n in named
+    ), f"a research_runs tool name is computed, so this scan cannot vouch for it: {named}"

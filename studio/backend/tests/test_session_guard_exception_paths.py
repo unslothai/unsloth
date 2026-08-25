@@ -105,7 +105,9 @@ def test_a_recreated_chat_keeps_its_folder_even_when_the_body_raises(monkeypatch
     """A chat recreated during the call owns the directory; skip the delete."""
     seen: list[str] = []
     monkeypatch.setattr(
-        tools, "_remove_session_sandbox_locked", lambda s, f: seen.append(s),
+        tools,
+        "_remove_session_sandbox_locked",
+        lambda s, f: seen.append(s),
     )
     monkeypatch.setattr(tools, "_thread_exists", lambda *a, **k: True)
     queue_removal("recreated")
@@ -259,9 +261,11 @@ def test_one_failing_delete_does_not_silently_drop_the_others(monkeypatch):
         with tools._session_in_flight("a"):
             pass
     assert "b" in attempted
-    assert attempted != ["a", "b", "c"], (
-        "the batch now completes past a failure -- update this test and say so"
-    )
+    assert attempted != [
+        "a",
+        "b",
+        "c",
+    ], "the batch now completes past a failure -- update this test and say so"
     # Whatever the policy, nothing may be left queued or marked as removing.
     assert_idle("after a partially failed batch")
 
@@ -302,8 +306,7 @@ def test_randomised_schedules_leave_no_lifecycle_state(seed, removals):
     faulthandler.dump_traceback_later(DEADLINE, exit = False)
     try:
         threads = [
-            threading.Thread(target = worker, args = (i,), name = f"pr9640-{seed}-{i}")
-            for i in range(8)
+            threading.Thread(target = worker, args = (i,), name = f"pr9640-{seed}-{i}") for i in range(8)
         ]
         for t in threads:
             t.start()

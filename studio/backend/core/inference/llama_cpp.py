@@ -25819,7 +25819,9 @@ class LlamaCppBackend:
                             if cancel_event is not None and cancel_event.is_set():
                                 raise
                             logger.exception(
-                                "Tool %s raised: %s", decision.tool_name, _tool_exc,
+                                "Tool %s raised: %s",
+                                decision.tool_name,
+                                _tool_exc,
                             )
                             result = f"Error: tool raised an exception: {_tool_exc}"
                         if decision.tool_name in RAG_SEARCH_TOOLS:
