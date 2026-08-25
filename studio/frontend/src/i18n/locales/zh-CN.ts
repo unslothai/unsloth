@@ -215,23 +215,11 @@ export const zhCN = {
       clear: "移除快捷键",
       reset: "恢复默认",
       resetAll: "全部恢复默认",
-      groups: {
-        general: "通用",
-        chat: "聊天",
-      },
+      primarySlot: "快捷键",
+      alternateSlot: "备用快捷键",
+      browserReserved:
+        "浏览器可能会占用该组合键。桌面应用中可正常使用。",
       actions: {
-        newChat: {
-          label: "新建聊天",
-          description: "开始一个新的聊天",
-        },
-        searchChats: {
-          label: "搜索聊天",
-          description: "打开聊天搜索对话框",
-        },
-        toggleSidebar: {
-          label: "切换侧边栏",
-          description: "显示或隐藏侧边栏",
-        },
         openSettings: {
           label: "打开设置",
           description: "打开设置对话框",
@@ -239,6 +227,206 @@ export const zhCN = {
         openKeyboardShortcuts: {
           label: "键盘快捷键",
           description: "打开该快捷键列表",
+        },
+        searchChats: {
+          label: "搜索聊天",
+          description: "打开聊天搜索对话框",
+        },
+        openMcpServers: {
+          label: "MCP 服务器",
+          description: "为该聊天配置 MCP 服务器",
+        },
+        logOut: {
+          label: "退出登录",
+          description: "退出 Unsloth",
+        },
+        approveToolRequest: {
+          label: "批准请求",
+          description: "允许正在等待批准的工具调用",
+        },
+        declineToolRequest: {
+          label: "拒绝请求",
+          description: "拒绝正在等待批准的工具调用",
+        },
+        newChat: {
+          label: "新建聊天",
+          description: "开始一个新的聊天",
+        },
+        newTemporaryChat: {
+          label: "新建临时聊天",
+          description: "开始一个不写入历史记录的聊天",
+        },
+        newStandaloneChat: {
+          label: "新建独立聊天",
+          description: "在所有项目之外开始新聊天",
+        },
+        archiveChat: {
+          label: "归档聊天",
+          description: "归档已选聊天，没有则归档当前聊天",
+        },
+        markChatUnread: {
+          label: "标记为未读",
+          description: "将已选聊天标记为未读，没有则标记当前聊天",
+        },
+        togglePinChat: {
+          label: "切换置顶",
+          description: "置顶或取消置顶已选聊天，没有则操作当前聊天",
+        },
+        selectAllChats: {
+          label: "选择全部对话",
+          description: "选择侧边栏中的所有对话",
+        },
+        clearChatSelection: {
+          label: "清除选择",
+          description: "取消选择已选对话。按 Esc 同样可以取消选择",
+        },
+        deleteSelectedChats: {
+          label: "删除所选对话",
+          description: "删除所有已选对话",
+        },
+        nextRecentlyViewedChat: {
+          label: "下一个最近查看的聊天",
+          description: "在最近查看的聊天中向前切换",
+        },
+        previousRecentlyViewedChat: {
+          label: "上一个最近查看的聊天",
+          description: "在最近查看的聊天中向后切换",
+        },
+        nextChat: {
+          label: "下一个聊天",
+          description: "切换到侧边栏中的下一个聊天",
+        },
+        previousChat: {
+          label: "上一个聊天",
+          description: "切换到侧边栏中的上一个聊天",
+        },
+        nextChatNeedingAttention: {
+          label: "下一个需要处理的聊天",
+          description: "切换到下一个正在生成、排队或未读的聊天",
+        },
+        clearAllUnreads: {
+          label: "全部标记为已读",
+          description: "将所有聊天标记为已读",
+        },
+        goToRecentChat1: {
+          label: "转到最近聊天 1",
+          description: "打开“最近”中的第 1 个聊天",
+        },
+        goToRecentChat2: {
+          label: "转到最近聊天 2",
+          description: "打开“最近”中的第 2 个聊天",
+        },
+        goToRecentChat3: {
+          label: "转到最近聊天 3",
+          description: "打开“最近”中的第 3 个聊天",
+        },
+        goToRecentChat4: {
+          label: "转到最近聊天 4",
+          description: "打开“最近”中的第 4 个聊天",
+        },
+        goToRecentChat5: {
+          label: "转到最近聊天 5",
+          description: "打开“最近”中的第 5 个聊天",
+        },
+        goToRecentChat6: {
+          label: "转到最近聊天 6",
+          description: "打开“最近”中的第 6 个聊天",
+        },
+        switchToChat: {
+          label: "切换到聊天",
+          description: "前往聊天工作区",
+        },
+        switchToProjects: {
+          label: "切换到项目",
+          description: "前往项目工作区",
+        },
+        switchToHub: {
+          label: "切换到模型中心",
+          description: "前往模型中心",
+        },
+        switchToTrain: {
+          label: "切换到训练",
+          description: "前往训练工作区",
+        },
+        switchToRecipes: {
+          label: "切换到 Recipes",
+          description: "前往 Data Recipes",
+        },
+        switchToImages: {
+          label: "切换到图像",
+          description: "前往图像工作区",
+        },
+        switchToVideo: {
+          label: "切换到视频",
+          description: "前往视频工作区",
+        },
+        switchToAudio: {
+          label: "切换到音频",
+          description: "前往音频工作区",
+        },
+        switchToExport: {
+          label: "切换到导出",
+          description: "前往导出工作区",
+        },
+        toggleSidebar: {
+          label: "切换侧边栏",
+          description: "显示或隐藏侧边栏",
+        },
+        toggleApiMonitor: {
+          label: "切换 API 活动",
+          description: "显示或隐藏 API 活动监视器",
+        },
+        openModelPicker: {
+          label: "打开模型选择器",
+          description: "为该聊天选择模型",
+        },
+        openProjectPicker: {
+          label: "打开项目选择器",
+          description: "从聊天标题栏切换到其他项目",
+        },
+        startDictation: {
+          label: "语音输入",
+          description: "开始或停止在输入框中语音输入",
+        },
+        attachFiles: {
+          label: "添加照片和文件",
+          description: "为输入框添加附件",
+        },
+        sendMessage: {
+          label: "发送消息",
+          description: "发送输入框中的内容",
+        },
+        cycleReasoningEffort: {
+          label: "循环切换推理强度",
+          description: "在各推理强度等级之间循环",
+        },
+        increaseReasoningEffort: {
+          label: "提高推理强度",
+          description: "将推理强度提高一级",
+        },
+        decreaseReasoningEffort: {
+          label: "降低推理强度",
+          description: "将推理强度降低一级",
+        },
+        toggleFastMode: {
+          label: "切换 Fast 模式",
+          description: "开启或关闭 Fast 模式",
+        },
+        renameChat: {
+          label: "重命名聊天",
+          description: "重命名当前聊天",
+        },
+        forkChat: {
+          label: "分叉聊天",
+          description: "从最后一条消息分出新的聊天",
+        },
+        copyChatAsMarkdown: {
+          label: "复制为 Markdown",
+          description: "将整个聊天以 Markdown 复制到剪贴板",
+        },
+        copySessionId: {
+          label: "复制会话 ID",
+          description: "复制该聊天的沙箱会话 ID",
         },
       },
     },

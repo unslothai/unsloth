@@ -220,23 +220,11 @@ export const hi = {
       clear: "शॉर्टकट हटाएँ",
       reset: "डिफ़ॉल्ट पर लौटाएँ",
       resetAll: "सभी को डिफ़ॉल्ट पर रीसेट करें",
-      groups: {
-        general: "सामान्य",
-        chat: "चैट",
-      },
+      primarySlot: "शॉर्टकट",
+      alternateSlot: "वैकल्पिक शॉर्टकट",
+      browserReserved:
+        "आपका ब्राउज़र यह कुंजी संयोजन अपने पास रख सकता है। डेस्कटॉप ऐप में यह काम करता है।",
       actions: {
-        newChat: {
-          label: "नई चैट",
-          description: "नई चैट शुरू करें",
-        },
-        searchChats: {
-          label: "चैट खोजें",
-          description: "चैट खोज संवाद खोलें",
-        },
-        toggleSidebar: {
-          label: "साइडबार टॉगल करें",
-          description: "साइडबार दिखाएँ या छिपाएँ",
-        },
         openSettings: {
           label: "सेटिंग्स खोलें",
           description: "सेटिंग्स संवाद खोलें",
@@ -244,6 +232,206 @@ export const hi = {
         openKeyboardShortcuts: {
           label: "कीबोर्ड शॉर्टकट",
           description: "यह शॉर्टकट सूची खोलें",
+        },
+        searchChats: {
+          label: "चैट खोजें",
+          description: "चैट खोज संवाद खोलें",
+        },
+        openMcpServers: {
+          label: "MCP सर्वर",
+          description: "इस चैट के लिए MCP सर्वर कॉन्फ़िगर करें",
+        },
+        logOut: {
+          label: "लॉग आउट",
+          description: "Unsloth से साइन आउट करें",
+        },
+        approveToolRequest: {
+          label: "अनुरोध स्वीकारें",
+          description: "प्रतीक्षारत टूल कॉल की अनुमति दें",
+        },
+        declineToolRequest: {
+          label: "अनुरोध अस्वीकारें",
+          description: "प्रतीक्षारत टूल कॉल को मना करें",
+        },
+        newChat: {
+          label: "नई चैट",
+          description: "नई चैट शुरू करें",
+        },
+        newTemporaryChat: {
+          label: "नई अस्थायी चैट",
+          description: "ऐसी चैट शुरू करें जो इतिहास में सहेजी न जाए",
+        },
+        newStandaloneChat: {
+          label: "नई स्वतंत्र चैट",
+          description: "किसी भी प्रोजेक्ट के बाहर नई चैट शुरू करें",
+        },
+        archiveChat: {
+          label: "चैट संग्रहित करें",
+          description: "चुनी गई चैट संग्रहित करें, या मौजूदा चैट",
+        },
+        markChatUnread: {
+          label: "अपठित के रूप में चिह्नित करें",
+          description: "चुनी गई चैट को अपठित चिह्नित करें, या मौजूदा चैट",
+        },
+        togglePinChat: {
+          label: "पिन टॉगल करें",
+          description: "चुनी गई चैट पिन या अनपिन करें, या मौजूदा चैट",
+        },
+        selectAllChats: {
+          label: "सभी चैट चुनें",
+          description: "साइडबार की हर चैट चुनें",
+        },
+        clearChatSelection: {
+          label: "चयन हटाएँ",
+          description: "चुनी गई चैट का चयन हटाएँ। Escape से भी चयन हटता है",
+        },
+        deleteSelectedChats: {
+          label: "चुनी गई चैट हटाएँ",
+          description: "हर चुनी गई चैट को हटाएँ",
+        },
+        nextRecentlyViewedChat: {
+          label: "अगली हाल में देखी चैट",
+          description: "हाल में देखी चैट में आगे बढ़ें",
+        },
+        previousRecentlyViewedChat: {
+          label: "पिछली हाल में देखी चैट",
+          description: "हाल में देखी चैट में पीछे जाएँ",
+        },
+        nextChat: {
+          label: "अगली चैट",
+          description: "साइडबार की अगली चैट पर जाएँ",
+        },
+        previousChat: {
+          label: "पिछली चैट",
+          description: "साइडबार की पिछली चैट पर जाएँ",
+        },
+        nextChatNeedingAttention: {
+          label: "ध्यान चाहने वाली अगली चैट",
+          description: "अगली उत्पन्न होती, कतार में या अपठित चैट पर जाएँ",
+        },
+        clearAllUnreads: {
+          label: "सभी अपठित हटाएँ",
+          description: "हर चैट को पढ़ा हुआ चिह्नित करें",
+        },
+        goToRecentChat1: {
+          label: "हाल की चैट 1 पर जाएँ",
+          description: "“हाल के” में 1वीं चैट खोलें",
+        },
+        goToRecentChat2: {
+          label: "हाल की चैट 2 पर जाएँ",
+          description: "“हाल के” में 2वीं चैट खोलें",
+        },
+        goToRecentChat3: {
+          label: "हाल की चैट 3 पर जाएँ",
+          description: "“हाल के” में 3वीं चैट खोलें",
+        },
+        goToRecentChat4: {
+          label: "हाल की चैट 4 पर जाएँ",
+          description: "“हाल के” में 4वीं चैट खोलें",
+        },
+        goToRecentChat5: {
+          label: "हाल की चैट 5 पर जाएँ",
+          description: "“हाल के” में 5वीं चैट खोलें",
+        },
+        goToRecentChat6: {
+          label: "हाल की चैट 6 पर जाएँ",
+          description: "“हाल के” में 6वीं चैट खोलें",
+        },
+        switchToChat: {
+          label: "चैट पर जाएँ",
+          description: "चैट कार्यक्षेत्र पर जाएँ",
+        },
+        switchToProjects: {
+          label: "प्रोजेक्ट पर जाएँ",
+          description: "प्रोजेक्ट कार्यक्षेत्र पर जाएँ",
+        },
+        switchToHub: {
+          label: "मॉडल हब पर जाएँ",
+          description: "मॉडल हब पर जाएँ",
+        },
+        switchToTrain: {
+          label: "ट्रेन पर जाएँ",
+          description: "प्रशिक्षण कार्यक्षेत्र पर जाएँ",
+        },
+        switchToRecipes: {
+          label: "Recipes पर जाएँ",
+          description: "Data Recipes पर जाएँ",
+        },
+        switchToImages: {
+          label: "इमेज पर जाएँ",
+          description: "इमेज कार्यक्षेत्र पर जाएँ",
+        },
+        switchToVideo: {
+          label: "वीडियो पर जाएँ",
+          description: "वीडियो कार्यक्षेत्र पर जाएँ",
+        },
+        switchToAudio: {
+          label: "ऑडियो पर जाएँ",
+          description: "ऑडियो कार्यक्षेत्र पर जाएँ",
+        },
+        switchToExport: {
+          label: "एक्सपोर्ट पर जाएँ",
+          description: "एक्सपोर्ट कार्यक्षेत्र पर जाएँ",
+        },
+        toggleSidebar: {
+          label: "साइडबार टॉगल करें",
+          description: "साइडबार दिखाएँ या छिपाएँ",
+        },
+        toggleApiMonitor: {
+          label: "API गतिविधि टॉगल करें",
+          description: "API गतिविधि मॉनिटर दिखाएँ या छिपाएँ",
+        },
+        openModelPicker: {
+          label: "मॉडल चयनकर्ता खोलें",
+          description: "इस चैट के लिए मॉडल चुनें",
+        },
+        openProjectPicker: {
+          label: "प्रोजेक्ट चयनकर्ता खोलें",
+          description: "चैट हेडर से किसी दूसरे प्रोजेक्ट पर जाएँ",
+        },
+        startDictation: {
+          label: "श्रुतलेख",
+          description: "लिखने के बॉक्स में श्रुतलेख शुरू या बंद करें",
+        },
+        attachFiles: {
+          label: "फ़ोटो और फ़ाइलें संलग्न करें",
+          description: "लिखने के बॉक्स में अनुलग्नक जोड़ें",
+        },
+        sendMessage: {
+          label: "संदेश भेजें",
+          description: "लिखने के बॉक्स की सामग्री भेजें",
+        },
+        cycleReasoningEffort: {
+          label: "तर्क प्रयास बदलें",
+          description: "तर्क प्रयास के स्तरों में क्रमशः बदलें",
+        },
+        increaseReasoningEffort: {
+          label: "तर्क प्रयास बढ़ाएँ",
+          description: "तर्क प्रयास एक स्तर बढ़ाएँ",
+        },
+        decreaseReasoningEffort: {
+          label: "तर्क प्रयास घटाएँ",
+          description: "तर्क प्रयास एक स्तर घटाएँ",
+        },
+        toggleFastMode: {
+          label: "Fast मोड टॉगल करें",
+          description: "Fast मोड चालू या बंद करें",
+        },
+        renameChat: {
+          label: "चैट का नाम बदलें",
+          description: "मौजूदा चैट का नाम बदलें",
+        },
+        forkChat: {
+          label: "चैट फ़ोर्क करें",
+          description: "अंतिम संदेश से नई चैट अलग करें",
+        },
+        copyChatAsMarkdown: {
+          label: "Markdown के रूप में कॉपी करें",
+          description: "पूरी चैट को Markdown के रूप में क्लिपबोर्ड पर कॉपी करें",
+        },
+        copySessionId: {
+          label: "सत्र आईडी कॉपी करें",
+          description: "इस चैट की सैंडबॉक्स सत्र आईडी कॉपी करें",
         },
       },
     },
