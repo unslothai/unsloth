@@ -1897,6 +1897,46 @@ def test_the_fit_prices_pass_through_adapter_weights(tmp_path, monkeypatch):
     assert _verdict(["--lora", str(small)]) == FIT_MODE
 
 
+def test_the_fit_prices_the_legacy_two_token_scaled_adapter(tmp_path, monkeypatch):
+    """``--lora-scaled FNAME SCALE`` is the spelling older llama-servers declared,
+    and Studio runs whatever binary it is pointed at. Reading only FNAME as the
+    operand and dropping it for want of a colon prices the adapter at zero, which is
+    the optimistic direction: a load that needs 21 GiB on a 20 GiB card would be
+    handed a loader that cannot page.
+    """
+    monkeypatch.setattr(hardware, "is_apple_silicon", lambda: False)
+    adapter = tmp_path / "adapter.gguf"
+    with open(adapter, "wb") as fh:  # sparse, so the test costs no disk
+        fh.truncate(3 * GIB)
+
+    stub = _Stub(1024)
+
+    def _verdict(extras):
+        return LlamaCppBackend._fit_derived_load_mode(
+            stub,
+            model_size = 18 * GIB,
+            gpus = [(0, 20 * 1024)],
+            avail_mib = 1024,
+            extra_args = extras,
+            env = {},
+        )
+
+    assert _verdict([]) == FIT_MODE
+    assert _verdict(["--lora-scaled", str(adapter), "0.5"]) is None
+    assert _verdict(["--control-vector-scaled", str(adapter), "1"]) is None
+    # A drive letter is a filename, not a scale, once the scale is its own token.
+    from core.inference.llama_cpp import _sidecar_adapter_paths
+
+    assert _sidecar_adapter_paths(["--lora-scaled", "C:/a.gguf", "0.5"]) == ["C:/a.gguf"]
+    # Today's syntax is unchanged, and a lone FNAME with no scale after it is still
+    # upstream's own throw rather than a load to price.
+    assert _sidecar_adapter_paths(["--lora-scaled", "/a.gguf:0.5"]) == ["/a.gguf"]
+    assert _sidecar_adapter_paths(["--lora-scaled", "/a.gguf"]) == []
+    assert _sidecar_adapter_paths(["--lora-scaled", "/a.gguf", "--lora", "/b.gguf"]) == [
+        "/b.gguf",
+    ]
+
+
 def test_an_unreadable_adapter_abstains(tmp_path, monkeypatch):
     """Engaged but unsized, the same answer every other unreadable term gives."""
     monkeypatch.setattr(hardware, "is_apple_silicon", lambda: False)

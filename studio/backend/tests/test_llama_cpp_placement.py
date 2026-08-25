@@ -2317,3 +2317,80 @@ def test_a_paravirtual_metal_launch_prices_the_whole_model(tmp_path, monkeypatch
 
     assert backend._launch_host_shortfall_message(argv, [], {}) is None
     assert backend._launch_host_shortfall_message(argv, [], {}, child_has_no_gpu = True) is not None
+
+
+def test_the_launched_load_mode_is_recorded_in_the_memory_state(tmp_path, monkeypatch):
+    """A --load-mode the launch emitted has to reach _memory_state.
+
+    "none" reads the weights into an anonymous host buffer (llama-model-loader
+    sets use_mmap only for mmap / mmap+mlock / auto), so it IS a reservation. Left
+    out of the record, a later "Don't reserve system RAM" is judged satisfied by
+    the running child and Apply keeps the reservation instead of relaunching.
+    """
+    import utils.model_memory_settings as mm
+    from core.inference.llama_server_args import memory_state_satisfies_settings
+
+    monkeypatch.setattr(mm, "get_model_memory_settings", lambda: (False, False))
+    monkeypatch.setattr(mm, "get_keep_resident", lambda: False)
+    monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
+    monkeypatch.setattr(mm, "should_mlock", lambda: False)
+
+    caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, None))
+    caps["supports_load_mode"] = True
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 40000, 48000)])
+    with patch.object(LlamaCppBackend, "probe_server_capabilities", lambda *a, **k: caps):
+        captured = _launch(backend, gguf, load_mode = "none")
+
+    assert captured["cmd"][captured["cmd"].index("--load-mode") + 1] == "none"
+    # (mlock, reserves_ram)
+    assert backend._memory_state == (False, True)
+
+    # And the two consumers of that record agree the child contradicts the setting.
+    monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: True)
+    assert (
+        memory_state_satisfies_settings(
+            backend._memory_state,
+            backend._memory_policy_active,
+            backend._memory_mlock_applicable,
+        )
+        is False
+    )
+
+
+def test_a_fit_derived_load_mode_is_recorded_too(tmp_path, monkeypatch):
+    """Same record, for the mode the fit supplies rather than the user.
+
+    The fit's "none" reserves exactly as much host RAM as a hand-picked one, so a
+    launch that took it must not report itself as non-reserving to the settings
+    route and the duplicate-load comparator.
+    """
+    import utils.model_memory_settings as mm
+    from core.inference.llama_server_args import memory_state_satisfies_settings
+
+    monkeypatch.setattr(mm, "get_model_memory_settings", lambda: (False, False))
+    monkeypatch.setattr(mm, "get_keep_resident", lambda: False)
+    monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
+    monkeypatch.setattr(mm, "should_mlock", lambda: False)
+
+    caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, None))
+    caps["supports_load_mode"] = True
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 40000, 48000)])
+    with (
+        patch.object(LlamaCppBackend, "probe_server_capabilities", lambda *a, **k: caps),
+        patch.object(LlamaCppBackend, "_fit_derived_load_mode", return_value = "none"),
+    ):
+        captured = _launch(backend, gguf)  # no per-model pick: the fit supplies it
+
+    assert captured["cmd"][captured["cmd"].index("--load-mode") + 1] == "none"
+    assert backend._fit_load_mode_flags == ["--load-mode", "none"]
+    assert backend._memory_state == (False, True)
+
+    monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: True)
+    assert (
+        memory_state_satisfies_settings(
+            backend._memory_state,
+            backend._memory_policy_active,
+            backend._memory_mlock_applicable,
+        )
+        is False
+    )

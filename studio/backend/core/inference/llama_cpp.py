@@ -4121,6 +4121,18 @@ def _sidecar_adapter_paths(extra_args: Optional[Iterable[str]]) -> list[str]:
     it is skipped rather than priced. ACCUMULATED, not last-wins: every handler
     ``push_back``s onto ``lora_adapters`` / ``control_vectors``, so a second
     ``--lora`` adds to the first rather than replacing it.
+
+    The ``-scaled`` pair also has a LEGACY spelling: builds up to the turn of the
+    year declared it ``{"--lora-scaled"}, "FNAME", "SCALE"`` and took the scale as a
+    SECOND token, and Studio runs whatever llama-server it is pointed at
+    (``LLAMA_SERVER_PATH``, or one found on PATH), which is why the pass-through
+    validator still admits that shape (``_OPTIONAL_SECOND_VALUE_FLAGS``). Read
+    colon-first, since that is today's syntax; only when the colon parse priced
+    NOTHING and the token after the operand is a bare number is this the two-token
+    form, and then the operand is the whole filename -- which is also the one
+    reading that survives a Windows drive letter. On a build that wants the colon
+    the same tokens are upstream's own throw, so pricing the file there costs at
+    most a fit that never launched.
     """
     args = [str(a) for a in extra_args] if extra_args else []
     paths: list[str] = []
@@ -4130,9 +4142,11 @@ def _sidecar_adapter_paths(extra_args: Optional[Iterable[str]]) -> list[str]:
             continue
         _, eq, inline = raw.partition("=")
         operand = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
+        priced = 0
         for entry in (piece for piece in operand.split(",") if piece):
             if not flag.endswith("-scaled"):
                 paths.append(entry)
+                priced += 1
                 continue
             # string_split(item, ':') demanding exactly 2 parts, so a bare path or a
             # drive-lettered one is upstream's own throw, not a load to price.
@@ -4144,6 +4158,16 @@ def _sidecar_adapter_paths(extra_args: Optional[Iterable[str]]) -> list[str]:
             except ValueError:
                 continue
             paths.append(head)
+            priced += 1
+        if priced or not operand or eq or not flag.endswith("-scaled"):
+            continue
+        # Legacy "FNAME SCALE": the scale is the token AFTER the operand.
+        scale = args[i + 2] if i + 2 < len(args) else ""
+        try:
+            float(scale.strip())
+        except ValueError:
+            continue
+        paths.append(operand)
     return paths
 
 
@@ -19991,8 +20015,17 @@ class LlamaCppBackend:
                 # Record what the child will ACTUALLY run with (env defaults plus
                 # last-wins argv), not just what Unsloth emitted, so the reload
                 # hint also catches a user-supplied --mlock / --no-mmap.
+                #
+                # In argv order, including the load-mode pair: `cmd` carries it
+                # between the Model Memory block and the extras, and "none" holds a
+                # full anonymous host copy (llama-model-loader.cpp sets use_mmap
+                # only for mmap/mmap+mlock/auto). Left out, a launch the fit gave
+                # --load-mode none records as non-reserving, and a later "Don't
+                # reserve system RAM" is judged already satisfied by both the
+                # settings route and the duplicate-load comparator -- so Apply
+                # keeps the reservation instead of relaunching with mmap.
                 self._memory_state = resolve_effective_memory_state(
-                    list(_mem_managed) + list(_mem_extras), env
+                    list(_mem_managed) + list(_load_mode_managed) + list(_mem_extras), env
                 )
                 # Did the policy change this launch at all: emitted a flag,
                 # suppressed a requested one, or scrubbed an inherited env var.
@@ -21018,6 +21051,7 @@ class LlamaCppBackend:
                         # the mapping would only have paged. Hand the respawn
                         # llama.cpp's auto back, as the --fit on and CPU fallbacks do.
                         # Only Unsloth's own tokens; a user's --load-mode is theirs.
+                        _fit_mode_left_cmd = bool(self._fit_load_mode_flags)
                         if self._fit_load_mode_flags:
                             cmd = _without_subsequence(cmd, self._fit_load_mode_flags)
                             self._fit_load_mode_flags = []
@@ -21039,6 +21073,15 @@ class LlamaCppBackend:
                             self._memory_policy_active,
                             self._memory_mlock_applicable,
                         ) = _mem_policy_for_cmd
+                        # ...except for the load-mode pair just removed: the snapshot
+                        # was taken while `cmd` still carried it, and restoring it
+                        # would record a reservation this respawn no longer makes.
+                        # What is left is the Model Memory block and the extras, in
+                        # argv order, which is what the original record was.
+                        if _fit_mode_left_cmd:
+                            self._memory_state = resolve_effective_memory_state(
+                                list(_mem_managed) + list(_mem_extras), env
+                            )
                         # Residency is a property of the DEVICES, which the retry just
                         # changed: crash on the discrete card, land on the
                         # unified-memory APU, and the weights are host-backed after
