@@ -412,7 +412,11 @@ def _drive_packed(
 # went on describing the OLD longest-first order after legs.py moved to the
 # second-wave one, so every test driving it was exercising an order the kernel
 # no longer builds -- including the test that exists to assert the order.
-ALL_FOUR = list(KERNELS[0])
+# Derived from KERNELS, so it follows the registry rather than restating it.
+# Renamed from ALL_LEGS when the Default leg made the kernel five: a name that
+# counts is a name that goes stale silently, and two assertions below had
+# already hardcoded the 4 to match it.
+ALL_LEGS = list(KERNELS[0])
 
 
 def test_losing_tmp_drops_the_kernel_back_to_one_leg_per_card(tmp_path):
@@ -431,7 +435,7 @@ def test_losing_tmp_drops_the_kernel_back_to_one_leg_per_card(tmp_path):
     as it would there.
     """
     (tmp_path / "blocked").write_text("not a directory")
-    driven = _drive_packed(tmp_path, ALL_FOUR, gpus = 2, venv_fallback = True)
+    driven = _drive_packed(tmp_path, ALL_LEGS, gpus = 2, venv_fallback = True)
     assert driven["stood_down"] is None
     stub = driven["stub"]
     assert stub.venv_root is not None
@@ -441,7 +445,7 @@ def test_losing_tmp_drops_the_kernel_back_to_one_leg_per_card(tmp_path):
             f"/kaggle/working: {stub.same_card_overlaps}"
         )
     assert stub.max_live_venvs <= 2, stub.max_live_venvs
-    assert len(stub.papermill) == 4, stub.papermill
+    assert len(stub.papermill) == len(ALL_LEGS), stub.papermill
 
 
 def test_a_seeds_seat_is_taken_before_any_worker_can_look_at_the_card(tmp_path):
@@ -461,7 +465,7 @@ def test_a_seeds_seat_is_taken_before_any_worker_can_look_at_the_card(tmp_path):
     """
     driven = _drive_packed(
         tmp_path,
-        ALL_FOUR,
+        ALL_LEGS,
         gpus = 2,
         durations = {
             "t4_canary.ipynb": 2.0,
@@ -493,14 +497,14 @@ def test_no_card_is_ever_asked_to_hold_more_than_it_has(tmp_path):
     Asserted on the summed GB and not on the overlap, because after this change
     an overlap is exactly what success looks like.
     """
-    driven = _drive_packed(tmp_path, ALL_FOUR, gpus = 2)
+    driven = _drive_packed(tmp_path, ALL_LEGS, gpus = 2)
     assert driven["stood_down"] is None
     stub = driven["stub"]
     for card, peak in stub.peak_card_gb.items():
         assert peak <= 13.0, f"card {card} peaked at {peak} GB: {stub.same_card_overlaps}"
     for card, count in stub.peak_card_legs.items():
         assert count <= 2, f"card {card} held {count} legs at once"
-    assert len(stub.papermill) == 4, stub.papermill
+    assert len(stub.papermill) == len(ALL_LEGS), stub.papermill
     # Both cards are used, and every leg ran. The SPLIT is deliberately not
     # asserted: how many legs each card ends up with is a function of how long
     # the legs take relative to the 5s venv stagger, not something the
@@ -539,7 +543,7 @@ def test_gptoss_starts_in_the_second_wave_so_the_prefetch_has_a_window(tmp_path)
     # whole ~284s: simulated at 651.1s worst case against 528.1s here.
     assert order[-1] != "gptoss", order
 
-    driven = _drive_packed(tmp_path, ALL_FOUR, gpus = 2)
+    driven = _drive_packed(tmp_path, ALL_LEGS, gpus = 2)
     started = [p["notebook"] for p in driven["stub"].papermill]
     assert started[0] != "t4_gptoss.ipynb", started
     assert started != sorted(started), "payloads are running in alphabetical order"
@@ -554,7 +558,7 @@ def test_each_leg_keeps_its_own_venv_compile_cache_and_ipykernel(tmp_path):
     an index reused across a wave would silently merge two legs' trees and the
     last writer would win.
     """
-    driven = _drive_packed(tmp_path, ALL_FOUR, gpus = 2)
+    driven = _drive_packed(tmp_path, ALL_LEGS, gpus = 2)
     calls = driven["stub"].papermill
     for field in ("kernel", "compile_location", "notebook"):
         values = [c[field] for c in calls]
@@ -575,7 +579,7 @@ def test_a_finished_leg_gives_its_virtualenv_back(tmp_path):
     for reasons that look nothing like a full disk. They go on the ~1 TB
     overlay instead, and only the evidence stays where Kaggle collects it.
     """
-    driven = _drive_packed(tmp_path, ALL_FOUR, gpus = 2)
+    driven = _drive_packed(tmp_path, ALL_LEGS, gpus = 2)
     stub = driven["stub"]
     ceiling = 2 * 2  # cards x MAX_LEGS_PER_CARD
     assert (
@@ -632,11 +636,8 @@ def test_the_studio_install_never_takes_a_card_and_the_legs_never_wait_for_it(
     driven = _drive_with_studio(
         tmp_path,
         monkeypatch,
-        ALL_FOUR,
-        durations = {
-            n: 0.30
-            for n in ("t4_gptoss.ipynb", "t4_frontier.ipynb", "t4_canary.ipynb", "t4_control.ipynb")
-        },
+        ALL_LEGS,
+        durations = {f"t4_{LEGS[n].name}.ipynb": 0.30 for n in ALL_LEGS},
     )
     assert driven["stood_down"] is None
     calls = {c["notebook"]: c for c in driven["stub"].papermill}
@@ -654,7 +655,7 @@ def test_the_studio_install_never_takes_a_card_and_the_legs_never_wait_for_it(
     # stagger, and under sub-second stubs the first card legitimately drains
     # most of the queue.
     leg_cards = [c["cuda"] for n, c in calls.items() if n.startswith("t4_")]
-    assert len(leg_cards) == len(ALL_FOUR), calls
+    assert len(leg_cards) == len(ALL_LEGS), calls
     assert set(leg_cards) <= {"0", "1"}, leg_cards
     assert set(leg_cards) == {"0", "1"}, leg_cards
     # Two legs on a card is legal now (see the VRAM budget); what must hold is
@@ -671,7 +672,7 @@ def test_the_studio_assertions_wait_for_both_cards_rather_than_borrowing_one(tmp
     runs once the leg queue has drained, unpinned, rather than being handed a
     single card out of the queue.
     """
-    driven = _drive_with_studio(tmp_path, monkeypatch, ALL_FOUR)
+    driven = _drive_with_studio(tmp_path, monkeypatch, ALL_LEGS)
     calls = [c["notebook"] for c in driven["stub"].papermill]
     assert STUDIO_TEST in calls, calls
     # Last, after every leg.
@@ -708,7 +709,7 @@ def test_a_failed_studio_install_skips_its_assertions_with_the_reason(tmp_path, 
 
     driver = build_kernel.build_kernel(
         SMOKE_DIR,
-        ALL_FOUR,
+        ALL_LEGS,
         unsloth_ref = "main",
         zoo_ref = "main",
         extra_args = (),
@@ -742,7 +743,7 @@ def test_a_failed_studio_install_skips_its_assertions_with_the_reason(tmp_path, 
     # Every leg still ran: a broken Studio install must not take the notebook
     # signal down with it.
     assert sorted(n for n in ran if n.startswith("t4_")) == sorted(
-        f"t4_{leg}.ipynb" for leg in ALL_FOUR
+        f"t4_{LEGS[leg].name}.ipynb" for leg in ALL_LEGS
     )
     recorded = (namespace.get("results") or {}).get(STUDIO_TEST)
     assert recorded is not None, "the skip was not recorded at all"
@@ -754,7 +755,7 @@ def test_studio_is_not_in_the_card_queue(tmp_path, monkeypatch):
     """ORDER is the legs. Either Studio half in it would be handed a card."""
     driver = build_kernel.build_kernel(
         SMOKE_DIR,
-        ALL_FOUR,
+        ALL_LEGS,
         unsloth_ref = "main",
         zoo_ref = "main",
         extra_args = (),
@@ -766,7 +767,7 @@ def test_studio_is_not_in_the_card_queue(tmp_path, monkeypatch):
     order = next(l for l in setup.splitlines() if l.startswith("ORDER = "))
     assert STUDIO_INSTALL not in order, order
     assert STUDIO_TEST not in order, order
-    assert order.count("t4_") == len(ALL_FOUR), order
+    assert order.count("t4_") == len(ALL_LEGS), order
     # ...but both are carried, or the kernel would have nothing to run.
     payloads = set(driver["metadata"]["kaggle_t4_ci"]["payloads"])
     assert {STUDIO_INSTALL, STUDIO_TEST} <= payloads, sorted(payloads)
@@ -782,7 +783,7 @@ def test_a_one_card_allocation_still_stands_a_packed_kernel_down(tmp_path):
     infrastructure, because one card silently serialises the whole kernel and
     doubles its wall clock while looking like a slow but healthy run.
     """
-    driven = _drive_packed(tmp_path, ALL_FOUR, gpus = 1)
+    driven = _drive_packed(tmp_path, ALL_LEGS, gpus = 1)
     assert driven["stood_down"] is not None, "a 1-GPU allocation ran the packed kernel anyway"
     assert driven["stub"].papermill == []
 
@@ -2381,7 +2382,7 @@ def test_the_shared_wheels_are_the_specs_every_leg_holds_in_common():
     # And on the real legs: BOTH packages, at the refs asked for.
     driver = build_kernel.build_kernel(
         SMOKE_DIR,
-        ALL_FOUR,
+        ALL_LEGS,
         unsloth_ref = "PRSHA",
         zoo_ref = "MAINSHA",
         extra_args = (),
@@ -2416,7 +2417,7 @@ def test_every_leg_gets_its_own_torch_and_triton_cache(tmp_path):
     named once and handed to everybody would satisfy "is set" and reproduce the
     bug exactly.
     """
-    driven = _drive_packed(tmp_path, ALL_FOUR, gpus = 2)
+    driven = _drive_packed(tmp_path, ALL_LEGS, gpus = 2)
     seen: dict[str, set] = {}
     for call in driven["stub"].papermill:
         env = call.get("env") or {}
@@ -2495,7 +2496,7 @@ def test_the_shared_wheel_build_is_opt_in():
     # Off means no wheel build in the kernel at all, not merely an unused one.
     off = build_kernel.build_kernel(
         SMOKE_DIR,
-        ALL_FOUR,
+        ALL_LEGS,
         unsloth_ref = "R",
         zoo_ref = "R",
         extra_args = (),
@@ -2634,12 +2635,12 @@ def test_the_prefetch_lane_never_takes_a_card(tmp_path):
     assumes exactly two lanes compete for two cards.
     """
     hub = _HubStub()
-    driven = _drive_packed(tmp_path, ALL_FOUR, gpus = 2, prefetch_repos = ("a/big", "b/small"), hub = hub)
+    driven = _drive_packed(tmp_path, ALL_LEGS, gpus = 2, prefetch_repos = ("a/big", "b/small"), hub = hub)
     assert driven["stood_down"] is None
     assert hub.calls == ["a/big", "b/small"], hub.calls
     # Every papermill call is a LEG. The prefetch is not one of them, so it
     # cannot have been handed CUDA_VISIBLE_DEVICES.
-    assert len(driven["stub"].papermill) == len(ALL_FOUR), driven["stub"].papermill
+    assert len(driven["stub"].papermill) == len(ALL_LEGS), driven["stub"].papermill
     # Two legs on a card is legal now (see the VRAM budget); what must hold is
     # that the summed appetite never exceeds what the card has.
     for card, peak in driven["stub"].peak_card_gb.items():
@@ -2656,7 +2657,7 @@ def test_the_leg_prefetch_does_not_redirect_hf_home(tmp_path):
     """
     hub = _HubStub()
     before = os.environ.get("HF_HOME")
-    _drive_packed(tmp_path, ALL_FOUR, gpus = 2, prefetch_repos = ("a/big",), hub = hub)
+    _drive_packed(tmp_path, ALL_LEGS, gpus = 2, prefetch_repos = ("a/big",), hub = hub)
     assert hub.hf_home_at_call == [before], hub.hf_home_at_call
     assert os.environ.get("HF_HOME") == before
 
@@ -2670,9 +2671,9 @@ def test_a_failing_prefetch_does_not_fail_the_kernel(tmp_path):
     is not under test -- on a payload that is not even the subject of the run.
     """
     hub = _HubStub(fail_for = ("a/big", "b/small"))
-    driven = _drive_packed(tmp_path, ALL_FOUR, gpus = 2, prefetch_repos = ("a/big", "b/small"), hub = hub)
+    driven = _drive_packed(tmp_path, ALL_LEGS, gpus = 2, prefetch_repos = ("a/big", "b/small"), hub = hub)
     assert driven["stood_down"] is None
-    assert len(driven["stub"].papermill) == len(ALL_FOUR), driven["stub"].papermill
+    assert len(driven["stub"].papermill) == len(ALL_LEGS), driven["stub"].papermill
     assert all(r.get("returncode") == 0 for r in driven["results"].values()), driven["results"]
 
 
@@ -2680,10 +2681,10 @@ def test_no_prefetch_repos_leaves_the_schedule_exactly_as_it_was(tmp_path):
     """The lane is opt-in at the call site, and off means OFF: no thread, no
     huggingface_hub import, no behaviour change for a kernel built without it."""
     hub = _HubStub()
-    driven = _drive_packed(tmp_path, ALL_FOUR, gpus = 2, prefetch_repos = (), hub = hub)
+    driven = _drive_packed(tmp_path, ALL_LEGS, gpus = 2, prefetch_repos = (), hub = hub)
     assert hub.calls == [], hub.calls
     assert driven["stood_down"] is None
-    assert len(driven["stub"].papermill) == len(ALL_FOUR)
+    assert len(driven["stub"].papermill) == len(ALL_LEGS)
 
 
 def test_the_prefetch_list_matches_the_models_the_legs_actually_load():
@@ -2976,8 +2977,8 @@ def test_gptoss_never_shares_a_card(tmp_path):
     is the pairing that put 13.48 GB on a card and came back as an OOM reading
     like a code failure.
     """
-    durations = {f"t4_{n}.ipynb": 0.4 for n in ALL_FOUR}
-    driven = _drive_packed(tmp_path, ALL_FOUR, gpus = 2, durations = durations)
+    durations = {f"t4_{n}.ipynb": 0.4 for n in ALL_LEGS}
+    driven = _drive_packed(tmp_path, ALL_LEGS, gpus = 2, durations = durations)
     for card, together in driven["stub"].same_card_overlaps:
         assert "t4_gptoss.ipynb" not in together, (card, together)
 
@@ -2990,8 +2991,8 @@ def test_two_small_legs_do_share_a_card(tmp_path):
     NOTHING. Without this the whole change could silently do no work at all and
     the suite would stay green.
     """
-    durations = {f"t4_{n}.ipynb": 0.4 for n in ALL_FOUR}
-    driven = _drive_packed(tmp_path, ALL_FOUR, gpus = 2, durations = durations)
+    durations = {f"t4_{n}.ipynb": 0.4 for n in ALL_LEGS}
+    driven = _drive_packed(tmp_path, ALL_LEGS, gpus = 2, durations = durations)
     assert driven[
         "stub"
     ].same_card_overlaps, "no card ever held two legs at once, so the VRAM budget bought nothing"
@@ -3041,9 +3042,9 @@ def test_studio_waits_for_the_queue_by_default(tmp_path, monkeypatch):
     not something that arrived with an unrelated change.
     """
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", AMBIENT_CUDA)
-    durations = {f"t4_{n}.ipynb": 0.4 for n in ALL_FOUR}
+    durations = {f"t4_{n}.ipynb": 0.4 for n in ALL_LEGS}
     durations[STUDIO_INSTALL] = 0.1
-    driven = _drive_packed(tmp_path, ALL_FOUR, gpus = 2, studio = STUDIO, durations = durations)
+    driven = _drive_packed(tmp_path, ALL_LEGS, gpus = 2, studio = STUDIO, durations = durations)
     calls = {c["notebook"]: c for c in driven["stub"].papermill}
     assert calls[STUDIO_TEST]["cuda"] == AMBIENT_CUDA, calls[STUDIO_TEST]
     legs = [
@@ -3051,7 +3052,7 @@ def test_studio_waits_for_the_queue_by_default(tmp_path, monkeypatch):
         for c in driven["stub"].papermill
         if c["notebook"].startswith("t4_")
     ]
-    assert len(legs) == len(ALL_FOUR)
+    assert len(legs) == len(ALL_LEGS)
 
 
 def test_studio_concurrent_takes_a_card_gptoss_is_not_on(tmp_path):
@@ -3116,7 +3117,7 @@ def test_studio_concurrent_still_skips_when_its_install_failed(tmp_path):
 
     driver = build_kernel.build_kernel(
         SMOKE_DIR,
-        ALL_FOUR,
+        ALL_LEGS,
         unsloth_ref = "main",
         zoo_ref = "main",
         extra_args = (),
@@ -3125,7 +3126,7 @@ def test_studio_concurrent_still_skips_when_its_install_failed(tmp_path):
         studio = STUDIO,
         after_gpu_concurrent = True,
     )
-    stub = _InstallFails(gpus = 2, durations = {f"t4_{n}.ipynb": 0.3 for n in ALL_FOUR})
+    stub = _InstallFails(gpus = 2, durations = {f"t4_{n}.ipynb": 0.3 for n in ALL_LEGS})
     stub.root = tmp_path
     stub.venv_root = tmp_path / "venvs"
     saved = sys.modules["subprocess"]

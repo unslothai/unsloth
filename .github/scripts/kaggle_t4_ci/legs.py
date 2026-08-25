@@ -117,6 +117,27 @@ class Leg:
     # Empty means "use the base as-is", which is what a leg testing the default
     # resolution wants.
     overlay: tuple[str, ...] = ()
+    # Distributions to REMOVE after the install groups run. Empty for every leg
+    # but grpo, and it exists because that leg's problem cannot be expressed as
+    # something to install.
+    #
+    # FlashInfer cannot LINK on the Kaggle image: it ships the runtime
+    # libcuda.so.1 but not the driver stub libcuda.so, so `-lcuda` fails after
+    # nvcc has already succeeded. Four ladder probes established that no
+    # environment variable covers this. Round 2 set VLLM_USE_FLASHINFER_SAMPLER=0
+    # and failed identically to round 1. Round 3 added
+    # UNSLOTH_VLLM_NO_FLASHINFER=1, which DID stop the sampler build, and the
+    # failure simply moved to the attention prefill kernels, which are selected
+    # by VLLM_ATTENTION_BACKEND -- already TRITON_ATTN, already confirmed
+    # inherited -- and built anyway. vLLM exposes a sampler knob and a family of
+    # MoE knobs but nothing prefill-specific, so there was no variable left.
+    #
+    # Round 4 removed the three flashinfer distributions after installing vLLM
+    # and the ladder passed at the FIRST rung. Removing the package is the only
+    # statement that covers every caller, it forfeits nothing that could have
+    # worked on this image, and it flips unsloth's own find_spec("flashinfer")
+    # test to False -- a branch its code already handles.
+    uninstall: tuple[str, ...] = ()
     # Filename under <payload-dir>/references to band-check against, if any.
     reference: str = ""
     # Extra environment for the child process.
@@ -308,6 +329,18 @@ LEGS: dict[str, Leg] = {
         args = (
             "--model",
             "unsloth/Qwen3-0.6B",
+            # 20, not the default 10, and the difference is measured. At 10
+            # (kernel unsloth-probe-defaultleg-r2-563e31) Qwen3-0.6B learns the
+            # canary but not to STOP after it: it emits `__UNSLOTH__!!!__` and
+            # fails the exact-match rule. At 20
+            # (unsloth-probe-defaultleg-s20-002d25) both repeats emit
+            # `__UNSLOTH__!!!` exactly and the whole leg passes.
+            #
+            # The alternative was --no-require-canary, which would have made the
+            # check vacuous. The rule was not wrong; it was tuned against
+            # Qwen2.5-0.5B and this leg trains a different model.
+            "--max-steps",
+            "20",
         ),
         # No reference yet. The committed band
         # (references/t4_qwen2.5-0.5b.json) is a Qwen2.5-0.5B trajectory and
@@ -404,7 +437,18 @@ LEGS: dict[str, Leg] = {
             "3",
             "--load-in-4bit",
             "--gpu-memory-utilization",
-            "0.5",
+            # 0.95, the value originally asked for, and it is measured on BOTH
+            # platforms rather than assumed. This file previously argued against
+            # it from two probes that OOMed at 0.9 -- but those were Qwen3-4B,
+            # and at 0.6B the activation budget is a different problem:
+            #
+            #   Colab  T4, torch 2.11.0  peak reserved 11.76 GB, sleep/wake 3/3
+            #   Kaggle T4, torch 2.10.0  peak reserved 11.30 GB, sleep/wake 3/3
+            #
+            # both passing on the FIRST rung of a 0.95/0.8/0.6/0.5 ladder, ~3 GB
+            # under the 14.56 GB card. The old 0.5 came from the 4B probes and
+            # was never measured for this model.
+            "0.95",
             "--max-seq-length",
             "1024",
             "--num-generations",
@@ -453,6 +497,11 @@ LEGS: dict[str, Leg] = {
             # any of the assignments, and skips the entire flashinfer block.
             "UNSLOTH_VLLM_NO_FLASHINFER": "1",
         },
+        # See the field comment. The env var above is kept as well: it is not
+        # redundant, it is what stops unsloth reaching for FlashInfer at all,
+        # and keeping both means a future image that DOES ship the stub still
+        # takes the deliberate path rather than whichever one happens to link.
+        uninstall = ("flashinfer-python", "flashinfer-cubin", "flashinfer-jit-cache"),
         # Now true, which is the point of the version choice above: this leg no
         # longer replaces torch, so it shares the image's view instead of
         # resolving a whole CUDA stack from scratch. Probe 3 spent about an hour
@@ -474,7 +523,16 @@ LEGS: dict[str, Leg] = {
 # own ceiling is lower still. At 4 legs the longest column is about 11 minutes,
 # so there is room, but this is a number to raise deliberately and measure
 # after, not to grow by accident.
-MAX_LEGS_PER_KERNEL = 4
+#
+# Raised 4 -> 5 for the Default leg, deliberately and with the arithmetic. The
+# two columns today are gptoss 468.0s + control 469.6s on one card and
+# frontier 474.7s + canary 474.7s on the other (run 32703162400), so the longest
+# is about 16 minutes once Default's ~300s is added to whichever column the
+# scheduler gives it. Against a 12 hour session kill and a lower launcher
+# ceiling, that is not close. The constraint this number encodes is wall clock,
+# not cards: legs queue rather than share, so a fifth leg waits for a card
+# instead of contending for one.
+MAX_LEGS_PER_KERNEL = 5
 
 # Legs defined here and deliberately NOT run, with the reason. A leg is unwired
 # rather than deleted when the payload is right and the environment is not, so
@@ -483,23 +541,6 @@ MAX_LEGS_PER_KERNEL = 4
 UNWIRED: dict[str, str] = {
     # A leg belongs here only while a specific unanswered question about it
     # would be answered by a session. "Not tried yet" is not that.
-    "default": (
-        "The overlay carries this leg, and the overlay is proven for TRAINING as "
-        "of kernel unsloth-probe-defaultleg-723c28 on a real Tesla T4: "
-        "transformers 4.57.6 and trl 0.22.2 resolved from the overlay against the "
-        "image's untouched torch 2.10.0, and 10 of 10 steps ran at 1.16 it/s. "
-        "What is NOT yet answered is the half this leg exists for. That run died "
-        "after training, in batched_generation, on a NameError of mine, so the "
-        "batch-size agreement and the left-padding assertion have never once "
-        "executed on hardware. Wiring it now would carry a leg whose headline "
-        "check is unproven, which is the vacuous-pass failure this file has "
-        'already been caught by five times. It also has reference = "", so it '
-        "has no band to check against and cannot detect drift yet. "
-        "STILL UNKNOWN: whether batched generation agrees across batch sizes "
-        "1/2/4/8 under left padding on a T4, and what reference band this model "
-        "holds. unsloth-probe-defaultleg-r2-563e31 answers the first; wire the "
-        "leg when that kernel reports the batched record and a band is captured."
-    ),
     "grpo": (
         "vLLM standby sleep hits an illegal memory access on Turing, and it is "
         "INTERMITTENT. Three sessions on a real Tesla T4, identical to the "
@@ -605,7 +646,9 @@ UNWIRED: dict[str, str] = {
 # variable and one contrasting observation was not enough to blame a shared
 # host. It stays unwired rather than re-paired, since a leg passing one session
 # in three tells CI nothing either way.
-KERNELS: tuple[tuple[str, ...], ...] = (("canary", "control", "gptoss", "frontier"),)
+KERNELS: tuple[tuple[str, ...], ...] = (
+    ("canary", "control", "gptoss", "frontier", "default"),
+)
 
 
 # What the prefetch lane warms, in order, into the Kaggle image's default HF

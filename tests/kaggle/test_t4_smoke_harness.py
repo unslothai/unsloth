@@ -2303,6 +2303,58 @@ def test_the_grpo_leg_disables_flashinfer_at_the_only_layer_that_holds():
     assert LEGS["grpo"].env.get("UNSLOTH_VLLM_NO_FLASHINFER") == "1"
 
 
+def test_the_grpo_leg_removes_flashinfer_and_the_removal_reaches_the_payload(tmp_path):
+    """The env vars were necessary and NOT sufficient, established over four
+    Kaggle ladder probes:
+
+        r1  nothing set                       4/4 rungs fail, cached_ops/sampling
+        r2  VLLM_USE_FLASHINFER_SAMPLER=0     identical failure
+        r3  UNSLOTH_VLLM_NO_FLASHINFER=1      sampling build gone; now fails in
+                                              cached_ops/batch_prefill_with_kv_cache_...
+        r4  uninstall flashinfer              PASSES on the first rung, 11.30 GB
+
+    r3 is the one that proves the remaining gap: the sampler build genuinely
+    stopped, and the failure moved to ATTENTION, which is chosen by
+    VLLM_ATTENTION_BACKEND -- already TRITON_ATTN and confirmed inherited by the
+    rung child -- and which vLLM offers no prefill-specific opt-out for. There
+    was no variable left to set, which is why the package goes instead.
+
+    Asserted through the BUILT payload rather than off the dataclass: a field
+    nothing emits is a setting that reads like coverage and does nothing, and
+    that is the exact failure mode this file exists to catch.
+    """
+    from legs import LEGS
+
+    assert set(LEGS["grpo"].uninstall) >= {"flashinfer-python", "flashinfer-cubin"}
+    payload = _payload_notebooks(_build(tmp_path / "g", "grpo"))["t4_grpo.ipynb"]
+    install_cell = _cell(payload, 1)
+    assert "flashinfer-python" in install_cell
+    assert "uninstall" in install_cell
+
+
+def test_a_leg_with_nothing_to_uninstall_does_not_run_pip_uninstall(tmp_path):
+    """The counterpart, so the emission is conditional rather than always-on:
+    an unconditional `pip uninstall -y` with an empty list is a per-leg
+    subprocess that can only cost time."""
+    from legs import LEGS
+
+    assert LEGS["control"].uninstall == ()
+    payload = _payload_notebooks(_build(tmp_path / "c", "control"))["t4_control.ipynb"]
+    assert "flashinfer" not in _cell(payload, 1)
+
+
+def test_the_grpo_leg_asks_for_the_utilization_both_platforms_measured(tmp_path):
+    """0.95 is measured, not requested-and-hoped. Colab (torch 2.11.0) peaked at
+    11.76 GB and Kaggle (torch 2.10.0) at 11.30 GB, both on the FIRST rung of a
+    0.95/0.8/0.6/0.5 ladder and both surviving three sleep/wake cycles, roughly
+    3 GB under a 14.56 GB card. The 0.5 that used to be here came from Qwen3-4B
+    probes and was never measured for the 0.6B this leg trains."""
+    from legs import LEGS
+
+    args = LEGS["grpo"].args
+    assert args[args.index("--gpu-memory-utilization") + 1] == "0.95"
+
+
 def test_the_grpo_leg_no_longer_carries_xformers():
     """Its vLLM backend is gone at this version, so it would be a package
     nothing selects, resolved against a torch it has opinions about."""
@@ -2383,12 +2435,21 @@ def test_the_grpo_leg_keeps_the_config_that_actually_fit():
     unsloth_zoo/gradient_checkpointing.py:1013, peaking at 15.97GB in 16-bit and
     19.25GB in 4-bit. The set below passed on kernel unsloth-t4-ci-53efcc4e at
     13.60GB with reward_std 0.707 at step 2, so restoring any of them to the
-    notebook's value is a session that OOMs, and it fails here instead."""
+    notebook's value is a session that OOMs, and it fails here instead.
+
+    UTILIZATION IS THE ONE EXCEPTION, raised 0.5 -> 0.95 on measurement. Those
+    probes trained **Qwen3-4B**; this leg trains Qwen3-0.6B, where the
+    activation budget is a different problem entirely. A 0.95/0.8/0.6/0.5 ladder
+    stopped at the FIRST rung on both platforms - Colab peak reserved 11.76GB,
+    Kaggle 11.30GB, three sleep/wake cycles each - roughly 3GB under the card.
+    The other three values are unchanged and still carry the 4B evidence, which
+    is why they are asserted together with this one rather than relaxed with
+    it."""
     from legs import LEGS
 
     args = LEGS["grpo"].args
     for flag, value in (
-        ("--gpu-memory-utilization", "0.5"),
+        ("--gpu-memory-utilization", "0.95"),
         ("--max-seq-length", "1024"),
         ("--num-generations", "2"),
         ("--lora-rank", "16"),

@@ -195,6 +195,7 @@ print("{PAYLOAD_SENTINEL} sources " + json.dumps(sorted(FILES)), flush=True)
 import glob, json, os, re, subprocess, sys, time
 print("{PAYLOAD_SENTINEL} leg {leg.name}: {leg.summary}", flush=True)
 GROUPS = {json.dumps(groups)}
+UNINSTALL = {json.dumps(list(leg.uninstall))}
 print("{PAYLOAD_SENTINEL} install plan " + json.dumps(GROUPS), flush=True)
 
 # Wheels the driver built ONCE, before any leg started, from the very SHAs
@@ -275,6 +276,26 @@ for group in GROUPS:
     print("{PAYLOAD_SENTINEL} install group " + json.dumps({{
         "seconds": round(time.time() - _g0, 1),
         "spec": [_localise(a) for a in group],
+    }}), flush=True)
+# After the install groups, never before: these distributions arrive as
+# dependencies of something installed above, so removing them earlier would
+# remove nothing and the later install would put them back.
+#
+# Never fatal. If a name is absent pip says so and exits 0, and even a genuine
+# failure here should not cost the session -- the payload then fails on its own
+# terms with an error that names what actually went wrong, which is more useful
+# than a stand-down during setup.
+if UNINSTALL:
+    _u0 = time.time()
+    _up = subprocess.run(
+        [sys.executable, "-m", "pip", "uninstall", "-y", *UNINSTALL],
+        capture_output=True, text=True)
+    print("{PAYLOAD_SENTINEL} uninstall " + json.dumps({{
+        "seconds": round(time.time() - _u0, 1),
+        "spec": UNINSTALL,
+        "returncode": _up.returncode,
+        "stdout": _up.stdout[-2000:],
+        "stderr": _up.stderr[-2000:],
     }}), flush=True)
 print("{PAYLOAD_SENTINEL} install done", flush=True)
 """
