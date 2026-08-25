@@ -152,9 +152,9 @@ def test_sentence_transformers_hands_the_nested_load_a_plain_value():
     """
     source = open(os.path.join(MODELS, "sentence_transformer.py"), encoding = "utf-8").read()
     assert "device_map = unmarked_device_map(device_map)" in source
-    assert "device_map = str(device_map)" not in source, (
-        "a bare str() also stringifies an explicit dict placement into \"{'': 0}\""
-    )
+    assert (
+        "device_map = str(device_map)" not in source
+    ), "a bare str() also stringifies an explicit dict placement into \"{'': 0}\""
     assert (
         'os.environ["UNSLOTH_AUTO_DEVICE_MAP"]' not in source
     ), "the process-wide pin is back; it is visible to every other thread"
@@ -452,7 +452,10 @@ def test_a_prequantized_hybrid_checkpoint_declines_rather_than_mis_sizing_mamba(
 
     plan_line = None
     for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "resolve_unsloth_device_map":
+        if (
+            isinstance(node, ast.Call)
+            and getattr(node.func, "id", None) == "resolve_unsloth_device_map"
+        ):
             plan_line = node.lineno
             break
     assert plan_line is not None
