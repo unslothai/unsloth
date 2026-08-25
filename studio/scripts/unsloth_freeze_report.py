@@ -57,20 +57,28 @@ PORTS = (8888, 8890)
 
 # Each entry is (label, extra environment, why it is being tried).
 CANDIDATES = [
-    ("control (no override)", {},
-     "baseline; everything below is compared against this"),
-    ("WEBKIT_DISABLE_COMPOSITING_MODE=1", {"WEBKIT_DISABLE_COMPOSITING_MODE": "1"},
-     "turns off accelerated compositing entirely, a level above the buffer transport"),
-    ("__NV_DISABLE_EXPLICIT_SYNC=1", {"__NV_DISABLE_EXPLICIT_SYNC": "1"},
-     "disables explicit sync on the NVIDIA driver's Wayland path"),
-    ("GDK_BACKEND=x11", {"GDK_BACKEND": "x11"},
-     "runs the interface through XWayland instead of Wayland"),
+    ("control (no override)", {}, "baseline; everything below is compared against this"),
+    (
+        "WEBKIT_DISABLE_COMPOSITING_MODE=1",
+        {"WEBKIT_DISABLE_COMPOSITING_MODE": "1"},
+        "turns off accelerated compositing entirely, a level above the buffer transport",
+    ),
+    (
+        "__NV_DISABLE_EXPLICIT_SYNC=1",
+        {"__NV_DISABLE_EXPLICIT_SYNC": "1"},
+        "disables explicit sync on the NVIDIA driver's Wayland path",
+    ),
+    (
+        "GDK_BACKEND=x11",
+        {"GDK_BACKEND": "x11"},
+        "runs the interface through XWayland instead of Wayland",
+    ),
 ]
 
 
-def sh(args, timeout=20):
+def sh(args, timeout = 20):
     try:
-        r = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(args, capture_output = True, text = True, timeout = timeout)
         return (r.stdout or r.stderr).strip()
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -84,10 +92,13 @@ def scrub(text: str) -> str:
 
 
 def host_facts() -> dict:
-    gpus = [l for l in sh(["lspci"]).splitlines()
-            if re.search(r"VGA|3D controller|Display controller", l)]
+    gpus = [
+        l
+        for l in sh(["lspci"]).splitlines()
+        if re.search(r"VGA|3D controller|Display controller", l)
+    ]
     return {
-        "when": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "when": datetime.now().astimezone().isoformat(timespec = "seconds"),
         "os": sh(["sh", "-c", ". /etc/os-release 2>/dev/null && echo $PRETTY_NAME"]),
         "kernel": platform.release(),
         "session_type": os.environ.get("XDG_SESSION_TYPE", "(unset)"),
@@ -95,15 +106,21 @@ def host_facts() -> dict:
         "wayland_display": os.environ.get("WAYLAND_DISPLAY", "(unset)"),
         "display": os.environ.get("DISPLAY", "(unset)"),
         "gdk_backend_preset": os.environ.get("GDK_BACKEND", "(unset)"),
-        "webkit_vars_preset": {k: v for k, v in os.environ.items()
-                               if k.startswith("WEBKIT_") or k.startswith("__NV_")},
+        "webkit_vars_preset": {
+            k: v for k, v in os.environ.items() if k.startswith("WEBKIT_") or k.startswith("__NV_")
+        },
         "gpus": gpus,
-        "nvidia_driver": sh(["nvidia-smi", "--query-gpu=name,driver_version",
-                             "--format=csv,noheader"]),
-        "nvidia_module": (Path("/proc/driver/nvidia/version").read_text().strip()
-                          if Path("/proc/driver/nvidia/version").exists() else "(absent)"),
-        "webkit2gtk": sh(["sh", "-c",
-                          "dpkg -l 2>/dev/null | awk '/libwebkit2gtk/ {print $2, $3}'"]),
+        "nvidia_driver": sh(
+            ["nvidia-smi", "--query-gpu=name,driver_version", "--format=csv,noheader"]
+        ),
+        "nvidia_module": (
+            Path("/proc/driver/nvidia/version").read_text().strip()
+            if Path("/proc/driver/nvidia/version").exists()
+            else "(absent)"
+        ),
+        "webkit2gtk": sh(
+            ["sh", "-c", "dpkg -l 2>/dev/null | awk '/libwebkit2gtk/ {print $2, $3}'"]
+        ),
         "unsloth_cli": shutil.which("unsloth") or "(not on PATH)",
     }
 
@@ -129,9 +146,14 @@ def stop_leftover_backend():
     Only processes whose executable lives under ~/.unsloth are touched. Matching on the port
     alone would happily kill an unrelated program that happens to be listening there.
     """
-    for pid in sh(["sh", "-c",
-                   f"ss -ltnp 2>/dev/null | grep -E ':({'|'.join(map(str, PORTS))}) ' "
-                   "| grep -oE 'pid=[0-9]+' | cut -d= -f2"]).split():
+    for pid in sh(
+        [
+            "sh",
+            "-c",
+            f"ss -ltnp 2>/dev/null | grep -E ':({'|'.join(map(str, PORTS))}) ' "
+            "| grep -oE 'pid=[0-9]+' | cut -d= -f2",
+        ]
+    ).split():
         # Identify it by its command line, not by /proc/<pid>/exe. The backend runs from a
         # virtualenv, and a venv's python is a symlink, so `exe` resolves to the system
         # interpreter (/usr/bin/python3.x) and never matches. Checking `exe` skipped our own
@@ -141,16 +163,16 @@ def stop_leftover_backend():
         except OSError:
             continue
         if str(STUDIO) not in argv:
-            print(f"    leaving pid {pid} alone; not started by Unsloth", flush=True)
+            print(f"    leaving pid {pid} alone; not started by Unsloth", flush = True)
             continue
         try:
             os.kill(int(pid), signal.SIGTERM)
-            print(f"    stopped the previous run's backend (pid {pid})", flush=True)
+            print(f"    stopped the previous run's backend (pid {pid})", flush = True)
         except (OSError, ValueError):
             pass
 
 
-def wait_for_free_ports(timeout=120):
+def wait_for_free_ports(timeout = 120):
     for _ in range(timeout):
         if not port_busy():
             return True
@@ -205,29 +227,40 @@ def applied_env(pid: int) -> dict:
 
 
 def run_candidate(label, extra, why, cmd) -> dict:
-    print(f"\n=== {label} ===", flush=True)
-    print(f"    ({why})", flush=True)
+    print(f"\n=== {label} ===", flush = True)
+    print(f"    ({why})", flush = True)
     stop_leftover_backend()
     if not wait_for_free_ports():
-        print("    the previous run has not released its port; this candidate will attach "
-              "to it and is likely to report NO SIGNAL", flush=True)
+        print(
+            "    the previous run has not released its port; this candidate will attach "
+            "to it and is likely to report NO SIGNAL",
+            flush = True,
+        )
 
     env = {**os.environ, **extra}
     before = backend_offsets()
-    proc = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True, start_new_session=True)
+    proc = subprocess.Popen(
+        cmd,
+        env = env,
+        stdout = subprocess.PIPE,
+        stderr = subprocess.STDOUT,
+        text = True,
+        start_new_session = True,
+    )
     started = time.time()
     applied, samples, exited = {}, [], None
 
-    print(f"    launching, then watching for {(WARMUP + WINDOW) // 60} minutes.", flush=True)
-    print("    Use the window normally while this runs.", flush=True)
+    print(f"    launching, then watching for {(WARMUP + WINDOW) // 60} minutes.", flush = True)
+    print("    Use the window normally while this runs.", flush = True)
     try:
         while time.time() - started < WARMUP + WINDOW:
             time.sleep(15)
             if proc.poll() is not None:
                 exited = proc.returncode
-                print(f"    the app EXITED (code {exited}) after "
-                      f"{time.time() - started:.0f}s", flush=True)
+                print(
+                    f"    the app EXITED (code {exited}) after " f"{time.time() - started:.0f}s",
+                    flush = True,
+                )
                 break
             if not applied:
                 applied = applied_env(proc.pid)
@@ -235,10 +268,12 @@ def run_candidate(label, extra, why, cmd) -> dict:
             n_mon, n_live = len(MONITOR.findall(text)), len(LIVENESS.findall(text))
             samples.append((round(time.time() - started), n_mon, n_live))
             if len(samples) % 2 == 0:
-                print(f"    t={samples[-1][0]:4}s  interface={n_mon:3}  watchdog={n_live:3}",
-                      flush=True)
+                print(
+                    f"    t={samples[-1][0]:4}s  interface={n_mon:3}  watchdog={n_live:3}",
+                    flush = True,
+                )
     except KeyboardInterrupt:
-        print("    interrupted; recording what was collected so far", flush=True)
+        print("    interrupted; recording what was collected so far", flush = True)
     finally:
         alive = proc.poll() is None
         if alive:
@@ -249,7 +284,7 @@ def run_candidate(label, extra, why, cmd) -> dict:
             except (OSError, ProcessLookupError):
                 pass
         try:
-            proc.wait(timeout=30)
+            proc.wait(timeout = 30)
         except subprocess.TimeoutExpired:
             pass
 
@@ -269,30 +304,42 @@ def run_candidate(label, extra, why, cmd) -> dict:
         # of Unsloth is already open, so this launch handed over and quit. Calling that
         # "crashed" would be both wrong and alarming, and it is the likeliest thing to go
         # wrong for someone running this on their own desktop.
-        verdict = ("SKIPPED: the app exited immediately and cleanly, which usually means "
-                   "another copy of Unsloth is already running. Close it and re-run")
+        verdict = (
+            "SKIPPED: the app exited immediately and cleanly, which usually means "
+            "another copy of Unsloth is already running. Close it and re-run"
+        )
     elif exited is not None:
         verdict = f"CRASHED: the app exited on its own (code {exited})"
     elif n_mon == 0 and n_live == 0:
-        verdict = ("NO SIGNAL: neither loop was seen, so this run measured nothing. "
-                   "Usually means the backend was already running before the app started")
+        verdict = (
+            "NO SIGNAL: neither loop was seen, so this run measured nothing. "
+            "Usually means the backend was already running before the app started"
+        )
     elif n_live > 0 and n_mon == 0:
         verdict = "FROZE: the interface never polled at all while the app kept running"
     elif stalled_at is not None:
-        verdict = (f"FROZE: the interface stopped polling at about {stalled_at}s "
-                   f"while the watchdog kept going")
+        verdict = (
+            f"FROZE: the interface stopped polling at about {stalled_at}s "
+            f"while the watchdog kept going"
+        )
     elif n_live >= 3 and n_mon * 3 < n_live:
         verdict = "SUSPECT: the interface polled far less than the watchdog"
     else:
         verdict = "OK: the interface kept polling for the whole run"
 
-    print(f"    VERDICT: {verdict}", flush=True)
+    print(f"    VERDICT: {verdict}", flush = True)
     pre = [l for l in text.splitlines() if "desktop_preflight completed" in l]
     return {
-        "candidate": label, "why": why, "env": extra, "verdict": verdict,
+        "candidate": label,
+        "why": why,
+        "env": extra,
+        "verdict": verdict,
         "preflight": scrub(pre[-1].strip()) if pre else "(not seen)",
-        "applied_by_app": applied, "interface_polls": n_mon, "watchdog_polls": n_live,
-        "exit_code": exited, "samples": samples,
+        "applied_by_app": applied,
+        "interface_polls": n_mon,
+        "watchdog_polls": n_live,
+        "exit_code": exited,
+        "samples": samples,
         "backend_log_excerpt": scrub("\n".join(text.splitlines()[-40:])),
     }
 
@@ -300,15 +347,19 @@ def run_candidate(label, extra, why, cmd) -> dict:
 def main() -> int:
     cmd = sys.argv[1:] or ["unsloth", "studio"]
     if not shutil.which(cmd[0]):
-        print(f"cannot find {cmd[0]!r} on PATH. Pass the command explicitly, for example:\n"
-              f"  python3 {Path(__file__).name} ~/Applications/Unsloth-Desktop.AppImage")
+        print(
+            f"cannot find {cmd[0]!r} on PATH. Pass the command explicitly, for example:\n"
+            f"  python3 {Path(__file__).name} ~/Applications/Unsloth-Desktop.AppImage"
+        )
         return 2
 
     print("Unsloth Desktop freeze report")
     print("=" * 60)
-    print(f"This runs {len(CANDIDATES)} launches of about "
-          f"{(WARMUP + WINDOW) // 60} minutes each, so roughly "
-          f"{len(CANDIDATES) * (WARMUP + WINDOW) // 60} minutes total.")
+    print(
+        f"This runs {len(CANDIDATES)} launches of about "
+        f"{(WARMUP + WINDOW) // 60} minutes each, so roughly "
+        f"{len(CANDIDATES) * (WARMUP + WINDOW) // 60} minutes total."
+    )
     print("Use the app normally during each one. Ctrl-C skips to the next candidate.\n")
 
     if port_busy():
@@ -326,11 +377,12 @@ def main() -> int:
         try:
             results.append(run_candidate(label, extra, why, cmd))
         except KeyboardInterrupt:
-            print("\n  skipped by user", flush=True)
+            print("\n  skipped by user", flush = True)
 
     out = Path.cwd() / f"unsloth-freeze-report-{datetime.now():%Y%m%d-%H%M%S}.json"
-    out.write_text(json.dumps({"host": json.loads(scrub(json.dumps(facts))),
-                               "results": results}, indent=2))
+    out.write_text(
+        json.dumps({"host": json.loads(scrub(json.dumps(facts))), "results": results}, indent = 2)
+    )
 
     print("\n" + "=" * 60)
     print("Summary")
