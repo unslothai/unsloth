@@ -144,60 +144,6 @@ test("the two update cards do not drift apart", () => {
   }
 });
 
-// Covering the composer is licensed per card, and the licence is carried on
-// the card rather than inferred in the store, so a new overlay added to the
-// rail is persistent until someone says otherwise. The loaded models indicator
-// and the download panel deliberately do not carry it: they are the last
-// children, so they are what would land on Send.
-test("only the dismissible cards licence covering the composer", () => {
-  for (const [name, source] of CARDS) {
-    assert.match(
-      source,
-      /data-overlay-dismissible="true"/,
-      `the ${name} card lost its dismissible marker, so the stack will never cover`,
-    );
-  }
-  // The llama.cpp card carries the licence CONDITIONALLY: its dismiss button
-  // goes away for the length of an update, and a card that cannot be got rid
-  // of must not be one the stack parks on Send.
-  assert.match(
-    LLAMA,
-    /data-overlay-dismissible=\{applying \? undefined : "true"\}/,
-    "the llama card licences covering the composer while it is mid-update",
-  );
-  assert.match(
-    LLAMA,
-    /\{applying \? null : \(\s*\n\s*<button/,
-    "the dismiss button is no longer the thing the licence is tied to",
-  );
-  const indicator = read("features/loaded-models/loaded-models-indicator.tsx");
-  const downloads = read(
-    "features/hub/download-manager/download-manager-panel.tsx",
-  );
-  for (const [name, source] of [
-    ["loaded models indicator", indicator],
-    ["download panel", downloads],
-  ] as const) {
-    assert.ok(
-      !/data-overlay-dismissible/.test(source),
-      `the ${name} is persistent and must not licence covering the composer`,
-    );
-  }
-  assert.match(
-    STORE,
-    /child\.hasAttribute\("data-overlay-dismissible"\)/,
-    "the store no longer asks the cards whether it may cover",
-  );
-  // Measured up from the corner, so the run that stops a cover is the one that
-  // would land on the composer, not any persistent card anywhere in the stack.
-  // Over `cards`, the rail's in-flow children: a dragged loaded models card is
-  // `position: fixed` somewhere else and lands on nothing.
-  assert.match(
-    STORE,
-    /for \(let i = cards\.length - 1; i >= 0; i -= 1\)/,
-    "the persistent run is no longer counted from the bottom of the stack",
-  );
-});
 
 test("the llama.cpp card keeps its full height in the rail", () => {
   // Nothing inside it can give up height, so squeezing it only mangles it.
@@ -233,56 +179,46 @@ test("the collapsed notes summary scrolls, like the expanded notes", () => {
   assert.match(expanded, /\boverscroll-contain\b/);
 });
 
+/** The two rails' class strings, anchored on the corner they are pinned to. */
+const RAIL_ANCHOR = '"pointer-events-none fixed bottom-0 right-4 ';
+
+function rails(): string[] {
+  const parts = PROVIDER.split(RAIL_ANCHOR);
+  assert.equal(parts.length - 1, 2, "a rail left its bottom-right corner");
+  return parts.slice(1);
+}
+
 test("the rail scrolls rather than spilling its cards", () => {
-  const rails = PROVIDER.split('"fixed right-4 ');
-  // The desktop rail and the browser rail.
-  assert.equal(rails.length - 1, 2, "the rail count changed");
-  for (const rail of rails.slice(1)) {
+  for (const rail of rails()) {
     const rules = rail.slice(0, rail.indexOf('"'));
-    assert.match(rules, /\boverflow-y-auto\b/, "a capped rail clips its cards");
+    // A cap without a scroller drops the overflow below the bottom of the
+    // screen: at a large type size the two banner floors exceed the cap on
+    // their own, and the cards under it cannot be reached.
+    assert.match(rules, /\boverflow-y-auto\b/, "a capped rail spills its cards");
     // The scroller clips at the padding box, so without room reserved there the
     // cards lose their shadows; the negative margin puts the rail back where it
     // was.
     assert.match(rules, /\bpx-3\b/);
     assert.match(rules, /-mx-3/);
-    // scrollHeight spans that padding, so discount it or the stack asks for room
-    // it does not occupy and lifts over the composer for nothing.
-    assert.match(
-      STORE,
-      /const natural = railCardsHeight\(node\.scrollHeight, gutter\)/,
-      "the natural height counts the rail's own padding as cards",
-    );
-    // Both totals: the squeezed one is what `overflowing` compares against the
-    // cards' cap, and the per-card readings are border boxes.
-    assert.match(
-      STORE,
-      /const collapsed = railCardsHeight\(node\.scrollHeight, gutter\)/,
-      "the squeezed height counts the rail's own padding as cards",
-    );
   }
 });
 
 // Reserved, not taken: the cards keep their band and the padding hangs below
-// it. A negative margin cannot do this -- `bottom` anchors the margin edge, so
-// the padding would move the cards instead.
+// it. The rail sits on the floor and the bottom gutter carries the cards back
+// up to 16px, so the cap grows by both gutters to pay for them.
 test("the rail's block gutter costs the cards no room", () => {
-  const rails = PROVIDER.split('"fixed right-4 ');
-  assert.equal(rails.length - 1, 2, "the rail count changed");
-  for (const rail of rails.slice(1)) {
+  for (const rail of rails()) {
     const rules = rail.slice(0, rail.indexOf('"'));
     const style = rail.slice(rail.indexOf("style={{"), rail.indexOf("}}"));
+    // 2rem for the cards' own band, less the 24px of gutter the rail adds
+    // around them, so the cards keep exactly the band they had.
     assert.match(
-      style,
-      /bottom: railBottomOffset\(stack\.bottom\)/,
-      "the rail's own edge is anchored where its cards belong",
+      rules,
+      /max-h-\[calc\(100dvh_-_8px\)\]/,
+      "the gutter is being taken out of the cards' band",
     );
-    assert.match(
-      style,
-      /maxHeight: railMaxHeight\(stack\.maxHeight\)/,
-      "the gutter is spent on the cards' cap",
-    );
-    // From the same constants, not pb-4/pt-2: those are rem, so at any root size
-    // but 16px the padding and the compensation drift apart.
+    // From the constants, not pb-4/pt-2: those are rem, so at any root size but
+    // 16px the cards would drift off the corner.
     assert.match(
       style,
       /paddingTop: STACK_SHADOW_GUTTER_TOP/,
@@ -291,15 +227,15 @@ test("the rail's block gutter costs the cards no room", () => {
     assert.match(
       style,
       /paddingBottom: STACK_SHADOW_GUTTER_BOTTOM/,
-      "the bottom gutter can drift from the offset that pays for it",
+      "the bottom gutter can drift from the cap that pays for it",
     );
     // Every surface offsets its shadow downwards, so flush against the clip
     // edge the bottom card loses all of it. A zero gutter is that bug again.
     assert.doesNotMatch(rules, /\bp[byt]-/, "a rem gutter is back on the rail");
+  }
   // The gutter drops the rail's box to the floor and `-mx-3` put it 4px from the right
-  // edge, so a scrolling rail lands on the window's resize grips, which are under it on
-  // Tailwind's scale. All eight: a narrow window spans the rail across the north and west
-  // targets too.
+  // edge, so it spans the window's resize grips, which are under it on Tailwind's scale.
+  // All eight: a narrow window spans the rail across the north and west targets too.
   const TITLEBAR = read("components/tauri/window-titlebar.tsx");
   // A z-index on the toolbar would read as protection and give none: it sits inside a
   // positioned, numbered header, which is a stacking context.
@@ -334,80 +270,54 @@ test("the rail's block gutter costs the cards no room", () => {
     assert.match(
       target,
       /zIndex: Z_LAYER\.WINDOW_RESIZE_EDGE/,
-      `the ${grip} target does not take the named layer, so a scrolling rail covers it`,
+      `the ${grip} target does not take the named layer, so the rail covers it`,
     );
-  }
   }
 });
 
-// pointer-events-none takes the rail's scrollbar with it, and only the cards
-// opt back in, so a scrolling rail nobody can drag hides the cards under the
-// fold. It is click-through only while there is nothing to scroll to.
-test("a scrolling rail takes pointer input, a fitting one stays click-through", () => {
-  const rails = PROVIDER.split('"fixed right-4 ');
-  assert.equal(rails.length - 1, 2, "the rail count changed");
-  for (const rail of rails.slice(1)) {
+// The rail was placed from JS for a while, lifting clear of the boxes the
+// composer and the floating panels publish. Every input to that placement
+// changes on its own, so the rail drifted to the middle and the top of the
+// window. Anchored in CSS again; the floors above absorb a short window.
+test("the rail is anchored to its corner, not placed from JS", () => {
+  for (const rail of rails()) {
     const branch = rail.slice(0, rail.indexOf("style={{"));
-    assert.match(
+    // Click-through in every state. It used to take pointer input while it
+    // scrolled, which needed the JS that also placed it. The fold is reached by
+    // wheeling over a card, whose nearest scrollable ancestor is the rail, or
+    // by focus, which scrolls it into view.
+    assert.doesNotMatch(
       branch,
-      /stack\.overflowing\s*\?\s*"pointer-events-auto"\s*:\s*"pointer-events-none"/,
-      "the rail is click-through unconditionally",
+      /pointer-events-auto/,
+      "the rail takes pointer input again, which the placement paid for",
     );
   }
-  // Derived from the placement, never read back off the node. A DOM reading
-  // latches: the stack scrolls for a frame, the placement then changes to one
-  // that fits, and nothing resizes afterwards to correct the flag, so a rail
-  // with nothing to scroll to keeps the pointer input it took. Compared
-  // against the height the cards collapse to, not their natural height nor the
-  // floor the placement asks for: a card clipped below its floor is not a fold
-  // to scroll to.
-  assert.match(
-    STORE,
-    /overflowing: collapsedRoom > geometry\.maxHeight/,
-    "the overflow flag is not derived from the placement",
-  );
-  assert.ok(!/setOverflowing/.test(STORE), "a latched DOM reading is back");
-  // The one place the flag can still latch is the empty-stack return, which
-  // publishes nothing and leaves. Before the rail carried a gutter that cost
-  // nothing: an empty rail was a zero-height box, so a stale "it scrolls"
-  // bought pointer input over no pixels. The gutter gives that box a height,
-  // so the corner would answer clicks with nothing in it. Every reading the
-  // branch leaves behind has to be cleared, the DOM one included.
-  const emptied = STORE.slice(
-    STORE.indexOf("node.childElementCount === 0"),
-    STORE.indexOf('node.style.transition = "none"'),
-  );
-  assert.ok(emptied.length > 0, "the empty-stack branch moved");
-  for (const cleared of [
-    "setNeededRoom",
-    "setFloorRoom",
-    "setCollapsedRoom",
-    "setPersistentTail",
-    "setDomOverflowing",
+  // The offset and the cap are the two things the placement used to own, so
+  // they are the two that must stay out of the render.
+  for (const banned of [
+    "useStackGeometry",
+    "stackGeometry",
+    "stack.bottom",
+    "stack.maxHeight",
+    "railBottomOffset",
+    "railMaxHeight",
   ]) {
-    assert.match(
-      emptied,
-      new RegExp(`${cleared}\\(`),
-      `an emptied rail keeps its ${cleared} reading, so it still holds the corner`,
+    assert.ok(
+      !PROVIDER.includes(banned),
+      `the rail is placed from JS again (${banned})`,
     );
   }
-  // The probe writes max-height twice and reads scrollHeight between the
-  // writes. transition-property: all reaches the rail, so unsuppressed each
-  // write starts a transition, and a transition computes its start value
-  // until the timeline advances: the box computes 0px while its inline style
-  // reads back as the cap, and three whole cards lay out below it.
-  const suppressed = STORE.indexOf('node.style.transition = "none"');
-  const probe = STORE.slice(
-    suppressed,
-    STORE.indexOf("setNeededRoom", suppressed),
-  );
-  assert.ok(
-    probe.length > 0 && /node\.style\.maxHeight = "none"/.test(probe),
-    "the height probe is not run with transitions suppressed",
-  );
-  assert.match(
-    STORE,
-    /void node\.scrollHeight;\s*\n\s*node\.style\.transition = eased;/,
-    "the restored cap is handed back to a transition",
-  );
+  // And the arithmetic it was placed by does not come back to the store, which
+  // is now only a register of where the draggable panels are.
+  for (const banned of [
+    "stackBottomInset",
+    "stackMaxHeight",
+    "dodgeInset",
+    "railCardsHeight",
+  ]) {
+    assert.ok(
+      !STORE.includes(banned),
+      `the dodge arithmetic is back in the frame store (${banned})`,
+    );
+  }
 });

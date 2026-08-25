@@ -2865,9 +2865,8 @@ export function ChatPage({
       });
       if (!active) return;
       if (outcome === "started") {
-        toast.info("Downloading model", {
-          description: "It'll load automatically once the download finishes.",
-        });
+        // No toast: the download panel already shows this download. The
+        // auto-load still runs from onComplete.
         return;
       }
       if (outcome === "conflict") {

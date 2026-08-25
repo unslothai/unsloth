@@ -17,6 +17,8 @@ import json
 import logging
 import sqlite3
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -102,6 +104,34 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
+@contextmanager
+def provider_bundle_transaction() -> Iterator[sqlite3.Connection]:
+    """Atomically mutate a provider row and its saved credentials.
+
+    Provider metadata and encrypted credentials share ``studio.db``.  A single
+    SQLite write transaction therefore prevents other processes from observing
+    a new endpoint with the previous key (or the inverse) while a provider edit
+    is in progress.
+    """
+    # Ensure both tables exist before opening the transaction.  The credential
+    # module commits schema initialization on its own connection.
+    from storage import credential_secrets
+
+    credential_secrets.ensure_schema()
+    conn = get_connection()
+    try:
+        conn.commit()
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("BEGIN IMMEDIATE")
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def create_provider(
     id: str,
     provider_type: str,
@@ -149,6 +179,8 @@ def update_provider(
     models: Optional[list[str]] = None,
     available_models: Optional[list[str]] = None,
     max_output_tokens: int | None | object = _UNSET,
+    *,
+    connection: sqlite3.Connection | None = None,
 ) -> bool:
     """Update fields on an existing provider. Returns True if a row was updated."""
     updates = []
@@ -177,16 +209,19 @@ def update_provider(
     params.append(datetime.now(timezone.utc).isoformat())
     params.append(id)
 
-    conn = get_connection()
+    owns_connection = connection is None
+    conn = connection or get_connection()
     try:
         cursor = conn.execute(
             f"UPDATE llm_providers SET {', '.join(updates)} WHERE id = ?",
             params,
         )
-        conn.commit()
+        if owns_connection:
+            conn.commit()
         return cursor.rowcount > 0
     finally:
-        conn.close()
+        if owns_connection:
+            conn.close()
 
 
 def delete_provider(id: str) -> bool:
