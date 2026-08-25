@@ -45,7 +45,11 @@ QWEN38_TEMPLATE = (
 
 
 class _FakeResponse:
-    def __init__(self, status_code = 200, body = None):
+    def __init__(
+        self,
+        status_code = 200,
+        body = None,
+    ):
         self.status_code = status_code
         self._body = body or {}
 
@@ -64,13 +68,24 @@ class _FakeAsyncClient:
         self.get_response: object = _FakeResponse(200, {})
         self.post_response: object = _FakeResponse(200, {})
 
-    async def get(self, url, headers = None, timeout = None):
+    async def get(
+        self,
+        url,
+        headers = None,
+        timeout = None,
+    ):
         self.get_calls.append((url, headers, timeout))
         if isinstance(self.get_response, Exception):
             raise self.get_response
         return self.get_response
 
-    async def post(self, url, headers = None, json = None, timeout = None):
+    async def post(
+        self,
+        url,
+        headers = None,
+        json = None,
+        timeout = None,
+    ):
         self.post_calls.append((url, headers, json, timeout))
         if isinstance(self.post_response, Exception):
             raise self.post_response
@@ -98,7 +113,9 @@ def test_llama_cpp_probe_reads_chat_template(monkeypatch):
     fake.get_response = _FakeResponse(200, {"chat_template": QWEN38_TEMPLATE})
     monkeypatch.setattr(ep_mod, "_http_client", fake)
 
-    template = _run(_make_client("llama_cpp", "http://127.0.0.1:8080/v1").probe_chat_template("any"))
+    template = _run(
+        _make_client("llama_cpp", "http://127.0.0.1:8080/v1").probe_chat_template("any")
+    )
 
     assert template == QWEN38_TEMPLATE
     # /props lives at the server root, not under the OpenAI-compat /v1 prefix.
@@ -122,7 +139,9 @@ def test_unsupported_provider_returns_none_without_http(monkeypatch):
     monkeypatch.setattr(ep_mod, "_http_client", fake)
 
     assert _run(_make_client("custom", "http://127.0.0.1:8080/v1").probe_chat_template("x")) is None
-    assert _run(_make_client("ollama", "http://127.0.0.1:11434/v1").probe_chat_template("x")) is None
+    assert (
+        _run(_make_client("ollama", "http://127.0.0.1:11434/v1").probe_chat_template("x")) is None
+    )
     assert fake.get_calls == []
     assert fake.post_calls == []
 
@@ -132,7 +151,9 @@ def test_probe_failure_returns_none(monkeypatch):
     fake.get_response = httpx.ConnectError("down")
     monkeypatch.setattr(ep_mod, "_http_client", fake)
 
-    assert _run(_make_client("llama_cpp", "http://127.0.0.1:8080/v1").probe_chat_template("x")) is None
+    assert (
+        _run(_make_client("llama_cpp", "http://127.0.0.1:8080/v1").probe_chat_template("x")) is None
+    )
 
 
 def test_probe_missing_template_key_returns_none(monkeypatch):
@@ -140,7 +161,9 @@ def test_probe_missing_template_key_returns_none(monkeypatch):
     fake.get_response = _FakeResponse(200, {"default_generation_settings": {}})
     monkeypatch.setattr(ep_mod, "_http_client", fake)
 
-    assert _run(_make_client("llama_cpp", "http://127.0.0.1:8080/v1").probe_chat_template("x")) is None
+    assert (
+        _run(_make_client("llama_cpp", "http://127.0.0.1:8080/v1").probe_chat_template("x")) is None
+    )
 
 
 # ── _probe_model_reasoning classification ────────────────────────────

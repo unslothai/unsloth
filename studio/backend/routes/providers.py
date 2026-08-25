@@ -726,9 +726,7 @@ async def test_provider(
 
 
 async def _probe_model_reasoning(
-    client: ExternalProviderClient,
-    provider_type: str,
-    models: list[dict],
+    client: ExternalProviderClient, provider_type: str, models: list[dict]
 ) -> dict[str, ProviderModelReasoning]:
     """Derive reasoning capabilities from a connected server's chat template.
 

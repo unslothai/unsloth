@@ -170,9 +170,11 @@ class ProviderModelReasoning(BaseModel):
         False,
         description = "Whether the model supports thinking/reasoning mode (enable_thinking or reasoning_effort)",
     )
-    reasoning_style: Literal["enable_thinking", "reasoning_effort", "enable_thinking_effort"] = Field(
-        "enable_thinking",
-        description = "Reasoning control style: 'enable_thinking' (boolean), 'reasoning_effort' (effort ladder), or 'enable_thinking_effort' (on/off gate plus an effort level)",
+    reasoning_style: Literal["enable_thinking", "reasoning_effort", "enable_thinking_effort"] = (
+        Field(
+            "enable_thinking",
+            description = "Reasoning control style: 'enable_thinking' (boolean), 'reasoning_effort' (effort ladder), or 'enable_thinking_effort' (on/off gate plus an effort level)",
+        )
     )
     reasoning_effort_levels: list[str] = Field(
         default_factory = list,
