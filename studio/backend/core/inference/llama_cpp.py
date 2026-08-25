@@ -18163,11 +18163,25 @@ class LlamaCppBackend:
                         # GPU-resident bytes in model_size_fit that the planner's
                         # own footprint cannot see: it rebuilds the model from the
                         # target GGUF's tensor table, so the projector and the MTP
-                        # reserve are simply absent from its deficit. The compute
-                        # buffer is NOT here: soft_overhead plus the per-device
-                        # pipeline reserve already stands in for it, and charging
-                        # it twice would only spill more.
+                        # reserve are simply absent from its deficit.
                         "extra_gpu_bytes": (mmproj_size + _shared_pool_mmproj + _mtp_reserve_bytes),
+                        # The compute buffer, which the planner has to charge on
+                        # the same terms as the fit that produced the use_fit
+                        # verdict it is answering: model_size_fit carries the flat
+                        # _compute_buffer_pipeline IN ADDITION to _soft_overhead,
+                        # and the fit adds _cc_bytes(ctx) per device ON TOP of the
+                        # pipeline reserve. So there is no double charge to avoid,
+                        # and omitting them is not conservative: _cc_bytes is
+                        # context-linear and reaches tens of GiB on deepseek4 at
+                        # 1M, or ~2.4 GiB on a quantised cache at 128K, on exactly
+                        # the loads this arm exists for -- and the plan is pinned
+                        # with --fit off, so the shortfall is a graph_reserve OOM
+                        # with nothing left to catch it.
+                        "compute_buffer_flat": int(_compute_buffer_pipeline),
+                        "ctx_compute_per_device": (
+                            _cc_bytes(effective_ctx, max(1, len(gpus or ())))
+                            // max(1, len(gpus or ()))
+                        ),
                         # A draft engaging is what turns the trailing nextn/MTP
                         # blocks from skipped bytes into resident ones in the
                         # TARGET's own load, so the planner has to charge them
@@ -22673,16 +22687,40 @@ class LlamaCppBackend:
         pinned = inputs.get("gpu_indices")
         shared = set(inputs.get("shared_gpu_ids") or ())
         pinned_set = None if pinned is None else set(pinned)
+        # Dropping a shared device from the BUDGET only helps if the child also
+        # stops using it, and nothing here can promise that: the auto-Vulkan arm
+        # pins every DETECTED gpu, iGPU included, and it runs after this snapshot
+        # was taken (so gpu_indices reads None right here). With no --device at
+        # all the child sees every card anyway. llama.cpp then splits rows by
+        # free memory, and an iGPU's "free" is the whole host pool, so it draws
+        # the MAJORITY of the layers and their caches with them -- the opposite
+        # of this planner's premise, pinned with --fit off. Decline instead.
+        if shared and (pinned_set is None or (shared & pinned_set)):
+            logger.debug(
+                "Tensor spill: declined, a shared-memory GPU stays in the child's device list"
+            )
+            return None
         # The USABLE budget Studio's own fit tested, not raw free: it carries the
         # user's VRAM-budget fraction and the per-card reserve floor. Falling back
         # to free keeps a caller that supplies no map working, and the planner's
         # per-device overhead is then the only reserve, as before.
         usable_mib = inputs.get("gpu_usable_mib") or {}
-        vram_per_device = [
-            int(usable_mib.get(idx, free_mib) * 1024 * 1024)
+        kept = [
+            (idx, free_mib)
             for idx, free_mib in rows
             if idx not in shared and (pinned_set is None or idx in pinned_set)
         ]
+        vram_per_device = [
+            int(usable_mib.get(idx, free_mib) * 1024 * 1024) for idx, free_mib in kept
+        ]
+        # llama.cpp sizes its row ranges from RAW free VRAM (llama-model.cpp:1433)
+        # and knows nothing about this budget, so the split has to be modelled on
+        # the raw numbers. The budget is free minus a reserve that depends on each
+        # card's TOTAL, which preserves the ratios only when every card has the
+        # same free/total -- a display on one GPU, or mixed card sizes, and the
+        # modelled boundaries stop matching the child's. Same filter and order as
+        # above, so index i means the same device in both lists.
+        split_weights = [int(free_mib * 1024 * 1024) for _idx, free_mib in kept]
         if not vram_per_device:
             return None
         avail_mib = self._available_system_memory_mib()
@@ -22700,15 +22738,23 @@ class LlamaCppBackend:
         if inputs.get("mtp_will_engage") and layout.excluded_block_bytes:
             extra_gpu_bytes += layout.excluded_block_bytes
 
+        # The compute buffer, on the same terms as the fit that sent us here.
+        # ctx_compute is replicated on every device; compute_buffer_flat is one
+        # lump, and extra_resident_bytes is charged once against the pool and
+        # booked onto device 0, which is where it lives.
+        extra_gpu_bytes += int(inputs.get("compute_buffer_flat") or 0)
+
         return plan_placement(
             layout,
             vram_per_device,
             avail_mib * 1024 * 1024,
             int(inputs.get("n_ctx") or 0),
+            split_weights_per_device = split_weights,
             opts = PlanOptions(
                 overhead_bytes_per_device = (
                     int(inputs.get("soft_overhead") or 0)
                     + self._PIPELINE_PER_DEVICE_OVERHEAD_MIB * 1024 * 1024
+                    + int(inputs.get("ctx_compute_per_device") or 0)
                 ),
                 host_ram_headroom_bytes = self._HOST_RAM_HEADROOM_MIB * 1024 * 1024,
                 # GPU-resident allocations the layout cannot account for, because

@@ -88,6 +88,14 @@ class ModelLayout:
     # on a GPU. llama.cpp's own fitter widens its offloadable-layer count the
     # same way (common/fit.cpp:139-142). Zero when nothing was dropped.
     excluded_block_bytes: int = 0
+    # Sliding-window attention: some layers keep a window-sized cache and some
+    # the full context (llama-kv-cache-iswa.cpp:69-104 builds two caches and
+    # filters each by hparams.is_swa(il)), and the interleave is per layer. Every
+    # layer is still an attention layer, so n_attention_layers does NOT reveal
+    # this. Recorded because a multi-device split has to know WHERE the big
+    # caches land, and the layout does not; the planner abstains rather than
+    # spread them evenly.
+    has_swa: bool = False
     # False when a needed quantity could not be read. The planner abstains.
     complete: bool = False
 
@@ -194,6 +202,10 @@ def _layout_from_reader(reader) -> ModelLayout:
 
     kv_per_token = int(n_attention) * int(n_kv_head) * (int(key_len) + int(val_len)) * 2
 
+    # Charging every layer the full context above is the safe direction for the
+    # TOTAL; what it cannot say is which layers hold the big caches.
+    has_swa = bool(_field(reader, f"{arch}.attention.sliding_window") or 0)
+
     # Mamba conv + SSM state, one f32 copy per sequence. Mirrors llama.cpp's
     # own sizing; zero when the model has no recurrent layers.
     d_inner = int(_field(reader, f"{arch}.ssm.inner_size") or 0)
@@ -289,6 +301,7 @@ def _layout_from_reader(reader) -> ModelLayout:
         arch = arch,
         n_layers = n_layers,
         n_attention_layers = int(n_attention),
+        has_swa = has_swa,
         blocks = blocks,
         lm_head_bytes = lm_head,
         token_embd_bytes = token_embd,

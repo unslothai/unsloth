@@ -107,18 +107,24 @@ def _inputs(
     usable_mib = None,
     extra_gpu = 0,
     mtp = None,
+    shared = None,
+    gpus = None,
+    compute_flat = 0,
+    ctx_compute = 0,
 ):
     return {
         "model_size": model_size,
         "kv_cache_bytes": kv,
-        "gpus": [(0, free_mib)],
+        "gpus": list(gpus) if gpus is not None else [(0, free_mib)],
         "gpu_usable_mib": {} if usable_mib is None else {0: usable_mib},
+        "compute_buffer_flat": compute_flat,
+        "ctx_compute_per_device": ctx_compute,
         "extra_gpu_bytes": extra_gpu,
         "gpu_indices": indices,
         "soft_overhead": 0,
         "model_path": "/models/stub.gguf",
         "n_ctx": 32768,
-        "shared_gpu_ids": set(),
+        "shared_gpu_ids": set() if shared is None else set(shared),
         **({} if mtp is None else {"mtp_will_engage": mtp}),
     }
 
@@ -689,3 +695,73 @@ def test_an_ordinary_model_is_unaffected_by_the_draft_flag():
     idle = _plan(stub, free_mib = 15 * 1024, mtp = False)
     drafting = _plan(stub, free_mib = 15 * 1024, mtp = True)
     assert idle.spilled_blocks == drafting.spilled_blocks
+
+
+# ------------------------------------------- devices the child can still use
+
+
+def test_a_shared_device_the_child_keeps_declines_the_plan():
+    """Dropping a shared iGPU from the BUDGET only helps if the child stops using
+    it, and nothing here can promise that: the auto-Vulkan arm pins every
+    DETECTED gpu, and it runs after this snapshot is taken, so gpu_indices reads
+    None right here. llama.cpp then splits rows by free memory, and an iGPU's
+    free is the whole host pool, so it draws the majority of the layers and their
+    caches -- pinned with --fit off. Decline instead of planning around it.
+    """
+    stub = _Stub()
+    gpus = [(0, 12 * 1024), (1, 12 * 1024)]
+    assert _plan(stub, gpus = gpus, shared = {1}) is None
+    # Named in the pin: still declined, since the child is told to use it.
+    assert _plan(stub, gpus = gpus, shared = {1}, indices = [0, 1]) is None
+    # Pinned away from the shared device: the plan may proceed.
+    kept = _plan(stub, gpus = gpus, shared = {1}, indices = [0])
+    assert kept is not None
+    # No shared device at all is the ordinary path.
+    assert _plan(stub, gpus = gpus) is not None
+
+
+def test_the_compute_buffer_reaches_the_planner():
+    """model_size_fit carries the flat compute buffer IN ADDITION to
+    soft_overhead, and the fit adds the context-linear _cc_bytes per device ON
+    TOP of the pipeline reserve -- so there is nothing double-charged to avoid,
+    and omitting them under-reserves on exactly the long-context loads this arm
+    exists for. Both must move the deficit."""
+    stub = _Stub()
+    base = _plan(stub, free_mib = 14 * 1024)
+    assert base is not None and base.spills_anything
+
+    per_device = _plan(stub, free_mib = 14 * 1024, ctx_compute = 3 * GIB)
+    flat = _plan(stub, free_mib = 14 * 1024, compute_flat = 3 * GIB)
+    for tighter in (per_device, flat):
+        assert tighter is not None
+        assert len(tighter.spilled_blocks) > len(base.spilled_blocks), (
+            "charging the compute buffer has to spill MORE, not the same"
+        )
+
+
+def test_the_seam_hands_the_planner_raw_free_vram_for_the_split():
+    """llama.cpp sizes its row ranges from raw free VRAM and knows nothing about
+    Studio's budget, so the seam has to pass the raw numbers separately. Observed
+    through the call rather than the source: the planner records what it was
+    given."""
+    seen = {}
+    stub = _Stub()
+    import core.inference.offload_planner as mod
+
+    real = mod.plan_placement
+
+    def spy(*a, **kw):
+        seen.update(kw)
+        seen["vram"] = a[1]
+        return real(*a, **kw)
+
+    mod.plan_placement = spy
+    try:
+        _plan(stub, gpus = [(0, 8 * 1024), (1, 16 * 1024)], usable_mib = 6 * 1024)
+    finally:
+        mod.plan_placement = real
+
+    # Index 0 carries a usable_mib override, index 1 falls back to raw free. The
+    # split weights must be raw on BOTH, and in the same device order.
+    assert seen["split_weights_per_device"] == [8 * 1024 * MIB, 16 * 1024 * MIB]
+    assert seen["vram"] == [6 * 1024 * MIB, 16 * 1024 * MIB]

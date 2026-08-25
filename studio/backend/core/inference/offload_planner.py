@@ -342,8 +342,16 @@ def plan_placement(
     *,
     opts: Optional[PlanOptions] = None,
     kv_bytes_floor: int = 0,
+    split_weights_per_device: Sequence[int] = (),
 ) -> Plan:
     """Decide the placement for one launch.
+
+    ``split_weights_per_device`` is the RAW free VRAM llama.cpp will size its row
+    ranges from, in the same device order as ``vram_bytes_per_device``. It is a
+    different quantity from the budget by construction -- the budget subtracts a
+    per-card reserve -- so the two must not be conflated when modelling the
+    split. Empty falls back to the budget, which is right whenever the caller has
+    applied no per-card adjustment at all.
 
     ``kv_bytes_floor`` is an attention-cache size the caller has already computed
     byte-accurately for this launch. The planner never reserves less than it; see
@@ -414,6 +422,7 @@ def plan_placement(
             quantised,
             kv_bytes_floor,
             vram_bytes_per_device,
+            split_weights_per_device or vram_bytes_per_device,
         )
         if plan is not None:
             return plan
@@ -440,6 +449,7 @@ def plan_placement(
                     quantised,
                     kv_bytes_floor,
                     vram_bytes_per_device,
+                    split_weights_per_device or vram_bytes_per_device,
                 )
                 if plan is not None:
                     return plan
@@ -464,7 +474,7 @@ def _kv_modes(opts: PlanOptions) -> tuple[bool, ...]:
     return (False, True) if opts.allow_kv_quant else (False,)
 
 
-def _device_slots(n_slots: int, vram_bytes_per_device: Sequence[int]) -> list[list[int]]:
+def _device_slots(n_slots: int, split_weights: Sequence[int]) -> list[list[int]]:
     """Which of the ``n_slots`` layer rows land on which device.
 
     Mirrors llama.cpp's default tensor split exactly: free VRAM per device
@@ -473,7 +483,7 @@ def _device_slots(n_slots: int, vram_bytes_per_device: Sequence[int]) -> list[li
     the output row (:1467). With every layer offloaded ``i_gpu_start`` is 0 and
     ``act_gpu_layers`` is ``n_layer_all + 1``, which is ``n_slots`` here.
     """
-    weights = [max(0, v) for v in vram_bytes_per_device]
+    weights = [max(0, v) for v in split_weights]
     total = sum(weights)
     if total <= 0:
         return [list(range(n_slots))] + [[] for _ in weights[1:]]
@@ -501,6 +511,7 @@ def _per_device_shortfall(
     *,
     quantised: bool,
     kv_bytes_floor: int,
+    split_weights_per_device: Sequence[int] = (),
 ) -> Optional[str]:
     """``None`` when every device provably fits, else why it cannot be shown to.
 
@@ -526,6 +537,13 @@ def _per_device_shortfall(
             f"only {layout.n_attention_layers} of {layout.n_layers} layers hold a cache "
             "and the layout does not say which"
         )
+    if layout.has_swa:
+        # Every layer IS an attention layer here, so the check above passes --
+        # but a window layer's cache is a fraction of a full-context one (Gemma3
+        # interleaves 5:1), and which rows are which is not in the layout. An
+        # even spread is not conservative: it under-books whichever card drew the
+        # full-context rows.
+        return "the cache is per-layer uneven (sliding-window attention) and the layout does not say which layers are full-context"
     if layout.has_excluded_blocks:
         return "the GGUF carries trailing blocks that shift llama.cpp's row count"
 
@@ -537,7 +555,7 @@ def _per_device_shortfall(
     by_index = {b.index: b for b in layout.blocks}
     output_row_bytes = layout.other_resident_bytes + (0 if spill_lm_head else layout.lm_head_bytes)
 
-    slots = _device_slots(n_slots, vram_bytes_per_device)
+    slots = _device_slots(n_slots, split_weights_per_device or vram_bytes_per_device)
     for device, rows in enumerate(slots):
         used = 0
         for row in rows:
@@ -572,6 +590,7 @@ def _plan_at(
     quantised: bool,
     kv_bytes_floor: int = 0,
     vram_bytes_per_device: Sequence[int] = (),
+    split_weights_per_device: Sequence[int] = (),
 ) -> Optional[Plan]:
     """One pass of the ladder at a fixed context and cache dtype."""
     needed = all_resident_bytes(
@@ -639,6 +658,7 @@ def _plan_at(
             vram_bytes_per_device,
             quantised = quantised,
             kv_bytes_floor = kv_bytes_floor,
+            split_weights_per_device = split_weights_per_device,
         )
         if uneven is not None:
             return Plan(
@@ -678,6 +698,7 @@ def _plan_at(
                 vram_bytes_per_device,
                 quantised = quantised,
                 kv_bytes_floor = kv_bytes_floor,
+                split_weights_per_device = split_weights_per_device,
             )
             if uneven is not None:
                 return Plan(

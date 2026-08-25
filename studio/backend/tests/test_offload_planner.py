@@ -1033,3 +1033,44 @@ def test_extra_resident_bytes_are_charged_against_the_pooled_budget():
     assert max_context_for(layout, [16 * GIB], spill_all_ffn = True, opts = charged) < max_context_for(
         layout, [16 * GIB], spill_all_ffn = True, opts = base
     )
+
+
+def test_row_ownership_is_modelled_on_raw_free_not_on_the_budget():
+    """llama.cpp reads free VRAM straight from the driver for its split
+    (llama-model.cpp:1433); the budget is that minus a reserve sized on each
+    card's TOTAL, so the two agree only when every card has the same free/total.
+    Feeding the budget in as the split weight silently moves the boundary."""
+    layout = _layout_from_reader(_StubReader(_shard_fields(), _shard_tensors(range(64))))
+    spilled = {b.index for b in layout.blocks}
+    budgets = [2 * GIB, 2 * GIB]
+
+    # Same budgets, different RAW free: the rows move, so the verdict may too.
+    even = _per_device_shortfall(
+        layout, _NO_OVERHEAD, 4096, spilled, False, budgets,
+        quantised = False, kv_bytes_floor = 0, split_weights_per_device = [8 * GIB, 8 * GIB],
+    )
+    lopsided = _per_device_shortfall(
+        layout, _NO_OVERHEAD, 4096, spilled, False, budgets,
+        quantised = False, kv_bytes_floor = 0, split_weights_per_device = [1 * GIB, 15 * GIB],
+    )
+    assert even != lopsided, "the split weights have to reach _device_slots"
+    assert "device 1" in (lopsided or ""), "the card drawing 60 of 65 rows is the one over"
+
+
+def test_a_sliding_window_model_abstains_on_a_multi_gpu_split():
+    """Gemma3 and friends interleave window and full-context layers, and EVERY
+    layer is an attention layer, so the n_attention_layers guard passes. Spreading
+    the cache evenly then under-books whichever card drew the full-context rows,
+    which is the optimistic direction."""
+    layout = _layout_from_reader(_StubReader(_shard_fields(), _shard_tensors(range(64))))
+    swa = replace(layout, has_swa = True)
+    assert swa.n_attention_layers == swa.n_layers, "the earlier guard does NOT cover this"
+
+    half = _ALL_SPILL_VRAM // 2
+    plan = plan_placement(swa, [half, half], 256 * GIB, 4096, opts = _NO_OVERHEAD)
+    assert plan.changed is False
+    assert "sliding-window" in plan.reason
+
+    # One card has no split to mislocate the caches across.
+    one = plan_placement(swa, [_ALL_SPILL_VRAM], 256 * GIB, 4096, opts = _NO_OVERHEAD)
+    assert len(one.spilled_blocks) == len(layout.blocks)
