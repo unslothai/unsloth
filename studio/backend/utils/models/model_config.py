@@ -1812,9 +1812,7 @@ def detect_mmproj_file(
                 seen_resolved.add(resolved)
                 # A split set has to keep its shard names: llama-server resolves the
                 # siblings from the path it is handed, and an HF blob target has none.
-                candidates.append(
-                    f.absolute() if _GGUF_SPLIT_FILE_RE.match(f.name) else resolved
-                )
+                candidates.append(f.absolute() if _GGUF_SPLIT_FILE_RE.match(f.name) else resolved)
 
     if not candidates:
         return None
