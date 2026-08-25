@@ -576,9 +576,9 @@ def build_driver(
     isolation = isolation or {}
     system_site = {name: bool(isolation.get(name, True)) for name in payloads}
     # Only legs carry overlays; Studio's halves install into their own tree.
-    overlay_specs = {name: tuple(specs)
-                     for name, specs in (overlays or {}).items()
-                     if specs and name in payloads}
+    overlay_specs = {
+        name: tuple(specs) for name, specs in (overlays or {}).items() if specs and name in payloads
+    }
     # The CARD queue, which is not every payload. cpu_lane runs beside the
     # cards and after_gpu runs once they are free; leaving either in here would
     # hand it a card and defeat the point of both.

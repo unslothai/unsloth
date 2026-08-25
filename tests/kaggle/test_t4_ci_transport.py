@@ -93,10 +93,17 @@ class _Stub:
             # pass while proving the overlay never happened.
             report = Path(cmd[cmd.index("--report") + 1])
             report.parent.mkdir(parents = True, exist_ok = True)
-            report.write_text(json.dumps({
-                "install": [{"metadata": {"name": n, "version": v}}
-                            for n, v in self.resolver_closure]
-            }), encoding = "utf-8")
+            report.write_text(
+                json.dumps(
+                    {
+                        "install": [
+                            {"metadata": {"name": n, "version": v}}
+                            for n, v in self.resolver_closure
+                        ]
+                    }
+                ),
+                encoding = "utf-8",
+            )
             return types.SimpleNamespace(returncode = 0, stdout = "", stderr = "")
         if "--target" in cmd:
             self.overlay_installs.append(list(cmd))
@@ -3178,9 +3185,9 @@ def test_a_legs_overlay_reaches_its_payload_and_never_carries_torch(tmp_path):
 
     installed = " ".join(installs[0]).lower()
     assert "transformers==4.57.6" in installed, installed
-    assert "torch==" not in installed, (
-        f"the overlay installed torch, which shadows the base one: {installed}"
-    )
+    assert (
+        "torch==" not in installed
+    ), f"the overlay installed torch, which shadows the base one: {installed}"
 
     record = [p for p in stub.papermill if p["notebook"] == f"t4_{leg}.ipynb"]
     assert record, [p["notebook"] for p in stub.papermill]
@@ -3200,9 +3207,9 @@ def test_a_leg_with_no_overlay_gets_no_pythonpath(tmp_path):
     every leg the same environment. The legs' whole purpose is that they differ.
     """
     stub = _drive_packed(tmp_path, ["control"], gpus = 2)["stub"]
-    assert not [c for c in stub.overlay_installs if "--target" in c], (
-        "a leg declaring no overlay had one built for it"
-    )
+    assert not [
+        c for c in stub.overlay_installs if "--target" in c
+    ], "a leg declaring no overlay had one built for it"
     record = [p for p in stub.papermill if p["notebook"] == "t4_control.ipynb"]
     assert record
     assert "overlay_" not in record[0]["env"].get("PYTHONPATH", "")
