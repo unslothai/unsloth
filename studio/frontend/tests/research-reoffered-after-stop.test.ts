@@ -15,13 +15,8 @@ import {
 
 const message = (custom: Record<string, unknown>) => ({ metadata: { custom } });
 
-test("a finished research reply still holds the thread", () => {
-  for (const status of [
-    "completed",
-    "running",
-    "awaiting_approval",
-    "failed",
-  ]) {
+test("a finished research reply holds the thread", () => {
+  for (const status of ["completed", "failed"]) {
     assert.equal(
       messageHasResearchRunId(
         message({ researchRunId: "run_1", researchStatus: status }),
@@ -30,10 +25,23 @@ test("a finished research reply still holds the thread", () => {
       status,
     );
   }
+  // No status at all is older metadata: count it, to stay on the safe side.
   assert.equal(
     messageHasResearchRunId(message({ researchRunId: "run_1" })),
     true,
   );
+});
+
+test("a reply whose run is still going keeps the toggle lit instead", () => {
+  for (const status of ["planning", "queued", "running", "cancelling"]) {
+    assert.equal(
+      messageHasResearchRunId(
+        message({ researchRunId: "run_1", researchStatus: status }),
+      ),
+      false,
+      status,
+    );
+  }
 });
 
 test("a stopped research reply does not, from history or from a live run", () => {

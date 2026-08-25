@@ -4233,13 +4233,8 @@ export function createOpenAIStreamAdapter(
             createdRun,
             detachResearchFollow,
           );
-          if (
-            !queuedRunSettings ||
-            resolvedThreadId ===
-              useChatRuntimeStore.getState().activeThreadId
-          ) {
-            runtime.setDeepResearchEnabled(false);
-          }
+          // The toggle stays on through the run: it is what the user turned on, and it is what
+          // is happening. The composer takes it away only once the chat's research is spent.
           if (abortSignal.aborted) {
             const detached = Boolean(
               (abortSignal.reason as { detach?: boolean } | undefined)?.detach,

@@ -641,7 +641,12 @@ export const useResearchRunStore = create<ResearchRunState>((set) => ({
         state.planReviewByRunId[run.id],
         run,
       );
-      const claimed = !(shouldBecomeLatest && run.status === "cancelled");
+      // Claimed means spent: a finished run is the chat's one research. A run still going
+      // keeps the toggle lit (it is what is happening) and a stopped one can be re-pointed,
+      // so neither takes the toggle away.
+      const claimed = shouldBecomeLatest
+        ? run.status === "completed" || run.status === "failed"
+        : Boolean(state.claimedThreadIds[run.threadId]);
       return {
         sessions: { ...state.sessions, [run.id]: session },
         claimedThreadIds:
