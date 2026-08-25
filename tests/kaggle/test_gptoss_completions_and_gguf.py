@@ -69,13 +69,27 @@ def test_the_leg_asks_for_completions_and_for_mxfp4():
     assert "gguf_export.py" in leg.files, "the export imports it lazily, so it must be declared"
 
 
-def test_the_payload_defaults_to_mxfp4_rather_than_q8():
-    """gpt-oss overrides q8_0 to MXFP4 and says so. A leg that asks for q8_0
-    would be asking for something that cannot happen, and would then have to
-    accept the override to pass -- which is the vacuous pass."""
+def test_the_payload_requests_q8_and_accepts_only_mxfp4():
+    """The pairing looks backwards and is the only one that works.
+
+    gpt-oss overrides q8_0 to MXFP4 and says so. Asking for mxfp4 directly is
+    the obvious response and unsloth REJECTS it as an input, measured on kernel
+    unsloth-probe-gptoss-r3-832c85:
+
+        Unsloth: Quant method = [mxfp4] not supported. Choose from below:
+        [not_quantized] [fast_quantized] [quantized] [f32] [bf16] ...
+
+    So the documented override is the only route to an MXFP4 file. Accepting
+    ONLY mxfp4 keeps it honest: a run that produced a real q8_0 would fail,
+    which is right, because gpt-oss q8_0 is documented impossible.
+    """
     src = (PAYLOAD / "run_gptoss_t4.py").read_text(encoding = "utf-8")
-    assert '"--gguf-quantization", default = "mxfp4"' in src
+    assert '"--gguf-quantization", default = "q8_0"' in src
     assert 'accept_quantizations = ("mxfp4",)' in src
+    assert 'default = "mxfp4"' not in src, (
+        "mxfp4 is not an accepted request value; unsloth rejects it before the "
+        "conversion starts"
+    )
 
 
 def test_the_dataset_shape_and_the_text_field_cannot_both_be_set():

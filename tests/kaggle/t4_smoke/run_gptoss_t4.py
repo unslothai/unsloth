@@ -500,17 +500,25 @@ def train_and_infer(args) -> dict:
     # heaviest thing in the leg. Anything after it would be measuring a session
     # that has just written ~28GB.
     #
-    # MXFP4, NOT Q8_0, and this is documented behaviour rather than a
-    # workaround. Measured on kernel unsloth-probe-gguf-q8-peft-920e3e's
-    # gpt-oss sibling, unsloth says so out loud:
+    # ASK for q8_0, ACCEPT only mxfp4. That pairing looks backwards and is the
+    # only one that works, which cost a probe to learn.
+    #
+    # gpt-oss overrides the request, out loud:
     #
     #   GPT-OSS does not support GGUF quantization (requested: q8_0).
     #     Overriding to MXFP4 format.
     #   GPT-OSS model - skipping additional quantizations
     #
-    # So the leg asks for MXFP4 and accepts MXFP4. Asking for q8_0 and
-    # accepting whatever came back would pass while proving nothing about
-    # either format.
+    # The obvious response is to ask for mxfp4 directly. unsloth REJECTS it as
+    # an input -- measured on kernel unsloth-probe-gptoss-r3-832c85:
+    #
+    #   Unsloth: Quant method = [mxfp4] not supported. Choose from below:
+    #   [not_quantized] [fast_quantized] [quantized] [f32] [bf16] ...
+    #
+    # So the documented override is the ONLY route to an MXFP4 file, and the
+    # leg has to travel it. Accepting only mxfp4 is what keeps that honest: a
+    # run that somehow produced a real q8_0 would fail, which is right, because
+    # gpt-oss q8_0 is documented impossible.
     if getattr(args, "export_gguf", False):
         from gguf_export import export_gguf, llama_cpp_facts, run_gguf
 
@@ -818,9 +826,9 @@ def main() -> int:
         "--no-train-on-completions", dest = "train_on_completions", action = "store_false"
     )
     ap.add_argument("--export-gguf", dest = "export_gguf", action = "store_true", default = False)
-    # MXFP4 by name. gpt-oss overrides any other request to it and says so, so
-    # asking for q8_0 here would be asking for something that cannot happen.
-    ap.add_argument("--gguf-quantization", default = "mxfp4")
+    # q8_0 as the REQUEST. `mxfp4` is not an accepted input value; the override
+    # is the only way to reach that format. See the export block above.
+    ap.add_argument("--gguf-quantization", default = "q8_0")
     ap.add_argument("--require-compile", dest = "require_compile", action = "store_true", default = True)
     ap.add_argument("--no-require-compile", dest = "require_compile", action = "store_false")
     ap.add_argument(
