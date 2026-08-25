@@ -336,6 +336,7 @@ from core.inference.tool_call_parser import (
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.child_stdio import utf8_child_env
 from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
+from utils.log_retention import prune_log_dir
 from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
@@ -11253,6 +11254,8 @@ class LlamaCppBackend:
             log_dir.mkdir(parents = True, exist_ok = True)
             self._llama_log_path = log_dir / f"diffusion-{int(time.time())}-port-{self._port}.log"
             self._llama_log_fh = open(self._llama_log_path, "w", encoding = "utf-8", buffering = 1)
+            # After the open, so the cap counts this file and can never delete it.
+            prune_log_dir(log_dir, "diffusion-*.log", protect = self._llama_log_path)
             logger.info(f"diffusion runner stdout/stderr -> {self._llama_log_path}")
         except (OSError, UnicodeDecodeError) as e:
             logger.debug(f"Could not open diffusion runner log file: {e}")
@@ -15123,6 +15126,8 @@ class LlamaCppBackend:
                 encoding = "utf-8",
                 buffering = 1,
             )
+            # After the open, so the cap counts this file and can never delete it.
+            prune_log_dir(log_dir, "llama-*.log", protect = self._llama_log_path)
             logger.info(f"llama-server stdout/stderr -> {self._llama_log_path}")
         except (OSError, UnicodeDecodeError) as e:
             # Best-effort; never block the load on logging.
@@ -19702,6 +19707,10 @@ class LlamaCppBackend:
                                 encoding = "utf-8",
                                 buffering = 1,
                             )
+                            # After the open, so the cap counts this file and never deletes
+                            # it. On the retry path the earlier attempts' logs are what a
+                            # reader wants, and keep-newest holds on to them.
+                            prune_log_dir(log_dir, "llama-*.log", protect = self._llama_log_path)
                             logger.info(f"llama-server stdout/stderr -> {self._llama_log_path}")
                         except (OSError, UnicodeDecodeError) as e:
                             # Best-effort; never block the load on logging.

@@ -634,6 +634,26 @@ jobs:
           mkdir -p logs/playwright_image_cancel_retry_cold
           python tests/studio/playwright_image_download_cancel_retry.py
 
+      # The log budget in studio/backend/tests/log_budget compares two BACKEND files with
+      # each other: the suppression sets in loggers/handlers.py and the poll cadences in
+      # session.py. A pull request that adds a polling call site in the frontend edits
+      # neither, so it passes, and the new endpoint logs every hit on a 300 ms window.
+      # Only a browser can see that a timer started, whatever it was implemented with.
+      #
+      # Last of the shard's steps on purpose: it walks the sidebar and then sits idle for
+      # two minutes, and it rotates the bootstrap password, so anything scheduled after it
+      # would wait on the dwell and then meet a password it did not mint.
+      - name: Every polled path is declared in the log budget (Playwright)
+        if: matrix.shard == 'extra'
+        env:
+          BASE_URL: http://127.0.0.1:18894
+          STUDIO_OLD_PW: ${{ env.STUDIO_EXTRA_OLD_PW }}
+          STUDIO_NEW_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
+          PW_ART_DIR: logs/playwright_declared_polls
+        run: |
+          mkdir -p logs/playwright_declared_polls
+          python tests/studio/playwright_declared_polls.py
+
       - name: Stop second Unsloth
         if: (always()) && (matrix.shard == 'extra' || matrix.shard == 'banner')
         run: |
