@@ -153,6 +153,10 @@ def _overload_names_in(body, base) -> set:
                 visit(getattr(node, field, []) or [])
             for handler in getattr(node, "handlers", []) or []:
                 visit(handler.body)
+            # Same blind spot as _branch_bodies, mirrored: an alias bound inside a match case
+            # would go unseen and its @t.overload defs would read as a duplicate.
+            for case in getattr(node, "cases", []) or []:
+                visit(case.body)
 
     visit(body)
     return names
@@ -178,6 +182,13 @@ def _branch_bodies(node):
     for handler in getattr(node, "handlers", []) or []:
         if handler.body:
             yield handler.body
+    # A match keeps its branches in `cases[*].body`, so the loop above walked straight past
+    # them and two copies of one def inside a SINGLE case scanned clean. Each case is a
+    # branch on the same terms as an if/else arm: yielded separately, never compared with a
+    # sibling case, where one definition apiece is the ordinary conditional idiom.
+    for case in getattr(node, "cases", []) or []:
+        if case.body:
+            yield case.body
 
 
 def _is_overload_def(node, overloads) -> bool:
@@ -653,6 +664,35 @@ _SELF_TEST_CASES = [
     (0, "try:\n    import json\nexcept ImportError:\n    import json\n"),
     (1, "try:\n    import json\n    import json\nexcept ImportError:\n    pass\n"),
 ]
+
+# Guarded, not inlined above: `match` is 3.10 syntax and this tool supports 3.9, where
+# ast.parse raises SyntaxError and every case below would report a parse finding instead.
+if sys.version_info >= (3, 10):
+    _SELF_TEST_CASES += [
+        (
+            1,
+            "import os\nmatch os.name:\n    case 'posix':\n        def go():\n"
+            "            return 1\n        def go():\n            return 2\n"
+            "    case _:\n        pass\n",
+        ),
+        (
+            1,
+            "match 1:\n    case 1:\n        import json\n        import json\n"
+            "    case _:\n        pass\n",
+        ),
+        # One definition per case is the conditional idiom, exactly as for if/else.
+        (
+            0,
+            "match 1:\n    case 1:\n        def go():\n            return 1\n"
+            "    case 2:\n        def go():\n            return 2\n",
+        ),
+        # The alias walk reaches into a case too, so this stays an overload pair.
+        (
+            0,
+            "match 1:\n    case 1:\n        import typing as t\n\n        @t.overload\n"
+            "        def f(x: int): ...\n\n        @t.overload\n        def f(x: str): ...\n",
+        ),
+    ]
 
 
 def _self_test() -> int:

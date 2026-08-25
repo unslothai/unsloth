@@ -246,7 +246,7 @@ jobs:
         # every other check here passes it -- compileall parses both copies, the
         # ruff rule set (E9 / F63 / F7 / F82) has no F811, and the two copies
         # usually differ only in their comments.
-        # Runs the tool's 18 cases, positive and negative, so a regression in the
+        # Runs the tool's self-test cases, positive and negative, so a regression in the
         # rule fails before we trust it on a diff. Stdlib-only, sub-second.
         run: |
           python scripts/lint_duplicate_definitions.py --self-test
