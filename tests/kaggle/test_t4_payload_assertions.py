@@ -2342,3 +2342,28 @@ def test_a_second_cycle_cannot_report_an_already_installed_llama_cpp_as_a_source
         is True
     )
     assert llama_cpp_facts("cmake --build . -j 4\n", ())["prebuilt"] is False
+
+
+def test_the_text_leg_gguf_export_does_not_land_in_the_artifact_directory():
+    """`/kaggle/working` is 21.0 GB and is what `kernels output` ships back.
+
+    Measured on unsloth-probe-lcleg-final-a90fbb, which is the run that found
+    this:
+
+        RuntimeError: Unsloth: Not enough disk space to convert to GGUF.
+        The export needs about 16.6GB on the filesystem holding
+        `/kaggle/working/t4_out_Latest_compile/cycle0/gguf_run0`
+
+    Two failures in one. A merge too big for that volume kills the leg, and a
+    merge that DOES fit is downloaded as part of the artifact, which nobody
+    wanted. gpt-oss and the vision run were both moved to a tempdir for exactly
+    this reason and this path was missed -- so a small model kept passing and
+    hid it.
+    """
+    src = _smoke_source()
+    call = src[src.index("gguf_export_record = export_gguf("):]
+    call = call[: call.index(")")]
+    assert "tempfile.mkdtemp" in call, "the export writes into the artifact directory"
+    assert "args.outdir" not in call, (
+        "args.outdir is /kaggle/working, which is 21 GB and is collected"
+    )

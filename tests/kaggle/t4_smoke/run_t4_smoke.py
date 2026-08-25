@@ -67,6 +67,7 @@ import json
 import os
 import platform
 import subprocess
+import tempfile
 import sys
 import time
 from pathlib import Path
@@ -499,10 +500,27 @@ def train_once(args, run_index: int) -> dict:
             facts = {"error": f"{type(exc).__name__}: {exc}"[:2000]}
         _log(f"llama.cpp: {json.dumps(facts)}")
 
+        # NOT under args.outdir. That is `/kaggle/working`, which is 21.0 GB
+        # and is also what `kernels output` ships back, so a merge that fits
+        # there is downloaded and a merge that does not kills the leg. Measured
+        # on unsloth-probe-lcleg-final-a90fbb:
+        #
+        #   RuntimeError: Unsloth: Not enough disk space to convert to GGUF.
+        #   The export needs about 16.6GB on the filesystem holding
+        #   `/kaggle/working/t4_out_Latest_compile/cycle0/gguf_run0`
+        #
+        # /tmp is the same overlay as `/`, 8656.9 GB with ~1100 GB free, which
+        # this file has recorded since the first disk probe. tempfile honours
+        # TMPDIR and lands there. The RECORD travels back -- path, size,
+        # seconds -- and the multi-gigabyte artifact does not, which nobody
+        # wanted collected anyway.
+        #
+        # gpt-oss and the vision run were both moved for this exact reason and
+        # this path was missed, which is why a small model kept passing.
         gguf_export_record = export_gguf(
             model,
             tokenizer,
-            os.path.join(args.outdir, f"gguf_run{run_index}"),
+            tempfile.mkdtemp(prefix = f"gguf_run{run_index}_"),
             quantization = args.gguf_quantization,
         )
         gguf_export_record["llama_cpp"] = facts
