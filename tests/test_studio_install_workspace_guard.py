@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INSTALL_SH = REPO_ROOT / "install.sh"
@@ -12,18 +15,27 @@ INSTALL_PS1 = REPO_ROOT / "install.ps1"
 SETUP_PS1 = REPO_ROOT / "studio" / "setup.ps1"
 SETUP_SH = REPO_ROOT / "studio" / "setup.sh"
 
-# Stubs for helpers the extracted guard block calls; mv-based replacement reproduces the venv-gone
-# effect without the full rollback machinery.
+# Stub the rollback helper with a move. The directory predicate is extracted
+# from install.sh because it controls whether the guard runs.
 _INSTALL_GUARD_STUBS = (
     'substep() { :; }\n_start_studio_venv_replacement() {\n    mv -- "$1" "$1.replaced"\n}\n'
 )
+
+
+def _extract_install_sh_function(name: str) -> str:
+    """Extract a top-level install.sh shell function, header line to closing brace."""
+    src = INSTALL_SH.read_text(encoding = "utf-8")
+    m = re.search(rf"^{re.escape(name)}\(\) \{{.*?\n\}}\n", src, re.DOTALL | re.MULTILINE)
+    assert m, f"install.sh function {name} not found"
+    return m.group(0)
 
 
 def _extract_install_sh_guard_block() -> str:
     """Extract install.sh's venv guard block (up to the first elif) as a self-contained snippet."""
     src = INSTALL_SH.read_text(encoding = "utf-8")
     m = re.search(
-        r'(if \[ -x "\$VENV_DIR/bin/python" \]; then\n.*?)elif \[ "\$_STUDIO_HOME_REDIRECT" != "env"',
+        r'(if \[ -x "\$VENV_DIR/bin/python" \] \|\| _dir_has_entries "\$VENV_DIR"; then\n.*?)'
+        r'elif \[ "\$_STUDIO_HOME_REDIRECT" != "env"',
         src,
         re.DOTALL,
     )
@@ -41,6 +53,7 @@ def _build_install_guard_script(
         block = _extract_install_sh_guard_block()
     return (
         _INSTALL_GUARD_STUBS
+        + _extract_install_sh_function("_dir_has_entries")
         + f'STUDIO_HOME="{studio_home}"\n'
         + f'VENV_DIR="$STUDIO_HOME/unsloth_studio"\n'
         + f'_STUDIO_HOME_REDIRECT="{redirect}"\n'
@@ -117,7 +130,7 @@ def test_default_mode_skips_sentinel_check(tmp_path):
 
 def test_install_ps1_has_matching_env_mode_guard():
     src = INSTALL_PS1.read_text(encoding = "utf-8")
-    block_start = src.index("if (Test-Path -LiteralPath $VenvPython)")
+    block_start = src.index("# why: matching guard to the .venv branch below")
     block = src[block_start : block_start + 2000]
     assert (
         "$StudioRedirectMode -eq 'env'" in block
@@ -191,7 +204,7 @@ def test_env_mode_passes_when_bin_unsloth_is_a_symlink(tmp_path):
 def test_install_ps1_sentinel_uses_pathtype_leaf():
     """Remove-Item $VenvDir gate must use -PathType Leaf so a sentinel-path directory cannot satisfy it."""
     src = INSTALL_PS1.read_text(encoding = "utf-8")
-    block_start = src.index("if (Test-Path -LiteralPath $VenvPython)")
+    block_start = src.index("# why: matching guard to the .venv branch below")
     block = src[block_start : block_start + 2000]
     assert (
         'share\\studio.conf") -PathType Leaf' in block
@@ -347,7 +360,7 @@ def test_install_ps1_writes_venv_marker_after_uv_venv():
 def test_install_ps1_guard_accepts_venv_marker():
     """install.ps1 env-mode guard must accept the in-VENV .unsloth-studio-owned marker as a sentinel."""
     src = INSTALL_PS1.read_text(encoding = "utf-8")
-    block_start = src.index("if (Test-Path -LiteralPath $VenvPython)")
+    block_start = src.index("# why: matching guard to the .venv branch below")
     block = src[block_start : block_start + 2000]
     assert (
         '$VenvDir ".unsloth-studio-owned") -PathType Leaf' in block
@@ -1012,3 +1025,458 @@ def test_install_ps1_install_id_file_layout_matches_backend_read_path():
     assert (
         "[System.IO.File]::Move($_idTmp, $_studioIdFile)" in context
     ), "install.ps1 must atomic-rename the temp file into place to avoid half-written ids"
+
+
+def _make_interpreterless_venv(studio_home):
+    """A venv whose uv-managed CPython was deleted: pyvenv.cfg intact, bin/python dangling."""
+    venv = studio_home / "unsloth_studio"
+    (venv / "bin").mkdir(parents = True)
+    (venv / "pyvenv.cfg").write_text("home = /gone/bin\nversion_info = 3.13.14\n")
+    (venv / "bin" / "python").symlink_to("/gone/bin/python3.13")
+    return venv
+
+
+def _run_guard_block(studio_home, redirect):
+    return subprocess.run(
+        ["bash", "-c", _build_install_guard_script(studio_home, redirect)],
+        env = {"PATH": "/usr/bin:/bin"},
+        text = True,
+        capture_output = True,
+    )
+
+
+def test_install_sh_replaces_venv_whose_interpreter_is_gone(tmp_path):
+    """A venv with no usable bin/python must still be moved aside: uv 0.10 will not overwrite it."""
+    studio_home = tmp_path / "ws"
+    venv = _make_interpreterless_venv(studio_home)
+    res = _run_guard_block(studio_home, "default")
+    assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
+    assert "RESULT=ok" in res.stdout
+    assert not venv.exists(), "install.sh must clear $VENV_DIR before `uv venv` runs"
+
+
+def test_install_sh_replaces_venv_dir_holding_only_hidden_entries(tmp_path):
+    """uv refuses any non-empty target, so a leftover holding only dotfiles must be cleared too."""
+    studio_home = tmp_path / "ws"
+    venv = studio_home / "unsloth_studio"
+    venv.mkdir(parents = True)
+    (venv / ".unsloth-studio-owned").write_text("")
+    res = _run_guard_block(studio_home, "default")
+    assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
+    assert not venv.exists()
+
+
+def test_install_sh_leaves_absent_and_empty_venv_dir_to_uv(tmp_path):
+    """uv creates into a missing or empty directory, so neither may trigger a rollback move."""
+    studio_home = tmp_path / "ws"
+    studio_home.mkdir()
+    res = _run_guard_block(studio_home, "default")
+    assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
+    assert not (studio_home / "unsloth_studio.replaced").exists()
+
+    (studio_home / "unsloth_studio").mkdir()
+    res = _run_guard_block(studio_home, "default")
+    assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
+    assert (studio_home / "unsloth_studio").is_dir(), "an empty $VENV_DIR must be left in place"
+    assert not (studio_home / "unsloth_studio.replaced").exists()
+
+
+def test_env_mode_blocks_interpreterless_venv_without_sentinels(tmp_path):
+    """The env-mode ownership guard must cover the interpreter-less case, not just the healthy one."""
+    studio_home = tmp_path / "ws"
+    venv = _make_interpreterless_venv(studio_home)
+    (venv / "important.txt").write_text("keep me")
+    res = _run_guard_block(studio_home, "env")
+    assert res.returncode != 0, (
+        "env-mode without sentinels must refuse to replace $VENV_DIR; "
+        f"stdout={res.stdout!r} stderr={res.stderr!r}"
+    )
+    assert "does not look like an Unsloth Studio install" in res.stderr
+    assert (venv / "important.txt").is_file(), "unrelated workspace data must survive"
+
+
+def test_env_mode_replaces_interpreterless_venv_when_marker_present(tmp_path):
+    """A partial install that left the marker must be replaceable on the next run."""
+    studio_home = tmp_path / "ws"
+    venv = _make_interpreterless_venv(studio_home)
+    (venv / ".unsloth-studio-owned").write_text("")
+    res = _run_guard_block(studio_home, "env")
+    assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
+    assert not venv.exists()
+
+
+def test_install_ps1_replacement_branch_covers_an_occupied_venv_dir():
+    """install.ps1 must move a venv aside on directory content, not only on a present python.exe."""
+    src = INSTALL_PS1.read_text(encoding = "utf-8")
+    assert (
+        "if ((Test-Path -LiteralPath $VenvPython) -or (Test-DirectoryHasEntries -Path $VenvDir))"
+        in src
+    ), "install.ps1 must treat an occupied $VenvDir as an environment to replace"
+    helper_start = src.index("function Test-DirectoryHasEntries")
+    helper = src[helper_start : src.index("function Get-VenvBaseHome", helper_start)]
+    assert (
+        "[System.IO.Directory]::EnumerateFileSystemEntries($Path)" in helper
+    ), "Test-DirectoryHasEntries must count hidden entries and not read the path as a wildcard"
+    assert (
+        "-PathType Container" in helper
+    ), "Test-DirectoryHasEntries must answer false for a missing directory"
+
+
+def _extract_install_sh_venv_chain() -> str:
+    """Extract the venv if/elif chain past the legacy migration to its closing `fi`.
+
+    _extract_install_sh_guard_block stops at the first elif, so it cannot see the two
+    interacting.
+    """
+    src = INSTALL_SH.read_text(encoding = "utf-8")
+    m = re.search(
+        r'^(if \[ -x "\$VENV_DIR/bin/python" \] \|\| _dir_has_entries "\$VENV_DIR"; then\n.*?^fi$)',
+        src,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert m, "install.sh venv chain not found"
+    return m.group(1) + "\n"
+
+
+def _run_venv_chain(studio_home, redirect = "default"):
+    """Run the full chain, then report what `uv venv` would face at install.sh's create gate."""
+    script = (
+        _INSTALL_GUARD_STUBS
+        + _extract_install_sh_function("_dir_has_entries")
+        + f'STUDIO_HOME="{studio_home}"\n'
+        + 'VENV_DIR="$STUDIO_HOME/unsloth_studio"\n'
+        + f'_STUDIO_HOME_REDIRECT="{redirect}"\n'
+        + 'SKIP_TORCH=true\n_MIGRATED=false\n_PREV_TORCH_VER=""\n'
+        + _extract_install_sh_venv_chain()
+        # Mirrors the `if [ ! -x "$VENV_DIR/bin/python" ]` create gate below the chain.
+        + 'if [ -x "$VENV_DIR/bin/python" ]; then echo UV=skipped_migrated\n'
+        + 'elif [ -d "$VENV_DIR" ] && [ -n "$(ls -A "$VENV_DIR" 2>/dev/null)" ]; then\n'
+        + "    echo UV=would_fail_dir_not_empty\n"
+        + "else echo UV=would_create_ok; fi\n"
+    )
+    return subprocess.run(
+        ["bash", "-c", script],
+        env = {"PATH": "/usr/bin:/bin"},
+        text = True,
+        capture_output = True,
+    )
+
+
+def _make_legacy_venv(studio_home):
+    """A healthy legacy ~/.unsloth/studio/.venv from before the unsloth_studio layout."""
+    legacy = studio_home / ".venv"
+    (legacy / "bin").mkdir(parents = True)
+    py = legacy / "bin" / "python"
+    py.write_text("#!/bin/sh\nexit 0\n")
+    py.chmod(0o755)
+    (legacy / "marker.txt").write_text("legacy")
+    return legacy
+
+
+def test_legacy_migration_into_empty_venv_dir_does_not_nest(tmp_path):
+    """An empty $VENV_DIR must not make `mv` nest the legacy env inside it (uv then fails)."""
+    studio_home = tmp_path / "ws"
+    studio_home.mkdir()
+    _make_legacy_venv(studio_home)
+    (studio_home / "unsloth_studio").mkdir()
+
+    res = _run_venv_chain(studio_home)
+
+    assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
+    venv = studio_home / "unsloth_studio"
+    assert not (venv / ".venv").exists(), (
+        "legacy environment was nested at $VENV_DIR/.venv; `uv venv` would then refuse the "
+        "occupied target with the same error as #9479"
+    )
+    assert (venv / "marker.txt").is_file(), "legacy environment must land directly in $VENV_DIR"
+    assert "UV=skipped_migrated" in res.stdout
+
+
+def test_legacy_migration_with_absent_venv_dir_still_migrates(tmp_path):
+    """The ordinary migration must keep working once the empty-directory case is handled."""
+    studio_home = tmp_path / "ws"
+    studio_home.mkdir()
+    _make_legacy_venv(studio_home)
+
+    res = _run_venv_chain(studio_home)
+
+    assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
+    assert (studio_home / "unsloth_studio" / "marker.txt").is_file()
+    assert "UV=skipped_migrated" in res.stdout
+
+
+def test_legacy_migration_clears_a_symlinked_empty_venv_dir_without_touching_target(tmp_path):
+    """Unlinking $VENV_DIR must never remove the directory a symlink points at."""
+    studio_home = tmp_path / "ws"
+    studio_home.mkdir()
+    _make_legacy_venv(studio_home)
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    (studio_home / "unsloth_studio").symlink_to(target)
+
+    res = _run_venv_chain(studio_home)
+
+    assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
+    assert target.is_dir(), "the symlink target must survive"
+    assert (studio_home / "unsloth_studio" / "marker.txt").is_file()
+
+
+def test_occupied_venv_dir_still_wins_over_legacy_migration(tmp_path):
+    """An occupied $VENV_DIR must be replaced rather than migrated into (the #9479 path)."""
+    studio_home = tmp_path / "ws"
+    studio_home.mkdir()
+    legacy = _make_legacy_venv(studio_home)
+    venv = _make_interpreterless_venv(studio_home)
+
+    res = _run_venv_chain(studio_home)
+
+    assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
+    assert "UV=would_create_ok" in res.stdout
+    assert not venv.exists(), "$VENV_DIR must be cleared before `uv venv` runs"
+    assert (legacy / "marker.txt").is_file(), "the legacy environment must be left intact"
+
+
+def test_install_sh_reports_a_failed_venv_move(tmp_path):
+    """A failed move must say so, matching install.ps1's Exit-InstallFailure on the same step."""
+    src = INSTALL_SH.read_text(encoding = "utf-8")
+    assert (
+        'if ! _start_studio_venv_replacement "$VENV_DIR"; then' in src
+    ), "install.sh must check the replacement helper rather than relying on bare set -e"
+    assert "could not move $VENV_DIR aside to reinstall" in src
+
+
+def _dir_has_entries_says(
+    tmp_path,
+    target,
+    pre = "",
+):
+    """Run the real _dir_has_entries from install.sh against one directory."""
+    script = (
+        _extract_install_sh_function("_dir_has_entries")
+        + f"{pre}\n"
+        + f'if _dir_has_entries "{target}"; then echo yes; else echo no; fi\n'
+    )
+    res = subprocess.run(
+        ["bash", "-c", script],
+        env = {"PATH": "/usr/bin:/bin"},
+        text = True,
+        capture_output = True,
+    )
+    assert res.returncode == 0, f"stderr={res.stderr!r}"
+    return res.stdout.strip()
+
+
+def test_dir_has_entries_survives_noglob_in_the_caller(tmp_path):
+    """The check is pure globbing, so `set -f` must not make an occupied directory look empty."""
+    occupied = tmp_path / "occupied"
+    occupied.mkdir()
+    (occupied / "file.txt").write_text("x")
+
+    assert _dir_has_entries_says(tmp_path, occupied, pre = "set -f") == "yes"
+    assert _dir_has_entries_says(tmp_path, occupied) == "yes"
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert (
+        _dir_has_entries_says(tmp_path, empty, pre = "set -f") == "no"
+    ), "an empty directory must still be left for uv to create into"
+
+
+def test_dir_has_entries_restores_the_callers_noglob_setting(tmp_path):
+    """Saving and restoring `-f` matters because _path_has_dir depends on the flag."""
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    script = (
+        _extract_install_sh_function("_dir_has_entries")
+        + "set -f\n"
+        + f'_dir_has_entries "{empty}" || true\n'
+        + "case $- in *f*) echo NOGLOB_KEPT ;; *) echo NOGLOB_LOST ;; esac\n"
+        + "set +f\n"
+        + f'_dir_has_entries "{empty}" || true\n'
+        + "case $- in *f*) echo GLOB_LOST ;; *) echo GLOB_KEPT ;; esac\n"
+    )
+    res = subprocess.run(
+        ["bash", "-c", script],
+        env = {"PATH": "/usr/bin:/bin"},
+        text = True,
+        capture_output = True,
+    )
+    assert "NOGLOB_KEPT" in res.stdout, "the caller's `set -f` must be restored"
+    assert "GLOB_KEPT" in res.stdout, "a caller without `set -f` must not gain it"
+
+
+@pytest.mark.parametrize("mode", [0o000, 0o111, 0o444])
+def test_dir_has_entries_treats_an_unenumerable_directory_as_occupied(tmp_path, mode):
+    """uv refuses these targets, so reporting them empty would wedge the repair.
+
+    0o444 is readable but not searchable, 0o111 the mirror; both must answer as 0o000.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root ignores directory permissions")
+    blocked = tmp_path / f"blocked{mode:o}"
+    blocked.mkdir()
+    (blocked / "file.txt").write_text("x")
+    blocked.chmod(mode)
+    try:
+        # install.ps1's catch returns $true here; the two must not disagree.
+        assert _dir_has_entries_says(tmp_path, blocked) == "yes"
+    finally:
+        blocked.chmod(0o700)
+
+
+def test_dir_has_entries_still_answers_no_for_a_searchable_empty_dir(tmp_path):
+    """The fail-closed rule must not swallow the empty case uv creates into."""
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    empty.chmod(0o555)
+    try:
+        assert _dir_has_entries_says(tmp_path, empty) == "no"
+    finally:
+        empty.chmod(0o700)
+
+
+# Measured against uv 0.12.1, the version install.sh pins: uv creates only into a
+# path that is absent or an empty directory, every other shape is EEXIST. The
+# predicate has to agree, or the repair loop continues for the shapes it misses.
+_UV_REFUSES = [
+    ("occupied real dir", "fulldir", True),
+    ("regular file", "plainfile", True),
+    ("dangling symlink", "dangling", True),
+    ("symlink to a file", "link_to_file", True),
+    ("symlink to an occupied dir", "link_to_full", True),
+    ("absent path", "absent", False),
+    ("empty real dir", "emptydir", False),
+    ("symlink to an empty dir", "link_to_empty", False),
+]
+
+
+def _make_uv_shape(root, shape):
+    if shape == "absent":
+        return root / "absent"
+    if shape == "emptydir":
+        (root / "emptydir").mkdir()
+        return root / "emptydir"
+    if shape == "fulldir":
+        (root / "fulldir").mkdir()
+        (root / "fulldir" / "x").write_text("x")
+        return root / "fulldir"
+    if shape == "plainfile":
+        (root / "plainfile").write_text("x")
+        return root / "plainfile"
+    if shape == "dangling":
+        (root / "dangling").symlink_to(root / "gone")
+        return root / "dangling"
+    if shape == "link_to_file":
+        (root / "target_file").write_text("x")
+        (root / "link_to_file").symlink_to(root / "target_file")
+        return root / "link_to_file"
+    if shape == "link_to_full":
+        (root / "target_full").mkdir()
+        (root / "target_full" / "x").write_text("x")
+        (root / "link_to_full").symlink_to(root / "target_full")
+        return root / "link_to_full"
+    if shape == "link_to_empty":
+        (root / "target_empty").mkdir()
+        (root / "link_to_empty").symlink_to(root / "target_empty")
+        return root / "link_to_empty"
+    raise AssertionError(shape)
+
+
+@pytest.mark.parametrize(
+    "label,shape,uv_refuses",
+    _UV_REFUSES,
+    ids = [row[1] for row in _UV_REFUSES],
+)
+def test_dir_has_entries_matches_what_uv_refuses(tmp_path, label, shape, uv_refuses):
+    """The predicate must answer uv's question, not "is this a non-empty directory"."""
+    target = _make_uv_shape(tmp_path, shape)
+    answer = _dir_has_entries_says(tmp_path, target)
+    assert answer == ("yes" if uv_refuses else "no"), (
+        f"{label}: uv {'refuses' if uv_refuses else 'creates into'} this path, "
+        f"so the replacement branch must {'run' if uv_refuses else 'be skipped'}"
+    )
+
+
+def test_install_ps1_helper_answers_on_the_link_itself():
+    """install.ps1 must match: -PathType Container follows a link and misses a dangling one."""
+    src = INSTALL_PS1.read_text(encoding = "utf-8")
+    helper_start = src.index("function Test-DirectoryHasEntries")
+    helper = src[helper_start : src.index("function Clear-MigrationTargetDirectory", helper_start)]
+    assert (
+        "Get-Item -LiteralPath $Path -Force" in helper
+    ), "a dangling link is invisible to -PathType Container but still blocks uv"
+
+
+def _run_rollback_lifecycle(studio_home, shape):
+    """Move $VENV_DIR aside, half-create a new venv, then fail and restore."""
+    fns = [
+        "_start_studio_venv_replacement",
+        "_restore_studio_venv_replacement",
+        "_commit_studio_venv_replacement",
+    ]
+    src = INSTALL_SH.read_text(encoding = "utf-8")
+    helpers = ""
+    for fn in fns:
+        m = re.search(rf"^{re.escape(fn)}\(\) \{{.*?\n\}}\n", src, re.DOTALL | re.MULTILINE)
+        assert m, fn
+        helpers += m.group(0)
+    venv = studio_home / "unsloth_studio"
+    if shape == "realdir":
+        venv.mkdir()
+        (venv / "keep.txt").write_text("CANARY")
+    elif shape == "regularfile":
+        venv.write_text("CANARY")
+    elif shape == "danglinglink":
+        venv.symlink_to(studio_home / "gone")
+    else:
+        raise AssertionError(shape)
+    script = (
+        "substep() { :; }\nrollback_substep() { :; }\n"
+        + helpers
+        + f'STUDIO_HOME="{studio_home}"\n'
+        + 'VENV_DIR="$STUDIO_HOME/unsloth_studio"\n'
+        + '_VENV_ROLLBACK_TARGET="$VENV_DIR"\n_VENV_ROLLBACK_DIR=""\n_VENV_ROLLBACK_ACTIVE=false\n'
+        + '_start_studio_venv_replacement "$VENV_DIR"\n'
+        + 'mkdir -p "$VENV_DIR/bin"; echo partial > "$VENV_DIR/bin/python"\n'
+        + "_restore_studio_venv_replacement\n"
+    )
+    return subprocess.run(
+        ["bash", "-c", script],
+        env = {"PATH": "/usr/bin:/bin"},
+        text = True,
+        capture_output = True,
+    )
+
+
+@pytest.mark.parametrize("shape", ["realdir", "regularfile", "danglinglink"])
+def test_rollback_restores_every_shape_the_predicate_moves_aside(tmp_path, shape):
+    """Whatever _dir_has_entries calls occupied has to be restorable on failure.
+
+    Testing with -d dropped a regular file and a dangling link: the rollback
+    deactivated itself and the half-built venv stayed at $VENV_DIR.
+    """
+    studio_home = tmp_path / "ws"
+    studio_home.mkdir()
+    res = _run_rollback_lifecycle(studio_home, shape)
+    assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
+
+    venv = studio_home / "unsloth_studio"
+    assert venv.exists() or venv.is_symlink(), "the original must be back at $VENV_DIR"
+    assert not (venv / "bin" / "python").is_file(), "the half-built venv must be gone"
+    stranded = list(studio_home.glob("unsloth_studio.rollback.*"))
+    assert not stranded, f"backup left stranded: {[p.name for p in stranded]}"
+
+
+def test_install_ps1_rollback_tests_the_path_not_the_link_target():
+    """Test-Path follows a link, so a dangling backup would read as absent."""
+    src = INSTALL_PS1.read_text(encoding = "utf-8")
+    assert "function Test-StudioPathPresent" in src
+    for fn, nxt in (
+        ("Restore-StudioVenvRollback", "Complete-StudioVenvRollback"),
+        ("Complete-StudioVenvRollback", None),
+    ):
+        start = src.index(f"function {fn} {{")
+        end = src.index(f"function {nxt} {{", start) if nxt else start + 1200
+        assert (
+            "Test-StudioPathPresent" in src[start:end]
+        ), f"{fn} must test the backup path itself, not the link target"

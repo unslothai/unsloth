@@ -405,6 +405,14 @@ export const zhCN = {
         engineStudioDescription: "使用已加载的音频模型（例如 Orpheus）",
         engineSystem: "系统语音",
         engineStudio: "加载 TTS 模型",
+        engineCustom: "自定义端点",
+        engineCustomDescription:
+          "来自连接的 OpenAI 兼容 TTS 服务器（例如 Kokoro）",
+        connectionLabel: "连接",
+        connectionDescription: "在“连接”标签页中添加 OpenAI 兼容服务器",
+        connectionPlaceholder: "选择连接",
+        customModelLabel: "模型",
+        customVoiceDescription: "端点所需的语音名称（默认为 alloy）",
         modelLabel: "TTS 模型",
         modelDescription: "从模型选择器加载音频模型（例如 Orpheus TTS）",
         openAudioAction: "打开音频",
@@ -504,7 +512,7 @@ export const zhCN = {
           "在空闲卸载前保存 KV 缓存，让恢复的聊天无需重新读取历史。最多占用 10 GB 磁盘空间。",
         apiOnly: "仅卸载由 API 加载的模型",
         apiOnlyDescription:
-          "空闲卸载会将你在 Studio 中加载的模型保留在内存中，只释放由 API 请求加载的模型。",
+          "空闲卸载会将你在 Unsloth 中加载的模型保留在内存中，只释放由 API 请求加载的模型。",
       },
       previewSharing: {
         sectionTitle: "预览分享",
@@ -830,6 +838,8 @@ export const zhCN = {
         title: "GPU 设备",
         ggufInference: "GGUF 推理",
         unavailable: "不可用",
+        detecting: "正在检查 GPU...",
+        unreadable: "无法读取此服务器的硬件信息。",
         noGpu: "未检测到可见 GPU。上方仅显示 CPU 资源。",
         unknownDevice: "未知 GPU",
         deviceWithIndex: "GPU {index}",
@@ -987,7 +997,7 @@ export const zhCN = {
       quickstart: {
         title: "生成命令",
         description:
-          "使用 Studio 中当前加载的模型启动智能体。请先加载模型，然后把 claude 换成下面任意一个受支持的智能体。",
+          "使用 Unsloth 中当前加载的模型启动智能体。请先加载模型，然后把 claude 换成下面任意一个受支持的智能体。",
         noneDetected: "未在你的 PATH 中找到受支持的智能体命令行工具。",
         installed: "已安装",
       },
@@ -1008,7 +1018,7 @@ export const zhCN = {
         description:
           "Unsloth 的参数会先被解析；无法识别的参数会原样传给智能体。",
         model:
-          "选择模型。不带 --model 时，unsloth start 会使用 Studio 中当前加载的模型；若没有已加载的模型则报错。",
+          "选择模型。不带 --model 时，unsloth start 会使用 Unsloth 中当前加载的模型；若没有已加载的模型则报错。",
         contextLength: "设置请求的上下文长度（别名：--max-seq-length）。",
         ggufVariant: "选择 GGUF 量化变体。",
         loadIn4bit: "开启或关闭 Hugging Face 模型的 4 位加载。",
@@ -1026,9 +1036,9 @@ export const zhCN = {
         yolo: "跳过确认提示。请仅在可信环境中使用。",
       },
       remote: {
-        title: "连接到远程 Studio",
+        title: "连接到远程 Unsloth Studio",
         description:
-          "在启动前设置以下内容，即可让 unsloth start 指向运行在别处的 Studio（也可以直接传入 --api-key）：",
+          "在启动前设置以下内容，即可让 unsloth start 指向运行在别处的 Unsloth Studio（也可以直接传入 --api-key）：",
       },
       passthrough: {
         title: "向智能体传递参数",
@@ -1067,7 +1077,7 @@ export const zhCN = {
         exportChat: "导出聊天",
       },
       pastedTextThreshold: "压缩长粘贴内容",
-      pastedTextThresholdDescription: "超过此长度的粘贴文本将变为 .txt 附件，而不会填满消息输入框。",
+      pastedTextThresholdDescription: "超过此长度的粘贴文本将变为 .txt 附件，而不会填满消息输入框。 按 {shortcut} 仍可粘贴到消息输入框。",
       pastedTextThresholdOff: "关闭",
       showResponseModel: "显示回复模型",
       showResponseModelDescription: "在助手回复中显示模型元数据。",
@@ -1084,6 +1094,12 @@ export const zhCN = {
         collapseByDefault: "默认折叠思考过程",
         collapseByDefaultDescription:
           "模型思考时保持折叠，而不是自动展开。需要阅读时展开对应区块。",
+      },
+      webSearch: {
+        title: "网页搜索",
+        images: "显示网页搜索图片",
+        imagesDescription:
+          "让网页搜索返回图片，并为回答中列出的每一项各获取一张。缩略图由 Studio 获取并缩放，浏览器不会直接访问图片来源。",
       },
       artifacts: {
         title: "Canvas",

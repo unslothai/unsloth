@@ -61,9 +61,12 @@ import {
   pasteClipboardFiles,
   extractYoutubeVideoId,
   pasteLongTextAsFile,
+  isPlainPasteChord,
+  plainPasteStillCounts,
   isStudioDictationAvailable,
   notifyStudioDictationUnavailable,
   YoutubeTranscriptPrompt,
+  stripSearchImageTokens,
 } from "@/features/chat";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
@@ -137,9 +140,11 @@ import {
   readIncompleteInfo,
   readTextThoughtSignature,
   claimAutoContinue,
+  forgetAutoContinue,
   recordAutoContinue,
   shouldAutoContinueMessage,
 } from "@/features/chat/utils/continuation";
+import { holdAutoContinueRun } from "@/features/chat/utils/auto-continue-run-keeper";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
 import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
@@ -169,6 +174,8 @@ import {
   registerQueuedChatRunSettings,
   releasePreStreamRunReservation,
   reservePreStreamRun,
+  claimThreadCreation,
+  useChatProjectScope,
   shouldAbortPendingQueueForModelBoundary,
   shouldAbortPendingQueueForSettingsChange,
   snapshotQueuedChatRunSettings,
@@ -2336,8 +2343,36 @@ const Composer: FC<{
     });
   // A pasted YouTube link offers a transcript attachment above the composer.
   const [youtubeLink, setYoutubeLink] = useState<string | null>(null);
+  // Paste without formatting asks for the clipboard in the field, so the paste
+  // it makes stays inline however long it is. A paste event carries no
+  // modifiers, so the chord is read from the keydown before it, and the flag
+  // lasts only as long as the keys are down: the paste is the keydown's own
+  // default action, while a menu the user might reach for instead cannot be
+  // opened without letting go first.
+  const plainPasteAtRef = useRef(0);
+  const notePlainPasteChord = useCallback(
+    (event: KeyboardEvent<HTMLTextAreaElement>) => {
+      plainPasteAtRef.current = isPlainPasteChord(event)
+        ? performance.now()
+        : 0;
+    },
+    [],
+  );
+  // Any release ends it, whichever key of the chord goes first, as does losing
+  // the field. The time cap behind them is for a release that never lands,
+  // which is what tabbing away mid-chord used to leave behind.
+  const endPlainPasteChord = useCallback(() => {
+    plainPasteAtRef.current = 0;
+  }, []);
   const handleFilePaste = useCallback(
     (event: ClipboardEvent<HTMLTextAreaElement>) => {
+      // Read once and cleared here, so a paste with no chord before it, from
+      // the menu or a script, is never taken for the plain one.
+      const plainPaste = plainPasteStillCounts(
+        plainPasteAtRef.current,
+        performance.now(),
+      );
+      plainPasteAtRef.current = 0;
       const pastedText = event.clipboardData?.getData("text/plain") ?? "";
       if (extractYoutubeVideoId(pastedText)) {
         setYoutubeLink(pastedText.trim());
@@ -2359,7 +2394,11 @@ const Composer: FC<{
         if (composer.getState().text !== value) return;
         composer.setText(value.slice(0, selectionStart) + value.slice(selectionEnd));
       };
-      const attachedPastedText = !overlay && pasteGoesLast && pasteLongTextAsFile(
+      const attachedPastedText =
+        !overlay &&
+        !plainPaste &&
+        pasteGoesLast &&
+        pasteLongTextAsFile(
         event,
         async (file) => {
           await aui.composer().addAttachment(file);
@@ -3036,6 +3075,9 @@ const Composer: FC<{
     ({ threadListItem }) => threadListItem.remoteId,
   );
   const referenceThreadId = threadId ?? activeThreadId ?? null;
+  // Read at Send time, so a send that materializes after a project switch is still filed
+  // where it was made.
+  const projectScope = useChatProjectScope();
   const promptQueueThreadIds = compactIds([
     threadListItemId,
     threadListItemRemoteId,
@@ -3497,6 +3539,17 @@ const Composer: FC<{
           }
           shouldCorrectPersistedModel ??= !state.remoteId;
           const initializingFreshThread = !state.remoteId;
+          // Stamp it with what the queue was STARTED under. This path initializes without
+          // going through the composer, and by dispatch time the adapter may be showing a
+          // different project, so the chat was filed wherever the user is now.
+          if (initializingFreshThread) {
+            claimThreadCreation([state.id, state.remoteId], {
+              projectId: projectIdAtQueueStart,
+              incognito: incognitoAtQueueStart,
+              modelId: runSettingsAtQueueStart.params.checkpoint ?? "",
+              createdAt: Date.now(),
+            });
+          }
           // A fresh chat receives its remote id during initialization. Await it
           // before append so the adapter can match the queued settings using
           // unstable_threadId on its first invocation.
@@ -4017,6 +4070,16 @@ const Composer: FC<{
     preStreamRunReservationRef.current = reservationToken;
     try {
       const sentText = aui.composer().getState().text;
+      // Stamp the send BEFORE send() starts awaiting every incomplete attachment: a document
+      // send reaches initialize() seconds later, by which time navigation may have moved the
+      // project and cleared the temporary flag. See utils/chat-thread-creation-claim.ts.
+      const chatStateAtSend = useChatRuntimeStore.getState();
+      claimThreadCreation(preStreamThreadIds, {
+        projectId: projectScope,
+        incognito: chatStateAtSend.incognito,
+        modelId: chatStateAtSend.params.checkpoint ?? "",
+        createdAt: Date.now(),
+      });
       aui.composer().send();
       // Empty texts are dropped, so an attachment-only send still clears.
       armJustSent(sentText, ...alsoGuard);
@@ -4030,7 +4093,7 @@ const Composer: FC<{
           error instanceof Error ? error.message : "Please retry the send.",
       });
     }
-  }, [aui, armJustSent, preStreamThreadIds, referenceThreadId]);
+  }, [aui, armJustSent, preStreamThreadIds, projectScope, referenceThreadId]);
 
   // Gate for both form submit and the Send button. Returns true when it handled
   // the event (blocked or queued) so callers stop.
@@ -4553,6 +4616,10 @@ const Composer: FC<{
               // no effect on Latin / CJK / Devanagari.
               dir="auto"
               {...inputProps}
+              // Capture, so inputProps keeps the handlers it already owns.
+              onKeyDownCapture={notePlainPasteChord}
+              onKeyUpCapture={endPlainPasteChord}
+              onBlurCapture={endPlainPasteChord}
               addAttachmentOnPaste={false}
               onPaste={handleFilePaste}
             />
@@ -6700,9 +6767,7 @@ const ContinueMessageBarForLastMessage: FC = () => {
   const truncation = useAuiState(({ message }) => {
     const custom = (message.metadata as { custom?: Record<string, unknown> } | undefined)
       ?.custom;
-    return (custom?.contextTruncation ?? null) as
-      | { fits?: boolean; prompt_target?: number }
-      | null;
+    return (custom?.contextTruncation ?? null) as ContextTruncation | null;
   });
 
   // Hitting Max Tokens is the reply running out of room mid-sentence, not a decision the
@@ -6712,7 +6777,29 @@ const ContinueMessageBarForLastMessage: FC = () => {
   // arriving at a message the claim below has already taken -- the branch picker back to
   // the truncated sibling, or returning to the chat -- would otherwise show a spinner for
   // a run `claimAutoContinue` refuses to start, on top of the Continue button it hides.
+  //
+  // Another tab won the message. The claim resolves after this component has already
+  // rendered off `shouldAutoContinueMessage`, which cannot see a race the lock decides,
+  // so the answer has to come back as state: without it this tab keeps a spinner for a
+  // run it never started, with the manual Continue button hidden behind it.
+  //
+  // Remembered as the message the answer was decided for, not as a bare flag: rows are
+  // mounted by INDEX (`<MessageByIndexProvider key={index}>` in progressive-messages.tsx),
+  // so selecting a different truncated branch at the same index re-renders THIS component
+  // instead of remounting it. A boolean survived that and suppressed the automatic
+  // continuation of a message no other tab had claimed, for as long as the row lived.
+  // Comparing ids re-answers per message while still refusing the one that really lost.
+  const [heldElsewhereFor, setHeldElsewhereFor] = useState<string | null>(null);
+  const claimHeldElsewhere = heldElsewhereFor === messageId;
+  // The runtime this bar belongs to, so its keeper renews and releases this claim and no
+  // other pane's.
+  // The thread this run will file itself under, which is what the lease belongs to and
+  // what its lifetime is read from. `remoteId`, not `id`: it is the value assistant-ui
+  // passes the adapter as `unstable_threadId` and the key the run appears under in
+  // `runningByThreadId`, and an uninitialized thread has an `id` but no `remoteId`.
+  const runThreadId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
   const autoContinuing =
+    !claimHeldElsewhere &&
     resumable &&
     shouldAutoContinueMessage(messageId, reason, parentId, {
       fits: truncation?.fits,
@@ -6725,21 +6812,80 @@ const ContinueMessageBarForLastMessage: FC = () => {
     if (!autoContinuing || !parentId) {
       return;
     }
-    // Claimed in module scope, not a ref. `<StrictMode>` in src/main.tsx replays this
-    // effect on the same fiber with the same `autoContinuing`, so nothing inside would
-    // have differed, and rechecking the round budget would not help either: one recorded
-    // round still leaves the limit unspent. A ref fixed the replay but not a real
-    // remount, so leaving the chat with a truncated branch selected and returning fired
-    // it again, creating another sibling and another paid request. The claim survives
-    // both, and is the same seam `resetAutoContinue()` clears.
-    if (!claimAutoContinue(messageId)) {
-      return;
-    }
-    // Recorded BEFORE the run, so a round that produces nothing still spends its budget
-    // instead of re-firing this effect forever.
-    recordAutoContinue(parentId);
-    startContinuation();
-  }, [autoContinuing, parentId, messageId, startContinuation]);
+    let mounted = true;
+    // Claimed in module scope, not a ref, and under a cross-tab lock. `<StrictMode>` in
+    // src/main.tsx replays this effect on the same fiber with the same `autoContinuing`,
+    // so nothing inside would have differed, and rechecking the round budget would not
+    // help either: one recorded round still leaves the limit unspent. A ref fixed the
+    // replay but not a real remount, so leaving the chat with a truncated branch selected
+    // and returning fired it again, creating another sibling and another paid request.
+    // A module claim survived both but not a second TAB, which has its own module scope
+    // and its own empty claim; the lease behind this one is shared and settles that.
+    void claimAutoContinue(messageId, runThreadId ?? "").then((claim) => {
+      if (claim === "started") {
+        // Is there still a message to resume? `aui.thread()` follows the SELECTION, not
+        // the thread this bar belongs to, so a chat or branch switch inside the window the
+        // Web Lock is pending leaves `startContinuation` looking at a different list, where
+        // it finds nothing and issues no run at all.
+        //
+        // Asked BEFORE anything is held, because a hold whose run never appears is renewed
+        // forever on purpose -- preflight has no upper bound, so no deadline can separate
+        // "never coming" from "still on its way". A hold taken for a run that was never
+        // issued therefore renews its lease for the life of the tab, and every other tab
+        // reads that lease as live and refuses the message for just as long.
+        //
+        // Not the preflight case, and it cannot become it: this is `startRun` never having
+        // been called, decided synchronously off the same store `startContinuation` reads a
+        // line later in the same tick. A run that HAS been issued and is merely slow to
+        // begin passes here and keeps its hold and its renewals.
+        const stillThere = aui
+          .thread()
+          .getState()
+          .messages.some((message) => message.id === messageId);
+        if (!stillThere) {
+          // Nothing held and nothing recorded, so the lease this claim took runs out its
+          // own TTL -- the same thing a tab that closed mid-claim leaves behind -- and the
+          // turn keeps the round no request was ever made for.
+          //
+          // The claim itself is given back, and only inside this tab: it is what makes
+          // `claimAutoContinue` answer "skipped" for a message it has already continued,
+          // and a message nothing was issued for has not been continued at all. Left in,
+          // returning to this branch found the message skipped for the life of the tab.
+          // The lease stays, so no second tab may start while this one is still deciding.
+          forgetAutoContinue(messageId);
+          return;
+        }
+        // Held for as long as THIS thread's run generates, wherever the user navigates
+        // to meanwhile. The bar cannot hold it itself: the continuation's sibling becomes
+        // the selected branch and unmounts this component almost at once.
+        holdAutoContinueRun(messageId, runThreadId);
+        // Started whether or not this component is still mounted: the run belongs to the
+        // thread, not to the bar, and a claim taken and then dropped would leave the
+        // message continued by nobody.
+        //
+        // Recorded BEFORE the run, so a round that produces nothing still spends its
+        // budget instead of re-firing this effect forever.
+        recordAutoContinue(parentId);
+        startContinuation();
+        return;
+      }
+      // `skipped` is this tab's own duplicate call, where the run is coming from the
+      // other one and nothing on screen should move.
+      if (claim === "held-elsewhere" && mounted) {
+        setHeldElsewhereFor(messageId);
+      }
+    });
+    return () => {
+      mounted = false;
+    };
+  }, [
+    aui,
+    autoContinuing,
+    parentId,
+    messageId,
+    startContinuation,
+    runThreadId,
+  ]);
 
   // Newest turn only: appending to an older one would strand the replies after it.
   // A turn cut mid-thought has no text to resume from, so Retry stays the way out.
@@ -7513,7 +7659,9 @@ const CopyButton: FC = () => {
   const handleCopy = async () => {
     // getCopyText reads content only, and a long paste sits in an attachment.
     const pasted = attachmentsPastedText(aui.message().getState().attachments);
-    const text = [aui.message().getCopyText(), pasted]
+    // The image tokens are renderer markup, not prose: strip them or the clipboard
+    // gets `[[img:0123456789ab]]` where the picture was.
+    const text = [stripSearchImageTokens(aui.message().getCopyText()), pasted]
       .filter((part) => part.length > 0)
       .join("\n\n");
     if (await copyToClipboard(text)) {
@@ -7566,7 +7714,9 @@ const EditAssistantMessageButton: FC = () => {
 async function exportMessageMarkdown(content: string): Promise<void> {
   try {
     await downloadFile(
-      content,
+      // Same rule as the copy button and the whole-chat export: the tokens are
+      // renderer markup, so a saved answer must not carry them as prose.
+      stripSearchImageTokens(content),
       `message-${Date.now()}.md`,
       "text/markdown",
     );
@@ -7692,9 +7842,13 @@ const AssistantActionBar: FC = () => {
                   // reasoning, tool calls and citations would be dropped and a
                   // tool-only reply would read as empty. Same conversion the
                   // whole-chat save runs.
-                  const text = replySourceMarkdown(
-                    aui.message().getState().content,
-                    toolResultModelText,
+                  // Stripped: a project source is retrieved back into context, so
+                  // saved tokens would teach the model ids that resolve to nothing.
+                  const text = stripSearchImageTokens(
+                    replySourceMarkdown(
+                      aui.message().getState().content,
+                      toolResultModelText,
+                    ),
                   );
                   if (!text.trim()) {
                     toast.info("No content to save.");

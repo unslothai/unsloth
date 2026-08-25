@@ -65,6 +65,15 @@ import type {
   Terminal,
 } from "./download-manager-types";
 import {
+  XET_NOTICE_DESCRIPTION,
+  XET_NOTICE_DESCRIPTION_CLASS,
+  XET_NOTICE_DURATION_MS,
+  XET_NOTICE_TITLE,
+  reserveXetNotice,
+  shouldShowXetNotice,
+  xetNoticesShown,
+} from "./xet-progress-notice";
+import {
   getState,
   hasActiveRepoPeer,
   isCurrent,
@@ -181,6 +190,7 @@ function markPollFailure(key: string, rt: JobRuntime): void {
   patchJob(key, {
     error: POLL_DEGRADED_MESSAGE,
     bytesPerSec: 0,
+    etaSeconds: 0,
   });
 }
 
@@ -216,12 +226,18 @@ export function finalize(
       completedBytes: bytes,
       completeOnDisk: true,
       bytesPerSec: 0,
+      etaSeconds: 0,
       error: null,
     });
     notify(job, "onComplete", bytes);
     scheduleRemoval(key, COMPLETE_LINGER_MS);
   } else if (outcome === "cancelled") {
-    patchJob(key, { state: "cancelled", bytesPerSec: 0, error: null });
+    patchJob(key, {
+      state: "cancelled",
+      bytesPerSec: 0,
+      etaSeconds: 0,
+      error: null,
+    });
     notify(job, "onCancelled", 0);
     scheduleRemoval(key, CANCELLED_LINGER_MS);
   } else {
@@ -234,6 +250,7 @@ export function finalize(
       error:
         opts.error === null ? null : (pollAccessErrorMessage(rawError) ?? rawError),
       bytesPerSec: 0,
+      etaSeconds: 0,
     });
     notify(job, "onError", 0);
     scheduleRemoval(key, ERROR_LINGER_MS);
@@ -316,10 +333,13 @@ function applySpeedSample(
   downloadedBytes: number,
   expectedBytes: number,
   nowMs: number,
-): number {
+): { bytesPerSec: number; etaSeconds: number } {
   appendSample(rt.speedSamples, nowMs / 1000, downloadedBytes);
   const stats = computeTransferStats(rt.speedSamples, expectedBytes);
-  return stats.stable ? stats.rateBytesPerSecond : 0;
+  return {
+    bytesPerSec: stats.stable ? stats.rateBytesPerSecond : 0,
+    etaSeconds: stats.stable ? stats.etaSeconds : 0,
+  };
 }
 
 function reconcileProgressAndSpeed(
@@ -340,7 +360,13 @@ function reconcileProgressAndSpeed(
   } = resolveProgressUpdate(current, progressResp, {
     resetMonotonic: generationChanged,
   });
-  const bytesPerSec = applySpeedSample(rt, downloadedBytes, expected, Date.now());
+  if (generationChanged) {
+    // Another server owns this transfer now, so the old samples describe a
+    // different run. The counter cannot say so: a restart resumes from the
+    // same cache and never goes backwards for appendSample to catch.
+    rt.speedSamples.length = 0;
+  }
+  const speed = applySpeedSample(rt, downloadedBytes, expected, Date.now());
   patchJob(key, {
     expectedBytes: expected,
     downloadedBytes,
@@ -348,7 +374,8 @@ function reconcileProgressAndSpeed(
     completedBytes,
     completeOnDisk,
     fraction,
-    bytesPerSec,
+    bytesPerSec: speed.bytesPerSec,
+    etaSeconds: speed.etaSeconds,
   });
   markPollSuccess(key, rt);
   return { madeProgress };
@@ -413,7 +440,12 @@ async function tick(key: string): Promise<void> {
     );
     if (!isCurrent(key, epoch)) return;
 
-    const generationChanged = syncServerGeneration(key, job, status);
+    // syncServerGeneration persists the new generation immediately, so a change
+    // seen on a tick that returns before the progress path would look unchanged
+    // on the next one. Hold it until a progress poll actually consumes it.
+    if (syncServerGeneration(key, job, status)) {
+      rt.pendingGenerationChange = true;
+    }
 
     const terminalKind = terminalKindFromState(status.state);
     if (terminalKind !== null) {
@@ -444,6 +476,8 @@ async function tick(key: string): Promise<void> {
     const current = getState().jobs[key];
     if (!current) return;
 
+    const generationChanged = rt.pendingGenerationChange === true;
+    rt.pendingGenerationChange = false;
     const { madeProgress } = reconcileProgressAndSpeed(
       rt,
       key,
@@ -636,6 +670,7 @@ export async function startJob(
     kind: req.kind,
     repoId: req.repoId,
     variant: req.variant,
+    etaSeconds: 0,
     state: adoptingCancel ? "cancelling" : "running",
     downloadedBytes: seedDownloaded,
     completedBytes: seedCompleted,
@@ -699,6 +734,29 @@ export async function startJob(
     }
     const started = transportAfterStart(mode, result.transport);
     if (started !== activeTransport) patchJob(key, { transport: started });
+    // Explain the 0%-then-done shape of a Xet transfer, for the first few only.
+    if (
+      shouldShowXetNotice({
+        kind: req.kind,
+        transport: started,
+        attached: result.attached === true,
+        // A cancel can land while this start is in flight, and the reissue
+        // above is the giveaway. Do not promise a download that is stopping.
+        live: result.state === "running" && !rt.cancelRequested,
+        shown: xetNoticesShown(),
+      })
+    ) {
+      // Reserving is async (a cross-tab lock), and nothing below waits on a
+      // toast, so let the download get on with it.
+      void reserveXetNotice().then((reserved) => {
+        if (!reserved) return;
+        toast.info(XET_NOTICE_TITLE, {
+          description: XET_NOTICE_DESCRIPTION,
+          duration: XET_NOTICE_DURATION_MS,
+          classNames: { description: XET_NOTICE_DESCRIPTION_CLASS },
+        });
+      });
+    }
     // An adopted job can already have fallen back from Xet to HTTP, which
     // keeps its original cancel marker and so its stop control.
     if (isResolvedTransport(result.cancel_transport)) {

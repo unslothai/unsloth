@@ -120,6 +120,8 @@ export {
   releasePreStreamRunReservation,
   reservePreStreamRun,
 } from "./utils/pre-stream-run-reservation";
+export { claimThreadCreation } from "./utils/chat-thread-creation-claim";
+export { useChatProjectScope } from "./chat-project-scope";
 // Audio swaps the same llama-server Chat decodes on, so it needs the same confirmation.
 export {
   confirmStopRunningChatsIfNeeded,
@@ -193,6 +195,12 @@ export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
 export { offerToDeleteKeptSandboxes } from "./utils/offer-kept-sandbox-files";
 export { pasteClipboardFiles } from "./utils/clipboard-files";
 export { extractYoutubeVideoId } from "./utils/youtube-url";
+export {
+  isSearchImagesToolResult,
+  searchImagePath,
+  stripSearchImageTokens,
+  type SearchImageEntry,
+} from "./search-images/search-images";
 export { YoutubeTranscriptPrompt } from "./components/youtube-transcript-prompt";
 export {
   formatMcpToolName,
@@ -205,7 +213,9 @@ export {
   createPastedTextFile,
   isPastedTextContent,
   isPastedTextFile,
+  isPlainPasteChord,
   pasteLongTextAsFile,
+  plainPasteStillCounts,
   pastedTextContentBytes,
   pastedTextContentPreview,
   pastedTextOf,
@@ -340,5 +350,7 @@ export {
   StudioSpeechSynthesisAdapter,
   createConfiguredUtterance,
   curateSystemVoices,
+  generateCustomTtsAudio,
   generateStudioTtsAudio,
+  releaseTtsAudioUrl,
 } from "./adapters/studio-speech-synthesis-adapter";

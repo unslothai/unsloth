@@ -5,18 +5,21 @@
 
 /* eslint-disable react-refresh/only-export-components */
 
-import { MarkdownText } from "@/components/assistant-ui/markdown-text";
+import {
+  MarkdownText,
+  SearchImagesEnabledContext,
+} from "@/components/assistant-ui/markdown-text";
 
 import { createReasoningScrollPin } from "@/components/assistant-ui/reasoning-scroll-pin";
+import {
+  GRID_COLLAPSE_REASONING_ENABLED,
+  REASONING_PAGINATION_ENABLED,
+} from "@/components/assistant-ui/thread-feature-flags";
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import {
-  GRID_COLLAPSE_REASONING_ENABLED,
-  REASONING_PAGINATION_ENABLED,
-} from "@/components/assistant-ui/thread-feature-flags";
 import {
   CLOSE_FALLBACK_MARGIN_MS,
   UnmeasuredCollapsible,
@@ -336,10 +339,12 @@ function ReasoningText({
 }
 
 const ReasoningImpl: ReasoningMessagePartComponent = () => (
-  <MarkdownText
-    codeHighlighting="plain"
-    paginateReasoning={REASONING_PAGINATION_ENABLED}
-  />
+  <SearchImagesEnabledContext.Provider value={false}>
+    <MarkdownText
+      codeHighlighting="plain"
+      paginateReasoning={REASONING_PAGINATION_ENABLED}
+    />
+  </SearchImagesEnabledContext.Provider>
 );
 
 const COPY_RESET_MS = 2000;
