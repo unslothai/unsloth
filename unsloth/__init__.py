@@ -1527,9 +1527,16 @@ if _IS_MLX:
     _install_mlx_unsloth_trainer_shim()
 
 else:
-    # GPU path: load everything from _gpu_init
-    from ._gpu_init import *
-    from ._gpu_init import __version__
+    # GPU startup probes can invoke driver/system utilities whose output is not
+    # valid UTF-8 (notably under WSL). A malformed diagnostic byte must not make
+    # the package itself unimportable. Keep the relaxed decoding scoped to the
+    # backend import and preserve explicit subprocess error policies.
+    from ._subprocess_encoding import replace_invalid_subprocess_text as _safe_probe_text
+    with _safe_probe_text():
+        # GPU path: load everything from _gpu_init
+        from ._gpu_init import *
+        from ._gpu_init import __version__
+    del _safe_probe_text
 
     def get_gpu_memory_stats():
         """Return CUDA/ROCm/XPU device stats, peak memory, and total memory in GiB."""
