@@ -43,10 +43,14 @@ _SLOW_DETECT_S = 10.0
 # lazy imports inside health_check, the anyio threadpool the auth dependency hops onto,
 # and TestClient's portal. Timing the first-ever call charged all of that to the
 # endpoint. The fix is to warm the app first, not to widen the number: measured after a
-# warm call, the request is 1.012-1.013s idle and 1.034-1.045s pinned to two CPUs under
-# six spinners, so it moves by about 35ms across a 6x change in load, against the 630ms
-# it moved before. The variance goes where it belongs, into the warm call, which went
-# from 0.009s to 0.063s over the same range.
+# warm call, the request is 1.011-1.012s idle and 1.027-1.038s pinned to two CPUs under
+# six spinners, so it moves by about 27ms across a 6x change in load, against the 630ms
+# it moved before. The variance goes where it belongs, into the warm call.
+#
+# The portal is the one of those three that a warm request does not warm on its own: a
+# TestClient outside its context manager builds a fresh one per request. Measured, that
+# is 3.4ms idle and 3-33ms loaded, so it was never what made this flaky, but it is real
+# and it is now excluded by entering the client rather than by being tolerated.
 #
 # 0.5s of headroom against a post-warm overhead of ~45ms is roughly 11x, and leaves the
 # ceiling at 1.5s, comfortably inside the 2s the launcher allows.
@@ -120,7 +124,7 @@ def test_the_budget_stays_under_the_desktop_probe_timeout():
 
 
 _SNIPPET = r"""
-import asyncio, json, os, sys, threading, time
+import asyncio, contextlib, json, os, sys, threading, time
 
 # UNSLOTH_STUDIO_DISABLE_TORCH_WARM is deliberately NOT set here. It used to be,
 # to keep a real warm out of the way, but nothing below runs the lifespan -- the
@@ -158,18 +162,25 @@ hw.ensure_hardware_detected = slow_detect
 
 app = FastAPI()
 app.add_api_route("/api/health", main.health_check, methods = ["GET"])
-client = TestClient(app)
+
+# Entered, not just constructed. A TestClient used outside its context manager has
+# self.portal unset, and _portal_factory then starts and tears down a fresh blocking
+# portal for EVERY request, so warming one request does not warm the next one's portal.
+# Entering it once sets self.portal and both requests share it. ExitStack rather than a
+# with-block only to keep this snippet flat; it is held open for the whole process.
+_stack = contextlib.ExitStack()
+client = _stack.enter_context(TestClient(app))
 
 # Warm first, with detection already settled so this call returns at once. It pays the
 # one-time costs that are not part of what is being measured: the lazy imports inside
-# health_check, the anyio threadpool the auth dependency hops onto, and TestClient's
-# portal. Timing the first-ever call folds those into the result, and they are the only
-# part of it that moves on a loaded runner, which is what made this assertion flaky.
+# health_check and the anyio threadpool the auth dependency hops onto. Timing the
+# first-ever call folds those into the result, and they are the only part of it that
+# moves on a loaded runner, which is what made this assertion flaky.
 hw.DEVICE = hw.DeviceType.CUDA
 hw.CHAT_ONLY = False
 hw.DETECTION_COMPLETE.set()
 warm_started = time.perf_counter()
-client.get("/api/health")
+warm_body = client.get("/api/health").json()
 warm_cost = time.perf_counter() - warm_started
 
 # Back to "detection has not run", now that the machinery around it is warm.
@@ -198,6 +209,13 @@ print("RESULT" + json.dumps({
     "status": response.status_code,
     "elapsed": elapsed,
     "warm_cost": warm_cost,
+    # State, not duration: health only omits this when detection is settled, so a warm
+    # call that had to wait would carry it as True.
+    "warm_hardware_detecting": warm_body.get("hardware_detecting"),
+    # TestClient.portal is None until the client is entered, and _portal_factory then
+    # builds a throwaway portal per request. Non-None means both calls shared one, which
+    # is the only thing that makes the warm call warm the portal as well.
+    "portal_shared": client.portal is not None,
     "chat_only": body.get("chat_only"),
     "hardware_detecting": body.get("hardware_detecting"),
     "authed_has_device_type": "device_type" in authed,
@@ -310,11 +328,21 @@ def test_health_answers_within_the_budget_while_detection_is_slow():
     result = _probe(_SLOW_DETECT_S)
 
     assert result["status"] == 200
-    # The one-time setup is charged to the warm call, not to this one. If that stops
-    # being true the number below stops meaning what it says, so check it here.
-    assert result["warm_cost"] < budget / 2, (
-        f"the warm call took {result['warm_cost']:.2f}s, so it waited on detection "
-        "rather than warming; the timed request below is measuring setup again"
+    # The warm call has to have taken the settled path, or the timed request below is
+    # measuring setup again. Asserted on STATE rather than on its duration: health omits
+    # hardware_detecting only when detection is complete, so a warm call that waited
+    # would carry it as True. A duration check here would be the same subsecond
+    # wall-clock ceiling this change exists to remove, on the same contended runners,
+    # and it would say nothing about whether the call waited, since DETECTION_COMPLETE
+    # is set before it. warm_cost is reported for the failure message, never asserted.
+    assert result["portal_shared"], (
+        "the TestClient was not entered, so _portal_factory built a separate blocking "
+        "portal for each request and the warm call did not warm the timed one's portal"
+    )
+    assert result["warm_hardware_detecting"] is not True, (
+        f"the warm call got a provisional reply (it took {result['warm_cost']:.2f}s), so "
+        "it waited on detection rather than warming, and the timed request below is "
+        "measuring one-time setup again"
     )
     assert result["elapsed"] < ceiling, (
         f"/api/health took {result['elapsed']:.2f}s with detection still running; the "
