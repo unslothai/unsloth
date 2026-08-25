@@ -13,7 +13,13 @@ register("./helpers/toast-resolver.mjs", import.meta.url);
 let route = "/chat";
 Object.defineProperty(globalThis, "window", {
   configurable: true,
-  value: { location: { get pathname() { return route; } } },
+  value: {
+    location: {
+      get pathname() {
+        return route;
+      },
+    },
+  },
 });
 
 const { calls } = await import("./helpers/toast-stub.mjs");
@@ -23,9 +29,7 @@ const {
   showCallerToast,
   showStartToast,
   startToastId,
-} = await import(
-  "../src/features/hub/download-manager/start-toast.ts"
-);
+} = await import("../src/features/hub/download-manager/start-toast.ts");
 
 function reset(at = "/chat") {
   calls.length = 0;
@@ -34,16 +38,26 @@ function reset(at = "/chat") {
   calls.length = 0;
 }
 
-const MESSAGE = { title: "Download is running", description: "Nothing is stuck." };
+// Compared through a copy, never `calls` itself: node's assert types are `asserts
+// actual is T`, so `deepEqual(calls, [])` narrows the shared array to never[] and every
+// later read of it fails to typecheck.
+function raised() {
+  return calls.slice();
+}
+
+const MESSAGE = {
+  title: "Download is running",
+  description: "Nothing is stuck.",
+};
 
 test("a start toast is keyed on its job so finalize can drop it", () => {
   reset();
   showStartToast("model:repo:q4", MESSAGE);
   assert.equal(calls[0].kind, "info");
-  assert.equal(calls[0].options.id, startToastId("model:repo:q4"));
+  assert.equal(calls[0].options?.id, startToastId("model:repo:q4"));
 
   dismissStartToast("model:repo:q4");
-  assert.deepEqual(calls[1], {
+  assert.deepEqual(raised()[1], {
     kind: "dismiss",
     id: startToastId("model:repo:q4"),
   });
@@ -58,7 +72,7 @@ test("leaving the surface that raised it drops it", () => {
 
   route = "/hub";
   dismissStartToasts();
-  assert.deepEqual(calls, [
+  assert.deepEqual(raised(), [
     { kind: "dismiss", id: startToastId("model:repo:q4") },
   ]);
 
@@ -66,7 +80,23 @@ test("leaving the surface that raised it drops it", () => {
   calls.length = 0;
   route = "/settings";
   dismissStartToasts();
-  assert.deepEqual(calls, []);
+  assert.deepEqual(raised(), []);
+});
+
+test("a raise that lands after the user left is dropped", () => {
+  // The Xet reservation is a round trip, so the raise can happen after navigation.
+  // The route-change sweep has already run by then, and recording the destination
+  // as the origin would leave the composed form on the hub toolbar for its full 8s.
+  reset("/chat");
+  const startedOn = "/chat";
+  route = "/hub";
+  showStartToast("model:repo:q4", MESSAGE, startedOn);
+  assert.deepEqual(raised(), []);
+
+  // And it is not resurrected by going back.
+  route = "/chat";
+  dismissStartToasts();
+  assert.deepEqual(raised(), []);
 });
 
 test("a toast raised on the route it landed on stays", () => {
@@ -77,7 +107,7 @@ test("a toast raised on the route it landed on stays", () => {
   calls.length = 0;
 
   dismissStartToasts();
-  assert.deepEqual(calls, []);
+  assert.deepEqual(raised(), []);
 });
 
 test("a noticeOnly caller is folded in or not shown at all", () => {
@@ -90,7 +120,7 @@ test("a noticeOnly caller is folded in or not shown at all", () => {
     description: "It'll load automatically once the download finishes.",
     noticeOnly: true,
   });
-  assert.deepEqual(calls, []);
+  assert.deepEqual(raised(), []);
 
   showCallerToast("model:repo:q4", {
     title: "Downloading in the background",
@@ -103,5 +133,5 @@ test("a noticeOnly caller is folded in or not shown at all", () => {
 test("a caller with nothing to say is silent", () => {
   reset();
   showCallerToast("model:repo:q4", undefined);
-  assert.deepEqual(calls, []);
+  assert.deepEqual(raised(), []);
 });

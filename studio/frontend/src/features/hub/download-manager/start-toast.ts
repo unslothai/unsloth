@@ -30,15 +30,22 @@ export function startToastId(jobKey: string): string {
 // then belongs to where it landed, and blanket dismissal would take it back out.
 const liveStartToasts = new Map<string, string>();
 
-function currentRoute(): string {
+/** The route to hold a start against. Capture it when the start begins, not when
+ * the toast is raised: the Xet reservation is a round trip, so a raise can land
+ * after the user has already navigated. */
+export function currentRoute(): string {
   return typeof window === "undefined" ? "" : window.location.pathname;
 }
 
 export function showStartToast(
   jobKey: string,
   message: { title: string; description: string },
+  originRoute: string = currentRoute(),
 ): void {
-  liveStartToasts.set(startToastId(jobKey), currentRoute());
+  // Raised late and the surface is gone: the route-change sweep has already been
+  // and gone, so this would sit on the new page for its full 8s.
+  if (originRoute !== currentRoute()) return;
+  liveStartToasts.set(startToastId(jobKey), originRoute);
   toast.info(message.title, {
     id: startToastId(jobKey),
     description: message.description,
@@ -53,9 +60,10 @@ export function showStartToast(
 export function showCallerToast(
   jobKey: string,
   message: CallerToast | undefined,
+  originRoute?: string,
 ): void {
   if (!message || message.noticeOnly) return;
-  showStartToast(jobKey, message);
+  showStartToast(jobKey, message, originRoute);
 }
 
 /** Drop the start toast once the transfer is over. Safe for a job that never raised

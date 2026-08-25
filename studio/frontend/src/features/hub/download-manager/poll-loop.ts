@@ -71,6 +71,7 @@ import {
 } from "./xet-progress-notice";
 import { reserveXetNoticeFromServer } from "@/features/settings/api/xet-notice";
 import {
+  currentRoute,
   dismissStartToast,
   showCallerToast,
   showStartToast,
@@ -744,6 +745,10 @@ export async function startJob(
     // A cancel can land while this start is in flight, and the reissue above is
     // the giveaway. Neither message is true of a start that is already stopping.
     const stopping = rt.cancelRequested;
+    // The surface this start belongs to, taken now rather than when the toast is
+    // raised: the reservation below is a round trip, and a raise that lands after
+    // the user has navigated would otherwise claim the page they moved to.
+    const startRoute = currentRoute();
     if (
       shouldShowXetNotice({
         kind: req.kind,
@@ -761,16 +766,20 @@ export async function startJob(
         // job on the same key the old request's message.
         if (!isCurrent(key, epoch) || rt.cancelRequested) return;
         if (granted) {
-          showStartToast(key, {
-            title: XET_NOTICE_TITLE,
-            description: composeNoticeDescription(req.callerToast),
-          });
+          showStartToast(
+            key,
+            {
+              title: XET_NOTICE_TITLE,
+              description: composeNoticeDescription(req.callerToast),
+            },
+            startRoute,
+          );
           return;
         }
-        showCallerToast(key, req.callerToast);
+        showCallerToast(key, req.callerToast, startRoute);
       });
     } else if (!stopping) {
-      showCallerToast(key, req.callerToast);
+      showCallerToast(key, req.callerToast, startRoute);
     }
     // An adopted job can already have fallen back from Xet to HTTP, which
     // keeps its original cancel marker and so its stop control.

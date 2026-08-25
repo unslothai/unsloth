@@ -10,8 +10,10 @@ export const toast = Object.assign(
   {
     info: (title, options) => calls.push({ kind: "info", title, options }),
     error: (title, options) => calls.push({ kind: "error", title, options }),
-    warning: (title, options) => calls.push({ kind: "warning", title, options }),
-    success: (title, options) => calls.push({ kind: "success", title, options }),
+    warning: (title, options) =>
+      calls.push({ kind: "warning", title, options }),
+    success: (title, options) =>
+      calls.push({ kind: "success", title, options }),
     dismiss: (id) => calls.push({ kind: "dismiss", id }),
   },
 );

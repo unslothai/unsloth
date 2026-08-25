@@ -49,7 +49,7 @@ export {
   type StagedDownloadEntry,
 } from "./use-staged-download";
 export { scopedVariant } from "./download-manager-types";
-export { dismissStartToasts } from "./start-toast";
+export { dismissStartToast, dismissStartToasts } from "./start-toast";
 export {
   getTransportMode,
   useDownloadTransportCapabilities,

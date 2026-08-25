@@ -57,7 +57,9 @@ import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
 import { useIsMobile } from "@/hooks/use-mobile";
 import {
   DOWNLOAD_KIND,
+  dismissStartToast,
   downloadManager,
+  jobKeyOf,
   useRepoDownload,
 } from "@/features/hub/download-manager";
 import {
@@ -2900,6 +2902,16 @@ export function ChatPage({
     })();
     return () => {
       active = false;
+      // This selection is no longer the pending auto-load: the user picked another
+      // model, so its completion loads nothing. Drop the toast still saying it will.
+      // A no-op once the download itself finished, which dismisses the same id.
+      dismissStartToast(
+        jobKeyOf(
+          DOWNLOAD_KIND.MODEL,
+          pending.selection.id,
+          pending.selection.ggufVariant ?? null,
+        ),
+      );
     };
   }, [pendingHubAutoLoad]);
   const loadNativeModelIntent = useCallback(
