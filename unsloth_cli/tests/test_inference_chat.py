@@ -2360,12 +2360,10 @@ def test_catalog_hands_a_cached_gguf_pick_a_local_file(monkeypatch, tmp_path):
 
 
 def test_catalog_payload_gate_accepts_an_uppercase_gguf_suffix(tmp_path):
-    """``_is_main_gguf_filename`` lowercases before testing the suffix; ``glob("*.gguf")``
-    does not, and is case-sensitive on Linux and on a case-sensitive macOS volume. A folder
-    holding ``Model.GGUF`` is a loadable GGUF model by the shared classifier and by the
-    loader, but the glob matched nothing and ``_is_model_directory`` is False for a
-    GGUF-only folder, so this gate dropped it -- and this gate decides whether the row is
-    listed at all."""
+    """``glob("*.gguf")`` is case-sensitive on Linux and on a case-sensitive macOS volume
+    while ``_is_main_gguf_filename`` lowercases first, so a folder holding ``Model.GGUF``
+    was classified as a GGUF model and then dropped by this gate, which decides whether the
+    row is listed at all."""
     from unsloth_cli._inference import ensure_studio_backend_path
     from unsloth_cli import _model_catalog as cat
 
@@ -2377,10 +2375,9 @@ def test_catalog_payload_gate_accepts_an_uppercase_gguf_suffix(tmp_path):
 
 
 def test_catalog_local_gguf_folder_picks_the_preferred_quant(monkeypatch, tmp_path):
-    """A GGUF DIRECTORY handed to the resolver is picked apart by detect_gguf_model, which
-    sorts by size and takes the largest complete file -- commonly the F16. Cached and
-    exported rows resolve through _preferred_complete_gguf and land on a Q4-class quant, so
-    the same folder loaded a far bigger model depending only on which source listed it."""
+    """A GGUF DIRECTORY goes through detect_gguf_model, which sorts by size and takes the
+    largest complete file, commonly the F16, while cached and exported rows resolve a
+    Q4-class quant: the same folder loaded a far bigger model by source alone."""
     from unsloth_cli import _model_catalog as cat
 
     folder = tmp_path / "multi"
@@ -2411,12 +2408,11 @@ def test_catalog_local_gguf_folder_picks_the_preferred_quant(monkeypatch, tmp_pa
 
 
 def test_catalog_pins_an_active_cache_adapter_to_its_snapshot(tmp_path):
-    """Resolving a LoRA by bare repo id takes the REMOTE branch of
-    get_base_model_from_lora_identifier, which probes the Hub and calls hf_hub_download for
-    adapter_config.json with no local_files_only. For a cached gated adapter with no token
-    that fails and the base is never read, so a row the picker advertised as local yields no
-    model configuration. A snapshot path makes is_local_path true and takes the local
-    reader. An ordinary cached repo is deliberately left on its id."""
+    """A LoRA resolved by bare repo id takes the REMOTE branch of
+    get_base_model_from_lora_identifier, which downloads adapter_config.json with no
+    local_files_only; for a cached gated adapter with no token that fails and the base is
+    never read. A snapshot path takes the local reader. An ordinary cached repo is
+    deliberately left on its id."""
     from unsloth_cli import _model_catalog as cat
 
     repo = tmp_path / "models--Org--GatedLora"

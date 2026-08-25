@@ -386,22 +386,18 @@ def _base_transformers_can_chat(
     except (OSError, RuntimeError, ValueError):
         return None
 
-    # The root the ADAPTER was found in comes first, then the active root, then the configured
-    # ones. The scan covers legacy, default and previously configured roots, so an adapter can
-    # be listed from a root that is not active -- and its base is then cached in that same root,
-    # which is why the adapter's own root is the reliable probe and `known_hf_hub_caches()`
-    # alone is not (it lists only registered roots). Probing just the active root returned None
-    # there, and None is inconclusive, which leaves the adapter chat-capable: a Whisper or
-    # encoder LoRA reached the chat picker.
+    # The adapter's own root first, then the active root, then the configured ones. The scan
+    # covers legacy and previously configured roots, so an adapter can be listed from an
+    # inactive root with its base cached beside it; the active root alone answered None there,
+    # and None is inconclusive, which left a Whisper or encoder LoRA in the chat picker.
     try:
         from huggingface_hub import try_to_load_from_cache
     except Exception:
         return None
 
-    # Each source is collected independently. Gathering them under one try meant a failure
-    # while enumerating the OPTIONAL extra roots discarded the adapter's own root too, and the
-    # answer came back None -- inconclusive, which re-admits the adapter to the chat picker.
-    # That is the same fail-open shape this function exists to close.
+    # Each source collected independently: under one try, a failure enumerating the OPTIONAL
+    # extra roots discarded the adapter's own root too and answered None, the same fail-open
+    # this function exists to close.
     roots: list[Path] = []
 
     def _add(root: Optional[Path]) -> None:

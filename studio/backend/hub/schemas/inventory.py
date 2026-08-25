@@ -269,10 +269,9 @@ class CachedModelRepo(CachedRepoBase):
     # never a pick on ANY page. It still gets a row, because these run to tens of GB and the row
     # is how they are seen and deleted; the pickers filter on this instead.
     companion: bool = False
-    # True when the SELECTED revision is a diffusers pipeline. An untrusted or unrecognised one
-    # carries no task, and its pipeline root has no config for can_chat to read, so this flag is
-    # the only thing that keeps it out of a chat picker. Declared because the scanner already
-    # emits it and response_model drops any key that is not on the schema, which left the CLI
+    # True when the SELECTED revision is a diffusers pipeline. An unrecognised one carries no
+    # task and no root config for can_chat, so this flag is all that keeps it out of a chat
+    # picker. Declared because response_model drops undeclared keys, which left the CLI
     # (reading the dict in-process) and the frontend disagreeing about the same row.
     diffusers: bool = False
 

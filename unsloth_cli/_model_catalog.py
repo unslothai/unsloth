@@ -137,24 +137,19 @@ def exported_entries() -> List[ModelEntry]:
         if export_type == "gguf" and _gguf_export_task(path, name, base) in NON_CHAT_TASKS:
             continue
         if export_type == "gguf":
-            # No complete quant means every candidate is zero-byte or short a shard, and the
-            # old fallback to `path` offered exactly that; it survives resolve_model_config()
-            # and only fails at load time. Drop it only once the payload is positively
-            # unloadable: _preferred_complete_gguf swallows every exception, so a bare falsy
-            # result also covers "could not tell", and hiding a real export on a transient
-            # read is worse than listing it.
+            # No complete quant means every candidate is zero-byte or short a shard, which
+            # survives resolve_model_config() and fails only at load time. Drop it only when
+            # positively unloadable: a falsy result also means "could not tell", and hiding a
+            # real export on a transient read is worse than listing it.
             load_id = _preferred_complete_gguf(path)
             if not load_id and not _local_dir_holds_a_payload(Path(path)):
                 continue
         else:
             load_id = None
-            # Positively loadable, not merely "not torn", which is what the local-folder branch
-            # already asks. scan_exported_models types a checkpoint as "lora" on
-            # adapter_config.json alone (the merged branch checks has_weights, the LoRA one does
-            # not), so an interrupted export leaves a config with no adapter_model.safetensors
-            # or .bin. Nothing is torn there because there is no payload at all, so the negative
-            # check passed it through and the picker offered a directory PEFT cannot load:
-            # load_peft_weights finds neither weight name locally and raises ValueError.
+            # Positively loadable, not merely "not torn". scan_exported_models types a
+            # checkpoint as "lora" on adapter_config.json alone, so an interrupted export
+            # leaves a config and no weights: nothing torn because there is no payload, and
+            # the picker offered a directory load_peft_weights raises ValueError on.
             if not _local_dir_holds_a_payload(Path(path)):
                 continue
         entries.append(ModelEntry("Fine-tunes", name, export_type, load_id or path))
@@ -261,11 +256,10 @@ def _cached_gguf_load_id(row: dict) -> str:
     """A concrete local GGUF for a cached row, falling back to the identifier it came with.
 
     An inactive-cache row already carries a snapshot path, so this resolves the quant inside it.
-    An ACTIVE-cache row carries the bare repo id -- correct for the inventory, which does not
-    want to pin a live repo, and wrong for a picker: from_identifier() sends a non-path through
-    detect_gguf_model_remote(), whose GatedRepoError branch is treated as permanent and returns
-    None WITHOUT the local-cache fallback it uses when offline. A gated or private repo whose
-    GGUF is fully downloaded then reads as non-GGUF and falls through to the Transformers
+    An ACTIVE-cache row carries the bare repo id, which is right for the inventory and wrong
+    for a picker: from_identifier() sends a non-path through detect_gguf_model_remote(), whose
+    GatedRepoError branch is permanent and returns None without the offline local-cache
+    fallback, so a fully downloaded gated GGUF reads as non-GGUF and hits the Transformers
     loader. Resolving the on-disk file keeps the pick on the weights the row was listed for.
     """
     load_id = row.get("load_id") or row["repo_id"]
@@ -336,8 +330,8 @@ def cached_entries() -> List[ModelEntry]:
         # A cached embedding/CLIP repo has task None like any chat repo; can_chat is the gate.
         if row.get("capabilities", {}).get("can_chat") is False:
             continue
-        # An untrusted or unrecognised diffusion repo carries no task either, and its pipeline
-        # root has no config for can_chat to read, so neither of the gates above catches it.
+        # A diffusion repo also carries no task, and its pipeline root has no config for
+        # can_chat to read, so neither gate above catches it.
         if row.get("diffusers"):
             continue
         entries.append(ModelEntry("Downloaded", row["repo_id"], "", _cached_model_load_id(row)))
@@ -347,15 +341,14 @@ def cached_entries() -> List[ModelEntry]:
 def _cached_model_load_id(row: dict) -> str:
     """Load target for a cached non-GGUF row; a local snapshot for adapters.
 
-    An ACTIVE-cache adapter carries the bare repo id, and resolving a LoRA by id takes the
-    remote branch of get_base_model_from_lora_identifier: it probes the Hub and calls
-    hf_hub_download for adapter_config.json with no local_files_only. For a cached private or
-    gated adapter with no token that call fails, the base is never read, and selecting a row
-    the picker advertised as local yields no model configuration. Handing over the snapshot
-    makes is_local_path true, which takes the local reader and no network at all.
+    An ACTIVE-cache adapter carries the bare repo id, and a LoRA resolved by id takes the
+    remote branch of get_base_model_from_lora_identifier, which downloads adapter_config.json
+    with no local_files_only. For a cached gated adapter with no token that fails and the base
+    is never read, so a row advertised as local yields no model configuration. A snapshot path
+    makes is_local_path true and takes the local reader instead.
 
-    Only adapters, deliberately. An ordinary cached repo resolves through its own local-first
-    path, and pinning one would freeze a live repo the inventory chose not to pin.
+    Only adapters, deliberately: pinning an ordinary cached repo would freeze a live repo the
+    inventory chose not to pin.
     """
     load_id = row.get("load_id") or row["repo_id"]
     if row.get("model_format") != "adapter" or os.path.isabs(str(load_id)):
@@ -396,17 +389,15 @@ def _local_dir_holds_a_payload(path: Path) -> bool:
     )
     from utils.paths.path_utils import is_appledouble_metadata
 
-    # A pipeline keeps its weights in component subdirs, so the torn test below, which reads
-    # the root, would call every pipeline unserviceable.
+    # A pipeline keeps its weights in component subdirs, so the torn test below reads an
+    # empty root and would call every pipeline unserviceable.
     if _is_diffusers_pipeline_dir(path):
         return True
     if _local_payload_is_torn(path):
         return False
-    # iterdir, not glob("*.gguf"): the glob is case-sensitive on Linux and macOS, while
-    # _is_main_gguf_filename lowercases before testing the suffix. A directory holding
-    # Model.GGUF is a loadable GGUF model by the shared classifier and by the loader, but the
-    # glob matched nothing and _is_model_directory says False for a GGUF-only folder, so the
-    # gate dropped a model that loads. This gate decides whether the row is listed at all.
+    # iterdir, not glob("*.gguf"): the glob is case-sensitive on Linux and macOS while
+    # _is_main_gguf_filename lowercases first, so a folder holding Model.GGUF was classified
+    # as a GGUF model and then dropped by this gate, which decides whether it is listed.
     try:
         children = list(path.iterdir())
     except OSError:
@@ -498,11 +489,10 @@ def local_folder_entries() -> List[ModelEntry]:
         if _local_is_a_diffusers_pipeline(model):
             continue
         target = model.load_id or model.id
-        # A GGUF DIRECTORY handed to the resolver is picked apart by detect_gguf_model, which
-        # sorts by file size and takes the largest complete file -- commonly the F16. The cached
-        # and exported rows go through _preferred_complete_gguf and land on a Q4-class quant, so
-        # the same folder loaded a dramatically bigger model depending only on which source
-        # listed it, which is an OOM rather than a preference. Resolve it the same way here.
+        # A GGUF DIRECTORY goes through detect_gguf_model, which sorts by size and takes the
+        # largest complete file, commonly the F16, while cached and exported rows resolve a
+        # Q4-class quant. Same folder, dramatically bigger load by source alone, so an OOM
+        # rather than a preference. Resolve it the same way here.
         if is_gguf:
             target = _preferred_complete_gguf(target) or target
         entries.append(
@@ -519,10 +509,9 @@ def local_folder_entries() -> List[ModelEntry]:
 def _safe(fn) -> List[ModelEntry]:
     """Run one source, and never let it take the other three down with it.
 
-    Still fails open, because a picker missing one group beats a traceback where a model list
-    should be. It no longer fails SILENTLY: a source is all of your downloaded models or all of
-    your fine-tunes, so swallowing the reason turns "my HF cache is unreadable" into an empty
-    list with nothing to go on. UNSLOTH_DEBUG re-raises, for when the empty group IS the bug.
+    Fails open, since a picker missing one group beats a traceback where a model list should
+    be, but not SILENTLY: a source is every downloaded model or every fine-tune, so swallowing
+    the reason turns "my HF cache is unreadable" into an empty list. UNSLOTH_DEBUG re-raises.
     """
     try:
         return fn()
@@ -530,8 +519,8 @@ def _safe(fn) -> List[ModelEntry]:
         # Same truthy set the rest of the tree uses (utils.utils, utils.transformers_version).
         if os.environ.get("UNSLOTH_DEBUG", "").strip().lower() in ("1", "true", "yes", "on"):
             raise
-        # Imported here, not at module scope: this module is asserted to pull in nothing beyond
-        # the inventory layer (test_catalog_inventory_works_without_fastapi_or_routes).
+        # Not at module scope: this module must pull in nothing beyond the inventory layer
+        # (test_catalog_inventory_works_without_fastapi_or_routes).
         import typer
 
         typer.echo(
