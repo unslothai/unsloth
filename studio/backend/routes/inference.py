@@ -7799,11 +7799,27 @@ def _estimate_gguf_required_gb(
             main_bytes = selected.size_bytes if selected is not None else None
             if main_bytes is None:
                 return None
-            # Split-aware, like the main weight: discovery hands back shard 1.
+            # This branch holds the file, so it asks rather than assuming, exactly as the
+            # local branch above does: charging a projector the launch suppresses inflates
+            # the estimate into a 409 for a load that fits.
             _local_mmproj = getattr(config, "gguf_local_mmproj_file", None)
-            _local_mmproj_bytes = (
-                LlamaCppBackend._get_gguf_size_bytes(str(_local_mmproj)) if _local_mmproj else 0
-            )
+            _local_mmproj_bytes = 0
+            if _local_mmproj and not extra_args_disable_mmproj(llama_extra_args):
+                _local_mmproj_opens = True
+                if disable_vision:
+                    try:
+                        from utils.models.gguf_metadata import mmproj_accepts_image
+
+                        # Kept for audio, so its bytes stay charged. An unreadable file
+                        # reads as image-capable upstream, hence suppressed and uncharged,
+                        # which matches what the loader will then do with it.
+                        _local_mmproj_opens = not mmproj_accepts_image(str(_local_mmproj))
+                    except Exception as _lm_exc:
+                        logger.debug(f"mmproj capability read failed: {_lm_exc}")
+                        _local_mmproj_opens = False
+                if _local_mmproj_opens:
+                    # Split-aware, like the main weight: discovery hands back shard 1.
+                    _local_mmproj_bytes = LlamaCppBackend._get_gguf_size_bytes(str(_local_mmproj))
             companions = _remote_gguf_companion_bytes(
                 repo,
                 hf_token = hf_token,

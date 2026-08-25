@@ -796,6 +796,55 @@ def test_the_training_guard_charges_a_hand_added_repo_root_projector(tmp_path):
     assert charged is not None and charged > 4 * GIB / (1024**3)
 
 
+@pytest.mark.parametrize(
+    "kwargs,accepts_image,charged,label",
+    [
+        ({}, True, True, "no switch charges it"),
+        ({"disable_vision": True}, True, False, "the switch suppresses an image tower"),
+        ({"disable_vision": True}, False, True, "an audio encoder survives the switch"),
+        ({"llama_extra_args": ["--no-mmproj"]}, True, False, "the extras opt-out resolves none"),
+    ],
+)
+def test_the_guard_asks_the_local_projector_whether_the_launch_opens_it(
+    tmp_path, kwargs, accepts_image, charged, label
+):
+    """This branch holds the file, unlike the published projector it cannot read, so
+    charging one the launch suppresses is a 409 for a load that fits."""
+    projector = tmp_path / "mmproj-F16.gguf"
+    projector.write_bytes(b"\x00" * (3 * MIB))
+    seen = {}
+
+    def fake_companions(repo, *, hf_token, include_mmproj, local_mmproj_bytes = 0, **kw):
+        seen["local_mmproj_bytes"] = local_mmproj_bytes
+        return max(int(local_mmproj_bytes), 0)
+
+    config = SimpleNamespace(
+        gguf_file = None,
+        gguf_mmproj_file = None,
+        gguf_local_mmproj_file = str(projector),
+        gguf_mtp_file = None,
+        gguf_dspark_file = None,
+        gguf_dflash_file = None,
+        gguf_hf_repo = "unsloth/some-vl-GGUF",
+        gguf_variant = "UD-Q4_K_XL",
+        is_vision = True,
+    )
+    variant = SimpleNamespace(quant = "UD-Q4_K_XL", size_bytes = 4 * GIB)
+    import utils.models.gguf_metadata as _meta
+
+    with (
+        patch("routes.inference._remote_gguf_companion_bytes", fake_companions),
+        patch.object(_meta, "mmproj_accepts_image", lambda _p: accepts_image),
+        patch(
+            "utils.models.model_config.list_gguf_variants",
+            lambda *a, **k: ([variant], False),
+        ),
+    ):
+        _estimate_gguf_required_gb(config, **kwargs)
+
+    assert seen.get("local_mmproj_bytes") == (3 * MIB if charged else 0), label
+
+
 def _ambient_mmproj(tmp_path, monkeypatch):
     ambient = tmp_path / "ambient-mmproj.gguf"
     ambient.write_bytes(b"\x00" * (1 * MIB))
