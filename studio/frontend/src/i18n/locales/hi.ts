@@ -196,6 +196,7 @@ export const hi = {
       chat: "चैट",
       connections: "कनेक्शन",
       apiKeys: "API",
+      remoteLan: "रिमोट और LAN",
       about: "परिचय",
       data: "डेटा",
       agents: "एजेंट",
@@ -282,6 +283,17 @@ export const hi = {
         engineModel: "लोकल ट्रांसक्रिप्शन",
         engineModelDescription:
           "स्पीच-टू-टेक्स्ट (STT) मॉडल लोकली चलाता है और ऑफ़लाइन काम करता है। डाउनलोड करें, लोड करें; कुछ देर उपयोग न होने पर यह अनलोड हो जाता है।",
+        engineCustom: "कस्टम एंडपॉइंट",
+        engineCustomDescription:
+          "आपके कनेक्शन से रिकॉर्ड किया गया ऑडियो OpenAI-संगत STT सर्वर को भेजता है।",
+        connectionLabel: "कनेक्शन",
+        connectionDescription:
+          "कनेक्शन में OpenAI-संगत सर्वर और वैकल्पिक API कुंजी जोड़ें।",
+        connectionPlaceholder: "कनेक्शन चुनें",
+        connectionEmpty: "कोई कनेक्शन उपलब्ध नहीं है",
+        customModelLabel: "मॉडल",
+        customModelDescription:
+          "/v1/audio/transcriptions को भेजा जाने वाला मॉडल नाम।",
         sttModelLabel: "स्पीच रिकग्निशन मॉडल",
         sttModelDescription: "लोकली चलाने के लिए STT मॉडल चुनें या खोजें।",
         sttModelSearchPlaceholder: "मॉडल खोजें",
@@ -340,6 +352,7 @@ export const hi = {
         languageLabel: "डिक्टेशन की भाषा",
         languageDescription: "पहचानी जाने वाली भाषा",
         languageAuto: "स्वतः (ब्राउज़र की भाषा)",
+        languageAutoDetect: "स्वतः (भाषा पहचानें)",
       },
       dictionary: {
         sectionTitle: "डिक्टेशन शब्दकोश",
@@ -404,6 +417,15 @@ export const hi = {
           "लोड किए गए ऑडियो मॉडल का उपयोग करता है (जैसे Orpheus)",
         engineSystem: "सिस्टम की आवाज़ें",
         engineStudio: "TTS मॉडल लोड करें",
+        engineCustom: "कस्टम एंडपॉइंट",
+        engineCustomDescription:
+          "आपके कनेक्शनों में से एक OpenAI-संगत TTS सर्वर (जैसे Kokoro)",
+        connectionLabel: "कनेक्शन",
+        connectionDescription: "कनेक्शन टैब में OpenAI-संगत सर्वर जोड़ें",
+        connectionPlaceholder: "कनेक्शन चुनें",
+        customModelLabel: "मॉडल",
+        customVoiceDescription:
+          "एंडपॉइंट द्वारा अपेक्षित वॉइस नाम; डिफ़ॉल्ट alloy है",
         modelLabel: "TTS मॉडल",
         modelDescription:
           "मॉडल सिलेक्टर से एक ऑडियो मॉडल लोड करें (जैसे Orpheus TTS)",
@@ -511,7 +533,7 @@ export const hi = {
           "निष्क्रियता पर अनलोड होने से पहले KV कैश सहेजता है, ताकि दोबारा शुरू की गई चैट को इतिहास फिर से न पढ़ना पड़े। डिस्क पर 10 GB तक।",
         apiOnly: "केवल API द्वारा लोड किए गए मॉडल अनलोड करें",
         apiOnlyDescription:
-          "निष्क्रियता पर अनलोड करते समय Studio से आपके द्वारा लोड किया गया मॉडल मेमोरी में बना रहता है, और केवल वही मॉडल हटाए जाते हैं जिन्हें किसी API अनुरोध ने लोड किया था।",
+          "निष्क्रियता पर अनलोड करते समय Unsloth से आपके द्वारा लोड किया गया मॉडल मेमोरी में बना रहता है, और केवल वही मॉडल हटाए जाते हैं जिन्हें किसी API अनुरोध ने लोड किया था।",
       },
       previewSharing: {
         sectionTitle: "पूर्वावलोकन साझाकरण",
@@ -584,6 +606,7 @@ export const hi = {
         embeddingModel: "एम्बेडिंग मॉडल",
         embeddingModelDescription:
           "आपके दस्तावेज़ों को इंडेक्स और खोजने के लिए उपयोग किया जाने वाला Hugging Face मॉडल या स्थानीय पथ। डिफ़ॉल्ट {defaultModel} है।",
+        searchPlaceholder: "एम्बेडिंग मॉडल खोजें",
         reindexWarning:
           "केवल नए इंडेक्स किए गए दस्तावेज़ों को प्रभावित करता है। मॉडल बदलने के बाद मौजूदा दस्तावेज़ फिर से अपलोड करें।",
         emptyError: "एक Hugging Face मॉडल id या स्थानीय पथ दर्ज करें।",
@@ -860,6 +883,8 @@ export const hi = {
         title: "GPU डिवाइस",
         ggufInference: "GGUF इन्फ़रेंस",
         unavailable: "उपलब्ध नहीं",
+        detecting: "GPU खोजे जा रहे हैं...",
+        unreadable: "इस सर्वर का हार्डवेयर नहीं पढ़ा जा सका।",
         noGpu: "कोई दृश्यमान GPU नहीं मिला। केवल-CPU संसाधन ऊपर दिखाए गए हैं।",
         unknownDevice: "अज्ञात GPU",
         deviceWithIndex: "GPU {index}",
@@ -1018,7 +1043,7 @@ export const hi = {
       quickstart: {
         title: "कमांड बनाएं",
         description:
-          "Studio में अभी लोड किए गए मॉडल के साथ एजेंट चलाएं। पहले एक मॉडल लोड करें, फिर claude की जगह नीचे दिए गए किसी भी समर्थित एजेंट का नाम रखें।",
+          "Unsloth में अभी लोड किए गए मॉडल के साथ एजेंट चलाएं। पहले एक मॉडल लोड करें, फिर claude की जगह नीचे दिए गए किसी भी समर्थित एजेंट का नाम रखें।",
         noneDetected: "आपके PATH में कोई समर्थित एजेंट CLI नहीं मिला।",
         installed: "इंस्टॉल है",
       },
@@ -1039,7 +1064,7 @@ export const hi = {
         description:
           "Unsloth के फ़्लैग पहले पढ़े जाते हैं; जो पहचान में नहीं आता वह सीधे एजेंट को भेज दिया जाता है।",
         model:
-          "मॉडल चुनता है। --model न देने पर unsloth start वही मॉडल उपयोग करता है जो Studio में लोड है, और कोई लोड न हो तो त्रुटि देता है।",
+          "मॉडल चुनता है। --model न देने पर unsloth start वही मॉडल उपयोग करता है जो Unsloth में लोड है, और कोई लोड न हो तो त्रुटि देता है।",
         contextLength:
           "मांगी गई कॉन्टेक्स्ट लंबाई सेट करता है (उपनाम: --max-seq-length)।",
         ggufVariant: "GGUF क्वांटाइज़ेशन वेरिएंट चुनता है।",
@@ -1054,13 +1079,17 @@ export const hi = {
           "मूल एजेंट को उसके मौजूदा मॉडल पर रखता है और Unsloth को लोकल सबएजेंट के रूप में दर्ज करता है (Claude Code, Codex और OpenCode)।",
         apiKey:
           "आपकी Unsloth API key लेता है (या UNSLOTH_API_KEY सेट करें)।",
+        reasoning:
+          "चैट में रीज़निंग इस्तेमाल करें: on, off या auto। Auto मॉडल के चैट टेम्पलेट के अनुसार चलता है, जो आम तौर पर on होता है।",
+        reasoningEffort:
+          "मॉडल के चैट टेम्पलेट को दिया जाने वाला रीज़निंग एफ़र्ट, जैसे medium। स्तर हर मॉडल के अपने होते हैं, इसलिए वही दें जो वह मॉडल स्वीकार करता है। खाली छोड़ने पर टेम्पलेट का स्तर रहता है।",
         yolo:
           "मंज़ूरी के प्रॉम्प्ट छोड़ देता है। केवल भरोसेमंद वातावरण में उपयोग करें।",
       },
       remote: {
-        title: "रिमोट Studio से जुड़ें",
+        title: "रिमोट Unsloth Studio से जुड़ें",
         description:
-          "चलाने से पहले ये सेट करके unsloth start को कहीं और चल रहे Studio की ओर भेजें (या --api-key सीधे दें):",
+          "चलाने से पहले ये सेट करके unsloth start को कहीं और चल रहे Unsloth Studio की ओर भेजें (या --api-key सीधे दें):",
       },
       passthrough: {
         title: "एजेंट को आर्ग्युमेंट भेजना",
@@ -1099,7 +1128,7 @@ export const hi = {
         exportChat: "चैट एक्सपोर्ट करें",
       },
       pastedTextThreshold: "लंबे पेस्ट को संक्षिप्त करें",
-      pastedTextThresholdDescription: "इससे लंबा चिपकाया गया टेक्स्ट संदेश बॉक्स भरने के बजाय .txt अटैचमेंट बन जाता है।",
+      pastedTextThresholdDescription: "इससे लंबा चिपकाया गया टेक्स्ट संदेश बॉक्स भरने के बजाय .txt अटैचमेंट बन जाता है। {shortcut} दबाने पर यह फिर भी संदेश बॉक्स में चिपकेगा।",
       pastedTextThresholdOff: "बंद",
       showResponseModel: "जवाब देने वाला मॉडल दिखाएँ",
       showResponseModelDescription:
@@ -1117,6 +1146,12 @@ export const hi = {
         collapseByDefault: "थिंकिंग को डिफ़ॉल्ट रूप से संक्षिप्त रखें",
         collapseByDefaultDescription:
           "मॉडल के सोचते समय रीज़निंग अपने आप खुलने के बजाय संक्षिप्त रहती है। पढ़ने के लिए किसी भी ब्लॉक को विस्तृत करें।",
+      },
+      webSearch: {
+        title: "वेब खोज",
+        images: "वेब खोज से छवियाँ दिखाएँ",
+        imagesDescription:
+          "वेब खोज को छवियाँ लौटाने दें और उत्तर में सूचीबद्ध हर चीज़ के लिए एक छवि लाएँ। थंबनेल Studio द्वारा लाए और छोटे किए जाते हैं, इसलिए ब्राउज़र कभी छवि होस्ट से संपर्क नहीं करता।",
       },
       artifacts: {
         title: "Canvas",
@@ -1252,6 +1287,11 @@ export const hi = {
     connections: {
       title: "कनेक्शन",
       description: "प्रदाता और बाहरी कनेक्शन प्रबंधित करें।",
+    },
+    remoteLan: {
+      title: "रिमोट और LAN",
+      description:
+        "इस Unsloth तक अपने दूसरे डिवाइस से पहुँचें, अपने लोकल नेटवर्क या एक अस्थायी सार्वजनिक URL से।",
     },
     apiKeys: {
       title: "API",

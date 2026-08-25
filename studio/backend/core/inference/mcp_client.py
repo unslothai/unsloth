@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import shlex
+import shutil
 import sys
 import threading
 import time
@@ -243,6 +244,104 @@ async def clear_oauth_tokens_async(url: str) -> None:
         logger.warning("Failed to clear OAuth tokens for %s: %s", url, exc)
 
 
+_IS_WINDOWS = os.name == "nt"
+_NODE_COMMANDS = frozenset({"node", "npm", "npx"})
+_WINDOWS_LAUNCHER_SUFFIXES = (".cmd", ".exe", ".bat", ".ps1")
+
+
+def _launcher_name(command: str) -> str:
+    """argv[0] reduced to its bare launcher name, Windows suffix stripped."""
+    name = os.path.basename(command).lower()
+    for suffix in _WINDOWS_LAUNCHER_SUFFIXES:
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return name
+
+
+def _is_node_command(command: str) -> bool:
+    """Whether argv[0] is a Node launcher. Only those need the managed runtime, so a
+    Python or other stdio server keeps the toolchain its own env pinned."""
+    return _launcher_name(command) in _NODE_COMMANDS
+
+
+def _command_selects_runtime(command: Optional[str]) -> bool:
+    """A path to a ``node`` launcher picks the runtime explicitly and runs regardless of
+    PATH, so handing its children a different Node would only split the two."""
+    return (
+        command is not None and bool(os.path.dirname(command)) and _launcher_name(command) == "node"
+    )
+
+
+def _runtime_requirements(command: Optional[str]) -> tuple[bool, bool]:
+    """``(needs npm, needs npx)`` for argv[0]. Each launcher asks only for what it runs,
+    so an unrelated missing launcher cannot shadow a good runtime: node needs neither, npm
+    needs npm, and npx needs npx alone -- npx never shells out to an ``npm`` executable,
+    its npx-cli.js delegates in-process to the npm library it ships with, so a PATH
+    exposing node and npx without a separate npm runs it fine and must be left alone.
+    A pathed npm/npx is already located and only needs a node for its shebang, so it
+    does not require a second copy of itself on PATH either."""
+    name = _launcher_name(command) if command is not None else None
+    if name == "node":
+        return False, False
+    if command is not None and os.path.dirname(command):
+        return False, False
+    if name == "npm":
+        return True, False
+    if name == "npx":
+        return False, True
+    return True, True
+
+
+def _path_key(env: dict) -> str:
+    """The key holding PATH. Windows env names are case-insensitive, so a config may
+    spell it ``Path``; on POSIX only the exact name counts."""
+    if _IS_WINDOWS:
+        for key in env:
+            if key.upper() == "PATH":
+                return key
+    return "PATH"
+
+
+def _stdio_env(headers: Optional[dict], command: Optional[str] = None) -> Optional[dict]:
+    """Process env for a stdio server: its own vars, plus the managed Node bin dir
+    on PATH so ``npx ...`` servers spawn on hosts with no usable system Node."""
+    env = dict(headers or {})
+    key = _path_key(env)
+    base = env.get(key)
+    if isinstance(base, str) and not base:
+        # An explicitly empty PATH is a deliberate sandbox: hand it over untouched.
+        return env
+    if command is not None and not _is_node_command(command):
+        return env or None
+    if _command_selects_runtime(command):
+        return env or None
+    if not isinstance(base, str):
+        base = os.environ.get("PATH", "")
+    try:
+        from utils.node_runtime import path_with_managed_node
+        require_npm, require_npx = _runtime_requirements(command)
+        patched = path_with_managed_node(base, require_npm = require_npm, require_npx = require_npx)
+    except (ImportError, OSError, ValueError):
+        patched = base
+    if patched and patched != env.get(key):
+        env[key] = patched
+    return env or None
+
+
+def _stdio_argv(parts: list, env: Optional[dict]) -> list:
+    """argv with argv[0] resolved against the child's PATH. Windows resolves the
+    command against the parent environment before ``env`` applies, so a managed-only
+    ``npx`` has to be handed over as a full path."""
+    path = (env or {}).get(_path_key(env or {}))
+    if not isinstance(path, str):
+        path = os.environ.get("PATH", "")
+    try:
+        resolved = shutil.which(parts[0], path = path)
+    except OSError:
+        resolved = None
+    return [resolved or parts[0], *parts[1:]]
+
+
 def _client(
     url: str,
     headers: Optional[dict],
@@ -261,11 +360,13 @@ def _client(
             raise ValueError(f"Empty stdio command: {url!r}")
         # env vars ride the headers field (merged over the SDK default env).
         # keep_alive=False tears the subprocess down so a one-shot call leaves no orphan.
+        env = _stdio_env(headers, parts[0])
+        argv = _stdio_argv(parts, env)
         return Client(
             StdioTransport(
-                command = parts[0],
-                args = parts[1:],
-                env = headers or None,
+                command = argv[0],
+                args = argv[1:],
+                env = env,
                 keep_alive = False,
             )
         )

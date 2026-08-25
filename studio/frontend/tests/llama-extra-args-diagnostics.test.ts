@@ -61,14 +61,26 @@ test("a well-formed argument the binary knows says nothing", () => {
   assert.deepEqual(diagnoseExtraArgs("", CATALOG), []);
 });
 
-test("a managed flag is an error that names the control that owns it", () => {
-  const text = messages("--parallel 8");
-  assert.match(text, /--parallel/);
-  assert.equal(levels("--parallel 8")[0], "error");
-  assert.equal(
-    extraArgsAreLoadable(diagnoseExtraArgs("--parallel 8", CATALOG)),
-    false,
-  );
+test("parallel aliases point at the supported control", () => {
+  for (const catalog of [CATALOG, null]) {
+    for (const input of [
+      "--parallel 8",
+      "--parallel=8",
+      "--n-parallel 8",
+      "--n_parallel 8",
+      "-np 8",
+      "-np8",
+    ]) {
+      const diagnostics = diagnoseExtraArgs(input, catalog);
+      assert.equal(diagnostics.length, 1);
+      assert.match(
+        diagnostics[0]?.message ?? "",
+        /is set by Parallel Slots above and cannot be passed here\.$/,
+      );
+      assert.equal(diagnostics[0]?.level, "error");
+      assert.equal(extraArgsAreLoadable(diagnostics), false);
+    }
+  }
 });
 
 test("a managed flag with no control says who owns it instead", () => {
@@ -88,13 +100,15 @@ test("an attached or equals form is caught the same way", () => {
 test("a flag a control also sets is a note, not a refusal", () => {
   // Deliberate: the backend appends extras last and reconciles the ones that move
   // its own sizing, and the CLI has always allowed this. Say who wins, do not block.
-  const diagnostics = diagnoseExtraArgs("--batch-size 512", CATALOG);
-  assert.deepEqual(
-    diagnostics.map((d) => d.level),
-    ["note"],
-  );
-  assert.match(diagnostics[0].message, /Batch Size/);
-  assert.equal(extraArgsAreLoadable(diagnostics), true);
+  for (const catalog of [CATALOG, null]) {
+    const diagnostics = diagnoseExtraArgs("--batch-size 512", catalog);
+    assert.deepEqual(
+      diagnostics.map((d) => d.level),
+      ["note"],
+    );
+    assert.match(diagnostics[0].message, /Batch Size/);
+    assert.equal(extraArgsAreLoadable(diagnostics), true);
+  }
 });
 
 test("a flag missing from this build warns but still loads", () => {
@@ -600,7 +614,10 @@ test("the box is filled from the stored flags, not left looking empty", () => {
   // set is to ask. An empty box would read as "no flags" and the first edit would
   // submit a list that dropped them.
   // Resolved by the backend, whose folding rules are the ones the load applies.
-  assert.match(body, /fetchLoadExtraArgs\(loadId, configId, target\.ggufVariant, keys\)/);
+  assert.match(
+    body,
+    /fetchLoadModelOverride\(loadId, configId, target\.ggufVariant, keys\)/,
+  );
   // Through the resolver, not a literal lookup: the backend folds identities and
   // falls back from repo:QUANT to the bare repo before it reads a row.
   // The candidate keys still travel, as the fallback for a backend that predates
@@ -821,7 +838,20 @@ test("a hydrated list is judged even when the row cannot be", () => {
   // With Advanced collapsed the row never mounts, so nothing objects to a stored
   // list this build refuses (the overrides route only validates its shape), and
   // Load would be live for a request that comes back 400.
-  assert.match(body, /const hydratedIsLoadable = extraArgsAreLoadable\( diagnoseExtraArgs\(formatExtraArgs\(stored\)/);
+  //
+  // Judged on the list hydration ADOPTS, not on the row's: a row carrying no
+  // arguments leaves the local ones standing, and reading the verdict off the empty
+  // server list called them loadable. That one lands even with Advanced expanded,
+  // where the row has already refused the list and republishes only on a change of
+  // its own verdict, so nothing puts the objection back.
+  assert.match(
+    body,
+    /const hydratedArgs = serverConfig\?\.llamaExtraArgs \?\? stored;/,
+  );
+  assert.match(
+    body,
+    /const hydratedIsLoadable = hydratedArgs\.length === 0 \? true : extraArgsAreLoadable\( diagnoseExtraArgs\( formatExtraArgs\(hydratedArgs\)/,
+  );
   // But not over an edit made while the request was out: the row is judging that
   // text, and replacing its verdict re-enabled Load for invalid input.
   assert.match(

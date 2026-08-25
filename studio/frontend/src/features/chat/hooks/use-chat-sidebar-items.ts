@@ -36,8 +36,6 @@ export interface SidebarItem {
   updatedAt: number;
   isFork?: boolean;
   projectId?: string | null;
-  /** The model this chat was started on. Single rows only: a compare row runs two. */
-  modelId?: string;
 }
 
 function lastActivityAt(thread: ThreadRecord): number {
@@ -89,8 +87,6 @@ export function groupThreads(
         updatedAt: lastActivityAt(t),
         isFork: Boolean(t.forkedFromThreadId),
         projectId: t.projectId ?? null,
-        // Stamped at creation. Blank on a legacy row, which reads as unknown.
-        modelId: t.modelId || undefined,
       });
     }
   }
@@ -268,9 +264,21 @@ export async function archiveAllChatItems(
   requestPromptQueueStop(toArchive.map((thread) => thread.id));
   for (const t of toArchive) cancelIfRunning(t.id);
 
-  await Promise.all(
-    toArchive.map((t) => updateStoredChatThread(t.id, { archived: true })),
+  // allSettled, not all: Promise.all rejects while slower siblings are still writing silently.
+  const writes = await Promise.allSettled(
+    toArchive.map((t) =>
+      updateStoredChatThread(t.id, { archived: true }, { notify: false }),
+    ),
   );
+  const failure = writes.find(
+    (write): write is PromiseRejectedResult => write.status === "rejected",
+  );
+  if (failure) {
+    // Silent updates mean a partial batch announces itself nowhere, so whatever did
+    // archive would stay listed here and in every other tab until some later change.
+    notifyChatHistoryUpdated();
+    throw failure.reason;
+  }
 
   // Reset only when this action archived the active single thread or compare
   // pair. An already-archived chat opened from the archive is not in

@@ -47,7 +47,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
         with:
           egress-policy: block
           disable-sudo: true
@@ -141,6 +141,7 @@ jobs:
             tests/studio/test_compile_caches_are_per_worker.py \
             tests/studio/test_composer_rtl_bidi_attribute.py \
             tests/studio/test_frontend_dep_removal.py \
+            tests/studio/test_frontend_dist_cache.py \
             tests/studio/test_gguf_smoke_phases_stay_independent.py \
             tests/studio/test_indicator_browsers_run_in_parallel.py \
             tests/studio/test_inference_smoke_http_diagnostics.py \
@@ -153,11 +154,14 @@ jobs:
             tests/studio/test_main_runs_survive_merge_bursts.py \
             tests/studio/test_pester_bootstrap_hardening.py \
             tests/studio/test_playwright_suites_run_in_ci.py \
+            tests/studio/test_sdk_installs_are_major_bounded.py \
             tests/studio/test_short_job_absorption.py \
             tests/studio/test_smoke_workflows_share_one_script.py \
             tests/studio/test_stt_model_search_locator_contract.py \
             tests/studio/test_uv_cache_discipline.py \
+            tests/studio/test_version_compat_bundle.py \
             tests/studio/test_windows_small_checks_stay_on_their_image.py \
+            tests/studio/test_windows_ui_lanes_are_isolated.py \
             tests/studio/test_workflow_guards_run_unfiltered.py \
             tests/security
 

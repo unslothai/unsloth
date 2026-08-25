@@ -159,6 +159,35 @@ def _arm_teardown_signals() -> None:
             return
 
 
+def _require_frontend_toolchain() -> None:
+    """Fail with the cause when the frontend dev dependencies are not installed.
+
+    `npm run dev` on a tree with no `node_modules` exits 127 with `sh: 1: vite: not found`,
+    and the readiness poll then reports "vite exited with code 127", which reads as a vite
+    crash. It is not: the toolchain was never installed, and no amount of retrying or
+    port-shuffling will help. A missing toolchain and a broken one are different failures
+    and must not look the same.
+
+    This is not hypothetical. A job that installs Studio from a warm frontend-dist cache
+    never builds the frontend, so `studio/setup.sh` skips its `npm install` and there is no
+    `node_modules` for this harness to use, while the same job on a cold cache builds and
+    passes. That makes the failure look like flake instead of a missing setup step.
+    """
+    if not FRONTEND.is_dir():
+        raise RuntimeError(f"no frontend at {FRONTEND}; this harness must run from the repo")
+    binaries = FRONTEND / "node_modules" / ".bin"
+    if any((binaries / name).exists() for name in ("vite", "vite.cmd", "vite.exe", "vite.bunx")):
+        return
+    raise RuntimeError(
+        f"the frontend dev dependencies are not installed at {FRONTEND / 'node_modules'}, so "
+        f"`npm run dev` would exit 127 with 'vite: not found'.\n"
+        f"Run `npm ci` in {FRONTEND} first. In CI, a job that restores a prebuilt "
+        f"studio/frontend/dist from cache never builds the frontend, so setup.sh skips its "
+        f"npm install and this directory stays empty: such a job has to install the "
+        f"dependencies itself before running a harness that serves its own vite."
+    )
+
+
 def start_vite(port: int, *, host: str = "127.0.0.1") -> subprocess.Popen[str]:
     """Start `vite dev` on `port` in its own process group, with stdout drained.
 
@@ -169,6 +198,7 @@ def start_vite(port: int, *, host: str = "127.0.0.1") -> subprocess.Popen[str]:
         raise RuntimeError(
             f"{host}:{port} is already serving. Stop it, or move this harness with SMOKE_PORT."
         )
+    _require_frontend_toolchain()
     process_group = (
         {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
         if os.name == "nt"
