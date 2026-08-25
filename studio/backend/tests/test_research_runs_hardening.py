@@ -2461,6 +2461,28 @@ def test_an_in_band_retry_after_http_date_is_read_as_a_delay(monkeypatch):
     assert all(27.0 < wait <= 30.0 for wait in waits), waits
 
 
+def test_a_terminal_quota_refusal_is_not_retried(monkeypatch):
+    # ChatGPT reports an exhausted subscription with the same 429 shape as a throttle. Waiting
+    # out its Retry-After cannot clear it, so it must surface on the first send.
+    body = _provider_error_sse(
+        {
+            "message": "ChatGPT subscription quota is temporarily unavailable.",
+            "type": "rate_limit_error",
+            "metadata": {"retry_after": "30", "terminal": True},
+        }
+    )
+    assert _send_attempts(monkeypatch, 200, body = body) == (1, [])
+
+
+def test_a_rate_limit_wait_cannot_outlive_the_internal_key(monkeypatch):
+    # The re-send authenticates with a key minted for this call, so a wait running past its
+    # expiry would fail auth without ever reaching the provider. An unlimited run has no wall
+    # clock, which leaves the key as the only thing bounding it.
+    monkeypatch.setattr(research_runs, "_MODEL_CALL_KEY_LIFETIME_SECONDS", 100)
+    _, waits = _send_attempts(monkeypatch, 429, {"Retry-After": "3000"}, model_timeout = 0.0)
+    assert waits == [95.0, 95.0]
+
+
 def test_another_in_band_provider_error_is_not_retried(monkeypatch):
     # Only a rate limit is transient; anything else must surface on the first send.
     errors = []

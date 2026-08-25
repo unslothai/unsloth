@@ -127,6 +127,9 @@ _MAX_MODEL_WAIT_BUDGET_SECONDS = 3600.0
 # bounded here instead: long enough for the hour-long windows providers reset on, short
 # enough that one mistaken or hostile header cannot park a run, and its lease, indefinitely.
 _MAX_RATE_LIMIT_WAIT_SECONDS = 3600.0
+# Lifetime of the internal key one model call authenticates with. Retry waits are bounded by
+# what is left of it: a key that expires mid-backoff fails auth without reaching the provider.
+_MODEL_CALL_KEY_LIFETIME_SECONDS = 2 * 60 * 60
 # Headroom so the named stall guards expire before HTTPX's own read timeout does.
 _STREAM_READ_TIMEOUT_MARGIN_SECONDS = 30.0
 
@@ -521,8 +524,11 @@ def _stream_rate_limit_delay(head: list[str]) -> float | None:
             return None
         if str(error.get("code")) != "429" and error.get("type") != "rate_limit_error":
             return None
-        requested = error.get("retry_after")
         metadata = error.get("metadata")
+        if isinstance(metadata, dict) and metadata.get("terminal"):
+            # Quota exhausted rather than throttled: no wait clears it, so surface it now.
+            return None
+        requested = error.get("retry_after")
         if requested is None and isinstance(metadata, dict):
             requested = metadata.get("retry_after")
         return _retry_after_delay(requested) or 0.0
@@ -537,16 +543,14 @@ async def _with_head(head: list[str], rest: AsyncIterator[str]) -> AsyncIterator
         yield line
 
 
-def _rate_limit_wait(requested: float, remaining: float | None, headroom: float) -> float:
+def _rate_limit_wait(requested: float, remaining: float, headroom: float) -> float:
     """How much of a provider's requested retry delay this call can afford.
 
-    The delay is the provider's, not a share of the model-load budget, so it is bounded by what
-    is left of the call's wall clock minus the room the re-sent request still needs. Coming back
-    sooner than the provider allows only spends an attempt on the same refusal. An unlimited run
-    has no wall clock to divide, so only the standing ceiling applies to it."""
-    if remaining is None:
-        return min(requested, _MAX_RATE_LIMIT_WAIT_SECONDS)
-    return max(0.0, min(requested, remaining - headroom))
+    The delay is the provider's, not a share of the model-load budget, so it is bounded by what is
+    left of the call minus the room the re-sent request still needs. Coming back sooner than the
+    provider allows only spends an attempt on the same refusal. The standing ceiling still applies:
+    an unlimited run has no wall clock, and one mistaken header must not park it for a day."""
+    return max(0.0, min(requested, _MAX_RATE_LIMIT_WAIT_SECONDS, remaining - headroom))
 
 
 def _local_model_ready() -> bool:
@@ -1150,12 +1154,10 @@ class ResearchSupervisor:
         await self._check_active(run_id)
 
     async def _wait_out_rate_limit(
-        self, run: dict, requested: float, model_timeout: float, started: float, headroom: float
+        self, run: dict, requested: float, deadline: float, headroom: float
     ) -> None:
         """Wait out a provider's retry delay, whatever carried it, against the same budget."""
-        remaining = (
-            model_timeout - (asyncio.get_running_loop().time() - started) if model_timeout else None
-        )
+        remaining = deadline - asyncio.get_running_loop().time()
         await self._wait_out_retry_after(
             run["id"], _rate_limit_wait(requested, remaining, headroom)
         )
@@ -1276,7 +1278,10 @@ class ResearchSupervisor:
         preview_labels: bool = False,
     ) -> tuple[str, str, str | None, dict[str, int] | None]:
         call_id = uuid.uuid4().hex
-        expires = (datetime.now(timezone.utc) + timedelta(hours = 2)).isoformat()
+        expires = (
+            datetime.now(timezone.utc) + timedelta(seconds = _MODEL_CALL_KEY_LIFETIME_SECONDS)
+        ).isoformat()
+        key_minted = asyncio.get_running_loop().time()
         token, key = await asyncio.to_thread(
             auth_storage.create_api_key,
             username = run["ownerSubject"],
@@ -1441,6 +1446,11 @@ class ResearchSupervisor:
                 )
 
             call_started = loop.time()
+            # A wait may not outlast this call's wall clock, nor the key the re-send
+            # authenticates with, so every backoff below is measured against whichever ends first.
+            retry_deadline = key_minted + _MODEL_CALL_KEY_LIFETIME_SECONDS
+            if model_timeout:
+                retry_deadline = min(retry_deadline, call_started + model_timeout)
             async with (
                 _wall_clock_timeout(model_timeout or None),
                 httpx.AsyncClient(timeout = timeout, trust_env = False) as client,
@@ -1523,8 +1533,7 @@ class ResearchSupervisor:
                                     await self._wait_out_rate_limit(
                                         run,
                                         _retry_after_seconds(exc.response) or delay,
-                                        model_timeout,
-                                        call_started,
+                                        retry_deadline,
                                         first_output_budget,
                                     )
                                 else:
@@ -1546,11 +1555,7 @@ class ResearchSupervisor:
                         await response.aclose()
                         response = None
                         await self._wait_out_rate_limit(
-                            run,
-                            throttled or 2**attempt,
-                            model_timeout,
-                            call_started,
-                            first_output_budget,
+                            run, throttled or 2**attempt, retry_deadline, first_output_budget
                         )
                         attempt += 1
                         # re-check the lease and cancellation before re-sending.

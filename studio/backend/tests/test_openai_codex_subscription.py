@@ -18,6 +18,7 @@ import hashlib
 import json
 import time
 
+import httpx
 import pytest
 
 from core.inference import openai_codex_auth as codex_auth
@@ -2848,3 +2849,26 @@ def test_a_read_started_after_a_release_cannot_be_matched_by_the_older_one(monke
         assert offered_subscription_model_ids("provider-release-race") == {"new-slug"}
     finally:
         forget_subscription_models("provider-release-race")
+
+
+def test_quota_metadata_marks_a_terminal_refusal():
+    """A 429 is both "wait a moment" and "your plan is spent"; only the flag tells them apart."""
+    from core.inference import openai_codex_client as codex_client
+
+    response = httpx.Response(
+        429,
+        headers = {"retry-after": "30"},
+        request = httpx.Request("POST", "https://chatgpt.com/backend-api/codex/responses"),
+    )
+    throttled = codex_client._quota_metadata(response)
+    assert throttled == {"retry_after": "30"}
+    assert codex_client._quota_metadata(response, terminal = True) == {
+        "retry_after": "30",
+        "terminal": True,
+    }
+
+
+def test_terminal_quota_detail_is_recognised():
+    from core.inference import openai_codex_client as codex_client
+    assert codex_client._is_terminal_quota("You exceeded your current quota (insufficient_quota)")
+    assert not codex_client._is_terminal_quota("Rate limit reached, try again in 30s")

@@ -554,13 +554,18 @@ async def ensure_subscription_models(provider_id: str) -> set[str]:
     return set()
 
 
-def _quota_metadata(response: httpx.Response) -> dict[str, Any]:
+def _quota_metadata(response: httpx.Response, *, terminal: bool = False) -> dict[str, Any]:
     values = {
         "retry_after": response.headers.get("retry-after"),
         "requests_reset": response.headers.get("x-ratelimit-reset-requests"),
         "tokens_reset": response.headers.get("x-ratelimit-reset-tokens"),
     }
-    return {key: value for key, value in values.items() if value}
+    metadata = {key: value for key, value in values.items() if value}
+    if terminal:
+        # Exhausted, not throttled. Both leave as a 429, so without this a client that backs
+        # off on rate limits waits out delays that no amount of waiting can clear.
+        metadata["terminal"] = True
+    return metadata
 
 
 async def _upstream_error_detail(response: httpx.Response) -> str | None:
@@ -736,9 +741,8 @@ async def _validated_stream_response(
                         status = 401,
                         metadata = {"access_token": token},
                     )
-                retryable = response.status_code in _RETRYABLE_STATUSES and not _is_terminal_quota(
-                    detail
-                )
+                terminal_quota = _is_terminal_quota(detail)
+                retryable = response.status_code in _RETRYABLE_STATUSES and not terminal_quota
                 if retryable and attempt < _MAX_TRANSIENT_RETRIES:
                     await _retry_pause(_retry_delay_seconds(response, attempt), cancel_event)
                     if cancel_event is not None and cancel_event.is_set():
@@ -749,7 +753,7 @@ async def _validated_stream_response(
                     raise CodexQuotaError(
                         "ChatGPT subscription quota is temporarily unavailable.",
                         status = 429,
-                        metadata = _quota_metadata(response),
+                        metadata = _quota_metadata(response, terminal = terminal_quota),
                     )
                 suffix = f" {detail}" if detail else ""
                 raise CodexTransportError(
