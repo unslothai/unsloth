@@ -107,6 +107,19 @@ PROBE_TIMEOUT_S = 10.0
 # these seconds only on a run that was already going to fail, and it cannot turn a real
 # death into a pass.
 RECOVERY_WINDOW_S = 90.0
+# Minimum spacing between recovery probes.
+#
+# _transport_kind classifies a connection reset as a stall rather than a death, on
+# purpose, because a reset means a listener accepted and then failed to finish. But a
+# reset comes back in about a millisecond, so an unpaced loop turns this window into
+# thousands of connections against a backend that is already in trouble, which can
+# prolong the fault it is waiting to clear. Spacing costs nothing on the case that
+# matters: a real stall spends the full probe budget before returning, so no pause is
+# added at all there.
+RECOVERY_PROBE_SPACING_S = 2.0
+# Health replies are a few hundred bytes; these bound a body read that is going wrong.
+_READ_CHUNK_BYTES = 65536
+_MAX_BODY_BYTES = 1 << 20
 
 LIVENESS_PATH = "/api/liveness"
 HEALTH_PATH = "/api/health"
@@ -186,6 +199,37 @@ def _transport_kind(err: object) -> str:
     return "timeout"
 
 
+def _read_within(resp, deadline: float) -> str:
+    """Read a response body under one deadline for the whole read.
+
+    urllib's ``timeout`` is per socket operation, not per request. A peer that dribbles
+    bytes resets it on every chunk, so ``resp.read()`` can outlive any probe budget and,
+    here, the script's own wall-clock watchdog. These probes exist to decide whether the
+    backend is answering; a probe that never ends is the one outcome that must not
+    happen, because a hung job reports nothing and burns the runner.
+
+    read1() returns as soon as any data arrives rather than looping to fill the buffer,
+    so the deadline is checked between arrivals and the whole read is bounded by the
+    deadline plus at most one socket timeout.
+    """
+    reader = getattr(resp, "read1", None) or resp.read
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        if time.monotonic() >= deadline:
+            raise TimeoutError("response body did not finish inside the probe budget")
+        chunk = reader(_READ_CHUNK_BYTES)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+        if total > _MAX_BODY_BYTES:
+            # A health reply is a few hundred bytes. Anything this large is a fault, and
+            # reading it to the end would be another way to sit here indefinitely.
+            raise TimeoutError("response body exceeded the probe's size cap")
+    return b"".join(chunks).decode("utf-8", "replace")
+
+
 def _get_json(path: str, timeout: float = PROBE_TIMEOUT_S) -> tuple[int, dict | None, str]:
     """GET *path*, returning (status, body, kind).
 
@@ -207,10 +251,11 @@ def _get_json(path: str, timeout: float = PROBE_TIMEOUT_S) -> tuple[int, dict | 
     a listener that failed to see the request through, which is a stall wearing a
     different errno, so it is counted as one rather than as a death.
     """
+    deadline = time.monotonic() + timeout
     try:
         with urllib.request.urlopen(f"{BASE}{path}", timeout = timeout) as resp:
             kind = "ok" if resp.status == 200 else "http"
-            body = resp.read().decode("utf-8", "replace")
+            body = _read_within(resp, deadline)
             try:
                 return resp.status, json.loads(body), kind
             except ValueError:
@@ -226,7 +271,10 @@ def _get_json(path: str, timeout: float = PROBE_TIMEOUT_S) -> tuple[int, dict | 
         return 0, None, _transport_kind(exc)
 
 
-def await_recovery(window_s: float = RECOVERY_WINDOW_S) -> tuple[str, int, float]:
+def await_recovery(
+    window_s: float = RECOVERY_WINDOW_S,
+    spacing_s: float = RECOVERY_PROBE_SPACING_S,
+) -> tuple[str, int, float]:
     """Watch the backend after sampling stops, until it answers or *window_s* elapses.
 
     Returns the last probe's (kind, status, seconds spent watching).
@@ -243,11 +291,18 @@ def await_recovery(window_s: float = RECOVERY_WINDOW_S) -> tuple[str, int, float
     """
     began = time.monotonic()
     while True:
+        probe_began = time.monotonic()
         status, _, kind = _get_json(LIVENESS_PATH)
         if kind != "timeout":
             return kind, status, round(time.monotonic() - began, 1)
-        if time.monotonic() - began >= window_s:
-            return kind, status, round(time.monotonic() - began, 1)
+        elapsed = time.monotonic() - began
+        if elapsed >= window_s:
+            return kind, status, round(elapsed, 1)
+        # A probe that failed instantly did not spend its budget, so it was a reset
+        # rather than silence. Pace the next one, and never past the end of the window.
+        idle = spacing_s - (time.monotonic() - probe_began)
+        if idle > 0:
+            time.sleep(min(idle, window_s - elapsed))
 
 
 def _stall_windows(samples: list[dict]) -> list[tuple[float, float, bool]]:
@@ -400,7 +455,15 @@ class BackendSurvivalPoller:
         # the launcher's most generous path, and nothing that long fits in this window.
         spans = _stall_windows(self.samples)
         terminal = next((sp for sp in spans if sp[2]), None)
-        longest = max((end - start for start, end, _ in spans), default = 0.0)
+        # A span still open when sampling stopped did not end there. It ended somewhere
+        # in the post-run watch, so its real length includes that time. Measuring it to
+        # the last sample understates the one stall a reader most needs the size of, and
+        # the whole point of warning rather than failing is that a human reads the number.
+        longest = max(
+            ((end - start) + (final_wait_s if still_open else 0.0)
+             for start, end, still_open in spans),
+            default = 0.0,
+        )
 
         if final_kind == "refused":
             fail(
@@ -432,12 +495,20 @@ class BackendSurvivalPoller:
             # is green. Say so anyway: a stall this long is a real backend defect even
             # when it is not a fatal one, and it must not vanish into a pass.
             worst_ms = max(s["ms"] for s in self.samples)
+            if terminal is not None:
+                # Sampling stopped mid-stall and the watch is what saw it clear, so say
+                # that rather than claiming it answered before the run ended.
+                cleared = (
+                    f"Sampling ended during that stall; the backend answered "
+                    f"{final_wait_s}s into the post-run watch, which is included above."
+                )
+            else:
+                cleared = "It answered again before the run ended."
             print(
                 f"::warning::backend stalled: {len(spans)} window(s) with nothing answering, "
                 f"longest {round(longest, 1)}s, worst single probe {worst_ms}ms against a "
-                f"{PROBE_TIMEOUT_S}s budget. It answered again before the run ended, so this "
-                "is not a failure here. See logs/studio_tabs.log for which request was in "
-                "flight.",
+                f"{PROBE_TIMEOUT_S}s budget. {cleared} Not a failure here. See "
+                "logs/studio_tabs.log for which request was in flight.",
                 flush = True,
             )
 
@@ -851,7 +922,6 @@ def main() -> int:
         ctx.close()
         browser.close()
 
-    watchdog.cancel()
     poller.finish()
 
     # Watched after sampling stopped and handed to report(), which needs it to tell a
@@ -860,6 +930,12 @@ def main() -> int:
     kind, status, waited = await_recovery()
     info(f"post-run {LIVENESS_PATH}: {kind} after {waited}s of watching")
     poller.report(final_kind = kind, final_status = status, final_wait_s = waited)
+
+    # Cancelled only now. The recovery watch adds up to RECOVERY_WINDOW_S after the UI
+    # drive, so disarming before it ran left the longest-running part of the script with
+    # nothing enforcing WALL_TIMEOUT_S, and a probe that would not end had the job's own
+    # cap as its only bound. A hung job reports nothing, which is the worst outcome here.
+    watchdog.cancel()
 
     if _failed:
         print(f"[mac-tabs] {len(_failed)} FAILURE(S)", flush = True)

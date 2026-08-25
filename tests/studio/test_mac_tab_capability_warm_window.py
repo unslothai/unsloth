@@ -20,6 +20,7 @@ from __future__ import annotations
 import importlib.util
 import re
 import sys
+import time
 import types
 from pathlib import Path
 
@@ -415,6 +416,7 @@ def test_the_forced_verdict_check_is_wired_into_the_public_entry_point():
     assert "assert_row_never_greyed_while_unmeasured" in called.get("main", set())
 
 
+
 # --------------------------------------------------------------------------------
 # What the survival poller fails on, now that it no longer replays the watchdog.
 # --------------------------------------------------------------------------------
@@ -431,7 +433,6 @@ def _timeline(duration_s, stalls = ()):
     Probes are sequential and a timeout costs the whole budget before the next route is
     tried, which is what the real poller does.
     """
-
     def lifts_at(t):
         for start, end in stalls:
             if start <= t < end:
@@ -449,31 +450,22 @@ def _timeline(duration_s, stalls = ()):
             else:
                 took, kind = BUDGET_S, "timeout"
             now += took
-            samples.append(
-                {
-                    "t": round(now, 3),
-                    "path": path,
-                    "kind": kind,
-                    "status": 200 if kind == "ok" else 0,
-                    "ms": round(took * 1000, 1),
-                    "inference_active": None,
-                    "hardware_detecting": None,
-                    "torch_warm_in_progress": None,
-                }
-            )
+            samples.append({
+                "t": round(now, 3), "path": path, "kind": kind,
+                "status": 200 if kind == "ok" else 0,
+                "ms": round(took * 1000, 1), "inference_active": None,
+                "hardware_detecting": None, "torch_warm_in_progress": None,
+            })
         now += POLL_S
     return samples
 
 
-def _verdict(
-    mod,
-    samples,
-    final_kind = "ok",
-    final_status = 200,
-):
+def _verdict(mod, samples, final_kind = "ok", final_status = 200, final_wait_s = 0.0):
     poller = mod.BackendSurvivalPoller()
     poller.samples = samples
-    poller.report(final_kind = final_kind, final_status = final_status)
+    poller.report(
+        final_kind = final_kind, final_status = final_status, final_wait_s = final_wait_s
+    )
     return list(mod._failed)
 
 
@@ -499,9 +491,7 @@ def test_a_backend_that_never_answers_again_fails(tmp_path, monkeypatch):
     watchdog arithmetic: the backend stopped answering and was still not answering when
     the run ended, confirmed by the final probe."""
     mod = _load(tmp_path, monkeypatch)
-    failed = _verdict(
-        mod, _timeline(150, stalls = [(60, 9999)]), final_kind = "timeout", final_status = 0
-    )
+    failed = _verdict(mod, _timeline(150, stalls = [(60, 9999)]), final_kind = "timeout", final_status = 0)
     assert len(failed) == 1, failed
     assert "never answered again" in failed[0], failed
 
@@ -561,26 +551,10 @@ def test_an_answer_from_either_route_closes_a_stall(tmp_path, monkeypatch):
     from either is proof the backend was serving and ends the span."""
     mod = _load(tmp_path, monkeypatch)
     samples = [
-        {
-            "t": 10.0,
-            "path": "/api/liveness",
-            "kind": "timeout",
-            "status": 0,
-            "ms": 10000.0,
-            "inference_active": None,
-            "hardware_detecting": None,
-            "torch_warm_in_progress": None,
-        },
-        {
-            "t": 10.1,
-            "path": "/api/health",
-            "kind": "ok",
-            "status": 200,
-            "ms": 5.0,
-            "inference_active": None,
-            "hardware_detecting": None,
-            "torch_warm_in_progress": None,
-        },
+        {"t": 10.0, "path": "/api/liveness", "kind": "timeout", "status": 0, "ms": 10000.0,
+         "inference_active": None, "hardware_detecting": None, "torch_warm_in_progress": None},
+        {"t": 10.1, "path": "/api/health", "kind": "ok", "status": 200, "ms": 5.0,
+         "inference_active": None, "hardware_detecting": None, "torch_warm_in_progress": None},
     ]
     spans = mod._stall_windows(samples)
     assert len(spans) == 1, spans
@@ -630,7 +604,8 @@ def test_the_watch_keeps_probing_until_the_backend_answers(tmp_path, monkeypatch
     tell the difference, so the watch keeps asking until something comes back."""
     mod = _load(tmp_path, monkeypatch)
     calls = _scripted_probes(mod, ["timeout", "timeout", "ok"])
-    kind, status, _ = mod.await_recovery(window_s = 30.0)
+    # spacing off: this case is about the loop continuing, not about how it paces.
+    kind, status, _ = mod.await_recovery(window_s = 30.0, spacing_s = 0.0)
     assert (kind, status) == ("ok", 200)
     assert len(calls) == 3, calls
 
@@ -640,7 +615,7 @@ def test_the_watch_gives_up_and_reports_a_timeout(tmp_path, monkeypatch):
     probes either, which is why extending the observation cannot rescue a real death."""
     mod = _load(tmp_path, monkeypatch)
     calls = _scripted_probes(mod, ["timeout"])
-    kind, _, _ = mod.await_recovery(window_s = 0.05)
+    kind, _, _ = mod.await_recovery(window_s = 0.05, spacing_s = 0.0)
     assert kind == "timeout"
     assert len(calls) >= 1, calls
 
@@ -653,7 +628,7 @@ def test_a_refused_port_does_not_get_the_recovery_window(tmp_path, monkeypatch):
     # Small but non-zero on purpose. A build that stopped returning early would spend it
     # and rack up probes, so this fails on the call count in a moment rather than hanging
     # the suite for as long as the real window lasts.
-    kind, _, _ = mod.await_recovery(window_s = 2.0)
+    kind, _, _ = mod.await_recovery(window_s = 2.0, spacing_s = 0.0)
     assert kind == "refused"
     assert len(calls) == 1, f"spent the window instead of returning at once: {len(calls)} probes"
 
@@ -662,7 +637,7 @@ def test_an_answered_non_200_does_not_get_the_recovery_window(tmp_path, monkeypa
     """Also already decided: the backend answered, so waiting adds nothing."""
     mod = _load(tmp_path, monkeypatch)
     calls = _scripted_probes(mod, ["http"])
-    kind, status, _ = mod.await_recovery(window_s = 2.0)
+    kind, status, _ = mod.await_recovery(window_s = 2.0, spacing_s = 0.0)
     assert (kind, status) == ("http", 503)
     assert len(calls) == 1, f"spent the window instead of returning at once: {len(calls)} probes"
 
@@ -689,13 +664,194 @@ def test_the_post_run_watch_is_wired_into_the_public_entry_point():
     }
     assert "await_recovery" in called
     reports = [
-        sub
-        for sub in ast.walk(main)
-        if isinstance(sub, ast.Call)
-        and isinstance(sub.func, ast.Attribute)
-        and sub.func.attr == "report"
-        and sub.keywords
+        sub for sub in ast.walk(main)
+        if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
+        and sub.func.attr == "report" and sub.keywords
     ]
     assert reports, "main() no longer hands a post-run verdict to report()"
     passed = {kw.arg for call in reports for kw in call.keywords}
     assert {"final_kind", "final_wait_s"} <= passed, passed
+
+
+# --------------------------------------------------------------------------------
+# The watch has to be bounded, paced, and honest about what it saw.
+# --------------------------------------------------------------------------------
+
+
+def _serve(handler_body, trickle = False, huge = False):
+    """A one-shot HTTP server on a free port. Returns (base_url, shutdown)."""
+    import http.server
+    import threading
+
+    class H(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self):
+            if trickle:
+                # Headers, then a byte at a time forever. Every chunk resets urllib's
+                # per-operation timeout, which is the shape that hangs a naive read().
+                self.send_response(200)
+                self.send_header("Content-Length", "1000000")
+                self.end_headers()
+                try:
+                    while True:
+                        self.wfile.write(b"x")
+                        self.wfile.flush()
+                        time.sleep(0.02)
+                except Exception:
+                    pass
+                return
+            payload = b"x" * (4 << 20) if huge else handler_body
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target = srv.serve_forever, daemon = True).start()
+    return f"http://127.0.0.1:{srv.server_port}", srv.shutdown
+
+
+def test_a_trickling_response_cannot_outlive_the_probe_budget(tmp_path, monkeypatch):
+    """urllib's timeout is per socket operation, so a peer that dribbles bytes resets it
+    forever and read() never returns. That would outlive the script's wall watchdog and
+    hang the job, which reports nothing at all. The read carries its own deadline."""
+    import threading
+
+    mod = _load(tmp_path, monkeypatch)
+    base, shutdown = _serve(b"{}", trickle = True)
+    monkeypatch.setattr(mod, "BASE", base)
+    # Driven from a daemon thread so that a build without the deadline fails this in five
+    # seconds instead of hanging the suite. A hang is the failure mode under test; it must
+    # not also be this test's own failure mode.
+    result = {}
+
+    def probe():
+        result["kind"] = mod._get_json("/api/liveness", timeout = 0.5)[2]
+
+    worker = threading.Thread(target = probe, daemon = True)
+    try:
+        began = time.monotonic()
+        worker.start()
+        worker.join(timeout = 5.0)
+        elapsed = time.monotonic() - began
+    finally:
+        shutdown()
+    assert not worker.is_alive(), "the probe never returned: a read with no deadline hangs the job"
+    assert result.get("kind") == "timeout"
+    assert elapsed < 5.0, f"probe ran {elapsed:.1f}s against a 0.5s budget"
+
+
+def test_an_oversized_body_does_not_get_read_to_the_end(tmp_path, monkeypatch):
+    """The other way to sit on a socket indefinitely. A health reply is a few hundred
+    bytes, so a body this size is a fault and reading it all is not the way to find out."""
+    mod = _load(tmp_path, monkeypatch)
+    base, shutdown = _serve(b"", huge = True)
+    monkeypatch.setattr(mod, "BASE", base)
+    try:
+        _, _, kind = mod._get_json("/api/liveness", timeout = 30.0)
+    finally:
+        shutdown()
+    assert kind == "timeout"
+
+
+def test_immediate_failures_are_paced_during_recovery(tmp_path, monkeypatch):
+    """_transport_kind calls a reset a stall on purpose, and a reset returns in about a
+    millisecond, so an unpaced window becomes thousands of connections against a backend
+    that is already in trouble. Pacing is bounded by the window, never past it."""
+    mod = _load(tmp_path, monkeypatch)
+    calls = _scripted_probes(mod, ["timeout"])
+    began = time.monotonic()
+    kind, _, _ = mod.await_recovery(window_s = 1.0, spacing_s = 0.2)
+    elapsed = time.monotonic() - began
+    assert kind == "timeout"
+    assert len(calls) <= 8, f"unpaced: {len(calls)} probes in {elapsed:.2f}s"
+    assert elapsed < 3.0, f"paced past the window: {elapsed:.2f}s"
+
+
+def test_a_real_stall_is_not_slowed_down_by_the_pacing(tmp_path, monkeypatch):
+    """A probe that spends its whole budget needs no pause after it, so the spacing costs
+    nothing on the case the window actually exists for."""
+    mod = _load(tmp_path, monkeypatch)
+
+    def slow(path, timeout = 10.0):
+        time.sleep(0.25)
+        return 0, None, "timeout"
+
+    mod._get_json = slow
+    began = time.monotonic()
+    mod.await_recovery(window_s = 0.5, spacing_s = 0.2)
+    assert time.monotonic() - began < 1.5
+
+
+def test_the_wall_watchdog_stays_armed_through_recovery_and_reporting():
+    """The watch runs after the UI drive and can add RECOVERY_WINDOW_S, so disarming
+    before it left the longest part of the script with nothing enforcing the deadline."""
+    import ast
+
+    tree = ast.parse(SCRIPT.read_text(encoding = "utf-8"))
+    main = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "main")
+    cancels = [
+        n.lineno for n in ast.walk(main)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "cancel"
+    ]
+    reports = [
+        n.lineno for n in ast.walk(main)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "report" and n.keywords
+    ]
+    recoveries = [
+        n.lineno for n in ast.walk(main)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+        and n.func.id == "await_recovery"
+    ]
+    assert cancels and reports and recoveries
+    assert min(cancels) > max(recoveries), "watchdog disarmed before the recovery watch"
+    assert min(cancels) > max(reports), "watchdog disarmed before reporting"
+
+
+def test_the_warning_counts_the_post_run_wait(tmp_path, monkeypatch, capsys):
+    """Sampling stops at an arbitrary moment. If it stops mid-stall, the span ends at the
+    last timed-out sample, so the reported length leaves out every second of the watch
+    that actually saw the stall clear. A warning nobody can trust is worse than none."""
+    mod = _load(tmp_path, monkeypatch)
+    # A SHORT trailing stall on purpose. With a long one the span alone clears any
+    # threshold and the assertion below passes whether or not the wait is counted, which
+    # is how this test first shipped without discriminating.
+    samples = _timeline(150, stalls = [(140, 9999)])
+    assert samples[-1]["kind"] == "timeout", "fixture no longer ends mid-stall"
+    raw = max(end - start for start, end, _ in mod._stall_windows(samples))
+    assert raw < 40.0, f"fixture stall is already long enough to pass on its own: {raw}s"
+    assert _verdict(mod, samples, final_kind = "ok", final_wait_s = 40.0) == []
+    warning = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("::warning::")]
+    assert warning, "no warning emitted for a stall that cleared after the run"
+    longest = float(re.search(r"longest ([\d.]+)s", warning[0]).group(1))
+    assert longest >= raw + 40.0 - 0.5, f"post-run wait not counted: {longest}s vs span {raw}s"
+    assert "post-run watch" in warning[0], warning[0]
+    assert "before the run ended" not in warning[0], warning[0]
+
+
+def test_the_warning_still_says_before_the_run_when_that_is_true(tmp_path, monkeypatch, capsys):
+    """The other half: a stall that closed while sampling was still going did clear before
+    the run ended, and the wording has to keep saying so."""
+    mod = _load(tmp_path, monkeypatch)
+    assert _verdict(mod, _timeline(150, stalls = [(30, 63)]), final_kind = "ok") == []
+    warning = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("::warning::")]
+    assert warning and "before the run ended" in warning[0], warning
+    assert "post-run watch" not in warning[0], warning[0]
+
+
+def test_pacing_never_sleeps_past_the_end_of_the_window(tmp_path, monkeypatch):
+    """The pause is clamped to whatever is left. A spacing wider than the remaining window
+    must not extend the watch, or the bound the wall watchdog is enforcing stops holding."""
+    mod = _load(tmp_path, monkeypatch)
+    _scripted_probes(mod, ["timeout"])
+    began = time.monotonic()
+    mod.await_recovery(window_s = 0.3, spacing_s = 5.0)
+    elapsed = time.monotonic() - began
+    assert elapsed < 2.0, f"slept past the window: {elapsed:.2f}s for a 0.3s window"
