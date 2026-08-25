@@ -2,18 +2,21 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { type Unzipped, strFromU8, unzipSync, zipSync } from "fflate";
+import { TEXT_ATTACHMENT_ACCEPT } from "./text-attachment-accept";
 
-import {
-  OPEN_DOCUMENT_SPREADSHEET_MIME,
-  OPEN_DOCUMENT_TEXT_MIME,
-} from "./open-document-accept";
 import {
   MAX_OPEN_DOCUMENT_ARCHIVE_BYTES,
   MAX_OPEN_DOCUMENT_XML_BYTES,
   readOpenDocumentAttachmentContent,
 } from "./open-document";
+import {
+  OPEN_DOCUMENT_SPREADSHEET_MIME,
+  OPEN_DOCUMENT_TEXT_MIME,
+} from "./open-document-accept";
 
 export type AttachmentTextLabel = "PDF" | "DOCX" | "HTML" | "ODS" | "ODT";
+
+export { TEXT_ATTACHMENT_ACCEPT };
 
 export type AttachmentText = {
   label: AttachmentTextLabel | null;
@@ -36,19 +39,6 @@ const ATTACHMENT_TAG_CLOSE = "\n</attachment>";
 const MAX_ATTACHMENT_WRAPPER_LENGTH = 4096;
 const DOCX_MIME =
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-// Shared with TextAttachmentAdapter so the preview applies the same first-match
-// dispatch before falling through to the document-specific adapters.
-export const TEXT_ATTACHMENT_ACCEPT = [
-  "text/plain,text/markdown,text/csv,text/xml,text/json,text/css",
-  "application/json,application/xml,image/svg+xml",
-  ".txt,.text,.log,.md,.markdown,.mdx,.rst,.csv,.tsv",
-  ".json,.jsonl,.ndjson,.xml,.yaml,.yml,.toml,.ini,.cfg,.conf,.env,.properties",
-  ".css,.scss,.sass,.less,.svg",
-  ".js,.jsx,.mjs,.cjs,.ts,.tsx,.py,.pyi,.ipynb,.rb,.php,.go,.rs,.java,.kt,.kts,.scala,.swift",
-  ".c,.h,.cc,.cpp,.hpp,.cxx,.cs,.m,.mm",
-  ".sh,.bash,.zsh,.fish,.ps1,.bat,.lua,.pl,.pm,.r,.jl,.dart,.vue,.svelte,.astro",
-  ".sql,.graphql,.gql,.proto,.tf,.tfvars,.gradle,.dockerfile,.makefile,.cmake,.diff,.patch",
-].join(",");
 // mammoth picks the parts it parses out of the relationships, not out of the
 // filenames, so a target may be called anything ("payload.bin") and still be
 // inflated and parsed as XML, while an .xml part nothing points at (customXml,
@@ -242,7 +232,10 @@ const MAX_PREVIEW_TEXT_LENGTH = 200_000;
 const MAX_PREVIEW_TEXT_BYTES = MAX_PREVIEW_TEXT_LENGTH * 5;
 
 /** Own-property lookup: an extension or entity named "constructor" would otherwise resolve to a member of Object.prototype. */
-function lookUp(table: Record<string, string>, key: string): string | undefined {
+function lookUp(
+  table: Record<string, string>,
+  key: string,
+): string | undefined {
   return Object.hasOwn(table, key) ? table[key] : undefined;
 }
 

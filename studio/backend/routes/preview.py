@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from loggers import get_logger
 
-from auth.authentication import get_current_subject
+from auth.authentication import authenticated_without_credential, get_current_subject
 from auth.storage import DEFAULT_ADMIN_USERNAME
 from models.inference import ChatCompletionRequest, LoadRequest
 from routes.inference import (
@@ -182,9 +182,13 @@ async def _serve_chat(
 
 
 @router.get("")
-async def list_previews(request: Request, current_subject: str = Depends(get_current_subject)):
+async def list_previews(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    no_credential: bool = Depends(authenticated_without_credential),
+):
     base = str(request.base_url)
-    sharing_on = get_preview_sharing_enabled()
+    sharing_on = get_preview_sharing_enabled() and not no_credential
     previews = []
     for target in list_preview_targets():
         ref = quote(target["ref"], safe = "/")

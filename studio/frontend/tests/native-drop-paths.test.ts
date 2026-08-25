@@ -10,6 +10,10 @@ import {
   OPEN_DOCUMENT_ATTACHMENT_EXTENSIONS,
 } from "../src/features/chat/open-document-accept.ts";
 import {
+  TEXT_ATTACHMENT_ACCEPT,
+  TEXT_ATTACHMENT_EXTENSIONS,
+} from "../src/features/chat/text-attachment-accept.ts";
+import {
   dequeueNativeAttachments,
   enqueueNativeAttachments,
 } from "../src/features/native-intents/attachment-queue.ts";
@@ -19,6 +23,7 @@ import {
   CHAT_VIDEO_DROP_ACCEPT,
   SUPPORTED_DROP_HINT,
   classifyDropPaths,
+  isComposerAttachmentName,
 } from "../src/features/native-intents/drop-paths.ts";
 import type { NativeIntent } from "../src/features/native-intents/types.ts";
 import { RAG_UPLOAD_ACCEPT } from "../src/features/rag/types/rag.ts";
@@ -37,16 +42,23 @@ const BACKEND_UPLOAD_EXTS_RE = /UPLOAD_EXTS\s*=\s*\{([^}]+)\}/s;
 const RUST_ATTACHMENT_EXTS_RE = /ATTACHMENT_EXTS[^=]*=\s*&\[([^\]]+)\]/s;
 const RUST_OPEN_DOCUMENT_ATTACHMENT_EXTS_RE =
   /OPEN_DOCUMENT_ATTACHMENT_EXTS[^=]*=\s*&\[([^\]]+)\]/s;
-const RUST_IMAGE_ATTACHMENT_EXTS_RE = /IMAGE_ATTACHMENT_EXTS[^=]*=\s*&\[([^\]]+)\]/s;
-const RUST_AUDIO_ATTACHMENT_EXTS_RE = /AUDIO_ATTACHMENT_EXTS[^=]*=\s*&\[([^\]]+)\]/s;
+const RUST_IMAGE_ATTACHMENT_EXTS_RE =
+  /IMAGE_ATTACHMENT_EXTS[^=]*=\s*&\[([^\]]+)\]/s;
+const RUST_AUDIO_ATTACHMENT_EXTS_RE =
+  /AUDIO_ATTACHMENT_EXTS[^=]*=\s*&\[([^\]]+)\]/s;
 const RUST_AUDIO_MIME_RE = /Some\("(audio\/[^"]+)"\)/g;
-const RUST_VIDEO_ATTACHMENT_EXTS_RE = /VIDEO_ATTACHMENT_EXTS[^=]*=\s*&\[([^\]]+)\]/s;
+const RUST_VIDEO_ATTACHMENT_EXTS_RE =
+  /VIDEO_ATTACHMENT_EXTS[^=]*=\s*&\[([^\]]+)\]/s;
+const RUST_TEXT_ATTACHMENT_EXTS_RE =
+  /TEXT_ATTACHMENT_EXTS[^=]*=\s*&\[([^\]]+)\]/s;
 const RUST_VIDEO_MIME_RE = /Some\("(video\/[^"]+)"\)/g;
 const DOTTED_EXTENSION_RE = /"(\.[^"]+)"/g;
 const RUST_EXTENSION_RE = /"([^"]+)"/g;
 const RUST_MIME_ARM_RE = /Some\("(image\/[^"]+)"\)/g;
-const MIME_MATCH_BODY_RE = /fn attachment_mime_type[\s\S]*?match ext\.as_str\(\) \{([\s\S]*?)\n {4}\}/;
-const MIME_ARM_EXTENSION_RE = /^\s*((?:"[^"]+"\s*\|?\s*)+)=>\s*Some\("image\//gm;
+const MIME_MATCH_BODY_RE =
+  /fn attachment_mime_type[\s\S]*?match ext\.as_str\(\) \{([\s\S]*?)\n {4}\}/;
+const MIME_ARM_EXTENSION_RE =
+  /^\s*((?:"[^"]+"\s*\|?\s*)+)=>\s*Some\("image\//gm;
 const COMPOSER_IMAGE_ACCEPT_RE = /const IMAGE_ACCEPT\s*=\s*"([^"]+)"/;
 const VISION_ADAPTER_ACCEPT_RE =
   /class VisionImageAdapter[^{]*\{\s*accept\s*=\s*"([^"]+)"/s;
@@ -54,13 +66,13 @@ const OPEN_DOCUMENT_EXTENSION_RE = /\.ods/;
 const OPEN_DOCUMENT_ADAPTER_ACCEPT_RE =
   /class OpenDocumentAttachmentAdapter[^{]*\{[\s\S]*?accept = OPEN_DOCUMENT_ATTACHMENT_ACCEPT;/;
 const OPEN_DOCUMENT_DROP_TO_COMPOSER_RE =
-  /await attachOptions\.onAttachImages\?\.\(registered\.images\)[\s\S]*?await attachOptions\.onAttachOpenDocuments\?\.\([\s\S]*?registered\.openDocuments/;
+  /const composerAttachments = \[[\s\S]*?\.\.\.registered\.composerDocuments,[\s\S]*?\.\.\.registered\.images,[\s\S]*?await attachOptions\.onAttachOpenDocuments\?\.\([\s\S]*?composerAttachments/;
 const OPEN_DOCUMENT_REGISTRATION_CLASS_RE =
-  /const openDocumentPaths = docPaths\.filter\(isOpenDocumentAttachmentName\);[\s\S]*?const ragDocumentPaths = docPaths\.filter[\s\S]*?registerEach\(ragDocumentPaths\),[\s\S]*?registerEach\(openDocumentPaths\),[\s\S]*?openDocuments: openDocuments\.intents/;
+  /const composerDocumentPaths = docPaths\.filter\(isComposerAttachmentName\);[\s\S]*?const ragDocumentPaths = docPaths\.filter[\s\S]*?registerEach\(ragDocumentPaths\),[\s\S]*?registerEach\(composerDocumentPaths\),[\s\S]*?composerDocuments: composerDocuments\.intents/;
 const OPEN_DOCUMENT_IMAGE_REGISTRATION_RE =
-  /const needsOpenDocuments = openDocumentPaths\.length > 0;[\s\S]*?const needsComposerAttachments = needsImages \|\| needsOpenDocuments;[\s\S]*?if \(needsComposerAttachments\) store\.beginImageDropRegistration\(\);[\s\S]*?finally \{[\s\S]*?if \(needsComposerAttachments\) store\.endImageDropRegistration\(\)/;
+  /const needsComposerDocuments = composerDocumentPaths\.length > 0;[\s\S]*?const needsComposerAttachments =\s*needsImages \|\| needsComposerDocuments;[\s\S]*?if \(needsComposerAttachments\) store\.beginImageDropRegistration\(\);[\s\S]*?finally \{[\s\S]*?if \(needsComposerAttachments\) store\.endImageDropRegistration\(\)/;
 const OPEN_DOCUMENT_BACKEND_GATE_RE =
-  /function canAttachDocumentPaths[\s\S]*?isOpenDocumentAttachmentName\(path\)[\s\S]*?\? canAttachOpenDocuments\(options\)[\s\S]*?: canAttachDocs\(options\)[\s\S]*?const needsRagDocuments = documentPaths\.some[\s\S]*?if \(needsRagDocuments && !canAttachDocs\(currentOptions\)\)/;
+  /function canAttachDocumentPaths[\s\S]*?isComposerAttachmentName\(path\)[\s\S]*?\? canAttachOpenDocuments\(options\)[\s\S]*?: canAttachDocs\(options\)[\s\S]*?const needsRagDocuments = documentPaths\.some[\s\S]*?if \(needsRagDocuments && !canAttachDocs\(currentOptions\)\)/;
 const OPEN_DOCUMENT_CHAT_QUEUE_RE =
   /const handleNativeOpenDocumentDrop = useCallback\([\s\S]*?addOpenDocumentAttachments\(artifactViewKey, intents\)[\s\S]*?onAttachOpenDocuments: handleNativeOpenDocumentDrop/;
 const OPEN_DOCUMENT_DRAIN_RE =
@@ -316,7 +328,10 @@ test("every MIME type Rust stamps is one the vision adapter claims", () => {
     .map((type) => type.trim())
     .sort();
 
-  assert.ok(stamped.length > 0, "no image MIME arms found in native_intents.rs");
+  assert.ok(
+    stamped.length > 0,
+    "no image MIME arms found in native_intents.rs",
+  );
   assert.deepEqual(stamped, accepted);
 });
 
@@ -342,7 +357,9 @@ test("every accepted image extension has a Rust MIME arm", () => {
   const body = intentsSource.match(MIME_MATCH_BODY_RE)?.[1];
   assert.ok(body, "attachment_mime_type match block not found");
   const mapped = [...body.matchAll(MIME_ARM_EXTENSION_RE)]
-    .flatMap((match) => [...match[1].matchAll(/"([^"]+)"/g)].map((ext) => ext[1]))
+    .flatMap((match) =>
+      [...match[1].matchAll(/"([^"]+)"/g)].map((ext) => ext[1]),
+    )
     .sort();
 
   assert.ok(accepted.length > 0, "no IMAGE_ATTACHMENT_EXTS found");
@@ -392,7 +409,8 @@ test("a remounted composer claims image and OpenDocument batches", () => {
   // A different composer must not take it.
   store.claimImageAttachments("composer-2", "single:other");
   assert.equal(
-    useNativeIntentStore.getState().pendingImageAttachments["single:new"]?.length,
+    useNativeIntentStore.getState().pendingImageAttachments["single:new"]
+      ?.length,
     1,
   );
 
@@ -401,10 +419,9 @@ test("a remounted composer claims image and OpenDocument batches", () => {
   assert.equal(after.pendingImageAttachments["single:new"], undefined);
   assert.deepEqual(after.pendingImageAttachments["single:thread-7"], [intent]);
   assert.equal(after.pendingOpenDocumentAttachments["single:new"], undefined);
-  assert.deepEqual(
-    after.pendingOpenDocumentAttachments["single:thread-7"],
-    [openDocument],
-  );
+  assert.deepEqual(after.pendingOpenDocumentAttachments["single:thread-7"], [
+    openDocument,
+  ]);
   assert.deepEqual(after.imageDropOwners, {});
 });
 
@@ -430,7 +447,11 @@ test("ownership recorded after a claim is still picked up", () => {
   store.noteImageDropOwner("single:new", "composer-3");
 
   const owners = useNativeIntentStore.getState().imageDropOwners;
-  assert.equal(owners["single:new"], "composer-3", "the note survives for a later claim");
+  assert.equal(
+    owners["single:new"],
+    "composer-3",
+    "the note survives for a later claim",
+  );
 
   store.claimImageAttachments("composer-3", "single:thread-9");
   const after = useNativeIntentStore.getState();
@@ -455,7 +476,11 @@ test("image failures cannot consume queued OpenDocuments", () => {
 test("document, image and audio drop extensions stay disjoint", () => {
   // classifyDropPaths sums the three filters; an overlap double-counts and
   // turns a good drop into "unsupported".
-  const exts = [RAG_UPLOAD_ACCEPT, CHAT_IMAGE_DROP_ACCEPT, CHAT_AUDIO_DROP_ACCEPT]
+  const exts = [
+    RAG_UPLOAD_ACCEPT,
+    CHAT_IMAGE_DROP_ACCEPT,
+    CHAT_AUDIO_DROP_ACCEPT,
+  ]
     .flatMap((accept) => accept.split(","))
     .map((ext) => ext.trim().toLowerCase());
   assert.deepEqual(
@@ -642,4 +667,79 @@ test("the native video cap is the raw limit the reference picker enforces", () =
   assert.equal(rustCap, MAX_REFERENCE_BYTES.video);
   // The thing that made this wrong: the two differ by a third.
   assert.ok(rustCap < 96 * 1024 * 1024);
+});
+
+test("a dropped source file attaches instead of being refused", () => {
+  for (const path of ["/src/Program.cs", "/src/index.php", "/app/main.js"]) {
+    assert.equal(classifyDropPaths([path]).kind, "docs", path);
+    assert.equal(isComposerAttachmentName(path), true, path);
+  }
+  const mixed = classifyDropPaths(["/src/a.cs", "/notes/report.pdf"]);
+  assert.equal(mixed.kind, "docs");
+});
+
+test("RAG documents keep their existing route", () => {
+  for (const path of ["/docs/notes.txt", "/docs/notes.md", "/docs/paper.pdf"]) {
+    assert.equal(classifyDropPaths([path]).kind, "docs", path);
+    assert.equal(isComposerAttachmentName(path), false, path);
+  }
+});
+
+test("a dotfile is not mistaken for a source file", () => {
+  // Rust classifies on Path::extension, which ".env" does not have.
+  for (const path of ["/p/.env", "/p/.properties", "/p/.log"]) {
+    assert.equal(isComposerAttachmentName(path), false, path);
+    assert.equal(classifyDropPaths([path]).kind, "unsupported", path);
+  }
+  assert.equal(isComposerAttachmentName("/p/app.env"), true);
+});
+
+test("an unreadable type is still refused", () => {
+  assert.equal(classifyDropPaths(["/docs/archive.zip"]).kind, "unsupported");
+  assert.equal(classifyDropPaths(["/bin/tool.exe"]).kind, "unsupported");
+});
+
+test("frontend and Rust accept the same dropped text extensions", () => {
+  const docs = RAG_UPLOAD_ACCEPT.split(",").map((ext) =>
+    ext.trim().toLowerCase(),
+  );
+  const frontend = TEXT_ATTACHMENT_EXTENSIONS.map((ext) => ext.toLowerCase())
+    .filter((ext) => !docs.includes(ext))
+    .sort();
+  const rustSource = readFileSync(
+    new URL("../../src-tauri/src/native_path_policy.rs", import.meta.url),
+    "utf8",
+  );
+  const rust = [
+    ...(rustSource
+      .match(RUST_TEXT_ATTACHMENT_EXTS_RE)?.[1]
+      .matchAll(RUST_EXTENSION_RE) ?? []),
+  ]
+    .map((match) => `.${match[1]}`)
+    .sort();
+
+  assert.deepEqual(rust, frontend);
+});
+
+test("the composer adapter reads the shared text accept list", () => {
+  const src = readFileSync(
+    new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    src,
+    /class TextAttachmentAdapter implements AttachmentAdapter \{[\s\S]*?accept = TEXT_ATTACHMENT_ACCEPT;/,
+  );
+  for (const ext of [".cs", ".php", ".js"]) {
+    assert.ok(TEXT_ATTACHMENT_ACCEPT.includes(ext), ext);
+  }
+
+  const attachmentContentSource = readFileSync(
+    new URL("../src/features/chat/attachment-content.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    attachmentContentSource,
+    /import \{ TEXT_ATTACHMENT_ACCEPT \} from "\.\/text-attachment-accept";/,
+  );
 });

@@ -571,7 +571,7 @@ def _purge_incomplete_blobs(
             if only_hashes is not None and blob_hash not in only_hashes:
                 continue
             if unresumable_only:
-                if partial_is_resumable(blob.name):
+                if partial_is_resumable(blob.name, entry.parent):
                     continue
                 # Two independent ways to spot a live writer, because neither is sufficient
                 # alone: the lock is the precise signal but upstream calls it best-effort and
@@ -1063,7 +1063,7 @@ def _resumable_blob_hashes(entry: Path) -> set[str]:
             if not blob.is_file():
                 continue
             blob_hash = incomplete_blob_hash(blob.name)
-            if blob_hash is not None and partial_is_resumable(blob.name):
+            if blob_hash is not None and partial_is_resumable(blob.name, entry.parent):
                 out.add(blob_hash)
     except OSError:
         return out
@@ -1124,7 +1124,7 @@ def incomplete_blob_hashes(
                 blob_hash = incomplete_blob_hash(blob.name)
                 if blob_hash is None:
                     continue
-                if resumable_only and not partial_is_resumable(blob.name):
+                if resumable_only and not partial_is_resumable(blob.name, entry.parent):
                     continue
                 out.add(blob_hash)
         except OSError:
@@ -1202,7 +1202,7 @@ def existing_blob_bytes(
                     continue
                 if (
                     partial_hash is not None
-                    and not partial_is_resumable(blob.name)
+                    and not partial_is_resumable(blob.name, entry.parent)
                     and not blob_download_lock_held(entry, blob_hash)
                 ):
                     # Callers spend this on "bytes we will not have to fetch again", and

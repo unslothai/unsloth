@@ -259,7 +259,20 @@ jobs:
         # at 82.5s (measured under -n 4 on a contended box; 75.4s serially), and the next
         # ones down are 76s and 25s, so the cap is 4x the worst real test. Nothing here is
         # near it, and a deadlock is caught in minutes rather than never.
+        #
+        # --timeout arms inside each xdist worker, so a stuck CONTROLLER escapes it: when a
+        # worker wedges holding the pipe, the session waits forever and no per-test cap is
+        # consulted. On the #9473 branch this step sat silent from 95% for 36.8 minutes,
+        # three runs running, each burning the whole 45 minute budget and reporting
+        # "cancelled" -- unreadable against ordinary concurrency supersession.
+        #
+        # So bound the session from outside, where a wedged worker cannot defeat it. SIGINT
+        # first so pytest dumps where it was stuck, SIGKILL 60s later if it will not.
+        # Reproduced with a test forking a child that never exits: unwrapped it hangs
+        # silently, wrapped it exits 124 through execnet safe_terminate -> workerpool.waitall.
+        # Expect a stuck FRAME, not always a test name. 1500s is ~3x the 8-10 minute norm.
         run: |
+          timeout --signal=INT --kill-after=60 1500 \
           python -m pytest tests/ -q --tb=short -n 4 --timeout=330 \
             --ignore=tests/test_studio_api.py \
             --ignore=tests/test_streaming_stripper.py \
@@ -463,15 +476,18 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}/studio
           UNSLOTH_COMPILE_DISABLE: '1'
-        # These drive a live uvicorn server and assert upper bounds on real
-        # elapsed time: a /health burst must stay under 250 ms while a 600 ms
-        # blocking probe runs, and a 100-request burst under 350 ms. That is the
-        # actual contract (the route hands the blocking call to a thread), so the
-        # bounds cannot be relaxed without the test ceasing to test anything.
-        # A descheduled worker inflates them, so they run alone. Measured under
-        # 3x CPU oversubscription the margin is wide (8 ms against 250, 38 ms
-        # against 350), but a runner core is several times slower than the box
-        # that measured it, which puts the 350 ms one within reach.
+        # These drive a live uvicorn server and assert upper bounds on real elapsed
+        # time: 50 concurrent probes under 15s, a fast-shim probe under 2s, five
+        # sequential probes under 10s, and a not-loaded short circuit under 50 ms.
+        # A descheduled worker inflates them, so they run alone.
+        #
+        # The two tightest bounds this step used to carry, 250 ms for a /health burst
+        # and 350 ms for a 100-request burst, are gone. Both were proxies for one
+        # property, that the route hands its blocking call to a thread and leaves the
+        # event loop free, and both could be falsified by a descheduled thread with the
+        # code entirely correct. Those two tests now hold the blocking call open on an
+        # event and require /health to answer while it is held, which asserts the
+        # property itself and does not move with load.
         # 20s serially, against the ~10 minutes -n 4 saves on this job.
         run: python -m pytest tests/studio/load_freeze -q --tb=short
 

@@ -62,8 +62,15 @@ trap '_on_signal INT 2' INT
 trap '_on_signal HUP 1' HUP
 
 healthy=0
-for _ in $(seq 1 180); do
-  if curl -fs "http://127.0.0.1:$port/api/health" >/dev/null; then
+# --max-time, or only the loop counter is bounded and a server that binds the
+# port then wedges parks the first iteration forever. And a real deadline
+# rather than an iteration count, because once a probe can cost --max-time,
+# 180 iterations is up to 18 minutes rather than the 180s it reads as. See
+# wait-for-health.sh, which had both halves of the same hole.
+health_deadline=$(( SECONDS + 180 ))
+while [ "$SECONDS" -lt "$health_deadline" ]; do
+  if curl -fs --connect-timeout 3 --max-time 5 \
+       "http://127.0.0.1:$port/api/health" >/dev/null; then
     healthy=1
     break
   fi

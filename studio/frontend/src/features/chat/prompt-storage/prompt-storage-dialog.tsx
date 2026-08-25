@@ -68,6 +68,7 @@ import {
   renderConversationBlocks,
 } from "../utils/conversation-markdown";
 import { planChatItemSources } from "../utils/project-source-plan";
+import { stripSearchImageTokens } from "../search-images/search-images.ts";
 import { saveMarkdownAsProjectSource } from "@/features/rag";
 
 function newId(): string {
@@ -475,7 +476,9 @@ async function saveConversationAsProjectSource(
   const markdown = buildConversationMarkdown(
     messages.map((msg) => ({
       role: String(msg.role ?? ""),
-      content: messageToMarkdown(msg),
+      // As the markdown exporter does: a project source is retrieved back into
+      // context, so the renderer's tokens must not be saved as prose.
+      content: stripSearchImageTokens(messageToMarkdown(msg)),
     })),
   );
   if (!markdown) {

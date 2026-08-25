@@ -101,6 +101,7 @@ export const CHAT_COLLAPSE_HTML_ARTIFACTS_KEY =
   "unsloth_chat_collapse_html_artifacts";
 export const CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY =
   "unsloth_chat_allow_artifact_network_access";
+export const CHAT_SEARCH_IMAGES_KEY = "unsloth_chat_search_images";
 export const CHAT_MCP_ENABLED_KEY = "unsloth_chat_mcp_enabled";
 export const CHAT_CONFIRM_TOOL_CALLS_KEY = "unsloth_chat_confirm_tool_calls";
 export const CHAT_EXPAND_QUANTIZATIONS_KEY =
@@ -461,19 +462,71 @@ async function flushSettingsPatch(keepalive = false): Promise<void> {
   }
 }
 
+// Flushes handed to the network and not yet answered. pendingPatch and
+// pendingTimer are both empty across that window, so they cannot answer "is a
+// settings write still outstanding" on their own.
+let unsettledFlushes = 0;
+
+function enqueueSettingsFlush(): Promise<void> {
+  unsettledFlushes += 1;
+  inflightFlush = inflightFlush
+    .catch(() => undefined)
+    .then(() => flushSettingsPatch())
+    .finally(() => {
+      unsettledFlushes -= 1;
+    });
+  return inflightFlush;
+}
+
 function scheduleSettingsFlush(): void {
   if (pendingTimer !== null) clearTimeout(pendingTimer);
   pendingTimer = setTimeout(() => {
     pendingTimer = null;
-    inflightFlush = inflightFlush
-      .catch(() => undefined)
-      .then(() => flushSettingsPatch());
+    void enqueueSettingsFlush();
   }, SETTINGS_DEBOUNCE_MS);
 }
 
 function saveSettingsPatch(patch: SettingsPatch): void {
   mergePatch(pendingPatch, patch);
   scheduleSettingsFlush();
+}
+
+// A wedged PATCH must not hold a send open. Past this the run goes ahead on the
+// value the server already has, which is exactly where it stood before.
+const SETTINGS_FLUSH_TIMEOUT_MS = 2000;
+
+/**
+ * Send the debounced settings patch now and wait for it.
+ *
+ * Some settings are read by the backend out of SQLite at call time rather than
+ * being carried in the request -- Search images picks the web_search schema that
+ * way -- and the mirror above is a trailing-edge debounce, so a message sent
+ * inside that window would run on the value before the toggle. Returns
+ * immediately when nothing is queued, which is every send but one right after a
+ * settings change.
+ */
+export async function flushPendingChatSettings(): Promise<void> {
+  const queued = pendingTimer !== null || Object.keys(pendingPatch).length > 0;
+  // Not just what is queued: the debounce may have fired already and handed its
+  // patch to a request the server has not answered, which leaves both of those
+  // empty while the value the backend reads is still the old one.
+  if (!queued && unsettledFlushes === 0) return;
+  if (pendingTimer !== null) {
+    clearTimeout(pendingTimer);
+    pendingTimer = null;
+  }
+  if (queued) void enqueueSettingsFlush();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      inflightFlush.catch(() => undefined),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, SETTINGS_FLUSH_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 // Best-effort flush of any pending patch when the page is going away. keepalive
@@ -650,6 +703,7 @@ const MIRRORED_SETTINGS = {
     storageKey: CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY,
     ...BOOLEAN_SETTING,
   },
+  searchImages: { storageKey: CHAT_SEARCH_IMAGES_KEY, ...BOOLEAN_SETTING },
   mcpEnabledForChat: { storageKey: CHAT_MCP_ENABLED_KEY, ...BOOLEAN_SETTING },
   confirmToolCalls: {
     storageKey: CHAT_CONFIRM_TOOL_CALLS_KEY,
@@ -2487,6 +2541,8 @@ type ChatRuntimeStore = {
   showCanvasMenuItem: boolean;
   collapseHtmlArtifacts: boolean;
   allowArtifactNetworkAccess: boolean;
+  // web_search also returns images the model can place inline; read by the backend per call.
+  searchImages: boolean;
   mcpEnabledForChat: boolean;
   ragEnabled: boolean;
   ragSource: RagSource;
@@ -2843,6 +2899,7 @@ type ChatRuntimeStore = {
   setShowCanvasMenuItem: (enabled: boolean) => void;
   setCollapseHtmlArtifacts: (enabled: boolean) => void;
   setAllowArtifactNetworkAccess: (enabled: boolean) => void;
+  setSearchImages: (enabled: boolean) => void;
   setMcpEnabledForChat: (enabled: boolean) => void;
   setConfirmToolCalls: (enabled: boolean) => void;
   setBypassPermissions: (enabled: boolean) => void;
@@ -2944,6 +3001,7 @@ type ScalarSettingKey =
   | "preserveThinking"
   | "collapseHtmlArtifacts"
   | "allowArtifactNetworkAccess"
+  | "searchImages"
   | "autoHealToolCalls"
   | "nudgeToolCalls"
   | "maxToolCallsPerMessage"
@@ -2993,6 +3051,7 @@ const SCALAR_SETTING_KEYS = [
   "preserveThinking",
   "collapseHtmlArtifacts",
   "allowArtifactNetworkAccess",
+  "searchImages",
   "autoHealToolCalls",
   "nudgeToolCalls",
   "maxToolCallsPerMessage",
@@ -3687,6 +3746,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY,
     false,
   ),
+  searchImages: loadBool(CHAT_SEARCH_IMAGES_KEY, false),
   mcpEnabledForChat: loadBool(CHAT_MCP_ENABLED_KEY, false),
   // Mirrors permissionMode (gate requested for ask/auto) so both controls
   // agree on load.
@@ -4719,6 +4779,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         allowArtifactNetworkAccess,
       );
       return { allowArtifactNetworkAccess };
+    }),
+  setSearchImages: (searchImages) =>
+    set(() => {
+      saveBool(CHAT_SEARCH_IMAGES_KEY, searchImages);
+      return { searchImages };
     }),
   setMcpEnabledForChat: (mcpEnabledForChat) =>
     set((state) => {

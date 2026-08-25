@@ -2141,6 +2141,7 @@ def test_internal_reprompt_attempts_do_not_duplicate_visible_text(monkeypatch):
             messages = [{"role": "user", "content": "Make a red square."}],
             tools = tools,
             max_tool_iterations = 1,
+            nudge_tool_calls = True,
         )
     )
 
@@ -2207,6 +2208,7 @@ def test_post_tool_stall_still_nudged_after_a_pre_tool_reprompt(monkeypatch):
             messages = [{"role": "user", "content": "Make a red square."}],
             tools = tools,
             max_tool_iterations = 2,
+            nudge_tool_calls = True,
         )
     )
 
@@ -2275,6 +2277,7 @@ def test_post_tool_reprompt_budget_is_one(monkeypatch):
             messages = [{"role": "user", "content": "Make a red square."}],
             tools = tools,
             max_tool_iterations = 2,
+            nudge_tool_calls = True,
         )
     )
 
@@ -2340,6 +2343,7 @@ def test_repeat_guard_resets_after_a_tool_runs(monkeypatch):
             messages = [{"role": "user", "content": "Make a red square."}],
             tools = tools,
             max_tool_iterations = 2,
+            nudge_tool_calls = True,
         )
     )
 
@@ -2502,6 +2506,7 @@ def test_forced_turn_answer_with_an_intent_lead_in_survives_after_a_tool(monkeyp
             messages = [{"role": "user", "content": "What is the capital of Japan?"}],
             tools = tools,
             max_tool_iterations = 2,
+            nudge_tool_calls = True,
         )
     )
 
@@ -2551,6 +2556,7 @@ def test_forced_turn_answer_with_an_intent_lead_in_survives_pre_tool(monkeypatch
             messages = [{"role": "user", "content": "What is the capital of Japan?"}],
             tools = tools,
             max_tool_iterations = 2,
+            nudge_tool_calls = True,
         )
     )
 
@@ -2597,6 +2603,7 @@ def test_forced_reprompt_plain_final_answer_is_visible(monkeypatch):
                 }
             ],
             max_tool_iterations = 1,
+            nudge_tool_calls = True,
         )
     )
 
@@ -2902,6 +2909,7 @@ def test_reprompted_tool_call_still_streams_final_answer(monkeypatch):
             messages = [{"role": "user", "content": "Make a red square."}],
             tools = tools,
             max_tool_iterations = 1,
+            nudge_tool_calls = True,
         )
     )
 
@@ -2972,6 +2980,7 @@ def test_plan_without_action_nudge_is_announced_on_the_status_channel(monkeypatc
             messages = [{"role": "user", "content": "What colour is the square?"}],
             tools = [_WEB_SEARCH_TOOL],
             max_tool_iterations = 2,
+            nudge_tool_calls = True,
         )
     )
 
@@ -2998,6 +3007,7 @@ def test_plan_without_action_nudge_status_clears_when_the_retry_just_answers(mon
             messages = [{"role": "user", "content": "What colour is the square?"}],
             tools = [_WEB_SEARCH_TOOL],
             max_tool_iterations = 2,
+            nudge_tool_calls = True,
         )
     )
 
@@ -3074,6 +3084,22 @@ def test_nudge_status_absent_when_nudging_is_disabled(monkeypatch):
             tools = [_WEB_SEARCH_TOOL],
             max_tool_iterations = 2,
             nudge_tool_calls = False,
+        )
+    )
+
+    assert NUDGE_TOOL_CALLS_STATUS not in _status_texts(events)
+    assert len(payloads) == 1
+
+
+def test_nudge_is_off_when_the_request_flag_is_omitted(monkeypatch):
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, _nudge_then_search_streams(), payloads)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "What colour is the square?"}],
+            tools = [_WEB_SEARCH_TOOL],
+            max_tool_iterations = 2,
         )
     )
 
@@ -3218,6 +3244,7 @@ def test_rag_autoinject_counts_as_a_prior_tool_execution(monkeypatch):
             messages = [{"role": "user", "content": "summarize the docs"}],
             tools = [{"type": "function", "function": {"name": "search_knowledge_base"}}],
             max_tool_iterations = 2,
+            nudge_tool_calls = True,
             rag_scope = {"thread_id": "t1"},
         )
     )
@@ -3736,6 +3763,80 @@ def test_tool_loop_refits_each_preflight_path_after_context_shrinking_respawn(mo
         assert [notice["context_length"] for notice in notices] == [2000, 1000]
         assert [payload["max_tokens"] for payload in payloads] == [2000, 1000]
         assert len(payloads[0]["messages"]) == 3
+        assert len(payloads[1]["messages"]) == 1
+
+
+def test_a_respawn_refit_that_misses_its_target_still_archives_and_reports(monkeypatch):
+    """A rescued respawn refit archives its evictions and emits metadata."""
+    import httpx
+
+    from core.inference import llama_cpp
+
+    # Captured once: the second pass would otherwise wrap the first pass's spy.
+    real_archive = llama_cpp._archive_and_recall
+
+    for max_tool_iterations in (1, 0):
+        payloads: list[dict] = []
+        archived: list[tuple[int, int]] = []
+        backend = _make_backend(
+            monkeypatch,
+            [
+                httpx.ConnectError("server is down"),
+                [_sse({"content": "Recovered."}), _done()],
+            ],
+            payloads,
+        )
+        backend._effective_context_length = 2000
+        monkeypatch.setattr(
+            backend,
+            "count_chat_tokens",
+            lambda candidate, *_args, **_kwargs: sum(
+                len(str(message.get("content", ""))) for message in candidate
+            ),
+        )
+
+        def spy(conversation, before, **kwargs):
+            archived.append((len(before), len(conversation)))
+            return real_archive(conversation, before, **kwargs)
+
+        monkeypatch.setattr(llama_cpp, "_archive_and_recall", spy)
+
+        def fake_respawn():
+            backend._effective_context_length = 1000
+            return True
+
+        monkeypatch.setattr(backend, "_respawn_if_dead", fake_respawn)
+        events = list(
+            backend.generate_chat_completion_with_tools(
+                messages = [
+                    {"role": "user", "content": "u" * 250},
+                    {"role": "assistant", "content": "a" * 250},
+                    {"role": "user", "content": "u" * 250},
+                    {"role": "assistant", "content": "a" * 250},
+                    {"role": "user", "content": "f" * 900},
+                ],
+                tools = [{"type": "function", "function": {"name": "python"}}],
+                max_tool_iterations = max_tool_iterations,
+                context_overflow = "truncate_oldest",
+            )
+        )
+
+        notices = [event for event in events if event.get("type") == "context_truncated"]
+        assert [notice["context_length"] for notice in notices] == [2000, 1000]
+        refit = notices[1]
+        # The rescued refusal reports what it evicted, boundary included: the client reads
+        # that depth to place the compaction notice, so recording nothing would compact
+        # silently. Reported is not REPLAYED, which `_sticky_compaction_boundary` still
+        # declines for any `fits` false record.
+        assert refit["fits"] is False
+        assert refit["dropped_messages"] == 2
+        assert refit["prompt_tokens_after"] == 900 < refit["prompt_tokens_before"]
+        # 4, not the 2 of `dropped_messages`: the boundary counts against the REQUEST's
+        # own leading messages, which the next request replays it against, while the drop
+        # count is what this one fit removed.
+        assert refit["boundary_messages"] == 4
+        assert "boundary_anchor" in refit
+        assert archived[-1] == (3, 1)
         assert len(payloads[1]["messages"]) == 1
 
 
