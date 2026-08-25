@@ -252,7 +252,8 @@ class FastDiffusionModel:
                 else None
             ),
             planner_kwargs = planner_kwargs_with_max_memory(
-                device_map_planner_kwargs, kwargs,
+                device_map_planner_kwargs,
+                kwargs,
             ),
             # This leaf popped `local_files_only` off kwargs above, so the helper is
             # handed the resolved value rather than the caller's raw mapping.

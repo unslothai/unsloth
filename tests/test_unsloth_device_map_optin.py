@@ -846,8 +846,8 @@ def test_the_diffusion_leaf_plans_with_the_locality_the_load_uses():
         if getattr(node.func, "id", None) != "resolve_unsloth_device_map":
             continue
         rendered = ast.unparse(node)
-        assert "local_files_only" in rendered and "cache_dir" in rendered, (
-            f"diffusion.py:{node.lineno} plans without the locality the load resolved"
-        )
+        assert (
+            "local_files_only" in rendered and "cache_dir" in rendered
+        ), f"diffusion.py:{node.lineno} plans without the locality the load resolved"
         return
     raise AssertionError("no resolve_unsloth_device_map call in diffusion.py")
