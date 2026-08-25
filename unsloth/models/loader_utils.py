@@ -222,7 +222,6 @@ def _as_bytes(size):
     """
     try:
         from accelerate.utils.modeling import convert_file_size_to_int
-
         return convert_file_size_to_int(size)
     except Exception:
         return None

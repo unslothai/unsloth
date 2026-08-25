@@ -177,6 +177,6 @@ def test_sentence_transformer_decline_survives_the_env_var():
         min(node.lineno for node in strips) < fastmodel_call
     ), "the marker is stripped after FastModel has already planned"
 
-    assert "os.environ['UNSLOTH_AUTO_DEVICE_MAP']" not in ast.unparse(function), (
-        "the process-wide pin is back; every other thread sees it"
-    )
+    assert "os.environ['UNSLOTH_AUTO_DEVICE_MAP']" not in ast.unparse(
+        function
+    ), "the process-wide pin is back; every other thread sees it"

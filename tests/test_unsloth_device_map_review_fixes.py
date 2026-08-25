@@ -51,7 +51,12 @@ class _Plan:
         return "<plan>"
 
 
-def _build(*, devices = 2, free = None, planner = None):
+def _build(
+    *,
+    devices = 2,
+    free = None,
+    planner = None,
+):
     ns = {
         "os": os,
         "torch": types.SimpleNamespace(cuda = _FakeCuda(devices, free or {})),
@@ -60,13 +65,16 @@ def _build(*, devices = 2, free = None, planner = None):
     }
     for node in ast.parse(_SRC).body:
         keep = (
-            isinstance(node, ast.FunctionDef)
-            and node.name in ("requested_device_map", "resolve_unsloth_device_map", "_as_bytes")
-        ) or (
-            isinstance(node, ast.ClassDef) and node.name == "_DefaultDeviceMap"
-        ) or (
-            isinstance(node, ast.Assign)
-            and getattr(node.targets[0], "id", None) in ("UNSLOTH_DEVICE_MAP", "DEFAULT_DEVICE_MAP")
+            (
+                isinstance(node, ast.FunctionDef)
+                and node.name in ("requested_device_map", "resolve_unsloth_device_map", "_as_bytes")
+            )
+            or (isinstance(node, ast.ClassDef) and node.name == "_DefaultDeviceMap")
+            or (
+                isinstance(node, ast.Assign)
+                and getattr(node.targets[0], "id", None)
+                in ("UNSLOTH_DEVICE_MAP", "DEFAULT_DEVICE_MAP")
+            )
         )
         if keep:
             exec(ast.get_source_segment(_SRC, node), ns)
@@ -112,12 +120,14 @@ def test_every_entry_point_defaults_to_the_marked_value(name):
         if not isinstance(node, ast.FunctionDef) or node.name != "from_pretrained":
             continue
         args = node.args
-        defaults = dict(
-            zip([a.arg for a in args.args][-len(args.defaults):], args.defaults)
-        ) if args.defaults else {}
-        defaults.update({
-            a.arg: d for a, d in zip(args.kwonlyargs, args.kw_defaults) if d is not None
-        })
+        defaults = (
+            dict(zip([a.arg for a in args.args][-len(args.defaults) :], args.defaults))
+            if args.defaults
+            else {}
+        )
+        defaults.update(
+            {a.arg: d for a, d in zip(args.kwonlyargs, args.kw_defaults) if d is not None}
+        )
         if "device_map" not in defaults:
             continue
         rendered = ast.unparse(defaults["device_map"])
@@ -136,9 +146,9 @@ def test_sentence_transformers_hands_the_nested_load_a_plain_value():
     """
     source = open(os.path.join(MODELS, "sentence_transformer.py"), encoding = "utf-8").read()
     assert "device_map = str(device_map)" in source
-    assert "os.environ[\"UNSLOTH_AUTO_DEVICE_MAP\"]" not in source, (
-        "the process-wide pin is back; it is visible to every other thread"
-    )
+    assert (
+        'os.environ["UNSLOTH_AUTO_DEVICE_MAP"]' not in source
+    ), "the process-wide pin is back; it is visible to every other thread"
 
 
 # --------------------------------------------------------------------------------------
@@ -154,7 +164,8 @@ def test_a_caller_supplied_max_memory_does_not_collide_with_the_measured_one():
     planner = _Recorder(plan = _Plan())
     ns = _build(free = {0: 10 * 2**30, 1: 10 * 2**30}, planner = planner)
     resolved = ns["resolve_unsloth_device_map"](
-        "unsloth", "unsloth/Qwen3-0.6B",
+        "unsloth",
+        "unsloth/Qwen3-0.6B",
         planner_kwargs = {"max_memory": {0: 4 * 2**30}, "retained_rows": 128},
     )
     assert resolved == _Plan.device_map, "the plan was lost to a TypeError"
@@ -172,7 +183,8 @@ def test_a_cap_above_free_memory_does_not_raise_the_budget():
     planner = _Recorder(plan = _Plan())
     ns = _build(free = {0: 2 * 2**30, 1: 2 * 2**30}, planner = planner)
     ns["resolve_unsloth_device_map"](
-        "unsloth", "unsloth/Qwen3-0.6B",
+        "unsloth",
+        "unsloth/Qwen3-0.6B",
         planner_kwargs = {"max_memory": {0: 99 * 2**30}},
     )
     assert planner.calls[0][1]["max_memory"][0] == 2 * 2**30
@@ -189,7 +201,9 @@ def test_the_cap_is_read_the_way_accelerate_reads_it(written, expected):
     planner = _Recorder(plan = _Plan())
     ns = _build(free = {0: 8 * 2**30, 1: 8 * 2**30}, planner = planner)
     ns["resolve_unsloth_device_map"](
-        "unsloth", "unsloth/Qwen3-0.6B", planner_kwargs = {"max_memory": {0: written}},
+        "unsloth",
+        "unsloth/Qwen3-0.6B",
+        planner_kwargs = {"max_memory": {0: written}},
     )
     assert planner.calls[0][1]["max_memory"][0] == min(expected, 8 * 2**30)
 
@@ -200,7 +214,9 @@ def test_an_unreadable_cap_leaves_the_measured_value_rather_than_dropping_the_de
     planner = _Recorder(plan = _Plan())
     ns = _build(free = {0: 8 * 2**30, 1: 8 * 2**30}, planner = planner)
     ns["resolve_unsloth_device_map"](
-        "unsloth", "unsloth/Qwen3-0.6B", planner_kwargs = {"max_memory": {0: "not a size"}},
+        "unsloth",
+        "unsloth/Qwen3-0.6B",
+        planner_kwargs = {"max_memory": {0: "not a size"}},
     )
     assert planner.calls[0][1]["max_memory"][0] == 8 * 2**30
 
@@ -212,7 +228,9 @@ def test_the_callers_kwargs_dict_is_not_mutated():
     ns = _build(free = {0: 8 * 2**30, 1: 8 * 2**30}, planner = planner)
     caller_kwargs = {"max_memory": {0: 4 * 2**30}, "retained_rows": 8}
     ns["resolve_unsloth_device_map"](
-        "unsloth", "unsloth/Qwen3-0.6B", planner_kwargs = caller_kwargs,
+        "unsloth",
+        "unsloth/Qwen3-0.6B",
+        planner_kwargs = caller_kwargs,
     )
     assert caller_kwargs == {"max_memory": {0: 4 * 2**30}, "retained_rows": 8}
 
@@ -230,9 +248,9 @@ def test_the_legacy_diffusion_alias_declines_planning_with_its_own_reason():
     source = open(os.path.join(MODELS, "diffusion.py"), encoding = "utf-8").read()
     tree = ast.parse(source)
 
-    assert "_unsloth_legacy_alias = True" in source, (
-        "nothing records that the alias was applied, so the planner call cannot know"
-    )
+    assert (
+        "_unsloth_legacy_alias = True" in source
+    ), "nothing records that the alias was applied, so the planner call cannot know"
 
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):

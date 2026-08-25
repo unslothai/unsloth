@@ -150,10 +150,9 @@ def _build(
             exec(ast.get_source_segment(_SRC, node), ns)
         elif isinstance(node, ast.ClassDef) and node.name == "_DefaultDeviceMap":
             exec(ast.get_source_segment(_SRC, node), ns)
-        elif (
-            isinstance(node, ast.Assign)
-            and getattr(node.targets[0], "id", None)
-            in ("UNSLOTH_DEVICE_MAP", "DEFAULT_DEVICE_MAP")
+        elif isinstance(node, ast.Assign) and getattr(node.targets[0], "id", None) in (
+            "UNSLOTH_DEVICE_MAP",
+            "DEFAULT_DEVICE_MAP",
         ):
             exec(ast.get_source_segment(_SRC, node), ns)
 
