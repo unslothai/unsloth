@@ -155,6 +155,59 @@ class GenStreamErrorRaised(RuntimeError):
         self.public = bool(public)
 
 
+def _summed_tool_loop_stats(total, turn):
+    """Fold one tool-loop turn's report into the loop's running total.
+
+    Every turn spends its tokens on the same request, so the reply reports their
+    sum, as the llama.cpp tool loop does; reporting only the last turn hides the
+    tokens that produced the tool call. The prompt count is the last turn's to
+    report one, which already contains the tool results the earlier turns produced.
+    """
+    if not isinstance(turn, dict):
+        return total
+    if not isinstance(total, dict):
+        return turn
+    prior_usage = total.get("usage") or {}
+    usage = dict(turn.get("usage") or {})
+    completion = (usage.get("completion_tokens") or 0) + (prior_usage.get("completion_tokens") or 0)
+    usage["completion_tokens"] = completion
+    # The prompt is the loop's, not one turn's, so a turn that ended before
+    # reporting keeps the last count that arrived. Its details describe that same
+    # count and move with it, or cached tokens could outnumber prompt tokens.
+    if not usage.get("prompt_tokens"):
+        usage["prompt_tokens"] = prior_usage.get("prompt_tokens") or 0
+        usage.pop("prompt_tokens_details", None)
+        if prior_usage.get("prompt_tokens_details") is not None:
+            usage["prompt_tokens_details"] = prior_usage["prompt_tokens_details"]
+    usage["total_tokens"] = usage["prompt_tokens"] + completion
+    # Details describe the completion, so they sum with it rather than describing
+    # one turn against every turn's tokens.
+    details = dict(prior_usage.get("completion_tokens_details") or {})
+    for field, value in (usage.get("completion_tokens_details") or {}).items():
+        details[field] = (details.get(field) or 0) + (value or 0)
+    if details:
+        usage["completion_tokens_details"] = details
+    summed = dict(turn)
+    summed["usage"] = usage
+    timings = dict(turn.get("timings") or {})
+    prior = total.get("timings") or {}
+    # Seeded from the turn but folded unconditionally, as the llama.cpp loop does:
+    # a turn reporting no timings must not take the loop's totals with it.
+    if timings or prior:
+        for field in ("predicted_ms", "predicted_n"):
+            timings[field] = (timings.get(field) or 0) + (prior.get(field) or 0)
+        # Rates describe the totals above, not the turn they arrived with: leaving
+        # the last turn's would report a speed the summed counts contradict.
+        predicted_ms = timings.get("predicted_ms") or 0
+        predicted_n = timings.get("predicted_n") or 0
+        timings["predicted_per_token_ms"] = (predicted_ms / predicted_n) if predicted_n else 0.0
+        timings["predicted_per_second"] = (
+            (predicted_n / (predicted_ms / 1000.0)) if predicted_ms else 0.0
+        )
+        summed["timings"] = timings
+    return summed
+
+
 class InferenceOrchestrator:
     """
     Inference backend orchestrator — subprocess-based.
@@ -744,6 +797,10 @@ class InferenceOrchestrator:
         preserve_thinking: Optional[bool] = None,
         continue_final_message: bool = False,
         presence_penalty: float = 0.0,
+        seed: Optional[int] = None,
+        frequency_penalty: float = 0.0,
+        logit_bias: Optional[dict] = None,
+        stop: Optional[list] = None,
     ) -> dict:
         """Build the 'generate' command shared by the locked and dispatched paths."""
         cmd = {
@@ -759,7 +816,13 @@ class InferenceOrchestrator:
             "max_new_tokens": max_new_tokens,
             "repetition_penalty": repetition_penalty,
             "presence_penalty": presence_penalty,
+            "frequency_penalty": frequency_penalty,
+            "logit_bias": logit_bias,
         }
+        if seed is not None:
+            cmd["seed"] = seed
+        if stop:
+            cmd["stop"] = stop
         # Only forward template kwargs the caller set, for older worker compat.
         if use_adapter is not None:
             cmd["use_adapter"] = use_adapter
@@ -979,6 +1042,10 @@ class InferenceOrchestrator:
         continue_final_message: bool = False,
         stats_holder: Optional[dict] = None,
         presence_penalty: float = 0.0,
+        seed: Optional[int] = None,
+        frequency_penalty: float = 0.0,
+        logit_bias: Optional[dict] = None,
+        stop: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Dispatched generation — sends command without holding _gen_lock.
 
@@ -1036,12 +1103,16 @@ class InferenceOrchestrator:
             max_new_tokens = max_new_tokens,
             repetition_penalty = repetition_penalty,
             presence_penalty = presence_penalty,
+            frequency_penalty = frequency_penalty,
+            logit_bias = logit_bias,
+            stop = stop,
             use_adapter = use_adapter,
             tools = tools,
             enable_thinking = enable_thinking,
             reasoning_effort = reasoning_effort,
             preserve_thinking = preserve_thinking,
             continue_final_message = continue_final_message,
+            seed = seed,
         )
 
         # Create the mailbox BEFORE sending, rechecking _unload_pending under
@@ -1534,10 +1605,11 @@ class InferenceOrchestrator:
         return True
 
     # --- Dictation models -------------------------------------------------
-    # These run in the STT sidecars (whisper-server, llama-server, Transformers
-    # in process), not the chat worker. Their lifecycle goes through here all
-    # the same, so one object knows everything that is resident and Voice
-    # settings and Model Hub cannot report different things about one model.
+    # These run in the STT sidecars (whisper-server, llama-server, and the
+    # Transformers spawn child), not the chat worker. Their lifecycle goes
+    # through here all the same, so one object knows everything that is
+    # resident and Voice settings and Model Hub cannot report different things
+    # about one model.
 
     def load_stt_model(
         self,
@@ -1707,6 +1779,10 @@ class InferenceOrchestrator:
         continue_final_message: bool = False,
         stats_holder: Optional[dict] = None,
         presence_penalty: float = 0.0,
+        seed: Optional[int] = None,
+        frequency_penalty: float = 0.0,
+        logit_bias: Optional[dict] = None,
+        stop: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Generate response, streaming tokens from subprocess.
 
@@ -1715,7 +1791,8 @@ class InferenceOrchestrator:
         schemas and reasoning controls.
 
         ``stats_holder``: caller-owned dict; on gen_done its "stats" key gets
-        the worker's usage/timings. Request-scoped to avoid cross-stream reads.
+        the worker's usage, timings and terminal reason. Request-scoped to avoid
+        cross-stream reads.
 
         ``presence_penalty`` matches the GGUF sampling path (0 disables it).
         """
@@ -1738,6 +1815,10 @@ class InferenceOrchestrator:
             continue_final_message = continue_final_message,
             stats_holder = stats_holder,
             presence_penalty = presence_penalty,
+            seed = seed,
+            frequency_penalty = frequency_penalty,
+            logit_bias = logit_bias,
+            stop = stop,
         )
 
     def generate_chat_completion_with_tools(
@@ -1769,7 +1850,11 @@ class InferenceOrchestrator:
         use_adapter: Optional[Union[bool, str]] = None,
         stats_holder: Optional[dict] = None,
         presence_penalty: float = 0.0,
+        frequency_penalty: float = 0.0,
+        logit_bias: Optional[dict] = None,
+        stop: Optional[list] = None,
         reasoning_prefilled: bool = False,
+        seed: Optional[int] = None,
         **_unused,
     ):
         """Run the safetensors agentic tool loop in the parent process,
@@ -1788,6 +1873,7 @@ class InferenceOrchestrator:
             # run_safetensors_tool_loop drop one-shot tools (e.g. render_html) from
             # later same-response prompts.
             turn_tools = active_tools if active_tools is not None else tools
+            turn_stats: dict = {}
             common_kwargs = dict(
                 messages = conv,
                 system_prompt = "",
@@ -1806,9 +1892,14 @@ class InferenceOrchestrator:
                 # Self-limiting: after a tool call the conversation ends on a tool
                 # result, so later turns render as ordinary new turns.
                 continue_final_message = continue_final_message,
-                # last turn wins, like the GGUF tool loop
-                stats_holder = stats_holder,
+                # Reported per turn and summed below, since the whole loop answers
+                # one request.
+                stats_holder = turn_stats,
                 presence_penalty = presence_penalty,
+                seed = seed,
+                frequency_penalty = frequency_penalty,
+                logit_bias = logit_bias,
+                stop = stop,
             )
             if use_adapter is not None:
                 stream = self.generate_with_adapter_control(
@@ -1832,6 +1923,12 @@ class InferenceOrchestrator:
                             close()
                         except Exception:
                             logger.debug("failed to close errored generation stream", exc_info = True)
+                # A turn that never reported -- one a cancel interrupted -- folds in
+                # as nothing, leaving the turns that did.
+                if stats_holder is not None:
+                    stats_holder["stats"] = _summed_tool_loop_stats(
+                        stats_holder.get("stats"), turn_stats.get("stats")
+                    )
 
         initial = list(messages)
         if system_prompt:
@@ -1877,6 +1974,9 @@ class InferenceOrchestrator:
             permission_mode = permission_mode,
             reasoning_prefilled = reasoning_prefilled,
             continue_final_message = continue_final_message,
+            # So a conversation search can be sized against what this model can hold.
+            context_length = _model_info.get("context_length"),
+            max_tokens = max_new_tokens,
         )
 
     def generate_with_adapter_control(
@@ -1932,6 +2032,10 @@ class InferenceOrchestrator:
         continue_final_message: bool = False,
         stats_holder: Optional[dict] = None,
         presence_penalty: float = 0.0,
+        seed: Optional[int] = None,
+        frequency_penalty: float = 0.0,
+        logit_bias: Optional[dict] = None,
+        stop: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Inner generation logic — sends command to subprocess, yields tokens.
 
@@ -1981,12 +2085,16 @@ class InferenceOrchestrator:
                 max_new_tokens = max_new_tokens,
                 repetition_penalty = repetition_penalty,
                 presence_penalty = presence_penalty,
+                frequency_penalty = frequency_penalty,
+                logit_bias = logit_bias,
+                stop = stop,
                 use_adapter = use_adapter,
                 tools = tools,
                 enable_thinking = enable_thinking,
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
                 continue_final_message = continue_final_message,
+                seed = seed,
             )
 
             # Claim the worker BEFORE sending, so a Stop on some OTHER chat -- still queued on the
@@ -2293,6 +2401,7 @@ class InferenceOrchestrator:
         use_adapter: Optional[Union[bool, str]] = None,
         cancel_event = None,
         stats_holder: Optional[dict] = None,
+        stop = None,
     ) -> Generator[str, None, None]:
         """Audio input generation (e.g. Gemma 3n) — streams text tokens."""
         yield from self._generate_audio_input_inner(
@@ -2309,6 +2418,7 @@ class InferenceOrchestrator:
             use_adapter = use_adapter,
             cancel_event = cancel_event,
             stats_holder = stats_holder,
+            stop = stop,
         )
 
     def _generate_audio_input_inner(
@@ -2326,6 +2436,7 @@ class InferenceOrchestrator:
         use_adapter: Optional[Union[bool, str]] = None,
         cancel_event = None,
         stats_holder: Optional[dict] = None,
+        stop = None,
     ) -> Generator[str, None, None]:
         """Shared inner logic for audio input generation (Whisper + ASR).
 
@@ -2374,6 +2485,8 @@ class InferenceOrchestrator:
             # As in the text path: key stays absent unless the caller selected one.
             if use_adapter is not None:
                 cmd["use_adapter"] = use_adapter
+            if stop:
+                cmd["stop"] = stop
 
             # Same shared-queue hazard as _generate_inner: see _direct_reader.
             read_one, drain, release_mailbox = self._direct_reader(request_id)

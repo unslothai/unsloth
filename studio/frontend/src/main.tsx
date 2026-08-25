@@ -11,32 +11,11 @@ import { initializeLocale } from "./i18n";
 import { isTauri } from "./lib/api-base";
 import { watchOverlayScrollbarGutter } from "./lib/overlay-scrollbar";
 
-const globalCrypto = globalThis.crypto as Crypto | undefined;
-
-if (globalCrypto && typeof globalCrypto.randomUUID !== "function") {
-  // Some envs ship `crypto` without `randomUUID()`. Provide a best-effort v4
-  // UUID using `getRandomValues` when available.
-  const cryptoRef = globalCrypto;
-
-  function getRandomByte(): number {
-    if (typeof cryptoRef.getRandomValues === "function") {
-      return cryptoRef.getRandomValues(new Uint8Array(1))[0];
-    }
-    return Math.floor(Math.random() * 256);
-  }
-
-  cryptoRef.randomUUID = (() =>
-    "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) =>
-      (+c ^ (getRandomByte() & (15 >> (+c / 4)))).toString(16),
-    )) as Crypto["randomUUID"];
-}
-
 const rootElement = document.getElementById("root");
 if (!rootElement) {
   throw new Error("Root element not found");
 }
-
-initializeLocale();
+const root = createRoot(rootElement);
 
 if (isTauri) {
   document.documentElement.classList.add("tauri");
@@ -52,10 +31,19 @@ if (uaLower.includes("linux") && !uaLower.includes("android")) {
 // Keep right-edge controls clear of overlay scrollbars.
 watchOverlayScrollbarGutter(window);
 
-createRoot(rootElement).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
-);
+function renderApp(): void {
+  root.render(
+    <StrictMode>
+      <App />
+    </StrictMode>,
+  );
+}
+
+const localeInitialization = initializeLocale();
+if (typeof localeInitialization !== "string") {
+  localeInitialization.then(renderApp);
+} else {
+  renderApp();
+}
 
 fetchDeviceType().catch(() => undefined);

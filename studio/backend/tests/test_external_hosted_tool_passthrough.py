@@ -187,6 +187,46 @@ def test_a_hosted_code_execution_is_not_dropped(monkeypatch):
     assert "code_execution" in (FakeExternalClient.last["passthrough"]["enabled_tools"] or [])
 
 
+def test_a_code_execution_with_run_tools_locally_still_answers_the_confirm_gate(monkeypatch):
+    """`run_tools_locally` must not smuggle a hosted-only turn past the 400.
+
+    Studio has no `code_execution`, so the local catalog is empty whatever the
+    flag says and the route falls back to the provider. The confirmation
+    rejection keys on the request NOT having taken the loop, so a "local"
+    reading here answers a confirm-me request with an unconfirmed sandbox run.
+    """
+    from fastapi import HTTPException
+
+    inf = _install(monkeypatch, "openai")
+    # Class-level state; the client is built after the guard, so an untouched
+    # record is the evidence nothing was sent.
+    FakeExternalClient.last = {}
+    payload = _payload(
+        enable_tools = True,
+        enabled_tools = ["code_execution"],
+        run_tools_locally = True,
+        confirm_tool_calls = True,
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        _run(inf, payload)
+    assert excinfo.value.status_code == 400
+    assert FakeExternalClient.last.get("passthrough") is None, "ran unconfirmed"
+
+
+def test_a_code_execution_with_run_tools_locally_still_reaches_the_provider(monkeypatch):
+    """And with no confirmation asked for, it proxies exactly as it always did."""
+    inf = _install(monkeypatch, "openai")
+    _run(
+        inf,
+        _payload(
+            enable_tools = True,
+            enabled_tools = ["code_execution"],
+            run_tools_locally = True,
+        ),
+    )
+    assert FakeExternalClient.last["passthrough"]["enabled_tools"] == ["code_execution"]
+
+
 @pytest.mark.parametrize("provider_type", SELF_HOSTED_PROVIDERS)
 def test_a_self_hosted_provider_still_runs_studios_own_web_search(monkeypatch, provider_type):
     """Shape 2, the PR's primary use case: a self-hosted server has no hosted
@@ -268,8 +308,30 @@ def test_b_an_omitted_permission_mode_arms_the_auto_gate(monkeypatch):
     assert policy.confirm_calls is True
 
 
+@pytest.mark.parametrize(
+    "nudge_tool_calls", [None, False, True], ids = ["omitted", "disabled", "enabled"]
+)
+def test_b_external_tool_loop_receives_requested_nudge_setting(monkeypatch, nudge_tool_calls):
+    """The external Studio loop must receive the request-level nudge policy."""
+    monkeypatch.setattr(
+        "core.inference.tools.get_enabled_mcp_tools",
+        lambda: _noop_mcp(),
+    )
+    inf = _install(monkeypatch, "openai")
+    payload = _payload(
+        enable_tools = True,
+        enabled_tools = ["python"],
+        nudge_tool_calls = nudge_tool_calls,
+    )
+
+    with pytest.raises(LoopEntered) as excinfo:
+        _run(inf, payload)
+
+    assert excinfo.value.args[0].nudge_tool_calls is nudge_tool_calls
+
+
 def test_b_the_external_and_codex_paths_derive_the_gate_identically():
-    """Both policy constructions must read the same two expressions off the
+    """Both policy constructions must read the same policy expressions off the
     payload; a divergence would make one path quietly more permissive."""
     tree = ast.parse(_ROUTE_SOURCE.read_text(encoding = "utf-8"))
     modes: set[str] = set()
@@ -283,6 +345,19 @@ def test_b_the_external_and_codex_paths_derive_the_gate_identically():
             confirms.add(ast.unparse(node.value))
     assert modes == {"payload.permission_mode or 'auto'"}
     assert confirms == {"_permission_mode_confirm(payload)"}
+
+    nudge_values = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+            continue
+        if node.func.id not in {"CodexToolPolicy", "ToolLoopPolicy"}:
+            continue
+        nudge_values.extend(
+            ast.unparse(keyword.value)
+            for keyword in node.keywords
+            if keyword.arg == "nudge_tool_calls"
+        )
+    assert nudge_values == ["payload.nudge_tool_calls", "payload.nudge_tool_calls"]
 
 
 @pytest.mark.parametrize(

@@ -10,6 +10,10 @@ import {
 } from "@/components/ui/collapsible";
 import { Spinner } from "@/components/ui/spinner";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
+import {
+  formatMcpToolName,
+  mcpServerFromProvenance,
+} from "@/features/chat/utils/mcp-tool-name";
 import { stripAnsi, stringifyToolResult } from "@/lib/strip-ansi";
 import { cn } from "@/lib/utils";
 import {
@@ -110,24 +114,16 @@ const statusIconMap: Record<ToolStatus, ElementType> = {
   "requires-action": AlertCircleIcon,
 };
 
-const MCP_TOOL_PREFIX = "mcp__";
-
-function formatToolNameForDisplay(toolName: string): string {
-  if (!toolName.startsWith(MCP_TOOL_PREFIX)) return toolName;
-  const rest = toolName.slice(MCP_TOOL_PREFIX.length);
-  const sep = rest.indexOf("__");
-  if (sep <= 0) return toolName;
-  return `${rest.slice(0, sep)} · ${rest.slice(sep + 2)}`;
-}
-
 function ToolFallbackTrigger({
   toolName,
+  mcpServer,
   status,
   icon: ToolIcon,
   className,
   ...props
 }: ComponentProps<typeof CollapsibleTrigger> & {
   toolName: string;
+  mcpServer?: string;
   status?: ToolCallMessagePartStatus;
   icon?: ElementType;
 }) {
@@ -138,7 +134,7 @@ function ToolFallbackTrigger({
 
   const StatusIcon = statusIconMap[statusType];
   const label = isCancelled ? "Cancelled tool" : "Used tool";
-  const displayName = formatToolNameForDisplay(toolName);
+  const displayName = formatMcpToolName(toolName, mcpServer) ?? toolName;
 
   return (
     <CollapsibleTrigger
@@ -383,16 +379,24 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
   argsText,
   result,
   status,
+  ...rest
 }) => {
   // Allow/Deny confirmation controls are rendered uniformly for every tool
   // card (built-in and fallback) by the `withToolConfirmation` wrapper in
   // thread.tsx, so this renderer stays purely presentational.
+  const mcpServer = mcpServerFromProvenance(
+    (rest as { provenance?: unknown }).provenance,
+  );
   const isCancelled =
     status?.type === "incomplete" && status.reason === "cancelled";
 
   return (
     <ToolFallbackRoot className={cn(isCancelled && "bg-muted/30")}>
-      <ToolFallbackTrigger toolName={toolName} status={status} />
+      <ToolFallbackTrigger
+        toolName={toolName}
+        mcpServer={mcpServer}
+        status={status}
+      />
       <ToolFallbackContent>
         <ToolFallbackError status={status} />
         <ToolFallbackArgs

@@ -172,11 +172,23 @@ echo "6. only file-edit turn 1 rescues a soft timeout"
 # hello.py and compares the output). Everything else -- turn 2, connection,
 # resume, attribution-ab -- has only text or a partial store to go on, so a cap
 # stays fatal there.
-# Count every waiver regardless of how the statement is wrapped: an escape
+# This heading says "only turn 1 RESCUES", so count rescues, not mentions. The
+# previous form counted every consultation of TIMED_OUT and pinned the total at
+# 3, which conflated the one waiver with the fatal checks beside it -- so adding
+# a fourth site that makes a cap MORE explicitly fatal failed a guard named for
+# waivers. Splitting them enforces the sentence above instead of a magic number,
+# and keeps the real power: a new waiver anywhere still fails.
+#
+# The waiver is the `||` form, and it is the only shape that lets execution
+# continue past a cap. Read as a whole statement, not per line: an escape
 # rewritten onto one line must still be counted, or this guard checks nothing.
-RESCUERS="$(grep -c 'TIMED_OUT:-0}" = 1 \]' "$DRIVE_SH" || true)"
-# Only turn 1's guard, plus the resume and attribution-ab fatal checks.
-assert_eq "exactly the expected TIMED_OUT sites" "$RESCUERS" 3
+WAIVERS="$(grep -c '|| \[ "${TIMED_OUT:-0}" = 1 \]' "$DRIVE_SH" || true)"
+assert_eq "exactly one TIMED_OUT waiver (file-edit turn 1)" "$WAIVERS" 1
+
+# The rest must consult it only to STOP: resume, attribution-ab and connection.
+# Counted separately so a waiver can never masquerade as one of them.
+TOTAL_SITES="$(grep -c 'TIMED_OUT:-0}" = 1 \]' "$DRIVE_SH" || true)"
+assert_eq "every other TIMED_OUT site is a fatal check" "$((TOTAL_SITES - WAIVERS))" 3
 assert_eq "resume keeps a hang fatal" \
     "$(grep -c 'a resume pass cannot be judged from a partial turn' "$DRIVE_SH" || true)" 1
 assert_eq "attribution-ab keeps a hang fatal" \

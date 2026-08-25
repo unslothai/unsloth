@@ -340,7 +340,7 @@ def grouped_gemm_dX(
     """
     dX backward kernel
     grad_output: (M, N)
-    gather_indices: (total_tokens,), indices of tokens assigned to each expert.  E.g., slicing gather_indices by cumsum of m_sizes gives the indices of tokens assigned to each expert.
+    gather_indices: (total_tokens,), indices of tokens assigned to each expert.  E.g., slicing gather_indices by cumsum of m_sizes gives the indices of tokens assigned to each expert. May be None when neither `permute_x` nor `permute_y` is True.
     m_sizes: tokens assigned to each expert which correspond to the size of M in the respective GEMMs in the grouped GEMM.
     topk: number of experts chosen per token.
     `permute_x`: whether X was permuted on load in the forward pass, typically only used for the first grouped GEMM in an MoE MLP to group tokens by expert.
@@ -406,7 +406,12 @@ def grouped_gemm_dX(
     assert M_total % topk == 0, f"M_total ({M_total}) must be divisible by topk ({topk})"
     num_tokens = M_total // topk
 
-    total_tokens = gather_indices.shape[0]
+    # the kernel only reads gather_indices under permute_x / permute_y, so it stays optional otherwise
+    if permute_x or permute_y:
+        assert (
+            gather_indices is not None
+        ), "gather_indices must be provided when permute_x or permute_y is True"
+    total_tokens = gather_indices.shape[0] if gather_indices is not None else M_total
     assert total_tokens == M_total, f"Total tokens ({total_tokens}) must match M_total ({M_total})"
 
     # Note that the output shape is [NUM_TOKENS * TOPK, K] even when `permute_x` is True since we need to accumulate gradients across all experts chosen by the token.
@@ -962,7 +967,8 @@ def grouped_gemm(
 
     X = X.view(-1, X.shape[-1])
     m_sizes = m_sizes.view(-1)
-    gather_indices = gather_indices.view(-1)
+    if gather_indices is not None:
+        gather_indices = gather_indices.view(-1)
 
     return GroupedGemm.apply(
         X,
