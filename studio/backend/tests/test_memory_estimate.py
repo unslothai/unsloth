@@ -798,6 +798,11 @@ class TestTokenFingerprint:
             return SimpleNamespace(identifier = model_id, resolved_with = hf_token)
 
         monkeypatch.setattr(ri.ModelConfig, "from_identifier", staticmethod(_from_identifier))
+        # "org/gated" is in no cache root on this box, so the on-disk gate would refuse
+        # it before from_identifier is reached and this test would be asserting the
+        # gate rather than the token scoping. Answer the gate; the scoping is the
+        # subject here, and it has its own test above.
+        monkeypatch.setattr(ri, "_estimate_target_is_on_this_disk", lambda _id: True)
 
         first = ri._cached_estimate_config("org/gated", "Q4_K_M", "token-a", False)
         second = ri._cached_estimate_config("org/gated", "Q4_K_M", "token-b", False)
@@ -896,6 +901,75 @@ class TestEstimateMemoryRoute:
         resp = _estimate(model_path = "org/model", gguf_variant = "Q4_K_M")
         assert resp.available is False
         assert resp.reason == "not_downloaded"
+
+    def test_a_repo_not_on_this_disk_is_refused_before_it_is_resolved(self, monkeypatch):
+        # The route's docstring promises "nothing is downloaded", and every other test
+        # in this class asserts that while monkeypatching _cached_estimate_config --
+        # the one function that can break it. Driven for real, an uncached remote id
+        # walked to the Hub and cached what it fetched: on one safetensors repo, four
+        # model_info attempts, an hf_hub_download of config.json, and 12 new paths /
+        # 1828 bytes of blob, ref, snapshot and lock. For a request whose answer is
+        # "not on this disk" and which needed none of it, on an endpoint the panel
+        # fires on every change.
+        def boom(*a, **kw):
+            raise AssertionError("must not resolve a model that is not on this disk")
+
+        monkeypatch.setattr(ri.ModelConfig, "from_identifier", staticmethod(boom))
+        monkeypatch.setattr(ri, "_estimate_hf_cache_roots", lambda: [Path(os.devnull).parent])
+        resp = _estimate(model_path = "org/definitely-not-cached")
+        assert resp.available is False
+        # not_downloaded, not unsizable: the sentinel keeps the two apart, because
+        # "absent" and "resolution failed" are different answers about the same model.
+        assert resp.reason == "not_downloaded"
+
+    def test_the_on_disk_check_reads_every_cache_root(self, tmp_path, monkeypatch):
+        # The fix's own worst case, and worse than the bug it fixes: a row that
+        # vanishes for a model sitting on the disk. Studio scans configured, legacy and
+        # default roots, while the snapshot helper the load path uses takes only the
+        # configured one, so the check has to iterate all of them.
+        primary, secondary = tmp_path / "a", tmp_path / "b"
+        for d in (primary, secondary):
+            d.mkdir()
+        snap = secondary / "models--org--Model-GGUF" / "snapshots" / "rev1"
+        snap.mkdir(parents = True)
+        (snap / "model.gguf").write_bytes(b"\0" * 8)
+        monkeypatch.setattr(ri, "_estimate_hf_cache_roots", lambda: [primary, secondary])
+        assert ri._estimate_target_is_on_this_disk("org/Model-GGUF") is True
+        # Casing drifts between download and lookup; the helper is case-insensitive.
+        assert ri._estimate_target_is_on_this_disk("ORG/model-gguf") is True
+        assert ri._estimate_target_is_on_this_disk("org/Other-GGUF") is False
+
+    def test_the_on_disk_check_fails_open(self, monkeypatch, gqa_gguf):
+        # An unanswerable question must not become a blanket refusal. A local path is
+        # read off disk and never consults the cache at all.
+        def boom(*a, **kw):
+            raise OSError("cache root unreadable")
+
+        monkeypatch.setattr(ri, "_estimate_hf_cache_roots", boom)
+        assert ri._estimate_target_is_on_this_disk("org/anything") is True
+        monkeypatch.setattr(ri, "_estimate_hf_cache_roots", lambda: [])
+        assert ri._estimate_target_is_on_this_disk("org/anything") is True
+        assert ri._estimate_target_is_on_this_disk(gqa_gguf) is True
+
+    def test_the_cache_evictions_are_serialised(self):
+        # The route body runs in an asyncio.to_thread worker, so two panel requests are
+        # two real threads in the eviction. min() walks the dict through a Python key
+        # function the interpreter can switch out of: a concurrent pop makes it raise
+        # KeyError, a concurrent insert RuntimeError, and neither is caught between
+        # there and the worker, so it surfaces as a 500 on a slider drag.
+        import inspect
+
+        for source in (
+            inspect.getsource(ri._gguf_resident_file_gb),
+            inspect.getsource(ri._cached_estimate_config),
+        ):
+            evict = source[source.index("_CACHE_MAX") :]
+            assert "_ESTIMATE_CACHE_LOCK" in source
+            assert source.index("_ESTIMATE_CACHE_LOCK") < source.index("_CACHE_MAX"), (
+                "the lock must be taken BEFORE the length check, or the check-then-"
+                "insert it protects is still torn"
+            )
+            assert "min(" in evict
 
     def test_expert_offload_from_the_extras_is_declared_unmodelled(self, monkeypatch, gqa_gguf):
         # --n-cpu-moe moves individual expert tensors, which the layer fraction

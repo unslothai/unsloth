@@ -8093,6 +8093,113 @@ def _manual_keeps_tensor_split(
     return gpu_layers is not None and gpu_layers >= 1
 
 
+def _estimate_target_is_on_this_disk(model_identifier: str) -> bool:
+    """Whether this identifier could possibly be priced without leaving the machine.
+
+    A local path always can: the resolution reads it off disk. A remote repo id can
+    only if it is already in an HF cache, because a repo that is not there answers
+    ``not_downloaded`` whatever the resolution finds -- so resolving it can produce
+    nothing the route will use, while a full identification walks to the Hub and
+    caches what it fetches.
+
+    Checked across EVERY cache root Studio scans, not just the configured one. A repo
+    downloaded under the legacy or default root would otherwise read as absent and the
+    row would vanish for a model that is sitting right there, which is a worse failure
+    than the round trip this avoids.
+
+    Fail-open on any error: an unreadable cache root must not turn into a blanket
+    ``not_downloaded``, so an unanswerable question falls through to the resolution
+    that was happening before.
+    """
+    try:
+        from utils.paths import is_local_path
+    except Exception:
+        return True
+    if not model_identifier or not model_identifier.strip():
+        return True
+    identifier = model_identifier.strip()
+    try:
+        if is_local_path(identifier):
+            return True
+    except Exception:
+        return True
+
+    # from_identifier prefixes a bare name, so ask about the id it will actually use.
+    candidates = [identifier]
+    if "/" not in identifier:
+        candidates.append(f"unsloth/{identifier}")
+    try:
+        from utils.models.model_config import _iter_hf_cache_snapshots
+
+        roots = _estimate_hf_cache_roots()
+    except Exception:
+        return True
+    if not roots:
+        return True
+    try:
+        for root in roots:
+            for candidate in candidates:
+                for _snapshot in _iter_hf_cache_snapshots(candidate, cache_dir = root):
+                    return True
+    except Exception:
+        return True
+    return False
+
+
+def _estimate_hf_cache_roots() -> list:
+    """Every HF cache root to look in, or [] if that cannot be established.
+
+    Two tiers on purpose. ``hf_cache_roots`` is the authority and the same list the
+    rest of Studio scans, but it reaches through ``hub.utils.paths`` into the logging
+    stack, and a caller that cannot complete that import would get an empty list and,
+    through the fail-open above, a check that quietly does nothing. A check that is
+    silently inert is worse than one that is absent, because it still reads as present.
+
+    So fall back to the two roots that can be established without leaving
+    ``huggingface_hub`` and this package's own settings. That loses the legacy root,
+    which is the honest cost of the degraded path, and is recorded here rather than in
+    a comment somewhere else.
+    """
+    try:
+        from hub.utils.hf_cache_state import hf_cache_roots
+
+        roots = [Path(r) for r in hf_cache_roots()]
+        if roots:
+            return roots
+    except Exception:
+        pass
+
+    roots = []
+    seen = set()
+
+    def _add(value) -> None:
+        if not value:
+            return
+        try:
+            path = Path(value)
+            key = str(path.resolve())
+        except OSError:
+            return
+        if key not in seen and path.is_dir():
+            seen.add(key)
+            roots.append(path)
+
+    try:
+        from utils.hf_cache_settings import known_hf_hub_caches
+
+        for configured in known_hf_hub_caches():
+            _add(configured)
+    except Exception:
+        pass
+    try:
+        from huggingface_hub import constants as _hf_constants
+
+        _add(getattr(_hf_constants, "HF_HUB_CACHE", None))
+    except Exception:
+        pass
+    return roots
+
+
 def _estimate_token_fingerprint(hf_token: Optional[str]) -> str:
     """Short non-reversible stand-in for an HF token, for cache keys only.
 
@@ -8108,6 +8215,14 @@ def _estimate_token_fingerprint(hf_token: Optional[str]) -> str:
 _ESTIMATE_FILES_TTL_SECONDS = 30.0
 _ESTIMATE_FILES_CACHE_MAX = 16
 _estimate_files_cache: "dict[tuple, tuple[float, Optional[float]]]" = {}
+# Shared by both estimate caches. Held only across evict-and-insert, never across a
+# header walk or a resolution, so a slow request cannot block a fast one behind it.
+_ESTIMATE_CACHE_LOCK = threading.Lock()
+# Told apart from None on purpose. Both mean "no config", but they are different
+# answers to the user: None is a resolution that was attempted and failed, which is
+# `unsizable`; this one is a model that is not on this disk, which is `not_downloaded`
+# and was the reason that case reported before the resolution was skipped.
+_ESTIMATE_NOT_ON_DISK = object()
 
 
 def _localized_estimate_config(config: ModelConfig, gguf_path: str) -> ModelConfig:
@@ -8220,10 +8335,19 @@ def _gguf_resident_file_gb(
             max_seq_length = 0,
         )
     files_gb = max(0.0, required_gb - context_term_gb)
-    if len(_estimate_files_cache) >= _ESTIMATE_FILES_CACHE_MAX:
-        oldest = min(_estimate_files_cache, key = lambda k: _estimate_files_cache[k][0])
-        _estimate_files_cache.pop(oldest, None)
-    _estimate_files_cache[key] = (now, files_gb)
+    # Under the lock: the route body runs in an asyncio.to_thread worker, so two panel
+    # requests really are two threads here, and min() walks the dict through a Python
+    # key function that the interpreter is free to switch out of. A concurrent pop makes
+    # that walk raise KeyError, a concurrent insert makes it raise RuntimeError
+    # (dictionary changed size during iteration), and nothing between here and the
+    # to_thread body catches either, so it surfaces as a 500 on a slider drag. Rare --
+    # reproducing it took hundreds of thousands of concurrent eviction cycles -- but the
+    # window is real and a lock around evict-and-insert costs nothing at this size.
+    with _ESTIMATE_CACHE_LOCK:
+        if len(_estimate_files_cache) >= _ESTIMATE_FILES_CACHE_MAX:
+            oldest = min(_estimate_files_cache, key = lambda k: _estimate_files_cache[k][0])
+            _estimate_files_cache.pop(oldest, None)
+        _estimate_files_cache[key] = (now, files_gb)
     return files_gb
 
 
@@ -12258,6 +12382,18 @@ def _cached_estimate_config(
     hit = _estimate_config_cache.get(key)
     if hit is not None and now - hit[0] < _ESTIMATE_CONFIG_TTL_SECONDS:
         return hit[1]
+    if not _estimate_target_is_on_this_disk(model_identifier):
+        # Ahead of from_identifier, because from_identifier is the expensive part. It
+        # runs the load path's full identification, and for an uncached REMOTE id that
+        # walks to the Hub and writes: measured on one uncached safetensors repo, four
+        # model_info attempts, an hf_hub_download of config.json, and 12 new paths /
+        # 1828 bytes (blob, ref, snapshot, lock) in the HF cache -- for a request whose
+        # answer is "not on this disk" and which needed none of it. On an endpoint the
+        # settings panel fires on every change that is a Hub round trip and a disk write
+        # behind a slider, which is exactly what this route's docstring promises it does
+        # not do. None, not a cached None: the common reason a repo is absent is a
+        # download still in flight, and the next tick is when that answer changes.
+        return _ESTIMATE_NOT_ON_DISK
     from core.inference.llama_cpp import _hf_offline_if_unreachable_for
 
     try:
@@ -12273,11 +12409,13 @@ def _cached_estimate_config(
         return None
     if config is None:
         return None
-    if len(_estimate_config_cache) >= _ESTIMATE_CONFIG_CACHE_MAX:
-        # Oldest first; the panel works one model at a time, so this is housekeeping.
-        oldest = min(_estimate_config_cache, key = lambda k: _estimate_config_cache[k][0])
-        _estimate_config_cache.pop(oldest, None)
-    _estimate_config_cache[key] = (now, config)
+    # Same lock, same reason as the files cache: see the note at its eviction.
+    with _ESTIMATE_CACHE_LOCK:
+        if len(_estimate_config_cache) >= _ESTIMATE_CONFIG_CACHE_MAX:
+            # Oldest first; the panel works one model at a time, so this is housekeeping.
+            oldest = min(_estimate_config_cache, key = lambda k: _estimate_config_cache[k][0])
+            _estimate_config_cache.pop(oldest, None)
+        _estimate_config_cache[key] = (now, config)
     return config
 
 
@@ -12332,6 +12470,8 @@ async def estimate_memory(
             request.hf_token,
             native_grant_backed,
         )
+        if config is _ESTIMATE_NOT_ON_DISK:
+            return EstimateMemoryResponse(available = False, reason = "not_downloaded")
         if config is None:
             return EstimateMemoryResponse(available = False, reason = "unsizable")
         if not getattr(config, "is_gguf", False):
