@@ -311,12 +311,10 @@ H3_MAX_REFERENCES = 12
 # A reference video's trained window, in seconds.
 H3_REF_VIDEO_MIN_SECONDS = 2.0
 H3_REF_VIDEO_MAX_SECONDS = 15.0
-# How far a trim may reach past the video track before it is refused. A container reports the
-# longest of its tracks, so a file whose audio outruns its video by a little reads as longer
-# than it can show -- and a client that picks an interval from that duration, as the browser's
-# HTMLMediaElement.duration makes Studio do, then asks for slightly more video than exists.
-# Within this margin the last frame is held instead, which is what the decoder already does at
-# the end of a trim; past it the request really did overshoot and still fails.
+# How far a trim may reach past the video track before it is refused. A container reports its
+# longest track, so a file whose audio outruns its video reads as longer than it can show, and
+# a client picking an interval from that duration (HTMLMediaElement.duration, in Studio's case)
+# asks for slightly more video than exists. Within this margin the last frame is held instead.
 H3_REF_TRIM_COVERAGE_SLACK_SECONDS = 0.5
 H3_FPS = 24
 
