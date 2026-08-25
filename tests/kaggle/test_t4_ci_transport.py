@@ -59,6 +59,19 @@ class _Stub:
         self.gpus = gpus
         self.venv_ok = venv_ok
         self.papermill: list[dict] = []
+        # Every `pip install --target ...` the driver issued, which is the only
+        # place an overlay's CONTENTS are decided. Recorded as the full command
+        # so a guard can ask what was installed, not merely that something was.
+        self.overlay_installs: list[list[str]] = []
+        # What the resolver is pretended to have found. Deliberately mixed: one
+        # ordinary pure-Python distribution and one native one, so the driver's
+        # deny-list has something real to reject. A stub closure of only safe
+        # packages would let a driver with no deny-list at all pass.
+        self.resolver_closure = [
+            ("transformers", "4.57.6"),
+            ("trl", "0.22.2"),
+            ("torch", "2.99.0"),
+        ]
         self.TimeoutExpired = subprocess.TimeoutExpired
         self.CalledProcessError = subprocess.CalledProcessError
         self.STDOUT = subprocess.STDOUT
@@ -72,6 +85,23 @@ class _Stub:
             return types.SimpleNamespace(returncode = 0, stdout = out, stderr = "")
         if cmd[0] == "which":
             return types.SimpleNamespace(returncode = 0, stdout = "/usr/bin/uv\n", stderr = "")
+        if "--report" in cmd:
+            # `pip install --dry-run --report FILE` writes the resolved closure
+            # to FILE and prints nothing useful, so a stub that only returns a
+            # returncode leaves the driver with an empty manifest -- which it
+            # handles by installing nothing, and the overlay guard would then
+            # pass while proving the overlay never happened.
+            report = Path(cmd[cmd.index("--report") + 1])
+            report.parent.mkdir(parents = True, exist_ok = True)
+            report.write_text(json.dumps({
+                "install": [{"metadata": {"name": n, "version": v}}
+                            for n, v in self.resolver_closure]
+            }), encoding = "utf-8")
+            return types.SimpleNamespace(returncode = 0, stdout = "", stderr = "")
+        if "--target" in cmd:
+            self.overlay_installs.append(list(cmd))
+            Path(cmd[cmd.index("--target") + 1]).mkdir(parents = True, exist_ok = True)
+            return types.SimpleNamespace(returncode = 0, stdout = "", stderr = "")
         if "papermill" in cmd:
             env = kw.get("env") or {}
             self.papermill.append(
@@ -3109,3 +3139,99 @@ def test_studio_concurrent_still_skips_when_its_install_failed(tmp_path):
     assert results[STUDIO_TEST]["returncode"] is None, results[STUDIO_TEST]
     assert "install lane did not succeed" in results[STUDIO_TEST]["error"]
     assert STUDIO_TEST not in [c["notebook"] for c in stub.papermill]
+
+
+def test_a_legs_overlay_reaches_its_payload_and_never_carries_torch(tmp_path):
+    """The overlay must WIN over the venv, and must not bring native packages.
+
+    Two failures are being guarded, and they look identical from outside:
+
+    * An overlay built but never put on ``PYTHONPATH``. The leg runs on the base
+      versions, trains, passes, and reports a version table nobody reads. This
+      is the reason the payload's env is inspected rather than the fact that a
+      ``pip install --target`` happened.
+    * An overlay that shadows torch. ``pip install --dry-run --report`` resolves
+      the FULL closure, and a closure containing transformers frequently
+      contains torch too; installing that into the overlay puts a second torch
+      ahead of the one already loaded against this box's CUDA runtime. The stub
+      resolver therefore returns torch on purpose, so a driver that forgot to
+      filter fails here instead of on a Kaggle session.
+
+    Measured basis for the mechanism: kernel unsloth-probe-overlay-t4-r2-38ac4d
+    on a real T4 resolved transformers==4.57.6 + trl~=0.22.0 to three packages,
+    115.9 MB, in 10.0s, with transformers and trl imported from the overlay and
+    torch still from the base.
+    """
+    leg = "canary"
+    overlay = ("transformers==4.57.6", "trl~=0.22.0")
+    original = LEGS[leg].overlay
+    object.__setattr__(LEGS[leg], "overlay", overlay)
+    try:
+        stub = _drive_packed(tmp_path, [leg], gpus = 2)["stub"]
+    finally:
+        object.__setattr__(LEGS[leg], "overlay", original)
+
+    installs = [c for c in stub.overlay_installs if "--target" in c]
+    assert installs, "the leg declared an overlay and nothing was installed into one"
+    target = installs[0][installs[0].index("--target") + 1]
+    assert f"overlay_t4_{leg}" in target, target
+
+    installed = " ".join(installs[0]).lower()
+    assert "transformers==4.57.6" in installed, installed
+    assert "torch==" not in installed, (
+        f"the overlay installed torch, which shadows the base one: {installed}"
+    )
+
+    record = [p for p in stub.papermill if p["notebook"] == f"t4_{leg}.ipynb"]
+    assert record, [p["notebook"] for p in stub.papermill]
+    pythonpath = record[0]["env"].get("PYTHONPATH", "")
+    assert target in pythonpath.split(os.pathsep), (
+        f"the overlay was built at {target} but the payload's PYTHONPATH is "
+        f"{pythonpath!r}, so the child would import the base versions"
+    )
+
+
+def test_a_leg_with_no_overlay_gets_no_pythonpath(tmp_path):
+    """The control case, without which the test above proves only that a
+    variable exists somewhere.
+
+    A driver that unconditionally set PYTHONPATH -- to the overlay root, to an
+    empty directory, to anything -- would satisfy the first guard while giving
+    every leg the same environment. The legs' whole purpose is that they differ.
+    """
+    stub = _drive_packed(tmp_path, ["control"], gpus = 2)["stub"]
+    assert not [c for c in stub.overlay_installs if "--target" in c], (
+        "a leg declaring no overlay had one built for it"
+    )
+    record = [p for p in stub.papermill if p["notebook"] == "t4_control.ipynb"]
+    assert record
+    assert "overlay_" not in record[0]["env"].get("PYTHONPATH", "")
+
+
+def test_every_leg_installs_bitsandbytes_and_probes_that_it_imports():
+    """bitsandbytes has to be asked for, and asked for EARLY.
+
+    It is absent from every dependency set the CI resolves: `unsloth_zoo`
+    declares 57 requirements and bitsandbytes is not among them, and git-main
+    `unsloth` declares only seven unconditional dependencies (typer, rich,
+    pydantic, pyyaml, nest-asyncio, structlog, click) with bitsandbytes reachable
+    only through its CUDA extras. The released PyPI package DOES carry it
+    unconditionally, which is why notebooks installing from PyPI never notice --
+    and why this CI, which installs from git SHAs, must ask.
+
+    Without it the run gets a long way before failing: the install succeeds, the
+    model downloads, and it dies inside `from_pretrained` at
+    unsloth_zoo/patching_utils.py:386. Probing it in the import cell turns that
+    into a failure before the session is spent, which is the whole point of the
+    probe list.
+    """
+    for name, leg in LEGS.items():
+        flat = [spec for group in leg.install for spec in group]
+        assert any("bitsandbytes" in spec for spec in flat), (
+            f"leg {name!r} never installs bitsandbytes; on the Kaggle image it "
+            f"would fail inside from_pretrained after the model download"
+        )
+        assert "bitsandbytes" in leg.imports, (
+            f"leg {name!r} does not probe bitsandbytes, so a broken or missing "
+            f"copy surfaces minutes later as a model-loading error"
+        )

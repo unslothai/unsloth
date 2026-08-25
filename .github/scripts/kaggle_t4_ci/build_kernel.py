@@ -547,6 +547,7 @@ def build_driver(
     vram_source: dict | None = None,
     after_gpu_concurrent: bool = False,
     shared_wheel_specs: tuple[str, ...] = (),
+    overlays: dict[str, tuple[str, ...]] | None = None,
 ) -> dict:
     """Kernel notebook that runs the payloads across the session's GPUs.
 
@@ -574,6 +575,10 @@ def build_driver(
     encoded = {name: _encode_bytes(json.dumps(nb).encode("utf-8")) for name, nb in payloads.items()}
     isolation = isolation or {}
     system_site = {name: bool(isolation.get(name, True)) for name in payloads}
+    # Only legs carry overlays; Studio's halves install into their own tree.
+    overlay_specs = {name: tuple(specs)
+                     for name, specs in (overlays or {}).items()
+                     if specs and name in payloads}
     # The CARD queue, which is not every payload. cpu_lane runs beside the
     # cards and after_gpu runs once they are free; leaving either in here would
     # hand it a card and defeat the point of both.
@@ -641,6 +646,18 @@ PAYLOADS = {json.dumps(encoded)}
 # NameError on a Kaggle session. test_no_generated_cell_reads_a_name_nothing
 # _defines is what caught that, which is the whole reason it exists.
 SYSTEM_SITE = {system_site!r}
+
+# Per-leg pure-Python version pins, laid OVER the venv rather than resolved
+# into it. See Leg.overlay. Empty for a leg that wants the base as it resolved.
+OVERLAYS = {overlay_specs!r}
+# Distributions an overlay may never carry. torch, triton and bitsandbytes are
+# native and coupled to the driver stack: a shadowed copy on PYTHONPATH either
+# fails to import or, worse, imports and silently disagrees with the CUDA
+# runtime already loaded. The overlay exists to move transformers/trl/peft, not
+# to rebuild the machine. Substring match, lowercased, so `nvidia-cublas-cu12`
+# and `torchvision` are caught without listing every wheel NVIDIA ships.
+OVERLAY_DENY = ("torch", "triton", "bitsandbytes", "nvidia", "cuda",
+                "xformers", "flash")
 
 # How many GPUs did we actually get? Assert rather than assume: a 1-GPU
 # allocation would silently serialise everything onto device 0 and double
@@ -861,6 +878,67 @@ def run_one(name, gpu_index, idx):
     env["PATH"] = bindir + os.pathsep + env.get("PATH", "")
     env["VIRTUAL_ENV"] = str(pathlib.Path(bindir).parent)
     env["UV_SYSTEM_PYTHON"] = "0"
+
+    # The per-leg OVERLAY: this leg's version pins laid over the venv rather
+    # than resolved into it.
+    #
+    # Two pip calls, and the first one is the point. `--dry-run --report`
+    # resolves the FULL closure against the environment as it actually is, so
+    # the second call can be `--no-deps` over a manifest instead of a guess. An
+    # overlay assembled by naming packages by hand pairs a new transformers with
+    # the base's older tokenizers or huggingface_hub, and fails minutes later
+    # inside a payload with an import error that reads like a code bug.
+    #
+    # Never fatal. A leg whose overlay fails runs on the base versions and says
+    # so: that is a leg testing the wrong versions, which the payload's own
+    # resolved-version record makes visible, and it is strictly better than
+    # standing the leg down and reporting nothing at all.
+    _ov_specs = OVERLAYS.get(name) or ()
+    if _ov_specs:
+        _ov_dir = VENV_ROOT / ("overlay_" + pathlib.Path(name).stem)
+        _ov_report = _leg_tmp / "overlay_report.json"
+        _ov_t0 = time.time()
+        _ov_rec = {{"payload": name, "requested": list(_ov_specs)}}
+        try:
+            _rc = subprocess.run(
+                [py, "-m", "pip", "install", "--dry-run", "--quiet",
+                 "--report", str(_ov_report)] + list(_ov_specs),
+                capture_output=True, text=True, timeout=600)
+            _closure = []
+            if _ov_report.exists():
+                for _item in json.loads(_ov_report.read_text()).get("install", []):
+                    _meta = _item.get("metadata", {{}})
+                    _closure.append((_meta.get("name", "?"), _meta.get("version", "?")))
+            _keep, _dropped = [], []
+            for _nm, _ver in _closure:
+                if any(_d in _nm.lower() for _d in OVERLAY_DENY):
+                    _dropped.append(f"{{_nm}}=={{_ver}}")
+                else:
+                    _keep.append(f"{{_nm}}=={{_ver}}")
+            _ov_rec.update({{"resolved": _keep, "denied": _dropped,
+                            "resolve_returncode": _rc.returncode}})
+            if _keep:
+                _rc2 = subprocess.run(
+                    [py, "-m", "pip", "install", "--quiet", "--no-deps",
+                     "--target", str(_ov_dir)] + _keep,
+                    capture_output=True, text=True, timeout=900)
+                _ov_rec["install_returncode"] = _rc2.returncode
+                if _rc2.returncode == 0:
+                    # PREPENDED, so the overlay wins over the venv. The payload
+                    # child reads this at interpreter start, which is the only
+                    # moment it can matter: an already-imported transformers
+                    # cannot be displaced by any later sys.path edit.
+                    env["PYTHONPATH"] = str(_ov_dir) + os.pathsep + env.get("PYTHONPATH", "")
+                    _ov_rec["active"] = True
+                else:
+                    _ov_rec["error"] = _rc2.stderr[-400:]
+            else:
+                _ov_rec["error"] = "resolved to nothing installable"
+        except BaseException as _exc:  # noqa: BLE001
+            _ov_rec["error"] = f"{{type(_exc).__name__}}: {{_exc}}"[:300]
+        _ov_rec["seconds"] = round(time.time() - _ov_t0, 1)
+        _ov_rec.setdefault("active", False)
+        print(f"{DRIVER_SENTINEL}_OVERLAY " + json.dumps(_ov_rec), flush=True)
 
     log = WORK / (pathlib.Path(name).stem + "_driver.log")
     started = time.time()
@@ -1316,6 +1394,7 @@ def build_kernel(
 ) -> dict:
     payloads = {}
     isolation = {}
+    overlays: dict[str, tuple[str, ...]] = {}
     legs_by_payload = {}
     leg_groups: dict[str, list[list[str]]] = {}
     for leg in resolve(leg_names):
@@ -1329,6 +1408,7 @@ def build_kernel(
             reference = "" if skip_reference else None,
         )
         isolation[name] = leg.system_site_packages
+        overlays[name] = tuple(leg.overlay)
         legs_by_payload[name] = leg
         leg_groups[name] = expand_install(
             leg,
@@ -1371,6 +1451,7 @@ def build_kernel(
         vram_source = legs_by_payload,
         after_gpu_concurrent = after_gpu_concurrent,
         shared_wheel_specs = shared_wheel_specs,
+        overlays = overlays,
     )
 
 

@@ -94,6 +94,29 @@ class Leg:
     # `test_the_declared_vram_matches_what_the_legs_reported` checks these
     # against the peaks in the evidence rather than trusting them.
     vram_gb: float = 1.0
+    # Pure-Python version pins this leg wants OVER the shared base, installed
+    # into a per-leg directory and put on PYTHONPATH ahead of it.
+    #
+    # This is the mechanism Studio already ships: `.venv_t5_530/`,
+    # `.venv_t5_550/`, `.venv_t5_510/` in studio/backend/utils/
+    # transformers_version.py, installed --no-deps, prepended to sys.path and
+    # propagated to children through PYTHONPATH. Copied rather than reinvented.
+    #
+    # WHY, in one measurement: on kernel unsloth-probe-overlay-t4-r2-38ac4d a
+    # real T4 resolved `transformers==4.57.6 + trl~=0.22.0` against the ambient
+    # environment to THREE packages, 115.9 MB, installed in 10.0s -- against the
+    # 158-207s each leg spends on its own install groups today. The overlay is
+    # the version delta, not the environment.
+    #
+    # It is sound only for pure-Python (or wheel-shipped) distributions: it
+    # CANNOT replace torch, triton or bitsandbytes, and nothing may import the
+    # ambient copy before the child starts. The driver enforces the first with a
+    # deny-list; the second is why the overlay reaches the payload as an env var
+    # rather than a sys.path edit inside an already-running interpreter.
+    #
+    # Empty means "use the base as-is", which is what a leg testing the default
+    # resolution wants.
+    overlay: tuple[str, ...] = ()
     # Filename under <payload-dir>/references to band-check against, if any.
     reference: str = ""
     # Extra environment for the child process.
