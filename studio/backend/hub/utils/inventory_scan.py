@@ -1375,17 +1375,35 @@ def snapshot_has_complete_variants(snapshot: str) -> bool:
 
 
 def snapshot_has_gguf_projector(snapshot: Optional[Path]) -> bool:
-    """Whether *snapshot* itself holds a GGUF vision projector.
+    """Whether *snapshot*'s GGUF load can reach a vision projector.
 
-    Same walk the variant lister reports ``has_vision`` from, so row capability and picker flag
-    cannot name different revisions.
+    Projectors normally live in the snapshot, but local HF-cache loads also search the enclosing
+    ``models--*/`` directory. Keep that widening limited to a real snapshot layout.
     """
     if snapshot is None:
         return False
     from hub.utils.gguf import list_local_gguf_variants
+    from utils.models.gguf_metadata import mmproj_accepts_image
 
     try:
-        return bool(list_local_gguf_variants(str(snapshot))[1])
+        snapshot_path = Path(snapshot)
+        if list_local_gguf_variants(str(snapshot_path))[1]:
+            return True
+        snapshots_dir = snapshot_path.parent
+        repo_root = snapshots_dir.parent
+        if snapshots_dir.name != "snapshots" or not repo_root.name.startswith("models--"):
+            return False
+        for candidate in repo_root.iterdir():
+            if (
+                is_gguf_filename(candidate.name)
+                and is_mmproj_filename(candidate.name)
+                and not is_appledouble_metadata(candidate)
+                and candidate.is_file()
+                and candidate.stat().st_size > 0
+                and mmproj_accepts_image(str(candidate))
+            ):
+                return True
+        return False
     except Exception:
         return False
 

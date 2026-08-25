@@ -409,7 +409,7 @@ def _cache_inventory_fields(
             else None
         ),
     ).model_dump()
-    # The loader's companion search never leaves the quants' snapshot.
+    # Judge the snapshot the row loads; the helper applies the loader's HF repo-root widening.
     if model_format == "gguf" and (
         hf_cache_scan.snapshot_has_gguf_projector(gguf_snapshot)
         if gguf_snapshot is not None

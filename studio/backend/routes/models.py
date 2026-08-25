@@ -3919,22 +3919,19 @@ def _cached_gguf_row_has_vision(repo_info, load_id: Optional[str]) -> bool:
     """
     if load_id:
         return _snapshot_has_gguf_projector(load_id)
-    # No projector in any revision means none to reach, and saves a cache walk.
-    if not _repo_has_mmproj(repo_info):
-        return False
     try:
         from hub.utils.gguf import iter_snapshots_preferring_whole, list_local_gguf_variants
 
         # The row describes this copy; a duplicate in another root is one the load never reaches.
         root = Path(repo_info.repo_path).parent
         for snapshot in iter_snapshots_preferring_whole(repo_info.repo_id, None, root = root):
-            variants, has_vision = list_local_gguf_variants(str(snapshot))
+            variants, _ = list_local_gguf_variants(str(snapshot))
             if variants:
-                return bool(has_vision)
+                return _snapshot_has_gguf_projector(str(snapshot))
     except Exception:
         pass
     # Nothing on disk to load, so the row describes the repo rather than a copy of it.
-    return True
+    return _repo_has_mmproj(repo_info)
 
 
 def _iter_gguf_paths(root: Path, deadline: Optional[float] = None):
