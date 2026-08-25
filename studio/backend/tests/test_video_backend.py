@@ -5921,6 +5921,7 @@ def _reference_video_data_url(
     size = (160, 96),
     with_audio = True,
     audio_seconds = None,
+    audio_start_seconds = 0.0,
 ):
     """A real encoded MP4, so the decode path is exercised rather than stubbed."""
     import base64
@@ -5947,14 +5948,18 @@ def _reference_video_data_url(
         if audio is not None:
             written = 0
             total = int((seconds if audio_seconds is None else audio_seconds) * 44_100)
+            pts = int(round(audio_start_seconds * 44_100))
             while written < total:
                 count = min(1024, total - written)
                 samples = np.zeros((1, count * 2), dtype = np.int16)
                 frame = av.AudioFrame.from_ndarray(samples, format = "s16", layout = "stereo")
                 frame.sample_rate = 44_100
+                # Placing the track later on the shared timeline, as an offset soundtrack does.
+                frame.pts = pts
                 for packet in audio.encode(frame):
                     out.mux(packet)
                 written += count
+                pts += count
             for packet in audio.encode():
                 out.mux(packet)
         for packet in video.encode():
@@ -6293,6 +6298,53 @@ def test_h3_reference_video_trim_entirely_past_the_soundtrack_drops_the_audio():
 
     assert len(frames) == round(4.0 * 24)
     assert waveform is None
+
+
+def test_h3_reference_video_trim_before_an_offset_soundtrack_drops_the_audio():
+    """A track starting after the interval is absent from it, not silent within it.
+
+    The mirror of the test above: there the soundtrack ended before the trim, here it begins
+    after it. Both leave no sample inside the interval, so both must report no soundtrack.
+    Returning a silent waveform instead would pass the model a fabricated track and let the
+    positional pairing in stage_h3_references miss the gap.
+    """
+    pytest.importorskip("av")
+    import base64
+
+    from core.inference.video_minimax_h3 import decode_h3_reference_video
+
+    blob = base64.b64decode(
+        _reference_video_data_url(
+            seconds = 15.0, fps = 24, audio_seconds = 5.0, audio_start_seconds = 10.0
+        ).split(",", 1)[1]
+    )
+    frames, waveform, _ = decode_h3_reference_video(
+        blob, trim_start_seconds = 0.0, trim_end_seconds = 5.0
+    )
+
+    assert len(frames) == round(5.0 * 24)
+    assert waveform is None
+
+
+def test_h3_reference_video_trim_reaching_an_offset_soundtrack_keeps_the_audio():
+    """The same offset track is still decoded by a trim that does overlap it."""
+    pytest.importorskip("av")
+    import base64
+
+    from core.inference.video_minimax_h3 import decode_h3_reference_video
+
+    blob = base64.b64decode(
+        _reference_video_data_url(
+            seconds = 15.0, fps = 24, audio_seconds = 5.0, audio_start_seconds = 10.0
+        ).split(",", 1)[1]
+    )
+    frames, waveform, sample_rate = decode_h3_reference_video(
+        blob, trim_start_seconds = 9.0, trim_end_seconds = 13.0
+    )
+
+    assert len(frames) == round(4.0 * 24)
+    assert waveform is not None
+    assert waveform.shape[0] == round(4.0 * sample_rate)
 
 
 def test_h3_reference_video_trim_tolerates_a_container_longer_than_its_video():

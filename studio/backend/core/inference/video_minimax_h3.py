@@ -802,13 +802,11 @@ def _decode_audio_trim_by_timestamp(
     target_count = int(round((end - start) * sample_rate))
     output = np.zeros((target_count, channels), dtype = "float32")
     resampler = av.AudioResampler(format = "flt", layout = stream.layout.name, rate = sample_rate)
-    decoded_any = False
     copied_any = False
-    timeline_end = float("-inf")
     stopped = False
 
     def _take(resampled: Any) -> bool:
-        nonlocal origin, decoded_any, copied_any, timeline_end
+        nonlocal origin, copied_any
         timestamp = _frame_timestamp_seconds(resampled)
         if timestamp is None:
             raise _H3MediaTimestampsUnavailable
@@ -817,8 +815,6 @@ def _decode_audio_trim_by_timestamp(
         block = resampled.to_ndarray().reshape(-1, channels)
         block_start = timestamp - origin
         block_end = block_start + block.shape[0] / sample_rate
-        decoded_any = True
-        timeline_end = max(timeline_end, block_end)
         if block_start >= end:
             return True
         destination_start = int(round((block_start - start) * sample_rate))
@@ -843,11 +839,12 @@ def _decode_audio_trim_by_timestamp(
         for resampled in resampler.resample(None):
             if _take(resampled):
                 break
-    if not decoded_any:
-        return None, None
-    # A track ending inside the interval leaves the rest of `output` silent rather than
-    # failing: embedded audio is optional, and a video carrying none is accepted outright.
-    if not copied_any and timeline_end <= start:
+    # No sample landing inside the interval means no soundtrack, whether the track ended
+    # before it or starts after it. Returning silence instead would hand the model a
+    # fabricated track and hide the gap from the positional pairing in stage_h3_references.
+    # A track that merely runs out partway still copied something, so it keeps its tail
+    # silent rather than failing: embedded audio is optional here.
+    if not copied_any:
         return None, None
     return output, sample_rate
 
