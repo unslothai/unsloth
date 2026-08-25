@@ -747,11 +747,29 @@ def batched_generation(model, tokenizer, prompts, *, max_new_tokens) -> dict:
     return result
 
 
-def batched_generation_failures(batch: dict | None) -> list[str]:
+# Models where batched greedy generation is CONFIRMED broken upstream, filed,
+# and not this repo's to fix. See unsloth #9708: on both of these, batch sizes
+# 2/4/8 fail to reproduce one-at-a-time output with real left padding and
+# demonstrably distinct prompt lengths, on both repeats.
+#
+# This is a STRICT expectation, not a mute. A model listed here that starts
+# AGREEING fails the leg, with a message saying to delete the entry -- so the
+# day #9708 is fixed, CI says so instead of quietly keeping a stale excuse.
+# Every other rule in this function stays live for these models: the padding
+# side, the distinct lengths and the empty-output check are what make the
+# disagreement a real finding rather than an unpadded batch.
+KNOWN_BATCHED_GENERATION_BREAKAGE = {
+    "unsloth/gemma-4-E2B-it": "unsloth#9708",
+    "unsloth/Qwen3.5-2B": "unsloth#9708",
+}
+
+
+def batched_generation_failures(batch: dict | None, model: str | None = None) -> list[str]:
     """Turn a `batched_generation` record into failures, vacuity included."""
     if not batch:
         return ["batched generation was never run"]
     out = []
+    known = KNOWN_BATCHED_GENERATION_BREAKAGE.get(model or "")
     if batch.get("distinct_lengths", 0) < 2:
         out.append(
             "every batched prompt tokenised to the same length "
@@ -771,13 +789,23 @@ def batched_generation_failures(batch: dict | None) -> list[str]:
             )
     if batch.get("empty_outputs"):
         out.append(f"prompts {batch['empty_outputs']} generated nothing at all")
-    for size, agreed in (batch.get("agrees") or {}).items():
-        if not agreed:
+    agrees = batch.get("agrees") or {}
+    for size, agreed in agrees.items():
+        if not agreed and not known:
             out.append(
                 f"batch size {size} did not reproduce one-at-a-time greedy output "
                 f"(#3699/#1456): {batch.get('batched', {}).get(size)!r} != "
                 f"{batch.get('singles')!r}"
             )
+    if known and agrees and all(agrees.values()):
+        # The strict half. An expectation that only ever excuses is a mute, and
+        # a mute outlives the bug it was written for.
+        out.append(
+            f"{model} is listed in KNOWN_BATCHED_GENERATION_BREAKAGE for "
+            f"{known}, and every batch size AGREED. If the upstream fix has "
+            f"landed, delete the entry; the leg must not carry an excuse for a "
+            f"bug that is gone"
+        )
     return out
 
 
@@ -2047,7 +2075,7 @@ def main() -> int:
         for run in runs:
             failures += [
                 f"run {run['run_index']}: {f}"
-                for f in batched_generation_failures(run.get("batched_generation"))
+                for f in batched_generation_failures(run.get("batched_generation"), args.model)
             ]
 
     # 4c. the GGUF export, and whether the exported file runs. Both rules live

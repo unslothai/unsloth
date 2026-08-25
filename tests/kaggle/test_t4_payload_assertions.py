@@ -2313,3 +2313,29 @@ def test_the_export_settings_ride_the_value_loop():
     block = _child_command_block()
     assert '("--gguf-quantization", args.gguf_quantization)' in block
     assert '("--gguf-accept", args.gguf_accept)' in block
+
+
+def test_a_second_cycle_cannot_report_an_already_installed_llama_cpp_as_a_source_build():
+    """Measured on unsloth-probe-visleg-full-b3a317, and it is a trap.
+
+    The prebuilt banner is printed once, by the install that downloads the
+    bundle. A second cycle in the same session finds llama.cpp already there
+    and prints nothing, so the field read `prebuilt: true` on cycle 0 and
+    `prebuilt: false` on cycle 1 for the SAME installation -- and `false` reads
+    as "built from source", which is the one thing this field exists to catch.
+
+    None is the third state: this run did not install it, so it cannot say.
+    """
+    from gguf_export import llama_cpp_facts
+
+    quiet = llama_cpp_facts("", ())
+    assert quiet["prebuilt"] is None, (
+        "an install that printed nothing must not claim a source build"
+    )
+    assert quiet["source_build_markers"] == []
+
+    # And the two real answers are unchanged.
+    assert llama_cpp_facts(
+        "Unsloth: Installing prebuilt llama.cpp b10472 - skipping compilation.", ()
+    )["prebuilt"] is True
+    assert llama_cpp_facts("cmake --build . -j 4\n", ())["prebuilt"] is False

@@ -259,6 +259,20 @@ def llama_cpp_facts(install_output: str, returned) -> dict:
         "returned": paths,
         "all_exist": all(os.path.exists(p) for p in paths) if paths else False,
         "dir": os.path.dirname(paths[0]) if paths else None,
-        "prebuilt": PREBUILT_MARKER in (install_output or ""),
+        # TRI-STATE, and the third state is the point. The prebuilt banner is
+        # printed once, by the install that actually downloads the bundle; a
+        # second cycle in the same session finds llama.cpp already there and
+        # prints nothing. Measured on unsloth-probe-visleg-full-b3a317, where
+        # cycle 0 read `prebuilt: true` and cycle 1 read `prebuilt: false` for
+        # the SAME installation -- and `false` reads as "built from source",
+        # which is the one thing this field exists to catch.
+        #
+        # None means "this run did not install it, so it cannot say". The
+        # source-build markers stay a plain list, because those are printed by
+        # the build itself and their absence is meaningful either way.
+        "prebuilt": (
+            True if PREBUILT_MARKER in (install_output or "")
+            else (None if not (install_output or "").strip() else False)
+        ),
         "source_build_markers": [m for m in SOURCE_BUILD_MARKERS if m in (install_output or "")],
     }
