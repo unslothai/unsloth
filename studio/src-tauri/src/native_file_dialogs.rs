@@ -395,6 +395,7 @@ pub async fn save_native_file_from_url(
     app: AppHandle,
     url: String,
     file_name: String,
+    bearer_token: Option<String>,
 ) -> Result<Option<String>, String> {
     crate::native_intents::ensure_main_window(&window)?;
     require_loopback_url(&url)?;
@@ -418,7 +419,7 @@ pub async fn save_native_file_from_url(
     let Some(path) = selected_path else {
         return Ok(None);
     };
-    stream_url_to_path(&url, &path, DOWNLOAD_READ_TIMEOUT).await?;
+    stream_url_to_path(&url, &path, DOWNLOAD_READ_TIMEOUT, bearer_token.as_deref()).await?;
     Ok(Some(saved_file_name(&path)))
 }
 
@@ -426,14 +427,22 @@ pub async fn save_native_file_from_url(
 /// clip that is still arriving resets it, so a large save is not cut short.
 const DOWNLOAD_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
-async fn stream_url_to_path(url: &str, path: &Path, read_timeout: Duration) -> Result<(), String> {
-    let mut response =
-        crate::loopback_http::streaming_client(Duration::from_secs(10), read_timeout)
-            .map_err(|error| format!("Download failed: {error}"))?
-            .get(url)
-            .send()
-            .await
-            .map_err(|error| format!("Download failed: {error}"))?;
+async fn stream_url_to_path(
+    url: &str,
+    path: &Path,
+    read_timeout: Duration,
+    bearer_token: Option<&str>,
+) -> Result<(), String> {
+    let client = crate::loopback_http::streaming_client(Duration::from_secs(10), read_timeout)
+        .map_err(|error| format!("Download failed: {error}"))?;
+    let mut request = client.get(url);
+    if let Some(token) = bearer_token {
+        request = request.bearer_auth(token);
+    }
+    let mut response = request
+        .send()
+        .await
+        .map_err(|error| format!("Download failed: {error}"))?;
     // Redirects are refused rather than followed, so a 3xx is a rejection here, not a hop.
     if !response.status().is_success() {
         return Err(format!(
@@ -686,13 +695,24 @@ mod tests {
     }
 
     /// A one-shot loopback server, so the streaming save is exercised over real HTTP.
-    fn serve_once(body: Vec<u8>, status: &'static str) -> (String, std::thread::JoinHandle<()>) {
+    fn serve_once(
+        body: Vec<u8>,
+        status: &'static str,
+        expected_bearer: Option<&'static str>,
+    ) -> (String, std::thread::JoinHandle<()>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let handle = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            let mut discard = [0_u8; 1024];
-            let _ = std::io::Read::read(&mut stream, &mut discard);
+            let mut request = [0_u8; 2048];
+            let read = std::io::Read::read(&mut stream, &mut request).unwrap();
+            if let Some(token) = expected_bearer {
+                let request = String::from_utf8_lossy(&request[..read]);
+                assert!(
+                    request.contains(&format!("authorization: Bearer {token}")),
+                    "bearer header missing from {request}"
+                );
+            }
             let header = format!(
                 "HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Type: video/mp4\r\n\r\n",
                 body.len()
@@ -707,11 +727,11 @@ mod tests {
     fn streaming_save_writes_the_whole_body_without_buffering_it() {
         // Larger than any single chunk, so the loop is what assembles the file.
         let body: Vec<u8> = (0..3_000_000_u32).map(|i| (i % 251) as u8).collect();
-        let (url, server) = serve_once(body.clone(), "200 OK");
+        let (url, server) = serve_once(body.clone(), "200 OK", None);
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("clip.mp4");
         test_runtime()
-            .block_on(stream_url_to_path(&url, &dest, DOWNLOAD_READ_TIMEOUT))
+            .block_on(stream_url_to_path(&url, &dest, DOWNLOAD_READ_TIMEOUT, None))
             .unwrap();
         server.join().unwrap();
         assert_eq!(fs::read(&dest).unwrap(), body);
@@ -725,12 +745,30 @@ mod tests {
     }
 
     #[test]
+    fn streaming_save_can_authenticate_a_protected_backend_download() {
+        let token = "desktop-access-token";
+        let (url, server) = serve_once(b"zip".to_vec(), "200 OK", Some(token));
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("logs.zip");
+        test_runtime()
+            .block_on(stream_url_to_path(
+                &url,
+                &dest,
+                DOWNLOAD_READ_TIMEOUT,
+                Some(token),
+            ))
+            .unwrap();
+        server.join().unwrap();
+        assert_eq!(fs::read(&dest).unwrap(), b"zip");
+    }
+
+    #[test]
     fn a_failed_download_leaves_no_file_behind() {
-        let (url, server) = serve_once(b"nope".to_vec(), "401 Unauthorized");
+        let (url, server) = serve_once(b"nope".to_vec(), "401 Unauthorized", None);
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("clip.mp4");
         let error = test_runtime()
-            .block_on(stream_url_to_path(&url, &dest, DOWNLOAD_READ_TIMEOUT))
+            .block_on(stream_url_to_path(&url, &dest, DOWNLOAD_READ_TIMEOUT, None))
             .unwrap_err();
         server.join().unwrap();
         assert!(error.contains("401"), "{error}");
@@ -790,6 +828,7 @@ mod tests {
                 &format!("http://127.0.0.1:{port}/clip.mp4"),
                 &dest,
                 Duration::from_millis(250),
+                None,
             ))
             .unwrap_err();
         drop(release);
@@ -823,6 +862,7 @@ mod tests {
                 &format!("http://127.0.0.1:{port}/clip.mp4"),
                 &dest,
                 DOWNLOAD_READ_TIMEOUT,
+                None,
             ))
             .unwrap_err();
         server.join().unwrap();

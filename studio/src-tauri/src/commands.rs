@@ -690,7 +690,7 @@ fn open_existing_dir(dir: &std::path::Path) -> Result<(), String> {
 }
 
 fn logs_dir(home: &std::path::Path) -> std::path::PathBuf {
-    home.join(".unsloth").join("studio").join("logs")
+    home.join(".unsloth").join("studio")
 }
 
 /// Open the Unsloth logs directory in the system file manager.
@@ -1134,12 +1134,9 @@ mod tests {
     }
 
     #[test]
-    fn logs_command_targets_the_logs_directory_not_the_studio_root() {
+    fn logs_command_targets_the_studio_root_containing_every_log_family() {
         let home = std::path::Path::new("home");
-        assert_eq!(
-            super::logs_dir(home),
-            home.join(".unsloth").join("studio").join("logs")
-        );
+        assert_eq!(super::logs_dir(home), home.join(".unsloth").join("studio"));
     }
 
     #[test]

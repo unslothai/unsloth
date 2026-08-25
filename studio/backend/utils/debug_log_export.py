@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import BinaryIO, Iterable
 
 from utils.debug_log_sources import LogSource
-from utils.log_redaction import redact_log_text
+from utils.log_redaction import StreamingLogRedactor, redact_log_text
 
 
 # One log record is normally a few hundred bytes. A limit keeps a malformed
@@ -36,6 +36,7 @@ def _unique_archive_name(source: LogSource, used: set[str]) -> str:
 
 
 def _copy_redacted(source: BinaryIO, destination: BinaryIO) -> None:
+    redactor = StreamingLogRedactor()
     while True:
         record = source.readline(EXPORT_READ_BYTES + 1)
         if not record:
@@ -48,7 +49,15 @@ def _copy_redacted(source: BinaryIO, destination: BinaryIO) -> None:
             destination.write(f"[oversized log record omitted: {omitted} bytes]\n".encode("ascii"))
             continue
         text = record.decode("utf-8", errors = "replace")
-        destination.write(redact_log_text(text).encode("utf-8"))
+        destination.write(redactor.redact_record(text).encode("utf-8"))
+
+
+def _safe_error_summary(exc: Exception) -> str:
+    """Describe a failed source without echoing its host path or message."""
+    errno = getattr(exc, "errno", None)
+    if isinstance(errno, int):
+        return f"{type(exc).__name__} (errno {errno})"
+    return type(exc).__name__
 
 
 def build_debug_log_archive(sources: Iterable[LogSource]) -> BinaryIO:
@@ -78,7 +87,9 @@ def build_debug_log_archive(sources: Iterable[LogSource]) -> BinaryIO:
                         with archive.open(member, "w", force_zip64 = True) as archived:
                             _copy_redacted(log_file, archived)
                 except (OSError, ValueError) as exc:
-                    failures.append(f"{source.family}/{Path(source.label).name}: {exc}")
+                    failures.append(
+                        f"{source.family}/{Path(source.label).name}: {_safe_error_summary(exc)}"
+                    )
 
             if failures:
                 archive.writestr(

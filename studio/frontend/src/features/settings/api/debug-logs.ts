@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { authFetch } from "@/features/auth";
+import { authFetch, getAuthToken } from "@/features/auth";
+import { apiUrl, isTauri } from "@/lib/api-base";
 import { readFastApiError } from "@/lib/format-fastapi-error";
-import { downloadFile } from "@/lib/native-files";
+import { downloadFile, downloadUrlStreaming } from "@/lib/native-files";
 import { DebugLogRequestError } from "../lib/debug-log-error";
 
 export { DebugLogRequestError } from "../lib/debug-log-error";
@@ -116,7 +117,33 @@ export async function loadDebugLog(
 }
 
 export async function exportDebugLogs(): Promise<void> {
-  const response = await authFetch("/api/settings/debug/logs/export");
+  const exportPath = "/api/settings/debug/logs/export";
+  if (isTauri) {
+    // Refresh an expired desktop session with a small response before Rust opens
+    // the chooser and streams the archive directly to disk.
+    const authCheck = await authFetch("/api/settings/debug/logs/sources");
+    if (!authCheck.ok) {
+      throw new Error(
+        await readFastApiError(authCheck, "Could not export the log files."),
+      );
+    }
+    const bearerToken = getAuthToken();
+    if (!bearerToken) throw new Error("Could not authenticate the log export.");
+    const compactTimestamp = new Date()
+      .toISOString()
+      .replace(/\D/g, "")
+      .slice(0, 14);
+    const timestamp =
+      `${compactTimestamp.slice(0, 8)}-${compactTimestamp.slice(8)}`;
+    await downloadUrlStreaming(
+      apiUrl(exportPath),
+      `unsloth-logs-${timestamp}.zip`,
+      bearerToken,
+    );
+    return;
+  }
+
+  const response = await authFetch(exportPath);
   if (!response.ok) {
     throw new Error(
       await readFastApiError(response, "Could not export the log files."),

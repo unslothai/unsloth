@@ -115,6 +115,15 @@ _FLAG_RE = re.compile(
     r"(?P<val>(?(q)" + _QUOTED_VALUE + r"|[^\s\"']{6,}))"
 )
 
+# YAML and similar structured logs may put a credential value on the next
+# physical line. ``redact_log_text`` can mask that shape when it receives both
+# lines together, but bounded streaming readers deliberately process one record
+# at a time. Keep only the fact that the next non-empty record is sensitive;
+# never retain the credential itself.
+_CONTINUED_SECRET_RE = re.compile(
+    r"(?i)" + _KEY_START + r"(?:" + _SECRET_KEYS + r")\b[\"']?\s*[:=]\s*$"
+)
+
 # An Authorization value, whatever the scheme. The key/value rule cannot reach
 # it: for "Authorization: Basic dXNlcjpwdw==" the value it captures is "Basic",
 # leaving the credential behind it. Same for a Cookie, which for Studio is the
@@ -232,3 +241,26 @@ def redact_log_text(text: str) -> str:
     except Exception:
         pass
     return text
+
+
+class StreamingLogRedactor:
+    """Redact independent records while preserving key/value context."""
+
+    def __init__(self) -> None:
+        self._redact_next_value = False
+
+    def redact_record(self, text: str) -> str:
+        redacted = redact_log_text(text)
+        if self._redact_next_value:
+            if not redacted.strip():
+                return redacted
+            newline = (
+                "\r\n" if redacted.endswith("\r\n") else "\n" if redacted.endswith("\n") else ""
+            )
+            indent = re.match(r"[ \t]*", redacted).group(0)
+            self._redact_next_value = False
+            return f"{indent}{REDACTED}{newline}"
+
+        if _CONTINUED_SECRET_RE.search(redacted):
+            self._redact_next_value = True
+        return redacted

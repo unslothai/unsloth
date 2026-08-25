@@ -203,6 +203,43 @@ def test_export_omits_an_oversized_record_instead_of_splitting_a_secret(client):
     assert exported.splitlines()[-1] == "kept"
 
 
+def test_export_masks_a_credential_value_on_the_next_line(client):
+    secret = "correct-horse-battery-staple"
+    path = _seed_server_log(f"password:\n  {secret}\nkept\n")
+
+    response = client.get("/api/settings/debug/logs/export")
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        exported = archive.read(f"server/{path.name}").decode("utf-8")
+    assert secret not in exported
+    assert "  <redacted>" in exported
+    assert exported.splitlines()[-1] == "kept"
+
+
+def test_export_warning_does_not_expose_a_source_realpath(tmp_path):
+    from utils.debug_log_export import build_debug_log_archive
+    from utils.debug_log_sources import LogSource
+
+    missing = tmp_path / "private-host-path" / "missing.log"
+    source = LogSource(
+        id = "server:missing",
+        family = "server",
+        label = missing.name,
+        realpath = str(missing),
+        size_bytes = 0,
+        modified_at = 0,
+        is_current = False,
+    )
+
+    output = build_debug_log_archive([source])
+    try:
+        with zipfile.ZipFile(output) as archive:
+            warning = archive.read("EXPORT_WARNINGS.txt").decode("utf-8")
+    finally:
+        output.close()
+    assert str(missing) not in warning
+    assert "server/missing.log: FileNotFoundError (errno 2)" in warning
+
+
 def test_the_endpoints_stay_out_of_the_access_log():
     """Load bearing, not tidiness. These paths are polled while the tab is open
     and they read the very file the access log writes to, so without the
