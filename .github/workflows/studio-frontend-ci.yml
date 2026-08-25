@@ -25,6 +25,7 @@ on:
       - 'tests/studio/probe_dismiss_guard.py'
       - 'tests/studio/playwright_settings_tabs.py'
       - 'tests/studio/playwright_stream_pacing.py'
+      - 'tests/studio/playwright_declared_polls.py'
       - 'tests/studio/playwright_code_block_flicker.py'
       - 'tests/studio/_code_block_flicker_analysis.py'
       - 'tests/studio/test_code_block_flicker_contract.py'
@@ -417,6 +418,15 @@ jobs:
       - name: Browser check for non-modal menu dismissal
         working-directory: ${{ github.workspace }}
         run: python3 tests/studio/probe_dismiss_guard.py --label ci --engine chromium
+
+      # The log budget compares two backend files against each other, so a pull request that
+      # adds a polling call site in the frontend passes it without touching either. Only a
+      # browser can see that a new timer started, whatever it was implemented with.
+      - name: Every polled path is declared in the log budget
+        working-directory: ${{ github.workspace }}
+        env:
+          PW_ART_DIR: logs/playwright-declared-polls
+        run: python3 tests/studio/playwright_declared_polls.py
 
       # The settings panels are fetched on first view, so only a browser can answer whether
       # every tab renders and deep-opens land (and abandoned ones do not come back).
