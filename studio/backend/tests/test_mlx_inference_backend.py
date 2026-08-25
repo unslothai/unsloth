@@ -5,7 +5,11 @@ import asyncio
 import contextlib
 import copy
 import json
+import errno
+import os
+import shutil
 import subprocess
+import time
 import sys
 import types
 from contextlib import contextmanager
@@ -4614,30 +4618,112 @@ def test_every_drafting_depth_shares_the_one_head_split_for_the_target(monkeypat
     monkeypatch.setattr(spec, "_handler", lambda _c: SimpleNamespace(
         name = "n", module = "m", function = "f"))
     monkeypatch.setattr(spec, "native_mtp_evidence", lambda *_a: SimpleNamespace(weight_bytes = 1))
-    splits = []
+    splits, alongside = [], []
+
+    sidecars = root / "mlx-speculative" / "mtp"
 
     def _split(_src, dest, **kwargs):
         splits.append(kwargs)
+        # What is still on disk while the new copy is being written.
+        alongside.append(
+            sorted(p.name for p in sidecars.iterdir() if not p.name.startswith("."))
+        )
         Path(dest, "config.json").write_text("{}")
         Path(dest, "model.safetensors").write_bytes(b"x" * 16)
 
     monkeypatch.setattr(spec, "_splitter", lambda *_a: _split)
 
-    first = spec.materialize_native_mtp(snapshot)
-    assert first.is_dir() and spec.materialize_native_mtp(snapshot) == first
-    assert [p for p in (root / "mlx-speculative" / "mtp").iterdir()] == [first]
+    first = spec.materialize_native_mtp(snapshot, reclaim = True)
+    assert first.is_dir() and spec.materialize_native_mtp(snapshot, reclaim = True) == first
+    assert [p for p in sidecars.iterdir()] == [first]
     # Split at the head's own depth, so the request's depth is not baked into the copy.
     assert splits == [{}]
-    # A second revision of the same target is a different head and keeps its own copy.
-    other = tmp_path / "snap2"
-    other.mkdir()
+    # A second revision of the same target is a different head and keeps its own copy. Cached on
+    # a second volume, so its sidecar can be judged while that volume is offline.
+    external = tmp_path / "external" / "hub"
+    other = external / "snap2"
+    other.mkdir(parents = True)
     (other / "config.json").write_text('{"revision": 2}')
-    second = spec.materialize_native_mtp(other)
+    second = spec.materialize_native_mtp(other, reclaim = True)
     assert second != first and second.is_dir() and first.is_dir()
+    # Handed out again just now, so being superseded a moment later does not make it free.
+    idle = time.time() - spec._SIDECAR_IN_USE_SECONDS - 1
+    os.utime(first, (idle, idle))
+    assert spec.materialize_native_mtp(snapshot, reclaim = True) == first
+    # A concurrent split's staging directory is not this pass's to remove either.
+    staging = sidecars / f".{'0' * 12}-{os.getpid()}-live"
+    staging.mkdir()
+    (staging / "source.json").write_text(json.dumps({"source": str(snapshot.resolve())}))
+    os.utime(staging, (idle, idle))
     # The identity reads each weight file's name, size and mtime, so a replaced snapshot differs.
     (snapshot / "config.json").write_text('{"reissued": true}')
-    reissued = spec.materialize_native_mtp(snapshot)
-    assert reissued != first
+    assert spec.materialize_native_mtp(snapshot, reclaim = True) != first and first.is_dir()
+
+    # Now idle, and every further request is the early return. That sweeps too, or a copy
+    # skipped once would never be looked at again.
+    os.utime(first, (idle, idle))
+    assert spec.materialize_native_mtp(snapshot, reclaim = True).is_dir()
+    assert not first.exists() and staging.is_dir()
+    # A split that does run reclaims before it writes, so the replacement is not sized against
+    # a disk still holding the copy it supersedes.
+    superseded = next(p for p in sidecars.iterdir() if p.name not in (staging.name, second.name))
+    os.utime(superseded, (idle, idle))
+    (snapshot / "config.json").write_text('{"reissued": 3}')
+    spec.materialize_native_mtp(snapshot, reclaim = True)
+    assert superseded.name not in alongside[-1], alongside[-1]
+    # A different source, so not this split's to remove, whatever became of that source since.
+    shutil.rmtree(external)
+    os.utime(second, (idle, idle))
+    (snapshot / "config.json").write_text('{"reissued": 2}')
+    assert spec.materialize_native_mtp(snapshot, reclaim = True).is_dir()
+    assert second.is_dir(), "a sidecar is superseded by its own source, never by another's state"
+
+
+def test_the_sidecar_lock_hands_back_one_descriptor_and_reports_contention(tmp_path, monkeypatch):
+    """`_unlock` closes the descriptor it is given, so handing it an already-closed one can shut
+    an unrelated file another thread opened onto that number. Contention has to be reported
+    rather than swallowed: the caller declines reclaiming on it."""
+    from core.inference import mlx_speculative as spec
+    from utils import cache_cleanup
+
+    monkeypatch.setattr(cache_cleanup, "cache_coordination_dir", lambda: tmp_path)
+    closed, unlocked = [], []
+    monkeypatch.setattr(cache_cleanup, "_unlock", lambda fd: unlocked.append(fd))
+    real_close = os.close
+    monkeypatch.setattr(os, "close", lambda fd: closed.append(fd) or real_close(fd))
+
+    with spec.native_mtp_sidecar_lock() as state:
+        assert state == "held"
+    # _unlock owns the descriptor it is handed; nothing else may close it.
+    assert len(unlocked) == 1 and unlocked[0] not in closed
+
+    monkeypatch.setattr(cache_cleanup, "_try_lock", _raise_contention)
+    closed.clear()
+    unlocked.clear()
+    with spec.native_mtp_sidecar_lock(timeout = 0.0) as state:
+        assert state == spec.MLX_SIDECAR_LOCK_BUSY
+    # Never acquired, so this one is closed here and never handed to _unlock.
+    assert not unlocked and len(closed) == 1
+
+    # A filesystem that cannot lock is not a sibling holding one: answering busy would spend
+    # the whole timeout and then decline reclaiming forever. Waited on the real default, so
+    # a version that retries it fails on the clock rather than only on the state.
+    monkeypatch.setattr(cache_cleanup, "_try_lock", _raise_unsupported)
+    closed.clear()
+    unlocked.clear()
+    started = time.monotonic()
+    with spec.native_mtp_sidecar_lock() as state:
+        assert state == "unavailable"
+    assert time.monotonic() - started < 1.0
+    assert not unlocked and len(closed) == 1
+
+
+def _raise_contention(_fd):
+    raise OSError(35, "would block")
+
+
+def _raise_unsupported(_fd):
+    raise OSError(errno.ENOTSUP, "operation not supported")
 
 
 def test_the_built_in_head_is_split_for_the_target_the_load_names(monkeypatch, tmp_path):
@@ -4648,11 +4734,32 @@ def test_the_built_in_head_is_split_for_the_target_the_load_names(monkeypatch, t
     from core.inference import mlx_speculative as spec
     from core.inference.mlx_inference import MLXInferenceBackend
 
-    asked = []
+    asked, guarded = [], []
     monkeypatch.setattr(spec, "mlx_target_snapshot_path", lambda t: Path(f"/snap/{t}"))
-    monkeypatch.setattr(spec, "materialize_native_mtp",
-                        lambda snapshot: asked.append(snapshot) or Path("/head"))
-    monkeypatch.setattr(drafters, "load_drafter", lambda p, kind: (SimpleNamespace(), kind))
+    monkeypatch.setattr(
+        spec,
+        "materialize_native_mtp",
+        lambda snapshot, *, reclaim: asked.append((snapshot, reclaim)) or Path("/head"),
+    )
+
+    # A sibling reclaims, so the lock has to still be held when the drafter is read, not only
+    # while the path is worked out.
+    held = {"now": False}
+
+    @contextlib.contextmanager
+    def _lock(*_a, **_k):
+        held["now"] = True
+        try:
+            yield "held"
+        finally:
+            held["now"] = False
+
+    monkeypatch.setattr(spec, "native_mtp_sidecar_lock", _lock)
+    monkeypatch.setattr(
+        drafters,
+        "load_drafter",
+        lambda p, kind: guarded.append(held["now"]) or (SimpleNamespace(), kind),
+    )
     monkeypatch.setattr(drafters, "validate_drafter_compatibility", lambda *_a: None)
     monkeypatch.setattr(
         "core.inference.mlx_inference.validate_speculative_target_contract", lambda *_a: None
@@ -4663,7 +4770,18 @@ def test_the_built_in_head_is_split_for_the_target_the_load_names(monkeypatch, t
     backend = MLXInferenceBackend()
     backend._model = SimpleNamespace()
     backend._load_speculative_drafter("mtp", spec.BUILTIN_MTP_ID, 4, "org/target")
-    assert asked == [Path("/snap/org/target")]
+    assert asked == [(Path("/snap/org/target"), True)]
+    assert guarded == [True], "the sidecar was read after the lock protecting it was released"
+
+    # A sibling holds it, which is the race itself: the split still runs so the load can go
+    # ahead, but it does not delete into a critical section somebody else is inside.
+    @contextlib.contextmanager
+    def _busy(*_a, **_k):
+        yield "busy"
+
+    monkeypatch.setattr(spec, "native_mtp_sidecar_lock", _busy)
+    backend._load_speculative_drafter("mtp", spec.BUILTIN_MTP_ID, 4, "org/target")
+    assert asked[-1] == (Path("/snap/org/target"), False)
     # The head belongs to one target, so a request that names none cannot ask for it.
     with pytest.raises(ValueError, match = "mlx_builtin_mtp_target_required"):
         backend._load_speculative_drafter("mtp", spec.BUILTIN_MTP_ID, 4, None)

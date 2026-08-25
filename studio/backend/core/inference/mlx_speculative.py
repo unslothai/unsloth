@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 from functools import lru_cache
 import hashlib
@@ -1966,19 +1967,150 @@ def cleanup_native_mtp_staging() -> None:
             continue
 
 
-def materialize_native_mtp(snapshot: Path) -> Path:
+# A sibling is inside the critical section, so the destructive half is declined.
+MLX_SIDECAR_LOCK_BUSY = "busy"
+
+
+def _sidecar_lock_debug(what: str, exc: BaseException) -> None:
+    from loggers import get_logger
+    get_logger(__name__).debug("The MLX sidecar lock %s (%s)", what, exc)
+
+
+@contextlib.contextmanager
+def native_mtp_sidecar_lock(timeout: float = 10.0):
+    """Serialize handing a sidecar out against reclaiming one, across this install's backends.
+
+    Two backends of one install share this cache (see ``live_sibling_backend`` in ``run.py``), so
+    one can reclaim a copy the other resolved a moment earlier and is about to open. Hold it until
+    the drafter's files are open, after which unlinking them is harmless.
+
+    Yields ``compiled_cache_lock``'s three states: only busy proves a sibling, and only busy must
+    decline the destructive half.
+    """
+    from utils.cache_cleanup import (
+        _CONTENTION_ERRNOS,
+        LOCK_BUSY,
+        LOCK_HELD,
+        LOCK_UNAVAILABLE,
+        _try_lock,
+        _unlock,
+        cache_coordination_dir,
+    )
+
+    try:
+        directory = cache_coordination_dir()
+        directory.mkdir(parents = True, exist_ok = True)
+        fd = os.open(
+            str(directory / "mlx-speculative-sidecars.lock"), os.O_CREAT | os.O_RDWR, 0o600
+        )
+    except Exception as exc:  # noqa: BLE001 -- opening it is part of taking it
+        _sidecar_lock_debug("could not be opened", exc)
+        yield LOCK_UNAVAILABLE
+        return
+
+    # _unlock closes the descriptor it is given, so only an acquired one may reach it.
+    acquired: list[int] = []
+    state = LOCK_HELD
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            try:
+                _try_lock(fd)
+                acquired.append(fd)
+                break
+            except OSError as exc:
+                if exc.errno not in _CONTENTION_ERRNOS:
+                    # Not contention: this filesystem cannot lock at all. Waiting out the timeout
+                    # to answer "busy" would stall every load, then decline reclaiming forever.
+                    _sidecar_lock_debug("is unavailable", exc)
+                    with contextlib.suppress(OSError):
+                        os.close(fd)
+                    state = LOCK_UNAVAILABLE
+                    break
+                if time.monotonic() >= deadline:
+                    _sidecar_lock_debug("is busy", exc)
+                    with contextlib.suppress(OSError):
+                        os.close(fd)
+                    state = LOCK_BUSY
+                    break
+                time.sleep(0.05)
+            except Exception as exc:  # noqa: BLE001
+                _sidecar_lock_debug("is unavailable", exc)
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+                state = LOCK_UNAVAILABLE
+                break
+        yield state
+    finally:
+        for held in acquired:
+            _unlock(held)
+
+
+def _mark_sidecar_in_use(path: Path) -> None:
+    try:
+        os.utime(path, None)
+    except OSError:
+        pass
+
+
+# A caller opens the directory just after it is handed back, so one touched this recently may be
+# about to be read and is left for a later pass rather than deleted out from under it.
+_SIDECAR_IN_USE_SECONDS = 300.0
+
+
+def reclaim_superseded_native_mtp(root: Path, source: Path, identity: str) -> None:
+    """Drop the sidecars split from ``source`` that this materialization replaces.
+
+    A sidecar's name digests the splitter, the mlx-vlm version and the source's own files, so
+    upgrading the runtime or re-splitting a re-downloaded target mints a new one and strands the
+    old. Standing on this same source is what makes one superseded, so nothing about the target
+    is guessed at: a sidecar whose target went away names a source never materialized again, and
+    stays.
+    """
+    try:
+        paths = tuple(root.iterdir())
+    except OSError:
+        return
+    for path in paths:
+        if path.name.startswith(".") or path.name == identity or not path.is_dir():
+            continue
+        try:
+            recorded = json.loads((path / "source.json").read_text(encoding = "utf-8"))
+            idle = time.time() - path.stat().st_mtime
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(recorded, dict) or recorded.get("source") != str(source):
+            continue
+        if idle > _SIDECAR_IN_USE_SECONDS:
+            shutil.rmtree(path, ignore_errors = True)
+
+
+def materialize_native_mtp(snapshot: Path, *, reclaim: bool = False) -> Path:
+    """Split the target's built-in head into a sidecar, reusing one already on disk.
+
+    ``reclaim`` drops the copies this split supersedes. It defaults off because that is safe only
+    under ``native_mtp_sidecar_lock``, so the caller holding it is the one that asks.
+    """
     config = json.loads((snapshot / "config.json").read_text(encoding = "utf-8"))
     handler = _handler(config) if isinstance(config, dict) else None
     if not handler or native_mtp_evidence(snapshot, config) is None:
         raise ValueError("mlx_builtin_mtp_unavailable")
     identity = _snapshot_identity(snapshot, handler)
+    source = snapshot.resolve()
     from utils.paths.storage_roots import cache_root
 
     root = cache_root() / "mlx-speculative" / "mtp"
     final = root / identity
     if _complete_sidecar(final, identity):
+        _mark_sidecar_in_use(final)
+        # Swept here too, not only when a split runs: a copy this one superseded may have been
+        # in use at that moment and skipped, and after that every request is this early return.
+        if reclaim:
+            reclaim_superseded_native_mtp(root, source, identity)
         return final
     cleanup_native_mtp_staging()
+    if reclaim:
+        reclaim_superseded_native_mtp(root, source, identity)
     root.mkdir(parents = True, exist_ok = True)
     staging = Path(tempfile.mkdtemp(prefix = f".{identity[:12]}-{os.getpid()}-", dir = root))
     try:
@@ -1988,7 +2120,9 @@ def materialize_native_mtp(snapshot: Path) -> Path:
         splitter(str(snapshot), str(staging))
         if not (staging / "config.json").is_file() or not (staging / "model.safetensors").is_file():
             raise RuntimeError("mlx_builtin_mtp_materialization_incomplete")
-        (staging / "source.json").write_text(json.dumps({"identity": identity}), encoding = "utf-8")
+        (staging / "source.json").write_text(
+            json.dumps({"identity": identity, "source": str(source)}), encoding = "utf-8"
+        )
         try:
             staging.replace(final)
         except OSError:

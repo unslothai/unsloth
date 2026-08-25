@@ -11,7 +11,7 @@ import os
 import re
 import sys
 import threading
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from typing import Any, Optional, Generator
 from core.inference.message_content import content_to_text
 from core.inference.runtime_context import (
@@ -1801,20 +1801,30 @@ class MLXInferenceBackend:
             BUILTIN_MTP_ID,
             materialize_native_mtp,
             mlx_speculative_snapshot_path,
+            MLX_SIDECAR_LOCK_BUSY,
             mlx_target_snapshot_path,
+            native_mtp_sidecar_lock,
         )
 
-        if repo_id == BUILTIN_MTP_ID:
-            if mode != "mtp" or not target_id:
-                raise ValueError("mlx_builtin_mtp_target_required")
-            path = materialize_native_mtp(mlx_target_snapshot_path(target_id))
-        else:
-            path = (
-                mlx_speculative_snapshot_path(repo_id, target_id, mode)
-                if target_id
-                else mlx_speculative_snapshot_path(repo_id)
-            )
-        draft_model, resolved_kind = load_drafter(str(path), kind = mode)
+        with ExitStack() as resolving:
+            if repo_id == BUILTIN_MTP_ID:
+                if mode != "mtp" or not target_id:
+                    raise ValueError("mlx_builtin_mtp_target_required")
+                # Held until the split head's files are open, or a sibling backend reclaiming a
+                # superseded copy could unlink the one just resolved here. Busy means that
+                # sibling is inside the critical section, so this load splits without reclaiming.
+                lock_state = resolving.enter_context(native_mtp_sidecar_lock())
+                path = materialize_native_mtp(
+                    mlx_target_snapshot_path(target_id),
+                    reclaim = lock_state != MLX_SIDECAR_LOCK_BUSY,
+                )
+            else:
+                path = (
+                    mlx_speculative_snapshot_path(repo_id, target_id, mode)
+                    if target_id
+                    else mlx_speculative_snapshot_path(repo_id)
+                )
+            draft_model, resolved_kind = load_drafter(str(path), kind = mode)
         if resolved_kind != mode:
             raise RuntimeError("mlx_speculative_kind_mismatch")
         materialized = materialize_mtp_masked_embedding(draft_model) if mode == "mtp" else 0
