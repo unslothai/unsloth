@@ -274,3 +274,10 @@ test("the settings row re-reads the install setting when it opens", () => {
   // and an Auto verdict from before RAM pressure or a recorded Xet failure.
   assert.match(ROW, /loadDownloadTransportSettings\(\{ refresh: true \}\)/);
 });
+
+test("a superseded read answers with the current value, not its own", () => {
+  // Keeping the stale payload out of the cache only protects later readers. The caller of the
+  // superseded GET writes the resolved value into its own state, so returning it there undoes
+  // the write that superseded it in every browser where localStorage is unavailable.
+  assert.match(API, /return cachedTransport \?\? settings;/);
+});

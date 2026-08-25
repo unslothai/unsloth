@@ -102,9 +102,15 @@ export async function loadDownloadTransportSettings(
   const request = ++latestRequest;
   inFlightIsRefresh = Boolean(opts.refresh);
   const pending = fetchDownloadTransportSettings()
-    .then((settings) =>
-      request === latestRequest ? cacheTransport(settings) : settings,
-    )
+    .then((settings) => {
+      if (request === latestRequest) {
+        return cacheTransport(settings);
+      }
+      // Superseded. Keeping the stale payload out of the cache is not enough: callers read
+      // the resolved value straight into their own state, so handing it back would let this
+      // response revert the write that superseded it. Answer with what the cache now holds.
+      return cachedTransport ?? settings;
+    })
     .finally(() => {
       if (inFlightTransport === pending) {
         inFlightTransport = null;
