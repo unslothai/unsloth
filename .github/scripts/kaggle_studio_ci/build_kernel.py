@@ -144,8 +144,12 @@ def _models_from(payload_args: str) -> list[str]:
     tokens = payload_args.split()
     picked = {}
     for flag, default in (
-        ("--chat-model", "unsloth/Qwen3.5-2B-GGUF"),
-        ("--train-model", "unsloth/Qwen2.5-0.5B-Instruct"),
+        # These defaults must track run_studio_gpu.py's own, or the prefetch
+        # warms a cache the payload never reads -- which downloads happily and
+        # reports success. tests/kaggle/test_t4_ci_transport.py compares the
+        # two, which is how this pair was caught drifting.
+        ("--chat-model", "unsloth/Qwen3.5-2B-MTP-GGUF"),
+        ("--train-model", "unsloth/Qwen3.5-2B"),
         # Read for the same reason as the repos: Studio loads ONE quant out of
         # a GGUF repo that ships many, and an unfiltered snapshot pulls all of
         # them. Run 32667451396 fetched 69.1 GB of Qwen3.5-2B-GGUF to serve a

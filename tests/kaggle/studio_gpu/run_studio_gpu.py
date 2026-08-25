@@ -1350,9 +1350,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default = "",
         help = "start Studio with --password and log in with it; 'auto' generates one",
     )
-    ap.add_argument("--chat-model", default = "unsloth/Qwen3.5-2B-GGUF")
+    # MTP-GGUF, not the plain GGUF: multi-token prediction is a distinct
+    # serving path in llama.cpp, and a leg pointed at the plain repo cannot
+    # tell whether it works.
+    ap.add_argument("--chat-model", default = "unsloth/Qwen3.5-2B-MTP-GGUF")
     ap.add_argument("--chat-variant", default = "UD-Q4_K_XL")
-    ap.add_argument("--train-model", default = "unsloth/Qwen2.5-0.5B-Instruct")
+    ap.add_argument("--train-model", default = "unsloth/Qwen3.5-2B")
     ap.add_argument("--max-steps", type = int, default = 8)
     ap.add_argument("--quantization", default = "q8_0")
     ap.add_argument(

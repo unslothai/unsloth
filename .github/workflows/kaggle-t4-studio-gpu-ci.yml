@@ -377,8 +377,13 @@ jobs:
       - name: Build the kernel notebook
         env:
           MAX_STEPS: ${{ inputs.max_steps || '8' }}
-          CHAT_MODEL: ${{ inputs.chat_model || 'unsloth/Qwen3.5-2B-GGUF' }}
-          TRAIN_MODEL: ${{ inputs.train_model || 'unsloth/Qwen2.5-0.5B-Instruct' }}
+          # MTP-GGUF, not the plain GGUF: multi-token prediction is a distinct
+          # serving path in llama.cpp and the plain repo does not exercise it.
+          CHAT_MODEL: ${{ inputs.chat_model || 'unsloth/Qwen3.5-2B-MTP-GGUF' }}
+          # Qwen3.5-2B rather than Qwen2.5-0.5B-Instruct, so Studio trains the
+          # model this CI actually cares about. Confirmed loadable on a T4 in
+          # 4bit by unsloth-probe-vision-recon-c76ea3.
+          TRAIN_MODEL: ${{ inputs.train_model || 'unsloth/Qwen3.5-2B' }}
           SKIP_UI: ${{ inputs.skip_ui }}
         run: |
           ARGS="--max-steps $MAX_STEPS --chat-model $CHAT_MODEL --train-model $TRAIN_MODEL"
