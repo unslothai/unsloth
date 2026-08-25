@@ -122,11 +122,8 @@ def run_without_native_path_secret(
     # Runs in the spawned child: bind it to the parent's death (Linux), since
     # multiprocessing children cannot be given a preexec_fn by the parent. Shared
     # entrypoint for the inference/export/training/data-recipe workers.
-    # Imported and called separately, not as one try block: allow_child_processes
-    # is newer than bind_current_process_to_parent_lifetime, so a tree carrying an
-    # older process_lifetime.py would raise ImportError on the combined import and
-    # silently lose the parent-death binding too -- trading an orphaned download
-    # for orphaned workers.
+    # Two try blocks, not one: allow_child_processes is the newer name, so on an
+    # older process_lifetime.py a combined import would lose the binding as well.
     try:
         from utils.process_lifetime import bind_current_process_to_parent_lifetime
         bind_current_process_to_parent_lifetime()

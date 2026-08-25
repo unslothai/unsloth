@@ -521,10 +521,8 @@ def test_allow_child_processes_survives_a_missing_config(monkeypatch):
 def test_an_older_process_lifetime_still_gets_the_parent_death_binding(monkeypatch):
     """A tree without `allow_child_processes` must keep the binding that predates it.
 
-    `allow_child_processes` is newer than `bind_current_process_to_parent_lifetime`.
-    Importing both in one statement would make an older process_lifetime.py raise
-    ImportError for the whole block, so a worker would lose the parent-death
-    binding as well -- turning a missing download fix into leaked workers.
+    Importing both names in one statement would raise ImportError for the whole
+    block, costing the worker its parent-death binding as well.
     """
     from utils import native_path_leases
 

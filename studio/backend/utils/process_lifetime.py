@@ -335,21 +335,13 @@ def bind_current_process_to_parent_lifetime() -> None:
 
 
 def allow_child_processes() -> None:
-    """Allow the current multiprocessing worker to spawn children.
+    """Allow the current multiprocessing worker to spawn children (#9094).
 
-    CPython refuses to let a daemonic process start one (process.py: `assert not
-    _current_process._config.get('daemon')`), which left the killable Hugging
-    Face prefetch child unstartable inside a worker (#9094).
-
-    Anything this worker spawns afterwards INHERITS the cleared flag, because
-    `Process.__init__` copies `_config`. A grandchild that does not pass
-    `daemon =` itself is therefore non-daemonic, and multiprocessing's
-    `_exit_function` `join()`s non-daemonic children unconditionally and without
-    a timeout -- it only `terminate()`s daemonic ones. Such a grandchild holds
-    the worker's exit open forever. Everything reachable from a worker today
-    passes `daemon = True` explicitly (the HF prefetch child does, and it is
-    `adopt_pid`-ed so the macOS sweep and the Windows job still cover it); keep
-    it that way.
+    Children inherit the cleared flag, since `Process.__init__` copies `_config`.
+    A grandchild that does not pass `daemon =` itself is therefore non-daemonic,
+    and `_exit_function` joins those unconditionally and without a timeout, so it
+    would hold the worker's exit open forever. Everything a worker reaches today
+    passes `daemon = True`; keep it that way.
     """
     try:
         from multiprocessing import process as multiprocessing_process
