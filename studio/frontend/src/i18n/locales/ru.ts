@@ -1578,8 +1578,8 @@ export const ru = {
       reasonNotTrainable: "Эта модель на устройстве не поддерживает обучение.",
       reasonUnsupportedFormat:
         "Этот формат модели не поддерживается для обучения.",
-      vramNeeds: "Требуется ~{est} ГБ VRAM (GPU: {total} ГБ)",
-      vramTight: "~{est} ГБ VRAM (впритык для {total} ГБ)",
+      vramNeeds: "Требуется ~{est} ГБ VRAM (GPU: {total} ГиБ)",
+      vramTight: "~{est} ГБ VRAM (впритык для {total} ГиБ)",
       vramApprox: "~{est} ГБ VRAM",
       vramOomBadge: "OOM",
       vramTightBadge: "Впритык",

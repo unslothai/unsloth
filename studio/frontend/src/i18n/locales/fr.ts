@@ -1603,8 +1603,8 @@ export const fr = {
         "Ce modèle présent sur l'appareil ne peut pas être entraîné.",
       reasonUnsupportedFormat:
         "Ce format de modèle n'est pas pris en charge pour l'entraînement.",
-      vramNeeds: "Nécessite environ {est} Go de VRAM (GPU : {total} Go)",
-      vramTight: "Environ {est} Go de VRAM (limite sur {total} Go)",
+      vramNeeds: "Nécessite environ {est} Go de VRAM (GPU : {total} Gio)",
+      vramTight: "Environ {est} Go de VRAM (limite sur {total} Gio)",
       vramApprox: "Environ {est} Go de VRAM",
       sourceModelsFolder: "Dossier des modèles",
       sourceHfCache: "Cache HF",

@@ -1562,8 +1562,8 @@ export const hi = {
         "इस डिवाइस पर मौजूद मॉडल को ट्रेन नहीं किया जा सकता।",
       reasonUnsupportedFormat:
         "यह मॉडल फ़ॉर्मेट ट्रेनिंग के लिए समर्थित नहीं है।",
-      vramNeeds: "लगभग {est}GB VRAM चाहिए (GPU: {total}GB)",
-      vramTight: "लगभग {est}GB VRAM ({total}GB पर बमुश्किल फिट)",
+      vramNeeds: "लगभग {est}GB VRAM चाहिए (GPU: {total}GiB)",
+      vramTight: "लगभग {est}GB VRAM ({total}GiB पर बमुश्किल फिट)",
       vramApprox: "लगभग {est}GB VRAM",
       sourceModelsFolder: "मॉडल फ़ोल्डर",
       sourceHfCache: "HF कैश",

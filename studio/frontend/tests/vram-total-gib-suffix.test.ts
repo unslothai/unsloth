@@ -18,12 +18,12 @@
  */
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import test from "node:test";
 
 const SRC = new URL("../src/", import.meta.url);
 
-// Every file that renders a GPU's total memory to the user.
+// Files that interpolate the total and name the unit inline.
 const RENDERERS = [
   "features/model-picker/components/model-config-page.tsx",
   "features/images/images-page.tsx",
@@ -40,27 +40,73 @@ const SUFFIXED = /\$\{[^}]*(?:memoryTotalGb|vramTotalGb|systemRamTotalGb)[^}]*\}
 
 test("VRAM and RAM totals are labelled GiB, not GB", () => {
   const offenders: string[] = [];
-  let matched = 0;
 
   for (const relative of RENDERERS) {
     const source = readFileSync(new URL(relative, SRC), "utf8");
-    for (const match of source.matchAll(SUFFIXED)) {
-      matched += 1;
+    const matches = [...source.matchAll(SUFFIXED)];
+
+    // Per file, not summed: hub-page.tsx matches twice, so an aggregate floor
+    // would let one renderer drop to zero matches and still pass.
+    assert.ok(matches.length > 0, `${relative}: no labelled total found`);
+
+    for (const match of matches) {
       if (match[1] !== "GiB") {
         offenders.push(`${relative}: ${match[0].trim()}`);
       }
     }
   }
 
-  // Guards the regex itself: a rename that stops it matching would otherwise
-  // make this test pass by inspecting nothing.
-  assert.ok(
-    matched >= RENDERERS.length,
-    `expected at least one labelled total per renderer, matched ${matched}`,
-  );
   assert.deepEqual(
     offenders,
     [],
     `these render a GiB value with a GB suffix:\n${offenders.join("\n")}`,
   );
+});
+
+// The other two renderers format through a helper, so the suffix is one literal
+// in the helper and the unit choice moves to the call site instead.
+const HELPER_RENDERERS = [
+  "components/floating-monitor.tsx",
+  "features/settings/tabs/resources-tab.tsx",
+];
+
+// The training picker's tooltip names the unit in the translation, not at the
+// render site, so the suffix has to be pinned once per locale. `{est}` stays
+// decimal GB: estimateLoadingVram divides by 1e9, so the two really do differ.
+const LOCALES = new URL("../src/i18n/locales/", import.meta.url);
+// Binary first: GiB has to win the alternation before GB can match its tail.
+const UNIT = /\{total\}\s*(GiB|Gio|ГиБ|GB|Go|ГБ)/;
+const BINARY_UNITS = ["GiB", "Gio", "ГиБ"];
+
+test("localized GPU totals name a binary unit", () => {
+  const files = readdirSync(LOCALES).filter((f) => f.endsWith(".ts"));
+  assert.ok(files.length > 0, "no locales found");
+
+  for (const file of files) {
+    const source = readFileSync(new URL(file, LOCALES), "utf8");
+    for (const line of source.split("\n")) {
+      if (!/\b(vramNeeds|vramTight):/.test(line)) continue;
+      const unit = line.match(UNIT);
+      assert.ok(unit, `${file}: no unit after {total} in ${line.trim()}`);
+      assert.ok(
+        BINARY_UNITS.includes(unit[1]),
+        `${file}: {total} is binary but is labelled ${unit[1]}`,
+      );
+    }
+  }
+});
+
+test("helper-formatted totals pick the GiB helper, not the disk one", () => {
+  for (const relative of HELPER_RENDERERS) {
+    const source = readFileSync(new URL(relative, SRC), "utf8");
+
+    const helper = source.match(/function formatGiB[\s\S]*?\n}/);
+    assert.ok(helper, `${relative}: no formatGiB helper`);
+    assert.match(helper[0], /`.*GiB`/, `${relative}: formatGiB does not suffix GiB`);
+
+    // formatGb is decimal and exists for disk only, so no memory value may reach it.
+    for (const call of source.matchAll(/(?<!function )formatGb\(([^)]*)\)/g)) {
+      assert.match(call[1], /disk/i, `${relative}: ${call[0]} formats memory as decimal GB`);
+    }
+  }
 });
