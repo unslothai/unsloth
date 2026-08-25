@@ -646,9 +646,7 @@ UNWIRED: dict[str, str] = {
 # variable and one contrasting observation was not enough to blame a shared
 # host. It stays unwired rather than re-paired, since a leg passing one session
 # in three tells CI nothing either way.
-KERNELS: tuple[tuple[str, ...], ...] = (
-    ("canary", "control", "gptoss", "frontier", "default"),
-)
+KERNELS: tuple[tuple[str, ...], ...] = (("canary", "control", "gptoss", "frontier", "default"),)
 
 
 # What the prefetch lane warms, in order, into the Kaggle image's default HF
