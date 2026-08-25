@@ -269,3 +269,22 @@ def test_native_load_keeps_a_projector_beside_the_selected_file(tmp_path):
     assert config is not None
     assert config.gguf_mmproj_file == str(projector.resolve())
     assert config.is_vision is True
+
+
+def test_native_load_rejects_a_split_projector_with_an_ungranted_shard(tmp_path):
+    _, weight = _hf_repo(tmp_path)
+    _gguf_with_general(
+        weight.parent / "mmproj-kquant-00001-of-00002.gguf",
+        {"general.type": "mmproj", "general.architecture": "qwen3vl"},
+    )
+    outside = _gguf_with_general(
+        tmp_path / "outside.gguf",
+        {"general.type": "mmproj", "general.architecture": "qwen3vl"},
+    )
+    (weight.parent / "mmproj-kquant-00002-of-00002.gguf").symlink_to(outside)
+
+    config = ModelConfig.from_identifier(str(weight), drafter_accept = _native_drafter_accept)
+
+    assert config is not None
+    assert config.gguf_mmproj_file is None
+    assert config.is_vision is False

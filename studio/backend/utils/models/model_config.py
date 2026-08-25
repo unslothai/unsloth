@@ -1802,16 +1802,16 @@ def detect_mmproj_file(
     seen_resolved: set[Path] = set()
     for d in scan_order:
         for f in _iter_gguf_files(d):
-            if accept is not None and not accept(str(f)):
-                continue
             candidate_path = f
             if _GGUF_SPLIT_FILE_RE.match(f.name):
                 shards = _complete_nonempty_gguf_shards(f)
                 if not shards:
                     continue
-                candidate_path = shards[0]
-                if accept is not None and not accept(str(candidate_path)):
+                if accept is not None and not all(accept(str(shard)) for shard in shards):
                     continue
+                candidate_path = shards[0]
+            elif accept is not None and not accept(str(f)):
+                continue
             try:
                 resolved = candidate_path.resolve()
                 # Interrupted download: llama-server can't open it and it must not shadow a real projector.
