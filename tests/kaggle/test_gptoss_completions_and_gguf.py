@@ -115,3 +115,64 @@ def test_the_gptoss_export_does_not_land_in_the_artifact_volume():
     assert (
         'os.path.join(args.outdir, "gguf")' not in src
     ), "the export is back in the 21GB artifact volume and will fail on space"
+
+
+def test_the_off_gpu_walk_names_the_tensors_and_not_only_the_bytes():
+    """Driven through the REAL `placement()`, against a stub model.
+
+    `{'cpu': 579133440}` reached hardware twice and nobody could say which
+    tensor it was, because the walk used `model.parameters()` and threw the
+    names away. 579133440 is exactly 201088 x 2880 -- gpt-oss-20b's vocab by
+    its hidden size -- so it was one embedding-shaped tensor all along, and
+    that is a filable bug report where a byte count is not.
+
+    A rule fed a hand-written dict would pass either way; this executes the
+    producing code, which is the gap that let a missing `torch` import reach
+    Kaggle on the Default leg.
+    """
+    import torch  # noqa: PLC0415
+
+    from run_gptoss_t4 import _placement_failures, placement  # noqa: PLC0415
+
+    class _Stub:
+        def __init__(self):
+            self._params = [
+                ("model.embed_tokens.weight", torch.zeros(4, 3)),
+                ("model.layers.0.mlp.weight", torch.zeros(2, 2)),
+            ]
+
+        def named_parameters(self):
+            return iter(self._params)
+
+    stub = _Stub()
+    record = placement(stub)
+    assert record["parameters_by_device"] == {"cpu": 16}
+    assert record["off_gpu_parameter_count"] == 2
+    # Largest first, so the reader sees the tensor that matters.
+    assert [p["name"] for p in record["off_gpu_parameters"]] == [
+        "model.embed_tokens.weight",
+        "model.layers.0.mlp.weight",
+    ]
+
+    failures = _placement_failures(record)
+    assert failures, "a wholly-CPU model must fail"
+    assert "model.embed_tokens.weight" in failures[0], (
+        "the failure message carries only byte counts again, which is the "
+        "unactionable red this test exists to prevent"
+    )
+
+
+def test_a_walk_that_recorded_no_names_still_fails_and_says_so():
+    """The refusal branch. An empty name list must not read as "no problem" --
+    the byte counts already said there is one."""
+    from run_gptoss_t4 import _placement_failures  # noqa: PLC0415
+
+    failures = _placement_failures(
+        {
+            "parameters_by_device": {"cpu": 579133440, "cuda:0": 10461969984},
+            "off_gpu_parameters": [],
+            "offloaded": False,
+        }
+    )
+    assert len(failures) == 1
+    assert "the walk recorded no names" in failures[0]

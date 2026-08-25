@@ -154,15 +154,27 @@ def placement(model) -> dict:
     landed on the CPU (correct, slow) from one on meta (loaded nothing).
     """
     counts: dict = {}
+    off_gpu: list = []
     try:
-        for param in model.parameters():
+        for name, param in model.named_parameters():
             key = str(param.device)
             counts[key] = counts.get(key, 0) + param.numel()
+            if not key.startswith("cuda"):
+                # NAMED, not just counted. `{'cpu': 579133440}` is a number
+                # nobody can act on; `model.embed_tokens.weight` is a bug
+                # report. The two readings cost the same walk, and the first
+                # one already reached hardware twice before anyone could say
+                # which tensor it was.
+                off_gpu.append({"name": name, "numel": param.numel(), "device": key})
     except Exception as exc:  # noqa: BLE001
         counts = {"error": f"{type(exc).__name__}: {exc}"}
     device_map = getattr(model, "hf_device_map", None)
     return {
         "parameters_by_device": counts,
+        # Largest first, capped: a genuinely offloaded model has thousands of
+        # these and the report is read by a human.
+        "off_gpu_parameters": sorted(off_gpu, key = lambda p: -p["numel"])[:20],
+        "off_gpu_parameter_count": len(off_gpu),
         "hf_device_map_devices": (
             sorted({str(v) for v in device_map.values()}) if isinstance(device_map, dict) else None
         ),
@@ -611,8 +623,12 @@ def _placement_failures(placement: dict | None) -> list[str]:
             device: n for device, n in counts.items() if not str(device).startswith("cuda")
         }
         if elsewhere:
+            named = ", ".join(
+                f"{p.get('name')} ({p.get('numel')} on {p.get('device')})"
+                for p in (placement.get("off_gpu_parameters") or [])
+            ) or "the walk recorded no names"
             failures.append(
-                f"parameters are off the GPU: {elsewhere} (all devices: {counts}). "
+                f"parameters are off the GPU: {elsewhere} [{named}] (all devices: {counts}). "
                 f"This leg's result is that the 20B checkpoint fits and trains "
                 f"wholly on one T4; a run that offloads to CPU, disk or meta is "
                 f"not a slower version of that, it is a different run, and "
