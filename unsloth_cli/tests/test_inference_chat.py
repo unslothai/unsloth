@@ -449,9 +449,12 @@ def test_catalog_cached_entries_filter_non_chat_rows(monkeypatch, tmp_path):
         # config for can_chat to read, so only its own flag keeps it out of chat.
         {"repo_id": "org/Sdxl", "task": None, "diffusers": True},
     ]
-    fake_cfg = types.ModuleType("utils.models.model_config")
-    fake_cfg._is_mmproj = lambda name: "mmproj" in name.lower()
-    monkeypatch.setitem(sys.modules, "utils.models.model_config", fake_cfg)
+    # The real variant lister, not a stub for the one symbol the old filename glob needed:
+    # it is what decides these labels now, and it is what picks the load target, so a stub
+    # here would test the plumbing and none of the answer. It costs 0.1s and pulls neither
+    # torch nor fastapi, so the suite keeps its no-server-import property. syspath_prepend
+    # is undone after the test, so nothing else in the file gains an importable backend.
+    monkeypatch.syspath_prepend(str(_REPO_ROOT / "studio" / "backend"))
     monkeypatch.setattr(cat, "_cached_catalog_rows", lambda: (gguf_rows, model_rows))
 
     entries = cat.cached_entries()
@@ -2436,3 +2439,35 @@ def test_catalog_pins_an_active_cache_adapter_to_its_snapshot(tmp_path):
         "cache_path": str(repo),
     }
     assert cat._cached_model_load_id(plain) == "Org/Chat"
+
+
+QUANT_LAYOUTS = [
+    ([("Tiny-Q4_K_M.gguf", 16)], "Q4_K_M"),
+    ([("Tiny-Q4_K_M.gguf", 16), ("Tiny-Q8_0.gguf", 16)], "Q4_K_M, Q8_0"),
+    # One directory per quant. The old glob was snapshots/*/*.gguf, one level deep, so
+    # this whole shape rendered as no detail at all.
+    ([("Q4_K_M/Tiny-Q4_K_M.gguf", 16), ("Q8_0/Tiny-Q8_0.gguf", 16)], "Q4_K_M, Q8_0"),
+    # A split quant is ONE thing to pick, not three. The old glob listed every shard:
+    # "Q4_K_M-00001-of-00003, Q4_K_M-00002-of-00003, Q4_K_M-00003-of-00003".
+    ([(f"Tiny-Q4_K_M-0000{n}-of-00003.gguf", 16) for n in (1, 2, 3)], "Q4_K_M"),
+    # The case the host decides. fnmatch normcases on Windows and not on Linux or macOS,
+    # so "*.gguf" found this file on one platform and not the others, and the same cache
+    # described itself differently depending on the machine reading it.
+    ([("Tiny-Q8_0.GGUF", 16)], "Q8_0"),
+    ([("Tiny-Q4_K_M.gguf", 16), ("mmproj-F16.gguf", 16)], "Q4_K_M"),
+]
+
+
+@pytest.mark.parametrize("files,expected", QUANT_LAYOUTS)
+def test_quant_labels_read_the_layouts_the_hub_actually_writes(monkeypatch, tmp_path, files,
+                                                               expected):
+    from unsloth_cli import _model_catalog as cat
+
+    monkeypatch.syspath_prepend(str(_REPO_ROOT / "studio" / "backend"))
+    repo = tmp_path / "models--org--Tiny-GGUF"
+    for name, size in files:
+        target = repo / "snapshots" / "abc" / name
+        target.parent.mkdir(parents = True, exist_ok = True)
+        target.write_bytes(b"\0" * size)
+
+    assert cat._quant_labels("org/Tiny-GGUF", str(repo)) == expected
