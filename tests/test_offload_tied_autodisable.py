@@ -232,9 +232,16 @@ MIN_FRACTION = _NS["_OFFLOAD_EMBEDDING_MIN_FRACTION"]
 
 
 class _FakeWeight:
-    def __init__(self, n_bytes, device_type = "cuda", index = 0):
+    def __init__(
+        self,
+        n_bytes,
+        device_type = "cuda",
+        index = 0,
+    ):
         self._bytes = n_bytes
-        self.device = torch.device(f"{device_type}:{index}" if device_type == "cuda" else device_type)
+        self.device = torch.device(
+            f"{device_type}:{index}" if device_type == "cuda" else device_type
+        )
 
     def numel(self):
         return self._bytes // 2

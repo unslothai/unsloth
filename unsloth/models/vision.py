@@ -398,13 +398,9 @@ def _resolve_offload_embedding(model, offload_embedding):
         # Cannot inspect it, so leave an explicit request alone and decline the default.
         return False if automatic else offload_embedding
     if _embeddings_are_tied(in_embed, out_embed):
-        return _decline(
-            "this model ties embed_tokens to lm_head, so offloading saves no VRAM."
-        )
+        return _decline("this model ties embed_tokens to lm_head, so offloading saves no VRAM.")
     if _embedding_dispatch_device(in_embed) is not None:
-        return _decline(
-            "this model is dispatched across devices, which overrides the offload."
-        )
+        return _decline("this model is dispatched across devices, which overrides the offload.")
     return _embedding_is_worth_offloading(in_embed) if automatic else True
 
 
