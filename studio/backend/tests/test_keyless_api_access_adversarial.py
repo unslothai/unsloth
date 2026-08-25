@@ -67,16 +67,28 @@ def seed_user():
 
 def app_state(**overrides):
     state = SimpleNamespace(
-        bind_host = "127.0.0.1", secure = False, remote_access_is_colab = False,
-        lan_access_is_colab = False, lan_access_secure_launch = False, cloudflare_url = None,
+        bind_host = "127.0.0.1",
+        secure = False,
+        remote_access_is_colab = False,
+        lan_access_is_colab = False,
+        lan_access_secure_launch = False,
+        cloudflare_url = None,
     )
     for name, value in overrides.items():
         setattr(state, name, value)
     return state
 
 
-def asgi_scope(*, path = "/v1/chat/completions", method = None, root_path = "", headers = None,
-               state = None, server = ("127.0.0.1", 8000), client = ("127.0.0.1", 50000)):
+def asgi_scope(
+    *,
+    path = "/v1/chat/completions",
+    method = None,
+    root_path = "",
+    headers = None,
+    state = None,
+    server = ("127.0.0.1", 8000),
+    client = ("127.0.0.1", 50000),
+):
     return {
         "type": "http",
         "method": method or ("GET" if path.startswith("/v1/models") else "POST"),
@@ -86,7 +98,9 @@ def asgi_scope(*, path = "/v1/chat/completions", method = None, root_path = "", 
         "scheme": "http",
         "server": server,
         "client": client,
-        "headers": [(name.lower().encode(), value.encode()) for name, value in (headers or {}).items()],
+        "headers": [
+            (name.lower().encode(), value.encode()) for name, value in (headers or {}).items()
+        ],
         "app": SimpleNamespace(state = state or app_state()),
     }
 
@@ -101,6 +115,7 @@ def resolve(request):
 
 # ── the headline invariant: off means off, through the dependency itself ──────
 
+
 def test_scope_off_is_refused_by_the_security_dependency_not_only_the_predicate():
     """The PR asserts scope=off at `scope_covers` level. Assert it where it matters."""
     seed_user()
@@ -112,11 +127,14 @@ def test_scope_off_is_refused_by_the_security_dependency_not_only_the_predicate(
     for dummy in ("not-needed", "lm-studio", "ollama"):
         with pytest.raises(HTTPException):
             asyncio.run(
-                get_current_subject(resolve(request_for(headers = {"Authorization": f"Bearer {dummy}"})))
+                get_current_subject(
+                    resolve(request_for(headers = {"Authorization": f"Bearer {dummy}"}))
+                )
             )
 
 
 # ── privilege escalation: can a keyless caller widen its own grant? ───────────
+
 
 def test_a_keyless_caller_cannot_widen_its_own_scope():
     """`_require_ui_session_for_keyless` is the only thing stopping self-promotion.
@@ -137,34 +155,52 @@ def test_a_keyless_caller_cannot_widen_its_own_scope():
 
     # An sk-unsloth key is held back by the same guard.
     raw_key, _row = storage.create_api_key(
-        username = storage.DEFAULT_ADMIN_USERNAME, name = "probe", expires_at = None,
+        username = storage.DEFAULT_ADMIN_USERNAME,
+        name = "probe",
+        expires_at = None,
     )
     key_credentials = resolve(
-        request_for(path = "/api/settings/keyless-api-access", method = "PUT",
-                    headers = {"Authorization": f"Bearer {raw_key}"})
+        request_for(
+            path = "/api/settings/keyless-api-access",
+            method = "PUT",
+            headers = {"Authorization": f"Bearer {raw_key}"},
+        )
     )
     assert asyncio.run(authenticated_via_api_key(key_credentials)) is True
 
 
 # ── transport: the inference limb, isolated from the tunnel flag ──────────────
 
+
 def test_inference_is_refused_from_a_public_bind_and_a_public_peer():
     """No PR test exercises the inference limb with a genuinely public transport."""
     seed_user()
     set_keyless_api_access("inference")
     public = app_state(bind_host = "64.227.100.5")
-    assert keyless_request_allowed(
-        request_for(server = ("64.227.100.5", 8000), client = ("8.8.8.8", 51000), state = public)
-    ) is False
+    assert (
+        keyless_request_allowed(
+            request_for(server = ("64.227.100.5", 8000), client = ("8.8.8.8", 51000), state = public)
+        )
+        is False
+    )
     # CGNAT is not private either.
-    assert keyless_request_allowed(
-        request_for(server = ("100.64.0.10", 8000), client = ("100.64.0.11", 51000),
-                    state = app_state(bind_host = "100.64.0.10"))
-    ) is False
+    assert (
+        keyless_request_allowed(
+            request_for(
+                server = ("100.64.0.10", 8000),
+                client = ("100.64.0.11", 51000),
+                state = app_state(bind_host = "100.64.0.10"),
+            )
+        )
+        is False
+    )
     # A private peer arriving on a loopback socket is still not LAN admission.
-    assert keyless_request_allowed(
-        request_for(server = ("127.0.0.1", 8000), client = ("192.168.1.90", 51000))
-    ) is False
+    assert (
+        keyless_request_allowed(
+            request_for(server = ("127.0.0.1", 8000), client = ("192.168.1.90", 51000))
+        )
+        is False
+    )
 
 
 def test_full_scope_denials_survive_without_the_tunnel_flag():
@@ -178,14 +214,20 @@ def test_full_scope_denials_survive_without_the_tunnel_flag():
     assert keyless_request_allowed(request_for()) is True  # control: loopback works
 
     for bind in ("0.0.0.0", "::"):
-        assert keyless_request_allowed(
-            request_for(state = app_state(bind_host = bind))
-        ) is False, f"wildcard bind {bind} admitted under full scope"
+        assert (
+            keyless_request_allowed(request_for(state = app_state(bind_host = bind))) is False
+        ), f"wildcard bind {bind} admitted under full scope"
 
-    assert keyless_request_allowed(
-        request_for(server = ("192.168.1.24", 8888), client = ("192.168.1.90", 51000),
-                    state = app_state(bind_host = "192.168.1.24"))
-    ) is False
+    assert (
+        keyless_request_allowed(
+            request_for(
+                server = ("192.168.1.24", 8888),
+                client = ("192.168.1.90", 51000),
+                state = app_state(bind_host = "192.168.1.24"),
+            )
+        )
+        is False
+    )
 
 
 def test_every_hosted_mode_flag_closes_full_and_inference():
@@ -193,17 +235,25 @@ def test_every_hosted_mode_flag_closes_full_and_inference():
     seed_user()
     for scope in ("inference", "full"):
         set_keyless_api_access(scope)
-        for flag in ("remote_access_is_colab", "lan_access_is_colab",
-                     "secure", "lan_access_secure_launch"):
-            assert keyless_request_allowed(
-                request_for(state = app_state(**{flag: True}))
-            ) is False, f"{flag} did not close scope={scope}"
-        assert keyless_request_allowed(
-            request_for(state = app_state(cloudflare_url = "https://x.trycloudflare.com"))
-        ) is False, f"active tunnel did not close scope={scope}"
+        for flag in (
+            "remote_access_is_colab",
+            "lan_access_is_colab",
+            "secure",
+            "lan_access_secure_launch",
+        ):
+            assert (
+                keyless_request_allowed(request_for(state = app_state(**{flag: True}))) is False
+            ), f"{flag} did not close scope={scope}"
+        assert (
+            keyless_request_allowed(
+                request_for(state = app_state(cloudflare_url = "https://x.trycloudflare.com"))
+            )
+            is False
+        ), f"active tunnel did not close scope={scope}"
 
 
 # ── route topology ───────────────────────────────────────────────────────────
+
 
 def test_management_routes_are_never_covered_by_inference_scope():
     """The PR only asserts the positive `full` form for /api/*."""
@@ -221,16 +271,25 @@ def test_root_path_and_trailing_slash_reach_the_same_verdict_end_to_end():
     """`root_path` is read off the ASGI scope but never driven through the entry point."""
     seed_user()
     set_keyless_api_access("inference")
-    assert keyless_request_allowed(
-        request_for(path = "/studio/v1/models/", root_path = "/studio", method = "GET")
-    ) is True
-    assert keyless_request_allowed(
-        request_for(path = "/studio/v1/load", root_path = "/studio", method = "POST")
-    ) is False
+    assert (
+        keyless_request_allowed(
+            request_for(path = "/studio/v1/models/", root_path = "/studio", method = "GET")
+        )
+        is True
+    )
+    assert (
+        keyless_request_allowed(
+            request_for(path = "/studio/v1/load", root_path = "/studio", method = "POST")
+        )
+        is False
+    )
     # prefix confusion: a sibling mount must not borrow the root's allowlist
-    assert keyless_request_allowed(
-        request_for(path = "/studio-v2/v1/models", root_path = "/studio", method = "GET")
-    ) is False
+    assert (
+        keyless_request_allowed(
+            request_for(path = "/studio-v2/v1/models", root_path = "/studio", method = "GET")
+        )
+        is False
+    )
 
 
 def test_traversal_shaped_paths_never_borrow_an_allowlisted_route():
@@ -267,26 +326,39 @@ def test_the_dynamic_model_prefix_can_only_ever_reach_model_retrieval():
         matched = [
             route.path
             for route in router.routes
-            if route.matches({"type": "http", "method": "GET",
-                              "path": path.removeprefix("/v1"), "root_path": "",
-                              "headers": []})[0] is not Match.NONE
+            if route.matches(
+                {
+                    "type": "http",
+                    "method": "GET",
+                    "path": path.removeprefix("/v1"),
+                    "root_path": "",
+                    "headers": [],
+                }
+            )[0]
+            is not Match.NONE
         ]
         assert matched == ["/models/{model_id:path}"], f"{path} reached {matched}"
 
 
 # ── credential precedence ────────────────────────────────────────────────────
 
+
 def test_a_session_jwt_naming_an_unknown_subject_is_refused():
     """Covered for expired sessions, not for a well-formed token naming nobody."""
     seed_user()
     set_keyless_api_access("full")
-    _salt, _hash, jwt_secret, _must_change = storage.get_user_and_secret(storage.DEFAULT_ADMIN_USERNAME)
+    _salt, _hash, jwt_secret, _must_change = storage.get_user_and_secret(
+        storage.DEFAULT_ADMIN_USERNAME
+    )
     forged = jwt.encode(
         {"sub": "ghost", "exp": datetime.now(timezone.utc) + timedelta(minutes = 30)},
-        jwt_secret, algorithm = "HS256",
+        jwt_secret,
+        algorithm = "HS256",
     )
     with pytest.raises(HTTPException):
-        asyncio.run(get_current_subject(resolve(request_for(headers = {"Authorization": f"Bearer {forged}"}))))
+        asyncio.run(
+            get_current_subject(resolve(request_for(headers = {"Authorization": f"Bearer {forged}"})))
+        )
 
 
 def test_the_asgi_twin_agrees_with_the_dependency_on_header_shapes():
@@ -299,14 +371,26 @@ def test_the_asgi_twin_agrees_with_the_dependency_on_header_shapes():
     set_keyless_api_access("inference")
     assert asgi_request_is_keyless(asgi_scope()) is True
     for dummy in ("not-needed", "lm-studio", "ollama"):
-        assert asgi_request_is_keyless(asgi_scope(headers = {"Authorization": f"Bearer {dummy}"})) is True
-    for hostile in ("Bearer sk-unsloth-nope", "Bearer", "Basic bm90LW5lZWRlZA==",
-                    "bearer  not-needed", "Bearer not-needed-extra"):
-        assert asgi_request_is_keyless(asgi_scope(headers = {"Authorization": hostile})) is False, hostile
+        assert (
+            asgi_request_is_keyless(asgi_scope(headers = {"Authorization": f"Bearer {dummy}"}))
+            is True
+        )
+    for hostile in (
+        "Bearer sk-unsloth-nope",
+        "Bearer",
+        "Basic bm90LW5lZWRlZA==",
+        "bearer  not-needed",
+        "Bearer not-needed-extra",
+    ):
+        assert (
+            asgi_request_is_keyless(asgi_scope(headers = {"Authorization": hostile})) is False
+        ), hostile
 
     duplicated = asgi_scope()
-    duplicated["headers"] = [(b"authorization", b"Bearer not-needed"),
-                             (b"authorization", b"Bearer not-needed")]
+    duplicated["headers"] = [
+        (b"authorization", b"Bearer not-needed"),
+        (b"authorization", b"Bearer not-needed"),
+    ]
     assert asgi_request_is_keyless(duplicated) is False
 
 
@@ -323,23 +407,25 @@ def test_a_cross_site_page_cannot_reach_keyless_without_sending_origin():
     for scope_name in ("inference", "full"):
         set_keyless_api_access(scope_name)
         for site in ("cross-site", "same-site", "CROSS-SITE", " cross-site "):
-            assert keyless_request_allowed(
-                request_for(path = "/v1/models", method = "GET",
-                            headers = {"Sec-Fetch-Site": site})
-            ) is False, f"{site!r} was admitted under {scope_name}"
+            assert (
+                keyless_request_allowed(
+                    request_for(path = "/v1/models", method = "GET", headers = {"Sec-Fetch-Site": site})
+                )
+                is False
+            ), f"{site!r} was admitted under {scope_name}"
 
         # a page on Studio's own origin, and the user typing the URL, are not attacks
         for site in ("same-origin", "none"):
-            assert keyless_request_allowed(
-                request_for(path = "/v1/models", method = "GET",
-                            headers = {"Sec-Fetch-Site": site})
-            ) is True, f"{site!r} was refused under {scope_name}"
+            assert (
+                keyless_request_allowed(
+                    request_for(path = "/v1/models", method = "GET", headers = {"Sec-Fetch-Site": site})
+                )
+                is True
+            ), f"{site!r} was refused under {scope_name}"
 
         # absence must stay admitted: curl, the OpenAI SDKs and Safari < 16.4 send
         # no Sec-Fetch-* at all, and serving them is the entire point of the setting
-        assert keyless_request_allowed(
-            request_for(path = "/v1/models", method = "GET")
-        ) is True
+        assert keyless_request_allowed(request_for(path = "/v1/models", method = "GET")) is True
 
 
 def test_a_real_credential_authenticates_under_every_scope_and_transport(monkeypatch):
@@ -355,33 +441,59 @@ def test_a_real_credential_authenticates_under_every_scope_and_transport(monkeyp
 
     seed_user()
     raw_key, row = storage.create_api_key(
-        username = storage.DEFAULT_ADMIN_USERNAME, name = "always-on", expires_at = None,
+        username = storage.DEFAULT_ADMIN_USERNAME,
+        name = "always-on",
+        expires_at = None,
     )
     _s, _h, jwt_secret, _m = storage.get_user_and_secret(storage.DEFAULT_ADMIN_USERNAME)
     session = jwt.encode(
-        {"sub": storage.DEFAULT_ADMIN_USERNAME,
-         "exp": datetime.now(timezone.utc) + timedelta(minutes = 30)},
-        jwt_secret, algorithm = "HS256",
+        {
+            "sub": storage.DEFAULT_ADMIN_USERNAME,
+            "exp": datetime.now(timezone.utc) + timedelta(minutes = 30),
+        },
+        jwt_secret,
+        algorithm = "HS256",
     )
 
     transports = {
-        "loopback": dict(server = ("127.0.0.1", 8000), client = ("127.0.0.1", 51000),
-                         state = app_state()),
-        "private_lan": dict(server = ("192.168.1.24", 8888), client = ("192.168.1.90", 51000),
-                            state = app_state(bind_host = "0.0.0.0")),
-        "public": dict(server = ("64.227.100.5", 8000), client = ("8.8.8.8", 51000),
-                       state = app_state(bind_host = "64.227.100.5")),
-        "tunnel": dict(server = ("127.0.0.1", 8000), client = ("127.0.0.1", 51000),
-                       state = app_state(cloudflare_url = "https://x.trycloudflare.com")),
-        "colab": dict(server = ("127.0.0.1", 8000), client = ("127.0.0.1", 51000),
-                      state = app_state(remote_access_is_colab = True)),
-        "secure": dict(server = ("127.0.0.1", 8000), client = ("127.0.0.1", 51000),
-                       state = app_state(secure = True)),
-        "browser_origin": dict(server = ("127.0.0.1", 8000), client = ("127.0.0.1", 51000),
-                               state = app_state(), headers = {"Origin": "https://evil.example"}),
-        "browser_cross_site": dict(server = ("127.0.0.1", 8000), client = ("127.0.0.1", 51000),
-                                   state = app_state(),
-                                   headers = {"Sec-Fetch-Site": "cross-site"}),
+        "loopback": dict(
+            server = ("127.0.0.1", 8000), client = ("127.0.0.1", 51000), state = app_state()
+        ),
+        "private_lan": dict(
+            server = ("192.168.1.24", 8888),
+            client = ("192.168.1.90", 51000),
+            state = app_state(bind_host = "0.0.0.0"),
+        ),
+        "public": dict(
+            server = ("64.227.100.5", 8000),
+            client = ("8.8.8.8", 51000),
+            state = app_state(bind_host = "64.227.100.5"),
+        ),
+        "tunnel": dict(
+            server = ("127.0.0.1", 8000),
+            client = ("127.0.0.1", 51000),
+            state = app_state(cloudflare_url = "https://x.trycloudflare.com"),
+        ),
+        "colab": dict(
+            server = ("127.0.0.1", 8000),
+            client = ("127.0.0.1", 51000),
+            state = app_state(remote_access_is_colab = True),
+        ),
+        "secure": dict(
+            server = ("127.0.0.1", 8000), client = ("127.0.0.1", 51000), state = app_state(secure = True)
+        ),
+        "browser_origin": dict(
+            server = ("127.0.0.1", 8000),
+            client = ("127.0.0.1", 51000),
+            state = app_state(),
+            headers = {"Origin": "https://evil.example"},
+        ),
+        "browser_cross_site": dict(
+            server = ("127.0.0.1", 8000),
+            client = ("127.0.0.1", 51000),
+            state = app_state(),
+            headers = {"Sec-Fetch-Site": "cross-site"},
+        ),
     }
 
     for scope_name in ("off", "inference", "full"):
@@ -390,42 +502,52 @@ def test_a_real_credential_authenticates_under_every_scope_and_transport(monkeyp
             # via monkeypatch, so the stub cannot outlive this test: it is a module
             # global, and test_lan_access_settings.py reads the real one
             monkeypatch.setattr(
-                lan_access, "lan_listener_status",
+                lan_access,
+                "lan_listener_status",
                 lambda t = transport: {
-                    "running": True, "port": t["server"][1],
-                    "addresses": [t["server"][0]], "error": None},
+                    "running": True,
+                    "port": t["server"][1],
+                    "addresses": [t["server"][0]],
+                    "error": None,
+                },
             )
             for credential_name, token in (("api_key", raw_key), ("session", session)):
                 headers = dict(transport.get("headers") or {})
                 headers["Authorization"] = f"Bearer {token}"
                 request = request_for(
-                    server = transport["server"], client = transport["client"],
-                    state = transport["state"], headers = headers,
+                    server = transport["server"],
+                    client = transport["client"],
+                    state = transport["state"],
+                    headers = headers,
                 )
                 credentials = resolve(request)
-                assert credentials.scheme not in (KEYLESS_SCHEME, KEYLESS_FALLBACK_SCHEME), (
-                    f"{credential_name} was downgraded to keyless on {label}/{scope_name}"
-                )
-                assert asyncio.run(get_current_subject(credentials)) == \
-                    storage.DEFAULT_ADMIN_USERNAME, (
-                        f"{credential_name} stopped working on {label}/{scope_name}"
-                    )
+                assert credentials.scheme not in (
+                    KEYLESS_SCHEME,
+                    KEYLESS_FALLBACK_SCHEME,
+                ), f"{credential_name} was downgraded to keyless on {label}/{scope_name}"
+                assert (
+                    asyncio.run(get_current_subject(credentials)) == storage.DEFAULT_ADMIN_USERNAME
+                ), f"{credential_name} stopped working on {label}/{scope_name}"
 
     # and the credentials that must NOT work still do not, at the widest scope
     set_keyless_api_access("full")
     storage.revoke_api_key(storage.DEFAULT_ADMIN_USERNAME, row["id"])
     expired, _row = storage.create_api_key(
-        username = storage.DEFAULT_ADMIN_USERNAME, name = "expired",
+        username = storage.DEFAULT_ADMIN_USERNAME,
+        name = "expired",
         expires_at = (datetime.now(timezone.utc) - timedelta(days = 1)).isoformat(),
     )
     for dead in (raw_key, expired):
         with pytest.raises(HTTPException):
-            asyncio.run(get_current_subject(
-                resolve(request_for(headers = {"Authorization": f"Bearer {dead}"}))
-            ))
+            asyncio.run(
+                get_current_subject(
+                    resolve(request_for(headers = {"Authorization": f"Bearer {dead}"}))
+                )
+            )
 
 
 # ── the reported race, pinned deterministically ──────────────────────────────
+
 
 def test_revoking_a_key_after_the_admission_snapshot_never_yields_the_admin():
     """Regression for the PR #9102 race reported by @Imagineer99.
@@ -435,14 +557,20 @@ def test_revoking_a_key_after_the_admission_snapshot_never_yields_the_admin():
     longer calls. This pins the interleaving directly instead: revoke between the
     middleware snapshot and the credential check.
     """
-    from state.tool_policy import get_tool_policy_default, reset_tool_policy, set_tool_policy_default
+    from state.tool_policy import (
+        get_tool_policy_default,
+        reset_tool_policy,
+        set_tool_policy_default,
+    )
 
     seed_user()
     set_keyless_api_access("inference", tools = False)
     reset_tool_policy()
     set_tool_policy_default(True)
     raw_key, row = storage.create_api_key(
-        username = storage.DEFAULT_ADMIN_USERNAME, name = "race", expires_at = None,
+        username = storage.DEFAULT_ADMIN_USERNAME,
+        name = "race",
+        expires_at = None,
     )
     scope = asgi_scope(headers = {"Authorization": f"Bearer {raw_key}"})
     observed = {}
