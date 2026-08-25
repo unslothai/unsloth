@@ -120,7 +120,9 @@ export function useTransportMode(): [
         : installMode;
       setMode(getTransportMode());
     });
-    void hydrateInstallMode().then(() => setMode(getTransportMode()));
+    // Refreshed, like the download path: reading the cache here showed the old mode in the
+    // toggle while the next download already ran on the one another browser had set.
+    void hydrateInstallMode(true).then(() => setMode(getTransportMode()));
     return () => {
       window.removeEventListener(CHANGE_EVENT, handleLocal);
       window.removeEventListener("storage", handleStorage);

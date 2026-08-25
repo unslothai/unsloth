@@ -277,3 +277,9 @@ test("a superseded read answers with the current value, not its own", () => {
   // the resolved value into its own state, undoing the write that superseded it.
   assert.match(API, /return cachedTransport \?\? settings;/);
 });
+
+test("the transport controls mount on a refreshed install mode", () => {
+  // Hydrating from the cache here showed the old mode in the toggle while the download path,
+  // which refreshes, already ran on the one another browser had set.
+  assert.match(PREFERENCE, /hydrateInstallMode\(true\)\.then\(\(\) => setMode/);
+});
