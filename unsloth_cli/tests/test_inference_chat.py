@@ -2467,3 +2467,69 @@ def test_quant_labels_read_the_layouts_the_hub_actually_writes(
         target.write_bytes(b"\0" * size)
 
     assert cat._quant_labels("org/Tiny-GGUF", str(repo)) == expected
+
+
+def test_quant_labels_follow_the_pin_rather_than_the_ref(monkeypatch, tmp_path):
+    """A pinned row loads its snapshot, not the one refs/main names.
+
+    The inventory pins precisely when the ref resolves somewhere worse, so labelling by the
+    ref advertised a quant the row will never open and hid the one it will.
+    """
+    from unsloth_cli import _model_catalog as cat
+
+    monkeypatch.syspath_prepend(str(_REPO_ROOT / "studio" / "backend"))
+    repo = tmp_path / "models--org--Two-GGUF"
+    by_ref = repo / "snapshots" / ("a" * 40)
+    pinned = repo / "snapshots" / ("b" * 40)
+    by_ref.mkdir(parents = True)
+    pinned.mkdir(parents = True)
+    (by_ref / "Two-Q2_K.gguf").write_bytes(b"\0" * 16)
+    (pinned / "Two-Q6_K.gguf").write_bytes(b"\0" * 16)
+    (repo / "refs").mkdir(parents = True)
+    (repo / "refs" / "main").write_text("a" * 40)
+
+    assert cat._quant_labels("org/Two-GGUF", str(repo), str(pinned)) == "Q6_K"
+    assert cat._quant_labels("org/Two-GGUF", str(repo)) == "Q2_K"
+
+
+def test_quant_labels_leave_out_a_quant_that_cannot_be_loaded(monkeypatch, tmp_path):
+    """An interrupted second quant is not selectable, so it is not advertised.
+
+    _preferred_complete_gguf narrows to complete_snapshot_variants before choosing the load
+    target; the detail column reads the same set, or it names a quant nothing can open.
+    """
+    from unsloth_cli import _model_catalog as cat
+
+    monkeypatch.syspath_prepend(str(_REPO_ROOT / "studio" / "backend"))
+    repo = tmp_path / "models--org--Tiny-GGUF"
+    snapshot = repo / "snapshots" / ("a" * 40)
+    snapshot.mkdir(parents = True)
+    (snapshot / "Tiny-Q4_K_M.gguf").write_bytes(b"\0" * 16)
+    (snapshot / "Tiny-Q8_0-00001-of-00003.gguf").write_bytes(b"\0" * 16)
+    (repo / "refs").mkdir(parents = True)
+    (repo / "refs" / "main").write_text("a" * 40)
+
+    assert cat._quant_labels("org/Tiny-GGUF", str(repo)) == "Q4_K_M"
+
+
+def test_one_undecodable_ref_does_not_empty_the_downloaded_group(monkeypatch, tmp_path):
+    """read_text raises UnicodeDecodeError, which is a ValueError and not an OSError.
+
+    Uncaught it leaves _quant_labels, aborts cached_entries, and _safe then hides every
+    Downloaded row because one repo in the cache has a torn ref.
+    """
+    from unsloth_cli import _model_catalog as cat
+
+    monkeypatch.syspath_prepend(str(_REPO_ROOT / "studio" / "backend"))
+    repo = tmp_path / "models--org--Tiny-GGUF"
+    snapshot = repo / "snapshots" / ("a" * 40)
+    snapshot.mkdir(parents = True)
+    (snapshot / "Tiny-Q4_K_M.gguf").write_bytes(b"\0" * 16)
+    (repo / "refs").mkdir(parents = True)
+    (repo / "refs" / "main").write_bytes(b"\xff\xfe\x00not utf-8")
+
+    rows = [{"repo_id": "org/Tiny-GGUF", "cache_path": str(repo), "task": "text-generation"}]
+    monkeypatch.setattr(cat, "_cached_catalog_rows", lambda: (rows, []))
+
+    entries = cat.cached_entries()
+    assert [(e.name, e.detail) for e in entries] == [("org/Tiny-GGUF", "Q4_K_M")]
