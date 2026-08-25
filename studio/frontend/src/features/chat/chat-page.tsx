@@ -2750,8 +2750,7 @@ export function ChatPage({
             repoId: selection.id,
             variant: selection.ggufVariant ?? null,
             expectedBytes: selection.expectedBytes ?? 0,
-            // Handed over, not raised here: the manager folds it into the Xet
-            // notice so one start produces one toast carrying both.
+            // Handed over, not raised here, so one start makes one toast.
             callerToast: {
               title: "Downloading in the background",
               description:
@@ -2856,11 +2855,10 @@ export function ChatPage({
       }
     },
   });
-  // The job the pending auto-load is waiting on, read by the context-change effect
-  // below. Written from an effect, never during render.
+  // The pending auto-load's job, for the context-change effect below. Written from
+  // an effect, never during render.
   const pendingAutoLoadKeyRef = useRef<string | null>(null);
-  // The live context, so a start still in flight can be asked whether the thread it
-  // was requested from is still the one on screen.
+  // The live context, so a start still in flight can check it is still on screen.
   const chatContextKeyRef = useRef(chatContextKey);
   useEffect(() => {
     chatContextKeyRef.current = chatContextKey;
@@ -2884,24 +2882,21 @@ export function ChatPage({
         repoId: pending.selection.id,
         variant: pending.selection.ggufVariant ?? null,
         expectedBytes: pending.selection.expectedBytes ?? 0,
-        // Folded into the Xet notice only. #9663 removed this surface's own toast
-        // as a duplicate of the download panel, so it must not come back on an
-        // HTTP start or once the three notices are spent.
+        // Notice-only: #9663 removed this surface's own toast, so it must not
+        // return on an HTTP start or once the three notices are spent.
         callerToast: {
           title: "Downloading model",
           description: "It'll load automatically once the download finishes.",
           noticeOnly: true,
-          // Asked again when the toast is finally raised, which can be several round
-          // trips later. The cleanup below only dismisses a toast that already exists;
-          // a raise still in flight would otherwise promise an auto-load that
-          // onComplete refuses, since the contextKey it was staged for has changed.
+          // The cleanup below only reaches a toast that already exists; a raise
+          // still in flight would promise an auto-load onComplete then refuses.
           stillValid: () => chatContextKeyRef.current === pending.contextKey,
         },
       });
       if (!active) return;
       if (outcome === "started") {
-        // No toast HERE, and none from the manager either unless the Xet notice
-        // fires and folds the sentence in. The auto-load runs from onComplete.
+        // No toast here, and none from the manager unless the notice folds the
+        // sentence in. The auto-load runs from onComplete.
         return;
       }
       if (outcome === "conflict") {
@@ -2925,16 +2920,13 @@ export function ChatPage({
     })();
     return () => {
       active = false;
-      // This selection is no longer the pending auto-load: the user picked another
-      // model, so its completion loads nothing. Drop the toast still saying it will.
-      // A no-op once the download itself finished, which dismisses the same id.
+      // Another model was picked, so this one's completion loads nothing. A no-op
+      // once the download finished, which dismisses the same id.
       dismissStartToast(pendingKey);
     };
   }, [pendingHubAutoLoad]);
-  // Switching thread, project or starting a new chat keeps the pathname at /chat and
-  // leaves pendingHubAutoLoad untouched, so neither the route sweep nor the cleanup
-  // above runs. onComplete refuses to load into a different contextKey, so the toast
-  // would go on promising an auto-load that cannot happen.
+  // Switching thread or project keeps the pathname and pendingHubAutoLoad, so neither
+  // sweep above runs, yet onComplete refuses to load into a different contextKey.
   useEffect(() => {
     return () => {
       const pendingKey = pendingAutoLoadKeyRef.current;

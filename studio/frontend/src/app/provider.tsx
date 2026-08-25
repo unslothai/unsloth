@@ -885,9 +885,8 @@ export function AppProvider({ children }: AppProviderProps) {
   const reduceMotion = useAppearanceCustomStore(
     (s) => s.customization.reduceMotion,
   );
-  // A download-start toast describes the surface it was raised on. It lasts 8s from
-  // a root-level Toaster, so leaving that surface would otherwise park it over the
-  // next route's header controls (see dismissStartToasts for the measurement).
+  // A start toast describes the surface it was raised on, and lasts 8s from a
+  // root-level Toaster; see dismissStartToasts for what it lands on otherwise.
   useEffect(() => {
     dismissStartToasts();
   }, [pathname]);

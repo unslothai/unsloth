@@ -17,8 +17,7 @@ export interface XetNoticeReservation {
 }
 
 /** A count recorded before the tally moved server-side. Sent until the server
- * confirms it, and only raises the stored value, so someone who spent their three
- * does not get three more. */
+ * confirms it, and it can only raise the stored value. */
 function readLegacyCount(): number {
   if (typeof window === "undefined") return 0;
   try {
@@ -35,8 +34,8 @@ function readLegacyCount(): number {
 }
 
 /** Only once a response proves the server took the hint. Marking it on the way out
- * would drop the floor whenever the POST failed, and every later request would send
- * 0, handing three fresh notices to someone who had already spent them. */
+ * dropped the floor on any failed POST, handing three fresh notices to someone who
+ * had already spent them. */
 function markLegacyMigrated(): void {
   if (typeof window === "undefined") return;
   try {
@@ -65,15 +64,14 @@ export async function reserveXetNoticeFromServer(): Promise<XetNoticeReservation
         body: JSON.stringify({ seen_hint: readLegacyCount() }),
       },
       // This POST increments a counter, so a retry whose predecessor reached the
-      // backend spends a second notice. The Tauri network retry is on by default;
-      // every other mutation here opts out the same way.
+      // backend spends a second notice. Every other mutation here opts out too.
       { retryNetworkErrors: false },
     );
     if (!res.ok) return denied;
     const body = (await res.json()) as Partial<XetNoticeReservation>;
-    // A proxy or an older backend can answer this unknown route with a 200 and some
-    // other JSON, so `res.ok` is not proof the hint was stored. Only a reply that
-    // reports the cap it enforced came from the reservation endpoint.
+    // A proxy or older backend can answer this unknown route with a 200 and other
+    // JSON, so `res.ok` is no proof the hint was stored. Only a reply reporting the
+    // cap it enforced came from the reservation endpoint.
     if (typeof body.granted !== "boolean" || !isCount(body.limit)) return denied;
     markLegacyMigrated();
     return {

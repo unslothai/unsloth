@@ -18,23 +18,20 @@ import {
 export const XET_NOTICE_DURATION_MS = 8000;
 
 // SHORT on purpose, as a correctness constraint. At 62 + 330 chars sonner rendered
-// this 235px tall over the Model hub toolbar, leaving 4 to 6 controls unclickable
-// for 8s, which is what #9293 reverted. It must end above the filter row, roughly
-// 158px, so title plus about two lines. Re-measure before adding a sentence.
+// this 235px tall over the Model hub toolbar, leaving 4 to 6 controls unclickable for
+// 8s, which is what #9293 reverted. It must end above the filter row, near 158px, so
+// title plus about two lines. Re-measure before adding a sentence.
 export const XET_NOTICE_TITLE = "Download is running";
 // The "switch to HTTP in Model Hub" advice is gone on purpose: it cost two lines and
-// left the toast bottom at y=126.5 against a filter row centred at y=127, a 0.5px
-// margin that any font or translation would have erased. Without it the toast ends
-// near y=100 and never reaches the row.
+// left the toast bottom at y=126.5 against a row centred at y=127, a margin any font
+// or translation would have erased. Without it the toast ends near y=100.
 export const XET_NOTICE_DESCRIPTION =
   "Xet sends the file in small pieces, so the bar can sit at 0% and then jump to done. Nothing is stuck.";
 export const XET_NOTICE_DESCRIPTION_CLASS = "!text-muted-foreground";
 
-/** The notice, plus whatever the starting surface wanted to add.
- *
- * Chat auto-loads and says so; the Hub does not, passes nothing, and gets the short
- * form, where "it'll load automatically" would be false. The test budget applies to
- * the short form alone, since only that one renders over the hub toolbar. */
+/** The notice, plus whatever the starting surface wanted to add. Chat auto-loads and
+ * says so; the Hub does not, passes nothing, and gets the short form. The test budget
+ * applies to that form alone, since only it renders over the hub toolbar. */
 export function composeNoticeDescription(
   callerToast?: { description: string } | null,
 ): string {

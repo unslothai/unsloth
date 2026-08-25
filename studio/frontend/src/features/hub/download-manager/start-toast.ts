@@ -3,13 +3,10 @@
 
 // The one toast announcing a download start, and the one place it is dismissed.
 //
-// Chat used to raise its own while startJob raised the Xet notice, so one download
-// produced two stacked toasts. Callers now hand their message over and the download
-// manager folds it into the notice or shows it alone.
-//
-// The 8s duration is unrelated to the transfer, so a finished download left the toast
-// still claiming it was running. The id comes from the job key rather than being
-// stored, since finalize() tears the runtime down first.
+// Chat used to raise its own alongside the Xet notice, so one download produced two
+// stacked toasts; callers now hand their message over instead. The 8s duration says
+// nothing about the transfer, so the id is derived from the job key and finalize()
+// dismisses it (nothing can be stored: teardownRuntime runs first).
 
 import { toast } from "@/lib/toast";
 
@@ -24,15 +21,12 @@ export function startToastId(jobKey: string): string {
   return `download-start:${jobKey}`;
 }
 
-// Id -> the route it was raised on, so a navigation clears these and nothing else,
-// and only the ones that actually left their surface. Keyed on the route rather than
-// dismissing everything live, because a start can itself change the route: the toast
-// then belongs to where it landed, and blanket dismissal would take it back out.
+// Id -> the route it was raised on. Keyed that way rather than dismissing everything
+// live, because a start can itself navigate: that toast belongs where it landed.
 const liveStartToasts = new Map<string, string>();
 
-/** The route to hold a start against. Capture it when the start begins, not when
- * the toast is raised: the Xet reservation is a round trip, so a raise can land
- * after the user has already navigated. */
+/** The route to hold a start against. Captured when the start begins, since the
+ * preflight and the reservation are round trips a raise can outlive. */
 export function currentRoute(): string {
   return typeof window === "undefined" ? "" : window.location.pathname;
 }
@@ -42,8 +36,8 @@ export function showStartToast(
   message: { title: string; description: string },
   originRoute: string = currentRoute(),
 ): void {
-  // Raised late and the surface is gone: the route-change sweep has already been
-  // and gone, so this would sit on the new page for its full 8s.
+  // Raised late, surface gone: the route sweep has already run, so this would sit
+  // on the new page for its full 8s.
   if (originRoute !== currentRoute()) return;
   liveStartToasts.set(startToastId(jobKey), originRoute);
   toast.info(message.title, {
@@ -82,13 +76,10 @@ export function dismissStartToast(jobKey: string): void {
   toast.dismiss(id);
 }
 
-/** Drop them all when the user leaves the surface that raised them.
- *
- * The Toaster is root-level and this lives 8s, so a start in chat followed by a
- * click on Models carries the toast onto the hub toolbar. The composed chat form
- * measures 167px tall against a filter row at 158px (1500x1000), which is the
- * overlap #9293 reverted; the hub's own download panel already shows the transfer.
- * Only ids raised here, so unrelated toasts survive the navigation. */
+/** Drop the ones whose surface the user just left. The Toaster is root-level and
+ * these live 8s, so chat's composed form (measured 167px tall against a hub filter
+ * row at 158px, 1500x1000) would otherwise land on the toolbar, which is the overlap
+ * #9293 reverted. Only ids raised here, so other toasts survive the navigation. */
 export function dismissStartToasts(): void {
   const here = currentRoute();
   for (const [id, raisedOn] of liveStartToasts) {

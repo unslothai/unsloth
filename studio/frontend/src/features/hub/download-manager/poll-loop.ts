@@ -581,9 +581,8 @@ export async function startJob(
     state?: DownloadJobState;
     transport?: ResolvedTransport;
     cancelTransport?: ResolvedTransport | null;
-    /** The surface this start was asked for, for the start toast to be held against.
-     * Passed in by `requestStart`, whose transport preflight is itself a round trip
-     * the user can navigate during; taken here only for a direct caller. */
+    /** The surface this start was asked for, to hold its toast against. Passed by
+     * `requestStart`, whose preflight is itself navigable; else taken here. */
     originRoute?: string;
   } = {},
 ): Promise<void> {
@@ -747,15 +746,14 @@ export async function startJob(
     }
     const started = transportAfterStart(mode, result.transport);
     if (started !== activeTransport) patchJob(key, { transport: started });
-    // One start, one toast. The only place a start is announced.
-    // A cancel can land while this start is in flight, and the reissue above is
-    // the giveaway. Neither message is true of a start that is already stopping.
+    // One start, one toast: the only place a start is announced. A cancel can land
+    // mid-flight (the reissue above is the giveaway), and neither message is true
+    // of a start that is already stopping.
     const stopping = rt.cancelRequested;
-    // Everything above this point was round trips the user could navigate during.
-    // Checked BEFORE reserving, not only when the toast is raised: a reservation is
-    // one of three for the life of the install, and spending it on a toast that will
-    // be discarded on arrival is how starting a download and going to look at it
-    // burns all three unseen.
+    // Everything above was round trips the user could navigate during. Checked BEFORE
+    // reserving, since a reservation is one of three for the life of the install:
+    // spending one on a toast that will be discarded on arrival is how starting a
+    // download and going to watch it burns all three unseen.
     const onOriginRoute = currentRoute() === startRoute;
     if (
       onOriginRoute &&
@@ -769,14 +767,12 @@ export async function startJob(
       // Async (it asks the backend for one of the three) and nothing below waits on
       // a toast. A lost reservation still leaves the caller owed its message.
       void reserveXetNoticeFromServer().then(({ granted }) => {
-        // This round trip can outlive the transfer: finalize() dismisses by id
-        // BEFORE this resolves, so raising it here would leave a finished or
-        // cancelled job claiming to be running for another 8s, or hand a restarted
-        // job on the same key the old request's message.
+        // This round trip can outlive the transfer: finalize() dismisses by id before
+        // it resolves, so raising here would leave a finished or cancelled job claiming
+        // to run for another 8s, or hand a restart on the same key a stale message.
         if (!isCurrent(key, epoch) || rt.cancelRequested) return;
-        // The caller's line can go stale on its own while the notice stays true: chat
-        // moved to another thread, so nothing auto-loads, but the transfer is still
-        // running and still needs the 0% explained.
+        // The caller's line can go stale while the notice stays true: chat moved
+        // thread, so nothing auto-loads, but the 0% still needs explaining.
         const caller = liveCallerToast(req.callerToast);
         if (granted) {
           showStartToast(

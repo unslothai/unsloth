@@ -129,9 +129,8 @@ async function runWithPendingStartGuard(
   // exact request is the live transfer; a peer/snapshot/pending start has not.
   if (hasActiveOrPendingStart(req)) {
     if (!isJobActiveFor(req)) return "busy";
-    // Returns "started" WITHOUT running the action, so startJob never announces.
-    // Callers used to cover this by toasting themselves; now the manager owns the
-    // message, so without this the user gets no feedback at all.
+    // Returns "started" WITHOUT running the action, so startJob never announces;
+    // now the manager owns the message, this is the only feedback there is.
     showCallerToast(
       jobKeyOf(req.kind, req.repoId, req.variant),
       req.callerToast,
@@ -153,8 +152,7 @@ export async function requestStart(
   req: DownloadRequest,
 ): Promise<DownloadStartOutcome> {
   // Before the preflight below, which is two round trips the user can navigate
-  // during. A route read after them would name the page they moved to, and the
-  // start toast would then be held against the wrong surface.
+  // during; read after them it would name the page they moved to.
   const originRoute = currentRoute();
   return runWithPendingStartGuard(req, async () => {
     let mode: TransportMode = getTransportMode();
@@ -196,9 +194,8 @@ export async function requestStart(
             next: mode,
             resumable: status.resumable,
           },
-          // Without the caller's line: this start is resolved later from the Hub,
-          // where "it'll load automatically" is a promise chat cannot keep once it
-          // is inactive. The Xet notice still explains the 0% on its own.
+          // Without the caller's line: resolved later from the Hub, where "it'll
+          // load automatically" is a promise chat cannot keep. The notice stands.
           pending: { ...req, callerToast: undefined },
         });
         return "conflict";
