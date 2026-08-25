@@ -124,6 +124,10 @@ def test_a_clean_stream_is_scoreable_and_counts_every_character(page):
         "failures": 0,
         "pending_chars": 0,
         "carried_flushes": got["carried_flushes"],
+        # Not pinned to a value, on the same footing as `carried_flushes` beside it: the
+        # id is which decoder the two numbers above are about, and the exact integer
+        # depends on how many decoders the page has built before this assertion.
+        "decoder_id": got["decoder_id"],
     }, got
 
 
@@ -232,6 +236,10 @@ def test_the_counter_survives_a_split_inside_the_data_prefix(page):
         "failures": 0,
         "pending_chars": 0,
         "carried_flushes": got["carried_flushes"],
+        # Not pinned to a value, on the same footing as `carried_flushes` beside it: the
+        # id is which decoder the two numbers above are about, and the exact integer
+        # depends on how many decoders the page has built before this assertion.
+        "decoder_id": got["decoder_id"],
     }, got
 
 
@@ -269,6 +277,10 @@ def test_unrelated_text_ending_in_a_marker_letter_does_not_corrupt_the_next_fram
         "failures": 0,
         "pending_chars": 0,
         "carried_flushes": got["carried_flushes"],
+        # Not pinned to a value, on the same footing as `carried_flushes` beside it: the
+        # id is which decoder the two numbers above are about, and the exact integer
+        # depends on how many decoders the page has built before this assertion.
+        "decoder_id": got["decoder_id"],
     }, got
 
 
@@ -363,6 +375,41 @@ def test_a_window_that_opens_on_an_empty_buffer_is_still_scoreable(page):
     assert out["reply_chars_delta"] == len("during"), out
 
 
+def test_a_marker_fragment_held_at_the_open_does_not_cost_the_window_its_reading(page):
+    """THE BOUNDARY OF THE REFUSAL, and it is a boundary rather than a hole.
+
+    A decoder whose first chunk is "dat" is holding a marker fragment, so `wireIntegrity` reports
+    it as buffered -- deliberately, and the reason is above `markerHold`. But that decoder is NOT
+    `active` yet, so `decoder_id` names whoever was, and when the fragment's frame completes
+    inside the window the carried flush lands on the new decoder and the delta stays zero. The
+    window is scoreable.
+
+    That is correct, and the quantity is why. `markerTail` is at most four characters of the
+    literal `data:` and is only ever set while `pending` is empty, so a held fragment carries
+    ZERO denominator characters: every character `reply_chars_delta` counts here was delivered
+    inside the window. The refusal exists for a buffer whose characters were delivered before the
+    window and counted inside it, which is the half-frame case above, and that one still names
+    the decoder holding it and still fires.
+    """
+    page.evaluate("() => window.__sb.streamcost.reset()")
+    _feed(page, _frame("earlier"))
+    _end_response(page)
+    # The next response begins with a chunk that is only part of the marker.
+    _feed(page, "dat")
+    inst = _instrument(page)
+    inst.open(_Window())
+    assert inst._integrity_open["pending_chars"] == 3, inst._integrity_open
+
+    _feed(page, 'a: {"choices":[{"delta":{"content":"hello"}}]}\n\n')
+    out = inst.close(_Window())
+    assert out["wire_pending_chars_at_open"] == 3, out
+    assert out["wire_pending_chars_at_close"] == 0, out
+    assert out["wire_parse_failures_in_window"] == 0, out
+    # Every counted character arrived inside the window: the fragment held none of them.
+    assert out["reply_chars_delta"] == len("hello"), out
+    assert out["reply_chars_scoreable"] is True, out
+
+
 # ── an aborted response must not poison the next one ──────────────────────────
 
 
@@ -391,6 +438,10 @@ def test_an_aborted_frame_does_not_follow_the_stream_that_replaces_it(page):
         "failures": 0,
         "pending_chars": 0,
         "carried_flushes": got["carried_flushes"],
+        # Not pinned to a value, on the same footing as `carried_flushes` beside it: the
+        # id is which decoder the two numbers above are about, and the exact integer
+        # depends on how many decoders the page has built before this assertion.
+        "decoder_id": got["decoder_id"],
     }, got
 
 
@@ -456,6 +507,92 @@ def test_a_window_opening_after_an_abort_keeps_the_next_response_scoreable(page)
     assert out["reply_chars_delta"] == len("a clean reply"), out
     assert out["wire_carried_frames_counted_in_window"] == 0, out
     assert out["reply_chars_scoreable"] is True, out
+
+
+def test_an_abort_does_not_cost_the_next_response_its_reading_when_that_one_is_split(page):
+    """THE RESIDUAL ON THAT FIX, and it survived because the two halves of the refusal were read at
+    two different scopes. `pending_at_open` belongs to ONE decoder; `carriedFlushes` was a counter
+    on `S` that any decoder could move. So the abort's orphaned half frame was paired with a
+    carried flush produced by the NEW response's own split, and the window was refused for a buffer
+    that never flushed -- the same false refusal, surviving in the fragmented case.
+
+    It is the fragmented case that matters most. Reads go ragged when the renderer is jammed, which
+    is exactly the window worth measuring, so the loss is biased against the expensive windows.
+    Measured before this change: this window delivered all 13 of its characters and was refused,
+    while the same traffic with no abort in front of it was accepted."""
+    page.evaluate("() => window.__sb.streamcost.reset()")
+    _feed(page, 'data: {"choices":[{"delta":{"content":"half a re')
+    _end_response(page)
+
+    inst = _instrument(page)
+    inst.open(_Window())
+    assert inst._integrity_open["pending_chars"] > 0, inst._integrity_open  # noqa: SLF001
+    frame = _frame("a clean reply")
+    head, tail = _halves(frame, frame.index("a clean") + 4)
+    assert "\n\n" not in head, head
+    _feed(page, head)
+    _feed(page, tail)
+    out = inst.close(_Window())
+    assert out["reply_chars_delta"] == len("a clean reply"), out
+    # The new response DID carry a frame across a decode boundary, so the counter really moved:
+    # this window is accepted despite that, not because nothing was counted.
+    assert out["wire_carried_frames_counted_in_window"] == 0, out
+    assert out["reply_chars_scoreable"] is True, out
+
+
+def test_the_carried_counter_still_moves_for_the_decoder_that_owns_the_split(page):
+    """THE CONTROL FOR THE ONE ABOVE. Without it that test passes just as well against an
+    instrument that has stopped counting carried flushes altogether, which would take the genuine
+    straddle refusal down with it. Same fragmentation, no abort in front of it.
+
+    ASKED OF THE DECODER THAT OWNS THE SPLIT, which is the whole point of the change. The window's
+    own `wire_carried_frames_counted_in_window` reads 0 here and that is correct rather than
+    convenient: nothing was pending when it opened, so the decoder it names is not the one that
+    went on to carry a frame, and its count is the honest answer to the question the refusal asks.
+    The counter itself has to be shown to have moved, and only the decoder holding it can say so."""
+    page.evaluate("() => window.__sb.streamcost.reset()")
+    inst = _instrument(page)
+    inst.open(_Window())
+    assert inst._integrity_open["pending_chars"] == 0, inst._integrity_open  # noqa: SLF001
+    # Read BEFORE the close, which clears the open sample.
+    opened_on = inst._integrity_open["decoder_id"]  # noqa: SLF001
+    frame = _frame("a clean reply")
+    head, tail = _halves(frame, frame.index("a clean") + 4)
+    _feed(page, head)
+    _feed(page, tail)
+    out = inst.close(_Window())
+    live = page.evaluate("() => window.__sb.streamcost.wireIntegrity()")
+    assert live["carried_flushes"] == 1, live
+    assert live["decoder_id"] != opened_on, (live, opened_on)
+    assert out["wire_carried_frames_counted_in_window"] == 0, out
+    assert out["reply_chars_delta"] == len("a clean reply"), out
+    assert out["reply_chars_scoreable"] is True, out
+
+
+def test_a_frame_that_really_did_straddle_the_open_still_refuses_its_window(page):
+    """THE REFUSAL THIS MUST NOT REMOVE, in the shape that separates the two candidate fixes.
+
+    The decoder that was pending at the open completes its carried frame INSIDE the window, so part
+    of the delta really was delivered before the window opened -- and then another decoder becomes
+    the active one before the close. A fix that compared the open's decoder id with the close's
+    would see two different ids, discard the carry it is looking for, and accept a window whose
+    denominator is wrong. Asking `wireIntegrity` about the NAMED decoder answers regardless of who
+    is active now."""
+    page.evaluate("() => window.__sb.streamcost.reset()")
+    frame = _frame("straddles the open")
+    head, tail = _halves(frame, 30)
+    assert "\n\n" not in head, head
+    _feed(page, head)
+
+    inst = _instrument(page)
+    inst.open(_Window())
+    assert inst._integrity_open["pending_chars"] > 0, inst._integrity_open  # noqa: SLF001
+    _feed(page, tail)
+    # Some other decoder takes over as active before the close.
+    _feed_other(page, "unrelated page traffic")
+    out = inst.close(_Window())
+    assert out["wire_carried_frames_counted_in_window"] == 1, out
+    assert out["reply_chars_scoreable"] is False, out
 
 
 # ── the tail of a split frame is stream traffic on the numerator too ─────────

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useT } from "@/i18n";
+import { KeylessApiAccessSection } from "../components/keyless-api-access-section";
 import { LanAccessSection } from "../components/lan-access-section";
 import { RemoteAccessSection } from "../components/remote-access-section";
 
@@ -30,6 +31,8 @@ export function RemoteLanTab() {
       <RemoteAccessSection />
 
       <LanAccessSection />
+
+      <KeylessApiAccessSection />
     </div>
   );
 }

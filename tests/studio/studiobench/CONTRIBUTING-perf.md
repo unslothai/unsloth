@@ -121,6 +121,47 @@ be cleared as well as its scatter.
 
 If you run waves, **each wave carries its own null control.** Wave 0's floor is not wave 1's floor.
 
+#### What a null control cannot do
+
+**A null control cannot detect a bias it shares.**
+
+This is the companion to "a check that comes back clean against code you believe is broken is
+usually a hole in the check", and it is the specific hole that a null control has.
+
+A null runs one build against itself. Any skew that is **symmetric between the two sides cancels
+exactly**, so the null reads flat and appears to certify the metric. It has certified only that the
+metric is *repeatable*. It has said nothing about whether the metric is *comparable*.
+
+The case that taught this, in full, because the shape matters more than the story:
+
+`highlight_spans_while_open` counted `pre span` on the first frame where every reasoning pane's
+`data-state` read `open`. Its null control was **0.0% at 100K and 500K, exact to the span, with
+0.0% within-arm spread** -- about as clean as a null control ever comes back. It was adopted
+*because* of that null, to replace a measure whose null swung 70%.
+
+Across two real arms it was 41% wrong. `data-state` flips when the collapse state changes, not when
+the content it reveals has mounted, and the distance between those two frames depends on the
+collapse mechanism -- which was the thing being compared. Settled, both arms mount 74,250 spans.
+Read at the flip, one arm reads 74,917 and the other 44,075.
+
+The null never had a chance: it served one bundle on both sides, so the same timing skew sat on both
+sides of its ratio and divided out.
+
+So, before you trust a flat null:
+
+- Ask what the measurement's terminating condition is, and whether that condition means the same
+  thing on both arms. A moment defined by app state is not a fixed moment when the app state
+  machine is what changed.
+- Prefer a terminating condition defined by the **quantity you are measuring going quiet** over one
+  defined by a signal that merely correlates with it.
+- A null control tests repeatability. To test comparability you need an arm where you know the
+  answer: a deliberately broken build, or an independent measurement of the same quantity by
+  another route.
+
+`scoring/payload_rules.py` carries the rules that came out of this, and
+`scoring/selftest/test_studiobench_payload_rules.py` pins the four numbers that were published and
+withdrawn before they were written down.
+
 ### Gate 2: sign consistency
 
 Every paired ratio must fall on the same side of 1.0. If three repetitions say faster and one says
@@ -133,19 +174,28 @@ were junk.
 
 ## 4. Parity: prove you did not change what is rendered
 
-### The policy, and the two exemptions
+### The policy, and the three exemptions
 
-**UI and UX idempotency is required for every change, with exactly two exemptions:**
+**UI and UX idempotency is required for every change, with exactly three exemptions:**
 
 1. **A deliberate difference accepted for a dramatic performance improvement.** This is a decision
    somebody makes on the record with the number attached, not a default. If you are relying on it,
    say so in the pull request and say what the difference is.
 2. **A difference that exists only OFF SCREEN.** This one is a definition rather than a judgement:
    rendering only what is visible is an accepted technique, not a parity violation.
+3. **Select-all need not select all, PROVIDED copy stays complete.** Copy may be implemented as
+   "emit the whole thread as markdown, or as plain text, read from the source" rather than as a
+   faithful reproduction of a DOM selection.
+   - **Completeness of the copied content is REQUIRED.** Silent truncation is data loss.
+   - **Visual selection fidelity is NOT required.**
 
-Neither exemption removes the need for a floor. An exemption changes what counts as a pass; it does
+   This is what makes deferral and virtualization cheap: the copy path stops depending on what is
+   mounted. Do not reject a design on the grounds that it breaks DOM-based select-all.
+
+No exemption removes the need for a floor. An exemption changes what counts as a pass; it does
 not make an unmeasured claim into a measured one, so the null control still has to run on the same
-scale.
+scale. The third carries a condition on top of that, and the condition is the required half: an
+exemption you are relying on for the selection does not excuse the copy.
 
 **A bare "PARITY OK" reads far stronger than any of the three modes can support**, which is why
 each mode prints the CLAIM it is making and the POLICY it is judging against, and why you should
@@ -156,6 +206,23 @@ read both before quoting a pass:
 | `--mode digest` | the thread root and declared overlays serialise identically, on screen and off | no, it does not know what was on screen |
 | `--mode visible` | every message the viewport showed is present and identical, and every difference lies off screen | **yes** -- this is the mode that can say so |
 | `--mode behaviour` | scroll extent matches and the invariants a windowed mount breaks first still hold | no, and it says nothing about appearance |
+
+No mode grants exemption 3 off a digest. `--mode behaviour` is the only one that speaks to it,
+through `clipboard_carries_the_whole_thread`, which scores the copy against the THREAD rather than
+against the other arm -- that is the required half. Where a payload carries no readable
+`select_all_copy`, the gate records that the exemption exists and does not grant it.
+
+**And it scores it by LENGTH, not by content.** Each arm's `clipboard_chars` is divided by the
+thread's own visible text and has to land inside `MIN_CLIPBOARD_COVERAGE`-`MAX_CLIPBOARD_COVERAGE`;
+the copied characters are never compared. That is not an oversight to be fixed by comparing them.
+The base arm's clipboard is the DOM's RENDERED TEXT and a store-based copy is markdown SOURCE, so
+the two are different serialisations of one conversation and a character comparison fails on a
+CORRECT build -- the only way to make it pass would be to normalise until it stopped testing
+anything. The band is where the strength is, and it is two-sided for that reason: the lower bound
+refused truncation measured at 0.61 of the thread, the upper bound refused the substitution its
+first fix turned into, measured at 2.16. A copy that rewrote content while landing inside the band
+would not be caught, so `--mode behaviour` prints the band it is enforcing next to its claim and
+does not use the bare word "complete".
 
 The digest is **sidebar-blind and layout-blind**: run against a real sidebar-drag change it reported
 0 of 34 differing pairs, and so did its own null control. So a digest pass is not a statement that

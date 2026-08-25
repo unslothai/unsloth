@@ -150,11 +150,18 @@ QUICK = Scene(
             ("stop_generation", 20_000, 3_000),
             ("scroll_after", 23_500, 2_500),
             ("reasoning_toggle", 26_500, 4_500),
-            ("send_turn", 31_500, 4_000),
+            # 1,500 rather than 4,000, and the reason is the gap AFTER it rather than the cost of
+            # the send itself. `send_turn` is a sub-100 ms action; a 4,000 ms window to start in is
+            # not headroom, it is permission to begin the follow-up four seconds late without
+            # recording a miss. The drain runs from when the send actually fires, so every one of
+            # those four seconds comes off `message_menu`'s window: measured from the latest legal
+            # send, this film left 3,500 ms for a 4,562 ms drain. The fast film had the same shape
+            # and CI failed on it. See test_settled_actions_open_after_the_follow_up_drains.
+            ("send_turn", 31_500, 1_500),
             ("message_menu", 36_000, 3_000),
             ("copy_markdown", 39_500, 2_500),
             ("select_text", 42_500, 2_000),
-            ("send_turn", 45_000, 4_000),
+            ("send_turn", 45_000, 1_500),
             ("select_all_copy", 49_500, 6_000),
             ("composer_fill", 56_000, 2_500),
             ("model_change", 59_000, 2_500),
@@ -221,25 +228,40 @@ FAST = Scene(
             ("scroll_during_generation", 6_000, 1_200),
             ("stop_generation", 18_400, 3_000),
             ("scroll_after", 21_500, 1_200),
-            ("reasoning_toggle", 23_000, 3_500),
-            ("send_turn", 26_700, 1_500),
-            ("message_menu", 32_000, 800),
-            ("copy_markdown", 33_000, 600),
-            ("select_text", 33_800, 400),
-            ("send_turn", 34_400, 1_500),
-            ("select_all_copy", 39_500, 4_000),
-            ("composer_fill", 43_700, 600),
-            ("model_change", 44_500, 1_000),
-            ("settings", 45_700, 1_200),
-            ("image_upload", 47_100, 800),
+            # THE BUDGET IS SIZED FROM WHAT CI MEASURES, not from the null control's 2,250 ms.
+            # On the GitHub runner this action costs 4,415.9 ms and 4,434.4 ms on two consecutive
+            # jobs -- reaching the open state alone takes 2,898.8 ms there, which already exceeds
+            # the whole-action figure the 3,500 ms budget was derived from. At 3,500 it overran by
+            # 934 ms on every run, and an overrun here lands on `send_turn`, the one slot whose
+            # downstream gap is load-bearing. 5,000 ms covers the measured cost with room.
+            ("reasoning_toggle", 23_000, 5_000),
+            # MOVED OUT FROM UNDER `reasoning_toggle`, which now nominally ends at 28,000. A send
+            # slot that opens before the action before it can finish is a slot that starts late,
+            # and a send that starts late shortens the drain window of everything after it while
+            # reporting no miss of its own.
+            ("send_turn", 28_100, 1_500),
+            # THE GAP IS THE POINT, and it is measured from 29,600 -- the latest this film's send
+            # can fire -- not from 28,100. The follow-up drains in 4,562 ms nominal and 4,400 to
+            # 4,700 ms observed, so a window closing at 35,400 leaves about 1.1 s of real margin
+            # against the worst drain seen. The old packing left 38 ms, which is why CI failed on
+            # a runner no slower than the one that passed.
+            ("message_menu", 34_400, 1_000),
+            ("copy_markdown", 35_400, 600),
+            ("select_text", 36_200, 400),
+            ("send_turn", 36_800, 1_500),
+            ("select_all_copy", 41_900, 4_000),
+            ("composer_fill", 46_100, 600),
+            ("model_change", 46_900, 1_000),
+            ("settings", 48_100, 1_200),
+            ("image_upload", 49_500, 800),
             # thread_reopen 6.5 s and delete 2.5 s, not 5 s and 0.6 s. Measured at 100K the pair
             # costs about 3.2 s, but the ACTION overran its 5 s window and pushed the last slot: the
             # machine arrived at delete_message 834 ms after its 600 ms budget had already closed, so
             # on a 36 job sweep delete recorded NOT EXERCISED on the base arm of every null-control
             # cell. A last slot with no slack is a slot that measures nothing, and the film's own end
             # is the one place an overrun has nowhere to go.
-            ("thread_reopen", 48_100, 6_500),
-            ("delete_message", 54_800, 2_500),
+            ("thread_reopen", 50_500, 6_500),
+            ("delete_message", 57_200, 2_500),
         ]
     ),
 )

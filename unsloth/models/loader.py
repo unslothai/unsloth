@@ -37,12 +37,14 @@ from transformers import AutoConfig
 from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
 from .loader_utils import (
+    DEFAULT_DEVICE_MAP,
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
     _offline_quantize_to_fp8,
     _tag_model_with_fp8_torchao_config,
     get_model_name,
     prepare_device_map,
+    requested_device_map,
     _offline_aware_load,
     _resolve_checkpoint_tokenizer_name,
     _is_offline_related_error,
@@ -214,6 +216,21 @@ def _config_get(
     if isinstance(config, dict):
         return config.get(field_name, default)
     return getattr(config, field_name, default)
+
+
+def _loaded_skip_modules(model_config):
+    """The skip list the load actually used, for the synthetic config stamped after it.
+
+    Whatever ended up on the loaded model is the authority: a pre-quantized checkpoint
+    brings its own list and transformers prefers it over any runtime config, while
+    on-the-fly quantization gets the one Unsloth built. None (transformers picked the
+    output head itself) and [] (told to exclude nothing) are different instructions on
+    reload, so neither is normalized away.
+    """
+    return _config_get(
+        getattr(model_config, "quantization_config", None) or {},
+        "llm_int8_skip_modules",
+    )
 
 
 def _config_diff(config):
@@ -416,7 +433,9 @@ class FastLanguageModel(FastLlamaModel):
         load_in_16bit = False,  # 16bit LoRA
         full_finetuning = False,
         token = None,
-        device_map = "sequential",
+        device_map = DEFAULT_DEVICE_MAP,
+        # Planner hints for device_map = "unsloth"; see resolve_unsloth_device_map.
+        device_map_planner_kwargs = None,
         rope_scaling = None,
         fix_tokenizer = True,
         trust_remote_code = False,
@@ -478,9 +497,12 @@ class FastLanguageModel(FastLlamaModel):
         # In multi-GPU (torchrun), each rank must load the model on its own device
         # to avoid Accelerate device relocation errors with quantized weights.
         is_quantized = load_in_4bit or load_in_8bit or load_in_fp8
+        device_map = requested_device_map(device_map)
         if is_quantized and isinstance(device_map, str):
             distributed_device_map, is_dist = prepare_device_map()
             if is_dist:
+                # One whole model per rank; sharding one across the ranks' GPUs as well
+                # would have every rank fighting for the same cards.
                 device_map = distributed_device_map
 
         # @_offline_aware_load already forced offline when needed; delegations inherit it.
@@ -495,6 +517,7 @@ class FastLanguageModel(FastLlamaModel):
                 full_finetuning = full_finetuning,
                 token = token,
                 device_map = device_map,
+                device_map_planner_kwargs = device_map_planner_kwargs,
                 rope_scaling = rope_scaling,  # [TODO] No effect
                 fix_tokenizer = fix_tokenizer,  # [TODO] No effect
                 trust_remote_code = trust_remote_code,
@@ -626,9 +649,22 @@ class FastLanguageModel(FastLlamaModel):
         ):
             model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
         # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set
+        # Say so: dropping the flags in silence surfaces much later as an
+        # out-of-memory failure whose message never mentions quantization.
         if model_name.lower().endswith("-bf16") and (
             load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
         ):
+            # Only the plain flags are dropped; a user quantization_config stays
+            # in **kwargs and still quantizes, so stay quiet in that case.
+            if (load_in_4bit or load_in_8bit or load_in_fp8 != False) and kwargs.get(
+                "quantization_config", None
+            ) is None:
+                print(
+                    f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so the "
+                    f"requested 4bit/8bit/fp8 loading is disabled and the model will "
+                    f"load in 16bit. Point at the 4bit repo instead if that is not "
+                    f"what you wanted -- a 16bit load needs far more VRAM."
+                )
             load_in_4bit = False
             load_in_8bit = False
             load_in_fp8 = False
@@ -807,9 +843,22 @@ class FastLanguageModel(FastLlamaModel):
             ):
                 model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
             # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set
+            # Say so: dropping the flags in silence surfaces much later as an
+            # out-of-memory failure whose message never mentions quantization.
             if model_name.lower().endswith("-bf16") and (
                 load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
             ):
+                # Only the plain flags are dropped; a user quantization_config
+                # stays in **kwargs and still quantizes, so stay quiet then.
+                if (load_in_4bit or load_in_8bit or load_in_fp8 != False) and kwargs.get(
+                    "quantization_config", None
+                ) is None:
+                    print(
+                        f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so the "
+                        f"requested 4bit/8bit/fp8 loading is disabled and the model will "
+                        f"load in 16bit. Point at the 4bit repo instead if that is not "
+                        f"what you wanted -- a 16bit load needs far more VRAM."
+                    )
                 load_in_4bit = False
                 load_in_8bit = False
                 load_in_fp8 = False
@@ -914,6 +963,7 @@ class FastLanguageModel(FastLlamaModel):
                 full_finetuning = full_finetuning,
                 token = token,
                 device_map = device_map,
+                device_map_planner_kwargs = device_map_planner_kwargs,
                 rope_scaling = rope_scaling,  # [TODO] No effect
                 fix_tokenizer = fix_tokenizer,  # [TODO] No effect
                 trust_remote_code = trust_remote_code,
@@ -982,6 +1032,7 @@ class FastLanguageModel(FastLlamaModel):
             load_in_4bit = load_in_4bit_kwargs,
             token = token,
             device_map = device_map,
+            device_map_planner_kwargs = device_map_planner_kwargs,
             rope_scaling = rope_scaling,
             fix_tokenizer = fix_tokenizer,
             model_patcher = dispatch_model,
@@ -1039,7 +1090,9 @@ class FastLanguageModel(FastLlamaModel):
                         "bnb_4bit_use_double_quant": True,
                         "llm_int8_enable_fp32_cpu_offload": False,
                         "llm_int8_has_fp16_weight": False,
-                        "llm_int8_skip_modules": None,
+                        # Whatever the load really used. None here would describe a layout
+                        # that never existed, and saving it makes the adapter unreloadable.
+                        "llm_int8_skip_modules": _loaded_skip_modules(model.config),
                         "llm_int8_threshold": 6.0,
                         "load_in_4bit": True,
                         "load_in_8bit": False,
@@ -1173,7 +1226,9 @@ class FastModel(FastBaseModel):
         load_in_16bit = False,  # 16bit LoRA
         full_finetuning = False,
         token = None,
-        device_map = "sequential",
+        device_map = DEFAULT_DEVICE_MAP,
+        # Planner hints for device_map = "unsloth"; see resolve_unsloth_device_map.
+        device_map_planner_kwargs = None,
         rope_scaling = None,  # [TODO] No effect
         fix_tokenizer = True,  # [TODO] No effect
         trust_remote_code = False,
@@ -1331,9 +1386,12 @@ class FastModel(FastBaseModel):
         # In multi-GPU (torchrun), each rank must load the model on its own device
         # to avoid Accelerate device relocation errors with quantized weights.
         is_quantized = load_in_4bit or load_in_8bit or load_in_fp8
+        device_map = requested_device_map(device_map)
         if is_quantized and isinstance(device_map, str):
             distributed_device_map, is_dist = prepare_device_map()
             if is_dist:
+                # One whole model per rank; sharding one across the ranks' GPUs as well
+                # would have every rank fighting for the same cards.
                 device_map = distributed_device_map
 
         if fast_inference:
@@ -1390,9 +1448,22 @@ class FastModel(FastBaseModel):
         ):
             model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
         # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set
+        # Say so: dropping the flags in silence surfaces much later as an
+        # out-of-memory failure whose message never mentions quantization.
         if model_name.lower().endswith("-bf16") and (
             load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
         ):
+            # Only the plain flags are dropped; a user quantization_config stays
+            # in **kwargs and still quantizes, so stay quiet in that case.
+            if (load_in_4bit or load_in_8bit or load_in_fp8 != False) and kwargs.get(
+                "quantization_config", None
+            ) is None:
+                print(
+                    f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so the "
+                    f"requested 4bit/8bit/fp8 loading is disabled and the model will "
+                    f"load in 16bit. Point at the 4bit repo instead if that is not "
+                    f"what you wanted -- a 16bit load needs far more VRAM."
+                )
             load_in_4bit = False
             load_in_8bit = False
             load_in_fp8 = False
@@ -1453,6 +1524,7 @@ class FastModel(FastBaseModel):
                 full_finetuning = full_finetuning,
                 token = token,
                 device_map = device_map,
+                device_map_planner_kwargs = device_map_planner_kwargs,
                 trust_remote_code = trust_remote_code,
                 revision = base_revision,
                 **kwargs,
@@ -1775,9 +1847,22 @@ class FastModel(FastBaseModel):
             ):
                 model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
             # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set
+            # Say so: dropping the flags in silence surfaces much later as an
+            # out-of-memory failure whose message never mentions quantization.
             if model_name.lower().endswith("-bf16") and (
                 load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
             ):
+                # Only the plain flags are dropped; a user quantization_config
+                # stays in **kwargs and still quantizes, so stay quiet then.
+                if (load_in_4bit or load_in_8bit or load_in_fp8 != False) and kwargs.get(
+                    "quantization_config", None
+                ) is None:
+                    print(
+                        f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so the "
+                        f"requested 4bit/8bit/fp8 loading is disabled and the model will "
+                        f"load in 16bit. Point at the 4bit repo instead if that is not "
+                        f"what you wanted -- a 16bit load needs far more VRAM."
+                    )
                 load_in_4bit = False
                 load_in_8bit = False
                 load_in_fp8 = False
@@ -1891,6 +1976,7 @@ class FastModel(FastBaseModel):
         is_vlm = any(x.endswith("ForConditionalGeneration") for x in architectures)
         is_vlm = is_vlm or hasattr(model_config, "vision_config")
         load_text_only = text_only and auto_model is None
+        text_only_decoder = False
         if load_text_only:
             if hasattr(model_config, "vision_config"):
                 text_config = _get_text_only_config(model_config, old_model_name)
@@ -1911,6 +1997,9 @@ class FastModel(FastBaseModel):
                     _apply_text_only_key_mapping(kwargs, model_config, text_config)
                     model_config = text_config
                     is_vlm = False
+                    # model_config is no longer the repo's config, so anything rebuilding
+                    # it from model_name (the device-map planner) sees a different model.
+                    text_only_decoder = True
             else:
                 is_vlm = False
         # If num_labels is set, use AutoModelForSequenceClassification
@@ -1969,6 +2058,7 @@ class FastModel(FastBaseModel):
             full_finetuning = full_finetuning,
             token = token,
             device_map = device_map,
+            device_map_planner_kwargs = device_map_planner_kwargs,
             trust_remote_code = trust_remote_code,
             revision = model_revision,
             tokenizer_revision = _revision_for_tokenizer_repo(
@@ -1993,6 +2083,7 @@ class FastModel(FastBaseModel):
             disable_log_stats = disable_log_stats,
             load_in_fp8 = load_in_fp8,
             text_only = load_text_only,
+            text_only_decoder = text_only_decoder,
             *args,
             **kwargs,
         )
@@ -2034,7 +2125,9 @@ class FastModel(FastBaseModel):
                         "bnb_4bit_use_double_quant": True,
                         "llm_int8_enable_fp32_cpu_offload": False,
                         "llm_int8_has_fp16_weight": False,
-                        "llm_int8_skip_modules": None,
+                        # Whatever the load really used. None here would describe a layout
+                        # that never existed, and saving it makes the adapter unreloadable.
+                        "llm_int8_skip_modules": _loaded_skip_modules(model.config),
                         "llm_int8_threshold": 6.0,
                         "load_in_4bit": True,
                         "load_in_8bit": False,

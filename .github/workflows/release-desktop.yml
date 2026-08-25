@@ -518,6 +518,21 @@ jobs:
     name: Build ${{ matrix.label }}
     needs: prepare-version
     runs-on: ${{ matrix.platform }}
+    # Every signing secret in this workflow -- the Apple certificate and its
+    # notarization credentials, the Azure Trusted Signing set, and the Tauri
+    # updater private key -- is read by this job and no other. Naming an
+    # environment here is what makes those thirteen secrets gateable: without
+    # it there is no place to hang a required reviewer, so anyone who can
+    # dispatch this workflow can sign a release under our identity.
+    #
+    # This is inert until protection rules exist on the environment. GitHub
+    # creates a referenced-but-absent environment on first run with no rules
+    # and no branch policy, and repository secrets keep resolving inside a job
+    # that names an environment, so adding this line alone changes nothing
+    # about how a release runs. Add required reviewers in repo settings to
+    # actually close the gap; one approval releases all three matrix legs,
+    # since pending deployments are approved per (run, environment).
+    environment: release-signing
     # 6.9-20.9 min observed across platforms and cache states.
     timeout-minutes: 60
 
@@ -809,7 +824,12 @@ jobs:
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
         run: |
-          echo $APPLE_CERTIFICATE | base64 --decode > certificate.p12
+          # Unquoted, this is word-split and glob-expanded before base64 sees
+          # it, and `echo` appends a newline. Base64 tolerates all three today,
+          # which is why it has worked; a re-encoded or line-wrapped secret is
+          # where it stops being tolerable. printf '%s' with quotes passes the
+          # secret through byte for byte.
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
           security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
           security default-keychain -s build.keychain
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
