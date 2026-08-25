@@ -3944,7 +3944,6 @@ def _repo_root_has_mmproj(repo_info) -> bool:
     in by hand puts it (#9286). Not part of any revision, so _repo_has_mmproj cannot
     see it."""
     from utils.models.model_config import _hf_repo_root_has_mmproj
-
     return _hf_repo_root_has_mmproj(Path(repo_info.repo_path))
 
 

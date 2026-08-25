@@ -6959,7 +6959,6 @@ def _projector_survives_vision_off(mmproj_path: str) -> bool:
     """
     try:
         from utils.models.gguf_metadata import mmproj_accepts_image
-
         return not mmproj_accepts_image(str(mmproj_path))
     except Exception as exc:
         logger.debug(f"mmproj capability read failed: {exc}")
