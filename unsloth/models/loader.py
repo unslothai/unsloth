@@ -2040,8 +2040,7 @@ class FastModel(FastBaseModel):
             # request is left alone, since it was already this caller's to get wrong.
             offload_embedding = (
                 False
-                if resize_model_vocab is not None
-                and offload_embedding is OFFLOAD_EMBEDDING_AUTO
+                if resize_model_vocab is not None and offload_embedding is OFFLOAD_EMBEDDING_AUTO
                 else offload_embedding
             ),
             float32_mixed_precision = float32_mixed_precision,
