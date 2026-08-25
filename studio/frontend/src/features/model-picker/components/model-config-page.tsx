@@ -1089,7 +1089,7 @@ function MemoryEstimateRow({
     : estimate.drafterKvUnsized
       ? {
           tone: "warn",
-          text: "The draft model is a repository, not a local file, so its cache can't be sized from here. Its weights are counted; its cache, which grows with context like the main one, is not.",
+          text: "Part of this load is a file the server will fetch rather than one on this disk, so it can't be sized from here. The figures above are a floor.",
         }
       : estimate.moeOffloadUnmodelled
         ? {

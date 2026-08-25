@@ -1606,9 +1606,9 @@ class TestDrafterEdgeCases:
 
         assert _extra_args_draft_cache_types(["--cache-type-k-draft", "f32"]) == ("f32", None)
         assert _extra_args_draft_cache_types(["--cache-type-v-draft", "q8_0"]) == (None, "q8_0")
-        source = inspect.getsource(ri._gguf_memory_breakdown)
-        assert "_extra_args_draft_cache_types(extras)" in source
-        assert "draft_cache_type_k = draft_k or spec_draft_cache_type" in source
+        # Asserted on the source before, which meant it could only ever restate the
+        # implementation. The precedence itself is checked by behaviour below, where a
+        # wrong order changes the number instead of the spelling.
 
 
 class TestSpeculativeModeTerms:
@@ -2609,6 +2609,33 @@ class TestTheEmbeddedHeadIsChargedOnlyWhenItEngages:
         )
         assert out.drafter_runtime_bytes == 0
 
+    @pytest.mark.parametrize("mode", [None, "mtp"])
+    def test_a_binary_that_cannot_run_mtp_is_not_charged_for_it(self, head, monkeypatch, mode):
+        """No mtp_token means --spec-default launches, whatever the mode asked for.
+
+        Unlike the size and MLA drops this is a hard incompatibility, so it applies to
+        a forced request too.
+        """
+        monkeypatch.setattr(
+            ri.LlamaCppBackend, "probe_server_capabilities",
+            classmethod(lambda cls, *a, **k: {"found": True, "mtp_token": None}),
+        )
+        out = ri._gguf_memory_breakdown(
+            self._config(head, "org/Qwen3-8B"), head, n_ctx = 131072, speculative_type = mode
+        )
+        assert out.drafter_runtime_bytes == 0
+
+    def test_an_unanswerable_probe_keeps_the_charge(self, head, monkeypatch):
+        """A probe that could not run is not evidence the build lacks the flag."""
+        monkeypatch.setattr(
+            ri.LlamaCppBackend, "probe_server_capabilities",
+            classmethod(lambda cls, *a, **k: {"found": False, "mtp_token": None}),
+        )
+        out = ri._gguf_memory_breakdown(
+            self._config(head, "org/Qwen3-8B"), head, n_ctx = 131072
+        )
+        assert out.drafter_runtime_bytes > 0
+
     def test_extras_asking_for_another_mode_are_left_alone(self, head):
         """Studio emits no spec block of its own once --spec-type is in the extras."""
         out = ri._gguf_memory_breakdown(
@@ -2704,3 +2731,196 @@ class TestTheCpuOnlyCheckIsActuallyReachable:
         assert out is not None
         assert out.gpu_bytes == 0
         assert out.total_bytes > 0
+
+
+class TestDraftCacheTypePrecedence:
+    """extras beat the panel field beat the inherited environment.
+
+    That is launch order: the field goes on argv, argv beats the LLAMA_ARG_* twin, and
+    the extras are appended after argv and beat both. `_extra_args_draft_cache_types`
+    falls back to the env by DEFAULT, so asking it once and then `or`-ing the field on
+    gave the environment precedence over the control -- an inherited q4 priced against
+    an f16 the child would really allocate, undercounting a context-scaled cache.
+    """
+
+    @pytest.fixture
+    def spec(self, tmp_path, monkeypatch):
+        target = _write_gguf(
+            tmp_path, "qwen3", {**_GQA_FIELDS, "context_length": 262144}, name = "t.gguf"
+        )
+        drafter = tmp_path / "mtp.gguf"
+        drafter.write_bytes(Path(target).read_bytes())
+        drafter_bytes = drafter.stat().st_size
+        # Varies with the draft pin, like the real one: the breakdown recovers the
+        # drafter's size by re-pricing with the pin flipped, so a constant stub charges
+        # no drafter at all and every assertion below would compare 0 with 0.
+        def _files(cfg, *, llama_extra_args = None, **kw):
+            pinned = _draft_on_cpu(list(llama_extra_args or ()))
+            return 1.0 + (0.0 if pinned else drafter_bytes / 1024**3)
+
+        monkeypatch.setattr(ri, "_gguf_resident_file_gb", _files)
+        return target, SimpleNamespace(
+            identifier = "org/Qwen3-8B", gguf_file = target, is_gguf = True, gguf_variant = None,
+            gguf_mmproj_file = None, gguf_mtp_file = str(drafter),
+            gguf_dspark_file = None, gguf_dflash_file = None,
+        )
+
+    def _bytes(self, spec, monkeypatch, *, env = None, field = None, extras = None):
+        target, config = spec
+        for key in ("LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K", "LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V"):
+            monkeypatch.delenv(key, raising = False)
+        if env:
+            monkeypatch.setenv("LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K", env)
+            monkeypatch.setenv("LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V", env)
+        out = ri._gguf_memory_breakdown(
+            config, target, n_ctx = 131072,
+            spec_draft_cache_type = field,
+            llama_extra_args = extras,
+        )
+        assert out is not None
+        return out.drafter_runtime_bytes
+
+    def test_the_panel_field_beats_an_inherited_value(self, spec, monkeypatch):
+        # q4_0 is a quarter of f16, so the wrong precedence is unmissable.
+        inherited_only = self._bytes(spec, monkeypatch, env = "q4_0")
+        field_wins = self._bytes(spec, monkeypatch, env = "q4_0", field = "f16")
+        assert field_wins > inherited_only
+
+    def test_the_inherited_value_is_used_when_the_field_is_blank(self, spec, monkeypatch):
+        plain = self._bytes(spec, monkeypatch)
+        inherited = self._bytes(spec, monkeypatch, env = "q4_0")
+        assert inherited < plain
+
+    def test_the_extras_beat_both(self, spec, monkeypatch):
+        field_only = self._bytes(spec, monkeypatch, env = "q4_0", field = "f16")
+        extras_win = self._bytes(
+            spec, monkeypatch, env = "q4_0", field = "f16",
+            extras = ["--cache-type-k-draft", "q4_0", "--cache-type-v-draft", "q4_0"],
+        )
+        assert extras_win < field_only
+
+
+class TestTheTensorSplitLatchesAreHonoured:
+    """load_model consults two in-process latches before it plans; so must the price.
+
+    Both silently turn the launch into a layer split, and the two shapes cost different
+    amounts: tensor replicates a flat buffer per device, a layer split multiplies the
+    context-linear term instead. On two cards that is gigabytes apart, which is enough
+    to move the verdict, so pricing tensor after a latch is set is a wrong number for a
+    launch that will not happen.
+    """
+
+    @pytest.fixture
+    def two_card(self, tmp_path, monkeypatch):
+        gguf = _write_gguf(tmp_path, "qwen3", {**_GQA_FIELDS, "context_length": 262144})
+        config = SimpleNamespace(
+            identifier = "local/tensor", gguf_file = gguf, is_gguf = True, gguf_variant = None,
+            gguf_mmproj_file = None, gguf_mtp_file = None,
+            gguf_dspark_file = None, gguf_dflash_file = None,
+        )
+        monkeypatch.setattr(
+            ri.LlamaCppBackend, "_find_llama_server_binary",
+            staticmethod(lambda **kw: "/opt/llama/llama-server"),
+        )
+        return gguf, config
+
+    def _priced(self, two_card, **kw):
+        gguf, config = two_card
+        return ri._gguf_memory_breakdown(
+            config, gguf, n_ctx = 32768, tensor_parallel = True, n_devices = 2,
+            tensor_split_possible = True, **kw
+        )
+
+    def test_a_binary_that_refused_a_quantized_tensor_cache_is_priced_as_layer(
+        self, two_card, monkeypatch
+    ):
+        as_tensor = self._priced(two_card, cache_type_kv = "q4_0")
+        monkeypatch.setattr(
+            ri.LlamaCppBackend, "_tensor_quant_kv_unsupported_binary",
+            classmethod(lambda cls, *a, **k: True),
+        )
+        downgraded = self._priced(two_card, cache_type_kv = "q4_0")
+        assert downgraded.compute_bytes != as_tensor.compute_bytes
+
+    def test_a_model_that_aborted_on_tensor_this_session_is_priced_as_layer(
+        self, two_card, monkeypatch
+    ):
+        as_tensor = self._priced(two_card, cache_type_kv = "f16")
+        monkeypatch.setattr(
+            ri.LlamaCppBackend, "_tensor_split_aborts",
+            classmethod(lambda cls, *a, **k: True),
+        )
+        downgraded = self._priced(two_card, cache_type_kv = "f16")
+        assert downgraded.compute_bytes != as_tensor.compute_bytes
+
+    def test_no_latch_leaves_tensor_pricing_alone(self, two_card, monkeypatch):
+        """The guard against the check firing on every load."""
+        monkeypatch.setattr(
+            ri.LlamaCppBackend, "_tensor_quant_kv_unsupported_binary",
+            classmethod(lambda cls, *a, **k: False),
+        )
+        monkeypatch.setattr(
+            ri.LlamaCppBackend, "_tensor_split_aborts",
+            classmethod(lambda cls, *a, **k: False),
+        )
+        assert ri._tensor_latches_allow_a_split(
+            two_card[0], two_card[1], "f16", None
+        ) is True
+
+    def test_an_unresolvable_binary_fails_open(self, two_card, monkeypatch):
+        monkeypatch.setattr(
+            ri.LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda **kw: None)
+        )
+        assert ri._tensor_latches_allow_a_split(
+            two_card[0], two_card[1], "f16", None
+        ) is True
+
+
+class TestInheritedRemoteFilesAreMarkedUnsized:
+    """A file the child fetches, that this route may not fetch to weigh, is a floor.
+
+    Both arrive through the environment and both are preserved for the launch:
+    LLAMA_ARG_SPEC_DRAFT_HF_REPO (kept by _child_spec_env once the extras own the spec
+    block) and LLAMA_ARG_MMPROJ_URL. Sizing either needs a network call this route is
+    documented not to make, so the honest answer is a marked lower bound rather than a
+    silently missing multi-gigabyte file.
+    """
+
+    @pytest.fixture
+    def plain(self, tmp_path, monkeypatch):
+        for key in (
+            "LLAMA_ARG_SPEC_DRAFT_HF_REPO", "LLAMA_ARG_HFD_REPO", "LLAMA_ARG_MMPROJ_URL",
+        ):
+            monkeypatch.delenv(key, raising = False)
+        gguf = _write_gguf(tmp_path, "qwen3", {**_GQA_FIELDS, "context_length": 262144})
+        return gguf, SimpleNamespace(
+            identifier = "local/plain", gguf_file = gguf, is_gguf = True, gguf_variant = None,
+            gguf_mmproj_file = None, gguf_mtp_file = None,
+            gguf_dspark_file = None, gguf_dflash_file = None,
+        )
+
+    def test_nothing_inherited_is_not_marked(self, plain):
+        gguf, config = plain
+        assert ri._gguf_memory_breakdown(config, gguf, n_ctx = 8192).drafter_kv_unsized is False
+
+    @pytest.mark.parametrize("key", ["LLAMA_ARG_SPEC_DRAFT_HF_REPO", "LLAMA_ARG_HFD_REPO"])
+    def test_an_inherited_remote_drafter_repo_is_marked(self, plain, monkeypatch, key):
+        gguf, config = plain
+        monkeypatch.setenv(key, "org/drafter-GGUF")
+        out = ri._gguf_memory_breakdown(
+            config, gguf, n_ctx = 8192, llama_extra_args = ["--spec-type", "draft-mtp"]
+        )
+        assert out.drafter_kv_unsized is True
+        # Still an answer, not a refusal: a floor beats a blank row.
+        assert out.total_bytes > 0
+
+    def test_an_inherited_projector_url_is_marked(self, plain, monkeypatch):
+        gguf, config = plain
+        monkeypatch.setenv("LLAMA_ARG_MMPROJ_URL", "https://example.invalid/mmproj.gguf")
+        assert ri._gguf_memory_breakdown(config, gguf, n_ctx = 8192).drafter_kv_unsized is True
+
+    def test_a_projector_url_is_irrelevant_with_vision_off(self, plain, monkeypatch):
+        gguf, config = plain
+        monkeypatch.setenv("LLAMA_ARG_MMPROJ_URL", "https://example.invalid/mmproj.gguf")
+        out = ri._gguf_memory_breakdown(config, gguf, n_ctx = 8192, disable_vision = True)
+        assert out.drafter_kv_unsized is False

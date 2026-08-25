@@ -8675,6 +8675,32 @@ def _inherited_drafter_bytes(extras: Optional[list[str]]) -> int:
         return 0
 
 
+def _inherited_remote_files_unsized(extras: Optional[list[str]], disable_vision: bool) -> bool:
+    """Whether the child inherits a file it will fetch and this cannot weigh.
+
+    Two of them, and both are real launch inputs the environment carries through:
+
+    * ``LLAMA_ARG_SPEC_DRAFT_HF_REPO`` (or the legacy ``LLAMA_ARG_HFD_REPO``), which
+      ``_child_spec_env`` preserves once the extras own the spec block. llama-server
+      downloads that drafter and gives it a context-sized cache;
+    * ``LLAMA_ARG_MMPROJ_URL``, which llama.cpp fetches and uses as the projector even
+      when Studio resolved a local one.
+
+    Neither can be sized from here without a network call, which this route is
+    documented not to make. So the total is a floor and says so, rather than quietly
+    omitting a multi-gigabyte file.
+    """
+    from core.inference.llama_cpp import _child_spec_env
+
+    spec_env = _child_spec_env(extras)
+    for key in ("LLAMA_ARG_SPEC_DRAFT_HF_REPO", "LLAMA_ARG_HFD_REPO"):
+        if (spec_env.get(key) or "").strip():
+            return True
+    if not disable_vision and (os.environ.get("LLAMA_ARG_MMPROJ_URL") or "").strip():
+        return True
+    return False
+
+
 def _build_default_spec_draft_n_max(extras: Optional[list[str]] = None) -> int:
     """The draft depth a build runs on its own, for extras that own the spec block.
 
@@ -8846,6 +8872,18 @@ def _embedded_mtp_engages(probe, config, speculative_type, extras) -> bool:
     mode = _canonicalize_spec_mode(speculative_type) or "auto"
     if mode not in ("auto", "mtp", "mtp+ngram"):
         return False
+    # A build that advertises no mtp_token cannot run MTP at all: the flags builder
+    # emits --spec-default and launches without it, whatever the mode says. This one IS
+    # a hard incompatibility, so it applies to a forced request too. Same rule as the
+    # other capability gates here -- only a probe that RAN and lacks it drops the term,
+    # since an unanswerable probe must not silently stop charging for the allocation.
+    try:
+        caps = LlamaCppBackend.probe_server_capabilities()
+        if caps.get("found") and not caps.get("mtp_token"):
+            return False
+    except Exception as exc:
+        logger.debug("MTP capability probe failed while pricing the draft head: %s", exc)
+
     if mode != "auto":
         # Both remaining drops are Auto's judgement, not a hard incompatibility. Forced
         # MTP on a sub-3B model logs "Engaging anyway (user override)" and emits, and
@@ -8858,6 +8896,39 @@ def _embedded_mtp_engages(probe, config, speculative_type, extras) -> bool:
     if getattr(probe, "_kv_lora_rank", None) is not None and not _mla_mtp_auto_enabled():
         return False
     return True
+
+
+def _tensor_latches_allow_a_split(
+    gguf_path: str,
+    config: ModelConfig,
+    cache_type_kv: Optional[str],
+    llama_extra_args: Optional[list[str]],
+) -> bool:
+    """Whether this process has already learned that a tensor split will not happen.
+
+    ``load_model`` checks two in-process latches before it plans, and both silently
+    turn the launch into a layer split: a binary that refused a quantized KV cache
+    under ``--split-mode tensor``, and a (binary, model, cache pair) that aborted on
+    one earlier this session. Pricing tensor after either has been set charges
+    per-device flat buffers for a launch that will not use them.
+
+    Fail-open: an unresolvable binary or an unreadable latch answers "allowed", which
+    is what this priced before the check existed.
+    """
+    from core.inference.llama_cpp import _planned_main_cache_types
+
+    try:
+        binary = LlamaCppBackend._find_llama_server_binary()
+        if not binary:
+            return True
+        pair = _planned_main_cache_types(cache_type_kv, llama_extra_args)
+        model = getattr(config, "identifier", None) or gguf_path
+        if LlamaCppBackend._tensor_quant_kv_unsupported_binary(binary, pair):
+            return False
+        return not LlamaCppBackend._tensor_split_aborts(binary, model, pair)
+    except Exception as exc:
+        logger.debug("Tensor-split latch lookup failed while pricing: %s", exc)
+        return True
 
 
 def _gguf_memory_breakdown(
@@ -8926,6 +8997,15 @@ def _gguf_memory_breakdown(
     tensor_parallel = (
         _effective_tensor_parallel(llama_extra_args, tensor_parallel)
         and tensor_split_possible
+        # And the two latches load_model consults before it plans: a build that already
+        # refused a quantized KV cache under a tensor split, and a (build, model, cache
+        # pair) that aborted on one this session. Both send the launch straight to a
+        # layer split, whose context buffers are multiplied per device where tensor's
+        # flat buffers are replicated -- gigabytes apart on two cards, and enough to
+        # move the verdict. Asked of the same classmethods rather than re-derived.
+        and _tensor_latches_allow_a_split(
+            gguf_path, config, cache_type_kv, llama_extra_args
+        )
         # The extras are already stripped of -ngl here and the count already carries it,
         # so the override lookup inside is a no-op and the field is what decides.
         and _manual_keeps_tensor_split(gpu_memory_mode, gpu_layers, llama_extra_args)
@@ -9051,7 +9131,28 @@ def _gguf_memory_breakdown(
         # K and V are independent overrides, and extras beat the panel field the same
         # way they do at launch; passing the field for both priced a cache the load
         # will not allocate.
-        draft_k, draft_v = _extra_args_draft_cache_types(extras)
+        # Launch order, which is not the helper's default order. The helper falls back
+        # to LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K/_V when the extras are silent, so asking
+        # it once and then `or`-ing the panel field gave the ENVIRONMENT precedence
+        # over the control. At launch the field goes on argv, argv beats the env twin,
+        # and the extras are appended after argv and beat both. Asked twice to get
+        # that: extras alone, then the env alone.
+        draft_k, draft_v = _extra_args_draft_cache_types(extras, env = {})
+        env_draft_k, env_draft_v = _extra_args_draft_cache_types([], env = os.environ)
+        # ... and the field only reaches argv on a build that has the flag. Where it
+        # does not, Studio emits nothing and the inherited value is what the child
+        # uses. Same default-charge-on-an-unanswerable-probe rule as elsewhere here:
+        # only a probe that RAN and lacks the flag drops the field.
+        _managed_draft_cache = True
+        try:
+            _dc_caps = LlamaCppBackend.probe_server_capabilities()
+            if _dc_caps.get("found") and not (
+                _dc_caps.get("spec_draft_cache_k_flag") or _dc_caps.get("spec_draft_cache_v_flag")
+            ):
+                _managed_draft_cache = False
+        except Exception as _dc_exc:
+            logger.debug("draft cache-type capability probe failed: %s", _dc_exc)
+        _field_draft_cache = spec_draft_cache_type if _managed_draft_cache else None
         draft_n_max = _estimate_draft_n_max(
             config, drafter_path, requested = spec_draft_n_max, extras = extras
         )
@@ -9080,8 +9181,8 @@ def _gguf_memory_breakdown(
             probe._estimate_mtp_overhead_bytes(
                 runtime.n_ctx,
                 spec_draft_n_max = draft_n_max,
-                draft_cache_type_k = draft_k or spec_draft_cache_type,
-                draft_cache_type_v = draft_v or spec_draft_cache_type,
+                draft_cache_type_k = draft_k or _field_draft_cache or env_draft_k,
+                draft_cache_type_v = draft_v or _field_draft_cache or env_draft_v,
                 drafter_path = drafter_path,
                 # The file is already in weights_bytes; this term is runtime only.
                 draft_weights_bytes = 0,
@@ -9139,7 +9240,13 @@ def _gguf_memory_breakdown(
     # Charged bytes with no local file behind them: a --spec-draft-hf repository. Its
     # weights are in the files term, but its cache grows with context like any other
     # and cannot be read off a header that is not here, so the total is a floor.
-    drafter_kv_unsized = bool((host_drafter_bytes or gpu_drafter_bytes) and not charged_drafter)
+    drafter_kv_unsized = bool(
+        ((host_drafter_bytes or gpu_drafter_bytes) and not charged_drafter)
+        # An inherited remote drafter repo or projector URL is a file the child fetches
+        # and this cannot weigh without leaving the machine. Same marker: the total is
+        # a floor, and saying so beats omitting gigabytes in silence.
+        or _inherited_remote_files_unsized(extras, disable_vision)
+    )
     runtime_bytes = (
         runtime.kv_bytes + runtime.compute_bytes + drafter_runtime_bytes + projector_runtime_bytes
     )
