@@ -727,12 +727,12 @@ def test_every_leaf_planner_call_forwards_the_budget_and_the_hub(name):
         if getattr(node.func, "id", None) != "resolve_unsloth_device_map":
             continue
         rendered = ast.unparse(node)
-        assert "planner_kwargs_with_max_memory" in rendered, (
-            f"{name}:{node.lineno} plans without the caller's max_memory"
-        )
-        assert "planner_hub_kwargs" in rendered, (
-            f"{name}:{node.lineno} plans without the caller's cache_dir/local_files_only"
-        )
+        assert (
+            "planner_kwargs_with_max_memory" in rendered
+        ), f"{name}:{node.lineno} plans without the caller's max_memory"
+        assert (
+            "planner_hub_kwargs" in rendered
+        ), f"{name}:{node.lineno} plans without the caller's cache_dir/local_files_only"
         return
     raise AssertionError(f"no resolve_unsloth_device_map call in {name}")
 

@@ -2678,9 +2678,7 @@ class FastLlamaModel:
             requested_device_map(device_map),
             model_name,
             fast_inference = fast_inference,
-            planner_kwargs = planner_kwargs_with_max_memory(
-                device_map_planner_kwargs, kwargs
-            ),
+            planner_kwargs = planner_kwargs_with_max_memory(device_map_planner_kwargs, kwargs),
             skip_reason = _planner_skip_reason,
             token = token,
             trust_remote_code = trust_remote_code,
