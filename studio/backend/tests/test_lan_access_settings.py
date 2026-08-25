@@ -113,6 +113,125 @@ def test_configure_reads_launch_ownership_from_the_bind_host(bind_host, launch_m
     assert state.lan_access_ready is False
 
 
+def _transport_request(
+    *,
+    server = ("192.168.1.24", 8888),
+    client = ("192.168.1.90", 54321),
+    state = None,
+    headers = None,
+):
+    return Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/v1/models",
+            "root_path": "",
+            "query_string": b"",
+            "headers": [
+                (name.lower().encode(), value.encode()) for name, value in (headers or {}).items()
+            ],
+            "server": server,
+            "client": client,
+            "app": SimpleNamespace(state = state or SimpleNamespace()),
+        }
+    )
+
+
+def _listener(
+    address = "192.168.1.24",
+    *,
+    running = True,
+    port = 8888,
+):
+    return {"running": running, "port": port, "addresses": [address]}
+
+
+@pytest.mark.parametrize(
+    "server,client,listener,expected",
+    [
+        (("192.168.1.24", 8888), ("10.0.0.90", 54321), _listener(), True),
+        (("fd00::24", 8888), ("fe80::90", 54321), _listener("fd00::24"), True),
+        (("::ffff:192.168.1.24", 8888), ("::ffff:192.168.1.90", 54321), _listener(), True),
+        (("192.168.1.24", 8889), ("192.168.1.90", 54321), _listener(), False),
+        (("192.168.1.25", 8888), ("192.168.1.90", 54321), _listener(), False),
+        (("192.168.1.24", 8888), ("192.168.1.90", 54321), _listener(running = False), False),
+        (("64.227.100.5", 8888), ("192.168.1.90", 54321), _listener("64.227.100.5"), False),
+        (("192.168.1.24", 8888), ("8.8.8.8", 54321), _listener(), False),
+        (("192.168.1.24", 8888), ("127.0.0.1", 54321), _listener(), False),
+        (("127.0.0.1", 8888), ("192.168.1.90", 54321), _listener("127.0.0.1"), False),
+        (("192.168.1.24", 8888), None, None, False),
+    ],
+)
+def test_private_lan_live_listener_matrix(monkeypatch, server, client, listener, expected):
+    monkeypatch.setattr(lan_access, "lan_listener_status", lambda: listener)
+    assert (
+        lan_settings.request_on_lan_access(_transport_request(server = server, client = client))
+        is expected
+    )
+
+
+def test_private_lan_ignores_forwarding_headers(monkeypatch):
+    monkeypatch.setattr(lan_access, "lan_listener_status", lambda: _listener())
+    headers = dict.fromkeys(("host", "forwarded", "x-forwarded-for", "origin"), "192.168.1.90")
+    assert not lan_settings.request_on_lan_access(
+        _transport_request(
+            server = ("127.0.0.1", 8888),
+            client = ("127.0.0.1", 54321),
+            headers = headers,
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "bind_host,resolved,server,secure,is_colab,expected",
+    [
+        ("192.168.1.24", None, "192.168.1.24", False, False, True),
+        ("0.0.0.0", None, "192.168.1.24", False, False, True),
+        ("::", None, "fd00::24", False, False, True),
+        ("studio.lan", "192.168.1.24", "192.168.1.24", False, False, True),
+        ("studio.lan", "127.0.0.1", "127.0.0.1", False, False, False),
+        ("studio.lan", "64.227.100.5", "64.227.100.5", False, False, False),
+        ("studio.lan", "error", "192.168.1.24", False, False, False),
+        ("192.168.1.24", None, "192.168.1.24", True, False, False),
+        ("192.168.1.24", None, "192.168.1.24", False, True, False),
+    ],
+)
+def test_private_lan_launch_managed_matrix(
+    monkeypatch, bind_host, resolved, server, secure, is_colab, expected
+):
+    def resolve(_host, port, **_kwargs):
+        if resolved == "error":
+            raise OSError("dns unavailable")
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (resolved, port))]
+
+    if resolved is not None:
+        monkeypatch.setattr(socket, "getaddrinfo", resolve)
+    monkeypatch.setattr(
+        lan_access,
+        "lan_listener_status",
+        lambda: {"running": False, "port": None, "addresses": []},
+    )
+    state = SimpleNamespace()
+    lan_settings.configure_lan_access(
+        state,
+        port = 8888,
+        bind_host = bind_host,
+        secure = secure,
+        is_colab = is_colab,
+        frontend_served = True,
+    )
+    assert (
+        lan_settings.request_on_lan_access(
+            _transport_request(
+                server = (server, 8888),
+                client = ("192.168.1.90", 54321),
+                state = state,
+            )
+        )
+        is expected
+    )
+
+
 # ── status ──
 
 
@@ -122,6 +241,22 @@ def test_a_loopback_launch_offers_a_startable_off_state():
     assert status["block_reason"] is None
     assert status["can_start"] is True and status["can_stop"] is False
     assert status["urls"] == []
+    assert status["keyless_lan_eligible"] is False
+
+
+def test_lan_status_uses_one_fail_closed_keyless_state(monkeypatch):
+    import utils.keyless_api_access as keyless
+
+    monkeypatch.setattr(keyless, "get_keyless_api_access_settings", lambda: ("inference", True))
+    status = lan_settings.lan_access_status(_app())
+    assert (status["keyless_scope"], status["keyless_tools"]) == ("inference", True)
+
+    def unreadable():
+        raise OSError("settings unavailable")
+
+    monkeypatch.setattr(keyless, "get_keyless_api_access_settings", unreadable)
+    status = lan_settings.lan_access_status(_app())
+    assert (status["keyless_scope"], status["keyless_tools"]) == ("off", False)
 
 
 @pytest.mark.parametrize(
@@ -150,6 +285,7 @@ def test_a_specific_host_launch_reports_the_address_it_was_given():
     status = lan_settings.lan_access_status(_app(lan_access_launch_managed = True))
     assert status["state"] == "online" and status["managed_by"] == "launch"
     assert status["urls"] == ["http://192.168.1.24:8888"]
+    assert status["keyless_lan_eligible"] is True
     assert status["can_stop"] is False
 
 
@@ -189,6 +325,7 @@ def test_a_publicly_routable_bind_is_flagged_so_the_ui_can_warn(monkeypatch):
     status = lan_settings.lan_access_status(_app())
     assert status["urls"] == ["http://192.168.1.24:8888", "http://64.227.100.5:8888"]
     assert status["public_urls"] == ["http://64.227.100.5:8888"]
+    assert status["keyless_lan_eligible"] is True
 
 
 @pytest.mark.parametrize(
@@ -214,7 +351,21 @@ def test_a_private_bind_carries_no_public_warning(monkeypatch):
         "lan_listener_status",
         lambda: {"running": True, "addresses": ["192.168.1.24"], "port": 8888, "error": None},
     )
-    assert lan_settings.lan_access_status(_app())["public_urls"] == []
+    status = lan_settings.lan_access_status(_app())
+    assert status["public_urls"] == []
+    assert status["keyless_lan_eligible"] is True
+
+
+def test_a_cgnat_bind_is_not_reported_as_keyless_lan(monkeypatch):
+    monkeypatch.setattr(
+        lan_access,
+        "lan_listener_status",
+        lambda: {"running": True, "addresses": ["100.64.0.10"], "port": 8888, "error": None},
+    )
+    status = lan_settings.lan_access_status(_app())
+    assert status["state"] == "online"
+    assert status["public_urls"] == []
+    assert status["keyless_lan_eligible"] is False
 
 
 def test_api_only_launches_advertise_that_the_web_ui_is_not_served():

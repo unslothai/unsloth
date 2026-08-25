@@ -8,8 +8,12 @@ export {
   jobKeyOf,
   startExternalJob,
   subscribeJobListeners,
+  type TransportMode,
   updateExternalJob,
+  TRANSPORT_MODE_STORAGE_KEY,
   useDownloadManagerStore,
+  useHttpPartialsResumable,
+  useTransportMode,
 } from "./download-manager";
 export { HfTokenIndicator } from "./components/hf-token-indicator";
 export { useHubDatasetSearch } from "./hooks/use-hub-dataset-search";

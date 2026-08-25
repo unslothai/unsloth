@@ -1548,18 +1548,11 @@ def test_vision_does_not_travel_between_two_cache_roots(tmp_path, monkeypatch):
 # --- the chokepoints, so a new signal cannot pick its own snapshot ------------
 
 _BACKEND = Path(__file__).resolve().parents[1]
-# Every helper the per-repo scan may hand the whole repo to. Each aggregates across revisions on
-# purpose, so a new name here is a new repo-wide signal on a one-directory row.
-_REPO_WIDE_HELPERS = frozenset(
+# helpers passed repo_info; snapshot signals also receive selected.
+_REPO_INFO_HELPERS = frozenset(
     {
         "_cache_inventory_fields",
-        # The row's pipeline task. Repo-wide on purpose and NOT a snapshot signal: it answers "which
-        # model is this", which every revision of a repo agrees on. The non-GGUF classifier returns
-        # non-None only when detect_family(repo_id) does, and _repo_is_diffusers is True whenever
-        # that holds, so its newest-revision _repo_has_pipeline_index branch cannot change the
-        # answer; the GGUF one reads general.architecture, identical in every cached quant. Scoping
-        # it would only lose rows -- an unreadable header in the one pinned snapshot would drop the
-        # repo from the Images/Video pickers entirely.
+        "_cached_row_is_diffusers",
         "_cached_row_task",
         "_repo_gguf_last_modified",
         "_repo_gguf_payload_snapshots",
@@ -1640,8 +1633,8 @@ def test_the_scan_loop_cannot_advertise_a_signal_it_did_not_scope(scan):
         }
     )
     assert (
-        set(handed_off) <= _REPO_WIDE_HELPERS
-    ), f"{scan} hands the whole repo to {sorted(set(handed_off) - _REPO_WIDE_HELPERS)}"
+        set(handed_off) <= _REPO_INFO_HELPERS
+    ), f"{scan} hands repo_info to {sorted(set(handed_off) - _REPO_INFO_HELPERS)}"
 
 
 @pytest.mark.parametrize("module, allowed", sorted(_MTIME_READERS.items()))
@@ -2550,10 +2543,8 @@ def test_a_nested_adapter_config_does_not_serve_the_snapshot_root(tmp_path, monk
     assert rows == [] or rows[0]["partial"] is True
 
 
-def test_a_broken_active_copy_withholds_the_compatibility_row(tmp_path, monkeypatch):
-    """The compatibility model list carries no path, so a client loads by id out of the active
-    cache. With a broken copy there, publishing another cache's copy under the same id offers a
-    load that follows the broken one. The Hub inventory still lists it, with a path."""
+def test_a_broken_active_copy_does_not_hide_a_complete_legacy_copy(tmp_path, monkeypatch):
+    """A broken active copy must not hide a complete copy the row can pin by path."""
     import asyncio
 
     import routes.models as models_route
@@ -2569,13 +2560,9 @@ def test_a_broken_active_copy_withholds_the_compatibility_row(tmp_path, monkeypa
     del torn["model-00002-of-00002.safetensors"]
     # Active: half a set behind a dangling ref. Legacy: the same repo, whole.
     _repo_with(active, snapshots = {OLDER: torn}, refs = {"main": UPSTREAM_HEAD})
-    _repo_with(legacy, snapshots = {NEWER: whole}, refs = {"main": NEWER})
+    legacy_repo = _repo_with(legacy, snapshots = {NEWER: whole}, refs = {"main": NEWER})
 
     monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda **kw: [active, legacy])
-    monkeypatch.setattr(
-        "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = active),
-    )
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
     inventory_scan.invalidate_hf_cache_scans()
 
@@ -2583,14 +2570,11 @@ def test_a_broken_active_copy_withholds_the_compatibility_row(tmp_path, monkeypa
         models_route.list_cached_models(current_subject = "test-user", hf_token = None)
     )
     cached = response["cached"] if isinstance(response, dict) else response.cached
-    assert cached == []
+    assert len(cached) == 1
+    assert cached[0]["load_id"] == str(legacy_repo / "snapshots" / NEWER)
 
     # Control: the broken copy in the other cache leaves the active one publishable.
     monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda **kw: [legacy, active])
-    monkeypatch.setattr(
-        "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = legacy),
-    )
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: legacy)
     inventory_scan.invalidate_hf_cache_scans()
 
@@ -3981,6 +3965,58 @@ def test_a_stray_base_shard_does_not_veto_a_complete_adapter(
 
 
 @pytest.mark.parametrize(
+    ("base_config", "expected"),
+    [
+        ({"model_type": "qwen3", "architectures": ["Qwen3ForCausalLM"]}, True),
+        (
+            {
+                "model_type": "whisper",
+                "architectures": ["WhisperForConditionalGeneration"],
+            },
+            False,
+        ),
+    ],
+    ids = ["chat-base", "non-chat-base"],
+)
+def test_cached_adapter_chat_capability_uses_its_exact_cached_base(
+    base_config, expected, tmp_path, monkeypatch
+):
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            SNAPSHOT: {
+                "adapter_config.json": json.dumps(
+                    {
+                        "base_model_name_or_path": "Org/Base",
+                        "revision": SNAPSHOT,
+                        "peft_type": "LORA",
+                    }
+                ).encode(),
+                "adapter_model.safetensors": b"\0" * 128,
+            }
+        },
+        refs = {"main": SNAPSHOT},
+        name = "models--Org--Adapter",
+    )
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            SNAPSHOT: {
+                "config.json": json.dumps(base_config).encode(),
+                "model.safetensors": b"\0" * 256,
+            }
+        },
+        refs = {"main": SNAPSHOT},
+        name = "models--Org--Base",
+    )
+
+    rows = {row["repo_id"]: row for row in _autoload_rows(tmp_path, monkeypatch)}
+
+    assert rows["Org/Adapter"]["model_format"] == "adapter"
+    assert rows["Org/Adapter"]["capabilities"]["can_chat"] is expected
+
+
+@pytest.mark.parametrize(
     "files, cannot_serve",
     [
         # A real transformers file beside a config.json outranks the adapter, so the torn base
@@ -4037,8 +4073,13 @@ def test_the_judged_weight_family_follows_the_row_format(files, cannot_serve, tm
 
 
 def _compat_cached_models(cache_root: Path, monkeypatch) -> list[str]:
-    """GET /api/models/cached-models. Its schema has no partial and no load_id, so it can only
-    describe a repo that loads by id."""
+    """Repo ids from GET /api/models/cached-models."""
+    return [row["repo_id"] for row in _compat_cached_rows(cache_root, monkeypatch)]
+
+
+def _compat_cached_rows(cache_root: Path, monkeypatch) -> list[dict]:
+    """GET /api/models/cached-models. Its schema carries partial and load_id, so it can describe
+    a repo pinned to a snapshot as well as one that loads by id."""
     import asyncio
     from types import SimpleNamespace
 
@@ -4056,25 +4097,33 @@ def _compat_cached_models(cache_root: Path, monkeypatch) -> list[str]:
         )
     finally:
         inventory_scan.invalidate_hf_cache_scans()
-    return [row["repo_id"] for row in response["cached"]]
+    return list(response["cached"])
 
 
 @pytest.mark.parametrize(
-    "snapshot_files",
+    "snapshot_files, listed",
     [
-        {"config.json": b"{}", "model-00001-of-00002.safetensors": b"\0" * 256},
-        {"config.json": b"{}", "model.safetensors": b"\0" * 256},
+        ({"config.json": b"{}", "model-00001-of-00002.safetensors": b"\0" * 256}, False),
+        ({"config.json": b"{}", "model.safetensors": b"\0" * 256}, True),
     ],
     ids = ["short-a-shard", "whole-but-only-loadable-by-path"],
 )
 def test_the_compatibility_route_withholds_a_recovery_it_cannot_describe(
-    snapshot_files, tmp_path, monkeypatch
+    snapshot_files, listed, tmp_path, monkeypatch
 ):
-    """Un-hiding a repo must not smuggle it into a response that cannot say what is wrong with it:
-    with neither partial nor a load id, a torn recovery reads as a plain cached model and a whole
-    one is offered under a repo id that does not resolve."""
+    """Un-hiding a repo must not smuggle it into a response that cannot say what is wrong with it.
+
+    A torn recovery stays withheld: nothing in the schema says "short a shard", so it would read
+    as a plain cached model. The whole one is no longer withheld, because the premise changed --
+    this schema now carries ``load_id``, so the row can name the snapshot to load instead of an
+    id that does not resolve. Withholding it hid a model whose weights are on disk and loadable.
+    """
     _repo_with(tmp_path, snapshots = {SNAPSHOT: snapshot_files}, refs = {"main": UPSTREAM_HEAD})
-    assert _compat_cached_models(tmp_path, monkeypatch) == []
+    rows = _compat_cached_rows(tmp_path, monkeypatch)
+    assert [row["repo_id"] for row in rows] == (["Org/Model"] if listed else [])
+    if listed:
+        # Pinned, since the dangling ref is exactly what the bare id cannot follow.
+        assert rows[0]["load_id"].endswith(SNAPSHOT)
     # The Hub inventory still lists it, with the fields to describe it.
     assert [row["repo_id"] for row in _autoload_rows(tmp_path, monkeypatch)] == ["Org/Model"]
 

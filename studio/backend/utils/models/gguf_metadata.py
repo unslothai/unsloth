@@ -52,6 +52,10 @@ _BOOL_CACHE: Dict[Tuple[_CacheKey, str], Optional[bool]] = {}
 
 _STRING_CACHE: Dict[Tuple[_CacheKey, str], Optional[str]] = {}
 
+# Whether the GGUF tensor table contains a sequence-classification head. None
+# means the file could not be read or parsed, so callers can fail closed.
+_CLASSIFIER_HEAD_CACHE: Dict[_CacheKey, Optional[bool]] = {}
+
 # GGUF header dims for the staged/deferred-load UI: context_length, layer_count
 # (block_count), and moe_layer_count (block_count minus leading dense layers; 0
 # if not MoE). One cached pass fills all three so the staged sheet can size every
@@ -345,6 +349,91 @@ def _skip_gguf_value(f, vtype: int) -> bool:
     return True
 
 
+def _parse_gguf_has_classifier_head(path: str) -> Optional[bool]:
+    """Whether the GGUF tensor table contains llama.cpp's ``cls.*`` head."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(24)
+            if len(head) < 24:
+                return None
+            magic, _version, tensor_count, kv_count = struct.unpack("<IIQQ", head)
+            if magic != _GGUF_MAGIC or tensor_count > 1 << 20 or kv_count > 1 << 20:
+                return None
+
+            for _ in range(kv_count):
+                klen_bytes = f.read(8)
+                if len(klen_bytes) < 8:
+                    return None
+                klen = struct.unpack("<Q", klen_bytes)[0]
+                if klen > 1 << 20 or len(f.read(klen)) < klen:
+                    return None
+                vtype_bytes = f.read(4)
+                if len(vtype_bytes) < 4 or not _skip_gguf_value(
+                    f, struct.unpack("<I", vtype_bytes)[0]
+                ):
+                    return None
+
+            for _ in range(tensor_count):
+                nlen_bytes = f.read(8)
+                if len(nlen_bytes) < 8:
+                    return None
+                nlen = struct.unpack("<Q", nlen_bytes)[0]
+                if nlen > 1 << 20:
+                    return None
+                name_bytes = f.read(nlen)
+                ndim_bytes = f.read(4)
+                if len(name_bytes) < nlen or len(ndim_bytes) < 4:
+                    return None
+                n_dimensions = struct.unpack("<I", ndim_bytes)[0]
+                if n_dimensions > 16:
+                    return None
+                # dimensions (u64 each), ggml type (u32), and data offset (u64)
+                trailer_size = n_dimensions * 8 + 4 + 8
+                if len(f.read(trailer_size)) < trailer_size:
+                    return None
+                if name_bytes.decode("utf-8", "replace").startswith("cls."):
+                    return True
+    except OSError as e:
+        logger.debug(f"_parse_gguf_has_classifier_head: cannot open {path}: {e}")
+        return None
+    except Exception as e:
+        logger.debug(f"_parse_gguf_has_classifier_head: parse failure on {path}: {e}")
+        return None
+    return False
+
+
+def _gguf_shard_has_classifier_head(path: str) -> Optional[bool]:
+    key = _cache_key(path)
+    if key is None:
+        return None
+    with _CACHE_LOCK:
+        if key in _CLASSIFIER_HEAD_CACHE:
+            return _CLASSIFIER_HEAD_CACHE[key]
+    result = _parse_gguf_has_classifier_head(path)
+    with _CACHE_LOCK:
+        while len(_CLASSIFIER_HEAD_CACHE) >= _CACHE_MAX_ENTRIES:
+            try:
+                _CLASSIFIER_HEAD_CACHE.pop(next(iter(_CLASSIFIER_HEAD_CACHE)))
+            except StopIteration:
+                break
+        _CLASSIFIER_HEAD_CACHE[key] = result
+    return result
+
+
+def _gguf_has_classifier_head(path: str) -> Optional[bool]:
+    try:
+        from utils.models.model_config import colocated_split_shards
+        shards, complete = colocated_split_shards(Path(path))
+    except Exception:
+        return None
+    if not complete:
+        return None
+    results = [_gguf_shard_has_classifier_head(str(shard)) for shard in shards]
+    if any(result is True for result in results):
+        return True
+    return False if results and all(result is False for result in results) else None
+
+
 def _parse_gguf_bool(path: str, wanted_key: str) -> Optional[bool]:
     """Bool value of ``wanted_key`` (GGUF vtype 7), or ``None`` if absent /
     unreadable. Mirrors ``_parse_gguf_header`` for a single bool key."""
@@ -571,6 +660,91 @@ def pairing_score(
         return 60 if w_base.lower() == p_base.lower() else -1
 
     return 0
+
+
+# GGUF ``general.architecture`` values that intrinsically identify embedding
+# models in llama.cpp. Generic ``bert`` is deliberately absent: without
+# pooling_type its required CLS/MEAN pooling cannot be recovered safely.
+# A ``cls.*`` tensor makes an encoder a sequence-classification/reranker model
+# instead, so architecture matches are gated on the tensor table below.
+GGUF_EMBEDDING_ARCHITECTURES: frozenset[str] = frozenset(
+    {
+        "modern-bert",
+        "nomic-bert",
+        "nomic-bert-moe",
+        "neo-bert",
+        "jina-bert-v2",
+        "jina-bert-v3",
+        "eurobert",
+        "gemma-embedding",
+        "pangu-embedded",
+        "llama-embed",
+    }
+)
+
+# Name hints for model, file and intrinsic GGUF names whose architecture is not yet above.
+_EMBEDDING_NAME_HINTS: tuple[str, ...] = (
+    "nomic-embed",
+    "llama-embed",
+    "embed-text",
+    "embedding",
+    "bge-",
+    "gte-",
+    "e5-",
+    "minilm",
+)
+_RERANKER_NAME_HINTS: tuple[str, ...] = ("reranker", "rerank")
+
+
+def is_gguf_embedding_architecture(architecture: Optional[str]) -> bool:
+    """True when ``architecture`` is a dedicated llama.cpp embedding arch."""
+    return bool(architecture and architecture.strip().lower() in GGUF_EMBEDDING_ARCHITECTURES)
+
+
+def _has_embedding_name_hint(value: Optional[str]) -> bool:
+    return bool(value and any(needle in value.strip().lower() for needle in _EMBEDDING_NAME_HINTS))
+
+
+def _has_reranker_name_hint(value: Optional[str]) -> bool:
+    return bool(value and any(needle in value.strip().lower() for needle in _RERANKER_NAME_HINTS))
+
+
+def is_gguf_embedding_model(
+    gguf_path: str,
+    model_identifier: Optional[str] = None,
+    architecture: Optional[str] = None,
+) -> bool:
+    """Whether a GGUF should be launched with ``--embedding`` for /v1/embeddings."""
+    meta = read_gguf_general_metadata(gguf_path) or {}
+    identifier_basename = None
+    if model_identifier:
+        identifier_basename = model_identifier.strip().replace("\\", "/").rsplit("/", 1)[-1]
+    try:
+        file_basename: Optional[str] = Path(gguf_path).name
+    except Exception:
+        file_basename = None
+    name_candidates = (
+        identifier_basename,
+        file_basename,
+        meta.get("general.name"),
+        meta.get("general.basename"),
+        meta.get("general.base_model.0.name"),
+    )
+    if any(_has_reranker_name_hint(value) for value in name_candidates):
+        return False
+
+    arch = (architecture or meta.get("general.architecture") or "").strip().lower()
+    if arch == "bert":
+        # A classifier head can prove that generic BERT is a reranker, but its
+        # absence cannot recover the missing pooling strategy. llama-server
+        # otherwise defaults to NONE and /v1/embeddings returns HTTP 400.
+        return False
+    if is_gguf_embedding_architecture(arch):
+        # Generic BERT-family architectures also back cross-encoder rerankers.
+        # Their standardized cls.* tensors are intrinsic evidence of that role;
+        # an unreadable tensor table stays unclassified rather than guessing.
+        return _gguf_has_classifier_head(gguf_path) is False
+    return any(_has_embedding_name_hint(value) for value in name_candidates)
 
 
 # ── speech / codec architectures ────────────────────────────────────────────

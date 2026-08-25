@@ -3551,12 +3551,16 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
     env = {**os.environ, "UNSLOTH_VERBOSE": "1"} if verbose else None
 
     if platform.system() == "Windows":
-        powershell_args = ["powershell.exe"]
+        # Resolved, not bare: the gate that runs immediately before this in setup() and update()
+        # had to stop trusting PATH for exactly this reason (#9440), and the Popen below has no
+        # OSError handler, so a bare name here just moves the same WinError 2 one frame later.
+        powershell = _studio_runtime_gate.resolve_windows_powershell()
+        powershell_args = [powershell]
         # PRESENCE, not truthiness: install.ps1 publishes this around the handoff and sets it to
         # "{}" when it found no proxy, so treating that as "nobody handed anything over" would
         # send an installer launch off to reload the profiles it deliberately discarded.
         if os.environ.get("_UNSLOTH_PS_PROXY_DEFAULTS") is None:
-            probed = _probe_profile_proxy_defaults(_profile_probe_hosts() or ["powershell.exe"])
+            probed = _probe_profile_proxy_defaults(_profile_probe_hosts() or [powershell])
             if probed:
                 env = {**(env or os.environ), "_UNSLOTH_PS_PROXY_DEFAULTS": probed}
         # -NoProfile unconditionally, not just on the hidden branch: install.ps1 hands off to
@@ -3758,7 +3762,7 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
     checkouts = _installers_on_disk(_installer_script_candidates(installer_name))
 
     if is_windows:
-        ps_argv: List[str] = ["powershell.exe"]
+        ps_argv: List[str] = [_studio_runtime_gate.resolve_windows_powershell()]
         # -NoProfile unconditionally, as in _run_setup_script above: gating it on the hidden
         # branch left the visible console path, where a profile is exactly what IS loaded.
         ps_argv.append("-NoProfile")
