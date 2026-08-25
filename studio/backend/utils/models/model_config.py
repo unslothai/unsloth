@@ -2628,38 +2628,57 @@ def _local_gguf_companion_search_root(
     return str(search_dir)
 
 
+def _enclosing_hf_snapshot_dir(path: str) -> Optional[str]:
+    """The ``models--*/snapshots/<sha>`` dir *path* sits in, or None."""
+    candidate = Path(path)
+    for directory in (candidate, *candidate.parents):
+        parent = directory.parent
+        if parent.name == "snapshots" and parent.parent.name.startswith("models--"):
+            return str(directory)
+    return None
+
+
 def _detect_local_mmproj(
     selected_path: str,
     gguf_file: str,
     accept_for: Optional[Callable[[str], Optional[Callable[[str], bool]]]] = None,
 ) -> Optional[str]:
-    """The projector for a local GGUF, snapshot first.
+    """The projector for a local GGUF, nearest boundary first.
 
     ``detect_mmproj_file`` ranks every candidate it can see against the weight, so
-    scanning the enclosing ``models--<repo>`` dir in the same pass would let a
-    hand-added projector outrank the one shipped beside the selected file. The repo
-    root is therefore a second pass, reached only when the snapshot pairs with none,
-    which is the same published-first order ``_download_mmproj`` uses.
+    reaching the enclosing ``models--<repo>`` dir in one pass would let a hand-added
+    projector outrank one published closer to the weight. The walk therefore widens
+    a boundary at a time -- the selected directory (with its quant parent), then the
+    snapshot it belongs to, then the repo dir -- and the first boundary that pairs
+    wins. Same published-first order ``_download_mmproj`` uses.
 
     ``accept_for`` builds the pre-read admission filter for a root (native-grant
-    loads) and applies to the widened pass ONLY: the snapshot pass has to answer
+    loads) and applies to the widened boundaries ONLY: the first one has to answer
     exactly what it answered before the widening, refusals included, so the extra
-    rule covers just the directory the widening newly reaches."""
-    snapshot_root = _local_gguf_companion_search_root(
+    rule covers just what the widening newly reaches."""
+    selected_root = _local_gguf_companion_search_root(
         selected_path, gguf_file, include_hf_repo_root = False
     )
-    found = detect_mmproj_file(gguf_file, search_root = snapshot_root)
-    if found is not None:
-        return found
-
+    roots = [selected_root]
     repo_root = _local_gguf_companion_search_root(selected_path, gguf_file)
-    if repo_root == snapshot_root:
-        return None
-    return detect_mmproj_file(
-        gguf_file,
-        search_root = repo_root,
-        accept = accept_for(repo_root) if accept_for is not None else None,
-    )
+    if repo_root != selected_root:
+        # A named checkpoint subdir (``snapshots/<sha>/distilled/``) is not a quant
+        # name, so the selected root stops inside it and the snapshot's own projector
+        # would otherwise share a pool with the repo dir's.
+        snapshot_dir = _enclosing_hf_snapshot_dir(selected_root)
+        if snapshot_dir is not None and snapshot_dir != selected_root:
+            roots.append(snapshot_dir)
+        roots.append(repo_root)
+
+    for index, root in enumerate(roots):
+        found = detect_mmproj_file(
+            gguf_file,
+            search_root = root,
+            accept = accept_for(root) if accept_for is not None and index else None,
+        )
+        if found is not None:
+            return found
+    return None
 
 
 def _hf_cache_repo_root_has_mmproj(repo_id: str) -> bool:
@@ -3766,6 +3785,10 @@ class ModelConfig:
     # ``sizes`` covers that file and every shard beside it.
     gguf_verified: Optional[tuple[str, str, str, tuple[tuple[str, int], ...]]] = None
     gguf_mmproj_file: Optional[str] = None  # Full path to the mmproj .gguf file (vision projection)
+    # A hand-added projector a REMOTE (-hf) load will attach at launch. Sized by the
+    # training guard and read by nothing else: the loader resolves its own projector
+    # beside the weight it downloads, so this is never handed to llama-server.
+    gguf_local_mmproj_file: Optional[str] = None
     gguf_mtp_file: Optional[str] = None  # Full path to the separate MTP drafter (local mode)
     gguf_dspark_file: Optional[str] = None  # Full path to a DSpark sidecar (local mode)
     gguf_dflash_file: Optional[str] = None  # Full path to a DFlash sidecar (local mode)
@@ -4082,12 +4105,13 @@ class ModelConfig:
                 # the config says vision, so the listing's answer alone would skip it.
                 # Pair it against the weight once one is cached; before that, presence
                 # is enough to make the load resolve companions beside what it downloads.
+                local_mmproj: Optional[str] = None
                 if not has_vision:
-                    has_vision = (
-                        _detect_local_mmproj(verified_file, verified_file) is not None
-                        if verified_file
-                        else _hf_cache_repo_root_has_mmproj(identifier)
-                    )
+                    if verified_file:
+                        local_mmproj = _detect_local_mmproj(verified_file, verified_file)
+                        has_vision = local_mmproj is not None
+                    else:
+                        has_vision = _hf_cache_repo_root_has_mmproj(identifier)
 
                 display_name = f"{identifier.split('/')[-1]} ({variant})"
                 logger.info(
@@ -4105,6 +4129,7 @@ class ModelConfig:
                     is_gguf = True,
                     gguf_file = None,
                     gguf_verified = verified_gguf,
+                    gguf_local_mmproj_file = local_mmproj,
                     gguf_hf_repo = identifier,
                     gguf_variant = variant,
                 )

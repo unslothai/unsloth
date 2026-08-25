@@ -6972,6 +6972,7 @@ def _remote_gguf_companion_bytes(
     include_dflash: bool = False,
     dspark_first: bool = False,
     weight_bytes: int = 0,
+    local_mmproj_bytes: int = 0,
 ) -> int:
     """Bytes of companion GGUFs the requested launch keeps resident. 0 on error.
 
@@ -6994,7 +6995,7 @@ def _remote_gguf_companion_bytes(
         from utils.models.model_config import dspark_preference_key
 
         info = model_info(repo, token = hf_token, files_metadata = True)
-        total = 0
+        listed_mmproj_bytes = 0
         mtp_bytes = 0
         dspark_candidates: list[tuple[str, int]] = []
         dflash_sizes: dict[str, int] = {}
@@ -7014,7 +7015,7 @@ def _remote_gguf_companion_bytes(
             if include_mtp and is_root_mtp:
                 mtp_bytes += size
             elif include_mmproj and "mmproj" in base:
-                total += size
+                listed_mmproj_bytes += size
             if include_dspark and _is_dspark_drafter_path(name):
                 dspark_candidates.append((name, size))
             # Root level only, exactly as _download_dflash's picker is: a nested
@@ -7046,6 +7047,10 @@ def _remote_gguf_companion_bytes(
         # target too, so the guard stops charging for the oversized candidates the
         # fetch itself now refuses.
         dflash_bytes = dflash_budget_bytes(dflash_sizes, _gguf_extra_shards, weight_bytes)
+        # A hand-added local projector and a published one are alternatives: the fetch
+        # only falls back to the local file when the repo publishes none, so the larger
+        # bound covers both without charging two companions for one launch.
+        total = max(int(local_mmproj_bytes), listed_mmproj_bytes)
         if not dspark_first:
             return total + mtp_bytes + dspark_bytes + dflash_bytes
         if dspark_families:
@@ -7067,7 +7072,7 @@ def _remote_gguf_companion_bytes(
         return total + mtp_bytes
     except Exception as e:
         logger.warning(f"Could not size GGUF companions for {repo}: {e}")
-        return 0
+        return int(local_mmproj_bytes)
 
 
 # What an unreadable remote drafter costs the guard. Sized to the largest drafter
@@ -7794,6 +7799,11 @@ def _estimate_gguf_required_gb(
             main_bytes = selected.size_bytes if selected is not None else None
             if main_bytes is None:
                 return None
+            # Split-aware, like the main weight: discovery hands back shard 1.
+            _local_mmproj = getattr(config, "gguf_local_mmproj_file", None)
+            _local_mmproj_bytes = (
+                LlamaCppBackend._get_gguf_size_bytes(str(_local_mmproj)) if _local_mmproj else 0
+            )
             companions = _remote_gguf_companion_bytes(
                 repo,
                 hf_token = hf_token,
@@ -7817,6 +7827,10 @@ def _estimate_gguf_required_gb(
                 # What the DFlash bound measures candidates against, so the guard stops
                 # charging for weights the fetch refuses as too big to be a drafter.
                 weight_bytes = int(main_bytes or 0),
+                # The repo publishes none but the cache holds one the load will attach,
+                # and the listing cannot see it. Left uncharged, the coexistence guard
+                # admits a chat load over VRAM a training run needs.
+                local_mmproj_bytes = _local_mmproj_bytes,
                 # ... except where the listing settles it. Auto launches exactly
                 # one drafter, in a fixed order, so once the listing says which
                 # kinds the repo has, charging the losers is not caution, it is a

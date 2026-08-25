@@ -174,6 +174,9 @@ def test_a_verified_cached_copy_uses_its_repo_root_projector(
     config = ModelConfig.from_identifier(REPO, gguf_variant = "Q8_0")
 
     assert config.is_vision is True
+    # Carried for the training guard only: the launch resolves its own beside the weight.
+    assert config.gguf_local_mmproj_file == str(projector.resolve())
+    assert config.gguf_mmproj_file is None
 
 
 def test_audio_only_repo_root_projector_still_triggers_companion_loading(

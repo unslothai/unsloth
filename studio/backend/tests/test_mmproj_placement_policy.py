@@ -750,6 +750,45 @@ def test_a_remote_projector_of_unknown_kind_is_charged_to_the_guard(tmp_path):
     assert seen.get("include_mmproj") is True
 
 
+def test_the_training_guard_charges_a_hand_added_repo_root_projector(tmp_path):
+    """The repo publishes none, so the Hub listing cannot see the projector the load
+    will attach. Uncharged, the coexistence guard admits a chat load over VRAM a
+    running training job needs."""
+    projector = tmp_path / "mmproj-F16.gguf"
+    projector.write_bytes(b"\x00" * (3 * MIB))
+    seen = {}
+
+    def fake_companions(repo, *, hf_token, include_mmproj, local_mmproj_bytes = 0, **kw):
+        seen["local_mmproj_bytes"] = local_mmproj_bytes
+        # What the real helper returns when the repo lists no projector of its own.
+        return max(int(local_mmproj_bytes), 0)
+
+    config = SimpleNamespace(
+        gguf_file = None,
+        gguf_mmproj_file = None,
+        gguf_local_mmproj_file = str(projector),
+        gguf_mtp_file = None,
+        gguf_dspark_file = None,
+        gguf_dflash_file = None,
+        gguf_hf_repo = "unsloth/some-vl-GGUF",
+        gguf_variant = "UD-Q4_K_XL",
+        is_vision = True,
+    )
+    variant = SimpleNamespace(quant = "UD-Q4_K_XL", size_bytes = 4 * GIB)
+
+    with (
+        patch("routes.inference._remote_gguf_companion_bytes", fake_companions),
+        patch(
+            "utils.models.model_config.list_gguf_variants",
+            lambda *a, **k: ([variant], False),
+        ),
+    ):
+        charged = _estimate_gguf_required_gb(config)
+
+    assert seen.get("local_mmproj_bytes") == 3 * MIB
+    assert charged is not None and charged > 4 * GIB / (1024**3)
+
+
 def _ambient_mmproj(tmp_path, monkeypatch):
     ambient = tmp_path / "ambient-mmproj.gguf"
     ambient.write_bytes(b"\x00" * (1 * MIB))

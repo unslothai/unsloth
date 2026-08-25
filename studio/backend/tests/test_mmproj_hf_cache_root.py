@@ -181,6 +181,28 @@ def test_the_snapshots_own_projector_is_not_shadowed_by_the_repo_root(tmp_path):
     assert _detect_local_mmproj(str(weight.parent), str(weight)) == str(shipped.resolve())
 
 
+def test_a_nested_checkpoint_dir_keeps_its_snapshots_projector_ahead(tmp_path):
+    """``snapshots/<sha>/distilled/`` is not a quant name, so the selected root stops
+    inside it. The snapshot is still its own boundary, ahead of the repo dir."""
+    repo, weight = _hf_repo(tmp_path)
+    nested = weight.parent / "distilled"
+    nested.mkdir()
+    weight = weight.rename(nested / "model-Q6_K.gguf")
+    shipped = _gguf_with_general(
+        nested.parent / "mmproj-F16.gguf",
+        {"general.type": "mmproj", "general.architecture": "qwen3vl"},
+    )
+    hand_added = _gguf_with_general(
+        repo / "model-Q6_K-mmproj.gguf",
+        {"general.type": "mmproj", "general.architecture": "qwen3vl"},
+    )
+
+    # One pass over both would take the hand-added file on the shared-prefix tie-break.
+    assert detect_mmproj_file(str(weight), search_root = str(repo)) == str(hand_added.resolve())
+
+    assert _detect_local_mmproj(str(nested), str(weight)) == str(shipped.resolve())
+
+
 def test_the_repo_root_still_answers_when_the_snapshot_has_none(tmp_path):
     repo, weight = _hf_repo(tmp_path)
     hand_added = _gguf_with_general(
