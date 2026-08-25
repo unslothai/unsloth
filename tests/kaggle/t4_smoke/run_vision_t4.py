@@ -105,8 +105,7 @@ def conversation_dataset(dataset):
 
     def _transform(batch):
         rows = [
-            {"image": image, "text": text}
-            for image, text in zip(batch["image"], batch["text"])
+            {"image": image, "text": text} for image, text in zip(batch["image"], batch["text"])
         ]
         return {"messages": [row["messages"] for row in build_conversations(rows)]}
 
