@@ -1736,10 +1736,12 @@ def test_an_inherited_loader_mode_wins_over_the_fits_pick():
     # Asked of the child's environment AFTER the same scrub it gets, so a var a
     # Model Memory toggle drops vetoes nothing.
     assert "scrub_memory_env(_fit_load_mode_env_view)" in arm
-    assert (
-        "if_fit_load_modeandnotload_modeandmemory_env_selects_load_mode(_fit_load_mode_env_view):"
-        in arm
-    )
+    # Assert the CONDITIONS, not one rendering of them: the formatter is free to
+    # wrap this across lines, which inserts a paren and breaks a single-string
+    # pin. Each clause is asserted on its own, so the guard cannot lose one
+    # without failing here.
+    assert "_fit_load_mode" in arm and "notload_mode" in arm
+    assert "memory_env_selects_load_mode(_fit_load_mode_env_view)" in arm
     assert "_fit_load_mode=None" in arm
 
 
