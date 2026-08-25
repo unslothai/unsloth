@@ -281,3 +281,18 @@ test("unreads whose row is gone still get a count", () => {
   store().markThreadsUnread(["deleted-1", "deleted-2"]);
   assert.equal(countUnreadRows(store()), 2);
 });
+
+test("an unread chat that left the list still counts", () => {
+  useChatNavigationStore.setState({ unreadThreadIds: new Set() });
+  store().publishLists({
+    pinnedItems: [],
+    projectItems: [],
+    recentItems: [row("A")],
+    attentionItemIds: [],
+    activeItemId: null,
+  });
+  // One listed, one whose row was archived out from under it. Clearing wipes
+  // both, so reporting only the visible row undercounts what it did.
+  store().markThreadsUnread(["A", "gone"]);
+  assert.equal(countUnreadRows(store()), 2);
+});

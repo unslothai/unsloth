@@ -248,18 +248,27 @@ export function visibleChatItems(state: ChatNavigationState): SidebarItem[] {
 }
 
 /**
- * How many rows hold an unread thread. Not the set's size: a Compare row is
+ * How many chats hold an unread thread. Not the set's size: a Compare row is
  * backed by two threads and marked unread by both, so the set counted it twice.
- * Falls back to the set when no row matches, for unreads left by a chat that is
- * no longer listed; those are still cleared and no row count describes them.
+ * Unreads no row accounts for still count one each, since the wipe clears them.
  */
 export function countUnreadRows(state: ChatNavigationState): number {
-  const rows = visibleChatItems(state).filter((item) =>
-    (item.threadIds?.length ? item.threadIds : [item.id]).some((id) =>
-      state.unreadThreadIds.has(id),
-    ),
-  ).length;
-  return rows || state.unreadThreadIds.size;
+  const listed = new Set<string>();
+  let rows = 0;
+  for (const item of visibleChatItems(state)) {
+    const own = (item.threadIds?.length ? item.threadIds : [item.id]).filter(
+      (id) => state.unreadThreadIds.has(id),
+    );
+    if (own.length === 0) continue;
+    rows += 1;
+    for (const id of own) listed.add(id);
+  }
+  // Plus the unreads no row accounts for, one each: a chat archived or deleted
+  // while unread leaves its thread in the set with nothing to fold it into, and
+  // the wipe below clears those too.
+  let unlisted = 0;
+  for (const id of state.unreadThreadIds) if (!listed.has(id)) unlisted += 1;
+  return rows + unlisted;
 }
 
 /** The row `slot` (1-based) of Recents only, ignoring the pinned block. */

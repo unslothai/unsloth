@@ -7612,9 +7612,16 @@ const ForkChatShortcut: FC = () => {
   // Compare mounts a thread in each pane, and the chord would go to whichever
   // registered first. Fork from the button there.
   const inComparePane = useInComparePane();
-  useShortcut("forkChat", () => void forkMessage(), {
-    enabled: chatActive && !inComparePane && !forkDisabled,
-  });
+  useShortcut(
+    "forkChat",
+    () => {
+      // `chatActive` is the visible tab, not the foreground, so a dialog over
+      // Chat would otherwise fork the conversation behind it.
+      if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
+      void forkMessage();
+    },
+    { enabled: chatActive && !inComparePane && !forkDisabled },
+  );
   return null;
 };
 

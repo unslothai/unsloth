@@ -1084,7 +1084,7 @@ test("the fork chord is registered where it mounts, not from an action bar", asy
   const start = thread.indexOf("const ForkChatShortcut: FC = () => {");
   assert.notEqual(start, -1, "the fork registration moved");
   const block = thread.slice(start, thread.indexOf("\n};", start));
-  assert.match(block, /useShortcut\("forkChat"/);
+  assert.match(block, /useShortcut\(\n\s*"forkChat",/);
   assert.match(block, /return null;/);
 
   // The button keeps the click and takes no part in the chord.

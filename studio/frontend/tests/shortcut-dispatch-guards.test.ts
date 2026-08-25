@@ -333,9 +333,12 @@ test("the sidebar's mutating chords refuse to fire under a dialog", async () => 
     );
   }
   // Covered, not "not in the foreground", or the mobile drawer kills them all.
+  assert.match(sidebar, /isSurfaceBackgrounded\(SIDEBAR_SELECTOR\)/);
+  // And with the drawer closed the sidebar is unmounted, so the app root is
+  // what carries the modal signal there.
   assert.match(
     sidebar,
-    /isSurfaceBackgrounded\('\[data-slot="sidebar"\]'\)/,
+    /document\.querySelector\(SIDEBAR_SELECTOR\) === null &&\n\s*isSurfaceBackgrounded\("#root"\)/,
   );
 });
 
@@ -530,5 +533,38 @@ test("the workspace chords wait on the same verdict their rows do", async () => 
     rowState,
     /if \(row\.pending\) \{\n\s*return \{\n\s*disabled: false,/,
     "a pending row now blocks the click the chord is allowed to make",
+  );
+});
+
+// The reasoning, Fast mode and fork chords drive controls on the page behind a
+// dialog just as the pickers do.
+test("the remaining chat-page chords stop at a covered surface", async () => {
+  const page = await readFile(
+    new URL("../src/features/chat/chat-page.tsx", import.meta.url),
+    "utf8",
+  );
+  for (const id of [
+    "cycleReasoningEffort",
+    "increaseReasoningEffort",
+    "decreaseReasoningEffort",
+    "toggleFastMode",
+  ]) {
+    const at = page.indexOf(`"${id}",`);
+    assert.notEqual(at, -1, `${id} is gone`);
+    assert.match(
+      page.slice(at, at + 220),
+      /if \(chatCovered\(\)\) return;/,
+      `${id} acts on the covered surface`,
+    );
+  }
+  const thread = await readFile(
+    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
+    "utf8",
+  );
+  const at = thread.indexOf('"forkChat",');
+  assert.notEqual(at, -1);
+  assert.match(
+    thread.slice(at, at + 320),
+    /if \(!isSurfaceInForeground\(COMPOSER_INPUT_SELECTOR\)\) return;/,
   );
 });

@@ -3371,15 +3371,30 @@ export function ChatPage({
     },
     [],
   );
-  useShortcut("cycleReasoningEffort", () => shiftReasoningEffort(1, true), {
-    enabled: active,
-  });
-  useShortcut("increaseReasoningEffort", () => shiftReasoningEffort(1, false), {
-    enabled: active,
-  });
-  useShortcut("decreaseReasoningEffort", () => shiftReasoningEffort(-1, false), {
-    enabled: active,
-  });
+  useShortcut(
+    "cycleReasoningEffort",
+    () => {
+      if (chatCovered()) return;
+      shiftReasoningEffort(1, true);
+    },
+    { enabled: active },
+  );
+  useShortcut(
+    "increaseReasoningEffort",
+    () => {
+      if (chatCovered()) return;
+      shiftReasoningEffort(1, false);
+    },
+    { enabled: active },
+  );
+  useShortcut(
+    "decreaseReasoningEffort",
+    () => {
+      if (chatCovered()) return;
+      shiftReasoningEffort(-1, false);
+    },
+    { enabled: active },
+  );
 
   const fastModeSupported = providerSupportsFastMode(
     activeExternalProviderType,
@@ -3388,6 +3403,7 @@ export function ChatPage({
   useShortcut(
     "toggleFastMode",
     () => {
+      if (chatCovered()) return;
       const state = useChatRuntimeStore.getState();
       const next = !state.params.fastMode;
       state.setParams({ ...state.params, fastMode: next });

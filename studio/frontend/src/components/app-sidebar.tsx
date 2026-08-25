@@ -579,6 +579,8 @@ const WORKFLOW_UNAVAILABLE = "The loaded model cannot do this";
 // one case this has to recover from.
 /** How long a selection chord keeps a repeat press off the open chat. */
 const SELECTION_ACTION_GRACE_MS = 750;
+/** The sidebar's own element, present on desktop and inside the mobile drawer. */
+const SIDEBAR_SELECTOR = '[data-slot="sidebar"]';
 const VERDICT_UNKNOWN_POLL_MS = 3000;
 const SELF_HEAL_POLL_MS = 15000;
 const VERDICT_POLL_STALL_MS = 30000;
@@ -2681,11 +2683,21 @@ export function AppSidebar() {
   // are window-level, so Settings over Chat would archive or rename the chat
   // behind it. Asked at press time, since `enabled` is read at render.
   //
-  // Backgrounded, not "not in the foreground": the mobile sidebar is unmounted
-  // while its drawer is closed, and reading a missing element as covered would
-  // kill these chords there. That leaves mobile-with-drawer-closed unguarded,
-  // which is a separate change to reach.
-  const sidebarCovered = () => isSurfaceBackgrounded('[data-slot="sidebar"]');
+  // Backgrounded, not "not in the foreground": reading a missing element as
+  // covered would kill these chords on the mobile drawer, which unmounts.
+  const sidebarCovered = () => {
+    if (isSurfaceBackgrounded(SIDEBAR_SELECTOR)) return true;
+    // Mobile with the drawer closed: the sidebar is unmounted, so the check
+    // above has nothing to read and these chords would stay live under a
+    // dialog. The app root is always mounted and Radix aria-hides it for a
+    // modal's life. Only as a fallback, since an open drawer is itself a
+    // dialog that hides the root while the sidebar inside it is the foreground.
+    return (
+      typeof document !== "undefined" &&
+      document.querySelector(SIDEBAR_SELECTOR) === null &&
+      isSurfaceBackgrounded("#root")
+    );
+  };
   useShortcut("archiveChat", () => {
     if (sidebarCovered()) return;
     if (projectsOnlySelected()) return;
