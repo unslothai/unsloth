@@ -94,13 +94,19 @@ def find_desktop_app() -> list[str] | None:
     therefore measures a different program from the one that freezes, and every candidate
     comes back with nothing observed.
     """
-    for cand in (shutil.which("unsloth-studio"),
-                 "/usr/bin/unsloth-studio",
-                 "/opt/Unsloth/unsloth-studio"):
+    for cand in (
+        shutil.which("unsloth-studio"),
+        "/usr/bin/unsloth-studio",
+        "/opt/Unsloth/unsloth-studio",
+    ):
         if cand and Path(cand).is_file():
             return [str(cand)]
-    globs = ["Unsloth*.AppImage", "Applications/Unsloth*.AppImage",
-             "Downloads/Unsloth*.AppImage", ".local/bin/Unsloth*.AppImage"]
+    globs = [
+        "Unsloth*.AppImage",
+        "Applications/Unsloth*.AppImage",
+        "Downloads/Unsloth*.AppImage",
+        ".local/bin/Unsloth*.AppImage",
+    ]
     hits = [q for g in globs for q in sorted(HOME.glob(g)) if q.is_file()]
     if hits:
         return [str(max(hits, key = lambda q: q.stat().st_mtime))]
