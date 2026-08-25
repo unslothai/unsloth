@@ -45,6 +45,7 @@ from ._utils import (
 from ._utils import *
 from .loader_utils import (
     DEFAULT_DEVICE_MAP,
+    OFFLOAD_EMBEDDING_AUTO,
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
     _restore_dropped_fp8_scales,
@@ -333,6 +334,36 @@ def _embedding_dispatch_device(input_embeddings):
     return None if hook is None else getattr(hook, "execution_device", None)
 
 
+# An embedding is worth putting in CPU RAM when it is big enough for the VRAM it frees to
+# matter and big enough to matter *on this card*. Both, because the cost is real: every
+# lookup then crosses PCIe. A 2.5 GiB embedding is 16% of a 16 GB T4 and worth moving; the
+# same matrix is 3% of an 80 GB card, where the traffic buys nothing.
+_OFFLOAD_EMBEDDING_MIN_BYTES = 2**30
+_OFFLOAD_EMBEDDING_MIN_FRACTION = 0.05
+
+
+def _embedding_is_worth_offloading(input_embeddings):
+    """Whether `"auto"` should offload, judged from the embedding against its own card.
+
+    False on anything unmeasurable: not offloading is the behaviour every release before
+    this one had, so it is the safe answer to an unknown.
+    """
+    try:
+        weight = getattr(input_embeddings, "weight", None)
+        if weight is None:
+            return False
+        size = weight.numel() * weight.element_size()
+        device = weight.device
+        if device.type != "cuda":
+            return False
+        total = torch.cuda.get_device_properties(device.index or 0).total_memory
+    except Exception:
+        return False
+    if not total:
+        return False
+    return size >= _OFFLOAD_EMBEDDING_MIN_BYTES and size / total >= _OFFLOAD_EMBEDDING_MIN_FRACTION
+
+
 def _resolve_offload_embedding(model, offload_embedding):
     """Report `offload_embedding` as True only when the offload will really run.
 
@@ -340,34 +371,41 @@ def _resolve_offload_embedding(model, offload_embedding):
     cannot help instead of failing the load. It also gates
     `_attach_bnb_multidevice_hooks`, which must still run whenever no offload
     happens, so every "no offload" case has to answer False.
+
+    `"auto"` (the default) decides from the size of the embedding. The declines below stay
+    silent for it: they explain why something a caller *asked* for is not happening, and
+    printing them for a default nobody set would put three lines of apology in front of
+    every tied-embedding load.
     """
-    if not offload_embedding:
+    automatic = offload_embedding == OFFLOAD_EMBEDDING_AUTO
+
+    def _decline(reason):
+        if not automatic:
+            print(f"Unsloth: Not offloading embeddings; {reason}")
+        return False
+
+    if not automatic and not offload_embedding:
         return False
     platform_name = _offload_embedding_unsupported_platform()
     if platform_name is not None:
-        print(f"Unsloth: Not offloading embeddings; offloading is unsupported on {platform_name}.")
-        return False
+        return _decline(f"offloading is unsupported on {platform_name}.")
     try:
         in_embed = model.get_input_embeddings()
         out_embed = (
             model.get_output_embeddings() if hasattr(model, "get_output_embeddings") else None
         )
     except Exception:
-        # Cannot inspect it, so leave the caller's request alone.
-        return offload_embedding
+        # Cannot inspect it, so leave an explicit request alone and decline the default.
+        return False if automatic else offload_embedding
     if _embeddings_are_tied(in_embed, out_embed):
-        print(
-            "Unsloth: Not offloading embeddings; this model ties embed_tokens "
-            "to lm_head, so offloading saves no VRAM."
+        return _decline(
+            "this model ties embed_tokens to lm_head, so offloading saves no VRAM."
         )
-        return False
     if _embedding_dispatch_device(in_embed) is not None:
-        print(
-            "Unsloth: Not offloading embeddings; this model is dispatched across devices, "
-            "which overrides the offload."
+        return _decline(
+            "this model is dispatched across devices, which overrides the offload."
         )
-        return False
-    return True
+    return _embedding_is_worth_offloading(in_embed) if automatic else True
 
 
 VLLM_SUPPORTED_VLM = [
@@ -908,7 +946,7 @@ class FastBaseModel:
         whisper_language = None,
         whisper_task = None,
         auto_config = None,
-        offload_embedding = False,
+        offload_embedding = OFFLOAD_EMBEDDING_AUTO,
         float32_mixed_precision = None,  # Forces float32 mixed precision
         # vLLM parameters
         fast_inference = False,
@@ -1412,10 +1450,12 @@ class FastBaseModel:
         raise_handler = RaiseUninitialized()
         try:
             if offload_embedding and fast_inference:
-                # vLLM manages its own weights; embedding offload does not apply.
-                print(
-                    "Unsloth: Not offloading embeddings; incompatible with fast_inference (vLLM)."
-                )
+                # vLLM manages its own weights; embedding offload does not apply. Silent for
+                # the `"auto"` default, which nobody asked for and so owes no explanation.
+                if offload_embedding != OFFLOAD_EMBEDDING_AUTO:
+                    print(
+                        "Unsloth: Not offloading embeddings; incompatible with fast_inference (vLLM)."
+                    )
                 offload_embedding = False
             if not fast_inference:
                 # Prevent load_in_fp8 from being forwarded into HF internal model loading

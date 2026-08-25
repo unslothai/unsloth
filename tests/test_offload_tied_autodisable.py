@@ -24,12 +24,20 @@ _SRC = open(VISION, encoding = "utf-8").read()
 
 def _load(*names):
     mod = ast.parse(_SRC)
-    ns = {"torch": torch, "os": os}
+    # The sentinel lives in loader_utils; importing that module would drag in torch's CUDA
+    # stack, so mirror the one value these functions read.
+    ns = {"torch": torch, "os": os, "OFFLOAD_EMBEDDING_AUTO": "auto"}
     wanted = set(names)
     for node in mod.body:
         if isinstance(node, ast.FunctionDef) and node.name in wanted:
             exec(ast.get_source_segment(_SRC, node), ns)
             wanted.discard(node.name)
+        elif isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "").startswith(
+            "_OFFLOAD_EMBEDDING_"
+        ):
+            # The size thresholds the auto decision reads; taken from the source so the
+            # tests below cannot drift from the shipped numbers.
+            exec(ast.get_source_segment(_SRC, node), ns)
     if wanted:
         raise AssertionError(f"not found in vision.py: {sorted(wanted)}")
     return ns
@@ -39,6 +47,7 @@ _NS = _load(
     "_embeddings_are_tied",
     "_offload_embedding_unsupported_platform",
     "_embedding_dispatch_device",
+    "_embedding_is_worth_offloading",
     "_resolve_offload_embedding",
 )
 resolve = _NS["_resolve_offload_embedding"]
@@ -211,3 +220,116 @@ if __name__ == "__main__":
             fn()
             print(f"[PASS] {name}")
     print("all offload tied auto-disable tests passed")
+
+
+# --------------------------------------------------------------------------------------
+# `offload_embedding = "auto"`: the loader decides, and says nothing when it declines.
+# --------------------------------------------------------------------------------------
+
+worth_offloading = _NS["_embedding_is_worth_offloading"]
+MIN_BYTES = _NS["_OFFLOAD_EMBEDDING_MIN_BYTES"]
+MIN_FRACTION = _NS["_OFFLOAD_EMBEDDING_MIN_FRACTION"]
+
+
+class _FakeWeight:
+    def __init__(self, n_bytes, device_type = "cuda", index = 0):
+        self._bytes = n_bytes
+        self.device = torch.device(f"{device_type}:{index}" if device_type == "cuda" else device_type)
+
+    def numel(self):
+        return self._bytes // 2
+
+    def element_size(self):
+        return 2
+
+    def data_ptr(self):
+        # Distinct per object, so the tied-weights check sees these as untied.
+        return id(self)
+
+
+class _FakeEmbedding:
+    def __init__(self, weight):
+        self.weight = weight
+
+
+@contextmanager
+def _card(total_bytes):
+    """Drive total device memory directly; no GPU is touched."""
+    saved = torch.cuda.get_device_properties
+    torch.cuda.get_device_properties = lambda index = 0: type(
+        "_Props", (), {"total_memory": total_bytes}
+    )()
+    try:
+        yield
+    finally:
+        torch.cuda.get_device_properties = saved
+
+
+def test_a_big_embedding_on_a_small_card_is_offloaded():
+    """Muse Glimmer's 202048 x 6656 embedding is 2.5 GiB, 16% of a 16 GB T4. Every one of
+    the four notebooks passed `offload_embedding = True` by hand for exactly this."""
+    with _card(16 * 2**30):
+        assert worth_offloading(_FakeEmbedding(_FakeWeight(int(2.5 * 2**30)))) is True
+
+
+def test_the_same_embedding_on_a_big_card_is_left_alone():
+    """3% of an 80 GB card. The PCIe traffic buys nothing there."""
+    with _card(80 * 2**30):
+        assert worth_offloading(_FakeEmbedding(_FakeWeight(int(2.5 * 2**30)))) is False
+
+
+def test_a_small_embedding_is_never_worth_the_traffic():
+    """Under the absolute floor even though it clears the fraction on a tiny card."""
+    with _card(4 * 2**30):
+        assert worth_offloading(_FakeEmbedding(_FakeWeight(MIN_BYTES // 2))) is False
+
+
+def test_anything_unmeasurable_declines():
+    """Not offloading is what every release before this did, so it is the safe answer."""
+    with _card(16 * 2**30):
+        assert worth_offloading(_FakeEmbedding(None)) is False
+        assert worth_offloading(_FakeEmbedding(_FakeWeight(4 * 2**30, "cpu"))) is False
+        assert worth_offloading(object()) is False
+
+
+def test_auto_declines_a_tied_model_without_printing(capsys):
+    """The tied decline explains why something a caller ASKED for is not happening. For a
+    default nobody set it would be an apology in front of every tied-embedding load."""
+    model = _tied_model()
+    with _as_platform("posix"):
+        assert resolve(model, "auto") is False
+    assert capsys.readouterr().out == ""
+
+
+def test_an_explicit_request_still_explains_itself(capsys):
+    model = _tied_model()
+    with _as_platform("posix"):
+        assert resolve(model, True) is False
+    assert "ties embed_tokens" in capsys.readouterr().out
+
+
+def _sized_model(n_bytes):
+    """An untied, undispatched model whose embedding is exactly `n_bytes` on cuda:0."""
+    return _Model(_FakeEmbedding(_FakeWeight(n_bytes)), _FakeEmbedding(_FakeWeight(8)))
+
+
+def test_auto_offloads_a_big_embedding_and_declines_a_small_one():
+    """`resolve` must actually consult the size test, not just default to yes: a blanket
+    yes would offload every model on every card and cost PCIe traffic for nothing."""
+    with _as_platform("posix"), _card(16 * 2**30):
+        assert resolve(_sized_model(int(2.5 * 2**30)), "auto") is True
+        assert resolve(_sized_model(64 * 2**20), "auto") is False
+
+
+def test_auto_declines_the_same_embedding_on_a_card_with_room():
+    with _as_platform("posix"), _card(80 * 2**30):
+        assert resolve(_sized_model(int(2.5 * 2**30)), "auto") is False
+
+
+def test_explicit_true_and_false_are_untouched_by_the_auto_default():
+    """Backwards compatibility: the size test only ever runs for `"auto"`."""
+    model = _untied_model()
+    with _as_platform("posix"), _card(80 * 2**30):
+        # 80 GB card, so `"auto"` would decline; an explicit True must not.
+        assert resolve(model, True) is True
+        assert resolve(model, False) is False

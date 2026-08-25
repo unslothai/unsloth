@@ -38,6 +38,7 @@ from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
 from .loader_utils import (
     DEFAULT_DEVICE_MAP,
+    OFFLOAD_EMBEDDING_AUTO,
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
     _offline_quantize_to_fp8,
@@ -443,7 +444,7 @@ class FastLanguageModel(FastLlamaModel):
         resize_model_vocab = None,
         revision = None,
         use_exact_model_name = False,
-        offload_embedding = False,
+        offload_embedding = OFFLOAD_EMBEDDING_AUTO,
         float32_mixed_precision = None,  # Forces float32 mixed precision
         fast_inference = False,  # uses vLLM
         gpu_memory_utilization = 0.5,
@@ -1216,7 +1217,7 @@ class FastModel(FastBaseModel):
         whisper_language = None,
         whisper_task = None,
         unsloth_force_compile = False,
-        offload_embedding = False,
+        offload_embedding = OFFLOAD_EMBEDDING_AUTO,
         float32_mixed_precision = None,  # Forces float32 mixed precision
         # Add the missing vLLM/inference parameters
         fast_inference = False,  # uses vLLM

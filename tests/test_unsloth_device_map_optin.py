@@ -124,22 +124,53 @@ def test_an_explicit_dict_is_returned_untouched():
     assert ns["resolve_unsloth_device_map"](explicit, "some/model") is explicit
 
 
-def test_the_env_var_only_upgrades_the_default(monkeypatch):
-    """UNSLOTH_AUTO_DEVICE_MAP is an operator switch, not a licence to override a
-    placement the caller chose. "auto" and a dict must survive it.
+@pytest.mark.parametrize("switch", [None, "1"])
+def test_only_the_default_is_ever_upgraded(monkeypatch, switch):
+    """Planning is what a caller who chose nothing gets, but it is never a licence to
+    override a placement they did choose. "auto" and a dict must survive it.
 
-    So must a "sequential" the caller typed out, which is why the default carries a marker:
-    the two are the same string, and the switch is only entitled to the one nobody chose.
+    So must a "sequential" they typed out, which is why the default carries a marker: the
+    two are the same string, and only the one nobody chose may be upgraded.
     """
     ns = _load()
-    monkeypatch.setenv("UNSLOTH_AUTO_DEVICE_MAP", "1")
+    if switch is None:
+        monkeypatch.delenv("UNSLOTH_AUTO_DEVICE_MAP", raising = False)
+    else:
+        monkeypatch.setenv("UNSLOTH_AUTO_DEVICE_MAP", switch)
     assert ns["requested_device_map"](ns["DEFAULT_DEVICE_MAP"]) == "unsloth"
     assert ns["requested_device_map"]("sequential") == "sequential"
     assert ns["requested_device_map"]("auto") == "auto"
     assert ns["requested_device_map"]("balanced") == "balanced"
     assert ns["requested_device_map"]({"": 0}) == {"": 0}
-    monkeypatch.delenv("UNSLOTH_AUTO_DEVICE_MAP")
+
+
+def test_the_env_var_can_turn_planning_back_off(monkeypatch):
+    """The multi-GPU operator who wants accelerate's greedy fill back needs a switch that
+    does not require editing call sites, so `0` has to reach the default itself."""
+    ns = _load()
+    monkeypatch.setenv("UNSLOTH_AUTO_DEVICE_MAP", "0")
     assert ns["requested_device_map"](ns["DEFAULT_DEVICE_MAP"]) == "sequential"
+    # Still a plain "sequential" downstream, marker and all.
+    assert ns["requested_device_map"](ns["DEFAULT_DEVICE_MAP"]) == ns["DEFAULT_DEVICE_MAP"]
+
+
+def test_an_unset_switch_plans_so_a_bare_from_pretrained_needs_no_device_map(monkeypatch):
+    """The reason the default flipped: a notebook should not have to pass
+    `device_map = "unsloth"` to get the placement that fits."""
+    monkeypatch.delenv("UNSLOTH_AUTO_DEVICE_MAP", raising = False)
+    planned = {"model.embed_tokens": 0, "lm_head": 1}
+    calls = []
+    ns = _load(
+        devices = 2,
+        free = {0: 16 * 2**30, 1: 16 * 2**30},
+        planner = lambda name, **kw: calls.append(name) or _Plan(planned),
+    )
+    resolved = ns["resolve_unsloth_device_map"](
+        ns["requested_device_map"](ns["DEFAULT_DEVICE_MAP"]),
+        "unsloth/Muse-Glimmer-30B-unsloth-bnb-4bit",
+    )
+    assert resolved == planned
+    assert calls == ["unsloth/Muse-Glimmer-30B-unsloth-bnb-4bit"]
 
 
 # ------------------------------------------------------- where planning cannot apply
