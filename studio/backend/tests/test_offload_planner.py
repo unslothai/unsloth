@@ -304,7 +304,7 @@ def test_largest_first_minimises_overshoot():
     # Need ~50 MiB freed: the 50 MiB block alone should do it.
     floor = resident_floor_bytes(layout, 4096)
     budget = floor + layout.spillable_bytes - 40 * MIB + 1 * GIB  # +overhead
-    plan = plan_placement(layout, [budget], 64 * GIB, 4096, opts = PlanOptions())
+    plan = plan_placement(layout, [budget], 64 * GIB, 4096, opts = PlanOptions(overhead_bytes_per_device = GIB, ))
     spilled = sum(b.spillable_bytes for b in layout.blocks if b.index in plan.spilled_blocks)
     assert spilled == 50 * MIB, "should take the 50 MiB block, not a bigger one"
 
@@ -318,14 +318,14 @@ def test_front_and_back_orders_pick_opposite_ends():
         [budget],
         64 * GIB,
         4096,
-        opts = PlanOptions(spill_order = SpillOrder.FRONT_FIRST),
+        opts = PlanOptions(overhead_bytes_per_device = GIB, spill_order = SpillOrder.FRONT_FIRST),
     )
     back = plan_placement(
         layout,
         [budget],
         64 * GIB,
         4096,
-        opts = PlanOptions(spill_order = SpillOrder.BACK_FIRST),
+        opts = PlanOptions(overhead_bytes_per_device = GIB, spill_order = SpillOrder.BACK_FIRST),
     )
     assert front.spilled_blocks == (0,)
     assert back.spilled_blocks == (3,)
@@ -362,7 +362,7 @@ def test_every_device_pays_the_fixed_overhead():
 
 def test_multi_gpu_credit_sums():
     layout = q2_layout()
-    assert plan_placement(layout, [6 * GIB, 6 * GIB], 64 * GIB, 8192).spilled_blocks == ()
+    assert plan_placement(layout, [6 * GIB, 6 * GIB], 64 * GIB, 8192, opts = FIXED_OVERHEAD_OPTS).spilled_blocks == ()
 
 
 # --------------------------------------------------------------- context policy
@@ -460,19 +460,28 @@ def test_f16_is_preferred_when_it_fits_even_with_quant_allowed():
     [(8, 20), (10, 52), (12, 84), (16, 148), (20, 212)],
 )
 def test_q4_ffn_spilled_context_ladder(budget_gib, expected_k):
-    got = max_context_for(q4_layout(), [budget_gib * GIB], spill_all_ffn = True)
+    got = max_context_for(q4_layout(), [budget_gib * GIB], spill_all_ffn = True, opts = FIXED_OVERHEAD_OPTS)
     assert expected_k * 1024 <= got < (expected_k + 1) * 1024, got
+
+
+# Budgets and expected contexts in this file are ARITHMETIC against a stated
+# overhead reserve, not independent measurements. They pin the reserve they were
+# computed for, so moving the constant (1 GiB -> 1.5 GiB, to cover the prefill
+# compute buffer that was OOMing at depth) does not silently invalidate every
+# expected value. The constant itself is pinned by
+# test_the_overhead_reserve_covers_the_measured_prefill_buffer.
+FIXED_OVERHEAD_OPTS = PlanOptions(overhead_bytes_per_device = GIB)
 
 
 @pytest.mark.parametrize("budget_gib,expected_k", [(6, 25), (8, 57), (12, 121), (20, 249)])
 def test_q2_ffn_spilled_context_ladder(budget_gib, expected_k):
-    got = max_context_for(q2_layout(), [budget_gib * GIB], spill_all_ffn = True)
+    got = max_context_for(q2_layout(), [budget_gib * GIB], spill_all_ffn = True, opts = FIXED_OVERHEAD_OPTS)
     assert expected_k * 1024 <= got < (expected_k + 1) * 1024, got
 
 
 @pytest.mark.parametrize("budget_gib,expected_k", [(12, 33), (16, 97), (24, 225)])
 def test_q2_fully_resident_context_ladder(budget_gib, expected_k):
-    got = max_context_for(q2_layout(), [budget_gib * GIB])
+    got = max_context_for(q2_layout(), [budget_gib * GIB], opts = FIXED_OVERHEAD_OPTS)
     assert expected_k * 1024 <= got < (expected_k + 1) * 1024, got
 
 
@@ -485,7 +494,7 @@ def test_the_ladder_never_regresses_as_vram_grows():
     """More VRAM must never mean more spill."""
     layout = q4_layout()
     counts = [
-        len(plan_placement(layout, [g * GIB], 64 * GIB, 32768).spilled_blocks)
+        len(plan_placement(layout, [g * GIB], 64 * GIB, 32768, opts = FIXED_OVERHEAD_OPTS).spilled_blocks)
         for g in (8, 10, 12, 14, 16, 18, 20, 22, 24)
     ]
     assert counts == sorted(counts, reverse = True), counts
@@ -633,8 +642,8 @@ def test_a_unified_memory_host_never_spills():
 
 def test_a_spilling_plan_reports_what_it_will_cost():
     """A plan that spills is not free, and the number has to travel with it."""
-    tight = plan_placement(_dense_q4(), [8 * GIB], 64 * GIB, 32768)
-    roomy = plan_placement(_dense_q4(), [48 * GIB], 64 * GIB, 32768)
+    tight = plan_placement(_dense_q4(), [8 * GIB], 64 * GIB, 32768, opts = FIXED_OVERHEAD_OPTS)
+    roomy = plan_placement(_dense_q4(), [48 * GIB], 64 * GIB, 32768, opts = FIXED_OVERHEAD_OPTS)
     assert tight.spills_anything and tight.predicted_gen_penalty_ms > 0.0
     assert not roomy.spills_anything and roomy.predicted_gen_penalty_ms == 0.0
 
@@ -644,8 +653,8 @@ def test_a_small_host_is_predicted_to_suffer_more_for_the_same_spill():
     batch >= 32, and decode is batch 1), so the penalty tracks core count. A
     desktop must not be told a server's story."""
     layout, vram, ram, ctx = _dense_q4(), [8 * GIB], 64 * GIB, 32768
-    big = plan_placement(layout, vram, ram, ctx, opts = PlanOptions(host = HostProfile(threads = 192)))
-    small = plan_placement(layout, vram, ram, ctx, opts = PlanOptions(host = HostProfile(threads = 8)))
+    big = plan_placement(layout, vram, ram, ctx, opts = PlanOptions(overhead_bytes_per_device = GIB, host = HostProfile(threads = 192)))
+    small = plan_placement(layout, vram, ram, ctx, opts = PlanOptions(overhead_bytes_per_device = GIB, host = HostProfile(threads = 8)))
     assert big.spilled_blocks == small.spilled_blocks, "same placement, different host"
     assert small.predicted_gen_penalty_ms > big.predicted_gen_penalty_ms * 2
 
@@ -664,7 +673,7 @@ def test_routed_experts_are_charged_less_than_a_dense_ffn_of_equal_size():
         is_moe = True,
     )
     moe = ModelLayout(**{**moe.__dict__, "n_expert": 256, "n_expert_used": 8})
-    opts = PlanOptions(host = HostProfile(threads = 192))
+    opts = PlanOptions(overhead_bytes_per_device = GIB, host = HostProfile(threads = 192))
     d = plan_placement(dense, [8 * GIB], 64 * GIB, 32768, opts = opts)
     m = plan_placement(moe, [8 * GIB], 64 * GIB, 32768, opts = opts)
     assert d.spilled_blocks == m.spilled_blocks, "same bytes spilled either way"
@@ -685,3 +694,29 @@ def test_the_mtp_block_is_not_counted_as_spillable():
     assert layout.n_layers == 64
     assert [b.index for b in layout.blocks] == list(range(64)), "no nextn block"
     assert all(b.index < layout.n_layers for b in layout.blocks)
+
+
+def test_the_overhead_reserve_covers_the_measured_prefill_buffer():
+    """The reserve is what the planner leaves free on every device, and it has
+    to cover the child's prefill compute buffer plus its CUDA primary context.
+
+    1 GiB did not, and failed CONSISTENTLY rather than randomly, which is what
+    made it easy to miss: the planner fills to budget minus this reserve, so
+    whatever the budget it leaves exactly this much, and the dense 27B at depth
+    32768 died with the identical shortfall at 6, 7, 8 and 10 GiB budgets:
+
+        allocating 594.16 MiB on device 0: cudaMalloc failed: out of memory
+        llama_init_from_model: failed to allocate compute pp buffers
+
+    Not fragmentation from the benchmark's VRAM pinning: the same case at 16, 64
+    and 1024 MiB hog blocks reproduced the identical 594.16 MiB failure.
+    """
+    reserve = PlanOptions().overhead_bytes_per_device
+    measured_prefill_buffer = int(594.16 * 1024 * 1024)
+    # The context consumed the remainder of the old 1 GiB, since 594 MiB could
+    # not be allocated inside it.
+    inferred_cuda_context = GIB - measured_prefill_buffer
+    assert reserve >= measured_prefill_buffer + inferred_cuda_context
+    assert reserve > GIB, "1 GiB is the value that OOMed"
+    # Bounded: erring high costs spill at 5.544 ms/GiB, so it is not free.
+    assert reserve <= 2 * GIB

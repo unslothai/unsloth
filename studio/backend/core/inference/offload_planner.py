@@ -80,7 +80,31 @@ class SpillOrder(Enum):
 @dataclass(frozen = True)
 class PlanOptions:
     # Compute buffer + CUDA context + scratch, charged on every device.
-    overhead_bytes_per_device: int = GIB
+    #
+    # 1 GiB was too thin and failed CONSISTENTLY rather than randomly, which is
+    # what made it easy to miss. The planner fills to
+    # ``budget - overhead_bytes_per_device``, so whenever it spills it leaves
+    # exactly this much free WHATEVER the budget is -- the dense 27B at depth
+    # 32768 therefore died with the identical shortfall at 6, 7, 8 and 10 GiB:
+    #
+    #   ggml_backend_cuda_buffer_type_alloc_buffer: allocating 594.16 MiB
+    #   on device 0: cudaMalloc failed: out of memory
+    #   graph_reserve: failed to allocate compute buffers
+    #   llama_init_from_model: failed to allocate compute pp buffers
+    #
+    # The child needs the PREFILL compute buffer (594 MiB measured there) plus
+    # its own CUDA primary context, which is what consumed the rest of the old
+    # 1 GiB. Not fragmentation from the benchmark's VRAM pinning: rerunning the
+    # same case with 16, 64 and 1024 MiB hog blocks reproduced the identical
+    # 594.16 MiB failure, so the block size is not what runs out.
+    #
+    # 1.5 GiB covers the measured requirement of just over 1.07 GiB with margin.
+    # It is a measured floor rather than a fitted curve: the steady-state compute
+    # buffer is flat in context (493 to 509 MiB from depth 4096 to 32768), but
+    # the prefill graph's reservation is not, and two depths do not justify
+    # fitting a slope. Erring high costs some spill -- the penalty is linear at
+    # 5.544 ms/GiB -- while erring low costs the whole load.
+    overhead_bytes_per_device: int = (3 * GIB) // 2
     # Host RAM this planner refuses to spend, so a spill does not push the box
     # into swap.
     host_ram_headroom_bytes: int = 2 * GIB
