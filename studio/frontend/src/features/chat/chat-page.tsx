@@ -57,7 +57,9 @@ import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
 import { useIsMobile } from "@/hooks/use-mobile";
 import {
   DOWNLOAD_KIND,
+  dismissStartToast,
   downloadManager,
+  jobKeyOf,
   useRepoDownload,
 } from "@/features/hub/download-manager";
 import {
@@ -2748,13 +2750,14 @@ export function ChatPage({
             repoId: selection.id,
             variant: selection.ggufVariant ?? null,
             expectedBytes: selection.expectedBytes ?? 0,
-          });
-          if (outcome === "started") {
-            toast.info("Downloading in the background", {
+            // Handed over, not raised here, so one start makes one toast.
+            callerToast: {
+              title: "Downloading in the background",
               description:
                 "It'll be ready to load once the current model finishes.",
-            });
-          } else if (outcome === "conflict") {
+            },
+          });
+          if (outcome === "conflict") {
             toast.info("Resume this download from Models", {
               description:
                 "An earlier partial download used a different transport. Open the Model hub tab to resume or restart it.",
@@ -2852,9 +2855,26 @@ export function ChatPage({
       }
     },
   });
+  // The pending auto-load's job, for the context-change effect below. Written from
+  // an effect, never during render.
+  const pendingAutoLoadKeyRef = useRef<string | null>(null);
+  // The live context, so a start still in flight can check it is still on screen.
+  const chatContextKeyRef = useRef(chatContextKey);
+  useEffect(() => {
+    chatContextKeyRef.current = chatContextKey;
+  }, [chatContextKey]);
   useEffect(() => {
     const pending = pendingHubAutoLoad;
-    if (!pending) return;
+    if (!pending) {
+      pendingAutoLoadKeyRef.current = null;
+      return;
+    }
+    const pendingKey = jobKeyOf(
+      DOWNLOAD_KIND.MODEL,
+      pending.selection.id,
+      pending.selection.ggufVariant ?? null,
+    );
+    pendingAutoLoadKeyRef.current = pendingKey;
     let active = true;
     void (async () => {
       const outcome = await downloadManager.requestStart({
@@ -2862,12 +2882,21 @@ export function ChatPage({
         repoId: pending.selection.id,
         variant: pending.selection.ggufVariant ?? null,
         expectedBytes: pending.selection.expectedBytes ?? 0,
+        // Notice-only: #9663 removed this surface's own toast, so it must not
+        // return on an HTTP start or once the three notices are spent.
+        callerToast: {
+          title: "Downloading model",
+          description: "It'll load automatically once the download finishes.",
+          noticeOnly: true,
+          // The cleanup below only reaches a toast that already exists; a raise
+          // still in flight would promise an auto-load onComplete then refuses.
+          stillValid: () => chatContextKeyRef.current === pending.contextKey,
+        },
       });
       if (!active) return;
       if (outcome === "started") {
-        toast.info("Downloading model", {
-          description: "It'll load automatically once the download finishes.",
-        });
+        // No toast here, and none from the manager unless the notice folds the
+        // sentence in. The auto-load runs from onComplete.
         return;
       }
       if (outcome === "conflict") {
@@ -2891,8 +2920,19 @@ export function ChatPage({
     })();
     return () => {
       active = false;
+      // Another model was picked, so this one's completion loads nothing. A no-op
+      // once the download finished, which dismisses the same id.
+      dismissStartToast(pendingKey);
     };
   }, [pendingHubAutoLoad]);
+  // Switching thread or project keeps the pathname and pendingHubAutoLoad, so neither
+  // sweep above runs, yet onComplete refuses to load into a different contextKey.
+  useEffect(() => {
+    return () => {
+      const pendingKey = pendingAutoLoadKeyRef.current;
+      if (pendingKey) dismissStartToast(pendingKey);
+    };
+  }, [chatContextKey]);
   const loadNativeModelIntent = useCallback(
     async (intent: NativeIntent, loadingDescription: string) => {
       const label =

@@ -46,15 +46,23 @@ test("the row lands on the TTS selector, not the mode Audio was left in", () => 
   );
 });
 
+test("custom TTS explains the strict voice default", () => {
+  assert.match(
+    en,
+    /customVoiceDescription: "Voice name the endpoint expects; defaults to alloy",/,
+  );
+  assert.doesNotMatch(en, /customVoiceDescription: .*optional/i);
+});
+
 test("a studio preview shows the generate wait instead of an idle button", () => {
   // Stop during the generate wait read as idle, and extra clicks orphaned requests.
   assert.match(
     source,
-    /markPreviewing\(true\);\s*setPreparingPreview\(true\);\s*try \{\s*const url = await generateStudioTtsAudio\(/,
+    /markPreviewing\(true\);\s*setPreparingPreview\(true\);\s*try \{\s*const generate =[\s\S]*?const url = await generate\(/,
   );
   assert.match(
     source,
-    /if \(controller\.signal\.aborted\) return;\s*setPreparingPreview\(false\);/,
+    /if \(controller\.signal\.aborted\) \{\s*releaseTtsAudioUrl\(url\);\s*return;\s*\}\s*setPreparingPreview\(false\);/,
   );
   // Every other exit goes through markPreviewing, so clearing there covers them all.
   assert.match(
