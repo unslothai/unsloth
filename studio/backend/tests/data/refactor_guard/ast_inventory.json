@@ -852,6 +852,9 @@
       "RAG_SEARCH_CAP_NUDGE": {
         "kind": "assign"
       },
+      "RAG_SEARCH_TOOLS": {
+        "kind": "assign"
+      },
       "RENDER_HTML_REPEAT_NUDGE": {
         "kind": "assign"
       },

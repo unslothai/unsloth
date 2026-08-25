@@ -191,6 +191,7 @@ export const zhCN = {
       chat: "聊天",
       connections: "连接",
       apiKeys: "API",
+      remoteLan: "远程与局域网",
       about: "关于",
       voice: "语音",
       data: "数据",
@@ -214,23 +215,11 @@ export const zhCN = {
       clear: "移除快捷键",
       reset: "恢复默认",
       resetAll: "全部恢复默认",
-      groups: {
-        general: "通用",
-        chat: "聊天",
-      },
+      primarySlot: "快捷键",
+      alternateSlot: "备用快捷键",
+      browserReserved:
+        "浏览器可能会占用该组合键。桌面应用中可正常使用。",
       actions: {
-        newChat: {
-          label: "新建聊天",
-          description: "开始一个新的聊天",
-        },
-        searchChats: {
-          label: "搜索聊天",
-          description: "打开聊天搜索对话框",
-        },
-        toggleSidebar: {
-          label: "切换侧边栏",
-          description: "显示或隐藏侧边栏",
-        },
         openSettings: {
           label: "打开设置",
           description: "打开设置对话框",
@@ -238,6 +227,206 @@ export const zhCN = {
         openKeyboardShortcuts: {
           label: "键盘快捷键",
           description: "打开该快捷键列表",
+        },
+        searchChats: {
+          label: "搜索聊天",
+          description: "打开聊天搜索对话框",
+        },
+        openMcpServers: {
+          label: "MCP 服务器",
+          description: "为该聊天配置 MCP 服务器",
+        },
+        logOut: {
+          label: "退出登录",
+          description: "退出 Unsloth",
+        },
+        approveToolRequest: {
+          label: "批准请求",
+          description: "允许正在等待批准的工具调用",
+        },
+        declineToolRequest: {
+          label: "拒绝请求",
+          description: "拒绝正在等待批准的工具调用",
+        },
+        newChat: {
+          label: "新建聊天",
+          description: "开始一个新的聊天",
+        },
+        newTemporaryChat: {
+          label: "新建临时聊天",
+          description: "开始一个不写入历史记录的聊天",
+        },
+        newStandaloneChat: {
+          label: "新建独立聊天",
+          description: "在所有项目之外开始新聊天",
+        },
+        archiveChat: {
+          label: "归档聊天",
+          description: "归档已选聊天，没有则归档当前聊天",
+        },
+        markChatUnread: {
+          label: "标记为未读",
+          description: "将已选聊天标记为未读，没有则标记当前聊天",
+        },
+        togglePinChat: {
+          label: "切换置顶",
+          description: "置顶或取消置顶已选聊天，没有则操作当前聊天",
+        },
+        selectAllChats: {
+          label: "选择全部对话",
+          description: "选择侧边栏中的所有对话",
+        },
+        clearChatSelection: {
+          label: "清除选择",
+          description: "取消选择已选对话。按 Esc 同样可以取消选择",
+        },
+        deleteSelectedChats: {
+          label: "删除所选对话",
+          description: "删除所有已选对话",
+        },
+        nextRecentlyViewedChat: {
+          label: "下一个最近查看的聊天",
+          description: "在最近查看的聊天中向前切换",
+        },
+        previousRecentlyViewedChat: {
+          label: "上一个最近查看的聊天",
+          description: "在最近查看的聊天中向后切换",
+        },
+        nextChat: {
+          label: "下一个聊天",
+          description: "切换到侧边栏中的下一个聊天",
+        },
+        previousChat: {
+          label: "上一个聊天",
+          description: "切换到侧边栏中的上一个聊天",
+        },
+        nextChatNeedingAttention: {
+          label: "下一个需要处理的聊天",
+          description: "切换到下一个正在生成、排队或未读的聊天",
+        },
+        clearAllUnreads: {
+          label: "全部标记为已读",
+          description: "将所有聊天标记为已读",
+        },
+        goToRecentChat1: {
+          label: "转到最近聊天 1",
+          description: "打开“最近”中的第 1 个聊天",
+        },
+        goToRecentChat2: {
+          label: "转到最近聊天 2",
+          description: "打开“最近”中的第 2 个聊天",
+        },
+        goToRecentChat3: {
+          label: "转到最近聊天 3",
+          description: "打开“最近”中的第 3 个聊天",
+        },
+        goToRecentChat4: {
+          label: "转到最近聊天 4",
+          description: "打开“最近”中的第 4 个聊天",
+        },
+        goToRecentChat5: {
+          label: "转到最近聊天 5",
+          description: "打开“最近”中的第 5 个聊天",
+        },
+        goToRecentChat6: {
+          label: "转到最近聊天 6",
+          description: "打开“最近”中的第 6 个聊天",
+        },
+        switchToChat: {
+          label: "切换到聊天",
+          description: "前往聊天工作区",
+        },
+        switchToProjects: {
+          label: "切换到项目",
+          description: "前往项目工作区",
+        },
+        switchToHub: {
+          label: "切换到模型中心",
+          description: "前往模型中心",
+        },
+        switchToTrain: {
+          label: "切换到训练",
+          description: "前往训练工作区",
+        },
+        switchToRecipes: {
+          label: "切换到 Recipes",
+          description: "前往 Data Recipes",
+        },
+        switchToImages: {
+          label: "切换到图像",
+          description: "前往图像工作区",
+        },
+        switchToVideo: {
+          label: "切换到视频",
+          description: "前往视频工作区",
+        },
+        switchToAudio: {
+          label: "切换到音频",
+          description: "前往音频工作区",
+        },
+        switchToExport: {
+          label: "切换到导出",
+          description: "前往导出工作区",
+        },
+        toggleSidebar: {
+          label: "切换侧边栏",
+          description: "显示或隐藏侧边栏",
+        },
+        toggleApiMonitor: {
+          label: "切换 API 活动",
+          description: "显示或隐藏 API 活动监视器",
+        },
+        openModelPicker: {
+          label: "打开模型选择器",
+          description: "为该聊天选择模型",
+        },
+        openProjectPicker: {
+          label: "打开项目选择器",
+          description: "从聊天标题栏切换到其他项目",
+        },
+        startDictation: {
+          label: "语音输入",
+          description: "开始或停止在输入框中语音输入",
+        },
+        attachFiles: {
+          label: "添加照片和文件",
+          description: "为输入框添加附件",
+        },
+        sendMessage: {
+          label: "发送消息",
+          description: "发送输入框中的内容",
+        },
+        cycleReasoningEffort: {
+          label: "循环切换推理强度",
+          description: "在各推理强度等级之间循环",
+        },
+        increaseReasoningEffort: {
+          label: "提高推理强度",
+          description: "将推理强度提高一级",
+        },
+        decreaseReasoningEffort: {
+          label: "降低推理强度",
+          description: "将推理强度降低一级",
+        },
+        toggleFastMode: {
+          label: "切换 Fast 模式",
+          description: "开启或关闭 Fast 模式",
+        },
+        renameChat: {
+          label: "重命名聊天",
+          description: "重命名当前聊天",
+        },
+        forkChat: {
+          label: "分叉聊天",
+          description: "从最后一条消息分出新的聊天",
+        },
+        copyChatAsMarkdown: {
+          label: "复制为 Markdown",
+          description: "将整个聊天以 Markdown 复制到剪贴板",
+        },
+        copySessionId: {
+          label: "复制会话 ID",
+          description: "复制该聊天的沙箱会话 ID",
         },
       },
     },
@@ -277,6 +466,17 @@ export const zhCN = {
         engineModel: "本地转写",
         engineModelDescription:
           "在本地运行语音转文字（STT）模型，可离线使用。下载并加载后，闲置一段时间会自动卸载。",
+        engineCustom: "自定义端点",
+        engineCustomDescription:
+          "将录制的音频发送到“连接”中的 OpenAI 兼容 STT 服务器。",
+        connectionLabel: "连接",
+        connectionDescription:
+          "在“连接”中添加 OpenAI 兼容服务器和可选的 API 密钥。",
+        connectionPlaceholder: "选择连接",
+        connectionEmpty: "没有可用的连接",
+        customModelLabel: "模型",
+        customModelDescription:
+          "发送到 /v1/audio/transcriptions 的模型名称。",
         sttModelLabel: "语音识别模型",
         sttModelDescription: "选择或搜索要在本地运行的 STT 模型。",
         sttModelSearchPlaceholder: "搜索模型",
@@ -333,6 +533,7 @@ export const zhCN = {
         languageLabel: "语音输入语言",
         languageDescription: "要识别的语言",
         languageAuto: "自动（浏览器语言）",
+        languageAutoDetect: "自动（检测语言）",
       },
       dictionary: {
         sectionTitle: "语音输入词典",
@@ -392,6 +593,14 @@ export const zhCN = {
         engineStudioDescription: "使用已加载的音频模型（例如 Orpheus）",
         engineSystem: "系统语音",
         engineStudio: "加载 TTS 模型",
+        engineCustom: "自定义端点",
+        engineCustomDescription:
+          "来自连接的 OpenAI 兼容 TTS 服务器（例如 Kokoro）",
+        connectionLabel: "连接",
+        connectionDescription: "在“连接”标签页中添加 OpenAI 兼容服务器",
+        connectionPlaceholder: "选择连接",
+        customModelLabel: "模型",
+        customVoiceDescription: "端点所需的语音名称（默认为 alloy）",
         modelLabel: "TTS 模型",
         modelDescription: "从模型选择器加载音频模型（例如 Orpheus TTS）",
         openAudioAction: "打开音频",
@@ -491,7 +700,7 @@ export const zhCN = {
           "在空闲卸载前保存 KV 缓存，让恢复的聊天无需重新读取历史。最多占用 10 GB 磁盘空间。",
         apiOnly: "仅卸载由 API 加载的模型",
         apiOnlyDescription:
-          "空闲卸载会将你在 Studio 中加载的模型保留在内存中，只释放由 API 请求加载的模型。",
+          "空闲卸载会将你在 Unsloth 中加载的模型保留在内存中，只释放由 API 请求加载的模型。",
       },
       previewSharing: {
         sectionTitle: "预览分享",
@@ -534,6 +743,27 @@ export const zhCN = {
         loadError: "无法加载登录时启动设置。",
         saveError: "无法更新登录时启动设置。",
       },
+      downloads: {
+        sectionTitle: "下载",
+        transport: "下载传输方式",
+        transportDescription:
+          "模型和数据集文件从 Hugging Face 下载的方式。HTTPS 会从中断处续传；Xet 首次下载通常更快，但取消后该文件会重新开始。",
+        transportHint:
+          "HTTPS 就是普通 TLS：任何网络、代理和 VPN 都允许，取消或断开的传输会从磁盘上已有的字节续传，内存占用也很平稳。Xet 获取去重后的数据块，因此与已有仓库共享数据时可以快得多，但它需要 hf_xet、占用更多内存，取消时会丢弃正在传输的文件。Auto 会针对本机判断：它会权衡内存以及 Xet 在这里是否曾经卡住，并在必要时退回 HTTPS。",
+        https: "HTTPS",
+        xet: "Xet",
+        auto: "Auto",
+        httpsHint: "标准 TLS。取消后可续传，适用于任何网络，内存占用稳定。",
+        transportDescriptionNoResume:
+          "模型和数据集文件从 Hugging Face 下载的方式。此安装的两种传输方式都无法续传，取消后的下载会重新开始；Xet 在首次下载时通常更快。",
+        httpsHintNoResume:
+          "标准 TLS。可在任何网络下使用，内存占用平稳。此安装无法续传已取消的下载。",
+        xetHint:
+          "去重数据块传输。首次下载通常更快，取消后文件重新开始，需要更多内存。",
+        autoHint: "按本机情况选择，若 Xet 在这里卡住或失败则切换到 HTTPS。",
+        autoCurrently: "本机上 Auto 正在使用 {transport}。",
+        xetMissing: "未安装 hf_xet，因此无法使用 Xet。",
+      },
       uploads: {
         sectionTitle: "上传",
         maxUploadSize: "训练数据集上传上限",
@@ -545,6 +775,7 @@ export const zhCN = {
         embeddingModel: "Embedding 模型",
         embeddingModelDescription:
           "用于为文档建立索引和搜索的 Hugging Face 模型或本地路径。默认值为 {defaultModel}。",
+        searchPlaceholder: "搜索嵌入模型",
         reindexWarning:
           "仅影响新建立索引的文档。更改模型后请重新上传已有文档。",
         emptyError: "请输入 Hugging Face 模型 ID 或本地路径。",
@@ -816,6 +1047,8 @@ export const zhCN = {
         title: "GPU 设备",
         ggufInference: "GGUF 推理",
         unavailable: "不可用",
+        detecting: "正在检查 GPU...",
+        unreadable: "无法读取此服务器的硬件信息。",
         noGpu: "未检测到可见 GPU。上方仅显示 CPU 资源。",
         unknownDevice: "未知 GPU",
         deviceWithIndex: "GPU {index}",
@@ -839,6 +1072,24 @@ export const zhCN = {
         switchFailed: "无法更改 llama.cpp 后端。",
         switchInterrupted: "切换在完成前中断。",
         envLocked: "已由环境变量 UNSLOTH_LLAMA_CPP_BACKEND 固定为 {backend}，其优先级高于此设置。",
+        customPath: {
+          label: "自定义 llama.cpp 文件夹",
+          description: "使用你自己的 llama-server 构建。",
+          hint: "选择包含 llama-server 的 llama.cpp 文件夹，或 llama-server 位于 build/bin 下的构建。自定义运行时用于 GGUF 聊天、嵌入和受支持的语音模型。环境变量仍然优先。",
+          automatic: "自动（内置）",
+          bundled: "使用 Unsloth 安装的 llama.cpp 运行时。",
+          active: "下次加载模型时将使用你的自定义 llama-server。",
+          environmentManaged: "由 {variable} 环境变量管理。",
+          missingBinary: "此文件夹中的 llama-server 已不可用。请选择其他文件夹或使用内置运行时。",
+          reloadRequired: "请重新加载模型以使用所选 llama-server。",
+          change: "更改",
+          saving: "正在保存...",
+          useBundled: "使用内置版本",
+          chooseTitle: "选择 llama.cpp 文件夹",
+          chooseAction: "使用此文件夹",
+          saved: "llama.cpp 文件夹已更新",
+          saveError: "无法更新 llama.cpp 文件夹",
+        },
         backends: {
           auto: "自动",
           cpu: "CPU",
@@ -851,6 +1102,7 @@ export const zhCN = {
           notInstalled: "未找到受管理的 llama.cpp 安装，因此没有可切换的后端。",
           localLink: "llama.cpp 是你自己链接的本地目录，Unsloth 不会替换它。",
           sourceBuild: "此 llama.cpp 由源码编译，无法在这里切换后端。",
+          customPath: "已选择自定义 llama.cpp 文件夹。其构建决定计算后端。",
           unresolved: "无法检查可用的后端。请检查网络连接后重试。",
         },
         // 不显示：用于设置搜索的额外词条。
@@ -954,7 +1206,7 @@ export const zhCN = {
       quickstart: {
         title: "生成命令",
         description:
-          "使用 Studio 中当前加载的模型启动智能体。请先加载模型，然后把 claude 换成下面任意一个受支持的智能体。",
+          "使用 Unsloth 中当前加载的模型启动智能体。请先加载模型，然后把 claude 换成下面任意一个受支持的智能体。",
         noneDetected: "未在你的 PATH 中找到受支持的智能体命令行工具。",
         installed: "已安装",
       },
@@ -975,7 +1227,7 @@ export const zhCN = {
         description:
           "Unsloth 的参数会先被解析；无法识别的参数会原样传给智能体。",
         model:
-          "选择模型。不带 --model 时，unsloth start 会使用 Studio 中当前加载的模型；若没有已加载的模型则报错。",
+          "选择模型。不带 --model 时，unsloth start 会使用 Unsloth 中当前加载的模型；若没有已加载的模型则报错。",
         contextLength: "设置请求的上下文长度（别名：--max-seq-length）。",
         ggufVariant: "选择 GGUF 量化变体。",
         loadIn4bit: "开启或关闭 Hugging Face 模型的 4 位加载。",
@@ -986,12 +1238,16 @@ export const zhCN = {
         asSubagent:
           "让父智能体保持当前模型，并将 Unsloth 注册为本地子智能体（Claude Code、Codex 和 OpenCode）。",
         apiKey: "提供你的 Unsloth API 密钥（或设置 UNSLOTH_API_KEY）。",
+        reasoning:
+          "是否在对话中使用推理：on、off 或 auto。auto 会遵循模型的对话模板，通常为开启。",
+        reasoningEffort:
+          "传给模型对话模板的推理强度，例如 medium。可用的级别因模型而异，请使用该模型接受的级别。不设置时沿用模板自身的值。",
         yolo: "跳过确认提示。请仅在可信环境中使用。",
       },
       remote: {
-        title: "连接到远程 Studio",
+        title: "连接到远程 Unsloth Studio",
         description:
-          "在启动前设置以下内容，即可让 unsloth start 指向运行在别处的 Studio（也可以直接传入 --api-key）：",
+          "在启动前设置以下内容，即可让 unsloth start 指向运行在别处的 Unsloth Studio（也可以直接传入 --api-key）：",
       },
       passthrough: {
         title: "向智能体传递参数",
@@ -1030,7 +1286,7 @@ export const zhCN = {
         exportChat: "导出聊天",
       },
       pastedTextThreshold: "压缩长粘贴内容",
-      pastedTextThresholdDescription: "超过此长度的粘贴文本将变为 .txt 附件，而不会填满消息输入框。",
+      pastedTextThresholdDescription: "超过此长度的粘贴文本将变为 .txt 附件，而不会填满消息输入框。 按 {shortcut} 仍可粘贴到消息输入框。",
       pastedTextThresholdOff: "关闭",
       showResponseModel: "显示回复模型",
       showResponseModelDescription: "在助手回复中显示模型元数据。",
@@ -1047,6 +1303,12 @@ export const zhCN = {
         collapseByDefault: "默认折叠思考过程",
         collapseByDefaultDescription:
           "模型思考时保持折叠，而不是自动展开。需要阅读时展开对应区块。",
+      },
+      webSearch: {
+        title: "网页搜索",
+        images: "显示网页搜索图片",
+        imagesDescription:
+          "让网页搜索返回图片，并为回答中列出的每一项各获取一张。缩略图由 Studio 获取并缩放，浏览器不会直接访问图片来源。",
       },
       artifacts: {
         title: "Canvas",
@@ -1174,6 +1436,11 @@ export const zhCN = {
     connections: {
       title: "连接",
       description: "管理提供方和外部服务的连接。",
+    },
+    remoteLan: {
+      title: "远程与局域网",
+      description:
+        "通过局域网或临时公开 URL，从其他设备访问此 Unsloth。",
     },
     apiKeys: {
       title: "API",
@@ -1464,8 +1731,8 @@ export const zhCN = {
       reasonAdapter: "适配器输出不能作为基础训练模型。",
       reasonNotTrainable: "此设备上的模型无法用于训练。",
       reasonUnsupportedFormat: "训练不支持此模型格式。",
-      vramNeeds: "约需 {est}GB VRAM（GPU：{total}GB）",
-      vramTight: "约 {est}GB VRAM（在 {total}GB 上偏紧）",
+      vramNeeds: "约需 {est}GB VRAM（GPU：{total}GiB）",
+      vramTight: "约 {est}GB VRAM（在 {total}GiB 上偏紧）",
       vramApprox: "约 {est}GB VRAM",
       vramOomBadge: "OOM",
       vramTightBadge: "显存吃紧",

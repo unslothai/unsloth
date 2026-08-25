@@ -3,18 +3,14 @@
 
 """Wiring guard for the plan-without-action ``nudge_tool_calls`` policy.
 
-Decided policy: the re-prompt is ALWAYS ON for the Unsloth inference paths
-(safetensors, GGUF/llama_cpp, MLX) and OPT-IN for the API (/v1 OpenAI-compat +
-Anthropic-compat, controlled by the request's ``nudge_tool_calls``, default off).
+The request flag is explicit at every boundary. ``None`` follows the shared
+process default from ``passthrough_healing.nudge_enabled`` (off unless
+``UNSLOTH_TOOL_CALL_NUDGE=1``), while Studio may opt in by sending ``True``.
 
 Mechanism (verified here without loading a model):
 
-  * every backend tool-loop entry point accepts and forwards ``nudge_tool_calls``
-    (safetensors -> ``InferenceBackend``; MLX -> ``InferenceOrchestrator``; both
-    call the shared ``run_safetensors_tool_loop``; GGUF -> ``LlamaCppBackend``);
-  * the safetensors/MLX loop gates the retry on a truthy flag (new retry ->
-    opt-in), while the GGUF loop keeps its pre-existing default-on behaviour
-    (``None`` keeps nudging) so an omitted flag never disables GGUF;
+  * the GGUF loop and external Studio loop use the same normalizer;
+  * the external route forwards the request flag into ``ToolLoopPolicy``;
   * the API request models default the flag to ``None`` (opt-in / off);
   * the Unsloth-facing routes forward the request's flag, and the Unsloth frontend
     sends ``nudge_tool_calls: true`` -- exercised behaviourally in
@@ -22,10 +18,24 @@ Mechanism (verified here without loading a model):
 """
 
 import inspect
+import pathlib
 
 from core.inference.llama_cpp import LlamaCppBackend
 from core.inference.orchestrator import InferenceOrchestrator
+from core.inference.passthrough_healing import nudge_enabled
 from core.inference.safetensors_agentic import run_safetensors_tool_loop
+from core.inference.studio_tool_loop import ToolLoopPolicy, stream_with_studio_tools
+
+
+_CHAT_ADAPTER_SOURCE = (
+    pathlib.Path(__file__).resolve().parents[2]
+    / "frontend"
+    / "src"
+    / "features"
+    / "chat"
+    / "api"
+    / "chat-adapter.ts"
+)
 
 try:
     # core.inference.inference imports unsloth at module scope, which requires
@@ -69,14 +79,24 @@ def test_delegating_backends_forward_the_flag_to_the_shared_loop():
         assert "nudge_tool_calls = nudge_tool_calls" in src, method.__qualname__
 
 
-def test_safetensors_loop_is_opt_in_while_gguf_stays_default_on():
-    # Safetensors/MLX: the retry is new here, so it requires a truthy flag.
-    sf_src = inspect.getsource(run_safetensors_tool_loop)
-    assert "and nudge_tool_calls" in sf_src
-    # GGUF: pre-existing nudge must not be accidentally disabled -- an omitted
-    # (None) flag keeps nudging; only an explicit False turns it off.
+def test_gguf_and_external_loops_use_the_shared_nudge_normalizer():
     gguf_src = inspect.getsource(LlamaCppBackend.generate_chat_completion_with_tools)
-    assert "nudge_tool_calls is None or nudge_tool_calls" in gguf_src
+    assert "_nudge_enabled(nudge_tool_calls)" in gguf_src
+    external_src = inspect.getsource(stream_with_studio_tools)
+    assert "nudge_enabled(policy.nudge_tool_calls)" in external_src
+    assert "nudge_tool_calls" in ToolLoopPolicy.__dataclass_fields__
+
+
+def test_nudge_normalizer_uses_the_process_default_and_explicit_values(monkeypatch):
+    from core.inference import passthrough_healing
+
+    monkeypatch.setattr(passthrough_healing, "_NUDGE_DEFAULT", False)
+    assert nudge_enabled(None) is False
+    assert nudge_enabled(False) is False
+    assert nudge_enabled(True) is True
+
+    monkeypatch.setattr(passthrough_healing, "_NUDGE_DEFAULT", True)
+    assert nudge_enabled(None) is True
 
 
 def test_api_request_models_default_the_flag_off():
@@ -97,3 +117,8 @@ def test_studio_routes_forward_the_request_flag():
     ):
         src = inspect.getsource(handler)
         assert "nudge_tool_calls = payload.nudge_tool_calls" in src, handler.__name__
+
+
+def test_studio_external_adapter_forwards_the_nudge_flag():
+    src = _CHAT_ADAPTER_SOURCE.read_text(encoding = "utf-8")
+    assert "nudge_tool_calls: runtime.nudgeToolCalls" in src

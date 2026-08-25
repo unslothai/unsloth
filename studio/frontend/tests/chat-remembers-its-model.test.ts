@@ -3,9 +3,9 @@
 
 // Every thread row has carried modelId since long before this notice, so the model a chat
 // was started on is already known for chats that already exist. What was missing was
-// showing it and offering it back. The rules below are the ones that keep the offer from
-// becoming a nuisance: it never loads anything on its own, and it stays quiet whenever it
-// could not be honoured.
+// offering it back. The rules below are the ones that keep the offer from becoming a
+// nuisance: it never loads anything on its own, and it stays quiet whenever it could not
+// be honoured.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -20,8 +20,6 @@ function read(path: string): string {
 
 const notice = read("../src/features/chat/components/chat-model-notice.tsx");
 const page = read("../src/features/chat/chat-page.tsx");
-const sidebar = read("../src/components/app-sidebar.tsx");
-const items = read("../src/features/chat/hooks/use-chat-sidebar-items.ts");
 const thread = read("../src/components/assistant-ui/thread.tsx");
 const researchPanel = read(
   "../src/features/chat/components/research-activity-panel.tsx",
@@ -36,26 +34,8 @@ function slice(source: string, from: string, to: string): string {
   return source.slice(start, end);
 }
 
-// Source assertions: use-chat-sidebar-items reaches chat-api, and the label helper reaches
-// external-providers, neither of which resolves in a bare node test. The sibling
-// thread-scoped suites do the same for the same reason.
-
-test("a single chat row carries the model it was started on", () => {
-  const single = slice(items, 'type: "single",', "});");
-  assert.match(single, /modelId: t\.modelId \|\| undefined,/);
-});
-
-test("a legacy row with no model reads as unknown rather than empty string", () => {
-  // db.ts backfills "" onto old records, and "" would render an empty label.
-  assert.match(items, /modelId: t\.modelId \|\| undefined,/);
-  assert.doesNotMatch(items, /modelId: t\.modelId,/);
-});
-
-test("a compare row carries no single model", () => {
-  // Two panes, two models: there is no honest one to show, so the field is absent.
-  const compare = slice(items, 'type: "compare",', "};");
-  assert.doesNotMatch(compare, /modelId/);
-});
+// Source assertions: the notice reaches external-providers, which does not resolve in a
+// bare node test. The sibling thread-scoped suites do the same for the same reason.
 
 test("the notice never switches a model on its own", () => {
   // Opening a chat must not evict what is resident: a local load is multi-gigabyte.
@@ -165,9 +145,17 @@ test("the conversation reserves the space the notice overlay takes", () => {
 
   // One declaration of the height, on the nearest ancestor of both, so the bar and
   // the padding cannot drift apart.
+  //
+  // `has-[>...]`, not `has-[...]`: the descendant form made every DOM change anywhere in the
+  // thread re-check this `:has()` on an ancestor of every message, and answering it walks the
+  // whole thread. Measured at the 500K rung on a 357,843-element thread, appending one empty span
+  // inside a message cost 17.5 / 18.6 ms with the descendant form and 0.10 ms once this rule and
+  // the sidebar wrapper's were both put in their child form. The notice is a direct child of the
+  // declaring element, so the two selectors match the same elements; that is asserted separately
+  // in `tests/thread-ancestor-has-scope.test.ts`, which is what keeps the child form honest.
   assert.match(
     page,
-    /has-\[\[data-chat-model-notice\]\]:\[--studio-chat-notice-height:2\.25rem\]/,
+    /has-\[>\[data-chat-model-notice\]\]:\[--studio-chat-notice-height:2\.25rem\]/,
   );
   // The notice claims the same variable rather than a padding of its own.
   assert.match(notice, /data-chat-model-notice=""/);
@@ -252,20 +240,6 @@ test("the canvas panel reserves the notice's height too", () => {
     /--studio-chat-notice-height,\s*2\.25rem/,
     "the panel must not assume a notice is present",
   );
-});
-
-test("the sidebar label cannot collide with the spinner or the unread dot", () => {
-  // Both take the same right-hand slot, and the dot is positioned over it.
-  assert.match(
-    sidebar,
-    /\{item\.modelId && !showWorkSpinner && !hasUnreadActivity && \(/,
-  );
-  // The title truncates first, so a long model name never squeezes it out.
-  const label = sidebar.slice(
-    sidebar.indexOf("{item.modelId && !showWorkSpinner"),
-  );
-  assert.match(label.slice(0, 400), /max-w-\[45%\]/);
-  assert.match(label.slice(0, 400), /compareModelDisplayName\(item\.modelId\)/);
 });
 
 test("a chat started as New Chat gets the notice once its row exists", () => {
