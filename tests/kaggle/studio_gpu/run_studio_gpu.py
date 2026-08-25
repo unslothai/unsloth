@@ -1501,16 +1501,20 @@ class Payload:
             head = [sys.executable, "-c", "from unsloth_cli import app; app()"]
         cmd = head + [
             "run",
-            "--model", self.args.chat_model,
-            "--port", str(port),
-            "--host", "127.0.0.1",
+            "--model",
+            self.args.chat_model,
+            "--port",
+            str(port),
+            "--host",
+            "127.0.0.1",
             # Headless: no UI to serve and no browser to open, which is the
             # shape this path is for.
             "--api-only",
             # Never a public URL from CI. --secure would imply one.
             "--no-cloudflare",
             "--start-api-key-marker",
-            "--max-seq-length", str(self.args.studio_ctx),
+            "--max-seq-length",
+            str(self.args.studio_ctx),
         ]
         if self.args.chat_variant:
             cmd += ["--gguf-variant", self.args.chat_variant]
@@ -1524,8 +1528,11 @@ class Payload:
 
         handle = open(log_path, "ab")
         proc = subprocess.Popen(
-            cmd, cwd = str(self.repo_root), env = env,
-            stdout = handle, stderr = subprocess.STDOUT,
+            cmd,
+            cwd = str(self.repo_root),
+            env = env,
+            stdout = handle,
+            stderr = subprocess.STDOUT,
         )
 
         api_key = None
@@ -1582,7 +1589,9 @@ class Payload:
                 detail["completion_status"] = code
                 text = ""
                 if code == 200 and isinstance(body, dict):
-                    text = ((body.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+                    text = ((body.get("choices") or [{}])[0].get("message") or {}).get(
+                        "content"
+                    ) or ""
                 detail["generated"] = text[:200]
                 if code != 200:
                     failures.append(

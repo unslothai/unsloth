@@ -95,7 +95,7 @@ def test_the_key_is_registered_as_a_secret_before_anything_reads_the_log():
 
 
 def test_gpu_use_is_measured_and_an_unmeasurable_reading_is_a_failure():
-    """"nvidia-smi did not answer" and "the model was on the GPU" are opposite
+    """ "nvidia-smi did not answer" and "the model was on the GPU" are opposite
     outcomes; treating the first as a pass is the exact shape this directory
     has been caught by before."""
     body = _body()
@@ -110,8 +110,10 @@ def test_a_corrupted_key_must_be_refused():
     satisfies the claim that the minted key authenticated."""
     func = _func("assert_cli_run")
     guarded = [
-        n for n in ast.walk(func)
-        if isinstance(n, ast.If) and "bad_key_status" not in ast.unparse(n.test)
+        n
+        for n in ast.walk(func)
+        if isinstance(n, ast.If)
+        and "bad_key_status" not in ast.unparse(n.test)
         and "code < 400" in ast.unparse(n.test)
     ]
     assert guarded, "nothing refuses a corrupted key"
