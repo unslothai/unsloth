@@ -4059,6 +4059,9 @@ def _read_roster(rag_scope: dict) -> tuple[list[str], int]:
     scopes = _roster_scopes(rag_scope)
     if not scopes:
         return [], 0
+    # the gate retrieval runs, and the call that ensures the schema a metadata connection skips
+    if not rag_db.rag_available():
+        return [], 0
     conn = rag_db.get_metadata_connection()
     try:
         conn.create_function("roster_name", 1, _roster_name, deterministic = True)
@@ -4107,6 +4110,8 @@ async def _rag_roster_sentence(rag_scope: dict) -> str:
             _roster_failure_logged = True
             logger.warning("RAG document roster unavailable: %s", exc)
         return ""
+    # cleared on success: a busy database clears on its own, so a later cause must still log
+    _roster_failure_logged = False
     if not names:
         return ""
     roster = ", ".join(f'"{name}"' for name in names)

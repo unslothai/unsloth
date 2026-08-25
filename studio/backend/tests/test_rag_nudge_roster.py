@@ -117,6 +117,35 @@ def test_thread_attachment_survives_truncation(rag_conn):
     assert "JUST-ATTACHED.pdf" in out
 
 
+def test_roster_counts_a_name_in_both_scopes_once(rag_conn):
+    """The same file attached to the chat and held by the project is one line and one
+    unit of the remainder. The count behind "and N more" spans every scope the list drew
+    from, so counting the first one alone under-reports what was dropped. Here that is
+    45 project names plus shared.pdf and just-attached.pdf, less the 40 listed."""
+    from routes import inference
+
+    cap = inference._RAG_ROSTER_MAX_NAMES
+    for i in range(cap + 5):
+        _doc(rag_conn, "project_p1", f"p{i}", f"project{i:02d}.pdf")
+    _doc(rag_conn, "project_p1", "pshared", "shared.pdf")
+    _doc(rag_conn, "thread_t1", "tshared", "shared.pdf")
+    _doc(rag_conn, "thread_t1", "town", "just-attached.pdf")
+    out = _nudge({"project_id": "p1", "thread_id": "t1"})
+    assert out.count('"shared.pdf"') == 1
+    assert out.count('.pdf"') == cap
+    assert "and 7 more" in out
+
+
+def test_roster_skips_a_filename_that_collapses_to_nothing(rag_conn):
+    """A name made only of whitespace would reach the list as an empty pair of quotes,
+    which reads as a document nobody can ask for."""
+    _doc(rag_conn, "project_p1", "d1", "real.pdf")
+    _doc(rag_conn, "project_p1", "d2", " \t ")
+    out = _nudge({"project_id": "p1"})
+    assert '"real.pdf"' in out
+    assert '""' not in out
+
+
 def test_kb_scope_excludes_other_scopes(rag_conn):
     _doc(rag_conn, "kb_k1", "d1", "kb.pdf")
     _doc(rag_conn, "project_p1", "d2", "project.pdf")
@@ -254,6 +283,79 @@ def test_roster_degrades_when_the_database_is_unavailable(rag_conn, monkeypatch)
     assert inference._RAG_GROUNDING_NUDGE in out
 
 
+def test_a_transient_failure_does_not_silence_the_next_one(rag_conn, monkeypatch, capsys):
+    """A busy database clears on its own; a missing table does not. Latching the warning
+    on the first failure of a process hides every later cause, and leaves the flag set for
+    whatever runs next in the same interpreter."""
+    import sqlite3
+
+    from routes import inference
+    from storage import rag_db
+
+    _doc(rag_conn, "project_p1", "d1", "syllabus.pdf")
+    monkeypatch.setattr(inference, "_roster_failure_logged", False)
+    real = rag_db.get_metadata_connection
+    failing = [True]
+
+    def flaky():
+        if failing[0]:
+            raise sqlite3.OperationalError("database is locked")
+        return real()
+
+    monkeypatch.setattr(rag_db, "get_metadata_connection", flaky)
+    assert "The attached documents are:" not in _nudge({"project_id": "p1"})
+    assert inference._roster_failure_logged is True
+    failing[0] = False
+    assert '"syllabus.pdf"' in _nudge({"project_id": "p1"})
+    assert inference._roster_failure_logged is False
+    failing[0] = True
+    assert "The attached documents are:" not in _nudge({"project_id": "p1"})
+    assert capsys.readouterr().out.count("RAG document roster unavailable") == 2
+
+
+def test_roster_is_skipped_when_rag_cannot_run(rag_conn, monkeypatch):
+    """The list must never name a file the search behind it would refuse. Without the
+    vector extension every retrieval answers "unavailable", and the metadata connection
+    the roster would otherwise open runs no schema migration of its own."""
+    from routes import inference
+    from storage import rag_db
+
+    _doc(rag_conn, "project_p1", "d1", "syllabus.pdf")
+    opened: list[int] = []
+    monkeypatch.setattr(rag_db, "rag_available", lambda: False)
+    monkeypatch.setattr(rag_db, "get_metadata_connection", lambda: opened.append(1))
+    out = _nudge({"project_id": "p1"}, base = BASE)
+    assert "The attached documents are:" not in out
+    assert inference._RAG_GROUNDING_NUDGE in out
+    assert opened == []
+
+
+def test_roster_reads_a_database_from_before_linked_folders(rag_home, monkeypatch):
+    """A rag.db written by a build without the linked-folder tables still answers search,
+    because every path that searches it opens the connection that migrates it first. The
+    metadata connection skips that migration, so the roster has to reach it another way or
+    its own predicate raises on a table the file has never held."""
+    import sqlite3
+
+    from storage import rag_db
+
+    monkeypatch.setattr(rag_db, "_extension_loaded", False)
+    db = rag_db.rag_db_path()
+    db.parent.mkdir(parents = True, exist_ok = True)
+    legacy = sqlite3.connect(str(db))
+    legacy.executescript(
+        "CREATE TABLE documents (id TEXT PRIMARY KEY, scope TEXT NOT NULL, kb_id TEXT,"
+        " thread_id TEXT, filename TEXT NOT NULL, sha256 TEXT NOT NULL,"
+        " status TEXT NOT NULL DEFAULT 'pending', error TEXT,"
+        " num_chunks INTEGER NOT NULL DEFAULT 0, stored_path TEXT, created_at TEXT NOT NULL);"
+        "INSERT INTO documents(id, scope, filename, sha256, status, num_chunks, created_at)"
+        " VALUES('d1','project_p1','legacy.pdf','s1','completed',3,'2026-01-01T00:00:00Z');"
+    )
+    legacy.commit()
+    legacy.close()
+    assert '"legacy.pdf"' in _nudge({"project_id": "p1"})
+
+
 def test_nudge_unchanged_without_scope_or_tool(rag_conn):
     from routes import inference
     assert asyncio.run(inference._apply_rag_nudge(BASE, TOOLS, rag_scope = None)) == BASE
@@ -262,7 +364,13 @@ def test_nudge_unchanged_without_scope_or_tool(rag_conn):
 
 @pytest.mark.parametrize("scope", [{}, {"default_top_k": 5, "mode": "hybrid"}])
 def test_scopeless_rag_scope_yields_no_roster(rag_conn, scope):
-    """An unpersisted New Chat sends settings with no ids."""
+    """An unpersisted New Chat sends settings with no ids.
+
+    Both cases call the nudge. Short-circuiting the empty dict to ``BASE`` asserted
+    against a string this file had just built, so that case passed unchanged on a tree
+    carrying no roster code at all.
+    """
     _doc(rag_conn, "project_p1", "d1", "syllabus.pdf")
-    out = _nudge(scope, base = BASE) if scope else BASE
+    out = _nudge(scope, base = BASE)
     assert "The attached documents are:" not in out
+    assert out.startswith(BASE)
