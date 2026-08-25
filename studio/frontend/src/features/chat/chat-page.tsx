@@ -3670,10 +3670,18 @@ export function ChatPage({
 
           `has-[>...]`, not `has-[...]`. This element is an ancestor of every
           message in the thread, and a `:has()` with a DESCENDANT argument must
-          be re-evaluated whenever anything is inserted or removed anywhere in
-          its subtree. Re-evaluating it here restyles the whole thread, and this
-          one also declares an inheriting custom property, which is the same
-          shape PR #9328 fixed for --aui-scroll-stabilizer.
+          be re-checked whenever anything is inserted or removed anywhere in its
+          subtree. Answering it means walking that subtree, so here it walks the
+          whole thread on every mutation.
+
+          It is a traversal and not a restyle: Blink's own
+          `UpdateLayoutTree.elementCount` for one inserted span is 1 once both
+          this rule and the sidebar wrapper's are in their child form, 2 with
+          one of them still in descendant form and 3 with both, i.e. only the
+          subjects are ever restyled. That is why containment cannot help and
+          why the inheriting custom property this rule declares is not the
+          carrier either: the same rule declaring a non-inherited `background`
+          costs the same. Related to #9328 by family, not by mechanism.
 
           Measured at the 500K rung, corpus 23cd2464, on a 357,843-element
           thread, as the cost of appending one EMPTY span inside a message: 17.5
@@ -3681,7 +3689,9 @@ export function ChatPage({
           9.3 ms with this rule alone deleted, and 0.10 ms with this rule and
           the one on the sidebar wrapper both deleted. The same span appended to
           <body> costs 0.10 ms either way, so the cost is the thread being under
-          the subject and nothing else.
+          the subject and nothing else. Chromium only: WebKitGTK and Firefox are
+          flat across all four selector forms, so this neither helps nor hurts
+          the engine Studio uses on Linux.
 
           ChatModelNotice renders a direct child of this element (see below), so
           the child combinator matches exactly what the descendant form matched.
