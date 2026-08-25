@@ -1066,6 +1066,15 @@ class ResearchSupervisor:
             remaining -= _MODEL_WAIT_POLL_SECONDS
         await self._check_active(run_id)
 
+    async def _wait_out_retry_after(self, run_id: str, delay: float) -> None:
+        """Wait out a provider-set retry delay in the same poll-sized slices as the model waits
+        above, so a cancel or a lost lease ends the run during the wait rather than after it."""
+        remaining = delay
+        while remaining > 0:
+            await self._check_active(run_id)
+            await asyncio.sleep(min(_MODEL_WAIT_POLL_SECONDS, remaining))
+            remaining -= _MODEL_WAIT_POLL_SECONDS
+
     @staticmethod
     def _absorb_late_task(run_id: str, what: str, task: asyncio.Task) -> None:
         """Retrieve the outcome of a task that outlived the cleanup bound."""
@@ -1412,15 +1421,22 @@ class ResearchSupervisor:
                                 ):
                                     raise
                             else:
-                                # re-check the lease and cancellation before re-sending.
                                 delay = 2**attempt
                                 if rate_limited:
-                                    delay = min(
-                                        _retry_after_seconds(exc.response) or delay,
-                                        _model_wait_budget(run),
+                                    # A rate-limit wait runs to minutes, so re-read the run
+                                    # while it waits; the short transport backoff below does
+                                    # not outlast one poll.
+                                    await self._wait_out_retry_after(
+                                        run["id"],
+                                        min(
+                                            _retry_after_seconds(exc.response) or delay,
+                                            _model_wait_budget(run),
+                                        ),
                                     )
-                                await asyncio.sleep(delay)
+                                else:
+                                    await asyncio.sleep(delay)
                                 attempt += 1
+                                # re-check the lease and cancellation before re-sending.
                                 await self._check_active(run["id"])
                     async for line in self._iter_stream_lines(
                         run["id"], response, semantic_deadline

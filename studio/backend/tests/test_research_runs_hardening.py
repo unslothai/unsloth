@@ -2293,8 +2293,13 @@ def _send_attempts(
     status,
     headers = None,
     model_timeout = 900.0,
+    on_wait = None,
+    on_check = None,
 ):
-    """Drive the real send/retry loop against a canned response; return (attempts, waits)."""
+    """Drive the real send/retry loop against a canned response; return (attempts, waits).
+
+    ``waits`` totals the wait before each re-send, so it does not depend on how many slices
+    the wait is split into. The hooks see the virtual clock at each slice."""
     run = {
         "id": "run-1",
         "ownerSubject": "owner",
@@ -2310,11 +2315,15 @@ def _send_attempts(
     }
     supervisor = research_runs.ResearchSupervisor.__new__(research_runs.ResearchSupervisor)
     attempts, waits = [], []
+    clock, waited = {"t": 0.0}, {"t": 0.0}
     real_sleep = asyncio.sleep
 
     async def _sleep(delay, *args, **kwargs):
         if delay and delay > 0.25:
-            waits.append(round(delay, 2))
+            if on_wait is not None:
+                on_wait(clock["t"])
+            clock["t"] += delay
+            waited["t"] += delay
         return await real_sleep(0)
 
     async def _send(
@@ -2322,14 +2331,22 @@ def _send_attempts(
         request,
         stream = False,
     ):
+        if waited["t"]:
+            waits.append(round(waited["t"], 2))
+            waited["t"] = 0.0
         attempts.append(request.url)
         return httpx.Response(status, headers = headers or {}, content = b"{}", request = request)
+
+    async def _check_active(run_id):
+        if on_check is not None:
+            on_check(clock["t"])
+        return await real_sleep(0)
 
     monkeypatch.setattr(asyncio, "sleep", _sleep)
     monkeypatch.setattr(httpx.AsyncClient, "send", _send)
     monkeypatch.setattr(research_runs.auth_storage, "create_api_key", lambda **k: ("t", "k"))
     supervisor._note_phase = lambda *a, **k: real_sleep(0)
-    supervisor._check_active = lambda *a, **k: real_sleep(0)
+    supervisor._check_active = _check_active
     supervisor._cancel_event = lambda run_id: SimpleNamespace(is_set = lambda: False)
     supervisor._endpoint = lambda: "http://127.0.0.1:9/v1/chat/completions"
     supervisor._discard_task = lambda *a, **k: real_sleep(0)
@@ -2355,3 +2372,29 @@ def test_rate_limit_wait_is_clamped_to_the_run_budget(monkeypatch):
 
 def test_server_error_backoff_is_unchanged(monkeypatch):
     assert _send_attempts(monkeypatch, 500) == (3, [1, 2])
+
+
+def test_a_cancel_during_the_rate_limit_wait_is_not_held_for_the_retry_after(monkeypatch):
+    # One uninterrupted sleep held a cancelled run open for the whole Retry-After, then
+    # re-sent without re-reading the lease.
+    started, ended = [], []
+
+    def _cancel_once_the_wait_starts(now):
+        if not started:
+            started.append(now)
+
+    def _end_when_cancelled(now):
+        if started and not ended:
+            ended.append(now)
+            raise RunCancelled()
+
+    _send_attempts(
+        monkeypatch,
+        429,
+        {"Retry-After": "30"},
+        on_wait = _cancel_once_the_wait_starts,
+        on_check = _end_when_cancelled,
+    )
+
+    assert ended, "the wait never re-checked the run"
+    assert ended[0] - started[0] <= research_runs._MODEL_WAIT_POLL_SECONDS
