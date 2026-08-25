@@ -887,9 +887,9 @@ def test_the_diffusion_leaf_plans_with_the_code_revision_too():
     source = open(os.path.join(MODELS, "diffusion.py"), encoding = "utf-8").read()
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "planner_hub_kwargs":
-            assert "code_revision" in ast.unparse(node), (
-                "the diffusion leaf plans against a different revision of the remote code"
-            )
+            assert "code_revision" in ast.unparse(
+                node
+            ), "the diffusion leaf plans against a different revision of the remote code"
             return
     raise AssertionError("no planner_hub_kwargs call in diffusion.py")
 
@@ -915,7 +915,8 @@ def test_an_auto_class_still_plans():
     so a remote-code checkpoint whose config simply is not in the mapping keeps its plan.
     Declining on `model_class is None` alone would have turned planning off for those."""
     import ast as _ast
+
     vision = open(os.path.join(MODELS, "vision.py"), encoding = "utf-8").read()
     idx = vision.index("an explicit model class has no auto mapping")
-    guard = vision[vision.rindex("if (", 0, idx):idx]
+    guard = vision[vision.rindex("if (", 0, idx) : idx]
     assert "_model_mapping" in guard, "the veto is not keyed on the class being concrete"
