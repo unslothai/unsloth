@@ -48,7 +48,9 @@ def _body(name: str = "assert_image_generation") -> str:
 def _png(width: int, height: int, payload: bytes) -> bytes:
     def chunk(kind: bytes, data: bytes) -> bytes:
         return (
-            struct.pack(">I", len(data)) + kind + data
+            struct.pack(">I", len(data))
+            + kind
+            + data
             + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
         )
 
@@ -97,8 +99,7 @@ def test_a_flat_image_is_a_failure():
     here passes on it."""
     func = _func("assert_image_generation")
     assert any(
-        isinstance(n, ast.If) and ast.unparse(n.test) == "flat"
-        for n in ast.walk(func)
+        isinstance(n, ast.If) and ast.unparse(n.test) == "flat" for n in ast.walk(func)
     ), "nothing fails on a flat image"
     body = _body()
     assert "getextrema()" in body
@@ -124,8 +125,7 @@ def test_the_pipeline_is_unloaded_in_a_finally():
     failure lands on the wrong assertion."""
     func = _func("assert_image_generation")
     finals = "\n".join(
-        ast.unparse(n) for t in ast.walk(func)
-        if isinstance(t, ast.Try) for n in t.finalbody
+        ast.unparse(n) for t in ast.walk(func) if isinstance(t, ast.Try) for n in t.finalbody
     )
     assert "images/unload" in finals
 
@@ -133,9 +133,8 @@ def test_the_pipeline_is_unloaded_in_a_finally():
 def test_a_load_or_generate_error_is_a_failure_rather_than_a_skip():
     body = _body()
     assert 'failures.append(f"images/load returned HTTP' in body
-    assert 'failures.append(' in body
+    assert "failures.append(" in body
     func = _func("assert_image_generation")
     assert any(
-        isinstance(n, ast.If) and "code >= 400" in ast.unparse(n.test)
-        for n in ast.walk(func)
+        isinstance(n, ast.If) and "code >= 400" in ast.unparse(n.test) for n in ast.walk(func)
     )
