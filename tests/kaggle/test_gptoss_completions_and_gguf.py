@@ -242,9 +242,9 @@ def test_a_second_tensor_off_the_card_is_still_a_failure():
     # The bracketed list is the "what is wrong" half; the embedding is still
     # printed after it as context, which is what makes the verdict readable.
     listed = failures[0].split("[", 1)[1].split("]", 1)[0]
-    assert "model.embed_tokens.weight" not in listed, (
-        "the list must name what is unexplained, not re-report the tensor that is accounted for"
-    )
+    assert (
+        "model.embed_tokens.weight" not in listed
+    ), "the list must name what is unexplained, not re-report the tensor that is accounted for"
 
 
 def test_the_hook_flag_is_READ_off_the_module_rather_than_assumed():

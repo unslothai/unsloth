@@ -911,9 +911,7 @@ class Payload:
         # documented default. "truncate_oldest" is the policy that applies to a
         # plain chat; "truncate_middle" is limited to client-tool and
         # response_format passthrough (studio/backend/models/inference.py).
-        code, body = self.chat(
-            long_messages, max_tokens = 32, context_overflow = "truncate_oldest"
-        )
+        code, body = self.chat(long_messages, max_tokens = 32, context_overflow = "truncate_oldest")
         detail["context_overflow"] = "truncate_oldest"
         detail["long_status"] = code
         detail["long_messages"] = len(long_messages)

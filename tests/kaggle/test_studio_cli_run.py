@@ -142,8 +142,8 @@ def test_the_vram_sample_comes_AFTER_a_served_completion():
     """
     func = _func("assert_cli_run")
     src = ast.get_source_segment(SRC, func) or ""
-    sample_at = src.index("detail[\"vram_after_mib\"]")
-    completion_at = src.index("detail[\"completion_status\"]")
+    sample_at = src.index('detail["vram_after_mib"]')
+    completion_at = src.index('detail["completion_status"]')
     assert completion_at < sample_at, (
         "VRAM is sampled before a completion has been served, so a slow load "
         "reads as a CPU fallback"

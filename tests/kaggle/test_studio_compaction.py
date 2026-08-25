@@ -204,9 +204,7 @@ def test_the_over_length_conversation_is_sent_twice_under_two_policies():
         and "long_messages" in ast.unparse(node)
     ]
     assert len(calls) == 2, f"expected two long-conversation calls, found {len(calls)}"
-    overflow = [
-        call for call in calls if any(kw.arg == "context_overflow" for kw in call.keywords)
-    ]
+    overflow = [call for call in calls if any(kw.arg == "context_overflow" for kw in call.keywords)]
     assert len(overflow) == 1, (
         "exactly one of the two must name the policy: both naming it removes "
         "the control, neither naming it removes the feature under test"
