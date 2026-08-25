@@ -1001,7 +1001,6 @@ def test_a_name_collision_falls_through_to_the_gfx_pass(win_rocm, monkeypatch):
     assert aggregate == 12.0
 
 
-
 def test_the_measured_strix_halo_registry(win_rocm, monkeypatch):
     """The one real Windows AMD reading taken so far, pinned.
 
@@ -1019,20 +1018,25 @@ def test_the_measured_strix_halo_registry(win_rocm, monkeypatch):
     records = {86826: {"name": "AMD Radeon(TM) 8060S Graphics"}}  # no "gfx" key
     monkeypatch.setattr(hw, "_windows_amd_adapter_records_by_luid", lambda: records)
     adapters = [
-        ("luid_0x00000000_0x00017099_phys_0", 0.0),          # no registry record
-        ("luid_0x00000000_0x0001532a_phys_0", 0.947 * GB),   # the AMD adapter
-        ("luid_0x00000000_0x00017034_phys_0", 0.0),          # Basic Render Driver
+        ("luid_0x00000000_0x00017099_phys_0", 0.0),  # no registry record
+        ("luid_0x00000000_0x0001532a_phys_0", 0.947 * GB),  # the AMD adapter
+        ("luid_0x00000000_0x00017034_phys_0", 0.0),  # Basic Render Driver
     ]
-    dev_meta = [{
-        "name": "AMD Radeon(TM) 8060S Graphics", "gfx": "gfx1151",
-        "total_bytes": int(89.465 * GB), "dedicated_bytes": int(89.465 * GB),
-    }]
+    dev_meta = [
+        {
+            "name": "AMD Radeon(TM) 8060S Graphics",
+            "gfx": "gfx1151",
+            "total_bytes": int(89.465 * GB),
+            "dedicated_bytes": int(89.465 * GB),
+        }
+    ]
 
     result = hw._match_adapter_used_by_luid(adapters, dev_meta)
     assert result is not None, "the join declined on the one real reading we have"
     per_device, aggregate = result
     assert round(per_device[0] / GB, 3) == 0.947
     assert round(aggregate / GB, 3) == 0.947
+
 
 def test_the_join_declines_usage_it_cannot_place(win_rocm, monkeypatch):
     """A hidden AMD card carrying the visible device's torch name, while the
