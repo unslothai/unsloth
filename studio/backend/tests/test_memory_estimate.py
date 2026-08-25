@@ -2370,9 +2370,7 @@ class TestAnEmbeddedMtpHeadIsPriced:
         """
         gguf, config = nextn_model
         for pin in (["--spec-draft-ngl", "0"], ["--spec-draft-device", "cpu"]):
-            pinned = ri._gguf_memory_breakdown(
-                config, gguf, n_ctx = 131072, llama_extra_args = pin
-            )
+            pinned = ri._gguf_memory_breakdown(config, gguf, n_ctx = 131072, llama_extra_args = pin)
             assert pinned is not None, pin
             assert pinned.drafter_runtime_bytes > 0, pin
             # In host RAM, so it is in the total and out of the GPU share.
@@ -2394,9 +2392,14 @@ class TestACpuOnlyHostShowsNoGpuFootprint:
     def priced(self, tmp_path):
         gguf = _write_gguf(tmp_path, "qwen3", {**_GQA_FIELDS, "context_length": 262144})
         return gguf, SimpleNamespace(
-            identifier = "local/cpu", gguf_file = gguf, is_gguf = True, gguf_variant = None,
-            gguf_mmproj_file = None, gguf_mtp_file = None,
-            gguf_dspark_file = None, gguf_dflash_file = None,
+            identifier = "local/cpu",
+            gguf_file = gguf,
+            is_gguf = True,
+            gguf_variant = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
         )
 
     def test_a_probed_empty_inventory_puts_everything_in_host_ram(self, priced, monkeypatch):
@@ -2438,9 +2441,14 @@ class TestAnInheritedContextIsPriced:
     def wide(self, tmp_path):
         gguf = _write_gguf(tmp_path, "qwen3", {**_GQA_FIELDS, "context_length": 262144})
         return gguf, SimpleNamespace(
-            identifier = "local/wide", gguf_file = gguf, is_gguf = True, gguf_variant = None,
-            gguf_mmproj_file = None, gguf_mtp_file = None,
-            gguf_dspark_file = None, gguf_dflash_file = None,
+            identifier = "local/wide",
+            gguf_file = gguf,
+            is_gguf = True,
+            gguf_variant = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
         )
 
     def test_the_environment_length_is_priced_when_nothing_else_sets_one(self, wide, monkeypatch):
@@ -2496,7 +2504,8 @@ class TestTheResolutionTriesOfflineFirst:
 
         monkeypatch.setattr(ri, "_estimate_target_is_on_this_disk", lambda ident: True)
         monkeypatch.setitem(
-            __import__("sys").modules, "utils.utils",
+            __import__("sys").modules,
+            "utils.utils",
             SimpleNamespace(force_hf_offline = _forced),
         )
         cfg = SimpleNamespace(identifier = "org/cached", gguf_file = gguf, is_gguf = True)
@@ -2528,7 +2537,8 @@ class TestTheResolutionTriesOfflineFirst:
 
         monkeypatch.setattr(ri, "_estimate_target_is_on_this_disk", lambda ident: True)
         monkeypatch.setitem(
-            __import__("sys").modules, "utils.utils",
+            __import__("sys").modules,
+            "utils.utils",
             SimpleNamespace(force_hf_offline = _forced),
         )
         monkeypatch.setattr(ri.ModelConfig, "from_identifier", staticmethod(_from_identifier))

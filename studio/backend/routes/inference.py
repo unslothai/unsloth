@@ -12615,7 +12615,9 @@ def _cached_estimate_config(
         with force_hf_offline():
             config = _resolve()
     except Exception as exc:
-        logger.debug("Offline resolve of %s did not answer, retrying online: %s", model_identifier, exc)
+        logger.debug(
+            "Offline resolve of %s did not answer, retrying online: %s", model_identifier, exc
+        )
     if config is None:
         try:
             with _hf_offline_if_unreachable_for(model_identifier):
