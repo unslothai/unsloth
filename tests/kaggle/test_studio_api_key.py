@@ -61,9 +61,7 @@ def test_the_session_token_is_set_aside_while_the_key_is_driven():
         if isinstance(node, ast.Assign)
         and isinstance(node.value, ast.Name)
         and node.value.id == "raw_key"
-        and any(
-            isinstance(t, ast.Attribute) and t.attr == "token" for t in node.targets
-        )
+        and any(isinstance(t, ast.Attribute) and t.attr == "token" for t in node.targets)
     ]
     assert swaps, (
         "the bearer is never set to the raw key itself, so the positive check "
