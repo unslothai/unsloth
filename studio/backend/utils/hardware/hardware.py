@@ -1447,6 +1447,25 @@ def _hip_runtime_version() -> Optional[tuple[int, int]]:
         return None
 
 
+# APU architectures that are unified memory but sit outside the shared
+# classifier's positive set. That set is the list of parts whose SHARED POOL SIZE
+# drives a lower set_per_process_memory_fraction cap, and it names anything else
+# from hipDeviceProp_t::integrated; a Phoenix / Hawk Point iGPU on a runtime that
+# leaves that flag at 0 is therefore in neither, and reads as "not unified".
+#
+# Harmless for the cap and for the total, and wrong for a NUMERATOR: clr never
+# assigned deviceProps.integrated before tag rocm-6.2.0 (so HIP SDK for Windows
+# 5.5.1 / 5.7.1 / 6.1.2 leave it 0 in a zero-initialised struct, which is what
+# _HIP_INTEGRATED_FLAG_MIN above already encodes), and the legacy R0000 property
+# ABI still does not assign it on any version -- while paldevice.cpp inflates
+# globalMemSize_ off settings().apuSystem_ in both cases.
+#
+# gfx1103 Phoenix / Hawk Point is an integrated part and never shipped as a
+# discrete board, so naming it here can only ever upgrade a part whose
+# props.total_memory really does span host memory.
+_ROCM_UNNAMED_APU_ARCHES = frozenset({"gfx1103"})
+
+
 def _rocm_props_are_positively_unified(props: Any) -> bool:
     """Whether this part is KNOWN to be unified memory, not merely unclassified.
 
@@ -1454,6 +1473,17 @@ def _rocm_props_are_positively_unified(props: Any) -> bool:
     purpose, because a total that is too small hides models. Anything that adds
     host-shared memory to a used figure needs the stricter question: on a
     discrete card, shared bytes are not part of ``props.total_memory``.
+
+    "Uncertain" is what this must not accept. A part the classifier can NAME as
+    an APU is not uncertain, whichever way the classifier's own answer went: on
+    Windows the backend is PAL, and paldevice.cpp adds the WDDM shared heap to
+    globalMemSize_ for any ``Pal::GpuType::Integrated`` part, which is a property
+    of the DEVICE and not of whether HIP filled in the props struct's integrated
+    field. So a gfx1103 Phoenix on a pre-6.2 runtime already carries a
+    pool-scoped total, and answering False here pairs that pool with Dedicated
+    Usage alone, which plateaus at the BIOS carve-out. Measured shape: 17.0 GB
+    total, 8 GiB resident, published as 1.90 used and 15.10 free.
+
     """
     if not IS_ROCM:
         return False
@@ -1463,6 +1493,30 @@ def _rocm_props_are_positively_unified(props: Any) -> bool:
     except Exception as e:
         logger.debug("ROCm unified-memory classification failed: %s", e)
         return False
+
+
+def _rocm_props_are_an_unnamed_apu(props: Any) -> bool:
+    """True for an APU arch the shared classifier's positive set omits.
+
+    Only ever asked of a LONE visible device, and only to settle the numerator.
+    Beside a discrete card the same chip's props.total_memory is the one number
+    this module cannot scope -- #9198 keeps a hybrid iGPU on its carve-out for
+    exactly that reason, and the Dedicated+Shared sum needs a single adapter
+    above the noise floor to be attributable in the first place, so upgrading
+    there could only take a reading away. On a lone APU neither applies.
+
+    Indexed rather than unpacked so a classifier that grows its tuple (#9198)
+    keeps working.
+    """
+    if not IS_ROCM:
+        return False
+    try:
+        from core.training.worker import _rocm_classify_unified_memory
+        arch = str(_rocm_classify_unified_memory(props)[0] or "")
+    except Exception as e:
+        logger.debug("ROCm unified-memory classification failed: %s", e)
+        return False
+    return arch.split(":")[0].strip().lower() in _ROCM_UNNAMED_APU_ARCHES
 
 
 def _rocm_props_total_is_carve_out(props: Any) -> bool:
@@ -2665,6 +2719,21 @@ def _rocm_windows_per_device_vram(
                 # probe that throws must cost this device its correction, not its
                 # place in the list.
                 unified = _rocm_props_are_positively_unified(props)
+                if not unified and len(device_indices) == 1:
+                    # The classifier names an APU from hipDeviceProp_t::integrated
+                    # or from the shared-pool arch set that sizes the memory-fraction
+                    # cap. A gfx1103 Phoenix on a pre-6.2 runtime is in neither, and
+                    # PAL does not consult either: it adds the WDDM shared heap to
+                    # globalMemSize_ for any Pal::GpuType::Integrated part, which is
+                    # a fact about the DEVICE. So that part reaches here with a
+                    # pool-scoped total and, unpatched, the Dedicated-only numerator
+                    # that plateaus at the BIOS carve-out -- the same overstated-free
+                    # reading on a device the classifier misses. Reported shape: a
+                    # Windows 780M on 24295 MiB of RAM reads a 17303 MiB total
+                    # (ComfyUI-Zluda#387), which is an 8 GiB carve-out plus 75% of
+                    # the WDDM shared heap. Hold 12 GiB there and Dedicated is 7.90,
+                    # so free publishes as 9.00 with 12 GiB resident.
+                    unified = _rocm_props_are_an_unnamed_apu(props)
                 if unified and hasattr(mod, "mem_get_info"):
                     pool_bytes = int(mod.mem_get_info(ordinal)[1])
                     # >= not >, and the equal case is the ONLY one that occurs.

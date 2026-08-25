@@ -1766,3 +1766,120 @@ def test_the_windows_path_is_inert_off_windows(win_rocm, monkeypatch, system):
     )
 
     assert hw._rocm_windows_per_device_vram([0, 1]) == ([], None)
+
+
+# ----------------------------------------------------------------------------- #
+# An APU the shared classifier cannot name
+#
+# _rocm_classify_unified_memory names an APU from hipDeviceProp_t::integrated or
+# from the shared-pool arch set that drives the memory-fraction cap. A gfx1103
+# Phoenix iGPU on a runtime that leaves the flag at 0 is in neither, so
+# _rocm_props_are_positively_unified said no -- while on Windows PAL had already
+# added the WDDM shared heap to globalMemSize_ for it, because that inflation
+# keys off Pal::GpuType::Integrated and not off what the props struct reports.
+#
+# A pool-scoped total paired with the Dedicated-only numerator is the exact
+# failure this PR exists to fix, on a device the classifier misses.
+# ----------------------------------------------------------------------------- #
+# Reported on a Windows Radeon 780M with 24295 MiB of RAM
+# (patientx/ComfyUI-Zluda#387): mem_get_info's total reads 17303 MiB. That is
+# paldevice.cpp's formula to the MiB -- an 8 GiB BIOS carve-out plus 75% of the
+# ~12147 MiB WDDM shared heap (8192 + 9110 = 17302). The same divergence is
+# described from the other side in likelovewant/ROCmLibs-for-gfx1103#67: ADLX
+# reports only the BIOS carve-out while hipMemGetInfo reports the shared pool.
+PHOENIX_CARVE_OUT = 8.0 * GB
+PHOENIX_POOL = 17303 * MiB  # 16.90 GiB
+PHOENIX_RESIDENT = 12.0 * GB  # a model that does not fit the carve-out
+PHOENIX_DEDICATED = 7.90 * GB  # plateaued just under the carve-out
+PHOENIX_SHARED = 4.10 * GB  # the overflow
+
+
+def _phoenix_host(monkeypatch, gfx = "gfx1103", name = "AMD Radeon(TM) 780M Graphics"):
+    """A lone Windows APU on a pre-6.2 HIP runtime, driven through the counters.
+
+    ``_rocm_props_are_positively_unified`` is deliberately NOT patched: what is
+    under test is the classification itself, so the real helper has to run.
+    """
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
+    torch = _fake_torch([(name, int(PHOENIX_POOL), gfx)])
+    torch.__version__ = "2.9.0+rocm6.1"
+    torch.version = types.SimpleNamespace(hip = "6.1", cuda = None)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    # The same variable read twice in clr, so the driver has nothing wider.
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda i: (0, int(PHOENIX_POOL)))
+    monkeypatch.setattr(
+        hw,
+        "_rocm_windows_perf_counter_vram_by_adapter",
+        lambda counter = "Dedicated Usage": [
+            (
+                "luid_0x00000000_0x0000c001_phys_0",
+                PHOENIX_DEDICATED if counter == "Dedicated Usage" else PHOENIX_SHARED,
+            )
+        ],
+    )
+    return torch
+
+
+def test_a_phoenix_apu_the_classifier_misses_reads_as_an_unnamed_apu(win_rocm):
+    """gfx1103 is an integrated part and never shipped as a discrete board, so
+    naming it cannot upgrade anything whose total is really carve-out scoped."""
+
+    class _P:
+        name = "AMD Radeon(TM) 780M Graphics"
+        gcnArchName = "gfx1103"
+        total_memory = int(PHOENIX_POOL)
+        is_integrated = 0  # pre-6.2 HIP leaves it 0 on Windows
+
+    assert hw._rocm_props_are_positively_unified(_P()) is False  # unchanged
+    assert hw._rocm_props_are_an_unnamed_apu(_P()) is True
+    _P.gcnArchName = "gfx1103:xnack-"  # suffixes and case must not hide it
+    assert hw._rocm_props_are_an_unnamed_apu(_P()) is True
+    _P.gcnArchName = "GFX1103"
+    assert hw._rocm_props_are_an_unnamed_apu(_P()) is True
+
+
+def test_a_discrete_card_is_neither_positively_unified_nor_an_unnamed_apu(win_rocm):
+    """The guarantee the numerator rests on: shared bytes are host memory a
+    discrete card's props.total_memory never counted."""
+
+    class _P:
+        name = "AMD Radeon RX 7900 XTX"
+        gcnArchName = "gfx1100"
+        total_memory = 24 * GB
+        is_integrated = 0
+
+    assert hw._rocm_props_are_positively_unified(_P()) is False
+    assert hw._rocm_props_are_an_unnamed_apu(_P()) is False
+    _P.gcnArchName, _P.name = "gfx1201", "AMD Radeon RX 9070 XT"
+    assert hw._rocm_props_are_positively_unified(_P()) is False
+    assert hw._rocm_props_are_an_unnamed_apu(_P()) is False
+
+
+def test_a_phoenix_pool_total_takes_the_shared_sum_not_the_plateau(win_rocm, monkeypatch):
+    """16.90 GiB pool under an 8 GiB carve-out with 12 GiB resident.
+
+    Pre-fix: 7.90 used, i.e. 9.00 free with 12 GiB in the pool. Overstating free
+    by 4.10 GB is the direction that OOMs, and it is the same reading the
+    measured gfx1151 gets when Dedicated alone is paired with a pool total."""
+    _phoenix_host(monkeypatch)
+
+    devices, aggregate = hw._rocm_windows_per_device_vram([0])
+    assert devices[0]["total_gb"] == 16.9
+    assert devices[0]["used_gb"] == pytest.approx(12.0, abs = 0.01)  # not the 7.90 plateau
+    assert aggregate == pytest.approx(12.0, abs = 0.01)
+    assert devices[0]["total_gb"] - devices[0]["used_gb"] == pytest.approx(4.9, abs = 0.01)
+
+
+def test_a_discrete_card_on_the_same_runtime_keeps_the_dedicated_counter(win_rocm, monkeypatch):
+    """The other half of the guarantee, through the same fixture: an unsettled
+    runtime does not let Shared Usage into a discrete card's numerator, and its
+    total is never probed for a pool it does not have."""
+    torch = _phoenix_host(monkeypatch, gfx = "gfx1100", name = "AMD Radeon RX 7900 XTX")
+    monkeypatch.setattr(
+        torch.cuda, "mem_get_info", lambda i: pytest.fail("a discrete card must not be asked")
+    )
+
+    devices, aggregate = hw._rocm_windows_per_device_vram([0])
+    assert devices[0]["total_gb"] == 16.9
+    assert devices[0]["used_gb"] == pytest.approx(7.90, abs = 0.01)  # Dedicated alone
+    assert aggregate == pytest.approx(7.90, abs = 0.01)
