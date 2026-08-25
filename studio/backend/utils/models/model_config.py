@@ -1810,14 +1810,18 @@ def detect_mmproj_file(
             by_meta = is_mmproj_by_metadata(meta)
             if by_meta is True or (by_meta is None and _is_mmproj(f.name)):
                 seen_resolved.add(resolved)
-                candidates.append(resolved)
+                # A split set has to keep its shard names: llama-server resolves the
+                # siblings from the path it is handed, and an HF blob target has none.
+                candidates.append(
+                    f.absolute() if _GGUF_SPLIT_FILE_RE.match(f.name) else resolved
+                )
 
     if not candidates:
         return None
 
     # Directory path: no model name to compare against; legacy behaviour.
     if not p.is_file():
-        return str(candidates[0])
+        return _drafter_launch_path(candidates[0])
 
     # Stage 1: GGUF metadata. Stage 2: filename family token (#5347).
     model_stem = p.stem.lower()
@@ -1854,7 +1858,8 @@ def detect_mmproj_file(
             -len(sc[1].stem),
         ),
     )
-    return str(best[1])
+    # Shard 1 for a split winner, whichever shard ranked first; a no-op otherwise.
+    return _drafter_launch_path(best[1])
 
 
 # Drafter naming, ranking and DFlash discovery live in utils.models.drafters, so one

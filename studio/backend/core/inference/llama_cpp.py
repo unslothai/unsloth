@@ -11878,16 +11878,14 @@ class LlamaCppBackend:
         if resolved is not None or not near_path or cancel_event.is_set():
             return resolved
 
-        from utils.models.model_config import _detect_local_mmproj, _drafter_launch_path
+        from utils.models.model_config import _detect_local_mmproj
 
+        # Discovery drops an incomplete split set and hands back shard 1 of a complete
+        # one on its own snapshot path, so what comes back is launchable as it is.
         cached = _detect_local_mmproj(near_path, near_path)
-        if cached is None:
-            return None
-        # Discovery already dropped an incomplete split set; llama-server still wants
-        # shard 1, whichever shard of a complete one ranked first.
-        launch_path = _drafter_launch_path(Path(cached))
-        logger.info("Reusing hand-added mmproj at the HF cache repo root: %s", launch_path)
-        return launch_path
+        if cached is not None:
+            logger.info("Reusing hand-added mmproj at the HF cache repo root: %s", cached)
+        return cached
 
     def _cached_repo_mtp_drafter(
         self,

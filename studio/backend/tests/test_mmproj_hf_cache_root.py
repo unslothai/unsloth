@@ -202,6 +202,31 @@ def test_an_audio_only_snapshot_projector_keeps_the_row_off_vision(tmp_path):
     assert snapshot_has_gguf_projector(weight.parent) is False
 
 
+def test_a_split_projector_keeps_its_shard_names_and_starts_at_shard_one(tmp_path):
+    """llama-server resolves the siblings from the path it is handed, so a symlinked
+    set must come back on its own names rather than on the blob it points at, and on
+    shard 1 whichever shard ranked first."""
+    repo, weight = _hf_repo(tmp_path)
+    blobs = repo / "blobs"
+    blobs.mkdir()
+    shards = []
+    for index in (1, 2):
+        blob = _gguf_with_general(
+            blobs / f"projector-{index}",
+            {"general.type": "mmproj", "general.architecture": "qwen3vl"},
+        )
+        shard = repo / f"mmproj-F16-0000{index}-of-00002.gguf"
+        try:
+            shard.symlink_to(blob)
+        except OSError as exc:
+            pytest.skip(f"symlinks unavailable: {exc}")
+        shards.append(shard)
+
+    found = _detect_local_mmproj(str(weight.parent), str(weight))
+
+    assert found == str(shards[0].absolute())
+
+
 def test_a_sibling_repo_s_projector_stays_invisible(tmp_path):
     repo, weight = _hf_repo(tmp_path)
     other = tmp_path / "models--other--Vision-GGUF"
