@@ -532,7 +532,10 @@ function keylessBaseEligible(
   try {
     const host = normalizeHost(new URL(base).hostname);
     if (isLoopbackHost(host)) return true;
-    return scope === "inference" && isPrivateLanHost(host);
+    return (
+      scope === "inference" &&
+      (isPrivateLanHost(host) || exposure === "private_lan")
+    );
   } catch {
     return false;
   }

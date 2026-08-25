@@ -27,6 +27,7 @@ from auth.authentication import (
 from utils.keyless_api_access import (
     KeylessToolPolicyMiddleware,
     _reset_scope_cache,
+    access_exposure,
     asgi_request_is_keyless,
     get_keyless_api_access_scope,
     get_keyless_api_tools_enabled,
@@ -214,6 +215,10 @@ def test_public_browser_and_private_lan_boundaries(monkeypatch):
     ):
         assert not keyless_request_allowed(request_for(state = app_state(**overrides)))
     assert not keyless_request_allowed(request_for(headers = {"Origin": "https://evil.example"}))
+    assert access_exposure(app_state(
+        bind_host = "studio.lan", lan_access_launch_managed = True,
+        lan_access_launch_addresses = ("192.168.1.24",),
+    )) == "private_lan"
 
     monkeypatch.setattr(host_policy, "_remote_connector_active", True)
     monkeypatch.setattr(
@@ -327,6 +332,15 @@ def test_tool_policy_and_api_identity(monkeypatch):
     assert _middleware_policy(asgi_scope(
         headers = {"Authorization": f"Bearer {key}"}
     )) == [True]
+
+    set_keyless_api_access("off")
+    async def enabled_between_layers(scope, *_args):
+        set_keyless_api_access("inference")
+        with pytest.raises(HTTPException):
+            await security(Request(scope))
+    asyncio.run(KeylessToolPolicyMiddleware(enabled_between_layers)(
+        asgi_scope(), lambda: None, lambda _message: None
+    ))
 
 def test_protected_side_effect_guards_remain_wired():
     import inspect

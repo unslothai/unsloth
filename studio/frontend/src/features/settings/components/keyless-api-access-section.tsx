@@ -25,26 +25,42 @@ import { SettingsRow } from "./settings-row";
 
 type PendingGrant = Exclude<KeylessApiAccessScope, "off"> | "tools";
 
+function activeExposureWarning(
+  exposure: KeylessApiAccessSettings["exposure"],
+): string {
+  if (exposure === "public_url") {
+    return " A public URL or tunnel is active, so keyless access remains disabled, including on localhost, until it is stopped.";
+  }
+  if (exposure === "colab") {
+    return " This Colab runtime cannot receive keyless access.";
+  }
+  return "";
+}
+
 const CONFIRM_COPY: Record<
   PendingGrant,
-  { title: string; body: () => string; action: string }
+  {
+    title: string;
+    body: (exposure: KeylessApiAccessSettings["exposure"]) => string;
+    action: string;
+  }
 > = {
   inference: {
     title: "Allow chat without a key?",
-    body: () =>
-      "Inference will work without a key on localhost and an active private LAN listener. Public URLs and Colab always require authentication; training, files and settings still require it.",
+    body: (exposure) =>
+      `Inference will work without a key on localhost and an active private LAN listener. Public URLs and Colab always require authentication; training, files and settings still require it.${activeExposureWarning(exposure)}`,
     action: "Allow chat",
   },
   full: {
     title: "Allow full localhost access without a key?",
-    body: () =>
-      "Localhost callers will be able to chat, start training runs, and read, change and delete files and settings. Full keyless access is never honored over LAN, a public bind or URL, a tunnel, or Colab.",
+    body: (exposure) =>
+      `Localhost callers will be able to chat, start training runs, and read, change and delete files and settings. Full keyless access is never honored over LAN, a public bind or URL, a tunnel, or Colab.${activeExposureWarning(exposure)}`,
     action: "Allow everything",
   },
   tools: {
     title: "Let keyless callers run tools?",
-    body: () =>
-      "Eligible keyless callers will also be able to run Python, terminal and web-search tools through the model. This is a separate grant from API access.",
+    body: (exposure) =>
+      `Eligible keyless callers will also be able to run Python, terminal and web-search tools through the model. This is a separate grant from API access.${activeExposureWarning(exposure)}`,
     action: "Allow tools",
   },
 };
@@ -250,7 +266,9 @@ export function KeylessApiAccessSection({
               {pending ? CONFIRM_COPY[pending].title : ""}
             </DialogTitle>
             <DialogDescription>
-              {pending ? CONFIRM_COPY[pending].body() : ""}
+              {pending
+                ? CONFIRM_COPY[pending].body(settings?.exposure ?? null)
+                : ""}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

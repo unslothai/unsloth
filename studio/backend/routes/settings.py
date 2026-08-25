@@ -1988,7 +1988,7 @@ class KeylessApiAccessPayload(BaseModel):
 class KeylessApiAccessResponse(BaseModel):
     scope: Literal["off", "inference", "full"]
     tools: bool
-    exposure: Optional[Literal["colab", "public_url", "network"]] = None
+    exposure: Optional[Literal["colab", "public_url", "private_lan", "network"]] = None
 
 
 class PreviewSharingPayload(BaseModel):

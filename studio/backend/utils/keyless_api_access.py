@@ -190,11 +190,24 @@ def access_exposure(app_state: Any) -> Optional[str]:
         return "public_url"
     if getattr(app_state, "cloudflare_url", None) or tunnel_connector_active():
         return "public_url"
+    # A settings-managed listener is created only from detected private LAN
+    # addresses. A launch-managed hostname is equally safe to describe as LAN
+    # only when its already-published resolution is entirely private.
+    if lan_connector_active():
+        return "private_lan"
+    if bool(getattr(app_state, "lan_access_launch_managed", False)):
+        from utils.lan_access_settings import _normalized_ip, _private_non_loopback
+
+        addresses = tuple(
+            _normalized_ip(value)
+            for value in (getattr(app_state, "lan_access_launch_addresses", ()) or ())
+        )
+        if addresses and all(
+            address is not None and _private_non_loopback(address) for address in addresses
+        ):
+            return "private_lan"
     bind_host = getattr(app_state, "bind_host", None)
     if not isinstance(bind_host, str) or is_external_host(bind_host):
-        return "network"
-    # a LAN listener reaches the local network only, so it must not read as a public url
-    if lan_connector_active():
         return "network"
     return None
 

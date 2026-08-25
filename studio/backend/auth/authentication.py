@@ -147,6 +147,7 @@ class _BearerOrKeyless(HTTPBearer):
             APPROVED_DUMMY_BEARERS,
             keyless_request_allowed,
             mark_keyless_admission,
+            request_was_admitted_keyless,
         )
 
         raw_headers = getattr(request, "scope", {}).get("headers") or ()
@@ -164,7 +165,12 @@ class _BearerOrKeyless(HTTPBearer):
         header = authorization[0] if authorization else ""
         scheme, token = get_authorization_scheme_param(header)
         usable_bearer = bool(scheme.lower() == "bearer" and token)
-        eligible = await run_in_threadpool(keyless_request_allowed, request)
+        recorded = request_was_admitted_keyless(request)
+        eligible = (
+            await run_in_threadpool(keyless_request_allowed, request)
+            if recorded is None
+            else recorded
+        )
         if not authorization and eligible:
             mark_keyless_admission(request, True)
             return _KEYLESS_CREDENTIALS

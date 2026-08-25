@@ -229,7 +229,7 @@ def test_keyless_examples_match_transport_tool_and_full_scope_policy():
     assert 'const KEYLESS_KEY_PLACEHOLDER = "not-needed"' in src
     assert 'exposure === "colab" || exposure === "public_url"' in src
     assert "if (isLoopbackHost(host)) return true;" in src
-    assert 'scope === "inference" && isPrivateLanHost(host)' in src
+    assert 'exposure === "private_lan"' in src
     section = KEYLESS_SECTION_TSX.read_text(encoding = "utf-8")
     assert "delete" in section[section.find("  full: {") : section.find("  tools: {")]
-    assert "read the files and settings in Unsloth" not in section
+    assert "including on localhost" in section

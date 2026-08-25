@@ -5,7 +5,11 @@ import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
 export type KeylessApiAccessScope = "off" | "inference" | "full";
-export type KeylessApiAccessExposure = "colab" | "public_url" | "network";
+export type KeylessApiAccessExposure =
+  | "colab"
+  | "public_url"
+  | "private_lan"
+  | "network";
 
 export type KeylessApiAccessSettings = {
   scope: KeylessApiAccessScope;
@@ -67,6 +71,7 @@ export function keylessAudience(
     case "public_url":
       return "Anyone with your public URL";
     case "network":
+    case "private_lan":
       return "Anyone on your network";
     case "colab":
       return "Anyone who can reach this Colab runtime";
