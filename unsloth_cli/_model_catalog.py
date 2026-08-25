@@ -223,7 +223,11 @@ def _complete_quants(snapshot: Path) -> Optional[set]:
     return set(complete) or None
 
 
-def _quant_labels(repo_id: str, repo_path: str, load_id: Optional[str] = None) -> str:
+def _quant_labels(
+    repo_id: str,
+    repo_path: str,
+    load_id: Optional[str] = None,
+) -> str:
     """The quants this cached GGUF repo offers, spelled the way Studio spells them.
 
     Through ``list_local_gguf_variants``, which is what ``_preferred_complete_gguf`` picks the
