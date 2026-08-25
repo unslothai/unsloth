@@ -1451,7 +1451,10 @@ class VideoBackend:
             kwargs["base_repo"] = base
             # An fp8 encoder request loads a hosted pre-cast checkpoint, so neither the estimate nor the pull includes those dense shards.
             te_sources = self._te_prequant_sources(
-                fam, kwargs.get("text_encoder_quant"), kwargs.get("gpu_ordinal")
+                fam,
+                kwargs.get("text_encoder_quant"),
+                kwargs.get("gpu_ordinal"),
+                base = base,
             )
             # The same deal for the denoiser: a hosted pre-quantized checkpoint replaces the dense
             # DiT shards, so the estimate and the scoped pull below both drop them. VERIFIED, like
@@ -2042,12 +2045,14 @@ class VideoBackend:
         fam: Any,
         text_encoder_quant: Optional[str],
         gpu_ordinal: Optional[int] = None,
+        base: Optional[str] = None,
     ) -> dict[str, Any]:
         """``{component: source}`` for the text encoders this load will take PRE-CAST from a
         hosted checkpoint instead of the base repo's dense weights (``{}`` when none)."""
-        from .diffusion_te_prequant import te_prequant_sources
-        return te_prequant_sources(
+        from .diffusion_te_prequant import te_prequant_sources_for_base
+        return te_prequant_sources_for_base(
             fam,
+            base or str(getattr(fam, "base_repo", "") or ""),
             te_quant_mode = text_encoder_quant,
             # The selected card: an fp8 encoder the default card cannot take is still hosted
             # pre-cast for the one this load lands on, and vice versa.
@@ -2894,7 +2899,10 @@ class VideoBackend:
                     )
             # Pre-cast encoders first: only a checkpoint that really resolves earns the right to drop the dense shards.
             te_sources = self._te_prequant_sources(
-                fam, text_encoder_quant, load_kwargs.get("gpu_ordinal")
+                fam,
+                text_encoder_quant,
+                load_kwargs.get("gpu_ordinal"),
+                base = base,
             )
             te_files = self._te_prequant_hub_files(te_sources, api)
             for component, files in te_files.items():
@@ -3513,7 +3521,12 @@ class VideoBackend:
         # families widen it), so only components[1] is scaled.
         from .diffusion_te_prequant import te_prequant_budget_scale
 
-        te_scale = te_prequant_budget_scale(fam, te_quant_mode = text_encoder_quant, target = target)
+        te_scale = te_prequant_budget_scale(
+            fam,
+            te_quant_mode = text_encoder_quant,
+            target = target,
+            base = repo_id if kind == "pipeline" else base,
+        )
         transformer_mib: Optional[int] = None
         if kind != "pipeline":
             checkpoint_path = self._resolve_checkpoint_path(
@@ -3657,6 +3670,7 @@ class VideoBackend:
             dtype = dtype,
             hf_token = hf_token,
             logger = logger,
+            local_files_only = local_files_only,
         )
         pipe_kwargs.update(te_injected)
         # The fp8-sized budget is valid only once the pre-cast encoder is actually in hand. Injection is best-effort
