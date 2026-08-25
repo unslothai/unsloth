@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from .loader_utils import DEFAULT_DEVICE_MAP
 from .llama import *
 import os
 from ._utils import __version__
@@ -475,7 +476,7 @@ class FastMistralModel(FastLlamaModel):
         dtype = None,
         load_in_4bit = True,
         token = None,
-        device_map = "sequential",
+        device_map = DEFAULT_DEVICE_MAP,
         rope_scaling = None,  # Mistral does not support RoPE scaling
         fix_tokenizer = True,
         model_patcher = None,
