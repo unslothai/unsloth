@@ -156,19 +156,71 @@ def exported_entries() -> List[ModelEntry]:
     return entries
 
 
+def _reachable_snapshots(repo_path: Path) -> List[Path]:
+    """The snapshot dirs whose quants a load through this row could actually open.
+
+    ``refs/main`` when it names one, because that is what a bare repo id resolves to and
+    listing another revision's quants would advertise files the selection cannot reach.
+    Every snapshot otherwise: a commit-pinned or tag-pinned fetch leaves no ``refs/main``
+    at all, and those rows are pinned to a snapshot rather than dropped, so they still
+    have quants to describe.
+    """
+    snapshots = repo_path / "snapshots"
+    try:
+        available = sorted(path for path in snapshots.iterdir() if path.is_dir())
+    except OSError:
+        return []
+    try:
+        ref = (repo_path / "refs" / "main").read_text(encoding = "utf-8").strip()
+    except OSError:
+        ref = ""
+    if ref:
+        pinned = snapshots / ref
+        if pinned in available:
+            return [pinned]
+    return available
+
+
 def _quant_labels(repo_id: str, repo_path: str) -> str:
-    from utils.models.model_config import _is_mmproj
+    """The quants this cached GGUF repo offers, spelled the way Studio spells them.
+
+    Reads through ``list_local_gguf_variants``, the same lister ``_preferred_complete_gguf``
+    selects the load target with, rather than globbing filenames. Globbing got three real
+    layouts wrong: ``snapshots/*/*.gguf`` is one level deep so a per-quant subdirectory
+    produced no label at all, each shard of a split quant rendered as its own label
+    (``Q4_K_M-00001-of-00003, Q4_K_M-00002-of-00003, ...``), and ``*.gguf`` matches
+    ``.GGUF`` on Windows, where fnmatch normcases, but not on Linux or macOS, so the same
+    repo described itself differently depending on the machine. The lister already answers
+    all three -- it recurses under a bounded entry count, groups shard families through
+    ``group_gguf_variant_files``, and tests the suffix case-insensitively -- and it drops
+    imatrix, mmproj, MTP drafter and big-endian companions on the way, which is the same
+    set the hand-rolled filter was reaching for.
+
+    Using the lister also means the detail column and the load target can no longer
+    disagree about what is in the repo, because they are now reading the same answer.
+
+    Fails open to no detail, like every other backend import in this module: this is one
+    cosmetic column, and a raise here would leave ``_safe`` to swallow the whole cached
+    source, taking every Downloaded row with it and saying nothing.
+    """
+    try:
+        from hub.utils.gguf import list_local_gguf_variants
+    except ImportError:
+        return ""
 
     stem = repo_id.split("/")[-1].removesuffix("-GGUF").lower()
     quants = []
-    for file in sorted(Path(repo_path).glob("snapshots/*/*.gguf")):
-        if _is_mmproj(file.name) or file.name.lower().startswith("mtp-"):
+    for snapshot in _reachable_snapshots(Path(repo_path)):
+        try:
+            variants, _ = list_local_gguf_variants(str(snapshot))
+        except Exception:
             continue
-        label = file.stem
-        if label.lower().startswith(stem + "-"):
-            label = label[len(stem) + 1 :]
-        if label not in quants:
-            quants.append(label)
+        for variant in variants:
+            label = variant.display_label or variant.quant
+            if label.lower().startswith(stem + "-"):
+                label = label[len(stem) + 1 :]
+            if label and label not in quants:
+                quants.append(label)
     return ", ".join(quants)
 
 
