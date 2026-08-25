@@ -717,11 +717,12 @@ async def lifespan(app: FastAPI):
     # The backend's own stall watchdog (#9712). Liveness answers prove the loop is
     # serving only when something probes from outside, and the observed stalls were
     # over before anyone could attach py-spy. This dumps thread stacks from inside
-    # the process while a stall is still in progress. Suppressed while the warm is
-    # importing torch, the one stall with a known frame.
-    from utils.stall_watchdog import start_stall_watchdog
+    # the process while a stall is still in progress. Stood down from its first beat
+    # until the warm is over: its dead man's switch cannot be disarmed once the
+    # warm's `import torch` has the GIL, so it must never be armed before then.
+    from utils.stall_watchdog import stand_down_for_the_warm, start_stall_watchdog
 
-    start_stall_watchdog(asyncio.get_running_loop(), suppress = _torch_warm_in_progress)
+    start_stall_watchdog(asyncio.get_running_loop(), suppress = stand_down_for_the_warm)
 
     _lifespan_log.info(
         "lifespan pre-auth setup completed in %.1fms",

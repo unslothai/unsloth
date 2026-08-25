@@ -21,14 +21,23 @@ A stall has two shapes, and they need different capture mechanisms:
   acquiring the GIL, so when the beats stop, it fires mid-stall and writes the frame
   every thread is actually in -- including the one sitting on the GIL.
 
-Dumps go to stderr, which every launch path already captures: the CI workflow
-redirects the backend to ``logs/*.log`` and the desktop launcher collects child
-stdio. A dump is a few KB of text and fires at most once per cooldown window.
+Dumps go to the stderr file descriptor: the CI workflow redirects it to the
+``logs/*.log`` it uploads, and the desktop launcher captures the child's pipe. A
+direct terminal launch shows dumps on the console but its on-disk session log
+misses them -- faulthandler writes at C level, underneath run.py's tee -- which is
+the price of staying visible to the two consumers that diagnose #9712. The
+structlog markers the watchdog emits around a stall do go through the tee.
 
-Suppressed while the coordinated warm is running: its ``import torch`` holds the
-GIL for tens of seconds on a healthy process, which is a known stall with a known
-frame. The launcher's health watchdog holds its startup grace open over the same
-window for the same reason.
+The dead man's switch cannot be disarmed once something has the GIL, so it must
+never be armed while the coordinated warm could still start: the warm's
+``import torch`` holds the GIL for tens of seconds on a healthy process, and a beat
+that armed just before it grabbed the GIL would dump over the one stall with a
+known frame. The watchdog therefore stands down from its first beat until the warm
+is over (see ``stand_down_for_the_warm``), the same window the launcher's health
+watchdog holds its startup grace open for.
+
+faulthandler's delayed-dump timer is process-global and this module assumes it is
+its only user; nothing else in the backend arms it.
 
 Not a replacement for the launcher-side health watchdog in commands.rs: that one
 decides whether to kill the process from outside. This one only ever writes
@@ -51,20 +60,38 @@ logger = structlog.get_logger(__name__)
 
 DISABLE_ENV_VAR = "UNSLOTH_STUDIO_DISABLE_STALL_WATCHDOG"
 
-BEAT_INTERVAL_S = 5.0
+BEAT_INTERVAL_S = 2.5
 # Passing runs of the mac smoke report worst-case route latency around 50ms, with
 # outliers to ~3.4s on a saturated instance. 1s flags a probe as slow without
 # counting those single-probe outliers as a stall on their own.
 PROBE_SLOW_S = 1.0
-# Three slow beats in a row is ~11s of continuously unresponsive loop, the low end
-# of the observed stalls and past anything a healthy run has shown.
+# Three slow beats in a row is 6-8.5s of continuously unresponsive loop depending
+# on where in a beat the stall lands: past any healthy run, and early enough to
+# dump before the shortest stall on record (10.03s) recovers.
 SLOW_PROBES_BEFORE_DUMP = 3
-# The dead man's switch fires this long after the last re-arm. Also the width of a
-# GIL hold the watchdog tolerates before it considers its own silence a stall.
-DEAD_MAN_TIMEOUT_S = 10.0
+# The dead man's switch fires this long after the last re-arm, so 5.5-8s into a
+# GIL-held stall. Sized for the same 10s floor as the slow-probe path.
+DEAD_MAN_TIMEOUT_S = 8.0
 # One dump per stall is the useful number; a host that stalls chronically should
-# not fill its log with them.
+# not fill its log with them. Applies to both capture paths.
 DUMP_COOLDOWN_S = 600.0
+
+
+def stand_down_for_the_warm() -> bool:
+    """True from process start until the coordinated warm is over.
+
+    Suppressing only while the warm is *running* leaves a window between the
+    watchdog's first beat and start_background_warm(), and a switch armed in that
+    window cannot be disarmed once the warm has the GIL. When the warm is switched
+    off entirely, no warm is coming and the watchdog engages immediately.
+    """
+    from utils.torch_warmup import DISABLE_ENV_VAR as _WARM_DISABLED
+    from utils.torch_warmup import warm_status
+
+    status = warm_status()
+    if status["started"]:
+        return bool(status["alive"] and not status["finished"])
+    return os.environ.get(_WARM_DISABLED) != "1"
 
 
 async def _noop() -> None:
@@ -103,6 +130,7 @@ class StallWatchdog:
         self._stall_started: Optional[float] = None
         self._last_dump: Optional[float] = None
         self._dead_man_armed = False
+        self._arm_failure_logged = False
 
     def start(self) -> None:
         self._thread = threading.Thread(
@@ -127,9 +155,12 @@ class StallWatchdog:
             beat_started = time.monotonic()
             # The watchdog going quiet is itself the signal in the GIL-held shape:
             # the switch fired while this thread could not run. Say so on recovery,
-            # with the one number the raw dump cannot carry.
+            # with the one number the raw dump cannot carry, and start the cooldown
+            # so back-to-back stalls do not each leave a dump.
             gap = beat_started - last_beat
             if self._dead_man_armed and gap > self._dead_man_timeout_s:
+                self._last_dump = beat_started
+                self._dead_man_armed = False
                 logger.warning(
                     "stall watchdog was itself blocked for %.1fs; if the GIL was held, "
                     "faulthandler wrote a thread dump to stderr (system sleep also lands here)",
@@ -192,7 +223,16 @@ class StallWatchdog:
 
     # -- dumps ------------------------------------------------------------------
 
+    def _in_cooldown(self) -> bool:
+        return (
+            self._last_dump is not None
+            and time.monotonic() - self._last_dump < self._dump_cooldown_s
+        )
+
     def _arm_dead_man(self) -> None:
+        if self._in_cooldown():
+            self._cancel_dead_man()
+            return
         try:
             faulthandler.dump_traceback_later(
                 self._dead_man_timeout_s,
@@ -201,9 +241,16 @@ class StallWatchdog:
                 exit = False,
             )
             self._dead_man_armed = True
-        except Exception:
-            # No usable fileno (a replaced stderr). The Python-side path still works.
+        except Exception as exc:
             self._dead_man_armed = False
+            # Once: a dump target with no usable file descriptor never grows one.
+            if not self._arm_failure_logged:
+                self._arm_failure_logged = True
+                logger.warning(
+                    "stall watchdog cannot arm faulthandler (%s); GIL-held stalls "
+                    "will not be dumped, only slow-probe ones",
+                    exc,
+                )
 
     def _cancel_dead_man(self) -> None:
         if self._dead_man_armed:
@@ -211,9 +258,9 @@ class StallWatchdog:
             self._dead_man_armed = False
 
     def _dump_from_python(self) -> None:
-        now = time.monotonic()
-        if self._last_dump is not None and now - self._last_dump < self._dump_cooldown_s:
+        if self._in_cooldown():
             return
+        now = time.monotonic()
         self._last_dump = now
         stalled_for = now - (self._stall_started or now)
         try:

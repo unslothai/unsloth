@@ -30,6 +30,7 @@ import pytest
 
 from utils.stall_watchdog import (
     StallWatchdog,
+    stand_down_for_the_warm,
     start_stall_watchdog,
     stop_stall_watchdog,
 )
@@ -144,6 +145,95 @@ def test_a_gil_holding_stall_is_dumped_mid_stall(loop_in_thread, tmp_path):
     )
 
 
+def test_repeated_gil_stalls_dump_once_per_cooldown(loop_in_thread, tmp_path):
+    """The switch fires on its own once armed, so the cooldown has to gate the
+    arming: a host that stalls chronically must leave one dump, and silence, until
+    the window passes."""
+    dump_path = tmp_path / "dump.txt"
+
+    def hold_gil_for(seconds: float):
+        released = threading.Event()
+
+        def holder():
+            old = sys.getswitchinterval()
+            sys.setswitchinterval(10.0)
+            try:
+                deadline = time.monotonic() + seconds
+                while time.monotonic() < deadline:
+                    pass
+            finally:
+                sys.setswitchinterval(old)
+                released.set()
+
+        loop_in_thread.call_soon_threadsafe(holder)
+        assert released.wait(timeout = 30.0)
+
+    with dump_path.open("w") as dump_file:
+        watchdog = StallWatchdog(
+            loop_in_thread,
+            dump_file = dump_file,
+            beat_interval_s = 0.05,
+            probe_slow_s = 0.05,
+            slow_probes_before_dump = 1000,
+            dead_man_timeout_s = 0.3,
+            dump_cooldown_s = 60.0,
+        )
+        watchdog.start()
+        try:
+            assert _wait_for(lambda: watchdog._dead_man_armed, timeout_s = 5.0)
+            hold_gil_for(0.8)
+            assert _wait_for(lambda: "Timeout" in dump_path.read_text(errors = "replace"))
+            # Let the recovery beat land and start the cooldown before stalling again.
+            assert _wait_for(lambda: watchdog._last_dump is not None, timeout_s = 5.0)
+            hold_gil_for(0.8)
+            time.sleep(0.3)
+        finally:
+            watchdog.stop()
+
+    text = dump_path.read_text(errors = "replace")
+    assert text.count("Timeout") == 1, (
+        "a second stall inside the cooldown window dumped again; a chronically "
+        "stalling host would fill its log with stacks"
+    )
+
+
+def test_stands_down_until_the_warm_is_over(monkeypatch):
+    """The dead man's switch cannot be disarmed once the warm holds the GIL, so the
+    gate has to be closed before the warm starts, and stay closed until it is over.
+    Gating on 'warm running' left the window between the watchdog's first beat and
+    start_background_warm(), and every cold start dumped over the torch import."""
+    import utils.stall_watchdog as sw
+    import utils.torch_warmup as tw
+
+    def status(started: bool, finished: bool, alive: bool):
+        monkeypatch.setattr(
+            tw, "warm_status",
+            lambda: {"started": started, "finished": finished, "alive": alive, "stages": {}},
+        )
+
+    monkeypatch.delenv(tw.DISABLE_ENV_VAR, raising = False)
+    status(started = False, finished = False, alive = False)
+    assert sw.stand_down_for_the_warm() is True, (
+        "not standing down before the warm starts is the arming race: the switch "
+        "armed in that window dumps over `import torch` on every cold start"
+    )
+    status(started = True, finished = False, alive = True)
+    assert sw.stand_down_for_the_warm() is True
+    status(started = True, finished = True, alive = False)
+    assert sw.stand_down_for_the_warm() is False
+    # A warm that died mid-stage is not coming back; staying down would blind the
+    # watchdog for the rest of the session.
+    status(started = True, finished = False, alive = False)
+    assert sw.stand_down_for_the_warm() is False
+
+    monkeypatch.setenv(tw.DISABLE_ENV_VAR, "1")
+    status(started = False, finished = False, alive = False)
+    assert sw.stand_down_for_the_warm() is False, (
+        "with the warm switched off no warm is coming; standing down anyway keeps "
+        "the watchdog disarmed for the whole session"
+    )
+
+
 def test_no_dump_while_suppressed(loop_in_thread, tmp_path):
     """The warm's `import torch` is a legitimate long GIL hold with a known frame.
     While the suppress callable says so, neither capture path may fire."""
@@ -205,8 +295,8 @@ def test_the_lifespan_wires_it_in():
         "main.py no longer starts the stall watchdog; the next #9712 stall leaves "
         "no dump behind"
     )
-    assert "suppress = _torch_warm_in_progress" in source, (
-        "the watchdog no longer stands down during the warm; every cold start would "
+    assert "suppress = stand_down_for_the_warm" in source, (
+        "the watchdog no longer stands down for the warm; every cold start would "
         "dump over the torch import"
     )
     assert "stop_stall_watchdog()" in source, (
