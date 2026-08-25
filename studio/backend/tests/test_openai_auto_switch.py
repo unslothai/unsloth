@@ -3844,9 +3844,7 @@ def test_count_tokens_does_not_own_an_independent_load(monkeypatch):
         return 503, "No GGUF model loaded"
 
     monkeypatch.setattr(inference_route, "_loaded_slot_ident", lambda: state["slot"])
-    monkeypatch.setattr(
-        inference_route, "_loaded_identity_satisfies", loaded_identity_satisfies
-    )
+    monkeypatch.setattr(inference_route, "_loaded_identity_satisfies", loaded_identity_satisfies)
     monkeypatch.setattr(inference_route, "_no_model_loaded_error", no_model_error)
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
     monkeypatch.setattr(resolver, "warm_index_soon", lambda: None)

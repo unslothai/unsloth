@@ -1632,7 +1632,6 @@ def test_preview_not_blocked_by_pending_non_preview_waiter(fake_slot):
 
 def test_queued_preview_does_not_deadlock_studio_switch():
     from core.inference import llama_keepwarm as kw
-
     async def _run():
         _reset_keepwarm_counters()
         kw._admitted_inference = 0
@@ -1678,9 +1677,7 @@ def test_queued_preview_does_not_deadlock_studio_switch():
             try:
                 async with kw.inference_lifecycle_gate():
                     studio_holds_gate.set()
-                    await inference._wait_for_model_switch_idle(
-                        current_request_counted = True
-                    )
+                    await inference._wait_for_model_switch_idle(current_request_counted = True)
             finally:
                 inference._auto_switch_process_lock.release()
             await send({"type": "http.response.start", "status": 200})
@@ -1699,18 +1696,14 @@ def test_queued_preview_does_not_deadlock_studio_switch():
             "headers": [(b"authorization", b"Bearer valid")],
         }
         queued_preview = asyncio.create_task(
-            kw.LlamaKeepWarmMiddleware(queued_preview_app)(
-                preview_scope, _receive, _send
-            )
+            kw.LlamaKeepWarmMiddleware(queued_preview_app)(preview_scope, _receive, _send)
         )
         while kw._preview_pending != 1:
             await asyncio.sleep(0)
         assert kw._preview_inflight == 1  # only active preview A, not queued B
 
         studio_switch = asyncio.create_task(
-            kw.LlamaKeepWarmMiddleware(studio_switch_app)(
-                studio_scope, _receive, _send
-            )
+            kw.LlamaKeepWarmMiddleware(studio_switch_app)(studio_scope, _receive, _send)
         )
         await asyncio.wait_for(studio_holds_gate.wait(), 1)
 
