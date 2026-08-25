@@ -735,6 +735,121 @@ class Payload:
                 detail["failures"].append("the model on the GPU returned empty content")
         return self.record("gpu_inference", not detail["failures"], detail)
 
+    def assert_server_flags(self) -> bool:
+        """Reload with a quantized KV cache and a two-card split, and check what
+        was APPLIED rather than what was asked for.
+
+        Studio's own status distinguishes the two, which is the point: it
+        carries `cache_type_kv` for the live server alongside a coverage field
+        and a reason for anything it could not apply. So a request that was
+        silently dropped is visible, and a check that only asserted "the load
+        succeeded" would pass on exactly that.
+
+        Both cards, deliberately. `tensor_split` over two T4s is the flag the
+        brief asks about and the one nothing here has ever exercised; a
+        single-card load would leave it untested while looking identical in the
+        report.
+
+        The context length is pinned to `--studio-ctx` (2048 by default) rather
+        than left at the model default, because an unconstrained context on a
+        14.56GB card is how a KV-cache test turns into an OOM about something
+        else.
+        """
+        failures: list[str] = []
+        detail: dict = {"requested": {}}
+        body = {
+            "model_path": self.args.chat_model,
+            "is_lora": False,
+            "max_seq_length": self.args.studio_ctx,
+            "gpu_memory_mode": "manual",
+            "gpu_layers": self.args.gpu_layers,
+            "force": True,
+            # q8_0 rather than a fancier width: it is the one every llama.cpp
+            # build supports, so a refusal here is about the MODEL's cache
+            # layout and not about the binary.
+            "cache_type_kv": "q8_0",
+            # Even across both cards. The values are relative weights, not
+            # byte counts.
+            "tensor_split": [1.0, 1.0],
+        }
+        if self.args.chat_variant:
+            body["gguf_variant"] = self.args.chat_variant
+        detail["requested"] = {
+            k: body[k] for k in ("max_seq_length", "cache_type_kv", "tensor_split")
+        }
+
+        try:
+            self.studio.expect(
+                "POST", "/api/inference/load", body, timeout = self.args.load_timeout
+            )
+        except StudioError as exc:
+            failures.append(f"loading with server flags failed: {exc}"[:600])
+            detail["failures"] = failures
+            return self.record("server_flags", False, detail)
+
+        code, status_body = self.studio.get("/api/inference/status")
+        detail["status_code"] = code
+        status = status_body if isinstance(status_body, dict) else {}
+        applied = {
+            k: status.get(k)
+            for k in (
+                "cache_type_kv",
+                "context_length",
+                "max_context_length",
+                "gpu_layers",
+                "is_mlx",
+            )
+        }
+        detail["applied"] = applied
+
+        # 1. the KV cache type actually in force. Reported rather than asserted
+        #    equal: a model whose cache layout cannot be quantized is entitled
+        #    to refuse, and Studio says so. What is NOT acceptable is silence.
+        got_cache = (applied.get("cache_type_kv") or "").lower()
+        if not got_cache:
+            failures.append(
+                "the status reports no cache_type_kv at all after a load that "
+                "asked for q8_0, so there is no way to tell whether the request "
+                "was honoured, downgraded or ignored"
+            )
+        elif got_cache != "q8_0":
+            # Not a failure by itself -- but it must come with a reason.
+            reason = status.get("kv_quant_reason") or status.get("mlx_kv_quant_reason")
+            detail["cache_downgrade_reason"] = reason
+            if not reason:
+                failures.append(
+                    f"q8_0 was requested and {got_cache!r} is in force, with no "
+                    f"reason given. A silent downgrade is the failure this check "
+                    f"exists for"
+                )
+
+        # 2. the context length is the one that was pinned. llama-server admits
+        #    a prompt on n_ctx alone, so a server running at the model default
+        #    behaves differently from one at 2048 and the difference is
+        #    invisible in a chat response.
+        ctx = applied.get("context_length")
+        if ctx is None:
+            failures.append("the status reports no context_length")
+        elif int(ctx) > self.args.studio_ctx:
+            failures.append(
+                f"context_length is {ctx}, above the {self.args.studio_ctx} that "
+                f"was requested, so the pin did not take"
+            )
+
+        # 3. it is still on the GPU. A tensor split that fell back to CPU would
+        #    otherwise report a healthy server and prove nothing about either
+        #    card.
+        used = nvidia_used_mib()
+        detail["gpu_used_mib"] = used
+        if used is not None and used < 200:
+            failures.append(
+                f"only {used} MiB of GPU memory is in use after a two-card "
+                f"tensor_split load, so this is running on the CPU"
+            )
+
+        detail["failures"] = failures
+        return self.record("server_flags", not failures, detail)
+
     def assert_api_key(self) -> bool:
         """Mint an API key and DRIVE it, which is the half that can be wrong.
 
@@ -1385,6 +1500,20 @@ class Payload:
                 {"failures": ["skipped: the model was not on the GPU, so this proves nothing"]},
             )
 
+        # AFTER the GPU inference assertions and BEFORE training: it reloads
+        # the chat model with different flags, so running it earlier would
+        # change the model the inference checks measured, and running it after
+        # training would put a reload between the adapter and the export.
+        if gpu_ok:
+            self.assert_server_flags()
+        else:
+            self.record(
+                "server_flags",
+                False,
+                {"failures": ["skipped: the model was not on the GPU, so a "
+                              "tensor_split check proves nothing"]},
+            )
+
         trained = self.assert_training()
         adapter_dir = None
         for entry in self.assertions:
@@ -1425,6 +1554,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--repo-root", required = True, help = "the unsloth checkout under test")
     ap.add_argument("--studio-home", required = True, help = "UNSLOTH_STUDIO_HOME for this run")
     ap.add_argument("--port", type = int, default = 18902)
+    ap.add_argument(
+        # 2048 constrains the runs, as the brief asks. It also keeps the
+        # KV-cache check about the cache: an unconstrained context on a 14.56GB
+        # card turns it into an OOM about something else.
+        "--studio-ctx",
+        dest = "studio_ctx",
+        type = int,
+        default = 2048,
+        help = "context length to pin the llama.cpp server to",
+    )
     ap.add_argument(
         # Empty means "use the bootstrap password", which is the behaviour this
         # payload had before. A caller passes `auto` to have one generated.

@@ -2361,3 +2361,33 @@ def test_the_kaggle_client_is_new_enough_to_read_the_only_credential_we_have():
     assert pins, "no pinned kaggle client in the workflow"
     assert len(set(pins)) == 1, f"jobs disagree on the kaggle client: {pins}"
     assert packaging_version.Version(pins[0]) >= packaging_version.Version("2.2.0"), pins[0]
+
+
+def test_no_studio_assertion_is_wired_to_a_constant_branch():
+    """A repo-wide version of the guard that caught five vacuous guards at once.
+
+    Every rule in the Studio payload was, at some point, protected by a test
+    that asserted "the failure message appears in the source". That is
+    satisfied by `if False:` sitting above an untouched message, so disabling a
+    rule outright left its test green. Five mutations survived that way in one
+    sitting.
+
+    A constant test in an `assert_*` method means a branch that can never be
+    taken, or one always taken. Neither is something a check has any business
+    doing, and this catches it for every assertion at once rather than one test
+    at a time.
+    """
+    import ast
+
+    src = (
+        Path(__file__).resolve().parents[2]
+        / "tests" / "kaggle" / "studio_gpu" / "run_studio_gpu.py"
+    ).read_text(encoding = "utf-8")
+    offenders = []
+    for func in ast.walk(ast.parse(src)):
+        if not (isinstance(func, ast.FunctionDef) and func.name.startswith("assert_")):
+            continue
+        for node in ast.walk(func):
+            if isinstance(node, ast.If) and isinstance(node.test, ast.Constant):
+                offenders.append(f"{func.name}: if {ast.unparse(node.test)}")
+    assert offenders == [], f"assertions wired to a constant: {offenders}"
