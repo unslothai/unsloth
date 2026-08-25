@@ -168,6 +168,7 @@ class InferenceOrchestrator:
         self._proc: Optional[mp.Process] = None
         self._cmd_queue: Any = None
         self._resp_queue: Any = None
+        self._subprocess_shutdown_lock = threading.Lock()
         self._cancel_event: Any = None  # mp.Event — set to cancel generation
         # Set for the whole unload; the worker never clears it (unlike _cancel_event),
         # so a generate queued behind the cancelled one is skipped, not run.
@@ -405,6 +406,10 @@ class InferenceOrchestrator:
         return proc is not None and proc.is_alive()
 
     def _shutdown_subprocess(self, timeout: float = 10.0) -> bool:
+        with self._subprocess_shutdown_lock:
+            return self._shutdown_subprocess_locked(timeout)
+
+    def _shutdown_subprocess_locked(self, timeout: float) -> bool:
         """Gracefully shut down the inference subprocess.
 
         Returns True only once the worker is confirmed dead. If it survives
@@ -437,8 +442,15 @@ class InferenceOrchestrator:
             pass
 
         # 5. Force kill if still alive
+        descendants = []
         if self._proc is not None and self._proc.is_alive():
             logger.warning("Inference subprocess did not exit gracefully, terminating")
+            try:
+                from utils.process_lifetime import collect_descendants
+
+                descendants = collect_descendants(self._proc.pid)
+            except Exception:
+                pass
             try:
                 self._proc.terminate()
                 self._proc.join(timeout = 5)
@@ -451,6 +463,14 @@ class InferenceOrchestrator:
                     self._proc.join(timeout = 3)
                 except Exception:
                     pass
+
+        if descendants:
+            try:
+                from utils.process_lifetime import terminate_descendants
+
+                terminate_descendants(descendants, timeout = 5)
+            except Exception:
+                pass
 
         if self._proc is not None and self._proc.is_alive():
             # Survived SIGKILL (uninterruptible syscall): keep the handle so callers
@@ -1470,18 +1490,11 @@ class InferenceOrchestrator:
                 else:
                     # Worker reports failures (consent gate included) under "message".
                     error = resp.get("message") or resp.get("error") or "Failed to load model"
-                    self.loading_models.discard(model_name)
                     self.active_model_name = None
                     self.models.clear()
                     raise Exception(error)
 
         except Exception as exc:
-            # cancel_load drops this marker before tearing the worker down, so if
-            # it's already gone the cancel owns the worker. A Stop during a failing
-            # load used to send both threads into _shutdown_subprocess; cancel_load
-            # nulls _cmd_queue at the end of its teardown, and the load thread's
-            # later put() replaced the real timeout with AttributeError.
-            cancelled = model_name not in self.loading_models
             self.loading_models.discard(model_name)
             from utils.transformers_version import SidecarSwapInProgress
 
@@ -1492,18 +1505,12 @@ class InferenceOrchestrator:
                 raise
             self.active_model_name = None
             self.models.clear()
-            # An inactivity timeout waiting for "loaded" (and other post-spawn
-            # failures) used to leave the worker alive: a still-running
-            # causal-conv1d install kept pip/nvcc and GPU memory after Studio
-            # had already reported the load failed (#9398). Stall retries already
-            # tear the child down; do the same for every other failed load, unless
-            # cancel_load already owns that teardown. unload_model wraps its own
-            # teardown the same way, for the same reason.
-            if not cancelled:
-                try:
-                    self._shutdown_subprocess(timeout = 5)
-                except Exception as teardown_exc:
-                    logger.warning("Could not shut the failed load's worker down: %s", teardown_exc)
+            # Reap workers after any failed load, including inactivity timeouts
+            # that leave installs and GPU memory alive (#9398).
+            try:
+                self._shutdown_subprocess(timeout = 5)
+            except Exception as teardown_exc:
+                logger.warning("Could not shut the failed load's worker down: %s", teardown_exc)
             raise
 
     def cancel_load(self, model_name: str) -> bool:

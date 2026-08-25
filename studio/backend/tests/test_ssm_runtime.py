@@ -276,8 +276,7 @@ def test_install_kernel_uses_prebuilt_wheel(monkeypatch):
 
 
 def test_install_kernel_heartbeats_during_prebuilt_wheel(monkeypatch):
-    # A quiet pip/uv wheel install used to emit one status and then silence the
-    # parent for >300s (#9398). Heartbeats must keep coming while install_wheel runs.
+    # Keep the parent alive during a quiet wheel install (#9398).
     import threading
     import time
 
@@ -332,10 +331,8 @@ def test_install_kernel_heartbeats_during_prebuilt_wheel(monkeypatch):
 
 
 def test_install_kernel_heartbeats_through_the_import_check(monkeypatch):
-    # The first real torch import after a wheel lands can take tens of seconds
-    # on a cold aarch64 process. The heartbeat with-block used to close after
-    # install_wheel, so _is_importable ran in silence and could trip the 300s
-    # inactivity deadline. Heartbeats must keep coming through that import.
+    # The first torch import can be quiet long enough to trip the inactivity
+    # deadline, so keep heartbeats running through it.
     import threading
     import time
 
@@ -392,9 +389,7 @@ def test_install_kernel_heartbeats_through_the_import_check(monkeypatch):
 
 
 def test_heartbeat_does_not_emit_after_the_block(monkeypatch):
-    # A tick that already left done.wait() used to _emit after the with-block,
-    # so a stray "still installing" could land after the parent moved on.
-    # join after done.set() waits that tick out.
+    # No in-flight tick may emit after the block exits.
     import time
 
     monkeypatch.setattr(ssm_runtime, "_HEARTBEAT_SECONDS", 0.05)

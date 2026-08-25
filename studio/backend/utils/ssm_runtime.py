@@ -246,8 +246,7 @@ def _hipcc_gcc_install_dir() -> Optional[str]:
     return None
 
 
-# How often a long install emits a status so the orchestrator's inactivity
-# deadline (300s silence) is not tripped by a quiet pip/uv download or build.
+# Keep quiet downloads and builds inside the orchestrator's inactivity deadline.
 _HEARTBEAT_SECONDS = 60.0
 
 
@@ -272,8 +271,7 @@ def _heartbeat(status_cb: StatusCb, message: str) -> Iterator[None]:
         yield
     finally:
         done.set()
-        # A tick that already left done.wait() must not _emit after this block:
-        # the parent would see a status for work that has already finished.
+        # Wait out a tick that already left done.wait().
         thread.join(timeout = 1)
 
 
@@ -320,17 +318,12 @@ def _install_kernel(
     )
     if wheel_url and url_exists(wheel_url):
         _emit(status_cb, f"Installing {display_name} (prebuilt kernel) for this model...")
-        # Heartbeat while pip/uv downloads and unpacks: this path used to emit one
-        # status and then go silent, so a slow aarch64 / cold-cache install tripped
-        # the orchestrator's 300s inactivity timeout (#9398).
+        # Keep quiet downloads and unpacks within the inactivity deadline (#9398).
         with _heartbeat(
             status_cb,
             f"Still installing {display_name} (prebuilt kernel)...",
         ):
-            # Keep the heartbeat open through the first real torch import
-            # (_is_importable): a cold aarch64 process can spend tens of seconds
-            # loading CUDA libs after the wheel lands, and that silence used to
-            # sit outside the block.
+            # A cold first import can also stay quiet for tens of seconds.
             for installer, result in install_wheel(
                 wheel_url,
                 python_executable = sys.executable,
