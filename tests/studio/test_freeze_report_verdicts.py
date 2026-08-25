@@ -512,7 +512,7 @@ def test_an_interface_that_stops_and_stays_stopped_is_still_a_freeze():
 
 
 def test_a_stall_that_only_starts_as_the_window_closes_is_not_called_a_freeze():
-    """"It never polled again" is free when there is no "again" left.
+    """ "It never polled again" is free when there is no "again" left.
 
     The interface goes flat on the final sample only. The rule that a freeze does not
     recover is satisfied vacuously, because the run ended before the interface had any
