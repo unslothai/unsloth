@@ -11913,9 +11913,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             if _lock_acquired:
                 _serial_load_lock.release()
         _load_in_flight = bool(_tracked_loading_id or not _lock_acquired)
-        _loading_id = (
-            _tracked_loading_id or getattr(llama_backend, "_model_identifier", "") or ""
-        )
+        _loading_id = _tracked_loading_id or getattr(llama_backend, "_model_identifier", "") or ""
         _reported_loading_id = _loading_id or "(loading)"
         backend = _peek_inference_backend()
         _active_standard_model = (
