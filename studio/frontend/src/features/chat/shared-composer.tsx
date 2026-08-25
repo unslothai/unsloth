@@ -1909,8 +1909,8 @@ export function SharedComposer({
       // As in the single-chat composer: a dialog over Chat leaves this
       // registered, and a microphone opened behind one is neither visible nor
       // stoppable from where the user is.
-      // Stopping first and ungated, as in the single-chat composer: a
-      // recording has to stay stoppable wherever the gate would say no.
+      // Stopping first and ungated, as in the single-chat composer: a recording
+      // stays stoppable wherever the gate would say no.
       if (isDictating) {
         stopDictation();
         return;
@@ -1925,8 +1925,8 @@ export function SharedComposer({
   useShortcut(
     "sendMessage",
     () => {
-      // As in the single-chat composer: a dialog over Chat leaves this
-      // registered, and the draft behind it is not what the user is typing.
+      // As in the single-chat composer: the draft behind a dialog is not what
+      // the user is typing.
       if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
       sendRef.current?.();
     },
@@ -1935,8 +1935,8 @@ export function SharedComposer({
   useShortcut(
     "attachFiles",
     () => {
-      // As in the single-chat composer: a dialog over Chat would otherwise
-      // raise the OS file chooser from behind it.
+      // As in the single-chat composer, which would otherwise raise the file
+      // chooser from behind a dialog.
       if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
       fileInputRef.current?.click();
     },

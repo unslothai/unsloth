@@ -773,12 +773,10 @@ export function AppSidebar() {
   const closeMobileIfOpen = () => {
     if (isMobile) setOpenMobile(false);
   };
-  // Every row below closes the drawer by hand, because SidebarProvider is
-  // mounted at the route root and outlives the navigation. The workspace
-  // chords are registered up there too, above this provider, so they have no
-  // way to call the same thing: the drawer would stay over the workspace they
-  // just switched to. Closing on the route covers both, and anything else that
-  // navigates from outside this file.
+  // SidebarProvider is mounted at the route root and outlives the navigation,
+  // and the workspace chords register up there too, above it, so they cannot
+  // call what every row below calls by hand. Closing on the route covers both,
+  // and anything else that navigates from outside this file.
   useEffect(() => {
     if (isMobile) setOpenMobile(false);
   }, [href, isMobile, setOpenMobile]);
@@ -1075,11 +1073,10 @@ export function AppSidebar() {
     manualOrder,
     chatsByProjectId,
   ]);
-  // Memoised for its identity, not for the slice: this feeds the rendered-row
-  // set the selection guard runs off, and an effect whose dependency is rebuilt
-  // every render re-runs every render. Its setState bails out on an unchanged
-  // selection, but React still re-renders once to find that out, which rebuilds
-  // this array and schedules the effect again, without end.
+  // Memoised for its identity, not for the slice. It feeds the rendered-row set
+  // the selection guard depends on, and that effect sets state: React re-renders
+  // once to find the bail-out, which would rebuild this array and schedule the
+  // effect again, without end.
   const visibleProjectRecords = useMemo(
     () =>
       showAllProjects
@@ -1219,8 +1216,8 @@ export function AppSidebar() {
   useEffect(() => {
     if (activeThreadId) noteViewed(activeThreadId);
   }, [activeThreadId, noteViewed]);
-  // A walk through the stack ends when its modifiers come up, as an app
-  // switcher's does. A no-op when no walk is running.
+  // A walk ends when its modifiers come up, as an app switcher's does. A no-op
+  // when no walk is running.
   useEffect(() => {
     const end = () => useChatNavigationStore.getState().endTraversal();
     const onKeyUp = (event: KeyboardEvent) => {
@@ -1230,10 +1227,9 @@ export function AppSidebar() {
       end();
     };
     window.addEventListener("keyup", onKeyUp);
-    // Losing the window ends it too, or the release lands somewhere else and
-    // the walk stays frozen: ⌘Tab away mid-walk is the ordinary way to do
-    // that. The next press would carry on from where this one stopped instead
-    // of toggling back, and the stack would never take the chat it landed on.
+    // Losing the window ends it too: ⌘Tab away mid-walk and the release lands
+    // elsewhere, leaving the walk frozen, so the next press carries on instead
+    // of toggling back and the stack never takes the chat it landed on.
     window.addEventListener("blur", end);
     return () => {
       window.removeEventListener("keyup", onKeyUp);
@@ -1263,10 +1259,9 @@ export function AppSidebar() {
   );
   // Whole lists, not the visible slices, so a drop cannot lose what a
   // collapsed "Show more" is hiding.
-  // The project chats actually on screen: grouping by project keeps them out of
+  // The project chats actually on screen. Grouping by project keeps them out of
   // Recents, so without these the chords cannot see them at all. Same rule the
-  // Projects section renders by, collapsed folders and the per-folder limit
-  // included.
+  // Projects section renders by, collapsed folders and per-folder limit included.
   // All three chat groups leave the tree on Train/Recipes/Export and are hidden
   // on the icon rail, so a chord must not reach what they hold. Same rule a
   // collapsed section follows, read off the sidebar as a whole. The mobile
@@ -1276,13 +1271,11 @@ export function AppSidebar() {
     !isStudioRoute &&
     !showTrainingRecents &&
     (isMobile || sidebarState !== "collapsed");
-  // Selecting needs more than the lists existing: it needs the rows. A closed
-  // mobile sheet unmounts them exactly as the icon rail does, so Select All
-  // there would build a selection with nothing on screen to show for it, and
-  // Archive, Pin and Mark unread would take it over the open chat. Navigation
-  // is deliberately not held to this: walking to the next chat moves the chat
-  // the user IS looking at, and the sheet is closed for most of its life on a
-  // window narrow enough to count as mobile.
+  // Selecting needs the rows, not just the lists. A closed mobile sheet unmounts
+  // them as the icon rail does, so Select All would build a selection with
+  // nothing on screen and Archive, Pin and Mark unread would take it over the
+  // open chat. Navigation is deliberately exempt: it moves the chat the user IS
+  // looking at, and the sheet is closed for most of its life on a narrow window.
   const chatRowsOnScreen = chatListsOnScreen && (!isMobile || openMobile);
   const renderedProjectChatItems = useMemo(() => {
     if (!chatListsOnScreen || organizeBy !== "project" || !projectsOpen)
@@ -1327,11 +1320,10 @@ export function AppSidebar() {
     for (const item of visibleRecentItems) ids.add(item.id);
     return ids;
   }, [visiblePinnedItems, renderedProjectChatItems, visibleRecentItems]);
-  // The folder rows themselves, which are selectable in their own right and
-  // leave the screen on their own terms: the section closes, the sidebar is
-  // organized by date instead, or a "show less" takes back everything past the
-  // limit. The chat sets above say nothing about any of that, since a folder
-  // with no chats in view is still a row.
+  // The folder rows, selectable in their own right and leaving the screen on
+  // their own terms: the section closes, the sidebar organizes by date, or a
+  // "show less" takes back the overflow. The chat sets above say nothing about
+  // that, since a folder with no chats in view is still a row.
   const renderedProjectIds = useMemo(() => {
     if (!chatListsOnScreen || organizeBy !== "project" || !projectsOpen) {
       return new Set<string>();
@@ -1453,12 +1445,11 @@ export function AppSidebar() {
     dropProjectSelection();
   }, [dropChatSelection, dropProjectSelection]);
 
-  // Emptying the published lists is not enough on its own: Archive, Pin, Mark
-  // unread and Delete all take the selection over the open chat whenever there
-  // is one, and a selection has no on-screen presence outside the rows -- its
-  // count lives in their context menus. So a selection carried onto Train or
-  // behind the icon rail would be invisible and still be what the chords hit.
-  // Same reason opening a row drops it.
+  // Emptying the published lists is not enough: Archive, Pin, Mark unread and
+  // Delete all prefer the selection over the open chat, and a selection shows
+  // nowhere but the rows, its count living in their context menus. Carried onto
+  // Train or behind the icon rail it would be invisible and still be what the
+  // chords hit. Same reason opening a row drops it.
   // Sections close one at a time, though, and a "show less" takes back only
   // its own overflow, so the rest of the selection is still on screen and
   // still worth acting on. Drop what went and keep what stayed.
@@ -1479,10 +1470,10 @@ export function AppSidebar() {
       }
       return kept.size === prev.size ? prev : kept;
     });
-    // Folder rows go the same way. Left behind, a selected project the user
-    // closed the section on keeps the selection alive with nothing on screen
-    // to show for it, and the tool card's Escape steps aside for it: the press
-    // that should have declined a call clears a selection instead.
+    // Folder rows go the same way. Left behind, a project whose section the
+    // user closed keeps the selection alive with nothing on screen, and the
+    // tool card's Escape steps aside for it: the press that should have
+    // declined a call clears a selection instead.
     const projectAnchor = projectAnchorRef.current;
     if (projectAnchor && !renderedProjectIds.has(projectAnchor)) {
       projectAnchorRef.current = null;
@@ -1518,20 +1509,19 @@ export function AppSidebar() {
     dropProjectSelection,
   ]);
 
-  // Escape is the way out of a selection, as it is for the menus. It stays a
-  // passive listener rather than consuming the key: dictation's Escape reads
-  // defaultPrevented before cancelling, and a stale selection must not outrank
-  // a live recording. The one Escape that must not double up is declining a
-  // tool call, and that one steps aside on `selectionActive` below.
+  // Escape leaves a selection, as it does the menus. A passive listener rather
+  // than one that consumes the key: dictation's Escape reads defaultPrevented
+  // first, and a stale selection must not outrank a live recording. Declining a
+  // tool call is the Escape that must not double up, and it steps aside on
+  // `selectionActive` below.
   const selectionActive = selectionCount > 0 || projectSelectionCount > 0;
   useEffect(() => {
     if (!selectionActive) return;
     const onKeyDown = (event: KeyboardEvent) => {
       // Bare, and only bare. Escape with a modifier is somebody else's chord,
       // ⇧Esc for Clear all unreads among them, and dropping the selection under
-      // one of those would leave Archive or Pin pointing somewhere else than
-      // the user had them pointed. defaultPrevented for the same reason: a menu
-      // or dialog closing on Escape is not a request to lose the selection too.
+      // one would leave Archive or Pin pointing elsewhere. defaultPrevented for
+      // the same reason: a menu closing on Escape is not a request to lose it.
       if (event.key !== "Escape" || event.defaultPrevented) return;
       if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) {
         return;
@@ -2179,9 +2169,8 @@ export function AppSidebar() {
   }
 
   type RenameTarget =
-    // `inline` is the row's own pill, which only the row renders. A chord has
-    // no row under the cursor and the chat may not have one on screen at all,
-    // so it opens the dialog the other two kinds already use.
+    // `inline` is the row's own pill, and a chord has no row under the cursor
+    // and may have none on screen at all, so it opens the dialog instead.
     | { kind: "chat"; item: SidebarItem; current: string; inline: boolean }
     | { kind: "project"; project: ProjectRecord; current: string }
     | { kind: "run"; run: TrainingRunSummary; current: string };
@@ -2683,22 +2672,19 @@ export function AppSidebar() {
       last?.id === id && Date.now() - last.at < SELECTION_ACTION_GRACE_MS
     );
   };
-  // A project selection is not a chat selection. None of the three chords
-  // below is on its context menu, so with only projects selected they stand
-  // aside rather than falling through to the open chat while the sidebar
-  // visibly points somewhere else. Delete already behaves this way.
+  // A project selection is not a chat selection: none of the chords below is on
+  // its context menu, so with only projects selected they stand aside rather
+  // than falling through to the open chat. Delete already behaves this way.
   const projectsOnlySelected = () =>
     selectionCount === 0 && projectSelectionCount > 0;
   // A dialog leaves the sidebar mounted and inert behind it, and these chords
-  // are window-level, so Settings open over Chat would archive or rename the
-  // chat behind the dialog. Asked at press time, since `enabled` is read at
-  // render and a dialog opening need not re-render this component.
+  // are window-level, so Settings over Chat would archive or rename the chat
+  // behind it. Asked at press time, since `enabled` is read at render.
   //
-  // Backgrounded, not "not in the foreground": on mobile the sidebar lives in
-  // a drawer and is unmounted while it is closed, and a chord that reads a
-  // missing element as covered would be dead there. That leaves the mobile
-  // drawer-closed case unguarded, which is the layout the report does not
-  // cover and a separate change to reach.
+  // Backgrounded, not "not in the foreground": the mobile sidebar is unmounted
+  // while its drawer is closed, and reading a missing element as covered would
+  // kill these chords there. That leaves mobile-with-drawer-closed unguarded,
+  // which is a separate change to reach.
   const sidebarCovered = () => isSurfaceBackgrounded('[data-slot="sidebar"]');
   useShortcut("archiveChat", () => {
     if (sidebarCovered()) return;

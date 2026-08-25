@@ -34,29 +34,26 @@ export function isTextEntryFocused(exceptFor?: string): boolean {
 
 /**
  * A keydown the IME is still composing with. Escape cancels a candidate and
- * Enter commits one, and neither is a chord: without this, declining a tool
- * call takes the Escape a CJK user pressed at the candidate window. Both
- * signals, the way the composer and the picker already read them: isComposing
- * on WebKit, the legacy 229 on Chromium.
+ * Enter commits one, so without this, declining a tool call takes the Escape a
+ * CJK user aimed at the candidate window. Both signals: isComposing on WebKit,
+ * the legacy 229 on Chromium.
  */
 export function isImeComposing(event: KeyboardEvent): boolean {
   return event.isComposing || event.keyCode === 229;
 }
 
 /**
- * Whether `selector`'s element is the foreground, rather than sitting under a
- * modal. A dialog leaves the route mounted, so a chord gated only on the route
- * still fires behind it; anything that starts hardware has to ask at press
- * time, since `enabled` is read at render and a dialog opening need not
- * re-render the component that registered the chord.
+ * Whether `selector`'s element is the foreground rather than under a modal. A
+ * dialog leaves the route mounted, so a route-gated chord still fires behind
+ * it, and `enabled` is read at render, which a dialog opening need not trigger.
+ * So anything irreversible asks here, at press time.
  */
 export function isSurfaceInForeground(selector: string): boolean {
   if (typeof document === "undefined") return false;
-  // Every match, not the first: entering Compare keeps the base view mounted
-  // and inert behind the panes, so the first composer in the document is the
-  // hidden one and asking it alone would call Compare backgrounded.
-  // Radix marks the rest of the page aria-hidden (older React: inert) for the
-  // life of a modal, which is the general signal, not a per-dialog store.
+  // Every match, not the first: Compare keeps the base view mounted and inert
+  // behind the panes, so the first composer found is the hidden one. Radix
+  // marks the rest of the page aria-hidden (older React: inert) for a modal's
+  // life, which is the general signal, not a per-dialog store.
   return [...document.querySelectorAll(selector)].some(
     (el) => !el.closest('[aria-hidden="true"], [inert]'),
   );
@@ -64,10 +61,9 @@ export function isSurfaceInForeground(selector: string): boolean {
 
 /**
  * Whether every `selector` match sits under a modal. Not the complement of the
- * check above: a surface that is not rendered at all is not backgrounded, and
- * reading it as such would disable a chord on a layout that never renders the
- * element. The mobile sidebar is the case, since it lives in a drawer and is
- * unmounted while that drawer is closed.
+ * check above: an unrendered surface is not backgrounded, and reading it that
+ * way would kill a chord on a layout that never renders the element. The mobile
+ * sidebar is the case, unmounted while its drawer is closed.
  */
 export function isSurfaceBackgrounded(selector: string): boolean {
   if (typeof document === "undefined") return false;
@@ -79,11 +75,10 @@ export function isSurfaceBackgrounded(selector: string): boolean {
 }
 
 /**
- * Whether pressing `binding` in a focused text field would put something in
- * it. Deliberately narrow: only Escape and the function keys are treated as
- * typing nothing. The caret keys move a cursor rather than insert, but a chord
- * bound to one still has an edit to stand aside for, so they count as typing
- * here. Anything held with a modifier other than Shift inserts nothing.
+ * Whether pressing `binding` in a focused text field would put something in it.
+ * Narrow on purpose: only Escape, the function keys, and anything held with a
+ * modifier other than Shift. A caret key inserts nothing but still has an edit
+ * to stand aside for, so it counts as typing.
  */
 export function typesInTextField(binding: ShortcutBinding): boolean {
   if (binding.mod || binding.ctrl || binding.alt) return false;
@@ -114,10 +109,7 @@ export interface UseShortcutOptions {
   repeats?: boolean;
 }
 
-/**
- * The chords `id` answers to right now, as a stable joined key so the effect
- * below re-runs only when one of them actually changes.
- */
+/** The chords `id` answers to now, joined so the effect re-runs only on a real change. */
 function useBindingValues(id: ShortcutId): string {
   return useKeyboardShortcutsStore((s) =>
     SHORTCUT_SLOTS.map((slot) => resolveBinding(s.overrides, id, slot) ?? "")
@@ -144,7 +136,7 @@ export function useShortcut(
   const values = useBindingValues(id);
   // A chord claimed by two actions is consumed by whichever listener runs
   // first, so a slot only registers when this action owns it. Otherwise the
-  // winner would follow mount order and change from route to route.
+  // winner follows mount order and changes from route to route.
   const ownedFlags = useKeyboardShortcutsStore((s) =>
     SHORTCUT_SLOTS.map((slot) => {
       const value = resolveBinding(s.overrides, id, slot);
@@ -174,10 +166,9 @@ export function useShortcut(
       if (isImeComposing(event)) return;
       const hit = bindings.find((binding) => matchesBinding(binding, event));
       if (!hit) return;
-      // The exception is for a chord that types nothing where it applies.
-      // Rebound to a key that does type, it would take that key away from the
-      // field instead: decline ships on Escape, and bound to Enter or a letter
-      // the same pass would deny the request as the user edits the prompt.
+      // The exception is for a chord that types nothing there. Decline ships
+      // on Escape; rebound to Enter or a letter, the same pass would deny the
+      // request as the user edits the prompt.
       const exception = typesInTextField(hit) ? undefined : textFieldException;
       if (skipInTextFields && isTextEntryFocused(exception)) return;
       // The focused control keeps its own Enter or Space.
@@ -188,9 +179,9 @@ export function useShortcut(
         return;
       }
       event.preventDefault();
-      // Held past the OS repeat delay, the chord arrives again and again. The
-      // chord is still ours, so it stays consumed, but only an action that
-      // asked for repeats runs on them.
+      // Held past the OS repeat delay the chord arrives again and again. It
+      // stays consumed either way, but only an action that asked for repeats
+      // runs on them.
       if (event.repeat && !repeats) return;
       handlerRef.current(event);
     };
@@ -200,10 +191,9 @@ export function useShortcut(
 }
 
 /**
- * Label for the primary chord `id` is bound to right now, in the platform's own
- * notation, or null when the slot is unassigned. Hints that render the shipped
- * default instead would tell the user to press a chord that stopped working the
- * moment they rebound or cleared the action in Settings.
+ * Label for the primary chord `id` is bound to now, in the platform's notation,
+ * or null when the slot is unassigned. Rendering the shipped default instead
+ * would name a chord that stopped working the moment the user rebound it.
  */
 export function useShortcutLabel(id: ShortcutId): string | null {
   const value = useKeyboardShortcutsStore((s) =>

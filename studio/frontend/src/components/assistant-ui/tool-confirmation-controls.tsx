@@ -129,9 +129,8 @@ export function ToolConfirmationControls({
     pending === null &&
     !(autoAllowed && !failed);
   // The Chat route stays mounted under a dialog, so `keyboardReady` still says
-  // yes while the request itself is hidden behind one. Answering a tool call
-  // the user cannot see is the one decision here that must not be reachable by
-  // accident, so both chords ask at press time.
+  // yes while the request is hidden behind one. Answering a tool call the user
+  // cannot see must not be reachable by accident, so both chords ask here.
   const chatCovered = () => isSurfaceBackgrounded(COMPOSER_INPUT_SELECTOR);
   useShortcut(
     "approveToolRequest",

@@ -416,11 +416,9 @@ test("an opt-in developer chord is not treated as taken", () => {
 });
 
 test("the browsers' own run on macOS is reserved there and only there", () => {
-  // ⌥⌘ is where Chrome keeps view source, dev tools, the console, bookmarks,
-  // split view, web search, Page Setup and tab switching, and Firefox its
-  // element picker and console. Off macOS the same values read as Ctrl+Alt,
-  // which none of them claim, so warning there would be a warning about
-  // nothing.
+  // ⌥⌘ is Chrome's run: view source, dev tools, console, bookmarks, split
+  // view, web search, Page Setup, tab switching; Firefox adds its element
+  // picker and console. Off macOS these read as Ctrl+Alt, which none claim.
   const macOwned = [
     "Mod+Alt+KeyU",
     "Mod+Alt+KeyP",
@@ -1072,11 +1070,10 @@ test("the workspace chords do not leave the mobile drawer over the workspace", a
   );
 });
 
-// An action bar is the wrong place to register a chord from: ActionBarRoot
-// returns null when hidden, and the user bar is autohide="always", so its
-// children are gone unless that message is hovered. The assistant bar never
-// mounted the fork button at all, so a thread that ended with a reply, which is
-// every thread that ended normally, had no listener anywhere.
+// An action bar is the wrong place to register a chord: ActionBarRoot returns
+// null when hidden and the user bar is autohide="always", so its children are
+// gone unless the message is hovered. The assistant bar never mounted the fork
+// button, so any thread ending in a reply had no listener at all.
 test("the fork chord is registered where it mounts, not from an action bar", async () => {
   const thread = await readFile(
     new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
@@ -1871,12 +1868,11 @@ test("a parked tool request is keyed by its own approval, not call_0", async () 
   );
 });
 
-// The selection guard's effect depends on the set of rendered rows. Every
-// value that set is built from has to keep its identity across a render that
-// changed nothing: the effect's setState bails out on an unchanged selection,
-// but React re-renders once to discover that, and a dependency rebuilt during
-// that render schedules the effect again. That is React error #185, and it
-// took the whole chat route down rather than just the sidebar.
+// The selection guard's effect depends on the set of rendered rows, and its
+// setState bails out on an unchanged selection. React still re-renders once to
+// discover that, so a dependency rebuilt during that render schedules the
+// effect again, without end. React error #185, which took down the whole chat
+// route rather than just the sidebar.
 test("the rows the selection guard reads keep their identity", async () => {
   const sidebar = await readFile(
     new URL("../src/components/app-sidebar.tsx", import.meta.url),

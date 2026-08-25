@@ -3306,11 +3306,10 @@ export function ChatPage({
   // chord would toggle state nothing renders.
   const headerPickersShown = active && view.mode !== "compare";
   // This page stays mounted under a dialog, so `enabled` still says yes while
-  // the header is inert behind it. Asked at press time, or the chord opens a
-  // popover belonging to the covered surface, or leaves the picker set to come
-  // back the moment the dialog closes. Backgrounded rather than "not in the
-  // foreground": the composer is the surface that travels with this header,
-  // and a layout that has not rendered it is not one that is covered.
+  // the header is inert. Without a press-time check the chord opens a popover
+  // on the covered surface, or leaves the picker to reappear when the dialog
+  // closes. Backgrounded, not "not in the foreground": the composer travels
+  // with this header, and an unrendered layout is not a covered one.
   const chatCovered = () => isSurfaceBackgrounded(COMPOSER_INPUT_SELECTOR);
   useShortcut(
     "openModelPicker",
@@ -3356,10 +3355,9 @@ export function ChatPage({
         return;
       }
       const current = levels.indexOf(state.reasoningEffort);
-      // An effort the model does not list has no place to step from: loading a
-      // model that drops the level in force leaves it set to one that is gone.
-      // The first press picks the lowest level the model does offer, rather
-      // than counting a step off an index that is not in the list.
+      // Loading a model that drops the level in force leaves the effort set to
+      // one that is gone, and indexOf gives -1. The first press picks the
+      // lowest level offered rather than counting a step off a missing index.
       if (current === -1) {
         state.setReasoningEffort(levels[0]);
         return;

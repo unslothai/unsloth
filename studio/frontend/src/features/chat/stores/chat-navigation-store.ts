@@ -58,13 +58,11 @@ export interface ChatNavigationState {
 }
 
 /**
- * Everything the chords read off a row: which chat it is, where it routes, and
- * the threads behind it. The sidebar rebuilds its items on every render, so
- * this cannot compare by identity; ids alone would keep a row whose project
- * changed under it and route the next jump to the project it left.
- *
- * Titles and timestamps are left out. They churn constantly, and no consumer
- * here reads them: the sidebar renders from its own copies.
+ * Everything the chords read off a row: which chat, where it routes, and the
+ * threads behind it. Compared by value, not identity, since the sidebar
+ * rebuilds its items; ids alone would keep a row whose project changed and
+ * route the next jump to the project it left. Titles and timestamps churn and
+ * nobody here reads them.
  */
 function sameRows(a: SidebarItem[], b: SidebarItem[]): boolean {
   if (a.length !== b.length) return false;
@@ -93,10 +91,9 @@ function sameStrings(a: string[], b: string[]): boolean {
 }
 
 /**
- * Everything here describes one account's chats. The sidebar used to hold the
- * unread set in component state, which died with it; a module store does not,
- * so signing out has to say so or the next account inherits the last one's
- * unread rows and its recently-viewed stack.
+ * One account's chats. The unread set used to live in component state and died
+ * with it; a module store does not, so signing out has to say so or the next
+ * account inherits these rows and this walk.
  */
 const ACCOUNT_STATE = {
   pinnedItems: [] as SidebarItem[],
@@ -169,9 +166,9 @@ export const useChatNavigationStore = create<ChatNavigationState>(
 
     noteViewed: (itemId) => {
       const { recentlyViewedIds, traversal } = get();
-      // Mid-walk the stack has to hold still: promoting each chat the walk
-      // lands on would swap the top two entries and the next step would come
-      // straight back, leaving everything below them unreachable.
+      // Mid-walk the stack holds still: promoting each chat it lands on would
+      // swap the top two, so the next step comes straight back and everything
+      // below stays unreachable.
       if (traversal && traversal.order[traversal.index] === itemId) return;
       if (recentlyViewedIds[0] === itemId) {
         if (traversal) set({ traversal: null });
@@ -201,8 +198,8 @@ export const useChatNavigationStore = create<ChatNavigationState>(
         : state.activeItemId
           ? order.indexOf(state.activeItemId)
           : -1;
-      // Nothing open, or a chat that never entered the stack: the walk starts
-      // outside it, so the first step lands on the end it is walking from.
+      // Nothing open, or a chat outside the stack: the walk starts outside it,
+      // so the first step lands on the end it walks from.
       const index =
         from === -1
           ? delta > 0
@@ -251,13 +248,10 @@ export function visibleChatItems(state: ChatNavigationState): SidebarItem[] {
 }
 
 /**
- * How many rows hold an unread thread. Not the size of the unread set: a
- * Compare row is backed by two threads and marked unread by both, so the set
- * counts that one row twice and the toast said it cleared two chats.
- *
- * Falls back to the set when no row matches, for unreads left behind by a chat
- * that is no longer listed. Those are still cleared, and no row count describes
- * them.
+ * How many rows hold an unread thread. Not the set's size: a Compare row is
+ * backed by two threads and marked unread by both, so the set counted it twice.
+ * Falls back to the set when no row matches, for unreads left by a chat that is
+ * no longer listed; those are still cleared and no row count describes them.
  */
 export function countUnreadRows(state: ChatNavigationState): number {
   const rows = visibleChatItems(state).filter((item) =>

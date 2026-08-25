@@ -4278,9 +4278,9 @@ const Composer: FC<{
   useShortcut(
     "startDictation",
     () => {
-      // Stopping comes first and ungated: the recording bar replaces the
-      // input, so the selector the gate asks about is gone for exactly as long
-      // as there is a recording to stop.
+      // Stopping first and ungated: the recording bar replaces the input, so
+      // the gate's selector is gone for exactly as long as there is something
+      // to stop.
       if (isDictating) {
         aui.composer().stopDictation();
         return;
@@ -4302,9 +4302,8 @@ const Composer: FC<{
         if (!dictationBlocked) sendAfterDictation();
         return;
       }
-      // A dialog over Chat leaves this registered too, and the draft behind it
-      // is not what the user is typing into. Sending is not undoable, so it
-      // asks at press time, the way dictation does.
+      // A dialog over Chat leaves this registered, and the draft behind it is
+      // not what the user is typing. Sending is not undoable, so it asks here.
       if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
       // requestSubmit, not the runtime's send: it runs handleSubmit first,
       // which parks a send behind indexing, queues it behind a run, or
@@ -5816,10 +5815,9 @@ const ComposerToolsMenu: FC<{
   useShortcut(
     "attachFiles",
     () => {
-      // The OS file chooser is the least dismissable thing a chord can raise,
-      // and `chatActive` is the visible tab rather than the foreground, so a
-      // dialog over Chat left this live. Asked at press time, as send and
-      // dictation above already do.
+      // `chatActive` is the visible tab, not the foreground, so a dialog over
+      // Chat left this live, and the OS file chooser is the least dismissable
+      // thing a chord can raise.
       if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
       pickAttachment();
     },

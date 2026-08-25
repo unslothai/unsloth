@@ -90,9 +90,8 @@ export interface ShortcutDef {
   /** Allow a chord with no modifier. Only for prompt-gated actions. */
   allowBareKey?: boolean;
   /**
-   * Hide the row on the desktop build, for an action the desktop does not
-   * carry. The chord would register against a handler that returns, so
-   * offering it there is offering a key that does nothing.
+   * Hide the row on the desktop build. The handler returns there, so offering
+   * the row offers a key that does nothing.
    */
   webOnly?: boolean;
 }
@@ -164,10 +163,9 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   // key every mail client uses, on the ⌥ run the rest of these chat chords sit on.
   def("archiveChat", "Mod+Alt+KeyE"),
   def("newStandaloneChat", "Mod+Alt+KeyO"),
-  // ⌃⇧U off macOS is where GTK's own hex entry lives, hard-coded in
-  // GtkIMContextSimple and bound again by IBus, so a composer with focus is
-  // exactly where it would be fought over. U stays the mnemonic there on the ⌥
-  // run instead, beside Clear all unreads, which takes the same letter with ⇧.
+  // ⌃⇧U off macOS is GTK's hex entry, hard-coded in GtkIMContextSimple and
+  // bound again by IBus, so a focused composer is where it would be fought
+  // over. U stays the mnemonic on the ⌥ run, beside Clear all unreads.
   def("markChatUnread", "Mod+Shift+KeyU", {
     nonMacDefaultBinding: "Mod+Alt+KeyU",
   }),
@@ -187,10 +185,9 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   def("nextRecentlyViewedChat", "Ctrl+Tab", {
     nonMacDefaultBinding: "Mod+Tab",
   }),
-  // No arrow alternate: ⌥⌘→ is Chrome's own next tab, and off macOS the same
-  // chord reads as Ctrl+Alt+→, desktop switching on GNOME and KDE and screen
-  // rotation on Intel graphics. Taken on every platform, so the bracket pair
-  // carries these alone.
+  // No arrow alternate: ⌥⌘→ is Chrome's next tab, and off macOS the same chord
+  // reads as Ctrl+Alt+→, desktop switching on GNOME and KDE and screen rotation
+  // on Intel graphics. Taken everywhere, so the bracket pair carries these.
   def("nextChat", "Mod+Shift+BracketRight"),
   def("nextChatNeedingAttention", "Mod+Alt+KeyA"),
   def("previousRecentlyViewedChat", "Ctrl+Shift+Tab", {

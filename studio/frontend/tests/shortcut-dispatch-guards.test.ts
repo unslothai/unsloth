@@ -29,12 +29,10 @@ function keydown(init: { isComposing?: boolean; keyCode?: number }) {
   } as unknown as KeyboardEvent;
 }
 
-// Escape cancels an IME candidate and Enter commits one. Both are chords here
-// (decline and approve ship bare), and declining takes the composer exception,
-// so without this a CJK user dismissing a candidate answers the tool call.
-// Two signals because neither is reliable alone: WebKit sets isComposing,
-// Chromium reports the legacy 229, which is the pair the composer and the
-// resource picker already read.
+// Escape cancels an IME candidate and Enter commits one, and both ship bare
+// here, so without this a CJK user dismissing a candidate answers the tool
+// call. Two signals because neither is reliable alone: isComposing on WebKit,
+// the legacy 229 on Chromium.
 test("a keydown mid-IME-composition is not a chord", () => {
   assert.equal(isImeComposing(keydown({ isComposing: true })), true);
   assert.equal(isImeComposing(keydown({ keyCode: 229 })), true);
