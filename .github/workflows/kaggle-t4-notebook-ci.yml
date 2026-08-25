@@ -282,8 +282,23 @@ on:
       - '.github/scripts/kaggle_t4_ci/**'
       - '.github/workflows/kaggle-t4-notebook-ci.yml'
       - 'pyproject.toml'
+  # NIGHTLY, for the legs that cannot be per-PR. The GRPO leg is the whole
+  # reason this trigger exists: measured over nine T4 sessions it hits an
+  # intermittent illegal memory access in vLLM's standby sleep on Turing in
+  # FOUR of them. A 44% red in front of every PR, for a race no reader can act
+  # on, is how a check gets switched off; at nightly cadence a clean run still
+  # arrives most days and a red one costs nobody a merge.
+  #
+  # 03:17 rather than 03:00: every scheduled workflow on GitHub asks for the
+  # hour mark, and this one has no reason to join that queue.
+  schedule:
+    - cron: '17 3 * * *'
   workflow_dispatch:
     inputs:
+      legs:
+        description: 'Comma-separated leg names to run instead of the wired KERNELS set. Empty means the wired set. The nightly uses this to run grpo, which is deliberately not per-PR'
+        type: string
+        default: ''
       force:
         description: 'Bypass the sampling gate (quota and concurrency still apply)'
         type: boolean
@@ -441,7 +456,7 @@ jobs:
         run: |
           python .github/scripts/kaggle_t4_ci/gate.py \
             --percent 15 \
-            --force '${{ inputs.force || 'false' }}' \
+            --force '${{ inputs.force || (github.event_name == 'schedule' && 'true' || 'false') }}' \
             --labels "$PR_LABELS" \
             --label-name kaggle-t4-ci \
             --event-action "$EVENT_ACTION" \
@@ -806,6 +821,11 @@ jobs:
         id: build
         if: steps.ref.outputs.stand_down != 'true' && steps.pins.outputs.stand_down != 'true' && steps.stepcount.outputs.stand_down != 'true'
         env:
+          # On the nightly this is 'grpo'; on every other trigger it is empty
+          # and the wired set runs. `github.event.inputs` is null on a
+          # schedule, so the default has to come from the fallback rather than
+          # from the input's own default.
+          LEG_LIST: ${{ inputs.legs || (github.event_name == 'schedule' && 'grpo' || '') }}
           SKIP_BAND: ${{ inputs.skip_reference_band }}
           # The VALIDATED, normalised count from the step above, not the raw
           # dispatch string. check_steps.parse_steps accepts "+10", "010" and
@@ -853,10 +873,20 @@ jobs:
             STUDIO_CONCURRENT='--studio-concurrent'
             echo "::notice title=Studio shares a card::the Studio GPU half is pinned to one T4 beside a small leg, so this run does NOT cover Studio's own choice between two cards."
           fi
+          # A leg list REPLACES --all-kernels rather than filtering it: the
+          # kernel plan and the payload count both come out of the same call,
+          # so a filter applied afterwards would leave the launcher expecting
+          # payloads that were never built.
+          if [ -n "$LEG_LIST" ]; then
+            KERNEL_SELECT="--legs $LEG_LIST"
+            echo "::notice title=Leg override::running $LEG_LIST instead of the wired set"
+          else
+            KERNEL_SELECT="--all-kernels"
+          fi
           python .github/scripts/kaggle_t4_ci/build_kernel.py \
             --payload-dir tests/kaggle/t4_smoke \
             --out kernel \
-            --all-kernels \
+            $KERNEL_SELECT \
             --unsloth-ref '${{ steps.ref.outputs.ref }}' \
             --zoo-ref '${{ steps.pins.outputs.zoo_ref }}' \
             --smoke-args "--max-steps $MAX_STEPS" \

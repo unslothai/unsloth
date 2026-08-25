@@ -3221,6 +3221,12 @@ def test_an_alternate_spelling_of_the_step_count_keeps_the_reference_band(tmp_pa
         source, _, name = inner.rpartition(".")
         if source == "steps.stepcount.outputs":
             return validated.get(name, "")
+        # A dispatch-only or event-only expression. On the pull_request event
+        # this test models, `inputs` is null and the schedule branch is false,
+        # so GitHub substitutes the empty string -- which is what the leg-list
+        # override reads as, and is the shape that must keep --all-kernels.
+        if inner.startswith("inputs.") or inner.startswith("github."):
+            return ""
         raise AssertionError(
             f"the build step takes {key} from {expr}. The step count it builds with, "
             f"and the reference count it compares against, have to be the ones the "

@@ -326,9 +326,15 @@ LEGS: dict[str, Leg] = {
         # both cards (897.7MB on cuda:0, 1017.1MB on cuda:1) because a probe
         # body sees both, where a leg gets exactly one. So 0.92 is one card's
         # share of a two-card placement and the single-card resident set is
-        # roughly double it, before any training activation. 4.0 is a guess
-        # with headroom, not a measurement, and it is replaced before wiring.
-        vram_gb = 4.0,
+        # roughly double it, before any training activation.
+        #
+        # MEASURED now, on ONE card, on the COMPLETE leg -- text cycles, the
+        # vision training run and the Q8_0 export all included:
+        # unsloth-probe-visleg-full-b3a317 read 2.84 GB peak reserved on both
+        # cycles, and the vision run's own peak was the same 2.84. So the old
+        # 4.0 guess was conservative rather than dangerous, unlike
+        # Latest_compile's, and the leg co-tenants comfortably.
+        vram_gb = 2.84,
         name = "Vision_FLA_compile",
         summary = "Qwen3.5-2B on the newest stack: vendored FLA, sdpa on Turing, completions-only",
         install = BASE_INSTALL + ((("--upgrade", "transformers", "trl")),),
