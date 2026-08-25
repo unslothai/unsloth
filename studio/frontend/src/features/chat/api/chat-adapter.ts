@@ -62,6 +62,10 @@ import {
 } from "../utils/pre-stream-run-reservation";
 import { readThreadCreationClaim } from "../utils/chat-thread-creation-claim";
 import {
+  newDeepResearchHandoff,
+  readDeepResearchToolEvent,
+} from "../utils/deep-research-handoff";
+import {
   consumeQueuedChatRunSettings,
   snapshotQueuedChatRunSettings,
 } from "../utils/queued-chat-run-settings";
@@ -4286,9 +4290,7 @@ export function createOpenAIStreamAdapter(
           runtime.setThreadRunning(threadKey, false, { owner: researchServerCancel });
         }
       };
-      let deepResearchHandoff: string | null = null;
-      let pendingResearchCallId = "";
-      let pendingResearchQuestion = "";
+      const deepResearchHandoff = newDeepResearchHandoff();
       const deepResearchArmed =
         runtime.deepResearchEnabled &&
         !options.pairId &&
@@ -5574,7 +5576,12 @@ export function createOpenAIStreamAdapter(
                 studioLocalCodeTools.length > 0 ||
                 mcpEnabledForChat ||
                 ragEnabled ||
-                projectRagEnabled)
+                projectRagEnabled ||
+                // Armed research needs Studio's loop for the same reason the local body
+                // does: deep_research is appended past every tool filter, but only for a
+                // request that asked for the loop at all. Without it the turn proxies
+                // through, the model is never offered the tool, and arming does nothing.
+                deepResearchArmed)
                 ? {
                     enable_tools: true,
                     enabled_tools: [
@@ -5990,43 +5997,13 @@ export function createOpenAIStreamAdapter(
               )._toolEvent;
               if (toolEvent !== undefined) {
                 // Deep Research is an ordinary tool to every loop that runs it, so the handoff
-                // is read off the events they all publish rather than a bespoke frame. Its
-                // question rides on tool_start; tool_end is what says it actually ran. Neither
-                // is rendered: the research card is the reply, a tool pill would just precede
-                // it saying the same thing.
-                if (toolEvent.tool_name === "deep_research") {
-                  // The local loop paints a provisional tool_start with empty arguments before
-                  // the real one, so only a start carrying a question is remembered, and only
-                  // the first: a second call in the same turn is the model repeating itself.
-                  if (toolEvent.type === "tool_start") {
-                    const args = toolEvent.arguments;
-                    const question =
-                      args && typeof args === "object"
-                        ? String(
-                            (args as { question?: unknown }).question ?? "",
-                          ).trim()
-                        : "";
-                    if (deepResearchHandoff === null && question) {
-                      pendingResearchCallId =
-                        typeof toolEvent.tool_call_id === "string"
-                          ? toolEvent.tool_call_id
-                          : "";
-                      pendingResearchQuestion = question;
-                    }
-                    continue;
-                  }
-                  // tool_end is what says the loop ran it. The run starts on the question the
-                  // model passed; if that could not be read, on the user's own message, which is
-                  // what research did before the model had a say. Never silently on nothing.
-                  if (
-                    toolEvent.type === "tool_end" &&
-                    deepResearchHandoff === null
-                  ) {
-                    deepResearchHandoff =
-                      toolEvent.tool_call_id === pendingResearchCallId
-                        ? pendingResearchQuestion
-                        : "";
-                  }
+                // is read off the events they all publish rather than a bespoke frame. An
+                // ungated pair is not rendered: the research card is the reply, a tool pill
+                // would just precede it saying the same thing.
+                if (
+                  toolEvent.tool_name === "deep_research" &&
+                  readDeepResearchToolEvent(deepResearchHandoff, toolEvent)
+                ) {
                   continue;
                 }
                 // Persist container_id onto the thread (OpenAI / Anthropic).
@@ -6884,9 +6861,9 @@ export function createOpenAIStreamAdapter(
         }
         // The model asked for Deep Research, so the run takes over from here and its card
         // replaces this reply. Not after Stop: the user ended the turn before it got there.
-        if (deepResearchHandoff !== null && !runSignal.aborted) {
+        if (deepResearchHandoff.question !== null && !runSignal.aborted) {
           try {
-            yield* startDeepResearch(deepResearchHandoff);
+            yield* startDeepResearch(deepResearchHandoff.question);
           } catch (error) {
             // The reply the model already wrote stays; the user can send again.
             toast.error("Deep research could not start", {

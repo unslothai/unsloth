@@ -75,8 +75,13 @@ def test_research_mode_is_single_chat_and_detaches_without_cancel() -> None:
     # off the tool events every loop already publishes, never off the toggle alone.
     assert "deep_research_armed: true" in adapter
     assert 'toolEvent.tool_name === "deep_research"' in adapter
-    assert "if (deepResearchHandoff !== null && !runSignal.aborted)" in adapter
+    assert "readDeepResearchToolEvent(deepResearchHandoff, toolEvent)" in adapter
+    assert "if (deepResearchHandoff.question !== null && !runSignal.aborted)" in adapter
     assert "if (deepResearchArmed && !supportsTools)" in adapter
+    # Armed research asks for Studio's tool loop on the external body too. Without it the
+    # turn proxies through, the model is never offered the tool, and arming does nothing.
+    assert "projectRagEnabled ||" in adapter
+    assert "deepResearchArmed)" in adapter
     research = adapter.split("const startDeepResearch = async function*", 1)[1].split(
         "const sandboxSessionId", 1
     )[0]
@@ -342,3 +347,33 @@ def test_research_stop_is_prompt_only_and_deduplicated() -> None:
     assert "Stop research" not in activity
     assert "abortSignal.reason as { detach?: boolean }" in adapter
     assert "await cancelResearchRun(createdRun.id)" in adapter
+
+
+def test_the_handoff_is_keyed_on_the_result_the_backend_writes() -> None:
+    """tool_end alone closes a denied, skipped or budget-exhausted call too.
+
+    Reading a run out of one spends the chat's single Deep Research on a question the loop
+    refused to pass on, so the two sides have to agree on what "it ran" looks like.
+    """
+    helper = source("features/chat/utils/deep-research-handoff.ts")
+    tools = (ROOT / "studio" / "backend" / "core" / "inference" / "tools.py").read_text(
+        encoding = "utf-8"
+    )
+    marker = re.search(r'DEEP_RESEARCH_STARTED_MARKER = "([^"]+)"', tools)
+    assert marker is not None
+    assert f'DEEP_RESEARCH_STARTED_MARKER = "{marker.group(1)}"' in helper
+    assert "result.startsWith(DEEP_RESEARCH_STARTED_MARKER)" in helper
+    # A gated call keeps its Allow / Deny card: the loop blocks on a verdict, so hiding it
+    # asks the user nothing and the turn hangs there.
+    assert "if (event.awaiting_confirmation === true) {\n      return false;" in helper
+
+    # The clamp is the endpoint's own limit; a longer question 422s the whole handoff.
+    routes = (ROOT / "studio" / "backend" / "routes" / "research_runs.py").read_text(
+        encoding = "utf-8"
+    )
+    max_length = re.search(
+        r"question: str \| None = Field\(default = None, max_length = ([\d_]+)\)", routes
+    )
+    assert max_length is not None
+    limit = int(max_length.group(1).replace("_", ""))
+    assert f"DEEP_RESEARCH_QUESTION_MAX_CHARS = {limit}" in helper

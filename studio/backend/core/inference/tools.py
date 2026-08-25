@@ -9966,17 +9966,20 @@ ALL_TOOLS = [
 
 # Deliberately an ordinary tool with an ordinary result. Studio runs three tool loops -- one for
 # llama.cpp, one for safetensors, one for external providers -- and only a plain result behaves
-# the same in all three. The client starts the run off the tool_start event every loop already
+# the same in all three. The client starts the run off the tool events every loop already
 # publishes, so nothing here needs to know a research run exists.
 #
 # Never in ALL_TOOLS: it is offered only when the composer armed research.
+#
+# The client keys the handoff on this opening rather than on tool_end alone: a denied, skipped,
+# truncated or budget-exhausted call is closed by the same event, and only the result says the
+# call actually ran.
+DEEP_RESEARCH_STARTED_MARKER = "Deep Research has started"
 DEEP_RESEARCH_STARTED = (
-    "Deep Research has started on that question. Reply with one short sentence saying you are "
-    "looking into it. Do not answer the question yourself and do not call this tool again; the "
-    "researched report arrives separately."
+    f"{DEEP_RESEARCH_STARTED_MARKER} on that question. Reply with one short sentence saying you "
+    "are looking into it. Do not answer the question yourself and do not call this tool again; "
+    "the researched report arrives separately."
 )
-# The planner re-reads it anyway; this only stops a runaway model from posting a document.
-_DEEP_RESEARCH_QUESTION_MAX_CHARS = 2000
 
 DEEP_RESEARCH_TOOL = {
     "type": "function",

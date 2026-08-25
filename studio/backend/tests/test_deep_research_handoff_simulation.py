@@ -25,7 +25,12 @@ from core.inference.studio_tool_loop import (
     ToolLoopRun,
     stream_with_studio_tools,
 )
-from core.inference.tools import DEEP_RESEARCH_STARTED, DEEP_RESEARCH_TOOL
+from core.inference.tools import (
+    DEEP_RESEARCH_STARTED,
+    DEEP_RESEARCH_STARTED_MARKER,
+    DEEP_RESEARCH_TOOL,
+    execute_tool,
+)
 from storage import research_runs_db as research_db
 from storage import studio_db
 
@@ -115,15 +120,23 @@ class ScriptedModel:
         return _gen()
 
 
-def _run_turn(model, *, tools, monkeypatch):
+def _run_turn(
+    model,
+    *,
+    tools,
+    monkeypatch,
+    permission_mode = "off",
+    verdict = None,
+):
     def _execute(name, arguments, **kwargs):
-        if name == "deep_research":
-            return DEEP_RESEARCH_HANDOFF + str(arguments.get("question") or "")
-        return f"RESULT<{name}>"
+        return execute_tool(name, arguments) if name == "deep_research" else f"RESULT<{name}>"
 
     monkeypatch.setattr(loop_mod, "execute_tool", _execute)
     monkeypatch.setattr(loop_mod, "build_rag_autoinject", lambda *a, **k: None)
-    monkeypatch.setattr(loop_mod, "is_high_risk_tool_call", lambda name, args: False)
+    if verdict is not None:
+        monkeypatch.setattr(loop_mod, "begin_tool_decision", lambda *a, **k: object())
+        monkeypatch.setattr(loop_mod, "abort_tool_decision", lambda *a, **k: None)
+        monkeypatch.setattr(loop_mod, "wait_tool_decision", lambda *a, **k: verdict)
 
     async def _collect():
         out = []
@@ -139,8 +152,8 @@ def _run_turn(model, *, tools, monkeypatch):
                 tools = tools,
                 max_calls = 25,
                 timeout = 300,
-                permission_mode = "off",
-                confirm_calls = False,
+                permission_mode = permission_mode,
+                confirm_calls = permission_mode == "ask",
                 bypass_permissions = False,
                 rag_scope = None,
             ),
@@ -153,14 +166,18 @@ def _run_turn(model, *, tools, monkeypatch):
     return asyncio.run(_collect())
 
 
-def _handoff_question(lines) -> str | None:
+def _tool_events(lines, tool_name = "deep_research") -> list[dict]:
+    """Every event the client reads the handoff off, in the order it is published."""
+    events = []
     for line in lines:
         if not line.startswith("data: ") or line[6:] == "[DONE]":
             continue
         payload = json.loads(line[6:])
-        if payload.get("type") == "deep_research":
-            return payload["question"]
-    return None
+        if payload.get("type") in ("tool_start", "tool_end") and (
+            payload.get("tool_name") == tool_name
+        ):
+            events.append(payload)
+    return events
 
 
 def _visible(lines) -> str:
@@ -176,6 +193,107 @@ def _visible(lines) -> str:
             if isinstance(content, str):
                 text.append(content)
     return "".join(text)
+
+
+# ── What the loop publishes, which is all the client has to go on ─
+
+
+def test_the_loop_publishes_the_question_and_a_result_that_says_it_ran(research_home, monkeypatch):
+    model = ScriptedModel([_calls_research(REFINED), _says("Looking into it.")])
+    lines = _run_turn(model, tools = [DEEP_RESEARCH_TOOL], monkeypatch = monkeypatch)
+
+    started, ended = _tool_events(lines)
+    assert started["type"] == "tool_start"
+    assert started["arguments"]["question"] == REFINED
+    assert started["tool_call_id"] == ended["tool_call_id"]
+    assert ended["result"] == DEEP_RESEARCH_STARTED
+    assert ended["result"].startswith(DEEP_RESEARCH_STARTED_MARKER)
+    assert _visible(lines) == "Looking into it."
+
+
+def test_a_denied_call_is_closed_by_the_same_event_and_says_it_did_not_run(
+    research_home, monkeypatch
+):
+    """Ask mode gates every tool. The client cannot read tool_end as "it ran"."""
+    model = ScriptedModel([_calls_research(REFINED), _says("Alright.")])
+    lines = _run_turn(
+        model,
+        tools = [DEEP_RESEARCH_TOOL],
+        monkeypatch = monkeypatch,
+        permission_mode = "ask",
+        verdict = "deny",
+    )
+
+    started, ended = _tool_events(lines)
+    # The card carries the approval prompt, so the client has to draw it: the loop is blocked
+    # on a verdict until someone answers.
+    assert started["awaiting_confirmation"] is True
+    assert started["approval_id"]
+    assert ended["result"] != DEEP_RESEARCH_STARTED
+    assert not ended["result"].startswith(DEEP_RESEARCH_STARTED_MARKER)
+
+
+def test_an_approved_call_runs_like_any_other(research_home, monkeypatch):
+    model = ScriptedModel([_calls_research(REFINED), _says("Looking into it.")])
+    lines = _run_turn(
+        model,
+        tools = [DEEP_RESEARCH_TOOL],
+        monkeypatch = monkeypatch,
+        permission_mode = "ask",
+        verdict = "allow",
+    )
+
+    started, ended = _tool_events(lines)
+    assert started["awaiting_confirmation"] is True
+    assert ended["result"] == DEEP_RESEARCH_STARTED
+
+
+def test_a_spent_call_budget_closes_the_card_without_running_it(research_home, monkeypatch):
+    """The same tool_end shape, for a call the loop announced and refused."""
+    model = ScriptedModel([_calls_research(REFINED), _says("Alright.")])
+
+    def _execute(name, arguments, **kwargs):
+        raise AssertionError("the budget was spent; nothing may run")
+
+    monkeypatch.setattr(loop_mod, "execute_tool", _execute)
+    monkeypatch.setattr(loop_mod, "build_rag_autoinject", lambda *a, **k: None)
+
+    async def _collect():
+        out = []
+        async for line in stream_with_studio_tools(
+            model,
+            run = ToolLoopRun(
+                messages = [{"role": "user", "content": RAW_MESSAGE}],
+                session_id = "s1",
+                thread_id = "thread-1",
+                tool_choice = None,
+            ),
+            policy = ToolLoopPolicy(
+                tools = [DEEP_RESEARCH_TOOL],
+                max_calls = 0,
+                timeout = 300,
+                permission_mode = "off",
+                confirm_calls = False,
+                bypass_permissions = False,
+                rag_scope = None,
+            ),
+            cancel_event = threading.Event(),
+        ):
+            out.append(line)
+        return out
+
+    _started, ended = _tool_events(asyncio.run(_collect()))
+    assert not ended["result"].startswith(DEEP_RESEARCH_STARTED_MARKER)
+
+
+def test_the_tool_is_only_offered_to_the_model_when_it_is_in_the_catalog(
+    research_home, monkeypatch
+):
+    model = ScriptedModel([_says("Hello.")])
+    _run_turn(model, tools = [DEEP_RESEARCH_TOOL], monkeypatch = monkeypatch)
+    offered = [tool["function"]["name"] for tool in model.requests[0]["tools"]]
+
+    assert offered == ["deep_research"]
 
 
 # ── What the change is for ────────────────────────────────────────
@@ -345,23 +463,28 @@ def test_the_tool_is_offered_only_when_research_is_armed(armed):
 
 
 def test_an_unarmed_request_is_byte_identical_to_before():
-    """The tool list a normal chat sends must not move because this feature exists."""
+    """The tool list a normal chat sends must not move because this feature exists.
+
+    Compared against the armed selection rather than a frozen catalog, which any unrelated
+    built-in would fail without saying anything about this feature.
+    """
     from models.inference import ChatCompletionRequest
     from routes.inference import _select_request_tools
 
-    payload = ChatCompletionRequest(
-        model = "local-model",
-        messages = [{"role": "user", "content": "hello"}],
-    )
-    tools = asyncio.run(_select_request_tools(payload, tools_on = True, mcp_allowed = False))
+    def _names(**extra):
+        payload = ChatCompletionRequest(
+            model = "local-model",
+            messages = [{"role": "user", "content": "hello"}],
+            **extra,
+        )
+        tools = asyncio.run(_select_request_tools(payload, tools_on = True, mcp_allowed = False))
+        return [tool["function"]["name"] for tool in tools]
 
-    assert all(tool["function"]["name"] != "deep_research" for tool in tools)
-    assert [tool["function"]["name"] for tool in tools] == [
-        "web_search",
-        "python",
-        "terminal",
-        "render_html",
-    ]
+    unarmed = _names()
+    assert "deep_research" not in unarmed
+    assert unarmed
+    # Appended, and nothing else moves: same catalog, in the same order, plus the one tool.
+    assert _names(deep_research_armed = True) == [*unarmed, "deep_research"]
 
 
 def test_a_client_that_never_heard_of_the_field_still_validates():

@@ -3218,6 +3218,11 @@ def _selects_only_provider_hosted_tools(payload, provider_type: str | None) -> b
     """
     if getattr(payload, "mcp_enabled", False):
         return False
+    # Armed research appends Studio's own deep_research past every filter below, and no
+    # provider can run it, so such a selection is never purely hosted. Without this the
+    # request proxies through, the tool is never offered and arming research does nothing.
+    if getattr(payload, "deep_research_armed", False):
+        return False
     enabled = getattr(payload, "enabled_tools", None)
     # None means "every local tool"; an empty list selects nothing and never
     # reaches the loop anyway. Neither is a hosted-tool request.
@@ -4188,7 +4193,6 @@ async def _select_request_tools(
         # Appended past every filter above, including the tools_on gate: arming research in the
         # composer is what offers this tool, and it is the only way the model can start a run.
         from core.inference.tools import DEEP_RESEARCH_TOOL
-
         tools = tools + [DEEP_RESEARCH_TOOL]
     return tools
 
