@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { resolveEstimateContext } from "../src/features/model-picker/model-config/estimate-context.ts";
+import {
+  resolveEstimateContext,
+  resolveEstimateSourceIdentity,
+} from "../src/features/model-picker/model-config/estimate-context.ts";
 
 // The regression this file exists for: the Context Length control needs a number to
 // display before a new GGUF's header has been read and falls back to 32,768, but the
@@ -42,4 +45,46 @@ test("zero is not mistaken for unset", () => {
   // 0 already means "price the native context" on the wire, so an explicit 0 and an
   // unset length agree rather than one of them falling through to a display bound.
   assert.equal(resolveEstimateContext(0, 40223), 0);
+});
+
+// Which MODEL the shown numbers belong to. The hook blanks the row when this changes
+// and merely greys it when anything else does, so anything that selects a different
+// FILE has to be in here. It keyed on modelPath alone, which is identical across a
+// quantization switch while the weights roughly quadruple: Q4_K_M's footprint stayed
+// on screen under F16's name until the new answer landed.
+const sourceId = (
+  path: string,
+  variant: string | null = null,
+  token = "",
+  native: string | null = null,
+) => resolveEstimateSourceIdentity(path, variant, token, native);
+
+test("two quantizations of one repository are different sources", () => {
+  assert.notEqual(
+    sourceId("unsloth/Qwen3-8B-GGUF", "Q4_K_M"),
+    sourceId("unsloth/Qwen3-8B-GGUF", "F16"),
+  );
+});
+
+test("the same source is the same identity, so a slider step does not blank the row", () => {
+  assert.equal(
+    sourceId("unsloth/Qwen3-8B-GGUF", "Q4_K_M"),
+    sourceId("unsloth/Qwen3-8B-GGUF", "Q4_K_M"),
+  );
+});
+
+test("two repositories are different sources", () => {
+  assert.notEqual(sourceId("org/a", "Q4_K_M"), sourceId("org/b", "Q4_K_M"));
+});
+
+test("two credentials are different sources: they resolve different files", () => {
+  assert.notEqual(sourceId("org/gated", "Q4_K_M", "aaa"), sourceId("org/gated", "Q4_K_M", "bbb"));
+});
+
+test("two native picks of the same file name are different sources", () => {
+  assert.notEqual(sourceId("model.gguf", null, "", "tok-1"), sourceId("model.gguf", null, "", "tok-2"));
+});
+
+test("absent and null are the same, so an unset variant does not thrash the row", () => {
+  assert.equal(sourceId("org/a", null), sourceId("org/a", undefined as unknown as null));
 });

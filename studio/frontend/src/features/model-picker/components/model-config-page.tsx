@@ -1065,14 +1065,28 @@ function MemoryEstimateRow({
             tone: "muted",
             text: "Expert layers held on the CPU aren't modelled here, so the GPU figure reads high.",
           }
-        : (singleMemoryPool ? totalFit : gpuFit) === "exceeds"
-          ? {
-              tone: "warn",
-              text: singleMemoryPool
-                ? "More than this machine's memory. The GPU and the rest of the system share one pool here, so there is nothing to offload to."
-                : "More than this GPU holds. Layers will spill to system RAM, or the context will be fitted down to what fits.",
-            }
-          : null;
+        : singleMemoryPool
+          ? totalFit === "exceeds"
+            ? {
+                tone: "warn",
+                text: "More than this machine's memory. The GPU and the rest of the system share one pool here, so there is nothing to offload to.",
+              }
+            : null
+          : // Discrete memory, so the two verdicts are separate questions and the
+            // aggregate one is asked FIRST. Reading gpuFit alone offered spilling to
+            // system RAM as the remedy for a load that does not fit in GPU and RAM
+            // combined, which is advice to do something that cannot work.
+            totalFit === "exceeds"
+            ? {
+                tone: "warn",
+                text: "More than this machine holds. The GPU and system RAM together are not enough for this load, so spilling layers or fitting the context down will not recover it.",
+              }
+            : gpuFit === "exceeds"
+              ? {
+                  tone: "warn",
+                  text: "More than this GPU holds. Layers will spill to system RAM, or the context will be fitted down to what fits.",
+                }
+              : null;
   return (
     <div className="space-y-2">
       <div className={ROW_CLASS}>

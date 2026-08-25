@@ -30,3 +30,32 @@ export function resolveEstimateContext(
 ): number {
   return customContextLength ?? activeLoadedContext ?? 0;
 }
+
+/**
+ * Which MODEL an estimate belongs to, for deciding whether shown numbers still do.
+ *
+ * Not the same question as "did anything change" -- that is the full request key,
+ * and a slider step must keep the old figures up and mark them stale rather than
+ * blank the row. This is the narrower one: a change here means the numbers on
+ * screen describe a DIFFERENT file, so they have to go, not go grey.
+ *
+ * The quantization is part of it, which is the whole reason this exists. Switching
+ * Q4_K_M to F16 on the same repository leaves `modelPath` untouched while the
+ * weights roughly quadruple, so keying on the path alone left one quant's footprint
+ * displayed under another's name -- the exact thing the caller says must not happen.
+ * The token identity and the native path token are here for the same reason: both
+ * select which file the backend resolves.
+ */
+export function resolveEstimateSourceIdentity(
+  modelPath: string,
+  ggufVariant: string | null | undefined,
+  tokenIdentity: string,
+  nativePathToken: string | null | undefined,
+): string {
+  return JSON.stringify([
+    modelPath,
+    ggufVariant ?? null,
+    tokenIdentity,
+    nativePathToken ?? null,
+  ]);
+}

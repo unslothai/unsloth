@@ -7254,6 +7254,10 @@ def _cached_repo_gguf_bytes(repo: str, hint: str = "") -> int:
 # truncated header drops the token array. Above Llama 4 / Gemma 3 (256k), the widest shipping.
 _ASSUMED_MAX_VOCAB = 262144
 
+# Canonical speculative modes whose launch opens no drafter file at all:
+# _build_speculative_flags returns out of each before it reaches --model-draft.
+_SPEC_MODES_WITHOUT_A_DRAFTER = frozenset({"off", "ngram", "ngram-simple"})
+
 
 class _GgufRuntimeBytes(NamedTuple):
     """The context-dependent half of a GGUF's footprint, itemized.
@@ -7279,6 +7283,12 @@ class _GgufRuntimeBytes(NamedTuple):
     swa_full: bool = False
     kv_unified: bool = True
     n_ubatch: Optional[int] = None
+    # The part of kv_bytes that is per-slot context checkpoints. Inside kv_bytes, not
+    # beside it, so the training guard's total is unchanged; carried separately because
+    # it is the one part of the cache that never reaches the GPU. llama.cpp keeps a
+    # checkpoint in common_prompt_checkpoint's std::vector<uint8_t> buffers, host heap,
+    # bounded by --cache-ram; Studio's own load schema says "Each costs host memory".
+    kv_checkpoint_bytes: int = 0
 
 
 _GGUF_RUNTIME_UNKNOWN = _GgufRuntimeBytes(0, 0, False, 0, None, 1)
@@ -7395,6 +7405,24 @@ def _gguf_runtime_bytes(
             llama_extra_args,
             default = managed_kv_unified,
         )
+        _resolved_checkpoints = resolve_ctx_checkpoints(llama_extra_args, ctx_checkpoints)
+        if _resolved_checkpoints:
+            # A build predating both --ctx-checkpoints aliases has the request skipped
+            # by the command builder, which logs and moves on, so charging for the
+            # snapshots reserves memory the process never allocates. Same capability
+            # probe the builder itself asks, and the same default-deny on an
+            # unanswerable one: this figure also guards a running training job, so an
+            # unreadable probe keeps the charge rather than dropping it.
+            try:
+                _cc_caps = LlamaCppBackend.probe_server_capabilities()
+                # ``found`` is what separates "this build lacks the flag" from "no
+                # binary was read": the defaults dict reports every capability False,
+                # so keying on the flag alone would drop the charge whenever the probe
+                # simply could not run.
+                if _cc_caps.get("found") and not _cc_caps.get("ctx_checkpoints_flag"):
+                    _resolved_checkpoints = 0
+            except Exception as _cc_exc:
+                logger.debug("ctx-checkpoints capability probe failed: %s", _cc_exc)
         kv = probe._estimate_kv_cache_bytes(
             ctx,
             cache_type_for_budget,
@@ -7406,10 +7434,28 @@ def _gguf_runtime_bytes(
             # before them. Per-slot SWA snapshots scale with the slot's context, so
             # a load asking for them needs materially more memory than one that
             # does not.
-            ctx_checkpoints = resolve_ctx_checkpoints(llama_extra_args, ctx_checkpoints),
+            ctx_checkpoints = _resolved_checkpoints,
             flash_attn = False,
         )
+        # The checkpoint share of that cache, by difference rather than by re-deriving
+        # the SWA layer walk: the snapshots are the only term that separates the two
+        # calls, and asking the same function twice cannot drift from it. Skipped
+        # entirely when none were asked for, which is the common case.
+        kv_checkpoint_bytes = 0
+        if _resolved_checkpoints:
+            _kv_without = probe._estimate_kv_cache_bytes(
+                ctx,
+                cache_type_for_budget,
+                n_parallel = slots,
+                swa_full = swa_full,
+                kv_unified = kv_unified,
+                n_ubatch = effective_ubatch,
+                ctx_checkpoints = 0,
+                flash_attn = False,
+            )
+            kv_checkpoint_bytes = max(0, int(kv) - int(_kv_without))
         _resolved = dict(
+            kv_checkpoint_bytes = kv_checkpoint_bytes,
             kv_estimable = True,
             n_ctx = ctx,
             cache_type_kv = cache_type_for_budget,
@@ -7642,6 +7688,7 @@ def _estimate_gguf_required_gb(
     try:
         from core.inference.llama_cpp import (
             _canonicalize_spec_mode,
+            _extra_args_device,
             _extra_args_draft_offloaded_to_cpu,
             _extra_args_mtp_draft_path,
             _extra_args_mtp_draft_source,
@@ -7738,6 +7785,18 @@ def _estimate_gguf_required_gb(
             or _extras_own_drafter
             or (_forced_dspark and not _dspark_capable)
             or (_forced_dflash and not _dflash_capable)
+            # Three modes return out of _build_speculative_flags before any
+            # --model-draft is emitted: "off" immediately, "ngram-simple" and "ngram"
+            # after their --spec-type alone. A model that ships an MTP sidecar was
+            # still billed for it in every one of them, so turning speculation OFF
+            # could add a multi-GiB drafter to the estimate. Same reasoning the DSpark
+            # and DFlash branches already apply to a binary that cannot run them.
+            #
+            # Only when the extras have not taken speculation over. `--spec-type
+            # draft-dspark` in Advanced Arguments opens the sidecar whatever the panel
+            # field says, so reading the field alone here stopped charging a drafter
+            # the launch does load.
+            or (_spec_mode in _SPEC_MODES_WITHOUT_A_DRAFTER and not _extra_args_own_spec)
         )
 
         def _same_file_key(p: str) -> str:
@@ -7791,6 +7850,18 @@ def _estimate_gguf_required_gb(
                     logger.debug(f"mmproj capability read failed: {_dv_exc}")
             if not _dv_opens_projector:
                 _sized_attrs = []
+        # A --mmproj in the extras last-wins at the child: the launch emits Studio's
+        # projector and appends the extras after it. So the override is the file that
+        # opens, and it is the one to charge -- the configured one was billed while a
+        # possibly much larger custom projector went free.
+        _mmproj_override_bytes = 0
+        if _sized_attrs == ["gguf_mmproj_file"]:
+            _mmproj_override = _extra_args_device(llama_extra_args, {"--mmproj", "-mm"})
+            if _mmproj_override and Path(_mmproj_override).is_file():
+                _sized_attrs = []
+                _mmproj_override_bytes = LlamaCppBackend._get_gguf_size_bytes(_mmproj_override)
+                total_bytes += _mmproj_override_bytes
+                _sized_keys.add(_same_file_key(_mmproj_override))
         if not _charge_no_drafter:
             if dspark_requested:
                 _sized_attrs.append("gguf_dspark_file")
@@ -8036,7 +8107,15 @@ def _gguf_offloaded_layer_fraction(
     -- it moves individual expert tensors, not whole blocks -- so a manual MoE
     offload reads high here, which the panel says out loud.
     """
+    from core.inference.llama_cpp import _device_selection_is_cpu
     from core.inference.llama_server_args import parse_gpu_layers_override
+
+    # A --device naming no GPU beats every layer count: llama.cpp then runs on the CPU
+    # whatever -ngl says, which is why the loader's own residency gate asks this first.
+    # Read through the same predicate, and with the env twin the child inherits, so the
+    # panel and the launch cannot disagree about where the weights land.
+    if _device_selection_is_cpu(extras, os.environ):
+        return 0.0
 
     try:
         override = parse_gpu_layers_override(extras)
@@ -8482,7 +8561,29 @@ def _charged_projector_bytes(
     Under the vision switch only an audio-only projector survives, asked through the
     loader's own helpers so the two cannot answer differently.
     """
-    from core.inference.llama_cpp import _mmproj_env_is_audio_only, extra_args_disable_mmproj
+    from core.inference.llama_cpp import (
+        _extra_args_device,
+        _mmproj_env_is_audio_only,
+        extra_args_disable_mmproj,
+    )
+
+    # A --mmproj in Advanced Arguments last-wins: the launch emits Studio's projector
+    # first and appends the extras after it, so the child opens the user's. Charging
+    # the configured one instead priced a file the load never opens and left a
+    # possibly much larger one free.
+    override = _extra_args_device(extras, {"--mmproj", "-mm"})
+    if override and Path(override).is_file() and not extra_args_disable_mmproj(extras):
+        if not disable_vision:
+            return LlamaCppBackend._get_gguf_size_bytes(override)
+        try:
+            from utils.models.gguf_metadata import mmproj_accepts_image
+            if not mmproj_accepts_image(override):
+                return LlamaCppBackend._get_gguf_size_bytes(override)
+        except Exception:
+            pass
+        # Unreadable under the vision switch reads as image-capable, hence dropped:
+        # the same call the configured branch below makes, and what the loader does.
+        return 0
 
     studio_mmproj = getattr(config, "gguf_mmproj_file", None)
     on_argv = bool(studio_mmproj) and not extra_args_disable_mmproj(extras)
@@ -8731,6 +8832,8 @@ def _gguf_memory_breakdown(
     if files_gb is None:
         return None
     from core.inference.llama_cpp import (
+        _canonicalize_spec_mode,
+        _device_selection_is_cpu,
         _extra_args_draft_cache_types,
         _extra_args_draft_offloaded_to_cpu,
         _kv_offload_from_args,
@@ -8792,8 +8895,23 @@ def _gguf_memory_breakdown(
     charged_drafter = _charged_drafter_path(
         config, host_drafter_bytes or gpu_drafter_bytes, extras = extras
     )
-    if charged_drafter:
-        drafter_path, drafter_kind = charged_drafter
+    # An embedded NextN head is a drafter with no file: nothing is charged in the
+    # weights, so charged_drafter is None, and the whole runtime block below used to be
+    # skipped. The head still allocates a context-sized draft KV, plus an MLA target
+    # copy or Hybrid-Mamba rollback state, which at long contexts is gigabytes. Priced
+    # through the same helper with drafter_path = None, which is the case it documents.
+    #
+    # Safe to ask unconditionally for these modes: the helper sizes the head from
+    # nextn_predict_layers, so a model whose header carries no NextN key prices nothing
+    # and this costs one arithmetic pass. The mode test is what keeps it off a launch
+    # that runs no speculation at all.
+    embedded_mtp = bool(
+        not charged_drafter
+        and _canonicalize_spec_mode(speculative_type) not in _SPEC_MODES_WITHOUT_A_DRAFTER
+        and not _extra_args_draft_offloaded_to_cpu(extras)
+    )
+    if charged_drafter or embedded_mtp:
+        drafter_path, drafter_kind = charged_drafter or (None, "mtp")
         probe = _probe_backend()
         probe._read_gguf_metadata(gguf_path)
         # K and V are independent overrides, and extras beat the panel field the same
@@ -8887,7 +9005,14 @@ def _gguf_memory_breakdown(
     # -nkvo puts the cache in host RAM. At a long context that is most of the
     # footprint, so ignoring it would report VRAM pressure the load never creates.
     kv_on_gpu = _kv_offload_from_args(llama_extra_args) and gpu_fraction > 0.0
-    gpu_bytes = gpu_weights + (runtime.kv_bytes if kv_on_gpu else 0)
+    # Context checkpoints ride inside kv_bytes but never reach the GPU: a checkpoint is
+    # a host-heap std::vector<uint8_t> in llama.cpp's common_prompt_checkpoint, capped
+    # by --cache-ram, and Studio's own load schema documents it as host memory. They
+    # stay in the total, which is aggregate memory, and come out of the GPU figure,
+    # which is not: 32 snapshots per slot is the default, so charging them to VRAM
+    # warned about GPU pressure an SWA load never creates.
+    gpu_kv_bytes = max(0, runtime.kv_bytes - runtime.kv_checkpoint_bytes)
+    gpu_bytes = gpu_weights + (gpu_kv_bytes if kv_on_gpu else 0)
     if gpu_fraction > 0.0:
         # Compute buffers land on the devices running layers.
         gpu_bytes += runtime.compute_bytes
@@ -8903,6 +9028,13 @@ def _gguf_memory_breakdown(
     # to host RAM along with the file.
     if not host_companion_bytes:
         gpu_bytes += projector_runtime_bytes
+    if _device_selection_is_cpu(extras, os.environ):
+        # Nothing is on a GPU because the process was given none. Applied here rather
+        # than only through the layer fraction because a companion does not follow
+        # --gpu-layers: a drafter and a projector are placed by their own flags, and
+        # neither of those can name a device that this selection has removed.
+        gpu_bytes = 0
+        drafter_runtime_gpu_bytes = 0
     return _GgufMemoryBreakdown(
         weights_bytes = weights_bytes,
         kv_bytes = runtime.kv_bytes,

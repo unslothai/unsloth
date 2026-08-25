@@ -1821,6 +1821,44 @@ class TestLaunchShapedPricing:
         assert full.drafter_runtime_bytes == full.kv_bytes
         assert windowed.drafter_runtime_bytes == windowed.kv_bytes
 
+    def test_a_cpu_device_selection_takes_the_weights_off_the_gpu(self, spec_config, swa):
+        """``--device none`` runs on the CPU whatever the layer count says.
+
+        The loader's residency gate asks ``_device_selection_is_cpu`` before it looks at
+        -ngl for exactly this reason. The estimate read Auto as fully GPU-resident and
+        charged the whole footprint to VRAM, which is a GPU-exceeds warning for a load
+        that touches no GPU at all.
+        """
+        priced = dict(n_ctx = 32768, cache_type_kv = "f16")
+        on_gpu = ri._gguf_memory_breakdown(spec_config, swa, **priced)
+        for flag in (["--device", "none"], ["--device", "cpu"], ["-dev", "none"]):
+            cpu_only = ri._gguf_memory_breakdown(spec_config, swa, llama_extra_args = flag, **priced)
+            assert cpu_only.gpu_bytes == 0, flag
+            # The memory is still spent, just not on the card.
+            assert cpu_only.total_bytes > 0
+        assert on_gpu.gpu_bytes > 0
+
+    def test_context_checkpoints_are_charged_to_the_host_not_the_gpu(self, spec_config, swa):
+        """Checkpoints are host RAM, so they belong in the total and not in gpu_bytes.
+
+        llama.cpp holds each one in ``common_prompt_checkpoint``'s
+        ``std::vector<uint8_t>`` buffers, on the host heap and bounded by
+        ``--cache-ram``; Studio's own load schema says "Each costs host memory". They
+        are inside ``kv_bytes`` because that is what the training guard budgets, so the
+        GPU figure has to take them back out. Priced into VRAM, the default 32 per slot
+        warned about GPU pressure the launch never creates.
+        """
+        priced = dict(n_ctx = 131072, cache_type_kv = "f16")
+        none = ri._gguf_memory_breakdown(spec_config, swa, ctx_checkpoints = 0, **priced)
+        many = ri._gguf_memory_breakdown(spec_config, swa, ctx_checkpoints = 8, **priced)
+
+        # The snapshots are real and substantial, or the rest of this proves nothing.
+        assert many.kv_bytes > none.kv_bytes
+        # ... and they are in the aggregate total, which is what the host pays.
+        assert many.total_bytes > none.total_bytes
+        # But the GPU figure does not move: that is the whole finding.
+        assert many.gpu_bytes == none.gpu_bytes
+
     def test_one_card_is_priced_as_the_layer_load_it_launches(self, spec_config, swa):
         # Tensor mode needs two usable GPUs. Below that load_model drops it, so pricing
         # tensor charged per-device compute buffers for a launch that runs neither.
@@ -2162,3 +2200,158 @@ class TestManualNormalizationAndRemoteDrafters:
         assert resp.available is True
         # available, but not silent about what is missing from the total.
         assert resp.drafter_kv_unsized is True
+
+
+class TestSpeculationOffChargesNoDrafter:
+    """Modes whose launch never emits ``--model-draft`` must not be billed for one.
+
+    ``_build_speculative_flags`` returns out of three of them before it reaches the
+    flag: "off" immediately, "ngram-simple" and "ngram" after their ``--spec-type``
+    alone. The resident-file resolution appended ``gguf_mtp_file`` for every mode that
+    was not DSpark or DFlash, so a model shipping an MTP sidecar was charged for it
+    even with speculation turned OFF -- selecting OFF could ADD gigabytes to the
+    figure, which is the opposite of what the control does.
+
+    Exercised against the real resolution rather than through the breakdown, because
+    the breakdown's own tests stub the files term wholesale and would pass either way.
+    """
+
+    @pytest.fixture
+    def config_with_a_sidecar(self, tmp_path):
+        target = _write_gguf(tmp_path, "qwen3", _GQA_FIELDS, name = "target.gguf")
+        sidecar = tmp_path / "mtp.gguf"
+        sidecar.write_bytes(Path(target).read_bytes())
+        return SimpleNamespace(
+            identifier = "local/target",
+            gguf_file = target,
+            is_gguf = True,
+            gguf_variant = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = str(sidecar),
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
+        )
+
+    @pytest.mark.parametrize("mode", ["off", "ngram", "ngram-simple"])
+    def test_a_drafterless_mode_is_not_charged_for_the_sidecar(self, config_with_a_sidecar, mode):
+        charged = ri._gguf_resident_file_gb(config_with_a_sidecar, speculative_type = "mtp")
+        quiet = ri._gguf_resident_file_gb(config_with_a_sidecar, speculative_type = mode)
+        assert charged is not None and quiet is not None
+        # The sidecar is a copy of the target, so its absence is unmissable.
+        assert quiet < charged
+        assert quiet == pytest.approx(charged / 2, rel = 0.05)
+
+    def test_a_drafting_mode_still_charges_it(self, config_with_a_sidecar):
+        """The guard against over-correcting: MTP must keep paying for its drafter."""
+        with_mtp = ri._gguf_resident_file_gb(config_with_a_sidecar, speculative_type = "mtp")
+        auto = ri._gguf_resident_file_gb(config_with_a_sidecar, speculative_type = "auto")
+        assert with_mtp is not None and auto is not None
+        assert with_mtp == auto
+
+
+class TestAProjectorOverrideIsTheOneCharged:
+    """``--mmproj`` in Advanced Arguments last-wins, so it is the file that opens.
+
+    ``load_model`` emits Studio's resolved projector and appends the extras after it,
+    so the child opens the user's. Both the resident-file total and the encoder's
+    runtime allowance read only the configured projector, which billed a file the
+    launch never opens and let a possibly much larger custom one through free.
+    """
+
+    @pytest.fixture
+    def vision_config(self, tmp_path):
+        target = _write_gguf(tmp_path, "qwen3", _GQA_FIELDS, name = "target.gguf")
+        small = tmp_path / "mmproj-small.gguf"
+        small.write_bytes(b"s" * 4096)
+        big = tmp_path / "mmproj-big.gguf"
+        big.write_bytes(b"b" * (4096 * 8))
+        config = SimpleNamespace(
+            identifier = "local/vision",
+            gguf_file = target,
+            is_gguf = True,
+            gguf_variant = None,
+            gguf_mmproj_file = str(small),
+            gguf_mtp_file = None,
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
+        )
+        return config, str(small), str(big)
+
+    def test_the_override_replaces_the_configured_projector_in_the_files(self, vision_config):
+        config, small, big = vision_config
+        configured = ri._gguf_resident_file_gb(config)
+        overridden = ri._gguf_resident_file_gb(config, llama_extra_args = ["--mmproj", big])
+        assert configured is not None and overridden is not None
+        # The override is 8x the configured one, so the total has to move with it.
+        assert overridden > configured
+        delta = (overridden - configured) * 1024**3
+        assert delta == pytest.approx(Path(big).stat().st_size - Path(small).stat().st_size, abs = 8)
+
+    def test_the_overrides_encoder_runtime_is_charged_too(self, vision_config):
+        config, _small, big = vision_config
+        charged = ri._charged_projector_bytes(config, ["--mmproj", big], False)
+        assert charged == Path(big).stat().st_size
+
+    def test_the_short_flag_is_read_the_same_way(self, vision_config):
+        config, _small, big = vision_config
+        assert ri._charged_projector_bytes(config, ["-mm", big], False) == Path(big).stat().st_size
+
+    def test_no_override_still_charges_the_configured_projector(self, vision_config):
+        config, small, _big = vision_config
+        assert ri._charged_projector_bytes(config, [], False) == Path(small).stat().st_size
+
+
+class TestAnEmbeddedMtpHeadIsPriced:
+    """A NextN head is a drafter with no file, and it still allocates a draft cache.
+
+    Nothing is charged in the weights for it, so `_charged_drafter_path` returns None
+    and the entire runtime-sizing block was skipped. `_estimate_mtp_overhead_bytes`
+    documents this case explicitly (``drafter_path=None``, ``draft_weights_bytes=0``)
+    and sizes the head from ``nextn_predict_layers``, so the allocation was knowable
+    and simply not asked for.
+    """
+
+    @pytest.fixture
+    def nextn_model(self, tmp_path):
+        gguf = _write_gguf(
+            tmp_path,
+            "qwen3",
+            {**_GQA_FIELDS, "context_length": 262144, "nextn_predict_layers": 2},
+            name = "nextn.gguf",
+        )
+        return gguf, SimpleNamespace(
+            identifier = "local/nextn",
+            gguf_file = gguf,
+            is_gguf = True,
+            gguf_variant = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
+        )
+
+    def test_the_head_is_charged_when_speculation_can_engage(self, nextn_model):
+        gguf, config = nextn_model
+        priced = ri._gguf_memory_breakdown(config, gguf, n_ctx = 131072)
+        assert priced is not None
+        assert priced.drafter_runtime_bytes > 0
+        # And it is inside the total, which is the figure the fit verdict reads.
+        assert priced.total_bytes > priced.weights_bytes + priced.kv_bytes
+
+    def test_turning_speculation_off_charges_no_head(self, nextn_model):
+        gguf, config = nextn_model
+        off = ri._gguf_memory_breakdown(config, gguf, n_ctx = 131072, speculative_type = "off")
+        assert off is not None
+        assert off.drafter_runtime_bytes == 0
+
+    def test_a_model_without_a_head_is_unaffected(self, tmp_path):
+        """The guard against charging every model: no NextN key, nothing priced."""
+        plain = _write_gguf(tmp_path, "qwen3", {**_GQA_FIELDS, "context_length": 262144})
+        config = SimpleNamespace(
+            identifier = "local/plain", gguf_file = plain, is_gguf = True, gguf_variant = None,
+            gguf_mmproj_file = None, gguf_mtp_file = None,
+            gguf_dspark_file = None, gguf_dflash_file = None,
+        )
+        priced = ri._gguf_memory_breakdown(config, plain, n_ctx = 131072)
+        assert priced is not None
+        assert priced.drafter_runtime_bytes == 0

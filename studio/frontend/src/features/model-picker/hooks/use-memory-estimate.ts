@@ -7,6 +7,7 @@ import {
   type MemoryEstimateRequest,
   fetchMemoryEstimate,
 } from "../api/memory-estimate";
+import { resolveEstimateSourceIdentity } from "../model-config/estimate-context";
 
 /** Long enough that a slider drag lands one request, not sixty; short enough that
  *  letting go feels immediate. The fetch itself is a header walk, tens of ms. */
@@ -86,7 +87,9 @@ export function useMemoryEstimate(
   const latestRequest = useRef(request);
   latestRequest.current = request;
   // Which model the numbers belong to. A switch must clear them: one model's
-  // footprint under another's name is worse than none.
+  // footprint under another's name is worse than none. The quantization counts as a
+  // switch -- Q4_K_M to F16 on one repository leaves modelPath alone while the
+  // weights quadruple -- so this is the source identity, not the path.
   const shownModel = useRef<string | null>(null);
 
   useEffect(() => {
@@ -96,7 +99,13 @@ export function useMemoryEstimate(
       setState({ estimate: null, loading: false, stale: false });
       return;
     }
-    const modelChanged = shownModel.current !== pending.modelPath;
+    const identity = resolveEstimateSourceIdentity(
+      pending.modelPath,
+      pending.ggufVariant,
+      tokenIdentity(pending.hfToken),
+      pending.nativePathToken,
+    );
+    const modelChanged = shownModel.current !== identity;
     setState((current) =>
       modelChanged
         ? { estimate: null, loading: true, stale: false }
@@ -107,13 +116,13 @@ export function useMemoryEstimate(
       fetchMemoryEstimate(pending, controller.signal)
         .then((estimate) => {
           if (controller.signal.aborted) return;
-          shownModel.current = pending.modelPath;
+          shownModel.current = identity;
           setState({ estimate, loading: false, stale: false });
         })
         .catch(() => {
           if (controller.signal.aborted) return;
           // A failed estimate is not a failed panel; drop the row.
-          shownModel.current = pending.modelPath;
+          shownModel.current = identity;
           setState({ estimate: null, loading: false, stale: false });
         });
     }, ESTIMATE_DEBOUNCE_MS);
