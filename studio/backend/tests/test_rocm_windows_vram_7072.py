@@ -1397,6 +1397,12 @@ def test_the_inventory_path_also_refuses_to_shrink_a_total(monkeypatch):
     shrink cannot break the used <= total invariant there, but an understated
     total still hides models the device can hold, which is the failure the
     classifier exists to prevent."""
+    # Not on win_rocm (this path is platform-independent), so it has to pin
+    # get_device itself. _torch_get_device_module resolves through it, and on a
+    # runner with no GPU the cached detection answers CPU, which returns
+    # (None, None) and makes the inventory come back empty. Leaving it ambient
+    # made this test pass locally and fail on CI.
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
     monkeypatch.setattr(hw, "IS_ROCM", True)
     torch = _fake_torch(DEVICES)
     monkeypatch.setitem(sys.modules, "torch", torch)
