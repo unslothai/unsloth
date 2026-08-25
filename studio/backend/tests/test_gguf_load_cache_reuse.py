@@ -636,6 +636,27 @@ class TestLoadReusesCachedCopy:
         ):
             assert backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN)) is None
 
+    def test_a_stale_cached_name_does_not_pass_for_a_published_projector(self, hf_cache):
+        """The live listing publishes none; an older snapshot still names one the repo
+        has since removed. The fetch of that name fails, and the hand-added file is the
+        only projector there is."""
+        backend = LlamaCppBackend()
+        snap = _build_cache(hf_cache, REPO, {MAIN: 4})
+        _build_cache(hf_cache, REPO, {"mmproj-F16.gguf": 2}, snapshot_sha = "b" * 40)
+        projector = snap.parent.parent / "mmproj-kquant.gguf"
+        projector.write_bytes(b"mmproj")
+
+        def _gone(*_args, **_kwargs):
+            raise OSError("404 for a file this revision no longer publishes")
+
+        with (
+            patch("huggingface_hub.list_repo_files", lambda *_a, **_k: [MAIN]),
+            patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", _gone),
+        ):
+            out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN))
+
+        assert out == str(projector)
+
     def test_an_unanswered_listing_still_reaches_the_repo_root(self, hf_cache):
         """Offline the listing says nothing at all, and the hand-added file is all
         there is; that is not the same claim as a repo that publishes one."""

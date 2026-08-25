@@ -11719,6 +11719,12 @@ class LlamaCppBackend:
                 if attempt < 2:
                     cancel_event.wait(2**attempt)
 
+        # What the LIVE listing itself said, captured before the cache fallback can name
+        # a file the current revision no longer publishes. "The repo publishes none" is a
+        # different claim from "an old snapshot still holds one", and a caller choosing
+        # between the repo's companion and a local alternative needs the first.
+        listed_live = (target is not None) if listing_answered else None
+
         if target is None:
             try:
                 from utils.models.model_config import _iter_hf_cache_snapshots
@@ -11742,6 +11748,8 @@ class LlamaCppBackend:
             and (listing_answered or target is not None)
         ):
             outcome["listed"] = target is not None
+        if outcome is not None and not cancel_event.is_set() and listed_live is not None:
+            outcome["listed_live"] = listed_live
         if target is None or cancel_event.is_set():
             # The listing is the only step that can fail this far in.
             if target is None and listing_failed and not cancel_event.is_set():
@@ -11787,9 +11795,12 @@ class LlamaCppBackend:
                 _shard_total.group(3),
             )
             # Settled, not retryable: the listing answered, so the caller records
-            # absence rather than reloading on every Apply.
+            # absence rather than reloading on every Apply. Absence for the live flag
+            # too: what it named can never be fetched, so nothing is being preferred
+            # over a caller's local alternative.
             if outcome is not None:
                 outcome["listed"] = False
+                outcome["listed_live"] = False
             return None
         try:
             logger.info(f"Downloading {label}: {hf_repo}/{target}")
@@ -11881,10 +11892,11 @@ class LlamaCppBackend:
             return resolved
         # "The repo publishes none" and "the fetch dropped" both come back None, and only
         # the first is what this fallback is for: launching a hand-added file in place of
-        # the repo's own projector is worse than the retry the next Apply gets. An
-        # unanswered listing (offline, a hub job holding the fetch) is not the same claim,
-        # and there the local file is all there is.
-        if outcome.get("listed") is True:
+        # the repo's own projector is worse than the retry the next Apply gets. The LIVE
+        # listing answers that, not `listed`, which an old snapshot naming a since-removed
+        # projector also sets. An unanswered listing (offline, a hub job holding the
+        # fetch) is not the same claim either, and there the local file is all there is.
+        if outcome.get("listed_live") is True:
             return None
 
         from utils.models.model_config import _detect_local_mmproj
