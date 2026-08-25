@@ -10431,3 +10431,44 @@ def test_an_unsupported_host_is_not_told_its_shards_are_unstaged(
     )
     reason3 = ((status3.get("resolved") or {}).get("transformer_quant") or {}).get("reason") or ""
     assert "shards are not staged" in reason3, reason3
+
+
+def test_generation_in_flight_tracks_a_generation(fake_runtime, tmp_path, monkeypatch):
+    import core.inference.diffusion as diffusion_mod
+
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
+        family_override = "z-image",
+    )
+    monkeypatch.setattr(diffusion_mod, "_diffusion_backend", backend)
+
+    seen = {}
+
+    def fake_apply(self, state, loras, cancel):
+        # Check the marker during pre-denoise setup.
+        seen["in_flight"] = diffusion_mod.generation_in_flight()
+
+    monkeypatch.setattr(DiffusionBackend, "_apply_loras", fake_apply)
+
+    assert diffusion_mod.generation_in_flight() is False
+    backend.generate(prompt = "a sloth", steps = 4)
+    assert (
+        seen["in_flight"] is True
+    ), "liveness cannot tell this backend from a dead one while it renders an image"
+    assert diffusion_mod.generation_in_flight() is False
+
+
+def test_generation_in_flight_never_builds_a_backend(fake_runtime, monkeypatch):
+    import core.inference.diffusion as diffusion_mod
+
+    monkeypatch.setattr(diffusion_mod, "_diffusion_backend", None)
+    monkeypatch.setattr(
+        diffusion_mod,
+        "DiffusionBackend",
+        lambda *a, **k: pytest.fail("liveness constructed a diffusion backend"),
+    )
+    assert diffusion_mod.generation_in_flight() is False
