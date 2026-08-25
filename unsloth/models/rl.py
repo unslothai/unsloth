@@ -121,9 +121,11 @@ def _restore_valid_grpo_train_batch_size(args, requested_batch_size):
         generation_batch_size = None
     if generation_batch_size is None or generation_batch_size <= 0:
         gradient_accumulation_steps = getattr(args, "gradient_accumulation_steps", 1)
-        if not isinstance(gradient_accumulation_steps, int) or isinstance(
-            gradient_accumulation_steps, bool
-        ) or gradient_accumulation_steps <= 0:
+        if (
+            not isinstance(gradient_accumulation_steps, int)
+            or isinstance(gradient_accumulation_steps, bool)
+            or gradient_accumulation_steps <= 0
+        ):
             return False
         generation_batch_size = requested_batch_size * gradient_accumulation_steps
     if generation_batch_size % num_generations != 0:
