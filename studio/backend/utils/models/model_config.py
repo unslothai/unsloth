@@ -1698,13 +1698,17 @@ def _local_gguf_load_path(path: Path) -> Path:
     return (first or path).absolute()
 
 
-def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional[str]:
+def detect_mmproj_file(
+    path: str,
+    search_root: Optional[str] = None,
+    accept: Optional[Callable[[str], bool]] = None,
+) -> Optional[str]:
     """Find the mmproj GGUF for a model.
 
     ``path``: directory or a .gguf file. ``search_root``: optional ancestor
     to also walk (snapshot layouts where the weight is in ``snapshot/BF16/``
     but the projector sits at ``snapshot/``). Returns the projector path or
-    ``None``."""
+    ``None``. ``accept`` filters a candidate before its GGUF header is read."""
     p = Path(path)
     start_dir = p.parent if p.is_file() else p
     if not start_dir.is_dir():
@@ -1756,6 +1760,8 @@ def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional
     seen_resolved: set[Path] = set()
     for d in scan_order:
         for f in _iter_gguf_files(d):
+            if accept is not None and not accept(str(f)):
+                continue
             try:
                 resolved = f.resolve()
                 # Interrupted download: llama-server can't open it and it must not shadow a real projector.
@@ -2557,7 +2563,12 @@ def _is_big_endian_gguf_path(path: str, quant: str = "") -> bool:
     return False
 
 
-def _local_gguf_companion_search_root(selected_path: str, gguf_file: str) -> str:
+def _local_gguf_companion_search_root(
+    selected_path: str,
+    gguf_file: str,
+    *,
+    include_hf_repo_root: bool = True,
+) -> str:
     """Directory to scan upward from for local GGUF companion files."""
     import re
 
@@ -2570,16 +2581,11 @@ def _local_gguf_companion_search_root(selected_path: str, gguf_file: str) -> str
         return str(search_dir)
     if re.fullmatch(quant_dir_re, search_dir.name, re.IGNORECASE):
         search_dir = search_dir.parent
-    # An HF-cache checkout keeps the weights under models--<repo>/snapshots/<sha>/
-    # (optionally a quant subdir deeper), and a user adding a projector by hand
-    # drops it wherever their file manager showed the model — most often the
-    # models--<repo> root. Stop the walk at that root: the cache itself is
-    # shared by every repo, so a sibling repo's projector must stay invisible.
-    for parent in search_dir.parents:
-        if parent.name == "snapshots" and parent.parent.name.startswith("models--"):
-            return str(parent.parent)
-        if parent.name.startswith("models--"):
-            return str(parent)
+    # Only projectors reach a real HF repo root; drafters stay in the selected snapshot.
+    if include_hf_repo_root:
+        for parent in search_dir.parents:
+            if parent.name == "snapshots" and parent.parent.name.startswith("models--"):
+                return str(parent.parent)
     return str(search_dir)
 
 
@@ -3718,7 +3724,7 @@ class ModelConfig:
             gguf_variant: Optional GGUF quant variant (e.g. "Q4_K_M") to load
                 via -hf for remote repos; None auto-selects via _pick_best_gguf().
             drafter_accept: ``(candidate, gguf_file, kind, search_root) -> bool``,
-                the caller's extra admission rule for a discovered drafter. A
+                the caller's extra admission rule for a discovered companion. A
                 native-grant load passes the lease boundary here so it is applied
                 BEFORE this scan inspects a candidate: detect_dflash_file reads
                 the header of the file it is about to accept, and a
@@ -3796,29 +3802,39 @@ class ModelConfig:
                 # Direct file selections may point into a quant subdir while mmproj-*.gguf sits at the root.
                 companion_root = _local_gguf_companion_search_root(path, gguf_file)
 
-                # One accept per drafter kind, bound to the file this load opens.
+                # One accept per companion kind, bound to the file this load opens.
                 # Each kind admits a different companion directory, so they cannot
                 # share one closure or an MTP load would take a sidecar out of
                 # dspark/.
-                def _drafter_accept_for(kind: str) -> Optional[Callable[[str], bool]]:
+                def _companion_accept_for(
+                    kind: str, search_root: str
+                ) -> Optional[Callable[[str], bool]]:
                     if drafter_accept is None:
                         return None
-                    return lambda candidate: drafter_accept(
-                        candidate, gguf_file, kind, companion_root
-                    )
+                    return lambda candidate: drafter_accept(candidate, gguf_file, kind, search_root)
 
-                mmproj_file = detect_mmproj_file(gguf_file, search_root = companion_root)
+                mmproj_file = detect_mmproj_file(
+                    gguf_file,
+                    search_root = companion_root,
+                    accept = _companion_accept_for("mmproj", companion_root),
+                )
                 if mmproj_file:
                     gguf_is_vision = True
                     logger.info(f"Detected mmproj for vision: {mmproj_file}")
                 elif base_is_vision:
                     logger.warning(f"Base model is vision but no mmproj file found in {gguf_dir}")
 
+                # Projectors may be hand-added at the HF repo root, while published
+                # drafters remain in the selected snapshot.
+                drafter_root = _local_gguf_companion_search_root(
+                    path, gguf_file, include_hf_repo_root = False
+                )
+
                 # Separate MTP drafter sibling (Gemma 4), mirroring mmproj.
                 mtp_file = detect_mtp_file(
                     gguf_file,
-                    search_root = companion_root,
-                    accept = _drafter_accept_for("mtp"),
+                    search_root = drafter_root,
+                    accept = _companion_accept_for("mtp", drafter_root),
                 )
                 if mtp_file:
                     logger.info(f"Detected MTP drafter: {mtp_file}")
@@ -3828,13 +3844,13 @@ class ModelConfig:
                 # load route a sidecar it has to reject a second time.
                 dspark_file = detect_dspark_file(
                     gguf_file,
-                    search_root = companion_root,
-                    accept = _drafter_accept_for("dspark"),
+                    search_root = drafter_root,
+                    accept = _companion_accept_for("dspark", drafter_root),
                 )
                 dflash_file = detect_dflash_file(
                     gguf_file,
-                    search_root = companion_root,
-                    accept = _drafter_accept_for("dflash"),
+                    search_root = drafter_root,
+                    accept = _companion_accept_for("dflash", drafter_root),
                 )
 
                 return cls(

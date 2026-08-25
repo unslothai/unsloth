@@ -4888,7 +4888,7 @@ def _drafter_for_path(
     if not gguf_path:
         return None
     detect = {"dspark": detect_dspark_file, "dflash": detect_dflash_file}.get(kind, detect_mtp_file)
-    root = _local_gguf_companion_search_root(gguf_path, gguf_path)
+    root = _local_gguf_companion_search_root(gguf_path, gguf_path, include_hf_repo_root = False)
     rejected = False
     accept = None
     if native_grant_backed:
@@ -4924,8 +4924,16 @@ def _native_drafter_accept(candidate: str, gguf_path: str, kind: str, search_roo
     a sidecar symlinked out of the lease from being read at all -- rejecting it
     afterwards, which _resolve_gguf_load_intent still does, cannot undo a read.
     Same predicate the rescan uses, so the two passes cannot disagree about what
-    is in bounds.
+    is in bounds. Projectors use the same pre-read filter, but have no permitted
+    companion subdirectory fallback.
     """
+    if kind == "mmproj":
+        try:
+            _validate_native_gguf_companion(candidate, gguf_path, "vision companion")
+        except HTTPException as exc:
+            logger.warning("Dropping vision companion for native load: %s", exc.detail)
+            return False
+        return True
     return _native_gguf_companion_usable(
         candidate,
         gguf_path,
