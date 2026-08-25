@@ -6812,7 +6812,11 @@ def test_h3_native_generate_stages_every_reference_kind(monkeypatch, tmp_path):
     assert result["conditioning"] == "ref2va"
 
 
-def _data_url_wav(seconds = 1.0, rate = 32_000, silent_after = None):
+def _data_url_wav(
+    seconds = 1.0,
+    rate = 32_000,
+    silent_after = None,
+):
     """A 440Hz tone; `silent_after` mutes the tail so a decoded offset is recoverable."""
     import base64
     import io
