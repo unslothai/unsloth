@@ -1043,12 +1043,10 @@ async def stream_with_studio_tools(
             # gets one nudge to actually do it, the same recovery the local loops
             # give a stalled small model, then the answer stands as written.
             visible_answer = "".join(turn.text)
-            # Classify the same text the retry replays. Markup this loop will not
-            # send back must not decide whether to nudge either: a turn whose whole
-            # visible content is an unpromotable call block strips to "", so there
-            # is no promise to continue from and no assistant turn to append, and
-            # nudging it anyway left the retry as user -> user again. The local
-            # loops likewise classify prepared text (_reprompt_intent_text).
+            # Classify the same text the retry replays, as the local loops do
+            # (_reprompt_intent_text). A turn that is nothing but an unpromotable call
+            # block strips to "", leaving no assistant turn to append and no promise to
+            # continue from, so nudging on the raw text replayed it as user -> user.
             leading_whitespace = visible_answer[
                 : len(visible_answer) - len(visible_answer.lstrip())
             ]
