@@ -134,6 +134,8 @@ export function DownloadTransportRow() {
                   <button
                     type="button"
                     role="radio"
+                    // Indexed for settings search, so the result has somewhere to scroll to.
+                    data-settings-label={t(opt.labelKey)}
                     aria-checked={active}
                     aria-disabled={disabled || undefined}
                     onClick={() => {

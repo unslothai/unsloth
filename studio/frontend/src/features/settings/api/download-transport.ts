@@ -30,6 +30,13 @@ type ApiDownloadTransportSettings = {
 
 let cachedTransport: DownloadTransportSettings | null = null;
 let inFlightTransport: Promise<DownloadTransportSettings> | null = null;
+// Whether the request in flight was itself a refresh. A refreshing caller cannot ride on a
+// GET that was already answered before it asked: that response predates whatever change it
+// is refreshing to find.
+let inFlightIsRefresh = false;
+// Newest request wins. Starting a second GET while an older one is in flight would otherwise
+// let the older response land last and cache the value we just went to replace.
+let latestRequest = 0;
 
 export function subscribeDownloadTransportSettings(
   listener: (settings: DownloadTransportSettings) => void,
@@ -81,20 +88,31 @@ async function fetchDownloadTransportSettings(): Promise<DownloadTransportSettin
 }
 
 /** The install's setting. `refresh` skips the cache, for a caller that must not act on a
- * value another browser may have changed since this tab loaded it. An in-flight read is
- * still shared: two refreshing callers a moment apart want the same answer, not two GETs. */
+ * value another browser may have changed since this tab loaded it. Refreshing callers share
+ * one GET with each other, but never with a plain hydration already in flight. */
 export async function loadDownloadTransportSettings(
   opts: { refresh?: boolean } = {},
 ) {
   if (cachedTransport && !opts.refresh) {
     return cachedTransport;
   }
-  inFlightTransport ??= fetchDownloadTransportSettings()
-    .then(cacheTransport)
+  if (inFlightTransport && (!opts.refresh || inFlightIsRefresh)) {
+    return inFlightTransport;
+  }
+  const request = ++latestRequest;
+  inFlightIsRefresh = Boolean(opts.refresh);
+  const pending = fetchDownloadTransportSettings()
+    .then((settings) =>
+      request === latestRequest ? cacheTransport(settings) : settings,
+    )
     .finally(() => {
-      inFlightTransport = null;
+      if (inFlightTransport === pending) {
+        inFlightTransport = null;
+        inFlightIsRefresh = false;
+      }
     });
-  return inFlightTransport;
+  inFlightTransport = pending;
+  return pending;
 }
 
 // Writes run one at a time. Two quick selections used to race, and the earlier PUT landing

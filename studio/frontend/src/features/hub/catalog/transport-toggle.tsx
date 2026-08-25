@@ -34,8 +34,12 @@ const OPTIONS: { value: "auto" | "http" | "xet"; label: string; hint: string }[]
 
 export function TransportToggle() {
   const [mode, setMode] = useTransportMode();
-  const { capabilities } = useDownloadTransportCapabilities();
-  const xetUnavailable = capabilities?.xet.available === false;
+  const { capabilities, isLoading } = useDownloadTransportCapabilities();
+  // Unknown counts as unavailable while the first check is in flight: clicking Xet in that
+  // window on a machine without hf_xet stored it locally and install-wide, and every later
+  // download then quietly fell back to HTTP. isLoading clears on failure too, so a capability
+  // check that errors leaves Xet selectable rather than disabling it for good.
+  const xetUnavailable = isLoading || capabilities?.xet.available === false;
   const autoResolvesTo = capabilities?.auto_resolves_to ?? "xet";
   const autoReason = capabilities?.auto_reason;
 

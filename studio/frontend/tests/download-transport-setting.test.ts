@@ -215,3 +215,24 @@ test("the transport row is reachable from Settings search", () => {
     assert.ok(SEARCH.includes(key), `search index is missing ${key}`);
   }
 });
+
+test("a refresh does not ride on a request that predates it", () => {
+  // The hydration GET may already have been answered with the old mode while still pending
+  // here, so sharing it would hand a download exactly the value the refresh went to replace.
+  assert.match(API, /inFlightIsRefresh/);
+  assert.match(API, /!opts\.refresh \|\| inFlightIsRefresh/);
+  // And the older of two overlapping responses must not land last and re-cache the old value.
+  assert.match(API, /request === latestRequest/);
+});
+
+test("the Hub toggle also waits to know whether Xet can run", () => {
+  // Same window as the settings row: clicking Xet before the capability lands stored it
+  // locally and install-wide on a machine that cannot run it.
+  assert.match(TOGGLE, /isLoading \|\| capabilities\?\.xet\.available === false/);
+});
+
+test("each indexed option has somewhere for search to scroll to", () => {
+  // An indexed label with no data-settings-label produces a result that opens General and
+  // then fails to find anything.
+  assert.match(ROW, /data-settings-label=\{t\(opt\.labelKey\)\}/);
+});
