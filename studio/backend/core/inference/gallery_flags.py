@@ -172,12 +172,12 @@ def _save(directory: Path, data: dict[str, Any]) -> None:
 def _file_lock(directory: Path):
     """Best-effort cross-process exclusive lock over one directory's store. Generation runs in
     subprocesses, so the in-process RLock alone would let two processes read the same JSON and
-    clobber each other on ``os.replace``. Degrades to a no-op where OS locking is unavailable
-    (the consequence is only a lost flag toggle)."""
+    clobber each other on ``os.replace``. Yields whether the OS lock was acquired, so destructive
+    callers can fail closed where locking is unavailable."""
     try:
         fd = os.open(str(directory / f"{_STORE_NAME}.lock"), os.O_CREAT | os.O_RDWR, 0o600)
     except Exception:
-        yield
+        yield False
         return
     locked = False
     try:
@@ -191,7 +191,7 @@ def _file_lock(directory: Path):
             locked = True
         except Exception:
             pass  # locking unavailable; the thread lock still applies
-        yield
+        yield locked
     finally:
         # Release only what was taken, and never let the release be the thing that fails the call.
         # A filesystem that cannot lock usually cannot unlock either, and by this point the body
@@ -211,7 +211,7 @@ def _file_lock(directory: Path):
 
 
 @contextlib.contextmanager
-def exclusive(directory: Path):
+def exclusive(directory: Path, *, require_file_lock: bool = False):
     """Hold the store's write lock across a read-then-act sequence.
 
     ``clear`` decides what to delete from a snapshot of the flags and then unlinks files, so an
@@ -219,7 +219,9 @@ def exclusive(directory: Path):
     anyway -- after the PATCH had already told the user it was archived. Taking the same lock
     ``set_flags`` takes serializes the two.
     """
-    with _lock, _file_lock(directory):
+    with _lock, _file_lock(directory) as file_locked:
+        if require_file_lock and not file_locked:
+            raise FlagsUnavailable(f"{_store_path(directory)} could not be locked")
         yield
 
 

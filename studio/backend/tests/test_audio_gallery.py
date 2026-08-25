@@ -515,3 +515,48 @@ def test_prune_spares_a_clip_archived_after_its_snapshot(monkeypatch):
 
     assert gallery.audio_path(doomed["id"]) is not None
     assert [r["prompt"] for r in gallery.list_audio(archived = True)] == ["doomed"]
+
+
+def test_prune_stops_when_the_cross_process_lock_is_unavailable(monkeypatch):
+    import contextlib
+
+    from core.inference import gallery_flags
+
+    doomed = _save_with_mtime("doomed", 100.0)
+    _save_with_mtime("b", 200.0)
+    _save_with_mtime("c", 300.0)
+
+    @contextlib.contextmanager
+    def unlocked(_directory):
+        yield False
+
+    real_read = gallery_flags.read_trusted
+
+    def racing_read(directory):
+        flags = real_read(directory)
+        gallery_flags.set_flags_locked(directory, doomed["id"], archived = True)
+        return flags
+
+    monkeypatch.setattr(gallery_flags, "_file_lock", unlocked)
+    monkeypatch.setattr(gallery_flags, "read_trusted", racing_read)
+    monkeypatch.setenv("UNSLOTH_AUDIO_GALLERY_MAX_CLIPS", "2")
+    gallery.save(_wav(), _meta(prompt = "d"))
+
+    assert gallery.audio_path(doomed["id"]) is not None
+
+
+def test_clear_stops_when_the_cross_process_lock_is_unavailable(monkeypatch):
+    import contextlib
+
+    from core.inference import gallery_flags
+
+    record = _save_with_mtime("active", 100.0)
+
+    @contextlib.contextmanager
+    def unlocked(_directory):
+        yield False
+
+    monkeypatch.setattr(gallery_flags, "_file_lock", unlocked)
+    with pytest.raises(gallery_flags.FlagsUnavailable):
+        gallery.clear()
+    assert gallery.audio_path(record["id"]) is not None

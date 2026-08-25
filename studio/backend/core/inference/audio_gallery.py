@@ -122,7 +122,7 @@ def _prune_to_cap() -> int:
         # from a snapshot and unlinking afterwards leaves a window an archive can land in:
         # the clip reads active from the stale snapshot and is deleted anyway, after the
         # PATCH has already told the user it was archived.
-        with gallery_flags.exclusive(directory):
+        with gallery_flags.exclusive(directory, require_file_lock = True):
             entries = _list_audio_entries()
 
             # Newest first, so the index where either budget runs out is the cut point. The
@@ -376,7 +376,7 @@ def clear(include_archived: bool = False) -> int:
     archive must be spared but the flag store cannot be read."""
     removed = 0
     directory = gallery_dir()
-    with gallery_flags.exclusive(directory):
+    with gallery_flags.exclusive(directory, require_file_lock = not include_archived):
         flags = {} if include_archived else gallery_flags.read_trusted(directory)
         try:
             paths = list(directory.glob("*.wav"))

@@ -725,6 +725,20 @@ export function AudioPage({
     });
   }, [active, refreshStatus, refreshSttStatus]);
 
+  useEffect(() => {
+    if (!active) return;
+    const refreshWhenVisible = () => {
+      if (document.hidden) return;
+      void refreshGallery(undefined, galleryCache.clips.length);
+    };
+    window.addEventListener("focus", refreshWhenVisible);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      window.removeEventListener("focus", refreshWhenVisible);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, [active, refreshGallery]);
+
   // The selected clip needs its bytes before the player can play it.
   useEffect(() => {
     const clip = clips.find((c) => c.id === selectedId);
