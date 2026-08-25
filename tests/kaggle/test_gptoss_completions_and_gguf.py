@@ -176,3 +176,108 @@ def test_a_walk_that_recorded_no_names_still_fails_and_says_so():
     )
     assert len(failures) == 1
     assert "the walk recorded no names" in failures[0]
+
+
+def _placement_record(**over):
+    """The shape a healthy gpt-oss run produces, measured on
+    unsloth-probe-gptoss-names2-ae1968."""
+    record = {
+        "parameters_by_device": {"cpu": 579133440, "cuda:0": 10461969984},
+        "off_gpu_parameters": [
+            {"name": "model.embed_tokens.weight", "numel": 579133440, "device": "cpu"}
+        ],
+        "off_gpu_parameter_count": 1,
+        "input_embedding": {
+            "module": "model.embed_tokens",
+            "weight_name": "model.embed_tokens.weight",
+            "device": "cpu",
+            "offload_hooks_installed": True,
+        },
+        "offloaded": False,
+    }
+    record.update(over)
+    return record
+
+
+def test_the_deliberate_embedding_offload_is_not_a_failure():
+    """Measured, and the assertion was wrong rather than the stack.
+
+    `Unsloth: Offloading embeddings to RAM to save 1.08 GB` is a documented
+    optimisation: the input embedding moves to RAM and
+    `_install_offload_embedding_hooks` carries ids down and vectors back up. It
+    failed this leg twice while training converged, inference was coherent and
+    the adapter moved, because the rule read a device count and the count
+    cannot tell an optimisation from a spill.
+    """
+    from run_gptoss_t4 import _placement_failures  # noqa: PLC0415
+
+    assert _placement_failures(_placement_record()) == []
+
+
+def test_the_excuse_is_the_hook_flag_and_not_the_device():
+    """The half that keeps it from being an excuse that can only excuse. An
+    embedding on the CPU WITHOUT the hooks is a genuine bug -- the lookup either
+    raises or silently synchronises -- and it is indistinguishable from the
+    healthy case in `parameters_by_device`."""
+    from run_gptoss_t4 import _placement_failures  # noqa: PLC0415
+
+    embed = dict(_placement_record()["input_embedding"], offload_hooks_installed = False)
+    failures = _placement_failures(_placement_record(input_embedding = embed))
+    assert failures and "model.embed_tokens.weight" in failures[0]
+
+
+def test_a_second_tensor_off_the_card_is_still_a_failure():
+    """The excuse covers exactly one parameter. A real spill that happens to
+    include the embedding must not ride in on its coat-tails."""
+    from run_gptoss_t4 import _placement_failures  # noqa: PLC0415
+
+    record = _placement_record(
+        off_gpu_parameters = [
+            {"name": "model.embed_tokens.weight", "numel": 579133440, "device": "cpu"},
+            {"name": "model.layers.7.mlp.down_proj.weight", "numel": 8294400, "device": "cpu"},
+        ]
+    )
+    failures = _placement_failures(record)
+    assert failures
+    assert "model.layers.7.mlp.down_proj.weight" in failures[0]
+    # The bracketed list is the "what is wrong" half; the embedding is still
+    # printed after it as context, which is what makes the verdict readable.
+    listed = failures[0].split("[", 1)[1].split("]", 1)[0]
+    assert "model.embed_tokens.weight" not in listed, (
+        "the list must name what is unexplained, not re-report the tensor that "
+        "is accounted for"
+    )
+
+
+def test_the_hook_flag_is_READ_off_the_module_rather_than_assumed():
+    """Mutation found this one: hardcoding `offload_hooks_installed = True` in
+    `placement()` satisfied every rule above, because they all judge the record
+    and none of them produce it. The flag is the entire difference between an
+    optimisation and a bug, so it has to come off the module."""
+    import torch  # noqa: PLC0415
+
+    from run_gptoss_t4 import placement  # noqa: PLC0415
+
+    class _Embed(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.zeros(4, 3))
+
+    class _Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.embed_tokens = _Embed()
+
+        def get_input_embeddings(self):
+            return self.embed_tokens
+
+    model = _Model()
+    assert placement(model)["input_embedding"]["offload_hooks_installed"] is False
+
+    model.embed_tokens._unsloth_offload_hooks_installed = True
+    read_back = placement(model)["input_embedding"]
+    assert read_back["offload_hooks_installed"] is True
+    assert read_back["weight_name"] == "embed_tokens.weight", (
+        "the name has to come from the module walk, or it cannot be matched "
+        "against the parameter that is off the card"
+    )

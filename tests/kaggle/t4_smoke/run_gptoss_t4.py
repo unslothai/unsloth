@@ -23,10 +23,15 @@ not in the path at all.
   probe saw `UNSLOTH_FORCE_FLOAT32=1`, `fp16=False`, `bf16=False`, and
   `UNSLOTH_FORCE_CUSTOM_DTYPE` pinning `down_projs` and `mlp.router` to float32.
   That path exists for this card and nothing else in CI exercises it.
-* **No offload.** 12.78 GB reserved of 14.56, every parameter on `cuda:0`, no
-  `hf_device_map`. About 1.8 GB of headroom, thin enough that placement is
-  counted on every run rather than assumed -- and asserted, since a run that
-  offloads passes everything else.
+* **One deliberate offload, and nothing else.** 12.7 GB reserved of 14.56, no
+  `hf_device_map`, every parameter on `cuda:0` EXCEPT `model.embed_tokens.weight`,
+  which unsloth puts in RAM on purpose -- `Unsloth: Offloading embeddings to RAM
+  to save 1.08 GB`, with forward hooks carrying ids down and vectors back up.
+  That was read as a spill twice before anyone looked at the name; 579133440 is
+  exactly 201088 x 2880, this checkpoint's vocab by its hidden size. Placement is
+  counted on every run rather than assumed, and the embedding is excused only
+  when its hook flag is set, because an embedding that reached the CPU without
+  them is a real bug that looks identical in a device count.
 * **torch.compile engages**: 32 unique graphs, 779 calls captured, 2 graph
   breaks, both `_warnings.warn`. A silent fall back to eager leaves every other
   number healthy while the leg's coverage goes unexercised, so this is asserted.
@@ -168,8 +173,32 @@ def placement(model) -> dict:
                 off_gpu.append({"name": name, "numel": param.numel(), "device": key})
     except Exception as exc:  # noqa: BLE001
         counts = {"error": f"{type(exc).__name__}: {exc}"}
+    # Is the one tensor allowed off the card the one unsloth DELIBERATELY put
+    # there? `offload_embedding` moves the input embedding to RAM and installs
+    # a pre/post forward hook pair that carries the ids down and the vectors
+    # back up (`unsloth/models/vision.py:_install_offload_embedding_hooks`).
+    # The flag it sets is the difference between that optimisation and a
+    # weight that landed on the CPU by accident, and the two are identical in a
+    # device count.
+    embed = {}
+    try:
+        module = model.get_input_embeddings()
+        weight = getattr(module, "weight", None)
+        for name, candidate in model.named_modules():
+            if candidate is module:
+                embed["module"] = name
+                break
+        embed["weight_name"] = f"{embed.get('module')}.weight" if "module" in embed else None
+        embed["device"] = str(weight.device) if weight is not None else None
+        embed["offload_hooks_installed"] = bool(
+            getattr(module, "_unsloth_offload_hooks_installed", False)
+        )
+    except Exception as exc:  # noqa: BLE001
+        embed = {"error": f"{type(exc).__name__}: {exc}"}
+
     device_map = getattr(model, "hf_device_map", None)
     return {
+        "input_embedding": embed,
         "parameters_by_device": counts,
         # Largest first, capped: a genuinely offloaded model has thousands of
         # these and the report is read by a human.
@@ -623,20 +652,37 @@ def _placement_failures(placement: dict | None) -> list[str]:
             device: n for device, n in counts.items() if not str(device).startswith("cuda")
         }
         if elsewhere:
-            named = (
-                ", ".join(
-                    f"{p.get('name')} ({p.get('numel')} on {p.get('device')})"
-                    for p in (placement.get("off_gpu_parameters") or [])
+            # The ONE tensor allowed off the card, and only on its own terms.
+            # `offload_embedding` puts the input embedding in RAM and hooks the
+            # lookup so ids go down and vectors come back up; measured saving
+            # 1.08GB on gpt-oss-20b. Accepting "cpu" wholesale would excuse a
+            # real spill, so this names the exact parameter AND requires the
+            # hook flag: an embedding that reached the CPU without them is a
+            # bug, and it looks identical in a device count.
+            embed = placement.get("input_embedding") or {}
+            deliberate = (
+                embed.get("offload_hooks_installed") is True
+                and str(embed.get("device", "")).startswith("cpu")
+                and embed.get("weight_name")
+            )
+            unexplained = [
+                p
+                for p in (placement.get("off_gpu_parameters") or [])
+                if not (deliberate and p.get("name") == embed.get("weight_name"))
+            ]
+            if unexplained or not (placement.get("off_gpu_parameters") or []):
+                named = ", ".join(
+                    f"{p.get('name')} ({p.get('numel')} on {p.get('device')})" for p in unexplained
+                ) or "the walk recorded no names"
+                failures.append(
+                    f"parameters are off the GPU: {elsewhere} [{named}] (all devices: "
+                    f"{counts}), and unsloth's deliberate embedding offload does not "
+                    f"account for them (input_embedding {embed}). This leg's result is "
+                    f"that the 20B checkpoint fits and trains wholly on one T4; a run "
+                    f"that offloads to CPU, disk or meta is not a slower version of "
+                    f"that, it is a different run, and accelerate's offload does not "
+                    f"support training at all"
                 )
-                or "the walk recorded no names"
-            )
-            failures.append(
-                f"parameters are off the GPU: {elsewhere} [{named}] (all devices: {counts}). "
-                f"This leg's result is that the 20B checkpoint fits and trains "
-                f"wholly on one T4; a run that offloads to CPU, disk or meta is "
-                f"not a slower version of that, it is a different run, and "
-                f"accelerate's offload does not support training at all"
-            )
     # The accelerate-side answer, which is absent on a healthy run and says
     # `cpu`/`disk` when dispatch offloaded. Three-way: `placement()` always
     # writes a bool, so anything else is a record this file cannot read.
