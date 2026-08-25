@@ -578,9 +578,7 @@ def _shard_tensors(indices):
 
 def test_a_single_file_gguf_is_still_read():
     """The guard below must not catch an ordinary one-file model."""
-    layout = _layout_from_reader(
-        _StubReader(_shard_fields(), _shard_tensors(range(64)))
-    )
+    layout = _layout_from_reader(_StubReader(_shard_fields(), _shard_tensors(range(64))))
     assert layout.complete
     assert len(layout.blocks) == 64
 
@@ -593,18 +591,14 @@ def test_a_split_gguf_abstains_instead_of_planning_on_one_shard():
     tensors. Undercounting the model is the OPTIMISTIC direction: the plan claims
     a fit that is not there, emits too few -ot patterns, and the launch path
     follows it with --fit off."""
-    partial = _StubReader(
-        _shard_fields(**{"split.count": 4}), _shard_tensors(range(16))
-    )
+    partial = _StubReader(_shard_fields(**{"split.count": 4}), _shard_tensors(range(16)))
     assert _layout_from_reader(partial).complete is False
 
     # And the undercount it is guarding against is real, not theoretical: the
     # same shard read as if it were the whole model reports a quarter of the
     # blocks and a quarter of the spillable bytes.
     whole = _layout_from_reader(_StubReader(_shard_fields(), _shard_tensors(range(64))))
-    as_if_whole = _layout_from_reader(
-        _StubReader(_shard_fields(), _shard_tensors(range(16)))
-    )
+    as_if_whole = _layout_from_reader(_StubReader(_shard_fields(), _shard_tensors(range(16))))
     assert as_if_whole.spillable_bytes * 4 == whole.spillable_bytes
 
 

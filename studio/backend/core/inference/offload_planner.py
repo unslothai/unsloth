@@ -248,9 +248,7 @@ def resident_floor_bytes(
         + layout.lm_head_bytes
         + layout.other_resident_bytes
         + layout.recurrent_bytes
-        + cache_bytes(
-            layout, n_ctx, kv_quantised = kv_quantised, kv_bytes_floor = kv_bytes_floor
-        )
+        + cache_bytes(layout, n_ctx, kv_quantised = kv_quantised, kv_bytes_floor = kv_bytes_floor)
     )
 
 
@@ -374,9 +372,7 @@ def plan_placement(
             )
 
     for quantised in _kv_modes(opts):
-        plan = _plan_at(
-            layout, opts, n_ctx, budget, host_ram_bytes, quantised, kv_bytes_floor
-        )
+        plan = _plan_at(layout, opts, n_ctx, budget, host_ram_bytes, quantised, kv_bytes_floor)
         if plan is not None:
             return plan
 
@@ -521,9 +517,7 @@ def _finish(
     # has to be able to pay for even when nothing is spilled.
     host_bytes = layout.token_embd_bytes + spilled_bytes
     vram_bytes = (
-        all_resident_bytes(
-            layout, n_ctx, kv_quantised = quantised, kv_bytes_floor = kv_bytes_floor
-        )
+        all_resident_bytes(layout, n_ctx, kv_quantised = quantised, kv_bytes_floor = kv_bytes_floor)
         - spilled_bytes
     )
 

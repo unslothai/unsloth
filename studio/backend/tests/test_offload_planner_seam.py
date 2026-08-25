@@ -302,9 +302,7 @@ def test_the_measured_cache_floors_the_planners_own_estimate():
     stub = _Stub()
     layout = stub._tensor_spill_layout("/models/stub.gguf")
     unfloored = plan_placement(layout, [20 * GIB], 64 * GIB, 32768)
-    floored = plan_placement(
-        layout, [20 * GIB], 64 * GIB, 32768, kv_bytes_floor = 8 * GIB
-    )
+    floored = plan_placement(layout, [20 * GIB], 64 * GIB, 32768, kv_bytes_floor = 8 * GIB)
     assert len(floored.spilled_blocks) > len(unfloored.spilled_blocks)
 
 
@@ -398,9 +396,9 @@ def test_the_abstain_branch_still_emits_exactly_fit_on():
         assert LlamaCppBackend._spill_plan_flags_for(plan) == [], reason
 
     # Same for a plan that cannot place the load, and for one that needs nothing.
-    assert LlamaCppBackend._spill_plan_flags_for(
-        Plan(reason = "does not fit", insufficient = True)
-    ) == []
+    assert (
+        LlamaCppBackend._spill_plan_flags_for(Plan(reason = "does not fit", insufficient = True)) == []
+    )
     assert LlamaCppBackend._spill_plan_flags_for(None) == []
 
 
