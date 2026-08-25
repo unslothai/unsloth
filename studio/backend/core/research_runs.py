@@ -123,9 +123,8 @@ _ADMISSION_HEARTBEAT_MISSES = 3
 # the poll loop stays bounded however long generation itself may run.
 _DEFAULT_MODEL_TIMEOUT_SECONDS = 900.0
 _MAX_MODEL_WAIT_BUDGET_SECONDS = 3600.0
-# An unlimited run has no wall clock to bound a provider's Retry-After against, so it is
-# bounded here instead: long enough for the hour-long windows providers reset on, short
-# enough that one mistaken or hostile header cannot park a run, and its lease, indefinitely.
+# Bounds a provider's Retry-After when the run has no wall clock of its own: past the hourly
+# windows providers reset on, short of parking a run and its lease on one mistaken header.
 _MAX_RATE_LIMIT_WAIT_SECONDS = 3600.0
 # Lifetime of the internal key one model call authenticates with. Retry waits are bounded by
 # what is left of it: a key that expires mid-backoff fails auth without reaching the provider.
@@ -465,9 +464,8 @@ async def _model_unloaded(response: httpx.Response) -> str | None:
 def _retry_after_delay(raw: object) -> float | None:
     """A Retry-After value as a delay in seconds, or None when it names none or has passed.
 
-    RFC 9110 defines the field as ``HTTP-date / delay-seconds`` and providers fronted by a CDN do
-    send the date form. Reading only the number leaves the caller backing off for a second or two
-    inside a cooldown that has minutes left, which spends the retry on the same refusal."""
+    RFC 9110 defines the field as ``HTTP-date / delay-seconds``, and providers behind a CDN do
+    send dates. Reading only the number backs off a second inside a cooldown with minutes left."""
     if raw is None:
         return None
     text = str(raw).strip()
@@ -497,8 +495,8 @@ def _retry_after_seconds(response: httpx.Response) -> float | None:
 async def _peek_stream_head(lines: AsyncIterator[str]) -> list[str]:
     """The stream's first line, or nothing when it ends without one.
 
-    One line only: a queue notice belongs to the loop that refreshes the admission bound, and
-    the proxied provider refusal below is always the first line a stream carries."""
+    One line only: a queue notice belongs to the loop that refreshes the admission bound, and the
+    refusal below is always a stream's first line."""
     async for line in lines:
         return [line]
     return []
@@ -509,9 +507,8 @@ def _stream_rate_limit_delay(head: list[str]) -> float | None:
     open with one, 0.0 when it names no delay.
 
     core.inference.external_provider turns an upstream non-200 into a 200 stream carrying one
-    OpenAI-shaped error line, so a provider 429 never reaches the status line. It survives in
-    that line alone, as ``code`` (``type`` for the ChatGPT connection) plus the Retry-After the
-    proxy forwards beside it."""
+    OpenAI-shaped error line, so a 429 survives only there: as ``code`` (``type`` for the ChatGPT
+    connection) plus the forwarded Retry-After."""
     for line in head:
         if not line.startswith("data:"):
             continue
@@ -547,9 +544,8 @@ def _rate_limit_wait(requested: float, remaining: float, headroom: float) -> flo
     """How much of a provider's requested retry delay this call can afford.
 
     The delay is the provider's, not a share of the model-load budget, so it is bounded by what is
-    left of the call minus the room the re-sent request still needs. Coming back sooner than the
-    provider allows only spends an attempt on the same refusal. The standing ceiling still applies:
-    an unlimited run has no wall clock, and one mistaken header must not park it for a day."""
+    left of the call minus the room the re-send needs; coming back early only spends an attempt on
+    the same refusal. The standing ceiling covers a run with no wall clock at all."""
     return max(0.0, min(requested, _MAX_RATE_LIMIT_WAIT_SECONDS, remaining - headroom))
 
 
@@ -1446,8 +1442,8 @@ class ResearchSupervisor:
                 )
 
             call_started = loop.time()
-            # A wait may not outlast this call's wall clock, nor the key the re-send
-            # authenticates with, so every backoff below is measured against whichever ends first.
+            # No backoff below may outlast this call's wall clock or the key the re-send
+            # authenticates with, so all of them measure against whichever ends first.
             retry_deadline = key_minted + _MODEL_CALL_KEY_LIFETIME_SECONDS
             if model_timeout:
                 retry_deadline = min(retry_deadline, call_started + model_timeout)
@@ -1527,9 +1523,8 @@ class ResearchSupervisor:
                             else:
                                 delay = 2**attempt
                                 if rate_limited:
-                                    # A rate-limit wait runs to minutes, so re-read the run
-                                    # while it waits; the short transport backoff below does
-                                    # not outlast one poll.
+                                    # This runs to minutes, so re-read the run while it
+                                    # waits; the backoff below never outlasts one poll.
                                     await self._wait_out_rate_limit(
                                         run,
                                         _retry_after_seconds(exc.response) or delay,
@@ -1543,8 +1538,8 @@ class ResearchSupervisor:
                                 await self._check_active(run["id"])
                             continue
                         # A proxied provider 429 arrives as a 200 whose first line is the
-                        # refusal, so the status above cannot see it. Still before a body byte
-                        # is used, so re-sending cannot duplicate report text.
+                        # refusal, so the status cannot see it. No body byte is used yet, so a
+                        # re-send cannot duplicate report text.
                         stream = self._iter_stream_lines(run["id"], response, semantic_deadline)
                         head = await _peek_stream_head(stream)
                         throttled = _stream_rate_limit_delay(head)
@@ -1558,7 +1553,6 @@ class ResearchSupervisor:
                             run, throttled or 2**attempt, retry_deadline, first_output_budget
                         )
                         attempt += 1
-                        # re-check the lease and cancellation before re-sending.
                         await self._check_active(run["id"])
                     async for line in _with_head(head, stream):
                         if self._cancel_event(run["id"]).is_set():

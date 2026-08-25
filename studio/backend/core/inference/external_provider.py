@@ -6692,9 +6692,8 @@ def _error_sse_line(
 ) -> str:
     """Format an error as an SSE data line in OpenAI error format.
 
-    ``retry_after`` carries the upstream Retry-After through: the status line is already spent
-    on the 200 this stream is delivered under, so a client that backs off (Deep Research does)
-    has nowhere else to read the delay the provider asked for."""
+    ``retry_after`` carries the upstream Retry-After through: this stream is delivered under a
+    200, so a client that backs off has nowhere else to read the delay from."""
     import json
 
     error: dict[str, str] = {

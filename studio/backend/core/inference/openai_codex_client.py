@@ -562,8 +562,8 @@ def _quota_metadata(response: httpx.Response, *, terminal: bool = False) -> dict
     }
     metadata = {key: value for key, value in values.items() if value}
     if terminal:
-        # Exhausted, not throttled. Both leave as a 429, so without this a client that backs
-        # off on rate limits waits out delays that no amount of waiting can clear.
+        # Exhausted, not throttled. Both leave as a 429, so without this a client waits out
+        # a delay that no wait can clear.
         metadata["terminal"] = True
     return metadata
 

@@ -2378,9 +2378,8 @@ def test_rate_limit_honours_retry_after(monkeypatch):
 
 
 def test_rate_limit_wait_is_capped_by_what_is_left_of_the_call(monkeypatch):
-    # The delay is the provider's, so the cap is the call's own wall clock less the room the
-    # re-sent request needs (20 - 5, shrinking as the call runs), not the model-load share a
-    # 20s budget would allow (5).
+    # The cap is the call's own wall clock less the room the re-send needs (20 - 5, shrinking
+    # as the call runs), not the model-load share a 20s budget would allow (5).
     _, waits = _send_attempts(monkeypatch, 429, {"Retry-After": "300"}, model_timeout = 20.0)
     assert len(waits) == 2
     assert all(13.0 < wait <= 15.0 for wait in waits), waits
@@ -2475,13 +2474,11 @@ def test_a_terminal_quota_refusal_is_not_retried(monkeypatch):
 
 
 def test_a_rate_limit_wait_cannot_outlive_the_internal_key(monkeypatch):
-    # The re-send authenticates with a key minted for this call, so a wait running past its
-    # expiry would fail auth without ever reaching the provider. An unlimited run has no wall
-    # clock, which leaves the key as the only thing bounding it.
+    # A wait past the call key's expiry would fail auth without reaching the provider, and an
+    # unlimited run has no wall clock, which leaves the key as the only thing bounding it.
     monkeypatch.setattr(research_runs, "_MODEL_CALL_KEY_LIFETIME_SECONDS", 100)
     _, waits = _send_attempts(monkeypatch, 429, {"Retry-After": "3000"}, model_timeout = 0.0)
-    # 100 less the 5s first-output reserve, shrinking as the key's remainder does -- not the
-    # 3000s asked for, and not the standing ceiling.
+    # 100 less the 5s reserve: not the 3000s asked for, and not the standing ceiling.
     assert len(waits) == 2
     assert all(93.0 < wait <= 95.0 for wait in waits), waits
 
