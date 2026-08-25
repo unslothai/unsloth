@@ -2623,9 +2623,23 @@ def _local_gguf_companion_search_root(
     # Only projectors reach a real HF repo root; drafters stay in the selected snapshot.
     if include_hf_repo_root:
         for parent in search_dir.parents:
-            if parent.name == "snapshots" and parent.parent.name.startswith("models--"):
+            if _is_hf_snapshots_container(parent):
                 return str(parent.parent)
     return str(search_dir)
+
+
+def _is_hf_snapshots_container(directory: Path) -> bool:
+    """Whether *directory* is the ``snapshots`` dir of a ``models--*`` cache repo.
+
+    Case-folded, because the resolution side is: _iter_hf_cache_snapshots and the
+    pre-download bound both match a cache dir case-insensitively, so discovery that
+    read the markers literally would refuse to widen inside a directory the weight
+    was resolved out of.
+    """
+    return (
+        directory.name.casefold() == "snapshots"
+        and directory.parent.name.casefold().startswith("models--")
+    )
 
 
 def _hf_repo_root_companion_dirs(repo_dir: Path) -> list[Path]:
@@ -2644,8 +2658,7 @@ def _enclosing_hf_snapshot_dir(path: str) -> Optional[str]:
     """The ``models--*/snapshots/<sha>`` dir *path* sits in, or None."""
     candidate = Path(path)
     for directory in (candidate, *candidate.parents):
-        parent = directory.parent
-        if parent.name == "snapshots" and parent.parent.name.startswith("models--"):
+        if _is_hf_snapshots_container(directory.parent):
             return str(directory)
     return None
 

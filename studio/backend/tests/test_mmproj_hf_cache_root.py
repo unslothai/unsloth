@@ -266,6 +266,39 @@ def test_a_projector_in_the_snapshots_container_reaches_the_row(tmp_path):
     assert _repo_root_has_mmproj(SimpleNamespace(repo_path = weight.parent.parent.parent)) is True
 
 
+def test_a_half_split_snapshot_projector_does_not_claim_vision_on_the_row(tmp_path):
+    """The variant lister counts each file on its own, so one shard of a split set reads
+    as vision support the load then refuses."""
+    _, weight = _hf_repo(tmp_path)
+    _clip_projector(weight.parent / "mmproj-F16-00001-of-00002.gguf", "clip.has_vision_encoder")
+
+    assert _detect_local_mmproj(str(weight.parent), str(weight)) is None
+    assert snapshot_has_gguf_projector(weight.parent) is False
+
+    _clip_projector(weight.parent / "mmproj-F16-00002-of-00002.gguf", "clip.has_vision_encoder")
+
+    assert snapshot_has_gguf_projector(weight.parent) is True
+
+
+def test_an_upper_cased_cache_dir_is_still_an_hf_layout(tmp_path):
+    """_iter_hf_cache_snapshots and the pre-download bound match a cache dir
+    case-insensitively, so the walk has to widen inside the same directories."""
+    repo = tmp_path / "MODELS--ORG--MODEL-GGUF"
+    snapshot = repo / "SNAPSHOTS" / "deadbeef"
+    snapshot.mkdir(parents = True)
+    weight = _gguf_with_general(
+        snapshot / "model-Q4_K_M.gguf",
+        {"general.name": "Model", "general.architecture": "qwen3vl"},
+    )
+    projector = _gguf_with_general(
+        repo / "mmproj-kquant.gguf",
+        {"general.type": "mmproj", "general.architecture": "qwen3vl"},
+    )
+
+    assert _local_gguf_companion_search_root(str(snapshot), str(weight)) == str(repo)
+    assert _detect_local_mmproj(str(snapshot), str(weight)) == str(projector.resolve())
+
+
 def test_a_sibling_repo_s_projector_stays_invisible(tmp_path):
     repo, weight = _hf_repo(tmp_path)
     other = tmp_path / "models--other--Vision-GGUF"
