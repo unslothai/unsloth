@@ -1,213 +1,111 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Make the MSVC C toolchain reachable to Triton on Windows (AMD), see #7595.
+"""Gate torch.compile on Triton's C toolchain being usable, on Windows. See #7595.
 
 On Windows, `import triton` succeeding does NOT mean a Triton compile will
 succeed. Triton's AMD/HIP driver JIT-compiles `hip_utils.c` with `clang-cl` on
-first GPU touch, and `clang-cl` finds the CRT headers (`stdlib.h`, ...) through
-the `INCLUDE` environment variable that `vcvarsall.bat` sets. Studio's worker
-subprocesses don't inherit a Developer-Prompt environment, so on an AMD box the
-first torch.compile dies with:
+first GPU touch, and without the CRT headers that dies with:
 
     fatal error: 'stdlib.h' file not found
 
-The installer can't fix this: the compile happens later, in a separate process.
-So we establish the env in-process, right before enabling torch.compile.
+Where those headers come from is the part worth being precise about, because it
+decides what this module can usefully do. `triton/runtime/build.py` calls
+`triton.windows_utils.find_msvc_winsdk()` and passes the result to the compiler
+as `/I` flags; that search reads `VCINSTALLDIR`, vswhere, `PATH`, the registry
+and the well-known Program Files roots. It never reads `INCLUDE`. So Triton
+finds its own toolchain whenever one is installed, and `INCLUDE` only matters as
+the compiler's own fallback when Triton passes no `/I` at all.
 
-`ensure_msvc_env_for_triton()` is a no-op off win32 and when the headers are
-already reachable. Otherwise it locates VS via `vswhere`, imports the x64
-`vcvarsall.bat` environment (INCLUDE / LIB / LIBPATH / PATH) into `os.environ`,
-and reports whether the CRT headers are now present.
+That leaves nothing for us to repair: when Visual Studio is present Triton
+already works, and when it is absent there is no toolchain to point it at. What
+IS worth doing is refusing to enable torch.compile when the headers are
+unreachable, so the user gets an actionable message instead of a hard crash on
+the first compile.
 
-`gate_torch_compile_on_windows()` is what the workers call: it folds that check
-into the pre-existing "is Triton importable" gate so a missing toolchain
-disables torch.compile with a clear message instead of hard-crashing on the
-first compile.
+`gate_torch_compile_on_windows()` is what the workers call. It asks Triton's own
+discovery (the same oracle the real compile uses, so it cannot disagree with
+what actually happens), falling back to `INCLUDE` for Triton builds old enough
+to rely on it.
 """
 
 from __future__ import annotations
 
 import os
 import sys
-import glob
 import logging
-import subprocess
 
 logger = logging.getLogger(__name__)
 
-# Mirrors setup.ps1's Find-VsBuildTools; keep the two in sync. VS 2026 installs
-# under "18" or "2026", and newest must come first or an older VS wins the scan.
-_VS_EDITIONS = ("BuildTools", "Community", "Professional", "Enterprise", "Preview")
-_VS_YEAR_DIRS = ("18", "2026", "2022", "2019", "2017")
-# Env keys vcvarsall establishes that Triton's clang-cl needs.
-_CARRY = ("INCLUDE", "LIB", "LIBPATH", "PATH")
-# cmd and vswhere emit in the console (OEM) codepage. Decoding that as UTF-8
-# turns a non-ASCII path (C:\Users\José\...) into U+FFFD, and since we overwrite
-# PATH wholesale that silently breaks every later subprocess in this worker.
-_CONSOLE_ENCODING = "oem" if sys.platform == "win32" else "utf-8"
-
 
 def _have_crt_headers() -> bool:
-    """True if stdlib.h is reachable through the current INCLUDE."""
+    """True if stdlib.h is reachable through the current INCLUDE.
+
+    Only the compiler's fallback path: modern triton-windows passes explicit
+    /I dirs and never consults INCLUDE.
+    """
     for d in os.environ.get("INCLUDE", "").split(os.pathsep):
         if d and os.path.isfile(os.path.join(d, "stdlib.h")):
             return True
     return False
 
 
-def _vs_sort_key(path: str) -> tuple[int, str]:
-    """Rank a globbed candidate by _VS_YEAR_DIRS order, unknown layouts last.
+def _triton_finds_crt_headers() -> bool:
+    """True if Triton's own MSVC/WinSDK search turns up the CRT headers.
 
-    Plain reverse-lexicographic would put VS 2026 ("18") behind "2022".
+    This is the search `triton/runtime/build.py` runs to build its `/I` list, so
+    asking it here is the same question the real compile will ask.
     """
-    parts = {p.lower() for p in path.split(os.sep)}
-    for i, year in enumerate(_VS_YEAR_DIRS):
-        if year.lower() in parts:
-            return (i, path)
-    return (len(_VS_YEAR_DIRS), path)
-
-
-def _find_vcvarsall() -> str | None:
-    program_files_x86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
-    program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
-
-    # Preferred: ask vswhere for the newest install of any product.
-    vswhere = os.path.join(program_files_x86, "Microsoft Visual Studio", "Installer", "vswhere.exe")
-    if os.path.isfile(vswhere):
-        try:
-            out = subprocess.run(
-                [
-                    vswhere,
-                    "-products",
-                    "*",
-                    "-latest",
-                    "-prerelease",
-                    "-property",
-                    "installationPath",
-                ],
-                capture_output = True,
-                text = True,
-                encoding = _CONSOLE_ENCODING,
-                errors = "replace",
-                timeout = 30,
-            ).stdout.strip()
-            if out:
-                cand = os.path.join(out, "VC", "Auxiliary", "Build", "vcvarsall.bat")
-                if os.path.isfile(cand):
-                    return cand
-        except (OSError, subprocess.SubprocessError):
-            pass
-
-    # Fallback: scan the well-known install roots (newest year, any edition).
-    for root in (program_files, program_files_x86):
-        for year in _VS_YEAR_DIRS:
-            for edition in _VS_EDITIONS:
-                cand = os.path.join(
-                    root,
-                    "Microsoft Visual Studio",
-                    year,
-                    edition,
-                    "VC",
-                    "Auxiliary",
-                    "Build",
-                    "vcvarsall.bat",
-                )
-                if os.path.isfile(cand):
-                    return cand
-        # Some layouts nest the year under the edition, and a VS newer than
-        # _VS_YEAR_DIRS lands here too; glob as a last resort, newest path first.
-        for cand in sorted(
-            glob.glob(
-                os.path.join(
-                    root,
-                    "Microsoft Visual Studio",
-                    "*",
-                    "*",
-                    "VC",
-                    "Auxiliary",
-                    "Build",
-                    "vcvarsall.bat",
-                )
-            ),
-            key = _vs_sort_key,
-        ):
-            if os.path.isfile(cand):
-                return cand
-    return None
-
-
-def _import_vcvars_env(vcvarsall: str, arch: str = "x64") -> bool:
-    """Run vcvarsall and copy the toolchain env keys into os.environ."""
     try:
-        # `set` after the call dumps the fully-populated developer environment.
-        # vcvarsall's own output is kept (not >nul'd) so a failure has a reason:
-        # "VS present but no C++ workload" is the likeliest one users hit.
-        #
-        # MUST be a string with shell = True, never a list: list2cmdline escapes
-        # the quotes around the path as \" and cmd then can't find vcvarsall,
-        # which every real install trips because VS lives under "Program Files".
-        proc = subprocess.run(
-            f'call "{vcvarsall}" {arch} && set',
-            shell = True,
-            capture_output = True,
-            text = True,
-            encoding = _CONSOLE_ENCODING,
-            errors = "replace",
-            timeout = 120,
-        )
-    except (OSError, subprocess.SubprocessError) as e:
-        logger.warning("vcvarsall invocation failed: %s", e)
+        from triton.windows_utils import find_msvc_winsdk
+    except Exception:  # noqa: BLE001 -- absent/older/broken Triton: fall back to INCLUDE
         return False
-    if proc.returncode != 0:
-        detail = (proc.stderr or proc.stdout or "").strip().splitlines()
-        logger.warning(
-            "vcvarsall %s exited %d: %s",
-            arch,
-            proc.returncode,
-            detail[-1] if detail else "no output",
-        )
+    try:
+        _, inc_dirs, _ = find_msvc_winsdk()
+    except Exception:  # noqa: BLE001 -- discovery is best-effort, never fatal
+        logger.debug("Triton's MSVC/WinSDK discovery raised", exc_info = True)
         return False
-
-    for line in proc.stdout.splitlines():
-        key, sep, val = line.partition("=")
-        if sep and key.upper() in _CARRY:
-            os.environ[key.upper()] = val
-    return True
+    return any(d and os.path.isfile(os.path.join(d, "stdlib.h")) for d in inc_dirs)
 
 
-def ensure_msvc_env_for_triton() -> bool:
-    """Ensure Triton's clang-cl can find the CRT headers on Windows.
+def _needs_msvc_headers() -> bool:
+    """Whether the compiler Triton will actually pick needs the MSVC/SDK headers.
 
-    Returns True when the MSVC headers are reachable (or not needed, i.e. off
-    win32), False when no Visual Studio / Build Tools install could supply them.
+    Only cl.exe and clang-cl do. `get_cc()` prefers the ROCm wheel's clang-cl, which is why AMD
+    hits this and nobody else does; without that wheel it falls through to the bundled TinyCC,
+    which carries its own headers and is never passed a `/I` for the SDK. Gating a TinyCC box on
+    MSVC would disable torch.compile on the ordinary Windows NVIDIA install, which works fine.
+    """
+    try:
+        from triton.runtime.build import get_cc, is_clang_cl, is_msvc
+    except Exception:  # noqa: BLE001 -- older/absent Triton: assume the MSVC path, as before
+        return True
+    try:
+        cc = get_cc()
+    except Exception:  # noqa: BLE001 -- no compiler at all is its own failure, not ours to judge
+        logger.debug("Triton's compiler selection raised", exc_info = True)
+        return True
+    return bool(is_msvc(cc) or is_clang_cl(cc))
+
+
+def crt_headers_reachable() -> bool:
+    """Whether a Triton compile in THIS process will find the CRT headers.
+
+    True off win32, where none of this applies.
     """
     if sys.platform != "win32":
         return True
-    if _have_crt_headers():
+    if not _needs_msvc_headers():
         return True
-
-    vcvarsall = _find_vcvarsall()
-    if not vcvarsall:
-        return False
-
-    if not _import_vcvars_env(vcvarsall):
-        logger.warning("found %s but could not import its environment", vcvarsall)
-        return False
-    return _have_crt_headers()
+    return _triton_finds_crt_headers() or _have_crt_headers()
 
 
 def gate_torch_compile_on_windows(log: logging.Logger) -> None:
-    """Disable torch.compile unless Triton *and* its MSVC toolchain are usable.
+    """Disable torch.compile unless Triton *and* its C toolchain are usable.
 
     No-op off win32. Workers call this before importing torch: Triton being
     importable is necessary but not sufficient, because its clang-cl JIT still
     needs the CRT headers (#7595).
-
-    The env import is the load-bearing half and is not conditional on the gate's
-    verdict: unsloth's own Triton kernels (kernels/rms_layernorm.py, swiglu.py,
-    ...) compile through the same clang-cl path, so they need INCLUDE even where
-    the training worker later disables dynamo for Windows ROCm (section 1f).
     """
     if sys.platform != "win32":
         return
@@ -221,14 +119,18 @@ def gate_torch_compile_on_windows(log: logging.Logger) -> None:
         )
         return
 
-    if ensure_msvc_env_for_triton():
+    if crt_headers_reachable():
         log.info("Triton available — torch.compile enabled")
         return
     os.environ["TORCHDYNAMO_DISABLE"] = "1"
+    # Deliberately not promising that everything now works. This turns off the compiles we own
+    # (inductor's), which is the whole of the diffusion path. It cannot turn off a kernel written
+    # as @triton.jit, and Unsloth's own kernels are, so a train still needs the toolchain.
     log.warning(
-        "Triton is installed but no MSVC toolchain was found, so its clang-cl "
-        "JIT would fail on 'stdlib.h' (#7595). torch.compile disabled. Install "
-        "Visual Studio Build Tools (C++ workload) to enable it: winget install "
-        'Microsoft.VisualStudio.2022.BuildTools --override "--add '
-        'Microsoft.VisualStudio.Workload.VCTools".'
+        "Triton is installed but its C toolchain has no CRT headers, so its "
+        "clang-cl JIT would fail on 'stdlib.h' (#7595). torch.compile disabled; "
+        "directly launched Triton kernels still need the toolchain. "
+        "Install Visual Studio Build Tools (C++ workload): winget "
+        'install Microsoft.VisualStudio.2022.BuildTools --override "--add '
+        'Microsoft.VisualStudio.Workload.VCTools --includeRecommended".'
     )

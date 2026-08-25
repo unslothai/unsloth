@@ -161,7 +161,13 @@ def torch_compile_runtime_available() -> bool:
         import triton  # noqa: F401, PLC0415
     except Exception:  # noqa: BLE001 -- absent or broken Triton means eager, never a failed load
         return False
-    return True
+    # Importable is not usable: Triton's clang-cl JIT still needs the CRT headers, and without
+    # them the first inductor compile dies mid-generation rather than at load (#7595).
+    try:
+        from .._msvc_env import crt_headers_reachable  # noqa: PLC0415
+    except Exception:  # noqa: BLE001 -- helper absent means fall back to the import-only answer
+        return True
+    return crt_headers_reachable()
 
 
 def compile_eligible(target: Any, *, is_gguf: bool, family: Any) -> bool:
@@ -240,7 +246,10 @@ def apply_speed_optims(
     # default = LIGHT: GGUF compiles ONLY the dequant op chain (cheap, VRAM-free, resolution-invariant); dense falls back to the
     # regional block compile. max = FULL: regional max-autotune compile of the repeated block. eager = no compile.
     if mode == SPEED_DEFAULT:
-        if is_gguf and on_cuda and family_allows_compile:
+        # The runtime check is in compile_eligible(), which the dense arm below reaches and this
+        # one does not, so ask it directly. Without it a GGUF load on Windows-AMD-without-MSVC
+        # installs a compiled dequant that only detonates at step 0 of the first generation.
+        if is_gguf and on_cuda and family_allows_compile and torch_compile_runtime_available():
             applied["compiled_dequant"] = gguf_compile.install_compiled_dequant(logger)
         elif compile_eligible(target, is_gguf = is_gguf, family = family):
             # A U-Net (SDXL) fuses QKV BEFORE its whole-module compile: 36.3 vs 39.3 ms/step (LPIPS 0.033). DiTs were neutral, so they keep the fuse on max only.
