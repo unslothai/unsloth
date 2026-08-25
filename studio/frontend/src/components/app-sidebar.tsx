@@ -1514,7 +1514,16 @@ export function AppSidebar() {
   useEffect(() => {
     if (!selectionActive) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") clearSelection();
+      // Bare, and only bare. Escape with a modifier is somebody else's chord,
+      // ⇧Esc for Clear all unreads among them, and dropping the selection under
+      // one of those would leave Archive or Pin pointing somewhere else than
+      // the user had them pointed. defaultPrevented for the same reason: a menu
+      // or dialog closing on Escape is not a request to lose the selection too.
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) {
+        return;
+      }
+      clearSelection();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);

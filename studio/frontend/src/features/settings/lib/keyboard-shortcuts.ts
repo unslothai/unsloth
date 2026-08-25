@@ -158,8 +158,18 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   // key every mail client uses, on the ⌥ run the rest of these chat chords sit on.
   def("archiveChat", "Mod+Alt+KeyE"),
   def("newStandaloneChat", "Mod+Alt+KeyO"),
-  def("markChatUnread", "Mod+Shift+KeyU"),
-  def("togglePinChat", "Mod+Alt+KeyP"),
+  // ⌃⇧U off macOS is where GTK's own hex entry lives, hard-coded in
+  // GtkIMContextSimple and bound again by IBus, so a composer with focus is
+  // exactly where it would be fought over. U stays the mnemonic there on the ⌥
+  // run instead, beside Clear all unreads, which takes the same letter with ⇧.
+  def("markChatUnread", "Mod+Shift+KeyU", {
+    nonMacDefaultBinding: "Mod+Alt+KeyU",
+  }),
+  // ⌥⌘P is Chrome's Page Setup on macOS, so P moves to the ⌃⇧ run there, the
+  // same swap the API monitor and the composer pair make.
+  def("togglePinChat", "Ctrl+Shift+KeyP", {
+    nonMacDefaultBinding: "Mod+Alt+KeyP",
+  }),
   // Archive, pin and mark unread above already act on the selection when
   // there is one, so these only cover what a selection alone needs.
   def("selectAllChats", "Mod+Alt+KeyS"),
@@ -188,9 +198,12 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
 
   // -- Panels and app-level actions ---------------------------------------
   // ⌥⌘U is view source on macOS, so U keeps its mnemonic on ⌃⇧ there instead,
-  // the same swap the composer pair below makes.
+  // the same swap the composer pair below makes. Off macOS it gives U up
+  // altogether: three actions wanted that letter and only two chords carry it
+  // safely there, so the two that mean "unread" have them and this one, whose
+  // U was never a mnemonic, takes M for monitor.
   def("toggleApiMonitor", "Ctrl+Shift+KeyU", {
-    nonMacDefaultBinding: "Mod+Alt+KeyU",
+    nonMacDefaultBinding: "Mod+Alt+Shift+KeyM",
   }),
   def("toggleSidebar", "Mod+KeyB"),
   def("openMcpServers", null),
@@ -326,6 +339,8 @@ const MAC_RESERVED_VALUES = new Set<string>([
   "Mod+Alt+KeyF",
   "Mod+Alt+KeyC",
   "Mod+Alt+KeyK",
+  // Page Setup, which Chrome lists beside ⌘P on its own shortcuts page.
+  "Mod+Alt+KeyP",
   "Mod+Alt+ArrowLeft",
   "Mod+Alt+ArrowRight",
   "Mod+Alt+ArrowUp",

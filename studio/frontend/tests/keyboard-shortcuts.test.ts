@@ -417,11 +417,13 @@ test("an opt-in developer chord is not treated as taken", () => {
 
 test("the browsers' own run on macOS is reserved there and only there", () => {
   // ⌥⌘ is where Chrome keeps view source, dev tools, the console, bookmarks,
-  // split view, web search and tab switching, and Firefox its element picker
-  // and console. Off macOS the same values read as Ctrl+Alt, which none of
-  // them claim, so warning there would be a warning about nothing.
+  // split view, web search, Page Setup and tab switching, and Firefox its
+  // element picker and console. Off macOS the same values read as Ctrl+Alt,
+  // which none of them claim, so warning there would be a warning about
+  // nothing.
   const macOwned = [
     "Mod+Alt+KeyU",
+    "Mod+Alt+KeyP",
     "Mod+Alt+KeyI",
     "Mod+Alt+KeyJ",
     "Mod+Alt+KeyB",
@@ -447,7 +449,6 @@ test("the browsers' own run on macOS is reserved there and only there", () => {
   for (const value of [
     "Mod+Alt+KeyE",
     "Mod+Alt+KeyO",
-    "Mod+Alt+KeyP",
     "Mod+Alt+KeyS",
     "Mod+Alt+KeyA",
     "Mod+Alt+KeyR",
@@ -457,12 +458,14 @@ test("the browsers' own run on macOS is reserved there and only there", () => {
   }
 });
 
-// The two that moved keep their letter, on the run the composer pair already
-// uses, so the mnemonic survives the platform swap.
-test("view source and the element picker do not carry Studio actions", () => {
+// Three actions whose macOS chord Chrome owns: view source, the element picker
+// and Page Setup. Each keeps its letter on the run the composer pair uses, so
+// the mnemonic survives the platform swap.
+test("view source, the element picker and Page Setup carry no Studio action", () => {
   for (const [id, mac, other] of [
-    ["toggleApiMonitor", "Ctrl+Shift+KeyU", "Mod+Alt+KeyU"],
+    ["toggleApiMonitor", "Ctrl+Shift+KeyU", "Mod+Alt+Shift+KeyM"],
     ["copySessionId", "Ctrl+Shift+KeyC", "Mod+Alt+KeyC"],
+    ["togglePinChat", "Ctrl+Shift+KeyP", "Mod+Alt+KeyP"],
   ] as const) {
     const def = SHORTCUT_DEFS.find((d) => d.id === id);
     assert.ok(def);
@@ -471,6 +474,36 @@ test("view source and the element picker do not carry Studio actions", () => {
     assert.equal(isBrowserReservedBinding(mac, true), false);
     assert.equal(isBrowserReservedBinding(other, false), false);
   }
+  // The API monitor is the one that gives its letter up rather than swapping
+  // runs: off macOS U carries the two unread actions and has nothing left.
+  for (const [id, value] of [
+    ["markChatUnread", "Mod+Alt+KeyU"],
+    ["clearAllUnreads", "Mod+Alt+Shift+KeyU"],
+  ] as const) {
+    const def = SHORTCUT_DEFS.find((d) => d.id === id);
+    assert.ok(def);
+    assert.equal(defaultBindingFor(def, "primary", false), value);
+  }
+});
+
+// GTK binds hex entry to Ctrl+Shift+U in GtkIMContextSimple, and IBus binds it
+// again, so off macOS that chord belongs to text composition. A composer with
+// focus is where Mark unread is most likely to be pressed, so it cannot be a
+// chord the input method is also listening for.
+test("no default sits on Linux's own text-composition prefix", () => {
+  for (const def of SHORTCUT_DEFS) {
+    for (const slot of SHORTCUT_SLOTS) {
+      assert.notEqual(
+        defaultBindingFor(def, slot, false),
+        "Mod+Shift+KeyU",
+        `${def.id}.${slot} ships GTK's hex-entry prefix off macOS`,
+      );
+    }
+  }
+  // Still fine on macOS, which has no such prefix.
+  const unread = SHORTCUT_DEFS.find((d) => d.id === "markChatUnread");
+  assert.ok(unread);
+  assert.equal(defaultBindingFor(unread, "primary", true), "Mod+Shift+KeyU");
 });
 
 test("no default takes a chord the browser owns without a reason", () => {
@@ -973,6 +1006,31 @@ test("a chord's surface does not come back open on the next visit", async () => 
     mcp,
     /useEffect\(\(\) => \{\n\s*return \(\) => useMcpServersDialogStore\.getState\(\)\.setOpen\(false\);\n\s*\}, \[\]\);/,
   );
+});
+
+// Escape clears the selection from the sidebar's own listener, not the
+// registry, so nothing stops another chord built on Escape from reaching it.
+// Clear all unreads ships one on macOS.
+test("only bare Escape drops the selection", async () => {
+  const sidebar = await readFile(
+    new URL("../src/components/app-sidebar.tsx", import.meta.url),
+    "utf8",
+  );
+  const at = sidebar.indexOf('if (event.key !== "Escape"');
+  assert.notEqual(at, -1, "the selection listener moved");
+  const block = sidebar.slice(at, sidebar.indexOf("clearSelection();", at));
+  // Every modifier, so ⇧Esc goes to Clear all unreads alone.
+  for (const modifier of ["metaKey", "ctrlKey", "altKey", "shiftKey"]) {
+    assert.ok(
+      block.includes(`event.${modifier}`),
+      `${modifier} still reaches the selection listener`,
+    );
+  }
+  assert.ok(block.includes("event.defaultPrevented"));
+  // The chord it has to stay clear of.
+  const clearAll = SHORTCUT_DEFS.find((d) => d.id === "clearAllUnreads");
+  assert.ok(clearAll);
+  assert.equal(defaultBindingFor(clearAll, "primary", true), "Shift+Escape");
 });
 
 // The mobile drawer is a Sheet owned by SidebarProvider, which __root mounts
