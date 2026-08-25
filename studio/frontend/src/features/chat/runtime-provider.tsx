@@ -2598,22 +2598,64 @@ function ThreadBackendAutosave({
     [reportAutosaveError, saveThread],
   );
 
-  // Keep one scheduler for the component lifetime so its timers remain stoppable. The ref
-  // gives it the latest queueSave when dependencies change.
+  // runEnd rides a subscription bound to whichever thread is main, so a thread that stops
+  // being main mid-run never gets its own runEnd and would otherwise checkpoint for the
+  // life of the page. CancelRegistrar above solves the same problem the same way: ask the
+  // runtime whether the run is still going rather than trusting the event.
+  const isRunActive = useCallback(
+    (threadId: string): boolean => {
+      const runtime = aui.threads().__internal_getAssistantRuntime?.();
+      if (!runtime) {
+        return false;
+      }
+      try {
+        return runtime.threads.getById(threadId).getState().isRunning === true;
+      } catch {
+        // A deleted or detached thread throws out of getById rather than reporting idle.
+        return false;
+      }
+    },
+    [aui],
+  );
+
+  // Keep one scheduler for the component lifetime so its timers remain stoppable. The refs
+  // give it the latest queueSave and liveness check when dependencies change.
   const queueSaveRef = useRef(queueSave);
   useEffect(() => {
     queueSaveRef.current = queueSave;
   }, [queueSave]);
+  const isRunActiveRef = useRef(isRunActive);
+  useEffect(() => {
+    isRunActiveRef.current = isRunActive;
+  }, [isRunActive]);
   const checkpointsRef = useRef<RunCheckpointScheduler | null>(null);
   const checkpoints = useCallback((): RunCheckpointScheduler => {
-    checkpointsRef.current ??= createRunCheckpointScheduler((threadId) =>
-      queueSaveRef.current(threadId),
+    checkpointsRef.current ??= createRunCheckpointScheduler(
+      (threadId) => queueSaveRef.current(threadId),
+      { isActive: (threadId) => isRunActiveRef.current(threadId) },
     );
     return checkpointsRef.current;
   }, []);
 
   useEffect(() => {
+    // The interval is quiet time between saves, and a hidden renderer may not get one:
+    // Chromium throttles chained timers to a wake a minute, and a WebView can be parked
+    // outright. Checkpoint on the way out instead. beforeunload is deliberately not used
+    // here, matching flushSettingsOnPageHidden: it does not fire on every platform, and a
+    // Tauri quit never fires it at all.
+    const flush = () => {
+      checkpointsRef.current?.flushAll();
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        flush();
+      }
+    };
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       checkpointsRef.current?.stopAll();
     };
   }, []);
