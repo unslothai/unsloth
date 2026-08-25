@@ -24205,13 +24205,9 @@ async def _anthropic_passthrough_non_streaming(
                 if retry_resp.status_code == 200:
                     retry_data = retry_resp.json()
                     if response_has_promotable_calls(retry_data, _allowed_tools, openai_tools):
-                        data = _sum_passthrough_attempt_stats(
-                            first_data, retry_data, retry_data
-                        )
+                        data = _sum_passthrough_attempt_stats(first_data, retry_data, retry_data)
                     else:
-                        data = _sum_passthrough_attempt_stats(
-                            first_data, retry_data, first_data
-                        )
+                        data = _sum_passthrough_attempt_stats(first_data, retry_data, first_data)
             except (httpx.RequestError, ValueError) as exc:
                 logger.warning("tool-call nudge retry failed; keeping original: %s", exc)
 
