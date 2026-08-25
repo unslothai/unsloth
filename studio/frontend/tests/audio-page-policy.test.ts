@@ -595,6 +595,13 @@ test("the gallery-changed subscription asks for the window that is loaded", () =
   );
 });
 
+test("reactivating audio asks for the window that is loaded", () => {
+  assert.match(
+    audioPageSource,
+    /if \(initialReadySent\.current\) \{\s*void refreshStatus\(\);\s*void refreshSttStatus\(\);\s*void refreshGallery\(undefined, galleryCache\.clips\.length\);\s*return;\s*\}/,
+  );
+});
+
 test("a window past the route cap resets the strip instead of stranding the restore", () => {
   // Asking for more than the route returns leaves the middle of the window unfetched. Keeping
   // the old scrollback there also keeps its cursor, which starts BELOW that middle, so a clip

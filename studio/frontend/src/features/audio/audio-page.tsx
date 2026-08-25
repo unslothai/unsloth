@@ -683,7 +683,7 @@ export function AudioPage({
     if (initialReadySent.current) {
       void refreshStatus();
       void refreshSttStatus();
-      void refreshGallery();
+      void refreshGallery(undefined, galleryCache.clips.length);
       return;
     }
     let cancelled = false;
