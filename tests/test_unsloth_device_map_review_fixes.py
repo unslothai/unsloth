@@ -23,14 +23,19 @@ _SRC = open(LOADER_UTILS, encoding = "utf-8").read()
 
 
 class _FakeCuda:
-    def __init__(self, count, free):
+    def __init__(self, count, free, refuses = ()):
         self._count = count
         self._free = free
+        self._refuses = set(refuses)
+        self.probed = []
 
     def device_count(self):
         return self._count
 
     def mem_get_info(self, index):
+        self.probed.append(index)
+        if index in self._refuses:
+            raise RuntimeError(f"CUDA error: device {index} is in Exclusive_Process mode")
         return (self._free.get(index, 8 * 2**30), 16 * 2**30)
 
 
@@ -56,10 +61,12 @@ def _build(
     devices = 2,
     free = None,
     planner = None,
+    refuses = (),
 ):
+    cuda = _FakeCuda(devices, free or {}, refuses = refuses)
     ns = {
         "os": os,
-        "torch": types.SimpleNamespace(cuda = _FakeCuda(devices, free or {})),
+        "torch": types.SimpleNamespace(cuda = cuda),
         "DEVICE_TYPE_TORCH": "cuda",
         "is_distributed": lambda: False,
     }
@@ -87,6 +94,7 @@ def _build(
     module = types.ModuleType("unsloth_zoo.device_map_planner")
     module.plan_device_map_for_pretrained = planner
     sys.modules["unsloth_zoo.device_map_planner"] = module
+    ns["_cuda"] = cuda
     return ns
 
 
@@ -175,7 +183,7 @@ def test_a_caller_supplied_max_memory_does_not_collide_with_the_measured_one():
     resolved = ns["resolve_unsloth_device_map"](
         "unsloth",
         "unsloth/Qwen3-0.6B",
-        planner_kwargs = {"max_memory": {0: 4 * 2**30}, "retained_rows": 128},
+        planner_kwargs = {"max_memory": {0: 4 * 2**30, 1: 10 * 2**30}, "retained_rows": 128},
     )
     assert resolved == _Plan.device_map, "the plan was lost to a TypeError"
     assert len(planner.calls) == 1
@@ -192,7 +200,7 @@ def test_a_cap_above_free_memory_does_not_raise_the_budget():
     ns["resolve_unsloth_device_map"](
         "unsloth",
         "unsloth/Qwen3-0.6B",
-        planner_kwargs = {"max_memory": {0: 99 * 2**30}},
+        planner_kwargs = {"max_memory": {0: 99 * 2**30, 1: 99 * 2**30}},
     )
     assert planner.calls[0][1]["max_memory"][0] == 2 * 2**30
 
@@ -210,7 +218,7 @@ def test_the_cap_is_read_the_way_accelerate_reads_it(written, expected):
     ns["resolve_unsloth_device_map"](
         "unsloth",
         "unsloth/Qwen3-0.6B",
-        planner_kwargs = {"max_memory": {0: written}},
+        planner_kwargs = {"max_memory": {0: written, 1: written}},
     )
     assert planner.calls[0][1]["max_memory"][0] == min(expected, 8 * 2**30)
 
@@ -300,7 +308,7 @@ def test_an_unreadable_cap_leaves_the_measured_value_rather_than_dropping_the_de
     ns["resolve_unsloth_device_map"](
         "unsloth",
         "unsloth/Qwen3-0.6B",
-        planner_kwargs = {"max_memory": {0: "not a size"}},
+        planner_kwargs = {"max_memory": {0: "not a size", 1: "not a size"}},
     )
     assert planner.calls[0][1]["max_memory"][0] == 8 * 2**30
 
@@ -310,13 +318,13 @@ def test_the_callers_kwargs_dict_is_not_mutated():
     would change what a second load in the same script asks for."""
     planner = _Recorder(plan = _Plan())
     ns = _build(free = {0: 8 * 2**30, 1: 8 * 2**30}, planner = planner)
-    caller_kwargs = {"max_memory": {0: 4 * 2**30}, "retained_rows": 8}
+    caller_kwargs = {"max_memory": {0: 4 * 2**30, 1: 4 * 2**30}, "retained_rows": 8}
     ns["resolve_unsloth_device_map"](
         "unsloth",
         "unsloth/Qwen3-0.6B",
         planner_kwargs = caller_kwargs,
     )
-    assert caller_kwargs == {"max_memory": {0: 4 * 2**30}, "retained_rows": 8}
+    assert caller_kwargs == {"max_memory": {0: 4 * 2**30, 1: 4 * 2**30}, "retained_rows": 8}
 
 
 # --------------------------------------------------------------------------------------
@@ -384,7 +392,9 @@ def test_a_device_the_caller_names_but_we_cannot_measure_survives():
     ns["resolve_unsloth_device_map"](
         "unsloth",
         "unsloth/Qwen3-0.6B",
-        planner_kwargs = {"max_memory": {0: "4GiB", "cpu": "30GiB", "disk": "unreadable"}},
+        planner_kwargs = {
+            "max_memory": {0: "4GiB", 1: "4GiB", "cpu": "30GiB", "disk": "unreadable"},
+        },
     )
     budgets = planner.calls[0][1]["max_memory"]
     assert budgets[0] == 4 * 2**30
@@ -463,3 +473,71 @@ def test_a_prequantized_hybrid_checkpoint_declines_rather_than_mis_sizing_mamba(
         f"llama.py:{guard_line} decides the skip-list gap after llama.py:{plan_line} has "
         f"already planned, so the plan is built before the veto exists"
     )
+
+
+# --------------------------------------------------------------------------------------
+# 5. Probing is not free: a withheld card must not be touched.
+# --------------------------------------------------------------------------------------
+
+
+def test_gpus_the_caller_withheld_are_never_probed():
+    """`mem_get_info` initialises a CUDA context on each device it touches, and a card the
+    caller withheld is very likely busy with the workload they withheld it for."""
+    planner = _Recorder(plan = _Plan())
+    ns = _build(devices = 4, free = {i: 16 * 2**30 for i in range(4)}, planner = planner)
+    ns["resolve_unsloth_device_map"](
+        "unsloth",
+        "unsloth/Qwen3-0.6B",
+        planner_kwargs = {"max_memory": {0: "12GiB", 1: "12GiB"}},
+    )
+    assert sorted(ns["_cuda"].probed) == [0, 1]
+
+
+def test_a_refusing_card_outside_the_requested_set_does_not_cost_the_plan():
+    """Dropping to "sequential" because GPU 3 is in Exclusive_Process mode is the wrong
+    answer when the caller asked for GPUs 0 and 1 -- and "sequential" is the placement that
+    then OOMs."""
+    planner = _Recorder(plan = _Plan())
+    ns = _build(
+        devices = 4,
+        free = {i: 16 * 2**30 for i in range(4)},
+        planner = planner,
+        refuses = (2, 3),
+    )
+    resolved = ns["resolve_unsloth_device_map"](
+        "unsloth",
+        "unsloth/Qwen3-0.6B",
+        planner_kwargs = {"max_memory": {0: "12GiB", 1: "12GiB"}},
+    )
+    assert resolved == _Plan.device_map
+
+
+def test_a_refusing_card_inside_the_requested_set_still_falls_back():
+    """The guard is still needed for the cards the caller did ask for."""
+    planner = _Recorder(plan = _Plan())
+    ns = _build(
+        devices = 4,
+        free = {i: 16 * 2**30 for i in range(4)},
+        planner = planner,
+        refuses = (1,),
+    )
+    resolved = ns["resolve_unsloth_device_map"](
+        "unsloth",
+        "unsloth/Qwen3-0.6B",
+        planner_kwargs = {"max_memory": {0: "12GiB", 1: "12GiB"}},
+    )
+    assert resolved == "sequential"
+
+
+def test_restricting_to_one_gpu_is_not_a_multi_gpu_plan():
+    """A single-card device set has nothing to split across, and the planner is not asked."""
+    planner = _Recorder(plan = _Plan())
+    ns = _build(devices = 4, free = {i: 16 * 2**30 for i in range(4)}, planner = planner)
+    resolved = ns["resolve_unsloth_device_map"](
+        "unsloth",
+        "unsloth/Qwen3-0.6B",
+        planner_kwargs = {"max_memory": {0: "12GiB"}},
+    )
+    assert resolved == "sequential"
+    assert planner.calls == []
+    assert ns["_cuda"].probed == []

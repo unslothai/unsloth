@@ -298,22 +298,6 @@ def resolve_unsloth_device_map(
         device_count = torch.cuda.device_count()
     except Exception as error:
         return _fallback(f"the devices could not be counted ({error})")
-    if device_count < 2:
-        return "sequential"
-
-    try:
-        from unsloth_zoo.device_map_planner import plan_device_map_for_pretrained
-    except Exception as error:
-        return _fallback(f"the planner is unavailable ({error})")
-
-    # Free, not total: this process's context and anything else resident on the card make
-    # total an overcommit. Guarded because `mem_get_info` initialises a context on every
-    # visible device, and one card that refuses (ECC error, MIG parent, Exclusive_Process)
-    # must not abort a load that has a good "sequential" placement waiting for it.
-    try:
-        max_memory = {index: torch.cuda.mem_get_info(index)[0] for index in range(device_count)}
-    except Exception as error:
-        return _fallback(f"free memory could not be read ({error})")
 
     # Popped, not forwarded: `max_memory` is a named parameter of the planner, so a copy
     # left in `planner_kwargs` raises `TypeError: got multiple values for keyword argument`,
@@ -326,9 +310,41 @@ def resolve_unsloth_device_map(
     # four-GPU host means GPUs 2 and 3 are somebody else's.
     planner_kwargs = dict(planner_kwargs or {})
     requested_memory = planner_kwargs.pop("max_memory", None)
-    if requested_memory:
+    requested_memory = dict(requested_memory) if requested_memory else None
+
+    # Read before probing, because probing is not free of consequence: `mem_get_info`
+    # initialises a CUDA context on each device it touches, and a card the caller withheld
+    # may well be busy with the workload they withheld it for. Touching one that refuses
+    # (ECC error, MIG parent, Exclusive_Process) would also drop the whole plan to
+    # "sequential" over a device this load was never going to use.
+    if requested_memory is None:
+        probe = list(range(device_count))
+    else:
+        probe = [
+            device
+            for device in requested_memory
+            if isinstance(device, int)
+            and not isinstance(device, bool)
+            and 0 <= device < device_count
+        ]
+    if len(probe) < 2:
+        return "sequential"
+
+    try:
+        from unsloth_zoo.device_map_planner import plan_device_map_for_pretrained
+    except Exception as error:
+        return _fallback(f"the planner is unavailable ({error})")
+
+    # Free, not total: this process's context and anything else resident on the card make
+    # total an overcommit. Guarded because a card can still refuse mid-probe.
+    try:
+        max_memory = {index: torch.cuda.mem_get_info(index)[0] for index in probe}
+    except Exception as error:
+        return _fallback(f"free memory could not be read ({error})")
+
+    if requested_memory is not None:
         budgets = {}
-        for device, written in dict(requested_memory).items():
+        for device, written in requested_memory.items():
             measured = max_memory.get(device)
             budget = _as_bytes(written)
             if budget is None:
