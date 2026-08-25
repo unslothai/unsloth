@@ -101,19 +101,27 @@ export async function reserveXetNotice(): Promise<boolean> {
  * accepted and reports that job's transport, but this user started nothing.
  * `live` is the backend calling the job running with no cancel pending: a
  * start the user already cancelled has nothing to reassure them about.
- * Neither shows the notice nor spends one of the three. */
+ * Neither shows the notice nor spends one of the three.
+ *
+ * `callerExplained` is a surface that already toasted about this start. Chat's
+ * model picker says "Downloading model, it'll load automatically once the
+ * download finishes", which is the same reassurance in different words, and
+ * sonner stacks the two in one corner. One start, one toast: the notice yields
+ * to the more specific message, and does not spend one of its three doing so. */
 export function shouldShowXetNotice(args: {
   kind: DownloadKind;
   transport: ResolvedTransport;
   attached: boolean;
   live: boolean;
   shown: number;
+  callerExplained?: boolean;
 }): boolean {
   return (
     args.kind === DOWNLOAD_KIND.MODEL &&
     args.transport === TRANSPORT.XET &&
     !args.attached &&
     args.live &&
+    !args.callerExplained &&
     args.shown < XET_NOTICE_LIMIT
   );
 }

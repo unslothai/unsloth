@@ -63,6 +63,12 @@ export interface DownloadRequest {
   files?: string[];
   /** See `ManagedDownload.checkpoint`. Carried on the request so the job records the role its stager already knew, rather than a surface re-deriving it from filenames. */
   checkpoint?: boolean;
+  /** The caller raises its own toast for this start, so the Xet notice must stay quiet.
+   *
+   * Chat's model picker already says "Downloading model, it'll load automatically once
+   * the download finishes", which is the same reassurance the Xet notice exists to give.
+   * Without this the two stack in the same corner and the user gets told twice. */
+  callerExplainsWait?: boolean;
 }
 
 /** The variant slot a scoped job occupies. Mirrors the backend's `_scope_variant`: no GGUF quant label starts with "@", so a scope collides with neither a real variant nor the repo's full snapshot. */

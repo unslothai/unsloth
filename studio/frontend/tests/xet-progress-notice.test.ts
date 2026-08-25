@@ -43,6 +43,25 @@ test("the notice is for Xet model downloads and nothing else", () => {
   assert.ok(!shouldShowXetNotice({ ...XET_MODEL, kind: "dataset", shown: 0 }));
 });
 
+test("a caller that already toasted about the start gets no second toast", () => {
+  // Reported on main after this landed: picking a model in chat produced the
+  // Xet notice AND chat's own "Downloading model, it'll load automatically
+  // once the download finishes", stacked in the same corner. Both are true and
+  // both say wait, so the user is told twice for one start.
+  //
+  // The earlier UI evidence never caught it because the scene drove the Hub
+  // download card, and only chat's picker raises a start toast of its own. One
+  // start, one toast.
+  assert.ok(
+    !shouldShowXetNotice({ ...XET_MODEL, callerExplained: true, shown: 0 }),
+  );
+  // Absent or false is the Hub path, which explains nothing on its own.
+  assert.ok(
+    shouldShowXetNotice({ ...XET_MODEL, callerExplained: false, shown: 0 }),
+  );
+  assert.ok(shouldShowXetNotice({ ...XET_MODEL, shown: 0 }));
+});
+
 test("attaching to someone else's job shows nothing", () => {
   // The backend accepts the start and reports that job's transport, but this
   // client began no transfer, so it must not spend one of the three either.

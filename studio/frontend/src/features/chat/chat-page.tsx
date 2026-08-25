@@ -2748,6 +2748,9 @@ export function ChatPage({
             repoId: selection.id,
             variant: selection.ggufVariant ?? null,
             expectedBytes: selection.expectedBytes ?? 0,
+            // This surface toasts about the start below, so the Xet notice
+            // stays quiet rather than stacking a second one on top of it.
+            callerExplainsWait: true,
           });
           if (outcome === "started") {
             toast.info("Downloading in the background", {
@@ -2862,6 +2865,9 @@ export function ChatPage({
         repoId: pending.selection.id,
         variant: pending.selection.ggufVariant ?? null,
         expectedBytes: pending.selection.expectedBytes ?? 0,
+        // Same reason as the background path: the "Downloading model" toast
+        // below already tells the user the wait is expected.
+        callerExplainsWait: true,
       });
       if (!active) return;
       if (outcome === "started") {

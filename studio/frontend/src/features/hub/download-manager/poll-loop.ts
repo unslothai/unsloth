@@ -743,6 +743,9 @@ export async function startJob(
         // A cancel can land while this start is in flight, and the reissue
         // above is the giveaway. Do not promise a download that is stopping.
         live: result.state === "running" && !rt.cancelRequested,
+        // Chat's picker toasts about this same start; two toasts in one corner
+        // is what the user sees, not two explanations.
+        callerExplained: req.callerExplainsWait === true,
         shown: xetNoticesShown(),
       })
     ) {
