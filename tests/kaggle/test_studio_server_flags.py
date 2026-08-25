@@ -28,7 +28,8 @@ SRC = PAYLOAD.read_text(encoding = "utf-8")
 def _body() -> str:
     tree = ast.parse(SRC)
     func = next(
-        n for n in ast.walk(tree)
+        n
+        for n in ast.walk(tree)
         if isinstance(n, ast.FunctionDef) and n.name == "assert_server_flags"
     )
     return ast.get_source_segment(SRC, func) or ""
@@ -78,8 +79,7 @@ def test_the_cache_rules_append_a_failure_on_both_paths():
     messages = [
         ast.unparse(node)
         for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and getattr(node.func, "attr", "") == "append"
+        if isinstance(node, ast.Call) and getattr(node.func, "attr", "") == "append"
     ]
     joined = " ".join(messages)
     assert "no cache_type_kv at all" in joined
@@ -99,14 +99,10 @@ def test_gpu_residency_is_confirmed_after_the_split():
     nothing about either card. Checked structurally: the threshold comparison
     must exist, not merely the message about it."""
     tree = ast.parse(_body())
-    compares = [
-        ast.unparse(node)
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Compare)
-    ]
-    assert any("used" in c and "200" in c for c in compares), (
-        f"no residency threshold comparison: {compares}"
-    )
+    compares = [ast.unparse(node) for node in ast.walk(tree) if isinstance(node, ast.Compare)]
+    assert any(
+        "used" in c and "200" in c for c in compares
+    ), f"no residency threshold comparison: {compares}"
     assert "nvidia_used_mib()" in _body()
 
 
@@ -127,8 +123,7 @@ def test_it_is_skipped_rather_than_passed_when_the_model_is_not_on_the_gpu():
     assert skips, "no skip path records server_flags"
     for node in skips:
         assert node.args[1].value is False, (
-            "the skip path records a PASS, so an untested flag reads as a "
-            "working one"
+            "the skip path records a PASS, so an untested flag reads as a working one"
         )
 
 

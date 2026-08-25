@@ -2381,7 +2381,10 @@ def test_no_studio_assertion_is_wired_to_a_constant_branch():
 
     src = (
         Path(__file__).resolve().parents[2]
-        / "tests" / "kaggle" / "studio_gpu" / "run_studio_gpu.py"
+        / "tests"
+        / "kaggle"
+        / "studio_gpu"
+        / "run_studio_gpu.py"
     ).read_text(encoding = "utf-8")
     offenders = []
     for func in ast.walk(ast.parse(src)):

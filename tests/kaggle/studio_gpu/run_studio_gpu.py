@@ -779,9 +779,7 @@ class Payload:
         }
 
         try:
-            self.studio.expect(
-                "POST", "/api/inference/load", body, timeout = self.args.load_timeout
-            )
+            self.studio.expect("POST", "/api/inference/load", body, timeout = self.args.load_timeout)
         except StudioError as exc:
             failures.append(f"loading with server flags failed: {exc}"[:600])
             detail["failures"] = failures
@@ -1510,8 +1508,12 @@ class Payload:
             self.record(
                 "server_flags",
                 False,
-                {"failures": ["skipped: the model was not on the GPU, so a "
-                              "tensor_split check proves nothing"]},
+                {
+                    "failures": [
+                        "skipped: the model was not on the GPU, so a "
+                        "tensor_split check proves nothing"
+                    ]
+                },
             )
 
         trained = self.assert_training()
