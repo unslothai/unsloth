@@ -13,8 +13,8 @@ import { isSearchImagesToolResult } from "@/features/chat";
 import { stringifyToolResult } from "@/lib/strip-ansi";
 import { memo, useEffect, useState } from "react";
 import { SearchImageThumb } from "./search-image";
-import { toolArgText } from "./tool-arg-text";
 import { Source, SourceIcon, SourceTitle } from "./sources";
+import { toolArgText } from "./tool-arg-text";
 import {
   ToolFallbackContent,
   ToolFallbackRoot,

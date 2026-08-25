@@ -53,6 +53,27 @@ test("toolArgText survives an object that cannot be coerced", () => {
   );
 });
 
+// A string argument is returned untouched however long it is: capping one would
+// silently truncate a legitimate `code`. Only the JSON branch is bounded, and
+// bounding it is what makes Chrome and Safari agree -- their maximum string
+// lengths differ by 4x, so an uncapped serialisation is "" on one and hundreds
+// of megabytes of DOM on the other.
+test("toolArgText caps a serialised object but never a string", () => {
+  const long = "x".repeat(500_000);
+  assert.equal(toolArgText(long), long);
+
+  // Wide rather than deep: a deep one hits the engine's own recursion limit
+  // first, and that limit is not the same on every engine.
+  const wide = JSON.parse(`[${new Array(200_000).fill(0).join(",")}]`);
+  const out = toolArgText(wide);
+  assert.ok(out.length <= 100_001, `serialised object was ${out.length} chars`);
+  assert.ok(out.endsWith("…"), "a truncated value says so");
+  assert.ok(out.startsWith("[0,0,0,"), "the head of the value still shows");
+
+  // Anything under the cap is exact, with no marker.
+  assert.equal(toolArgText({ cmd: "ls" }), '{"cmd":"ls"}');
+});
+
 // Absent and null both mean "the model has not written this yet", and the cards
 // branch on the empty string to show their writing state.
 test("toolArgText maps a missing argument to the empty string", () => {
@@ -110,6 +131,10 @@ function readConsts(
     if (ts.isVariableDeclaration(node) && node.name.getText() === component) {
       body = node.initializer;
     }
+    // tool-fallback.tsx spells its components as function declarations.
+    if (ts.isFunctionDeclaration(node) && node.name?.getText() === component) {
+      body = node.body;
+    }
     node.forEachChild(findComponent);
   };
   source.forEachChild(findComponent);
@@ -148,8 +173,13 @@ const COERCED: ReadonlyArray<
   [
     "tool-ui-image-generation.tsx",
     "ImageGenerationToolUIImpl",
-    ["prompt", "resultPrompt"],
+    // size/quality/mime come off the RESULT, which is the provider's JSON and
+    // not the model's, but they reach `.match`, `.toLowerCase` and Array.join
+    // and so die the same way. Studio accepts a user-set OpenAI-compatible
+    // base_url, so they are third-party either way.
+    ["prompt", "resultPrompt", "size", "quality", "mime"],
   ],
+  ["tool-fallback.tsx", "ToolFallbackTrigger", ["name"]],
 ];
 
 const COERCION_CALL = /^toolArgText\(/;
@@ -191,12 +221,109 @@ test("no tool card escapes the coercion policy", () => {
   const accounted = [
     ...COERCED.map(([file]) => file),
     ...TYPEOF_GUARDED.map(([file]) => file),
-  ].sort();
+  ]
+    // COERCED also covers tool-fallback.tsx, which is the card every UNKNOWN
+    // tool lands on rather than a tool-ui-* of its own.
+    .filter((file) => file.startsWith("tool-ui-"))
+    .sort();
   assert.deepEqual(
     present,
     accounted,
     "a tool card is not listed in COERCED or TYPEOF_GUARDED",
   );
+});
+
+/**
+ * The image card's own `parseImageSize` and metadata line, run on a result the
+ * provider did not make strings. Lifted from the shipped source, like the web
+ * search derivation in search-images.test.ts, so it cannot drift from the card.
+ */
+test("the image card survives a result whose fields are not strings", () => {
+  const file = `${CARDS_DIR}tool-ui-image-generation.tsx`;
+  const raw = readFileSync(
+    fileURLToPath(new URL(file, import.meta.url)),
+    "utf8",
+  );
+  const parser = raw.match(/const parseImageSize = \([\s\S]*?\n\};/);
+  assert.ok(parser, "parseImageSize moved");
+
+  // The card's own derivations, in the order it writes them. Nothing here is
+  // hand-copied, so the test follows the card if the card changes.
+  const one = (name: string): string => {
+    const [initializer, ...rest] = readConsts(
+      file,
+      "ImageGenerationToolUIImpl",
+      name,
+    );
+    assert.ok(initializer, `${file} does not declare ${name}`);
+    assert.equal(rest.length, 0, `${file} declares ${name} more than once`);
+    return `const ${name} = ${initializer};`;
+  };
+  const body = [
+    parser[0],
+    "const imageResult = __result;",
+    one("size"),
+    one("quality"),
+    one("mime"),
+    one("imageDimensions"),
+    one("imageSrc"),
+    one("imageMetadata"),
+    "return { imageDimensions, imageSrc, imageMetadata };",
+  ].join("\n");
+  const render = new Function(
+    "__result",
+    "toolArgText",
+    ts.transpileModule(body, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    }).outputText,
+  ) as (
+    result: Record<string, unknown>,
+    coerce: typeof toolArgText,
+  ) => Record<string, unknown>;
+  const run = (result: Record<string, unknown>) =>
+    render({ image_b64: "AAA", ...result }, toolArgText);
+
+  // A provider that answers "size": 1024 rather than "1024x1024".
+  assert.deepEqual(run({ size: 1024, quality: "hd" }), {
+    imageDimensions: null,
+    imageSrc: "data:image/png;base64,AAA",
+    imageMetadata: "1024 · hd · image/png",
+  });
+  const hostile = JSON.parse('{"toString":null}');
+  assert.doesNotThrow(() => run({ size: hostile }));
+  assert.doesNotThrow(() => run({ quality: hostile }));
+  assert.doesNotThrow(() => run({ image_mime: hostile }));
+  assert.doesNotThrow(() => run({ image_mime: 42 }));
+  // A well-formed result renders exactly as it always did.
+  assert.deepEqual(
+    run({ size: "1024x768", quality: "hd", image_mime: "image/webp" }),
+    {
+      imageDimensions: { width: 1024, height: 768 },
+      imageSrc: "data:image/webp;base64,AAA",
+      imageMetadata: "1024x768 · hd · image/webp",
+    },
+  );
+});
+
+// A tool name is provider data too: the SSE relay forwards
+// `delta.tool_calls[].function.name` verbatim, and a name that is not a string
+// matches nothing in thread.tsx's by_name map, so it always reaches this card.
+test("the fallback card survives a tool name that is not a string", () => {
+  const source = readFileSync(
+    fileURLToPath(new URL(`${CARDS_DIR}tool-fallback.tsx`, import.meta.url)),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /const name = toolArgText\(toolName\);/,
+    "tool-fallback.tsx reads toolName without coercing it",
+  );
+  assert.match(
+    source,
+    /formatMcpToolName\(name, mcpServer\) \?\? name/,
+    "tool-fallback.tsx passes the raw toolName to formatMcpToolName",
+  );
+  assert.equal(toolArgText(123).startsWith("mcp__"), false);
 });
 
 const TYPEOF_GUARD = /typeof parsedArgs\.\w+ === "string"/;
