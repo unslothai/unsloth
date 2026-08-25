@@ -133,44 +133,43 @@ test("the request omits the seed when it is unset", () => {
 
 test("the pin covers llama.cpp's whole uint32 range bar the sentinel", () => {
   // 0xFFFFFFFF is LLAMA_DEFAULT_SEED, llama.cpp's "draw one" value, so it is the one
-  // number a pin cannot name. Stopping at int32 max instead would put every seed above
-  // 2^31-1 out of reach, and a run whose server-drawn seed landed there could not be replayed.
+  // number a pin cannot name. llama-server parses the field as a uint32, so stopping at
+  // int32 max instead would refuse half the seeds it accepts for no reason.
   assert.equal(MAX_SAMPLING_SEED, 0xffffffff - 1);
 });
 
-test("a seed reaches only the backend that reads one", () => {
-  // A loaded variant, a GGUF context, or a direct .gguf file each mean llama-server.
-  assert.ok(modelReadsSamplingSeed("Q4_K_M", null, "unsloth/Qwen3.5-9B-GGUF"));
-  assert.ok(modelReadsSamplingSeed(null, 8192, "unsloth/Qwen3.5-9B"));
-  assert.ok(modelReadsSamplingSeed(null, null, "/models/local-file.GGUF"));
-  // Transformers and MLX take the field and ignore it, so neither is offered one.
-  assert.ok(!modelReadsSamplingSeed(null, null, "unsloth/Llama-4-8B"));
-  assert.ok(!modelReadsSamplingSeed(null, null, undefined));
-  // An audio-output GGUF answers through generateAudio, whose request carries no seed, so
+test("a seed reaches only the backends that read one", () => {
+  // llama-server reads the seed, and so does MLX: generate_chat_response takes it and
+  // builds _make_seeded_mlx_sampler, and worker.py's _backend_declares lets it through.
+  assert.ok(modelReadsSamplingSeed({ isGguf: true }));
+  assert.ok(modelReadsSamplingSeed({ isMlx: true }));
+  // The transformers backend declares no seed kwarg, so the same gate drops it there.
+  assert.ok(!modelReadsSamplingSeed({ isGguf: false, isMlx: false }));
+  // No summary at all is a model the panel knows nothing about, so it is offered nothing.
+  assert.ok(!modelReadsSamplingSeed(null));
+  assert.ok(!modelReadsSamplingSeed(undefined));
+  // An audio-output model answers through generateAudio, whose request carries no seed, so
   // the control would promise a reproducibility it cannot deliver on that path.
   assert.ok(
-    !modelReadsSamplingSeed("Q4_K_M", 8192, "unsloth/TTS-GGUF", {
+    !modelReadsSamplingSeed({
+      isGguf: true,
       isAudio: true,
       hasAudioInput: false,
     }),
   );
   // A model that takes audio IN still decodes through llama-server, so it keeps the field.
   assert.ok(
-    modelReadsSamplingSeed("Q4_K_M", 8192, "unsloth/Voxtral-GGUF", {
+    modelReadsSamplingSeed({
+      isGguf: true,
       isAudio: true,
       hasAudioInput: true,
     }),
   );
 });
 
-test("the panel offers the seed only where llama-server reads it", () => {
+test("the panel offers the seed only where the backend reads it", () => {
   const sheet = read("../src/features/chat/chat-settings-sheet.tsx");
-  assert.match(
-    sheet,
-    /const showSeed =\s*!isExternalModel &&\s*modelReadsSamplingSeed\(/,
-  );
-  // The panel passes the active model, or the audio-output exclusion never fires for it.
-  assert.match(sheet, /activeModelSummary,\s*\);/);
+  assert.match(sheet, /const showSeed = modelReadsSamplingSeed\(/);
   // type="number" reports an entry the engine cannot parse as "", which would clear
   // the pin with no error. chat-providers-dialog documents the same trap.
   const field = slice(sheet, "{showSeed ? (", 'aria-label="Seed"');
@@ -180,22 +179,51 @@ test("the panel offers the seed only where llama-server reads it", () => {
     .filter((line) => !line.startsWith("//"));
   assert.ok(props.includes('type="text"'));
   assert.ok(!props.includes('type="number"'));
-  // The panel and the request body answer "reaches llama-server" with the same helper, so
-  // neither can drift into hiding the field while the wire still carries a pin. isGguf is
-  // deliberately not that helper: it also caps Max Tokens, and the two must stay separable.
-  assert.match(sheet, /modelReadsSamplingSeed\(/);
+  // isGguf is deliberately not this helper: it also caps Max Tokens, and the two
+  // questions must stay separable even though both read the same summary today.
   assert.doesNotMatch(sheet, /const isGguf = modelReadsSamplingSeed\(/);
 });
 
-test("an over-long paste clamps rather than becoming another number", () => {
+test("the panel and the request body gate on the same argument", () => {
+  // A regex on the call name alone cannot see a call site passing an extra argument,
+  // which is how the panel and the body drifted apart the first time. Compare the
+  // argument text so an added or dropped signal at one site fails here.
+  const gateArguments = (source: string): string[] =>
+    [...source.matchAll(/modelReadsSamplingSeed\(([^)]*)\)/g)].map((match) =>
+      match[1].replace(/\s+/g, " ").trim(),
+    );
+  assert.deepEqual(
+    gateArguments(read("../src/features/chat/chat-settings-sheet.tsx")),
+    ["activeModel"],
+  );
+  assert.deepEqual(
+    gateArguments(read("../src/features/chat/api/chat-adapter.ts")),
+    ["activeModel"],
+  );
+});
+
+test("an over-long entry clamps rather than becoming another number", () => {
   const sheet = read("../src/features/chat/chat-settings-sheet.tsx");
-  const handler = slice(sheet, "onChange={(e) => {", 'placeholder="Random"');
+  const handler = slice(sheet, "onBlur={() => {", "onKeyDown={(e) => {");
   // Truncating to 10 digits before clamping turned 12345678901234 into 1234567890.
   assert.doesNotMatch(handler, /\.slice\(0, ?10\)/);
   assert.match(handler, /digits\.length > 10\s*\?\s*MAX_SAMPLING_SEED/);
   // And the length is measured after the padding, so a pasted 0000000003407 stays 3407
   // instead of reading as 13 digits and clamping to the maximum.
   assert.match(handler, /\^0\+\(\?=\\d\)/);
+});
+
+test("typing is not rewritten before the entry is finished", () => {
+  const sheet = read("../src/features/chat/chat-settings-sheet.tsx");
+  const field = slice(sheet, "{showSeed ? (", "placeholder=\"Random\"");
+  // The box shows the raw draft while it is being typed into, so a clamp cannot
+  // rewrite it mid-entry. NumericValueInput keeps a draft for the same reason.
+  assert.match(field, /value=\{\s*seedDraft \?\?/);
+  assert.match(field, /onChange=\{\(e\) =>\s*setSeedDraft\(/);
+  // Blur is the only commit, so it must not fire for a field nobody typed into,
+  // and Enter has to reach it.
+  assert.match(field, /if \(seedDraft === null\) return;/);
+  assert.match(field, /if \(e\.key === "Enter"\) e\.currentTarget\.blur\(\);/);
 });
 
 test("a preset carries the seed it was saved with", () => {
@@ -236,8 +264,10 @@ test("the stored seed is range-checked, not just the keystroke", () => {
 
 test("the request drops a seed the loaded model cannot use", () => {
   const adapter = read("../src/features/chat/api/chat-adapter.ts");
-  // A pin set on a GGUF outlives a switch to safetensors, where the panel hides the
+  // A pin set on a GGUF outlives a switch to transformers, where the panel hides the
   // field: without this the user would keep sending a seed they can no longer see.
   assert.match(adapter, /!modelReadsSamplingSeed\(/);
-  assert.match(adapter, /runtime\.activeGgufVariant,/);
+  // The same summary the body already reads isGguf from for context_overflow, so
+  // "is this a GGUF" cannot be answered two ways inside one request.
+  assert.match(adapter, /activeModel\?\.isGguf === true/);
 });

@@ -22,8 +22,8 @@ export interface InferenceParams {
    */
   fastMode?: boolean;
   /**
-   * Sampling seed forwarded to llama-server so a generation can be reproduced.
-   * `null` is unset, which leaves the server to draw its own seed per request.
+   * Sampling seed forwarded to the backends that read one so a generation can be
+   * reproduced. `null` is unset, which leaves the backend to draw its own per request.
    */
   seed?: number | null;
 }
@@ -32,23 +32,22 @@ export interface InferenceParams {
  *  its "draw one" sentinel, so a pin can name every value below that and no other. */
 export const MAX_SAMPLING_SEED = 4_294_967_294;
 
-/** Whether the loaded model decodes through llama-server, the only backend that reads
- *  a seed. Shared so the panel cannot offer the field where the request would drop it. */
+/** Whether the loaded model's backend reads a sampling seed. Shared so the panel cannot
+ *  offer the field where the request would drop it, and takes the same `models[]` summary
+ *  the request body already reads `isGguf` from, so the two cannot answer differently. */
 export function modelReadsSamplingSeed(
-  activeGgufVariant: string | null | undefined,
-  ggufContextLength: number | null | undefined,
-  checkpoint: string | null | undefined,
-  activeModel?: Pick<ChatModelSummary, "isAudio" | "hasAudioInput"> | null,
+  activeModel:
+    | Pick<ChatModelSummary, "isGguf" | "isMlx" | "isAudio" | "hasAudioInput">
+    | null
+    | undefined,
 ): boolean {
   // An audio-output model answers through generateAudio, whose request carries no seed.
   if (activeModel?.isAudio && !activeModel.hasAudioInput) {
     return false;
   }
-  return (
-    activeGgufVariant != null ||
-    ggufContextLength != null ||
-    (checkpoint?.toLowerCase().endsWith(".gguf") ?? false)
-  );
+  // llama-server takes a seed, and so does MLX. The transformers backend declares no
+  // `seed` kwarg, so worker.py's `_backend_declares` gate drops it before generation.
+  return activeModel?.isGguf === true || activeModel?.isMlx === true;
 }
 
 /** The params that survive a reload. `checkpoint` names the model rather than

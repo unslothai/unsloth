@@ -5737,14 +5737,10 @@ export function createOpenAIStreamAdapter(
             min_p: params.minP,
             repetition_penalty: params.repetitionPenalty,
             presence_penalty: params.presencePenalty,
-            // Omitted when unset so llama-server keeps drawing a fresh seed, and when the
-            // model does not reach it, so a pin left over from a GGUF is not sent invisibly.
-            ...(params.seed == null ||
-            !modelReadsSamplingSeed(
-              runtime.activeGgufVariant,
-              runtime.ggufContextLength,
-              params.checkpoint,
-            )
+            // Omitted when unset so the server keeps drawing a fresh seed, and when the
+            // backend does not read one, so a pin left over from a GGUF is not sent
+            // invisibly after a switch to transformers.
+            ...(params.seed == null || !modelReadsSamplingSeed(activeModel)
               ? {}
               : { seed: params.seed }),
             image_base64: imageBase64,

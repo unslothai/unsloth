@@ -505,7 +505,7 @@ export function ChatSettingsPanel({
   const showPresencePenalty =
     !isExternalModel || Boolean(providerCapabilities?.presencePenalty);
   const isMobile = useIsMobile();
-  const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  const isLoadedGguf = useChatRuntimeStore((s) => s.activeGgufVariant) != null;
   const currentCheckpoint = params.checkpoint;
   const activeModelIsLocal = useChatRuntimeStore(
     (s) => s.activeModelIsLocal,
@@ -516,21 +516,16 @@ export function ChatSettingsPanel({
   // suffix too (mirrors the chat page's activeModelIsGguf). Otherwise Max Tokens
   // would fall back to params.maxSeqLength instead of the loaded GGUF context.
   const isGguf =
-    activeGgufVariant != null ||
+    isLoadedGguf ||
     ggufContextLength != null ||
     (currentCheckpoint?.toLowerCase().endsWith(".gguf") ?? false);
-  const activeModelSummary = useChatRuntimeStore(
+  const activeModel = useChatRuntimeStore(
     (s) => s.models.find((m) => m.id === currentCheckpoint) ?? null,
   );
-  // The predicate the request body gates on too, so the panel cannot offer a seed it drops.
-  const showSeed =
-    !isExternalModel &&
-    modelReadsSamplingSeed(
-      activeGgufVariant,
-      ggufContextLength,
-      currentCheckpoint,
-      activeModelSummary,
-    );
+  // Same call the request body makes, on the same summary, so the panel cannot offer a
+  // seed the body drops. An external selection carries an `external::` id that no local
+  // entry matches, so the summary answers that case without a separate guard.
+  const showSeed = modelReadsSamplingSeed(activeModel);
   const platformDeviceType = usePlatformStore((s) => s.deviceType);
   // Unified memory, not just Darwin: an Intel Mac spills to system RAM like a PC.
   const isUnifiedMemory = usePlatformStore((s) => s.appleSilicon);
@@ -634,6 +629,10 @@ export function ChatSettingsPanel({
   const [systemPromptDraft, setSystemPromptDraft] = useState("");
   const [systemVariablesDraft, setSystemVariablesDraft] = useState("");
   const [systemVariablesOpen, setSystemVariablesOpen] = useState(false);
+  // Raw keystrokes while the Seed box is being typed into, null once committed.
+  // Clamping straight into params would rewrite the box mid-entry, so the commit
+  // waits for blur the way NumericValueInput's does.
+  const [seedDraft, setSeedDraft] = useState<string | null>(null);
   // When the prompt overflows the inline box, clicking opens the popup editor.
   const systemPromptBoxRef = useRef<HTMLTextAreaElement>(null);
   const [systemPromptOverflows, setSystemPromptOverflows] = useState(false);
@@ -1520,7 +1519,10 @@ export function ChatSettingsPanel({
                     reproduce the same reply. Leave blank to draw a fresh seed
                     each request. It only fixes the draw, so the other sampling
                     settings have to stay put as well; at Temperature 0 decoding
-                    is already greedy and a seed changes nothing.
+                    is already greedy and a seed changes nothing. Matching a
+                    reply also needs the model loaded with Parallel Slots at 1
+                    and Speculative Decoding off, since both change how tokens
+                    are batched and that moves the result.
                   </InfoHint>
                 </div>
                 <InputGroup className="panel-input-group w-[8.5rem] shrink-0">
@@ -1531,13 +1533,19 @@ export function ChatSettingsPanel({
                     inputMode="numeric"
                     autoComplete="off"
                     spellCheck={false}
-                    value={params.seed == null ? "" : String(params.seed)}
-                    onChange={(e) => {
-                      const digits = e.target.value
-                        .replace(/\D/g, "")
-                        // Measured after the padding: a zero-padded seed is short enough
-                        // to keep, and truncating instead of clamping would rewrite it.
-                        .replace(/^0+(?=\d)/, "");
+                    value={
+                      seedDraft ??
+                      (params.seed == null ? "" : String(params.seed))
+                    }
+                    onChange={(e) =>
+                      setSeedDraft(e.target.value.replace(/\D/g, ""))
+                    }
+                    onBlur={() => {
+                      if (seedDraft === null) return;
+                      // Measured after the padding: a zero-padded seed is short enough
+                      // to keep, and truncating instead of clamping would rewrite it.
+                      const digits = seedDraft.replace(/^0+(?=\d)/, "");
+                      setSeedDraft(null);
                       setSeed(
                         digits === ""
                           ? null
@@ -1545,6 +1553,10 @@ export function ChatSettingsPanel({
                             ? MAX_SAMPLING_SEED
                             : Math.min(Number(digits), MAX_SAMPLING_SEED),
                       );
+                    }}
+                    onKeyDown={(e) => {
+                      // Blur is the only commit, so Enter has to reach it.
+                      if (e.key === "Enter") e.currentTarget.blur();
                     }}
                     placeholder="Random"
                     aria-label="Seed"
