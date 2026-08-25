@@ -43,7 +43,7 @@ from studiobench.runtime import browser as browser_mod  # noqa: E402
 from studiobench.runtime import bundle_guard, lifecycle  # noqa: E402
 from studiobench.runtime import session as session_mod  # noqa: E402
 from studiobench.runtime.lifecycle import StudioAuth, StudioInstall  # noqa: E402
-from studiobench.runtime.types import Paths  # noqa: E402
+from studiobench.runtime.types import OutDirLock, Paths  # noqa: E402
 
 
 class _Verdict:
@@ -347,6 +347,413 @@ def test_the_same_treatment_studio_still_resumes(studio):
         sb.prepare_payload(
             paths,
             sb.requested_identity(resumed, "fix", corpus_hash),
+            resume = True,
+            log = lambda *_a: None,
+        )
+        is None
+    )
+
+
+# ── whether the probe ran before the film ───────────────────────────────────────────────────
+
+
+def test_a_run_records_whether_the_click_probe_ran(studio):
+    """REGRESSION, and the recording half of the identity axis.
+
+    `--click-probe` runs a full `page.click`, a real mouse click, a dispatch, a focus and a hover
+    over the thread before the film starts, and its own help text says it "makes the cell's
+    timings incomparable with a cell that did not run it". A cell id carries the rung, the arm and
+    the repetition and none of that, so unless `run_meta` says which way the run was measured, a
+    later `--resume` has nothing to compare and cannot refuse a toggle.
+    """
+
+    assert sb.run(_args(studio, "--branch", "main", "--click-probe")) == 0
+
+    meta = [r for r in _rows(studio) if r.get("row_type") == "run_meta"]
+    assert len(meta) == 1
+    assert meta[0]["click_probe"] is True
+
+
+def test_a_resume_that_drops_the_click_probe_is_refused(studio):
+    """End to end, over the payload the run above actually wrote."""
+
+    paths = Paths.under(studio["out"])
+    assert sb.run(_args(studio, "--branch", "main", "--click-probe")) == 0
+    corpus_hash = _rows(studio)[0]["corpus_hash"]
+
+    with pytest.raises(SystemExit) as excinfo:
+        sb.prepare_payload(
+            paths,
+            sb.requested_identity(_args(studio, "--branch", "main", "--resume"), None, corpus_hash),
+            resume = True,
+            log = lambda *_a: None,
+        )
+
+    assert "click_probe" in str(excinfo.value)
+
+
+def test_a_resume_that_keeps_the_click_probe_still_resumes(studio):
+    """The control: the identity this payload was recorded under has to keep resuming."""
+
+    paths = Paths.under(studio["out"])
+    assert sb.run(_args(studio, "--branch", "main", "--click-probe")) == 0
+    corpus_hash = _rows(studio)[0]["corpus_hash"]
+
+    resumed = _args(studio, "--branch", "main", "--click-probe", "--resume")
+
+    assert (
+        sb.prepare_payload(
+            paths,
+            sb.requested_identity(resumed, None, corpus_hash),
+            resume = True,
+            log = lambda *_a: None,
+        )
+        is None
+    )
+
+
+def test_a_plain_run_and_a_plain_resume_are_unaffected(studio):
+    """The other control. A run that never asks for the probe records it as false and resumes."""
+
+    paths = Paths.under(studio["out"])
+    assert sb.run(_args(studio, "--branch", "main")) == 0
+
+    meta = [r for r in _rows(studio) if r.get("row_type") == "run_meta"]
+    assert meta[0]["click_probe"] is False
+    corpus_hash = _rows(studio)[0]["corpus_hash"]
+
+    assert (
+        sb.prepare_payload(
+            paths,
+            sb.requested_identity(_args(studio, "--branch", "main", "--resume"), None, corpus_hash),
+            resume = True,
+            log = lambda *_a: None,
+        )
+        is None
+    )
+
+
+# ── the external probe on the record ────────────────────────────────────────────────────────
+#
+# `SBENCH_EXTRA_INIT_SCRIPT` is an ENVIRONMENT variable, not a flag, so it outlives the command
+# that wanted it. A resume under a shell that still has it set runs the rungs still owed with the
+# probe in the page and appends a probed `run_meta`, and `refuse_if_probed` reads every `run_meta`
+# in a file: the cells recorded cleanly before it stop being scorable too, permanently, because a
+# payload is append-only. So `run_meta` has to carry the probe and `--resume` has to compare it.
+
+
+class _ProbedBundle(_Bundle):
+    """A probe run attaches console and `pageerror` listeners, which a `None` page cannot take."""
+
+    page = types.SimpleNamespace(on = lambda *_a, **_k: None)
+
+
+@pytest.fixture
+def probe(tmp_path, monkeypatch):
+    """A probe installed the way a caller installs one, with a file that really is readable."""
+
+    path = tmp_path / "paint_counter.js"
+    path.write_text("window.__probe_ticks = 0;\n", encoding = "utf-8")
+    monkeypatch.setattr(browser_mod, "launch", lambda *a, **k: _ProbedBundle())
+    monkeypatch.setenv("SBENCH_EXTRA_INIT_SCRIPT", str(path))
+    return path
+
+
+def test_a_run_records_which_probe_was_in_the_page(studio, probe):
+    """The recording half of the identity axis, over a `run_meta` a real run wrote."""
+
+    assert sb.run(_args(studio, "--branch", "main")) == 0
+
+    meta = [r for r in _rows(studio) if r.get("row_type") == "run_meta"]
+    assert len(meta) == 1
+    assert meta[0]["probe_init_script"] == str(probe)
+
+
+def test_a_resume_that_drops_the_external_probe_is_refused(studio, probe, monkeypatch):
+    """End to end, over the payload the run above actually wrote."""
+
+    paths = Paths.under(studio["out"])
+    assert sb.run(_args(studio, "--branch", "main")) == 0
+    corpus_hash = _rows(studio)[0]["corpus_hash"]
+    monkeypatch.delenv("SBENCH_EXTRA_INIT_SCRIPT")
+
+    with pytest.raises(SystemExit) as excinfo:
+        sb.prepare_payload(
+            paths,
+            sb.requested_identity(_args(studio, "--branch", "main", "--resume"), None, corpus_hash),
+            resume = True,
+            log = lambda *_a: None,
+        )
+
+    assert "probe_init_script" in str(excinfo.value)
+
+
+def test_an_unreadable_probe_is_refused_before_the_payload_is_archived(studio, monkeypatch):
+    """REGRESSION. A refusal must not cost the previous run's payload its standard path.
+
+    Reusing an `--out` without `--resume` archives the payload already there, and that archive used
+    to run before `SBENCH_EXTRA_INIT_SCRIPT` was read. A path typo therefore exited 2 having
+    installed nothing, launched nothing and recorded nothing, while `payload.jsonl` was gone from
+    the one name every reader opens: `--report`, `--assert-liveness` and the next `--resume`.
+    """
+
+    monkeypatch.delenv("SBENCH_EXTRA_INIT_SCRIPT", raising = False)
+    paths = Paths.under(studio["out"])
+    assert sb.run(_args(studio, "--branch", "main")) == 0
+    recorded = paths.payload_jsonl.read_text(encoding = "utf-8")
+
+    monkeypatch.setenv("SBENCH_EXTRA_INIT_SCRIPT", str(studio["out"] / "typo_not_a_file.js"))
+    assert sb.run(_args(studio, "--branch", "main")) == 2
+
+    assert paths.payload_jsonl.read_text(encoding = "utf-8") == recorded
+    assert sorted(p.name for p in paths.out.glob("payload-*.jsonl")) == []
+    # The refusal is still ahead of everything it was ahead of before.
+    assert studio["installed"] == ["main"]
+
+
+def test_a_duplicate_run_is_refused_before_it_archives_or_installs_anything(studio):
+    """REGRESSION. A run refused for the directory must not have moved the live payload first.
+
+    The guard against two runs in one `--out` used to be taken where the `Recorder` opens
+    `payload.jsonl`, which is after `prepare_payload` has archived what was already there and after
+    every clone, build and launch. A second launcher pointed at a busy directory therefore renamed
+    the FIRST run's live payload out from under it -- the writer keeps its inode through a rename,
+    so that run went on recording into `payload-<stamp>.jsonl` while `payload.jsonl`, the one name
+    `--report`, `--assert-liveness` and the next `--resume` open, was gone -- and put a clone and a
+    build on the machine the first run was measuring, before saying the word it could have said in
+    the first millisecond.
+
+    The holder here stands for that first run: it is the same lock a live run holds, so the second
+    invocation meets exactly what it meets in the field.
+    """
+
+    paths = Paths.under(studio["out"])
+    assert sb.run(_args(studio, "--branch", "main")) == 0
+    recorded = paths.payload_jsonl.read_text(encoding = "utf-8")
+
+    studio["installed"].clear()
+    holder = OutDirLock.take(paths.out)
+    try:
+        with pytest.raises(SystemExit) as excinfo:
+            sb.run(_args(studio, "--branch", "main"))
+    finally:
+        holder.release()
+
+    assert "still running" in str(excinfo.value)
+    assert (
+        paths.payload_jsonl.read_text(encoding = "utf-8") == recorded
+    ), "the refused duplicate archived the live payload of the run it was refused in favour of"
+    assert sorted(p.name for p in paths.out.glob("payload-*.jsonl")) == []
+    assert studio["installed"] == [], (
+        "the duplicate installed a Studio on a machine that was already measuring, which is the "
+        "contention the guard exists to prevent, paid as the cost of refusing it"
+    )
+    # And the directory is free again the moment the holder lets go.
+    assert sb.run(_args(studio, "--branch", "main", "--resume")) == 0
+
+
+def test_a_duplicate_is_still_refused_while_the_report_is_being_rendered(studio, monkeypatch):
+    """REGRESSION. The directory stays held until `run()` has finished READING the payload back.
+
+    `rec.close()` runs in the `finally` under the cells; `_render_ab` and `_summarise` then reopen
+    `payload.jsonl` after it and before `run()`'s own outer `finally` lets the directory go. While
+    `Recorder.close` released the lock it had ADOPTED from `run()`, the directory was free for the
+    whole of that window, and a duplicate arriving in it was admitted. It then did what the guard
+    exists to stop, to a run whose cells had all completed:
+
+      * `prepare_payload` renames `payload.jsonl` to `payload-<stamp>.jsonl` BEFORE it clones
+        anything, so for the minutes it spends installing there is no `payload.jsonl` at all and
+        the first run's reporting step dies with `FileNotFoundError` -- after every cell passed.
+      * once it has opened a payload of its own, that empty file is what `_render_ab` reads, so
+        `ab.md` is written out of another run's rows and the first run still exits 0.
+
+    The duplicate is driven through the real `run()`, from inside the reporting window, so it meets
+    the guard exactly where a second launcher meets it in the field. `flock` treats two descriptors
+    on one file independently even within a process, so the in-process contender is refused by the
+    same kernel lock a separate launcher is.
+    """
+
+    paths = Paths.under(studio["out"])
+    real_render = sb._render_ab
+    seen: dict = {}
+
+    def render_with_a_duplicate_arriving(*args, **kwargs):
+        if "duplicate" not in seen:
+            seen["installed_before"] = list(studio["installed"])
+            seen["payload_before"] = paths.payload_jsonl.read_text(encoding = "utf-8")
+            try:
+                seen["duplicate"] = sb.run(_args(studio, "--branch", "main"))
+            except SystemExit as exc:
+                seen["duplicate"] = exc
+        return real_render(*args, **kwargs)
+
+    monkeypatch.setattr(sb, "_render_ab", render_with_a_duplicate_arriving)
+    assert sb.run(_args(studio, "--branch", "main", "--ab", "pr-9296"), ab_ref = "pr-9296") == 0
+
+    assert isinstance(
+        seen["duplicate"], SystemExit
+    ), "a second run was admitted to the output directory while the first was still reporting"
+    assert "still running" in str(seen["duplicate"])
+    # Nothing of the first run's was moved, and nothing was installed on top of it.
+    assert paths.payload_jsonl.exists(), "the duplicate archived the payload being reported on"
+    assert paths.payload_jsonl.read_text(encoding = "utf-8") == seen["payload_before"]
+    assert sorted(p.name for p in paths.out.glob("payload-*.jsonl")) == []
+    assert studio["installed"] == seen["installed_before"]
+    # The report is the first run's own, over its own rows.
+    table = (paths.out / "ab.md").read_text(encoding = "utf-8")
+    assert "main -> pr-9296" in table
+    # And the control: the directory is released once `run()` has actually finished with it.
+    assert sb.run(_args(studio, "--branch", "main")) == 0
+
+
+def _clean_summary(studio) -> Path:
+    """A clean run, then the `--report` the README quickstart runs on it, into the same `--out`."""
+
+    paths = Paths.under(studio["out"])
+    assert sb.run(_args(studio, "--branch", "main")) == 0
+    assert sb.main(["--report", str(paths.payload_jsonl), "--tier", "quick", "--rungs", "1K"]) == 0
+    summary = paths.out / "summary.md"
+    assert summary.exists()
+    assert "studiobench summary" in summary.read_text(encoding = "utf-8")
+    return summary
+
+
+def test_a_fresh_probe_run_replaces_the_summary_it_inherited(studio, monkeypatch, tmp_path):
+    """REGRESSION. A clean summary may not sit at the standard path over a probed payload.
+
+    `archive_payload` moves `payload.jsonl` and nothing else, so the `summary.md` an earlier
+    `--report` of this directory wrote stayed where every reader opens it while the payload it
+    described was moved aside and a probed one took its place. Nothing later corrected it: a probe
+    run is read through the probe's own console output, so `--report`, whose `SystemExit` clause
+    does replace the file, is the one command nobody has a reason to run on that payload. Without
+    `--ab` there is no `ab.md` either, so the stale summary was the only report-shaped file in the
+    directory.
+    """
+
+    monkeypatch.delenv("SBENCH_EXTRA_INIT_SCRIPT", raising = False)
+    summary = _clean_summary(studio)
+    clean = summary.read_text(encoding = "utf-8")
+
+    script = tmp_path / "paint_counter.js"
+    script.write_text("window.__probe_ticks = 0;\n", encoding = "utf-8")
+    monkeypatch.setattr(browser_mod, "launch", lambda *a, **k: _ProbedBundle())
+    monkeypatch.setenv("SBENCH_EXTRA_INIT_SCRIPT", str(script))
+    assert sb.run(_args(studio, "--branch", "main")) == 0
+
+    text = summary.read_text(encoding = "utf-8")
+    assert text != clean
+    assert "NO SUMMARY" in text
+    assert script.name in text
+    assert "studiobench summary" not in text
+    # The evidence itself is untouched: the refusal replaces the report, never the payload the
+    # summary described, which is still on disk under its archived name.
+    assert len(list(Paths.under(studio["out"]).out.glob("payload-*.jsonl"))) == 1
+
+
+def test_a_fresh_single_arm_probe_run_replaces_the_ab_table_it_inherited(
+    studio, monkeypatch, tmp_path
+):
+    """REGRESSION. `_render_ab`'s own probe refusal cannot reach this case.
+
+    That function runs only under `if ab_ref`, so a fresh SINGLE-ARM probe run into a directory
+    an earlier `--ab` run left behind never calls it, and the clean table survives beside the new
+    unscorable payload. `archive_payload` moves only `payload.jsonl`, so nothing else touches it
+    either. Distinct from the resumed-A/B hole fixed in 52fc3e848, where `_render_ab` did run and
+    an early return jumped over its refusal.
+    """
+
+    monkeypatch.delenv("SBENCH_EXTRA_INIT_SCRIPT", raising = False)
+    table = Paths.under(studio["out"]).out / "ab.md"
+    table.write_text(
+        "studiobench A/B\n===============\n\n  headline_ratio 0.923 (7.7% faster)\n",
+        encoding = "utf-8",
+    )
+    clean = table.read_text(encoding = "utf-8")
+
+    script = tmp_path / "paint_counter.js"
+    script.write_text("window.__probe_ticks = 0;\n", encoding = "utf-8")
+    monkeypatch.setattr(browser_mod, "launch", lambda *a, **k: _ProbedBundle())
+    monkeypatch.setenv("SBENCH_EXTRA_INIT_SCRIPT", str(script))
+    # No --ab, so _render_ab is never called and only this refusal can reach the file.
+    assert sb.run(_args(studio, "--branch", "main")) == 0
+
+    text = table.read_text(encoding = "utf-8")
+    assert text != clean
+    assert "NO TABLE" in text
+    assert script.name in text
+    assert "headline_ratio" not in text, "the clean A/B table survived a probe run"
+
+
+def test_a_probe_run_invents_no_ab_table_where_there_was_none(studio, monkeypatch, tmp_path):
+    """The control, matching the summary one: replace a stale table, never invent one."""
+
+    script = tmp_path / "paint_counter.js"
+    script.write_text("window.__probe_ticks = 0;\n", encoding = "utf-8")
+    monkeypatch.setattr(browser_mod, "launch", lambda *a, **k: _ProbedBundle())
+    monkeypatch.setenv("SBENCH_EXTRA_INIT_SCRIPT", str(script))
+    assert sb.run(_args(studio, "--branch", "main")) == 0
+    assert not (Paths.under(studio["out"]).out / "ab.md").exists()
+
+
+def test_a_probe_run_invents_no_summary_where_there_was_none(studio, monkeypatch, tmp_path):
+    """The control. The refusal replaces a stale report; it does not create a report-shaped file
+    in a directory whose reader was never given one to misread."""
+
+    script = tmp_path / "paint_counter.js"
+    script.write_text("window.__probe_ticks = 0;\n", encoding = "utf-8")
+    monkeypatch.setattr(browser_mod, "launch", lambda *a, **k: _ProbedBundle())
+    monkeypatch.setenv("SBENCH_EXTRA_INIT_SCRIPT", str(script))
+    assert sb.run(_args(studio, "--branch", "main")) == 0
+    assert not (Paths.under(studio["out"]).out / "summary.md").exists()
+
+
+def test_a_clean_rerun_also_invalidates_the_summary_it_inherited(studio, monkeypatch):
+    """REGRESSION, and this test previously asserted the opposite.
+
+    It was written as a control reading "only a PROBE run invalidates", on the reasoning that
+    `--report` rewrites the summary properly afterwards. That reasoning holds only for a reader
+    who runs `--report`, and it is the same asymmetry in reverse that made the probe case a bug:
+    `archive_payload` moves `payload.jsonl` and nothing else, so after ANY rerun of this directory
+    the standing `summary.md` describes a payload that is no longer at the path it names. A plain
+    run writes `summary.md` never and `ab.md` only under `--ab`, so a single-arm rerun produces no
+    report-shaped file to displace it.
+
+    The sharper version of the same hole is probed-then-clean: the probe refusal says in so many
+    words that the payload beside it is not scorable, and that claim survives into a directory
+    whose payload is now perfectly scorable. A refusal that outlives its reason is read as a
+    finding about the run that is actually there.
+
+    `--report` still writes a real summary over it, which is the half of the original control
+    that was correct and is kept below.
+    """
+
+    monkeypatch.delenv("SBENCH_EXTRA_INIT_SCRIPT", raising = False)
+    summary = _clean_summary(studio)
+    paths = Paths.under(studio["out"])
+
+    assert sb.run(_args(studio, "--branch", "main")) == 0
+    text = summary.read_text(encoding = "utf-8")
+    assert "NO SUMMARY" in text
+    assert "studiobench summary" not in text, "a summary of the archived payload survived a rerun"
+    # It names where the payload it described went, so the reader can still reach it.
+    assert "payload-" in text
+
+    # And the legitimate `--report` path still scores the new payload rather than refusing it.
+    assert sb.main(["--report", str(paths.payload_jsonl), "--tier", "quick", "--rungs", "1K"]) == 0
+    assert "studiobench summary" in summary.read_text(encoding = "utf-8")
+
+
+def test_a_resume_under_the_same_probe_still_resumes(studio, probe):
+    """The control. A potency ladder that died is meant to be resumable as the ladder it was."""
+
+    paths = Paths.under(studio["out"])
+    assert sb.run(_args(studio, "--branch", "main")) == 0
+    corpus_hash = _rows(studio)[0]["corpus_hash"]
+
+    assert (
+        sb.prepare_payload(
+            paths,
+            sb.requested_identity(_args(studio, "--branch", "main", "--resume"), None, corpus_hash),
             resume = True,
             log = lambda *_a: None,
         )

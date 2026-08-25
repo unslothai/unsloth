@@ -997,6 +997,26 @@ def _cached_repo_override_identity(model_id: str) -> Optional[tuple[str, str]]:
     return repo.strip().casefold(), quant.strip().casefold()
 
 
+def is_cache_load_path_key(model_id: str) -> bool:
+    """True when ``model_id`` spells a cached quant as the path a load actually opens.
+
+    The two spellings of one cached repo are not interchangeable in a lookup:
+    ``override_lookup_candidates`` tries the load path before the advertised repo id,
+    so of a pair only the path row is ever read and the repo-id row sits dormant. A
+    caller choosing between stored rows has to know which side it is holding, and
+    ``cached_repo_alias_keys`` deliberately does not say, since it answers "the other
+    spelling" in either direction.
+
+    Lives here for the reason the rest of the resolution does: the ordering rule is
+    this module's, and a second copy of it would drift.
+    """
+    from core.inference.model_ids import hf_cache_repo_id
+
+    split = split_quant_suffix(model_id)
+    base = split[0] if split else model_id
+    return hf_cache_repo_id(base) is not None
+
+
 def cached_repo_alias_keys(model_id: str) -> list[str]:
     """Stored keys that name the same cached quant as ``model_id`` under the other spelling.
 

@@ -538,12 +538,16 @@ def test_the_median_of_three_good_repetitions_is_unchanged() -> None:
 
 def clean_cell() -> dict:
     """One (engine, size) cell that harness_failures() has nothing to say about."""
-    per_cycle = {"images": 3, "codeBlocks": 7}
+    per_cycle = {"images": 3, "codeBlocks": 7, "codeChars": 12000}
     counts = {
         "messages": 20,
         "domNodes": 4000,
         "codeBlocks": 7,
+        "codeChars": 12660,
         "highlightedTokens": 3000,
+        "fenceBlocks": 5,
+        "deferredFences": 2,
+        "unhighlightedMountedFences": 0,
         "images": 3,
         "actionBars": 10,
         "tooltipTriggers": 30,
@@ -617,6 +621,36 @@ def discriminating_report() -> dict:
 def test_a_clean_cell_produces_no_harness_failure() -> None:
     # The guards below are only worth anything if they are silent on a good run.
     assert HARNESS.harness_failures(results_with(clean_cell()), discriminating_report()) == []
+
+
+def test_deferred_fences_are_not_a_harness_failure() -> None:
+    # THE POINT OF MEASURING CHARACTERS. A real, complete thread now holds far fewer highlighted
+    # tokens than before the default moved: 1,322 against 3,216 for one cycle, measured, with the
+    # fixture untouched. The harness must not call that broken.
+    cell = copy.deepcopy(clean_cell())
+    cell["counts"]["deferredFences"] = 4
+    cell["counts"]["highlightedTokens"] = 300
+    assert HARNESS.harness_failures(results_with(cell), discriminating_report()) == []
+
+
+def test_a_fixture_that_lost_its_code_is_still_a_harness_failure() -> None:
+    # The replaced check caught a fixture that is not the heavy thread it claims to be, and this
+    # still does. Tokens are left HIGH so only the character floor can fail: a thread whose code
+    # blocks quietly emptied still renders, still scrolls and still curves, of something else.
+    cell = copy.deepcopy(clean_cell())
+    cell["counts"]["codeChars"] = 6000
+    cell["counts"]["highlightedTokens"] = 99999
+    failures = HARNESS.harness_failures(results_with(cell), discriminating_report())
+    assert any("6000 codeChars, short of the 12000" in f for f in failures), failures
+
+
+def test_a_fence_that_is_neither_deferred_nor_highlighted_is_a_harness_failure() -> None:
+    # The other half of the old token floor, per block: one block stuck on streamdown's
+    # unhighlighted fallback passed the total as long as the rest made it up.
+    cell = copy.deepcopy(clean_cell())
+    cell["counts"]["unhighlightedMountedFences"] = 1
+    failures = HARNESS.harness_failures(results_with(cell), discriminating_report())
+    assert any("mounted but unhighlighted" in f for f in failures), failures
 
 
 def test_a_scroll_that_never_settled_is_a_harness_failure() -> None:

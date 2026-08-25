@@ -375,20 +375,24 @@ class TestChatCompletionRequestToolFields:
         assert req.stop is None
 
     def test_extra_fields_accepted(self):
-        # `frequency_penalty` and `response_format` are not yet explicitly
-        # declared but must survive Pydantic parsing now that extra="allow" is
-        # set. `seed` is declared and should land on the typed field instead.
+        """Declared fields bind and are typed; unknown ones still survive
+        extra="allow". Declaring response_format is what turns away a value of
+        the wrong shape -- a bare string names no schema to constrain to. What
+        is inside the object is the serving path's business, not the schema's."""
+        from pydantic import ValidationError
+
         req = self._make(
-            frequency_penalty = 0.5,
             seed = 42,
+            frequency_penalty = 0.5,
             response_format = {"type": "json_object"},
+            unknown = "kept",
         )
-        assert req.seed == 42
-        # Extras land in model_extra
-        assert req.model_extra is not None
-        assert req.model_extra.get("frequency_penalty") == 0.5
-        assert "seed" not in req.model_extra
-        assert req.model_extra.get("response_format") == {"type": "json_object"}
+        assert (req.seed, req.frequency_penalty) == (42, 0.5)
+        assert req.response_format == {"type": "json_object"}
+        assert not {"seed", "frequency_penalty", "response_format"} & set(req.model_extra or {})
+        assert (req.model_extra or {}).get("unknown") == "kept"
+        with pytest.raises(ValidationError):
+            self._make(response_format = "json_object")
 
     def test_unsloth_extensions_still_work(self):
         req = self._make(
@@ -632,6 +636,59 @@ class TestChatCompletionRequestToolFields:
         [entry] = monitor.snapshot()
         assert entry["status"] == "error"
         assert "n > 1 is not supported" in entry["error"]
+        assert monitor.active_count() == 0
+
+    def test_a_no_op_response_format_keeps_a_gguf_request_off_the_passthrough(self):
+        """The passthrough exists to reach llama-server's grammar engine, and
+        ``{"type": "text"}`` names the default rather than a grammar: routing it
+        there would withdraw what the ordinary path serves, n > 1 among them."""
+        from routes.inference import _takes_tool_passthrough
+
+        class _GGUFBackend:
+            supports_tools = False
+
+        backend = _GGUFBackend()
+        assert _takes_tool_passthrough(self._make(response_format = {"type": "json_object"}), backend)
+        # The field takes any object, and anything but the exact default -- an
+        # unknown type, or a text format carrying members this build does not know
+        # -- is a contract, so it keeps going where one can be answered or rejected.
+        assert _takes_tool_passthrough(self._make(response_format = {"type": "later"}), backend)
+        assert _takes_tool_passthrough(
+            self._make(response_format = {"type": "text", "strict": True}), backend
+        )
+        assert not _takes_tool_passthrough(self._make(response_format = {"type": "text"}), backend)
+
+    @pytest.mark.parametrize("enabled_tools", [None, []])
+    def test_the_gguf_tool_loop_refuses_a_contract_it_cannot_forward(
+        self, monkeypatch, enabled_tools
+    ):
+        """Unsloth's loop runs its own turns and never forwards response_format, so
+        serving the request would answer with text that violates the contract while
+        the client has no way to tell. A selection that resolves to no tool routes to
+        the ordinary generator, which forwards it no more than the loop does, and the
+        refusal lands after the monitor row opens, so it must close it."""
+        import routes.inference as inference_route
+
+        class _GGUFBackend:
+            is_loaded = True
+            model_identifier = "test-gguf"
+            supports_tools = True
+            is_vision = False
+            _is_audio = False
+            context_length = 4096
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
+        client = self._v1_client(monkeypatch, _GGUFBackend())
+        body = {
+            "messages": [{"role": "user", "content": "hi"}],
+            "enable_tools": True,
+            "response_format": {"type": "json_object"},
+        }
+        if enabled_tools is not None:
+            body["enabled_tools"] = enabled_tools
+        resp = client.post("/v1/chat/completions", json = body)
+        self._assert_unsupported_param(resp, "response_format")
         assert monitor.active_count() == 0
 
     def test_client_tools_rejected_when_gguf_template_has_no_tool_support(self, monkeypatch):
@@ -1045,24 +1102,49 @@ class TestChatCompletionRequestToolFields:
         assert "does not advertise tools" in entry["error"]
         assert monitor.active_count() == 0
 
-    def test_n_rejected_for_non_gguf_path(self, monkeypatch):
+    @pytest.mark.parametrize(
+        "param, model_entry, extra_body, unreachable_pre_switch",
+        [
+            ("n", {"is_audio": True, "audio_type": "tts"}, {"n": 2}, False),
+            ("n", {"has_audio_input": True}, {"n": 2, "audio_base64": "AAAA"}, False),
+            ("n", {}, {"n": 2, "enable_tools": True}, False),
+            ("n", {}, {"n": 2, "stream": True}, True),
+            ("response_format", {}, {"response_format": {"type": "json_object"}}, False),
+            ("response_format", {}, {"response_format": {"type": "later"}}, False),
+        ],
+    )
+    def test_the_non_gguf_paths_refuse_what_they_cannot_serve(
+        self, monkeypatch, param, model_entry, extra_body, unreachable_pre_switch
+    ):
+        """Plain non-GGUF text now serves extra choices, so only the paths that
+        answer something other than a sample still refuse n: one waveform, one
+        transcript of the one recording, a loop that runs turns rather than
+        samples, and one SSE stream, which carries a single choice whether or not
+        the pre-switch check (reached only when a load may) ran. And no non-GGUF
+        backend can constrain decoding at all."""
+        import routes.inference as inference_route
+
         class _NoGGUFBackend:
             is_loaded = False
             supports_tools = False
 
         class _InferenceBackend:
             active_model_name = "test-model"
-            models = {"test-model": {}}
+            models = {"test-model": model_entry}
 
+        if unreachable_pre_switch:
+            monkeypatch.setattr(inference_route, "_automatic_model_load_may_run", lambda: False)
+        monkeypatch.setattr(
+            inference_route,
+            "_detect_safetensors_features",
+            lambda *a, **k: {"supports_tools": True},
+        )
         client = self._v1_client(monkeypatch, _NoGGUFBackend(), _InferenceBackend())
         resp = client.post(
             "/v1/chat/completions",
-            json = {
-                "messages": [{"role": "user", "content": "hi"}],
-                "n": 2,
-            },
+            json = {"messages": [{"role": "user", "content": "hi"}], **extra_body},
         )
-        self._assert_unsupported_n(resp)
+        self._assert_unsupported_param(resp, param)
 
     def test_confirm_tool_calls_requires_streaming_for_safetensors_tools(self, monkeypatch):
         import routes.inference as inference_route
@@ -7351,6 +7433,19 @@ class TestApiMonitorAudioInput:
             assert entry["reply"] == "[Generated audio]"
             assert monitor.active_count() == 0
 
+            # This branch answers speech and returns before the routing that decides
+            # a decoding contract, so it refuses one itself rather than ignoring it.
+            payload.response_format = {"type": "json_object"}
+            with pytest.raises(HTTPException) as excinfo:
+                await inf_mod.openai_chat_completions(
+                    payload, request = request, current_subject = "test"
+                )
+            assert excinfo.value.status_code == 400
+            assert excinfo.value.detail["error"]["param"] == "response_format"
+            # `{"type": "text"}` constrains nothing, so speech is still served.
+            payload.response_format = {"type": "text"}
+            await inf_mod.openai_chat_completions(payload, request = request, current_subject = "test")
+
         asyncio.run(_run())
 
 
@@ -7679,3 +7774,35 @@ class TestGgufChatHistoryAlternation:
         roles = [m["role"] for m in rebuilt]
         assert roles == ["system", "user"]
         assert all(roles[i] != roles[i + 1] for i in range(len(roles) - 1)), roles
+
+
+# ── Per-choice seeds on the GGUF drain ──────────────────────────────
+
+
+def test_every_gguf_choice_gets_a_seed_of_its_own():
+    """llama-server holds the seed as a uint32 and draws at random for exactly
+    one value, LLAMA_DEFAULT_SEED (0xFFFFFFFF). Only -1 converts to it, so every
+    other negative is an ordinary fixed seed there: exempting all of them from
+    the offset sent n identical requests and returned n copies of one run."""
+    from routes.inference import _choice_seed
+
+    sent = 0xFFFFFFFF
+    for seed in (-2, -3, 0, 5, 2**32 - 2):
+        served = [_choice_seed(seed, i, negative_is_random = True) for i in range(3)]
+        as_read = [v & 0xFFFFFFFF for v in served]
+        assert len(set(as_read)) == 3, (seed, served)
+        # A shifted seed that landed on the sentinel would sample at random where
+        # the caller asked for a fixed run.
+        assert sent not in as_read, (seed, served)
+
+    # -1 is the sentinel itself: offsetting it would make every choice after the
+    # first deterministic, which is the opposite of what was asked for.
+    assert [_choice_seed(-1, i, negative_is_random = True) for i in range(3)] == [-1, -1, -1]
+
+    # MLX maps every seed onto its key domain, so nothing is exempt there.
+    assert [_choice_seed(-2, i) for i in range(3)] == [-2, -1, 0]
+    assert [_choice_seed(5, i) for i in range(3)] == [5, 6, 7]
+
+    # Choice 0 is always the caller's own seed, on both drains.
+    assert _choice_seed(-2, 0, negative_is_random = True) == -2
+    assert _choice_seed(None, 2, negative_is_random = True) is None

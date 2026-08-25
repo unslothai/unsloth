@@ -20,6 +20,8 @@ web_search calls):
 
 from __future__ import annotations
 
+import random
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -34,7 +36,11 @@ def _unknown_window(monkeypatch):
     # The request-scoped window is module state that outlives a test, and execute_tool
     # sets it deliberately. Restore it so one test cannot decide another's budget.
     token = tools._REQUEST_CONTEXT_TOKENS.set(tools._UNSET_CONTEXT_TOKENS)
+    # Measured counts are cached per model for the life of the process, so one test's
+    # backend double must not answer the next one's questions.
+    tools._PROBE_COUNT_CACHE.clear()
     yield
+    tools._PROBE_COUNT_CACHE.clear()
     tools._REQUEST_CONTEXT_TOKENS.reset(token)
 
 
@@ -593,3 +599,524 @@ class TestAConfiguredCapIsNeverRaised:
 
         assert tools._tool_result_char_budget() == tools._MIN_PAGE_CHARS
         assert tools._page_char_budget() == tools._MIN_PAGE_CHARS
+
+
+class TestTheProbeIsNotPaidForTwice:
+    """The measurement is worth its round trips; paying for it again is not.
+
+    `count_chat_tokens` is two llama-server calls -- `/apply-template` then `/tokenize` --
+    over a fresh connection each time, so every counter call here is two HTTP round trips
+    on the path between a tool finishing and the model seeing its result. Measured on the
+    merge base, with a 5,120-token window: an English result cost 2 counter calls and a
+    dense one (base64, hexdump, sha256sum) cost 4, on every single result, forever.
+
+    Three things were being bought and thrown away. The framing baseline is the same
+    number for every result the process ever truncates, and it was priced per result. Its
+    value cannot change the answer for a result that fits on its first count, and it was
+    priced before that count was taken. And an estimate already at or below the readable
+    floor is the answer whatever the tokenizer says, and it was measured anyway.
+
+    Nothing here may change what is returned. Every test below asserts the number the
+    merge base returns alongside the round trips it no longer takes.
+    """
+
+    _RATE = 1.33
+
+    def _serving(
+        self,
+        monkeypatch,
+        ctx,
+        rate = None,
+        identified = True,
+        pid = 4242,
+        extra_args = None,
+        gguf = "/models/qwen3-4b.gguf",
+    ):
+        """A loaded llama.cpp backend that counts the calls it is asked to make.
+
+        `is_loaded` really is `self._process is not None and self._healthy`, so a resident
+        backend always has a process, and `pid` is what a reload changes.
+        """
+        rate = self._RATE if rate is None else rate
+        calls = []
+
+        def count_chat_tokens(messages, *a, **k):
+            body = "".join(m["content"] for m in messages)
+            calls.append(len(body))
+            return 8 + int(len(body) / rate)
+
+        backend = SimpleNamespace(
+            is_loaded = True, context_length = ctx, count_chat_tokens = count_chat_tokens
+        )
+        if identified:
+            # What a real backend exposes once a GGUF is resident.
+            backend._process = SimpleNamespace(pid = pid)
+            backend.model_identifier = "Qwen3-4B"
+            backend._gguf_load_identity = ((gguf, 66306, 4242, 1),)
+            backend._chat_template_override = None
+            backend._extra_args = list(extra_args) if extra_args else None
+        monkeypatch.setattr("routes.inference.get_llama_cpp_backend", lambda: backend)
+        return calls, backend
+
+    def test_an_estimate_at_the_floor_is_not_measured_at_all(self, monkeypatch):
+        """A 1,024-token window leaves a 358-token share, so the estimate is already below
+        the 2,000-character floor and `_dense_char_limit` clamps up to it whatever comes
+        back. The merge base spent 2 counter calls (4 HTTP round trips) rediscovering it.
+        """
+        _window(monkeypatch, 1024)
+        calls, _ = self._serving(monkeypatch, 1024)
+
+        kept = tools._dense_char_limit("0123456789abcdef" * 2000, tools._MAX_PAGE_CHARS)
+
+        assert kept == tools._MIN_PAGE_CHARS  # the merge base's answer, unchanged
+        assert calls == []
+
+    def test_a_result_that_fits_does_not_price_the_framing_baseline(self, monkeypatch):
+        """English is the common case and it fits on its first count. The baseline only
+        ever decides whether a count that came in OVER budget is a real measurement, so
+        for this result it is bought and never read: 2 counter calls where 1 answers."""
+        _window(monkeypatch, 5120)
+        calls, _ = self._serving(monkeypatch, 5120, rate = 4.2)
+        text = ("The build finished and the archive was uploaded to the release bucket. ") * 400
+        budget = tools._tool_result_char_budget()
+
+        kept = tools._dense_char_limit(text, budget)
+
+        assert kept == budget  # English keeps every character it was allowed, as before
+        assert len(calls) == 1
+        assert calls == [budget], "the one call is the measurement, not the baseline"
+
+    def test_the_baseline_is_priced_once_per_model_not_once_per_result(self, monkeypatch):
+        """A dense result does need the baseline. It is the same number for the next one."""
+        _window(monkeypatch, 5120)
+        calls, _ = self._serving(monkeypatch, 5120)
+        first = "0123456789abcdef" * 2000
+        second = "fedcba9876543210" * 1500
+
+        cold = tools._dense_char_limit(first, tools._tool_result_char_budget())
+        cold_calls = list(calls)
+        calls.clear()
+        tools._dense_char_limit(second, tools._tool_result_char_budget())
+
+        # A chunk of length 0 IS the baseline: the empty probe the guard measures against.
+        assert 0 in cold_calls, "the first dense result pays for the baseline"
+        assert calls, "the second result is still measured"
+        assert 0 not in calls, "but the baseline is answered from the cache"
+        assert len(calls) == len(cold_calls) - 1
+        # And the answer is still the measured one.
+        assert cold / self._RATE <= 5120 * tools._PAGE_CONTEXT_SHARE
+
+    def test_the_same_result_twice_costs_nothing_the_second_time(self, monkeypatch):
+        """Retries, regenerations and a model that runs the same command again."""
+        _window(monkeypatch, 5120)
+        calls, _ = self._serving(monkeypatch, 5120)
+        text = "0123456789abcdef" * 2000
+        budget = tools._tool_result_char_budget()
+
+        first = tools._dense_char_limit(text, budget)
+        assert calls, "the first pass must actually measure"
+        calls.clear()
+        second = tools._dense_char_limit(text, budget)
+
+        assert second == first
+        assert calls == []
+
+    def test_a_different_model_never_reads_the_previous_one_s_counts(self, monkeypatch):
+        """Same window, different tokenizer. The cache key carries the model's identity,
+        so a reload cannot be answered from the model it replaced."""
+        _window(monkeypatch, 5120)
+        text = "0123456789abcdef" * 2000
+        budget = tools._tool_result_char_budget()
+
+        dense_calls, _ = self._serving(
+            monkeypatch, 5120, rate = 1.33, pid = 111, gguf = "/models/dense.gguf"
+        )
+        dense = tools._dense_char_limit(text, budget)
+
+        sparse_calls, _ = self._serving(
+            monkeypatch, 5120, rate = 4.2, pid = 222, gguf = "/models/sparse.gguf"
+        )
+        sparse = tools._dense_char_limit(text, budget)
+
+        assert sparse_calls, "the new model must be measured, not looked up"
+        assert sparse > dense, "and priced by its own tokenizer"
+        assert sparse == budget and dense_calls
+
+    def test_a_backend_with_no_resident_process_is_not_cached(self, monkeypatch):
+        """Nothing to tie a count to means no key guaranteed to change when the rendering
+        does, so the safe answer is to keep paying. Every lightweight double lands here."""
+        _window(monkeypatch, 5120)
+        calls, _ = self._serving(monkeypatch, 5120, identified = False)
+        text = "0123456789abcdef" * 2000
+        budget = tools._tool_result_char_budget()
+
+        first = tools._dense_char_limit(text, budget)
+        spent = len(calls)
+        calls.clear()
+        second = tools._dense_char_limit(text, budget)
+
+        assert second == first
+        assert len(calls) == spent
+        assert not tools._PROBE_COUNT_CACHE
+
+    def test_a_count_that_failed_is_never_remembered_as_an_answer(self, monkeypatch):
+        """A busy server is a property of the moment, not of the text. Caching the failure
+        would turn one timeout into a permanent estimate for that result."""
+        _window(monkeypatch, 5120)
+        state = {"fail": True}
+
+        def count_chat_tokens(messages, *a, **k):
+            if state["fail"]:
+                raise RuntimeError("llama-server is busy")
+            return 8 + int(sum(len(m["content"]) for m in messages) / self._RATE)
+
+        monkeypatch.setattr(
+            "routes.inference.get_llama_cpp_backend",
+            lambda: SimpleNamespace(
+                is_loaded = True,
+                context_length = 5120,
+                count_chat_tokens = count_chat_tokens,
+                _process = SimpleNamespace(pid = 4242),
+                model_identifier = "Qwen3-4B",
+                _gguf_load_identity = (("/models/qwen3-4b.gguf", 66306, 4242, 1),),
+                _chat_template_override = None,
+                _extra_args = None,
+            ),
+        )
+        text = "0123456789abcdef" * 2000
+        budget = tools._tool_result_char_budget()
+
+        assert tools._dense_char_limit(text, budget) == budget  # the estimate stands
+        state["fail"] = False
+
+        assert tools._dense_char_limit(text, budget) < budget  # and is measured next time
+
+    def test_the_cache_cannot_grow_without_bound(self, monkeypatch):
+        _window(monkeypatch, 5120)
+        self._serving(monkeypatch, 5120)
+        budget = tools._tool_result_char_budget()
+
+        for index in range(tools._PROBE_COUNT_CACHE_ENTRIES + 40):
+            tools._dense_char_limit(f"{index:04d}" + "0123456789abcdef" * 2000, budget)
+
+        held = sum(len(entry) for entry in tools._PROBE_COUNT_CACHE.values())
+        assert held <= tools._PROBE_COUNT_CACHE_ENTRIES
+
+    def test_the_cache_is_bounded_by_characters_and_not_only_by_entries(self, monkeypatch):
+        """The entry count says nothing about size. Only a fetched page is capped at
+        `_MAX_PAGE_CHARS`; a tool result's prefix is bounded by the configured cap and the
+        window, and `_env_int` takes any positive integer, so one prefix can be enormous.
+        Measured on this path: a 1,000,000-character cap on a 262k window cached 733,971
+        characters from a single result, which 64 entries would multiply.
+        """
+        monkeypatch.setattr(tools, "_MAX_OUTPUT_CHARS", 1_000_000)
+        _window(monkeypatch, 262_144)
+        calls, _ = self._serving(monkeypatch, 262_144, rate = 4.0)
+        budget = tools._tool_result_char_budget()
+
+        assert budget > tools._MAX_PAGE_CHARS, "the premise: prefixes far exceed the page cap"
+
+        for index in range(8):
+            tools._dense_char_limit(f"{index:04d}" + "A" * 6_000_000, budget)
+
+        held = sum(len(key) for entry in tools._PROBE_COUNT_CACHE.values() for key in entry)
+        assert held <= tools._PROBE_COUNT_CACHE_CHARS
+        # And the baseline, which is 0 characters, is still in there earning its keep.
+        assert any("" in entry for entry in tools._PROBE_COUNT_CACHE.values())
+
+    def test_a_prefix_too_large_to_hold_is_skipped_not_stored(self, monkeypatch):
+        monkeypatch.setattr(tools, "_PROBE_COUNT_CACHE_CHARS", 5000)
+        _window(monkeypatch, 5120)
+        calls, _ = self._serving(monkeypatch, 5120)
+        text = "0123456789abcdef" * 2000
+        budget = tools._tool_result_char_budget()
+
+        first = tools._dense_char_limit(text, budget)
+        held = sum(len(key) for entry in tools._PROBE_COUNT_CACHE.values() for key in entry)
+        calls.clear()
+        second = tools._dense_char_limit(text, budget)
+
+        assert second == first, "the answer never depends on what was cached"
+        assert held <= 5000
+
+    def test_the_guard_still_rejects_a_template_that_renders_no_content(self, monkeypatch):
+        """The baseline is deferred, not dropped. A count that does not move off it is
+        still not a measurement, and the caller still keeps its estimate."""
+        _window(monkeypatch, 5120)
+        monkeypatch.setattr(
+            "routes.inference.get_llama_cpp_backend",
+            lambda: SimpleNamespace(
+                is_loaded = True,
+                context_length = 5120,
+                count_chat_tokens = lambda messages, *a, **k: 11,
+                _process = SimpleNamespace(pid = 7),
+                model_identifier = "Gemma-4",
+                _gguf_load_identity = (("/models/gemma-4.gguf", 66306, 7, 1),),
+                _chat_template_override = None,
+                _extra_args = None,
+            ),
+        )
+
+        assert tools._loaded_token_counter(5120)("0123456789abcdef" * 250) is None
+        assert tools._dense_char_limit("0123456789abcdef" * 2000, 7168) == 7168
+
+    def test_a_pass_through_chat_template_is_not_answered_from_the_managed_one(self, monkeypatch):
+        """The gap `_chat_template_override` cannot see.
+
+        User extra args are appended verbatim AFTER Studio's own flags and llama.cpp is
+        last-wins, so `--chat-template` / `--chat-template-file` in extra args changes what
+        `/apply-template` renders while every managed field stays exactly as it was. Same
+        GGUF, same window, same managed override: reuse the counts and a prefix gets a
+        price from a template that is no longer serving it, which is the irreducible
+        overflow this budget exists to prevent, reintroduced through the cache.
+        """
+        _window(monkeypatch, 5120)
+        text = "0123456789abcdef" * 2000
+        budget = tools._tool_result_char_budget()
+
+        self._serving(monkeypatch, 5120, rate = 1.33, pid = 900)
+        dense = tools._dense_char_limit(text, budget)
+
+        # Reloaded with only a pass-through template added. Everything managed is identical.
+        calls, backend = self._serving(
+            monkeypatch,
+            5120,
+            rate = 4.2,
+            pid = 901,
+            extra_args = ["--chat-template", "chatml"],
+        )
+        sparse = tools._dense_char_limit(text, budget)
+
+        assert backend.model_identifier == "Qwen3-4B"
+        assert backend._chat_template_override is None
+        assert calls, "the new template must be measured, not looked up"
+        assert sparse > dense, "and priced by the template actually rendering"
+
+    def test_the_extra_args_alone_are_enough_to_miss(self, monkeypatch):
+        """Belt to the process id's braces: even holding the pid fixed, counts are not
+        shared across a different command line."""
+        _window(monkeypatch, 5120)
+        text = "0123456789abcdef" * 2000
+        budget = tools._tool_result_char_budget()
+
+        self._serving(monkeypatch, 5120, rate = 1.33, pid = 5)
+        tools._dense_char_limit(text, budget)
+
+        calls, _ = self._serving(
+            monkeypatch, 5120, rate = 1.33, pid = 5, extra_args = ["--chat-template-file", "/x.jinja"]
+        )
+        tools._dense_char_limit(text, budget)
+
+        assert calls, "a different command line is a different rendering"
+
+    def test_a_reload_of_the_very_same_configuration_still_misses(self, monkeypatch):
+        """A restart is a new process whatever its arguments, so nothing survives it. This
+        is what makes the key safe against flags nobody has thought of yet."""
+        _window(monkeypatch, 5120)
+        text = "0123456789abcdef" * 2000
+        budget = tools._tool_result_char_budget()
+
+        self._serving(monkeypatch, 5120, pid = 1000)
+        first = tools._dense_char_limit(text, budget)
+
+        calls, _ = self._serving(monkeypatch, 5120, pid = 1001)
+        second = tools._dense_char_limit(text, budget)
+
+        assert second == first, "same configuration, same answer"
+        assert calls, "but re-measured rather than carried over the restart"
+
+    def test_an_unhashable_identity_field_disables_the_cache_rather_than_raising(self, monkeypatch):
+        _window(monkeypatch, 5120)
+        calls, backend = self._serving(monkeypatch, 5120)
+        backend._gguf_load_identity = {"not": "hashable"}
+        text = "0123456789abcdef" * 2000
+        budget = tools._tool_result_char_budget()
+
+        first = tools._dense_char_limit(text, budget)
+        spent = len(calls)
+        calls.clear()
+
+        assert tools._dense_char_limit(text, budget) == first
+        assert len(calls) == spent
+        assert not tools._PROBE_COUNT_CACHE
+
+    def _template_down(
+        self,
+        monkeypatch,
+        ctx,
+        rate = None,
+        fallback_rate = None,
+    ):
+        """`/apply-template` is down but `/tokenize` is not.
+
+        `count_chat_tokens(strict = False)` then returns the plain-text fallback, which
+        prices the bytes but drops the template's role markers and special tokens.
+        """
+        rate = self._RATE if rate is None else rate
+        calls = []
+
+        def count_chat_tokens(messages, *a, **k):
+            body = "".join(m["content"] for m in messages)
+            calls.append((len(body), bool(k.get("strict"))))
+            if k.get("strict"):
+                raise RuntimeError("llama-server could not render the chat template")
+            return int(len(body) / (fallback_rate or rate)) or 1  # no framing: the fallback
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            context_length = ctx,
+            count_chat_tokens = count_chat_tokens,
+            _process = SimpleNamespace(pid = 77),
+            model_identifier = "Qwen3-4B",
+            _gguf_load_identity = (("/models/qwen3-4b.gguf", 66306, 4242, 1),),
+            _chat_template_override = None,
+            _extra_args = None,
+        )
+        monkeypatch.setattr("routes.inference.get_llama_cpp_backend", lambda: backend)
+        return calls
+
+    def test_a_plain_text_fallback_count_is_used_but_never_retained(self, monkeypatch):
+        """The count is still used: it tokenizes the real bytes, which is what catches
+        dense ASCII, and the estimate it would otherwise fall back to undercharges base64
+        several fold. It is simply not KEPT -- it prices a prompt the model will never be
+        sent, so caching it would let one bad moment under-count that prefix for the life
+        of the process.
+        """
+        _window(monkeypatch, 5120)
+        calls = self._template_down(monkeypatch, 5120)
+        text = "0123456789abcdef" * 2000
+        budget = tools._tool_result_char_budget()
+
+        kept = tools._dense_char_limit(text, budget)
+
+        assert kept < budget, "the fallback still measured the bytes"
+        assert not any(cache for cache in tools._PROBE_COUNT_CACHE.values())
+        # And a later result re-measures rather than trusting it.
+        calls.clear()
+        tools._dense_char_limit(text, budget)
+        assert calls
+
+    def test_the_strict_attempt_is_made_once_per_result_not_once_per_probe(self, monkeypatch):
+        """A template that will not render is not going to start mid-result, so asking
+        again would spend round trips on a settled question. One extra attempt for the
+        first probe, not one for every probe."""
+        _window(monkeypatch, 5120)
+        calls = self._template_down(monkeypatch, 5120)
+
+        tools._dense_char_limit("0123456789abcdef" * 2000, tools._tool_result_char_budget())
+
+        assert sum(1 for _, strict in calls if strict) == 1
+        assert len(calls) > 2, "and the result really did take several passes"
+
+    def test_a_healthy_template_pays_nothing_for_the_strict_check(self, monkeypatch):
+        """Strict costs the same two llama-server calls as non-strict when the template
+        renders, so verification is free in the case that matters."""
+        _window(monkeypatch, 5120)
+        calls, _ = self._serving(monkeypatch, 5120, rate = 4.2)
+        text = ("The build finished and the archive was uploaded to the release bucket. ") * 400
+        budget = tools._tool_result_char_budget()
+
+        assert tools._dense_char_limit(text, budget) == budget
+        assert len(calls) == 1
+
+    def test_a_full_cache_evicts_rather_than_refusing_every_later_result(self, monkeypatch):
+        """Refusing new entries once full was worse than not caching at all: most tool
+        results are one-offs, so the first 64 distinct prefixes froze the cache on text
+        nothing would ask about again."""
+        _window(monkeypatch, 5120)
+        calls, _ = self._serving(monkeypatch, 5120)
+        budget = tools._tool_result_char_budget()
+        for index in range(tools._PROBE_COUNT_CACHE_ENTRIES + 10):
+            tools._dense_char_limit(f"{index:04d}" + "0123456789abcdef" * 2000, budget)
+
+        repeated = "ZZZZ" + "0123456789abcdef" * 2000
+        tools._dense_char_limit(repeated, budget)
+        calls.clear()
+        tools._dense_char_limit(repeated, budget)
+
+        assert calls == [], "a recently measured result is still answered from the cache"
+
+    def test_the_baseline_survives_a_cache_full_of_one_off_results(self, monkeypatch):
+        """The sharp edge. The baseline is only priced when a count comes in OVER budget,
+        so a process that handled 64 results that FIT first could never get it in at all,
+        and every later dense result paid for it again -- the merge base's cost, for the
+        life of the process. Measured before the fix: 4 counter calls (8 HTTP) every time.
+        """
+        _window(monkeypatch, 5120)
+        budget = tools._tool_result_char_budget()
+
+        # 64 English results, each of which fits on its first count, so `_framing()` never
+        # runs and the baseline is never offered to the cache.
+        self._serving(monkeypatch, 5120, rate = 4.2)
+        for index in range(tools._PROBE_COUNT_CACHE_ENTRIES):
+            tools._dense_char_limit(
+                f"{index:04d}" + ("The build finished and the archive was uploaded. ") * 400,
+                budget,
+            )
+        held = list(tools._PROBE_COUNT_CACHE.values())[0]
+        assert len(held) == tools._PROBE_COUNT_CACHE_ENTRIES, "the cache really is full"
+        assert tools._PROBE_BASELINE not in held, "and the baseline really is not in it"
+
+        # Now dense results arrive. The first pays for the baseline; the rest must not.
+        calls, _ = self._serving(monkeypatch, 5120, rate = 1.33)
+        tools._dense_char_limit("D1" + "0123456789abcdef" * 2000, budget)
+        calls.clear()
+        tools._dense_char_limit("D2" + "0123456789abcdef" * 2000, budget)
+
+        assert 0 not in [chars for chars in calls], "the baseline is held, not re-priced"
+        held = list(tools._PROBE_COUNT_CACHE.values())[0]
+        assert tools._PROBE_BASELINE in held, "and pinned against eviction"
+
+    def test_concurrent_chats_do_not_corrupt_or_crash_on_the_shared_cache(self, monkeypatch):
+        """Tool calls run in worker threads (`tool_stream_exec.stream_tool_execution` runs
+        each invocation in one), so concurrent chats reach this process-global cache at the
+        same time.
+
+        A bare dict assignment is atomic under the GIL, but the LRU touch and the eviction
+        are read-then-mutate sequences and are not. Measured before the lock, with this
+        exact harness at 24 threads: 69 exceptions out of 12,000 truncations -- `KeyError`
+        from popping a key another thread had just evicted, and "dictionary changed size
+        during iteration" from choosing a victim while another thread inserted. None of
+        them were caught on the way out of `_truncate`.
+        """
+        import threading
+
+        _window(monkeypatch, 5120)
+        self._serving(monkeypatch, 5120)
+        # Cache pressure, so eviction fires on nearly every insert, and aggressive
+        # preemption so the read-then-mutate windows are actually interleaved.
+        monkeypatch.setattr(tools, "_PROBE_COUNT_CACHE_ENTRIES", 3)
+        monkeypatch.setattr(tools, "_PROBE_COUNT_CACHE_CHARS", 12_000)
+        previous_interval = sys.getswitchinterval()
+        sys.setswitchinterval(1e-9)
+        budget = tools._tool_result_char_budget()
+        texts = {f"t{i}": f"{i:04d}" + "0123456789abcdef" * (300 + i * 40) for i in range(8)}
+        errors: list[BaseException] = []
+        answers: dict[str, set] = {name: set() for name in texts}
+
+        def worker(seed):
+            rng = random.Random(seed)
+            for _ in range(150):
+                name = rng.choice(list(texts))
+                try:
+                    answers[name].add(tools._dense_char_limit(texts[name], budget))
+                except BaseException as exc:  # noqa: BLE001 -- the whole point is to catch it
+                    errors.append(exc)
+
+        try:
+            threads = [threading.Thread(target = worker, args = (seed,)) for seed in range(12)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        finally:
+            sys.setswitchinterval(previous_interval)
+
+        assert errors == [], f"the shared cache raised under concurrency: {errors[:3]}"
+        # And every thread agreed on every answer, which is the point of the whole change.
+        for name, seen in answers.items():
+            assert len(seen) == 1, f"{name} got different answers in different threads: {seen}"
+        # The bounds still hold when several threads insert at once.
+        for entry in tools._PROBE_COUNT_CACHE.values():
+            assert len(entry) <= 3
+            assert sum(map(len, entry)) <= 12_000

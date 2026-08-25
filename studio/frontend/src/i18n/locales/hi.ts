@@ -417,6 +417,15 @@ export const hi = {
           "लोड किए गए ऑडियो मॉडल का उपयोग करता है (जैसे Orpheus)",
         engineSystem: "सिस्टम की आवाज़ें",
         engineStudio: "TTS मॉडल लोड करें",
+        engineCustom: "कस्टम एंडपॉइंट",
+        engineCustomDescription:
+          "आपके कनेक्शनों में से एक OpenAI-संगत TTS सर्वर (जैसे Kokoro)",
+        connectionLabel: "कनेक्शन",
+        connectionDescription: "कनेक्शन टैब में OpenAI-संगत सर्वर जोड़ें",
+        connectionPlaceholder: "कनेक्शन चुनें",
+        customModelLabel: "मॉडल",
+        customVoiceDescription:
+          "एंडपॉइंट द्वारा अपेक्षित वॉइस नाम; डिफ़ॉल्ट alloy है",
         modelLabel: "TTS मॉडल",
         modelDescription:
           "मॉडल सिलेक्टर से एक ऑडियो मॉडल लोड करें (जैसे Orpheus TTS)",
@@ -566,6 +575,29 @@ export const hi = {
         closeToTraySaveError: "सिस्टम ट्रे में बंद करने की सेटिंग अपडेट नहीं हो सकी।",
         loadError: "लॉगिन पर चलाने की सेटिंग लोड नहीं हो सकी।",
         saveError: "लॉगिन पर चलाने की सेटिंग अपडेट नहीं हो सकी।",
+      },
+      downloads: {
+        sectionTitle: "डाउनलोड",
+        transport: "डाउनलोड ट्रांसपोर्ट",
+        transportDescription:
+          "Hugging Face से मॉडल और डेटासेट फ़ाइलें कैसे आती हैं। HTTPS वहीं से जारी रहता है जहाँ रुका था; Xet पहली बार डाउनलोड में अक्सर तेज़ होता है, लेकिन रद्द करने पर फ़ाइल फिर से शुरू करता है।",
+        transportHint:
+          "HTTPS सामान्य TLS है: हर नेटवर्क, प्रॉक्सी और VPN इसे चलने देता है, रद्द या टूटा ट्रांसफ़र डिस्क पर मौजूद बाइट्स से जारी रहता है, और मेमोरी उपयोग स्थिर रहता है। Xet डीडुप्लिकेट किए गए चंक लाता है, इसलिए जिस रिपॉज़िटरी का डेटा आपके पास पहले से है वह बहुत तेज़ आ सकती है, पर इसके लिए hf_xet चाहिए, RAM ज़्यादा लगती है, और रद्द करने पर चल रही फ़ाइल छूट जाती है। Auto इस मशीन के हिसाब से तय करता है: यह RAM और यहाँ Xet के अटकने को देखता है, और ज़रूरत पर HTTPS पर लौट आता है।",
+        https: "HTTPS",
+        xet: "Xet",
+        auto: "Auto",
+        httpsHint:
+          "मानक TLS। रद्द करने के बाद जारी रहता है, हर नेटवर्क पर चलता है, मेमोरी उपयोग स्थिर।",
+        transportDescriptionNoResume:
+          "मॉडल और डेटासेट फ़ाइलें Hugging Face से कैसे आती हैं। इस इंस्टॉलेशन में कोई भी ट्रांसपोर्ट डाउनलोड फिर से शुरू नहीं कर सकता, इसलिए रद्द किया गया डाउनलोड शुरू से चलता है; पहली बार डाउनलोड करने में Xet अक्सर तेज़ होता है।",
+        httpsHintNoResume:
+          "मानक TLS। किसी भी नेटवर्क पर काम करता है, मेमोरी का उपयोग स्थिर रहता है। यह इंस्टॉलेशन रद्द किए गए डाउनलोड को फिर से शुरू नहीं कर सकता।",
+        xetHint:
+          "डीडुप्लिकेट चंक ट्रांसफ़र। नए डाउनलोड में अक्सर तेज़, रद्द करने पर फ़ाइल फिर से शुरू, ज़्यादा मेमोरी चाहिए।",
+        autoHint:
+          "मशीन के अनुसार चुनता है और यहाँ Xet अटकने या विफल होने पर HTTPS पर चला जाता है।",
+        autoCurrently: "इस मशीन पर Auto {transport} उपयोग कर रहा है।",
+        xetMissing: "hf_xet इंस्टॉल नहीं है, इसलिए Xet उपलब्ध नहीं है।",
       },
       uploads: {
         sectionTitle: "अपलोड",
@@ -854,6 +886,8 @@ export const hi = {
         title: "GPU डिवाइस",
         ggufInference: "GGUF इन्फ़रेंस",
         unavailable: "उपलब्ध नहीं",
+        detecting: "GPU खोजे जा रहे हैं...",
+        unreadable: "इस सर्वर का हार्डवेयर नहीं पढ़ा जा सका।",
         noGpu: "कोई दृश्यमान GPU नहीं मिला। केवल-CPU संसाधन ऊपर दिखाए गए हैं।",
         unknownDevice: "अज्ञात GPU",
         deviceWithIndex: "GPU {index}",
@@ -1097,7 +1131,7 @@ export const hi = {
         exportChat: "चैट एक्सपोर्ट करें",
       },
       pastedTextThreshold: "लंबे पेस्ट को संक्षिप्त करें",
-      pastedTextThresholdDescription: "इससे लंबा चिपकाया गया टेक्स्ट संदेश बॉक्स भरने के बजाय .txt अटैचमेंट बन जाता है।",
+      pastedTextThresholdDescription: "इससे लंबा चिपकाया गया टेक्स्ट संदेश बॉक्स भरने के बजाय .txt अटैचमेंट बन जाता है। {shortcut} दबाने पर यह फिर भी संदेश बॉक्स में चिपकेगा।",
       pastedTextThresholdOff: "बंद",
       showResponseModel: "जवाब देने वाला मॉडल दिखाएँ",
       showResponseModelDescription:
@@ -1562,8 +1596,8 @@ export const hi = {
         "इस डिवाइस पर मौजूद मॉडल को ट्रेन नहीं किया जा सकता।",
       reasonUnsupportedFormat:
         "यह मॉडल फ़ॉर्मेट ट्रेनिंग के लिए समर्थित नहीं है।",
-      vramNeeds: "लगभग {est}GB VRAM चाहिए (GPU: {total}GB)",
-      vramTight: "लगभग {est}GB VRAM ({total}GB पर बमुश्किल फिट)",
+      vramNeeds: "लगभग {est}GB VRAM चाहिए (GPU: {total}GiB)",
+      vramTight: "लगभग {est}GB VRAM ({total}GiB पर बमुश्किल फिट)",
       vramApprox: "लगभग {est}GB VRAM",
       sourceModelsFolder: "मॉडल फ़ोल्डर",
       sourceHfCache: "HF कैश",
