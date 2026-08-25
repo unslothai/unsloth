@@ -427,10 +427,14 @@ def test_adapter_base_is_found_in_the_cache_root_holding_the_adapter(tmp_path):
     root = tmp_path / "legacy_hub"
     base_snapshot = root / "models--Org--WhisperBase" / "snapshots" / ("b" * 40)
     base_snapshot.mkdir(parents = True)
-    (base_snapshot / "config.json").write_text(json.dumps({
-        "model_type": "whisper",
-        "architectures": ["WhisperForConditionalGeneration"],
-    }))
+    (base_snapshot / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "whisper",
+                "architectures": ["WhisperForConditionalGeneration"],
+            }
+        )
+    )
     (root / "models--Org--WhisperBase" / "refs").mkdir(parents = True)
     (root / "models--Org--WhisperBase" / "refs" / "main").write_text("b" * 40)
 

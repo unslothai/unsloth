@@ -2348,8 +2348,11 @@ def test_catalog_hands_a_cached_gguf_pick_a_local_file(monkeypatch, tmp_path):
     (repo / "refs").mkdir()
     (repo / "refs" / "main").write_text("a" * 40)
 
-    monkeypatch.setattr(cat, "_preferred_complete_gguf",
-                        lambda p: str(snapshot / "gated-Q4_K_M.gguf") if str(snapshot) in str(p) else None)
+    monkeypatch.setattr(
+        cat,
+        "_preferred_complete_gguf",
+        lambda p: str(snapshot / "gated-Q4_K_M.gguf") if str(snapshot) in str(p) else None,
+    )
     resolved = cat._cached_gguf_load_id(
         {"repo_id": "Org/Gated-GGUF", "load_id": "Org/Gated-GGUF", "cache_path": str(repo)}
     )
