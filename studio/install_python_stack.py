@@ -781,6 +781,12 @@ def _detect_rocm_version_uncached() -> tuple[int, int] | None:
     #
     # dpkg-query can still report removed-but-not-purged packages, so only
     # accept package readings whose status is actually "installed".
+    #
+    # rocm-core wins outright when installed; libhsa-runtime64-1 is a fallback for
+    # distros that ship no rocm-core. See _rocm_tag_from_dpkg in install.sh for why
+    # they are not peers: the HSA package comes from the distro archive and tracks
+    # it rather than the installed ROCm, so on Ubuntu it sits at 5.7.1 beside AMD's
+    # rocm-core 7.2.1 and would report a disagreement on a perfectly healthy host.
     dpkg = shutil.which("dpkg-query")
     if dpkg:
         try:
@@ -799,23 +805,27 @@ def _detect_rocm_version_uncached() -> tuple[int, int] | None:
             )
             # dpkg-query returns nonzero when either requested package is absent,
             # while still printing the other package's installed line. Parse stdout
-            # independently of the process status so the HSA runtime still votes.
+            # independently of the process status so the fallback still votes.
+            _dpkg_readings: "dict[str, list[tuple[int, int]]]" = {"rocm-core": [], "hsa": []}
             for line in result.stdout.splitlines():
                 fields = line.split()
                 if len(fields) < 5 or fields[3] != "installed":
                     continue
                 package, raw = fields[0], fields[4]
-                source = {
-                    "rocm-core": "dpkg rocm-core",
-                    "libhsa-runtime64-1": "dpkg HSA runtime",
-                }.get(package)
-                if source is None:
+                if package not in ("rocm-core", "libhsa-runtime64-1"):
                     continue
                 # dpkg can prepend an epoch ("1:6.3.0-1"); strip it before parsing.
                 raw = re.sub(r"^\d+:", "", raw)
                 m = re.match(r"(\d+)[.-](\d+)", raw)
                 if m:
-                    _record(source, int(m.group(1)), int(m.group(2)))
+                    _key = "rocm-core" if package == "rocm-core" else "hsa"
+                    _dpkg_readings[_key].append((int(m.group(1)), int(m.group(2))))
+            if _dpkg_readings["rocm-core"]:
+                for _major, _minor in _dpkg_readings["rocm-core"]:
+                    _record("dpkg rocm-core", _major, _minor)
+            else:
+                for _major, _minor in _dpkg_readings["hsa"]:
+                    _record("dpkg HSA runtime", _major, _minor)
         except Exception:
             pass
 

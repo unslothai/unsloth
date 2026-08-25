@@ -364,15 +364,34 @@ assert_contains "the winning reading is named" "using the highest, rocm6.1" "$_w
 assert_eq "Radeon URL uses resolved Debian rocm6.1, not hipconfig 5.7" \
     "https://repo.radeon.com/rocm/manylinux/rocm-rel-6.1/" "$(run_radeon_url rocm6.1)"
 
-# Both Debian packages can be installed from AMD's apt repository. Emit HSA first
-# even though install.sh requests rocm-core first: each installed line votes and
-# the higher version must win independently of package/output order.
+# rocm-core and libhsa-runtime64-1 are NOT peers, so rocm-core wins even when the HSA
+# reading is higher. rocm-core comes from AMD's repo and marks the ROCm release; the HSA
+# package comes from the distro archive and tracks the archive. HSA is emitted first,
+# ahead of the order install.sh requests them in, so passing by position is not possible.
 reset_sources
 add_dpkg_packages \
     "libhsa-runtime64-1|installed|6.4.3+dfsg-4" \
     "rocm-core|installed|1:6.1.2-2"
-assert_eq "both Debian package readings choose highest regardless of output order -> rocm6.4" \
-    "$_BASE/rocm6.4" "$(run_index)"
+assert_eq "installed rocm-core outranks a HIGHER distro HSA reading -> rocm6.1" \
+    "$_BASE/rocm6.1" "$(run_index)"
+assert_eq "and the outranked HSA reading is not named as a disagreement" "" "$(run_warnings)"
+
+# The real Ubuntu 24.04 + AMD ROCm 7.2 repo shape: AMD's rocm-core beside Ubuntu's own
+# permanently-stale libhsa-runtime64-1. Verified on that host; peer voting made every
+# healthy install print a disagreement warning naming a 5.7 reading that means nothing.
+reset_sources
+add_dpkg_packages \
+    "libhsa-runtime64-1|installed|5.7.1-2build1" \
+    "rocm-core|installed|7.2.1.70201-81~24.04"
+assert_eq "Ubuntu + AMD repo resolves rocm7.2" "$_BASE/rocm7.2" "$(run_index)"
+assert_eq "Ubuntu + AMD repo warns about nothing" "" "$(run_warnings)"
+
+# The fallback still has to fire where it was added: Debian ships no rocm-core at all.
+reset_sources
+add_hipconfig "5.7.31921-0"
+add_dpkg_hsa_runtime "1:6.1.2-1"
+assert_eq "no rocm-core, so the installed HSA runtime still votes -> rocm6.1" \
+    "$_BASE/rocm6.1" "$(run_index)"
 
 # 2. Same shape from /opt/rocm/.info/version. This one already worked by position,
 #    so it is here to pin that the rewrite did not lose it.

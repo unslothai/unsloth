@@ -138,7 +138,14 @@ _emit() {
         -e "s|\${db:Status-Eflag}|ok|g" \
         -e "s|\${Version}|$_ver|g" \
         -e "s|\${[^}]*}||g")
+    # Terminate the record explicitly. $(...) strips trailing newlines, so a caller
+    # whose showformat ends in a REAL newline (Python's "\n") otherwise gets every
+    # package concatenated onto one line, and a multi-package assertion silently
+    # tests only the first record. install.sh passes a literal backslash-n, which
+    # printf re-expands, so that caller just sees one blank line between records and
+    # both parsers skip those.
     printf "$_out"
+    printf '\n'
 }
 _missing=0
 for _wanted in $_requested; do
@@ -541,14 +548,20 @@ class TestDetectRocmVersion:
                 result = _detect_rocm_version()
                 assert result is None
 
+    # shutil.which is patched to None in the version-file tests below on purpose. The
+    # detector no longer stops at the first answer, so every other source still runs and
+    # an unpatched test reads the DEVELOPER'S machine: a box with ROCm installed fails
+    # these on its real hipconfig or its real dpkg packages, and CI never sees it because
+    # CI has no ROCm at all. Matches test_empty_version_file, which already did this.
     def test_version_from_file(self, tmp_path):
         """Reads version from /opt/rocm/.info/version."""
         info_dir = tmp_path / ".info"
         info_dir.mkdir()
         (info_dir / "version").write_text("7.1.0-12345\n")
         with patch.dict(os.environ, {"ROCM_PATH": str(tmp_path)}):
-            result = _detect_rocm_version()
-            assert result == (7, 1)
+            with patch("shutil.which", return_value = None):
+                result = _detect_rocm_version()
+                assert result == (7, 1)
 
     def test_version_62(self, tmp_path):
         """Reads ROCm 6.2 version."""
@@ -556,8 +569,9 @@ class TestDetectRocmVersion:
         info_dir.mkdir()
         (info_dir / "version").write_text("6.2.0\n")
         with patch.dict(os.environ, {"ROCM_PATH": str(tmp_path)}):
-            result = _detect_rocm_version()
-            assert result == (6, 2)
+            with patch("shutil.which", return_value = None):
+                result = _detect_rocm_version()
+                assert result == (6, 2)
 
     def test_hipconfig_fallback(self, tmp_path):
         """Falls back to hipconfig --version when file not found."""
@@ -599,8 +613,9 @@ class TestDetectRocmVersion:
         info_dir.mkdir()
         (info_dir / "version").write_text("6.2.0\n")
         with patch.dict(os.environ, {"ROCM_PATH": str(tmp_path)}):
-            result = _detect_rocm_version()
-            assert result == (6, 2)
+            with patch("shutil.which", return_value = None):
+                result = _detect_rocm_version()
+                assert result == (6, 2)
 
     def test_multiple_version_sources_highest_wins(self, tmp_path):
         """When ROCm version sources disagree, the highest valid version wins."""
@@ -671,11 +686,17 @@ class TestDetectRocmVersion:
             with patch("shutil.which", side_effect = which):
                 assert _detect_rocm_version() == (6, 1)
 
-    def test_dpkg_both_packages_vote_independently_highest_wins(self, tmp_path):
-        """Both Debian package readings count, regardless of stdout order."""
+    def test_installed_rocm_core_outranks_the_distro_hsa_package(self, tmp_path):
+        """rocm-core wins over libhsa-runtime64-1 even when the HSA reading is HIGHER.
+
+        They are not peers. rocm-core comes from AMD's repo and marks the ROCm release;
+        libhsa-runtime64-1 comes from the distro archive and tracks the archive. Ubuntu
+        24.04 with AMD's ROCm 7.2 repo really does carry rocm-core 7.2.1 beside Ubuntu's
+        libhsa-runtime64-1 5.7.1-2build1, so peer voting reports a disagreement on a
+        healthy host. HSA is emitted first here, so a parser that just takes the highest
+        reading, or the first line, fails this.
+        """
         dpkg = tmp_path / "dpkg-query"
-        # HSA first deliberately differs from the query argument order; the parser
-        # must collect both lines before taking the highest package version.
         _write_dpkg_query_stub(
             str(dpkg),
             "unused",
@@ -690,7 +711,27 @@ class TestDetectRocmVersion:
 
         with patch.dict(os.environ, {"ROCM_PATH": str(tmp_path / "nonexistent")}):
             with patch("shutil.which", side_effect = which):
-                assert _detect_rocm_version() == (6, 4)
+                assert _detect_rocm_version() == (6, 1)
+
+    def test_distro_hsa_package_does_not_manufacture_a_disagreement(self, capsys, tmp_path):
+        """The real Ubuntu shape must resolve quietly, not warn on every install."""
+        dpkg = tmp_path / "dpkg-query"
+        _write_dpkg_query_stub(
+            str(dpkg),
+            "unused",
+            packages = {
+                "libhsa-runtime64-1": ("installed", "5.7.1-2build1"),
+                "rocm-core": ("installed", "7.2.1.70201-81~24.04"),
+            },
+        )
+
+        def which(cmd):
+            return str(dpkg) if cmd == "dpkg-query" else None
+
+        with patch.dict(os.environ, {"ROCM_PATH": str(tmp_path / "nonexistent")}):
+            with patch("shutil.which", side_effect = which):
+                assert _detect_rocm_version() == (7, 2)
+        assert "ROCm version sources disagree" not in capsys.readouterr().err
 
     def test_removed_dpkg_hsa_runtime_is_ignored(self, tmp_path):
         """Removed-but-not-purged HSA runtime must not report a stale version."""

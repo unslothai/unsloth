@@ -3539,15 +3539,30 @@ _rocm_tag_from_dpkg() {
     # failing, so a dpkg lacking it goes silent instead of over-reporting.
     # Query both in one invocation. dpkg-query returns nonzero when either requested
     # package is absent, but still writes the installed package's line, so neutralize
-    # that status before pipefail sees it. Emit every installed reading; the resolver
-    # below deliberately selects the highest one.
-    { dpkg-query -W -f='${Status} ${Version}\n' rocm-core libhsa-runtime64-1 2>/dev/null || true; } \
+    # that status before pipefail sees it.
+    # rocm-core WINS OUTRIGHT when installed, and libhsa-runtime64-1 is consulted only
+    # in its absence, because the two are not peers. rocm-core comes from AMD's repo and
+    # marks the ROCm release; libhsa-runtime64-1 comes from the DISTRO archive and tracks
+    # that archive, not the stack you installed. AMD's own HSA package is hsa-rocr, under
+    # a different name and versioned 1.x. So on Ubuntu 24.04 with AMD's ROCm 7.2 repo the
+    # host carries rocm-core 7.2.1 next to Ubuntu's libhsa-runtime64-1 5.7.1-2build1, and
+    # letting both vote makes every healthy host report a disagreement it does not have.
+    # Voting them as peers is the same trap as reading amd-smi's driver version, which
+    # unslothai#8414 already had to remove. Debian ships no rocm-core at all, which is the
+    # host this source exists for, so the fallback still fires exactly where it is needed.
+    { dpkg-query -W -f='${Package} ${Status} ${Version}\n' rocm-core libhsa-runtime64-1 2>/dev/null || true; } \
         | awk '
-            $3 == "installed" && $4 != "" {
-                v = $4
+            $4 == "installed" && $5 != "" {
+                v = $5
                 sub(/^[0-9]+:/, "", v)
                 split(v, a, /[.-]/)
-                if (a[1] ~ /^[0-9]+$/ && a[2] ~ /^[0-9]+$/) print "rocm" a[1] "." a[2]
+                if (a[1] !~ /^[0-9]+$/ || a[2] !~ /^[0-9]+$/) next
+                if ($1 == "rocm-core") _core[_nc++] = "rocm" a[1] "." a[2]
+                else                   _hsa[_nh++]  = "rocm" a[1] "." a[2]
+            }
+            END {
+                if (_nc) { for (_i = 0; _i < _nc; _i++) print _core[_i] }
+                else     { for (_i = 0; _i < _nh; _i++) print _hsa[_i] }
             }
         ' || return 0
 }
@@ -3724,7 +3739,7 @@ get_torch_index_url() {
             case "$_rocm_tag" in
                 rocm[1-5].*)
                     echo "[WARN] ROCm $_rocm_tag detected but PyTorch ROCm wheels require ROCm 6.0+ -- falling back to CPU-only PyTorch" >&2
-                    echo "[WARN] $_rocm_tag is the HIGHEST version detected from usable ROCm sources; Debian uses its installed libhsa-runtime64-1 package rather than rocm-core." >&2
+                    echo "[WARN] $_rocm_tag is the HIGHEST version detected from usable ROCm sources; where dpkg has no rocm-core (Debian) the installed libhsa-runtime64-1 is read instead." >&2
                     echo "[WARN] Upgrade ROCm: https://rocm.docs.amd.com/en/latest/deploy/linux/index.html" >&2
                     echo "[WARN] If this host really runs ROCm 6.0+ and only its packaging says otherwise, pin the wheels and re-run:" >&2
                     echo "[WARN]   UNSLOTH_TORCH_INDEX_FAMILY=rocm6.4   (a PyTorch wheel leaf: rocm6.0-6.4, rocm7.0-7.2)" >&2
