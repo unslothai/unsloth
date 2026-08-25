@@ -1702,6 +1702,138 @@ class Payload:
         detail["failures"] = failures
         return self.record("lora_vs_base", not failures, detail)
 
+    def assert_image_generation(self) -> bool:
+        """The image tab, end to end: load, generate, and download the PNG.
+
+        Last priority and the smallest possible run -- 256x256 (the schema's
+        floor) at 2 steps -- because the claim is that the path executes, not
+        that the picture is good.
+
+        "Nothing errored" is not the check. A diffusion pipeline that fails
+        mid-way still writes a gallery record and still returns 200, and a
+        pipeline whose weights never loaded produces a FLAT image, which is a
+        valid PNG. So the evidence is the file:
+
+        * the bytes start with the PNG magic, so what the download endpoint
+          serves is really a PNG rather than a JSON error with a 200 on it;
+        * the IHDR chunk says 256x256, read out of the header rather than
+          taken from the gallery record -- the record repeats what was asked
+          for, and the file says what was made;
+        * the image is not one flat colour. A pipeline that produced nothing
+          returns a uniform frame, which compresses to almost nothing, so this
+          is checked on the decoded extrema where PIL is available and on a
+          compressed-size floor where it is not. Both are recorded, so a
+          reader can see which one ruled.
+        """
+        import urllib.error
+        import urllib.request
+
+        failures: list[str] = []
+        detail: dict = {"model": self.args.image_model}
+        want = 256
+
+        try:
+            code, body = self.studio.post(
+                "/api/inference/images/load",
+                {"model_path": self.args.image_model},
+                timeout = self.args.export_timeout,
+            )
+            detail["load_status"] = code
+            if code >= 400:
+                failures.append(f"images/load returned HTTP {code}: {str(body)[:300]}")
+                detail["failures"] = failures
+                return self.record("image_generation", False, detail)
+
+            code, body = self.studio.post(
+                "/api/inference/images/generate",
+                {
+                    "prompt": "a red square on a blue background",
+                    "width": want,
+                    "height": want,
+                    "steps": 2,
+                    "guidance": 0.0,
+                    "seed": 3407,
+                },
+                timeout = self.args.export_timeout,
+            )
+            detail["generate_status"] = code
+            images = (body or {}).get("images") if isinstance(body, dict) else None
+            detail["generated_count"] = len(images or [])
+            if code >= 400 or not images:
+                failures.append(
+                    f"images/generate returned HTTP {code} with {len(images or [])} "
+                    f"images: {str(body)[:300]}"
+                )
+                detail["failures"] = failures
+                return self.record("image_generation", False, detail)
+
+            record = images[0]
+            detail["record"] = {k: record.get(k) for k in ("id", "width", "height", "steps")}
+            image_id = record.get("id")
+
+            # The PNG itself, fetched raw. The JSON client decodes to utf-8,
+            # which would corrupt the bytes the whole check is about.
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{self.args.port}/api/inference/images/"
+                f"gallery/{image_id}/file"
+            )
+            if self.studio.token:
+                request.add_header("Authorization", f"Bearer {self.studio.token}")
+            with urllib.request.urlopen(request, timeout = 120) as response:
+                png = response.read()
+                detail["content_type"] = response.headers.get("Content-Type")
+            detail["png_bytes"] = len(png)
+
+            if not png.startswith(b"\x89PNG\r\n\x1a\n"):
+                failures.append(
+                    f"the download did not start with the PNG magic, so what it "
+                    f"served is not a PNG: {png[:16]!r}"
+                )
+            else:
+                # IHDR is fixed-offset: 8 magic, 4 length, 4 type, then width
+                # and height as big-endian uint32.
+                width = int.from_bytes(png[16:20], "big")
+                height = int.from_bytes(png[20:24], "big")
+                detail["png_size"] = [width, height]
+                if (width, height) != (want, want):
+                    failures.append(
+                        f"the PNG header says {width}x{height}, not {want}x{want} -- "
+                        f"the file is not what was asked for, whatever the record says"
+                    )
+
+                flat = None
+                try:
+                    from PIL import Image  # noqa: PLC0415
+
+                    with Image.open(io.BytesIO(png)) as opened:
+                        bands = opened.convert("RGB").getextrema()
+                    detail["extrema"] = bands
+                    flat = all(low == high for low, high in bands)
+                    detail["flatness_source"] = "pixels"
+                except Exception as exc:  # noqa: BLE001
+                    detail["pil_error"] = f"{type(exc).__name__}: {exc}"[:200]
+                    # A uniform 256x256 frame compresses to well under 2 KB.
+                    flat = len(png) < 2000
+                    detail["flatness_source"] = "compressed size"
+                if flat:
+                    failures.append(
+                        f"the image is one flat colour ({detail['flatness_source']}), "
+                        f"which is what a pipeline whose weights never loaded "
+                        f"produces -- and it is a perfectly valid PNG"
+                    )
+        except BaseException as exc:  # noqa: BLE001
+            failures.append(f"the image path raised: {type(exc).__name__}: {exc}"[:300])
+        finally:
+            # Always, or a diffusion pipeline holds the card for whatever runs
+            # next and that failure lands on the wrong assertion.
+            try:
+                self.studio.post("/api/inference/images/unload", {}, timeout = 120)
+            except BaseException:  # noqa: BLE001
+                pass
+
+        detail["failures"] = failures
+        return self.record("image_generation", not failures, detail)
+
     def assert_cloudflare(self) -> bool:
         """`unsloth run --cloudflare`: a public URL that serves, and refuses.
 
@@ -2313,6 +2445,12 @@ class Payload:
         # internet. Its own launch rather than a flag on the one above,
         # because the tunnel needs a WILDCARD bind and assert_cli_run's claim
         # is about a loopback server.
+        # Before the tunnel, and after everything that needs the card for
+        # language work: a diffusion pipeline is the largest single thing this
+        # payload puts on a T4, and it is unloaded in a finally either way.
+        if self.args.image_generation:
+            self.assert_image_generation()
+
         if self.args.cloudflare_check:
             self.assert_cloudflare()
         else:
@@ -2361,6 +2499,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type = int,
         default = 2048,
         help = "context length to pin the llama.cpp server to",
+    )
+    ap.add_argument(
+        "--image-model",
+        dest = "image_model",
+        default = "unsloth/sdxl-turbo",
+        help = "diffusion repo for the image-generation assertion",
+    )
+    ap.add_argument(
+        # OFF by default: it is the last-priority item and it pulls a diffusion
+        # checkpoint the rest of the payload has no use for. A dispatch that
+        # wants it says so.
+        "--image-generation",
+        dest = "image_generation",
+        action = "store_true",
+        default = False,
+        help = "load a diffusion model and generate one 256x256 image at 2 steps",
     )
     ap.add_argument(
         # On by default because the directive asks for it, and off-able because
