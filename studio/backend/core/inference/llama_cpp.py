@@ -4036,6 +4036,64 @@ def _extra_args_draft_cache_types(
     return k_type, v_type
 
 
+_DRAFT_GPU_LAYER_FLAGS = frozenset(
+    {"--spec-draft-ngl", "-ngld", "--gpu-layers-draft", "--n-gpu-layers-draft"}
+)
+
+
+def _extra_args_draft_gpu_layers(
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> Optional[str]:
+    """The effective draft layer count for the SEPARATE drafter, as written.
+
+    Last-wins over argv, falling back to the ``LLAMA_ARG_N_GPU_LAYERS_DRAFT`` twin
+    the child reads before argv. None when neither is set."""
+    args = [str(a) for a in extra_args] if extra_args else []
+    last_ngl: Optional[str] = None
+    for i, raw in enumerate(args):
+        flag = _flag_name(raw)
+        _, eq, inline = raw.partition("=")
+        value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
+        if flag in _DRAFT_GPU_LAYER_FLAGS:
+            last_ngl = value
+    if last_ngl is None:
+        last_ngl = (os.environ if env is None else env).get("LLAMA_ARG_N_GPU_LAYERS_DRAFT")
+    return last_ngl
+
+
+def _draft_is_split_across_host(
+    extra_args: Optional[Iterable[str]],
+    env: Optional[Mapping[str, str]] = None,
+    *,
+    n_draft_layers: Optional[int] = None,
+) -> bool:
+    """True when a fixed POSITIVE draft layer count splits the drafter between the
+    GPU and host RAM.
+
+    ``_extra_args_draft_offloaded_to_cpu`` is the whole-drafter question and only
+    answers ``-ngld 0``. Anything between that and the drafter's own block count
+    leaves the layers past the count on the host -- llama.cpp derives
+    ``i_gpu_start`` from the count and hands every layer below it the CPU buffer
+    list (llama-model.cpp), and each layer's KV follows its device
+    (llama-kv-cache.cpp). llama.cpp's default is -1, "all", so only a non-negative
+    count is a placement at all, and a count at or above ``n_draft_layers`` places
+    the drafter whole. An unreadable block count (None) says nothing either way, so
+    a positive count stands as a split rather than being waved through.
+    """
+    raw = _extra_args_draft_gpu_layers(extra_args, env)
+    if raw is None:
+        return False
+    try:
+        count = int(str(raw).strip())
+    except (TypeError, ValueError):
+        # llama.cpp's std::stoi would throw and the child would never start, so
+        # there is no placement to misprice.
+        return False
+    if count <= 0:
+        return False
+    return not (n_draft_layers and count >= n_draft_layers)
+
+
 def _extra_args_draft_offloaded_to_cpu(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> bool:
@@ -4043,18 +4101,11 @@ def _extra_args_draft_offloaded_to_cpu(
     its weights+KV): --spec-draft-ngl 0, or --spec-draft-device naming only
     cpu/none, else the LLAMA_ARG_N_GPU_LAYERS_DRAFT env the child honors (the
     device flag has no env). An embedded MTP head follows the main -ngl, so these
-    draft-only flags don't move it. Last-wins, so only each flag's final value counts."""
-    ngl_flags = {"--spec-draft-ngl", "-ngld", "--gpu-layers-draft", "--n-gpu-layers-draft"}
-    args = [str(a) for a in extra_args] if extra_args else []
-    last_ngl: Optional[str] = None
-    for i, raw in enumerate(args):
-        flag = _flag_name(raw)
-        _, eq, inline = raw.partition("=")
-        value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
-        if flag in ngl_flags:
-            last_ngl = value
-    if last_ngl is None:
-        last_ngl = (os.environ if env is None else env).get("LLAMA_ARG_N_GPU_LAYERS_DRAFT")
+    draft-only flags don't move it. Last-wins, so only each flag's final value counts.
+
+    A count BETWEEN 0 and the drafter's block count is a split, not an offload; see
+    ``_draft_is_split_across_host``."""
+    last_ngl = _extra_args_draft_gpu_layers(extra_args, env)
     if last_ngl is not None:
         try:
             if int(last_ngl) == 0:
@@ -8791,7 +8842,10 @@ class LlamaCppBackend:
         ``host_only_bytes`` is the slice of that footprint no amount of free VRAM can
         hold (a drafter pinned to the CPU with ``-ngld 0``): counted in the total, but
         charged to host RAM alone, because free VRAM cannot pay for an allocation the
-        child only ever makes on the host.
+        child only ever makes on the host. ``kv_cache_bytes`` joins it under an
+        effective ``--no-kv-offload``, which puts the WHOLE cache on the host
+        whatever the layer placement says (llama-kv-cache.cpp defaults each layer's
+        buffer type to the CPU one and upgrades it only inside ``if (offload)``).
 
         Apple Silicon abstains outright. Metal is the one backend where
         ``buffer_from_host_ptr`` IS supported, so mmap wraps the weights in a Metal
@@ -8852,9 +8906,17 @@ class LlamaCppBackend:
         _dev_value = _extra_args_main_device(extra_args)
         if _dev_value is None:
             _dev_value = source_env.get("LLAMA_ARG_DEVICE")
-        _dev_names = [d for d in str(_dev_value or "").split(",") if d.strip()]
+        _dev_names = [d.strip() for d in str(_dev_value or "").split(",") if d.strip()]
         _credited = len(list(gpu_indices)) if gpu_indices is not None else len(rows)
-        _device_narrows = bool(_dev_names) and len(_dev_names) < _credited
+        # DISTINCT names, not raw entries. Comparing names to each other needs no
+        # ordinal map, so this is the one narrowing a count CAN see: llama.cpp
+        # appends every comma-separated entry without deduplicating
+        # (parse_device_list, common/arg.cpp) and llama_prepare_model_devices keeps
+        # the list verbatim (src/llama.cpp), so "CUDA0,CUDA0" is ONE physical pool
+        # listed twice -- both entries resolve through ggml_backend_dev_by_name to
+        # the same device and allocate out of the same VRAM. Counting it as two
+        # would leave the pooled credit paying for a card that is not there.
+        _device_narrows = bool(_dev_names) and len(set(_dev_names)) < _credited
         # Vulkan is the one backend where the names ARE comparable: the pin this
         # launch emits is built straight from the credited ordinals
         # (_vulkan_device_pin -> "Vulkan<i>"), so a surviving --device can be held
@@ -8926,7 +8988,23 @@ class LlamaCppBackend:
         shared = set(shared_gpu_ids or ())
         pinned = list(gpu_indices) if gpu_indices is not None else [idx for idx, _free in rows]
         if rows and not is_vulkan_backend and self._amd_apu_wants_unified_memory(pinned):
-            shared |= {idx for idx, _free in rows}
+            # Per device, not blanket. The gate above is the cheap "is any of them
+            # unified" question; on a MIXED host it is also true of a discrete card
+            # sitting next to an APU, and that card's VRAM is its own pool. Dropping
+            # it would forfeit a fit that is really there, so re-ask per row -- the
+            # same scoping _amd_apu_wants_unified_memory documents (PHYSICAL ids, so
+            # a dGPU on a mixed host is not treated as unified-memory).
+            shared |= {
+                idx for idx, _free in rows if self._amd_apu_wants_unified_memory([idx])
+            }
+        # --no-kv-offload puts the WHOLE cache in host RAM, whatever the layer
+        # placement says: llama-kv-cache.cpp defaults every layer's buffer type to
+        # ggml_backend_cpu_buffer_type() and only upgrades it to the layer's device
+        # inside `if (offload)`. So on that arm the KV is not a byte free VRAM may
+        # pay for, and pooling it would let a long-context load on a card with room
+        # to spare answer yes without ever asking the RAM that has to hold it.
+        # Resolved off the same effective views the placement overrides above use.
+        _kv_on_host = not _kv_offload_from_args(extra_args, env = source_env)
         if self._fits_without_paging(
             footprint,
             rows,
@@ -8937,7 +9015,13 @@ class LlamaCppBackend:
             # line (model_size no longer carries it), and charged to RAM here: a
             # model that leaves surplus VRAM would otherwise let that surplus
             # cover the projector and answer True without consulting RAM at all.
-            host_only_bytes = max(0, host_only_bytes) + max(0, mmproj_pinned_bytes),
+            host_only_bytes = (
+                max(0, host_only_bytes)
+                + max(0, mmproj_pinned_bytes)
+                # Charged to RAM alone, but still counted ONCE in the footprint
+                # above, the same split the pinned projector gets.
+                + (max(0, kv_cache_bytes) if _kv_on_host else 0)
+            ),
             vram_margin_mib = fit_margin_mib,
             avail_mib = avail_mib,
         ):
@@ -17013,6 +17097,22 @@ class LlamaCppBackend:
                             self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB * 1024 * 1024
                         )
 
+                    # ...and the tensor-mode rate, which _plan_tensor_parallel reserves
+                    # on EVERY selected device: the f32 output/logits buffer and the
+                    # comm staging are replicated rather than split, so the layer lump
+                    # above is a fraction of what a tensor split really allocates (at
+                    # one slot the layer figure drops the vocab-width output buffer
+                    # entirely). Same flat fallback when the dims are missing.
+                    _compute_buffer_tensor = self._estimate_compute_buffer_bytes(
+                        n_ubatch = _effective_ubatch,
+                        n_parallel = n_parallel,
+                        per_device_tensor = True,
+                    )
+                    if _compute_buffer_tensor <= 0:
+                        _compute_buffer_tensor = (
+                            self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB * 1024 * 1024
+                        )
+
                     # Layer split adds a fixed per-device overhead on every GPU. The
                     # folded buffer covers one device; reserve the extra devices'
                     # share so a k-GPU split can't pin a context that OOMs a device
@@ -17026,6 +17126,10 @@ class LlamaCppBackend:
                     # Per-GPU weight proportions for tensor mode (None lets
                     # llama.cpp split by free VRAM).
                     tp_tensor_split: Optional[list[int]] = None
+                    # Whether the tensor-parallel branch below really planned this
+                    # load. Not readable from tp_tensor_split, which stays None on a
+                    # tensor split llama.cpp is left to size itself.
+                    _tp_planned = False
                     explicit_ctx = requested_ctx > 0
                     # Nothing speculative on the GPU: the drafter that launches is the
                     # separate CPU-offloaded one, and a sidecar wins over an embedded head
@@ -17788,6 +17892,7 @@ class LlamaCppBackend:
                             vram_fraction = _vram_frac,
                         )
                         use_fit = False
+                        _tp_planned = True
                     elif gpus and self._can_estimate_kv() and effective_ctx > 0:
                         # Compute the largest hardware-aware cap from the model's
                         # native context across all usable GPU subsets (for UI
@@ -18481,6 +18586,27 @@ class LlamaCppBackend:
                     # fitter the EXTRAS turned back on keeps llama.cpp's own 1024 MiB
                     # default rather than this launch's budget; neutralise both terms
                     # on that arm. A pass-through --fit-target then wins over either.
+                    # A drafter the extras SPLIT between the card and the host with a
+                    # fixed positive -ngld. _cpu_draft_path is None there, because that
+                    # predicate is the whole-drafter question, so mtp_bytes below
+                    # carries the drafter WHOLE in the GPU-eligible term while
+                    # llama.cpp pins the layers past the count -- and their KV -- in
+                    # host RAM. Nothing here can say which slice stays on the card, so
+                    # this is the "engaged but unsized" case the fit abstains on rather
+                    # than a term to price. The drafter backend is already cached from
+                    # the KV sizing above, so its block count costs no extra read.
+                    _draft_split_across_host = bool(
+                        _mtp_draft_for_budget
+                        and _draft_is_split_across_host(
+                            _fit_extras,
+                            _fit_env,
+                            n_draft_layers = getattr(
+                                self._draft_backend_for(_mtp_draft_for_budget),
+                                "_n_layers",
+                                None,
+                            ),
+                        )
+                    )
                     _fit_margin_mib = (
                         max(
                             self._fit_target_margin_mib(
@@ -18509,12 +18635,29 @@ class LlamaCppBackend:
                         # cushion this footprint has no term for, so a long context
                         # would go missing from it entirely -- exactly the "engaged
                         # but unsized" case the predicate abstains on.
-                        mtp_unsized = bool(_flat_mtp_engages or _cpu_draft_fit_bytes is None),
+                        mtp_unsized = bool(
+                            _flat_mtp_engages
+                            or _cpu_draft_fit_bytes is None
+                            or _draft_split_across_host
+                        ),
                         # Host-only, not pooled: -ngld 0 puts the drafter in RAM, and
                         # free VRAM cannot pay for an allocation the child makes on
                         # the host.
                         host_only_bytes = _cpu_draft_fit_bytes or 0,
-                        compute_buffer_flat = _compute_buffer_pipeline,
+                        # One lump on the layer path, where llama.cpp allocates the
+                        # graph buffer once. A tensor split replicates it on every
+                        # selected device -- _plan_tensor_parallel reserves exactly
+                        # len(gpu_indices) * the per_device_tensor rate -- so pricing
+                        # one device's LAYER-mode buffer there understates a multi-GPU
+                        # load by GiBs, which is the direction that claims a fit that
+                        # is not there. pipeline_overhead_bytes below does not cover
+                        # it: that is a flat per-device CUDA-context constant, blind to
+                        # the vocabulary, the micro-batch and the slot count.
+                        compute_buffer_flat = (
+                            _fit_devices * _compute_buffer_tensor
+                            if _tp_planned
+                            else _compute_buffer_pipeline
+                        ),
                         compute_buffer_ctx = _cc_bytes(effective_ctx, _fit_devices),
                         # Ungated, like the placement's own _subset_model_size: the
                         # per-device CUDA context and scratch are there whether or

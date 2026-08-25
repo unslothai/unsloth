@@ -336,7 +336,10 @@ def test_a_weights_only_drafter_reserve_counts_as_unsized():
     from core.inference.llama_cpp import LlamaCppBackend as B
 
     compact = "".join(inspect.getsource(B.load_model).split())
-    assert "mtp_unsized=bool(_flat_mtp_engagesor_cpu_draft_fit_bytesisNone)" in compact
+    assert (
+        "mtp_unsized=bool(_flat_mtp_engagesor_cpu_draft_fit_bytesisNone"
+        "or_draft_split_across_host)"
+    ) in compact
     assert "_flat_mtp_engagesandmtp_overhead_fnisNone" not in compact
 
 
@@ -519,6 +522,18 @@ def test_the_effective_fitter_state_reads_the_launchs_own_fit_flag():
         # A comma list is one margin per device; the fit credits every device it
         # counts, so the largest is the only safe price.
         (["--fit-target", "512,4096,1024"], None, 4096.0),
+        # Upstream splits this value on both "," and "/" (the same "[,/]+" regex
+        # --tensor-split uses, common/arg.cpp), so a slash list is a well-formed
+        # per-device margin, not an unreadable token. Reading it as one would
+        # abstain and leave the caller on this launch's own smaller margin,
+        # crediting several GiB per device the fitter keeps free.
+        (["--fit-target", "4096/4096"], None, 4096.0),
+        (["-fitt", "512/4096/1024"], None, 4096.0),
+        (["--fit-target", "512,4096/1024"], None, 4096.0),
+        ([], {"LLAMA_ARG_FIT_TARGET": "1024/8192"}, 8192.0),
+        # Still unreadable when a slash-separated entry is: upstream's stoull
+        # throws on the whole list.
+        (["--fit-target", "512/lots"], None, None),
         # Last-wins over argv, like every other llama.cpp flag.
         (["--fit-target", "4096", "--fit-target", "512"], None, 512.0),
         # Env twin only when argv sets nothing.
@@ -1042,6 +1057,16 @@ def test_an_inherited_device_selection_voids_the_vram_credit(monkeypatch):
         ("nvidia_multi", ["-dev", "CUDA1"], None, None),
         # Both named: nothing is left out.
         ("nvidia_multi", ["--device", "CUDA0,CUDA1"], None, FIT_MODE),
+        # Two entries, ONE card: parse_device_list appends every name without
+        # deduplicating and llama_prepare_model_devices keeps the list verbatim,
+        # so both resolve to the same device and allocate from one VRAM pool.
+        # A raw count would call this a restatement and credit a card that is not
+        # there; distinct names see it without needing an ordinal map.
+        ("nvidia_multi", ["--device", "CUDA0,CUDA0"], None, None),
+        ("nvidia_multi", ["-dev", "CUDA1,CUDA1,CUDA1"], None, None),
+        # ...and on a one-card host the same list still names every credited
+        # device, so it stays a restatement.
+        ("nvidia_discrete", ["--device", "CUDA0,CUDA0"], None, FIT_MODE),
         # Last-wins, like every other llama.cpp flag.
         ("nvidia_multi", ["--device", "CUDA0", "--device", "CUDA0,CUDA1"], None, FIT_MODE),
         ("nvidia_multi", ["--device", "CUDA0,CUDA1", "--device", "CUDA0"], None, None),
@@ -1314,3 +1339,277 @@ def test_a_cpu_pinned_projector_fits_when_ram_really_holds_it(monkeypatch):
         )
         == FIT_MODE
     )
+
+
+# ------------------------------------- mixed ROCm host: APU plus discrete card
+
+
+class _MixedRocmStub(_Stub):
+    """A ROCm host where only SOME of the visible devices are unified-memory APUs.
+
+    The plain _Stub answers the APU question blanket, which is exactly the shape
+    that cannot tell a mixed host from a pure one.
+    """
+
+    def __init__(self, avail_mib, unified):
+        super().__init__(avail_mib)
+        self._unified = set(unified)
+
+    def _amd_apu_wants_unified_memory(self, gpu_indices = None):
+        if gpu_indices is None:
+            return bool(self._unified)
+        return any(idx in self._unified for idx in gpu_indices)
+
+
+def _mixed_rocm(footprint, avail_mib, unified, rows, monkeypatch, **kwargs):
+    monkeypatch.setattr(hardware, "is_apple_silicon", lambda: False)
+    return LlamaCppBackend._fit_derived_load_mode(
+        _MixedRocmStub(avail_mib, unified),
+        model_size = footprint,
+        gpus = rows,
+        shared_gpu_ids = set(),
+        is_vulkan_backend = False,
+        avail_mib = avail_mib,
+        gpu_indices = [idx for idx, _free in rows],
+        **kwargs,
+    )
+
+
+def test_a_discrete_rocm_card_keeps_its_vram_next_to_an_apu(monkeypatch):
+    """An 8 GiB APU beside a 24 GiB discrete Radeon, 20 GiB to place.
+
+    The APU's "VRAM" IS the host RAM the spill would come from, so it is dropped
+    from the credit -- but the discrete card's 24 GiB is its own pool and holds
+    the whole load. Marking every row shared because one of them is an APU would
+    forfeit a fit that is really there: 4 GiB of RAM (2 after headroom) is
+    nowhere near enough.
+    """
+    rows = [(0, 8 * 1024), (1, 24 * 1024)]
+    assert _mixed_rocm(20 * GIB, 4 * 1024, {0}, rows, monkeypatch) == FIT_MODE
+
+
+def test_an_apu_only_rocm_host_still_loses_the_whole_credit(monkeypatch):
+    """The case the union exists for: counting the shared pool as VRAM AND as the
+    RAM the spill comes from would fit the model twice into memory holding it once.
+    """
+    rows = [(0, 24 * 1024)]
+    assert _mixed_rocm(20 * GIB, 4 * 1024, {0}, rows, monkeypatch) is None
+
+
+def test_every_apu_on_a_mixed_host_loses_its_credit(monkeypatch):
+    """Per device, not "the first one": two APUs beside one discrete card leaves
+    only the discrete card's 12 GiB, which cannot hold 20 GiB."""
+    rows = [(0, 24 * 1024), (1, 24 * 1024), (2, 12 * 1024)]
+    assert _mixed_rocm(20 * GIB, 4 * 1024, {0, 1}, rows, monkeypatch) is None
+
+
+# ---------------------------------------- a KV cache the launch pins to the host
+
+
+@pytest.mark.parametrize(
+    "extras,env",
+    [
+        (["--no-kv-offload"], None),
+        (["-nkvo"], None),
+        ([], {"LLAMA_ARG_KV_OFFLOAD": "0"}),
+        # Last-wins, and the positive form is a real flag: -nkvo then -kvo is back on.
+        (["-kvo", "-nkvo"], None),
+        # The env twin parses BEFORE argv, so a false env survives an absent flag.
+        ([], {"LLAMA_ARG_KV_OFFLOAD": "false"}),
+    ],
+)
+def test_a_cpu_only_kv_cache_is_charged_to_host_ram_alone(extras, env, monkeypatch):
+    """8 GiB of weights and a 12 GiB cache on a 24 GiB card with 4 GiB of RAM.
+
+    Pooled, the card's surplus covers the cache and the fit answers yes without
+    ever asking RAM. But --no-kv-offload allocates every layer's K and V on the
+    CPU buffer whatever the layer placement says (llama-kv-cache.cpp upgrades the
+    buffer type only inside `if (offload)`), so those 12 GiB can only come out of
+    the 4 GiB this host has.
+    """
+    assert (
+        _mode(
+            "linux",
+            "nvidia_discrete",
+            8 * GIB,
+            4 * 1024,
+            monkeypatch,
+            kv_cache_bytes = 12 * GIB,
+            extra_args = extras,
+            env = env or {},
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "extras,env",
+    [
+        ([], None),
+        (["--kv-offload"], None),
+        # A CLI re-enable beats a false env: llama.cpp reads the env first.
+        (["-kvo"], {"LLAMA_ARG_KV_OFFLOAD": "0"}),
+        (["-nkvo", "-kvo"], None),
+    ],
+)
+def test_an_offloaded_kv_cache_is_still_pooled(extras, env, monkeypatch):
+    """The same load with the cache where llama.cpp puts it by default. Charging
+    it to host RAM anyway would abstain on a fit that is really there."""
+    assert (
+        _mode(
+            "linux",
+            "nvidia_discrete",
+            8 * GIB,
+            4 * 1024,
+            monkeypatch,
+            kv_cache_bytes = 12 * GIB,
+            extra_args = extras,
+            env = env or {},
+        )
+        == FIT_MODE
+    )
+
+
+def test_a_cpu_only_kv_cache_is_not_charged_twice(monkeypatch):
+    """Host-only, like the pinned projector: counted ONCE in the footprint and
+    charged to RAM, not added on top of it. 8 + 12 GiB into 32 GiB of RAM (30
+    after headroom) fits; double-counting the cache would make it 32 and fail."""
+    assert (
+        _mode(
+            "linux",
+            "cpu_only",
+            8 * GIB,
+            32 * 1024,
+            monkeypatch,
+            kv_cache_bytes = 12 * GIB,
+            extra_args = ["-nkvo"],
+        )
+        == FIT_MODE
+    )
+
+
+# ---------------------------- the tensor-parallel compute buffer, replicated
+
+
+def test_a_tensor_split_charges_the_replicated_compute_buffer():
+    """Checked at the source: reaching this call needs a real multi-GPU probe.
+
+    _plan_tensor_parallel admits devices against, and reserves per device,
+    _estimate_compute_buffer_bytes(per_device_tensor = True). The fit has to charge
+    the same thing: the layer-mode lump is ONE device's buffer at the smaller rate,
+    and understating it on a pooled multi-GPU credit is the direction that claims a
+    fit that is not there.
+    """
+    import inspect
+
+    from core.inference.llama_cpp import LlamaCppBackend as B
+
+    compact = "".join(inspect.getsource(B.load_model).split())
+    # The tensor-mode rate is measured alongside the layer one...
+    assert "_compute_buffer_tensor=self._estimate_compute_buffer_bytes(" in compact
+    assert "per_device_tensor=True,)" in compact
+    # ...and the same flat fallback covers missing dims.
+    assert "if_compute_buffer_tensor<=0:" in compact
+    # ...and it is what the fit charges, once per selected device, but only when
+    # the tensor-parallel branch really planned this load. tp_tensor_split cannot
+    # answer that: it stays None on a split llama.cpp is left to size itself.
+    assert "_tp_planned=False" in compact
+    assert "use_fit=False_tp_planned=True" in compact
+    assert (
+        "compute_buffer_flat=(_fit_devices*_compute_buffer_tensor"
+        "if_tp_plannedelse_compute_buffer_pipeline)"
+    ) in compact
+
+
+def test_the_tensor_rate_really_exceeds_the_layer_one():
+    """The under-charge the fix closes is not a rounding difference: at one slot
+    the layer figure drops the vocab-width output buffer entirely."""
+    class _Dims:
+        # is_embedding_gguf is a read-only property on the real backend.
+        _vocab_size = 151936
+        _embedding_length = 5120
+        is_embedding_gguf = False
+        _DEFAULT_N_UBATCH = LlamaCppBackend._DEFAULT_N_UBATCH
+        _COMPUTE_BUFFER_SAFETY = LlamaCppBackend._COMPUTE_BUFFER_SAFETY
+
+    layer = LlamaCppBackend._estimate_compute_buffer_bytes(
+        _Dims(), n_ubatch = 512, n_parallel = 1, per_device_tensor = False
+    )
+    tensor = LlamaCppBackend._estimate_compute_buffer_bytes(
+        _Dims(), n_ubatch = 512, n_parallel = 1, per_device_tensor = True
+    )
+    assert tensor > layer
+    # 4-GPU tensor split: what the fit used to charge vs what it now does.
+    assert 4 * tensor - layer > GIB
+
+
+def test_the_replicated_buffer_can_decide_the_fit(monkeypatch):
+    """23 GiB across two 12 GiB cards with no host RAM is a fit until the second
+    device's copy of the compute buffer is priced."""
+    base = dict(platform = "linux", hw = "nvidia_multi", avail_mib = 0, monkeypatch = monkeypatch)
+    assert _mode(footprint = 22 * GIB, compute_buffer_flat = GIB, **base) == FIT_MODE
+    assert _mode(footprint = 22 * GIB, compute_buffer_flat = 3 * GIB, **base) is None
+
+
+# ------------------------------- a drafter split between the GPU and the host
+
+
+@pytest.mark.parametrize(
+    "extras,env,n_draft_layers,expected",
+    [
+        # Nothing set: llama.cpp's own -1 default places the drafter whole.
+        ([], None, 28, False),
+        (["-ngld", "-1"], None, 28, False),
+        # The whole-drafter case _extra_args_draft_offloaded_to_cpu already owns.
+        (["-ngld", "0"], None, 28, False),
+        # A real split: the layers past the count stay in host RAM.
+        (["-ngld", "1"], None, 28, True),
+        (["--gpu-layers-draft", "14"], None, 28, True),
+        (["--spec-draft-ngl=4"], None, 28, True),
+        (["-ngld", "1"], None, None, True),  # unreadable block count says nothing
+        # At or above the drafter's own block count it is placed whole.
+        (["-ngld", "28"], None, 28, False),
+        (["-ngld", "999"], None, 28, False),
+        # The env twin the child reads before argv...
+        ([], {"LLAMA_ARG_N_GPU_LAYERS_DRAFT": "1"}, 28, True),
+        # ...which argv last-wins over.
+        (["-ngld", "-1"], {"LLAMA_ARG_N_GPU_LAYERS_DRAFT": "1"}, 28, False),
+        # Last-wins within argv too.
+        (["-ngld", "1", "-ngld", "-1"], None, 28, False),
+        (["-ngld", "-1", "-ngld", "1"], None, 28, True),
+        # Upstream's std::stoi throws and the child never starts, so nothing is
+        # mispriced; abstaining here would forfeit a real fit.
+        (["-ngld", "lots"], None, 28, False),
+    ],
+)
+def test_a_partial_draft_offload_is_recognised(extras, env, n_draft_layers, expected):
+    from core.inference.llama_cpp import _draft_is_split_across_host
+
+    assert (
+        _draft_is_split_across_host(extras, env or {}, n_draft_layers = n_draft_layers)
+        is expected
+    )
+
+
+def test_a_partial_draft_offload_leaves_the_drafter_unsized():
+    """Checked at the source: reaching this call needs a real drafter GGUF.
+
+    -ngld 1 is not _extra_args_draft_offloaded_to_cpu (that is the -ngld 0 case), so
+    _cpu_draft_path is None and mtp_bytes carries the drafter WHOLE in the
+    GPU-eligible term while llama.cpp pins the layers past the count, and their KV,
+    in host RAM. Nothing at the call site can say which slice stays on the card, so
+    it has to abstain rather than credit VRAM for bytes that never reach it.
+    """
+    import inspect
+
+    from core.inference.llama_cpp import LlamaCppBackend as B
+
+    compact = "".join(inspect.getsource(B.load_model).split())
+    assert "_draft_split_across_host=bool(_mtp_draft_for_budgetand_draft_is_split_across_host(" in compact
+    # The same effective views the other overrides are classified on.
+    assert "_draft_is_split_across_host(_fit_extras,_fit_env," in compact
+    # Scoped by the drafter's own block count, off the backend the KV sizing above
+    # already cached, so -ngld at or above it is not treated as a split.
+    assert 'n_draft_layers=getattr(self._draft_backend_for(_mtp_draft_for_budget),"_n_layers",None,)' in compact
+    # And it lands on the abstain, not on a term.
+    assert "or_draft_split_across_host" in compact

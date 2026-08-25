@@ -870,9 +870,9 @@ def fit_target_margin_in(
 ) -> Optional[float]:
     """The per-device margin an effective ``--fit-target`` asks the fitter to keep.
 
-    ``-fitt/--fit-target`` takes a comma-separated list of MiB values, one per
-    device, and a single value is broadcast across all of them (common/arg.cpp;
-    default 1024, ``fit_params_target`` in common/common.h). The fitter refuses
+    ``-fitt/--fit-target`` takes a list of MiB values, one per device, and a
+    single value is broadcast across all of them (common/arg.cpp; default 1024,
+    ``fit_params_target`` in common/common.h). The fitter refuses
     to allocate into that margin and spills the rest to host RAM instead
     (``targets.push_back(dmds_full[id].free - margins[id])``, common/fit.cpp), so
     a load-mode fit that credits VRAM has to price it.
@@ -889,7 +889,12 @@ def fit_target_margin_in(
     if raw_value is None:
         return None
     values: list[float] = []
-    for part in str(raw_value).split(","):
+    # Upstream splits this value on both "," and "/" -- the same `[,/]+` regex
+    # --tensor-split uses (common/arg.cpp) -- so "4096/4096" is a well-formed
+    # two-device margin. Reading it as one unparseable token would abstain and
+    # leave the caller on this launch's own much smaller margin, crediting VRAM
+    # the fitter keeps free and claiming a fit that is not there.
+    for part in str(raw_value).replace("/", ",").split(","):
         part = part.strip()
         if not part:
             continue
