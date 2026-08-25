@@ -275,33 +275,30 @@ class TestTheGuardIsNotVacuous:
         )
 
 
-class TestSlowSuccessIsNotYetSignal:
-    """A 200 that took a minute is treated exactly like a 200 that took a millisecond.
+class TestSlowSuccessIsSignal:
+    """A request that succeeds but takes far too long is worth exactly one line.
 
-    Both suppressors key on the STATUS CODE. Nothing anywhere reads how long the request
-    took, so a degrading endpoint stays invisible for as long as it keeps returning 2xx.
-
-    These tests assert the CURRENT behaviour rather than the desired one, on purpose. The
-    gap is real and worth closing, but a guard that silently tolerates either answer would
-    let the exemption be added and then removed again without anyone noticing. Closing it
-    should flip these deliberately, with the new volume budgeted the same way as every
-    other line here.
+    Both suppressors key on the status code, so before the exemption a degrading endpoint
+    was invisible for as long as it kept returning 2xx -- and on a quiet-success path it
+    was invisible full stop. These pin both halves of the fix: the slow line appears, and
+    it is bounded, because "this endpoint is slow" is one fact rather than one fact per
+    request.
     """
 
     SLOW_MS = 30_000.0
 
-    def _slow_lines(self, monkeypatch, path, count = 6):
+    def _slow(self, monkeypatch, path, count, gap_s = 0.0):
         capture = _drive(
             monkeypatch,
             [
                 replay.Request("GET", path, 200, duration_ms = self.SLOW_MS)
                 for _ in range(count)
             ],
-            gap_s = 0.0,
+            gap_s = gap_s,
         )
         return capture.records_for(path)
 
-    def test_a_slow_success_on_a_silent_path_writes_nothing(self, monkeypatch):
+    def test_a_slow_success_logs_even_where_a_fast_one_is_silent(self, monkeypatch):
         silent = sorted(
             p for p in session.ALL_POLLS
             if policy.classify(hmod, p) == policy.QUIET_SUCCESS
@@ -309,20 +306,85 @@ class TestSlowSuccessIsNotYetSignal:
         assert silent, "no quiet-success paths configured; this guard would be vacuous"
         path = silent[0]
 
-        records = self._slow_lines(monkeypatch, path)
-        assert records == [], (
-            f"{path} now logs a slow success ({len(records)} line(s)). If that is the "
-            "intended change, budget it: a sustained degradation on a 5s poll emits one "
-            "line per request unless the slow line gets a heartbeat of its own."
+        fast = _drive(monkeypatch, [replay.Request("GET", path, 200)], gap_s = 0.0)
+        assert fast.records_for(path) == [], (
+            f"{path} is quiet-success: a FAST 200 must still write nothing"
         )
 
-    def test_the_harness_can_tell_a_slow_request_from_a_fast_one(self, monkeypatch):
-        """Guards the guard: without this, the two tests around it are vacuous.
+        records = self._slow(monkeypatch, path, count = 1)
+        assert len(records) == 1, (
+            f"{path} took {self.SLOW_MS:.0f}ms and still wrote nothing. A degrading "
+            "endpoint that keeps returning 2xx is exactly the case this exists for."
+        )
+        assert records[0].get("slow") is True, (
+            "the slow line must carry its own reason, or a reader cannot tell it apart "
+            "from an ordinary access record"
+        )
 
-        ``duration_ms`` has to actually reach the middleware's clock. If it silently did
-        nothing, every 'slow' case above would really be a fast one and would pass for the
-        wrong reason.
+    def test_a_sustained_degradation_is_bounded(self, monkeypatch):
+        """The cost side. Without a window here it is one line per request, for as long as
+        the endpoint stays slow, which is the unbounded growth these budgets exist to stop.
+
+        Note the requests themselves move the clock: each one takes `duration_ms`, so
+        twenty of them at 3s span a minute of virtual time, not an instant. The bound to
+        assert is therefore per WINDOW, not per run.
         """
+        path = sorted(
+            p for p in session.ALL_POLLS
+            if policy.classify(hmod, p) == policy.QUIET_SUCCESS
+        )[0]
+        duration_ms = hmod._SLOW_REQUEST_MS + 1000.0
+        count = 20
+        span_s = count * duration_ms / 1000.0
+        window_s = hmod._SLOW_REQUEST_DEDUP_MS / 1000.0
+        allowed = int(span_s // window_s) + 1
+
+        capture = _drive(
+            monkeypatch,
+            [
+                replay.Request("GET", path, 200, duration_ms = duration_ms)
+                for _ in range(count)
+            ],
+            gap_s = 0.0,
+        )
+        records = capture.records_for(path)
+        assert len(records) <= allowed, (
+            f"{count} slow requests spanning {span_s:.0f}s produced {len(records)} lines; "
+            f"a {window_s:.0f}s slow window allows at most {allowed}. Being told an "
+            "endpoint is slow is one fact per window, not one per request."
+        )
+        assert len(records) < count, (
+            "the slow line is not being de-duplicated at all, so a sustained degradation "
+            "writes one line per request"
+        )
+
+    def test_the_slow_heartbeat_reopens(self, monkeypatch):
+        """Bounded, not silenced: a still-degraded endpoint must say so again later."""
+        path = sorted(
+            p for p in session.ALL_POLLS
+            if policy.classify(hmod, p) == policy.QUIET_SUCCESS
+        )[0]
+        window_s = hmod._SLOW_REQUEST_DEDUP_MS / 1000.0
+        records = self._slow(monkeypatch, path, count = 3, gap_s = window_s + 1.0)
+        assert len(records) == 3, (
+            f"three slow requests spaced beyond the {window_s:.0f}s slow window produced "
+            f"{len(records)} lines; the heartbeat must reopen or a permanent degradation "
+            "goes quiet after its first line."
+        )
+
+    def test_a_fast_success_is_unaffected(self, monkeypatch):
+        """The exemption must be invisible while everything is healthy."""
+        for path in sorted(session.ALL_POLLS)[:12]:
+            fast = _drive(
+                monkeypatch,
+                [replay.Request("GET", path, 200) for _ in range(5)],
+                gap_s = 0.0,
+            )
+            slow_lines = [r for r in fast.records_for(path) if r.get("slow")]
+            assert not slow_lines, f"{path} produced a slow line for a 0ms request"
+
+    def test_the_harness_can_tell_a_slow_request_from_a_fast_one(self, monkeypatch):
+        """Guards the guard: without this, every case above is really a fast request."""
         path = "/api/models/list"
         capture = _drive(
             monkeypatch,
@@ -333,6 +395,5 @@ class TestSlowSuccessIsNotYetSignal:
         assert records, f"{path} is in the normal class and should log on the first hit"
         assert records[0]["process_time_ms"] >= self.SLOW_MS, (
             "duration_ms did not reach the middleware: it recorded "
-            f"{records[0]['process_time_ms']}ms for a {self.SLOW_MS}ms request, so every "
-            "slow-path assertion here is really testing a fast request."
+            f"{records[0]['process_time_ms']}ms for a {self.SLOW_MS}ms request."
         )

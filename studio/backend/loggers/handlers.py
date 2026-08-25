@@ -50,6 +50,19 @@ _QUIET_POLL_DEDUP_MS = _env_int("UNSLOTH_STUDIO_ACCESS_LOG_POLL_DEDUP_MS", 10000
 _WATCHDOG_POLL_DEDUP_MS = _env_int("UNSLOTH_STUDIO_ACCESS_LOG_WATCHDOG_DEDUP_MS", 60000)
 # Both windows off is what --verbose sets; the drop-the-2xx suppressor below has no
 # window of its own, so it must read the same signal to honour --verbose.
+# A request this slow is worth a line whatever its class. The suppressors key on the
+# STATUS CODE, so a 200 that took a minute is currently indistinguishable from a 200 that
+# took a millisecond, and a degrading endpoint stays invisible until it starts failing.
+# Above normal-slow and below actually-wrong: /api/health waits up to a second for hardware
+# detection and /api/inference/status reads llama.cpp capabilities, so a 1s threshold would
+# log those constantly. 0 = off.
+_SLOW_REQUEST_MS = _env_int("UNSLOTH_STUDIO_SLOW_REQUEST_MS", 2000)
+# ...and the slow line gets a heartbeat of its own, because "tell me this endpoint is
+# slow" is not the same request as "tell me 720 times an hour". Measured: a 5s poll that
+# degrades to 3s responses emits 720 lines an hour with no window here, which is precisely
+# the unbounded growth the suppressors exist to stop. One line a minute says the same
+# thing. Failures are unaffected; they were never de-duplicated.
+_SLOW_REQUEST_DEDUP_MS = _env_int("UNSLOTH_STUDIO_SLOW_REQUEST_DEDUP_MS", 60000)
 _VERBOSE_ACCESS_LOG = _ACCESS_LOG_DEDUP_MS <= 0 and _QUIET_POLL_DEDUP_MS <= 0
 _QUIET_POLL_PATHS = {
     "/api/health",
@@ -271,6 +284,8 @@ class LoggingMiddleware:
         # Flips True after the first successful /api/auth/refresh; before that, chat
         # list-poll 401s are the transient bootstrap race and are suppressed.
         self._auth_refreshed = False
+        # path -> monotonic ts of the last EMITTED slow line.
+        self._last_slow: dict[str, float] = {}
 
     def _is_redundant_repeat(
         self, method: str, path: str, query: bytes, status_code: int, now: float
@@ -305,6 +320,23 @@ class LoggingMiddleware:
             widest = max(_ACCESS_LOG_DEDUP_MS, _QUIET_POLL_DEDUP_MS, _WATCHDOG_POLL_DEDUP_MS)
             cutoff = now - (widest / 1000.0)
             self._last_log = {k: v for k, v in self._last_log.items() if v >= cutoff}
+        return False
+
+    def _slow_line_is_a_repeat(self, path: str, now: float) -> bool:
+        """True if a slow line for ``path`` already fired inside the slow window.
+
+        Its own bucket, keyed only on the path: a degrading endpoint is one fact, and
+        splitting it by status or query would report it once per variant.
+        """
+        if _SLOW_REQUEST_DEDUP_MS <= 0:
+            return False
+        last = self._last_slow.get(path)
+        if last is not None and (now - last) * 1000.0 < _SLOW_REQUEST_DEDUP_MS:
+            return True
+        self._last_slow[path] = now
+        if len(self._last_slow) > _DEDUP_MAP_MAX:
+            cutoff = now - (_SLOW_REQUEST_DEDUP_MS / 1000.0)
+            self._last_slow = {k: v for k, v in self._last_slow.items() if v >= cutoff}
         return False
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
@@ -345,13 +377,26 @@ class LoggingMiddleware:
             end_time = time.perf_counter()
             if 200 <= status_code < 300 and path == _AUTH_REFRESH_PATH:
                 self._auth_refreshed = True
-            if (
-                not excluded
-                and not _is_quiet_success(
-                    scope["method"], path, status_code, not self._auth_refreshed
-                )
-                and not self._is_redundant_repeat(
-                    scope["method"], path, scope.get("query_string", b""), status_code, end_time
+            duration_ms = (end_time - start_time) * 1000.0
+            # Ordered so a slow request short-circuits both suppressors. It deliberately
+            # does NOT stamp the dedup map on the way past: this line is extra, and the
+            # path's own heartbeat should keep its existing rhythm rather than be reset by
+            # one slow call. `excluded` still wins, because those are static assets.
+            slow = (
+                _SLOW_REQUEST_MS > 0
+                and duration_ms >= _SLOW_REQUEST_MS
+                and not self._slow_line_is_a_repeat(path, end_time)
+            )
+            if not excluded and (
+                slow
+                or (
+                    not _is_quiet_success(
+                        scope["method"], path, status_code, not self._auth_refreshed
+                    )
+                    and not self._is_redundant_repeat(
+                        scope["method"], path, scope.get("query_string", b""), status_code,
+                        end_time,
+                    )
                 )
             ):
                 logger.info(
@@ -359,7 +404,8 @@ class LoggingMiddleware:
                     method = scope["method"],
                     path = path,
                     status_code = status_code,
-                    process_time_ms = round((end_time - start_time) * 1000, 2),
+                    process_time_ms = round(duration_ms, 2),
+                    **({"slow": True} if slow else {}),
                 )
 
 

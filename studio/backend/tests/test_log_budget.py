@@ -212,3 +212,67 @@ class TestVolumeEnvelope:
             f"lines; sharing one bucket implies {expected}. If a path left "
             "_LIVENESS_POLL_PATHS it now heartbeats on its own and costs a line per window."
         )
+
+
+class TestDegradedVolume:
+    """The exemption's own budget.
+
+    A new log source with no ceiling is the exact regression this file exists to catch, and
+    the slow line is a new log source. Measured before it had a heartbeat, a sustained
+    degradation emitted one line per request; this is what stops that returning.
+    """
+
+    def test_a_degraded_session_stays_inside_its_envelope(self, monkeypatch):
+        durations = {path: session.DEGRADED_RESPONSE_MS for path in session.IDLE_POLLS}
+        result = replay.replay(
+            hmod, monkeypatch, session.IDLE_POLLS, session.STEADY_IDLE_SECONDS,
+            durations = durations,
+        )
+        if result.emitted > session.DEGRADED_LINE_ENVELOPE:
+            counts = Counter(result.capture.paths())
+            worst = "\n  ".join(
+                f"{n:5d}  {path}  [{policy.classify(hmod, path)}]"
+                for path, n in counts.most_common(8)
+            )
+            pytest.fail(
+                f"every idle poll degraded to {session.DEGRADED_RESPONSE_MS:.0f}ms emits "
+                f"{result.emitted} lines over "
+                f"{session.STEADY_IDLE_SECONDS / 60:.0f} virtual minutes, envelope is "
+                f"{session.DEGRADED_LINE_ENVELOPE}.\nBiggest contributors:\n  {worst}\n\n"
+                "The slow-request exemption needs a window of its own; without one it "
+                "logs on every request for as long as the endpoint stays slow."
+            )
+
+    def test_the_exemption_fires_and_stays_per_path_bounded(self, monkeypatch):
+        """Both directions, compared correctly.
+
+        Raw line counts are NOT comparable between the two sessions: a slow request eats
+        the session it runs in, so degrading everything yields far fewer requests in the
+        same wall clock (measured: 4980 healthy vs 609 degraded). What must hold is that
+        the exemption fires at all, and that each PATH is bounded by its own slow window.
+
+        The aggregate therefore scales with how many paths are degraded at once, which is
+        the intended shape: twenty-one endpoints all going slow is worth twenty-one lines
+        a minute, not silence.
+        """
+        durations = {path: session.DEGRADED_RESPONSE_MS for path in session.IDLE_POLLS}
+        result = replay.replay(
+            hmod, monkeypatch, session.IDLE_POLLS, session.STEADY_IDLE_SECONDS,
+            durations = durations,
+        )
+        slow = [kw for _lvl, _ev, kw in result.capture.events if kw.get("slow")]
+        assert slow, (
+            "degrading every idle poll produced no slow lines at all, so a degraded "
+            "Studio is indistinguishable from a healthy one"
+        )
+
+        window_s = hmod._SLOW_REQUEST_DEDUP_MS / 1000.0
+        allowed = int(session.STEADY_IDLE_SECONDS // window_s) + 1
+        counts = Counter(kw["path"] for kw in slow)
+        over = {path: n for path, n in counts.items() if n > allowed}
+        assert not over, (
+            f"these paths exceeded {allowed} slow lines in "
+            f"{session.STEADY_IDLE_SECONDS / 60:.0f} virtual minutes, so the slow line is "
+            f"not bounded by its {window_s:.0f}s window:\n  "
+            + "\n  ".join(f"{path}: {n}" for path, n in sorted(over.items()))
+        )

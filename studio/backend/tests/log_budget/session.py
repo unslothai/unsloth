@@ -136,6 +136,17 @@ KNOWN_UNCLASSIFIED_POLLS: frozenset[str] = frozenset()
 STEADY_IDLE_LINE_ENVELOPE = 1170
 BUSY_LINE_ENVELOPE = 260
 
+# What "degraded" means for the budget below: every idle poll still answers 200, but slowly
+# enough to trip the slow-request exemption. This is the scenario the exemption was added
+# for, and also its worst case, so it gets its own envelope rather than being averaged into
+# the healthy one. Measured on this revision; ratchet it the same way as the others.
+DEGRADED_RESPONSE_MS = 3000.0
+# Measured 580 on this revision. Deliberately not generous: the healthy envelope
+# above is 1170, and a degraded session emits FEWER lines only because slow requests
+# eat the session they run in. A number set by intuition here would have been 3x too
+# high and would have guarded nothing.
+DEGRADED_LINE_ENVELOPE = 640
+
 # One-shot requests the app makes once on startup. Present so the boot window is not
 # mistaken for steady state, and so a mutation record and a failure record exist to assert
 # against.
