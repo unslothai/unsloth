@@ -2480,7 +2480,10 @@ def test_a_rate_limit_wait_cannot_outlive_the_internal_key(monkeypatch):
     # clock, which leaves the key as the only thing bounding it.
     monkeypatch.setattr(research_runs, "_MODEL_CALL_KEY_LIFETIME_SECONDS", 100)
     _, waits = _send_attempts(monkeypatch, 429, {"Retry-After": "3000"}, model_timeout = 0.0)
-    assert waits == [95.0, 95.0]
+    # 100 less the 5s first-output reserve, shrinking as the key's remainder does -- not the
+    # 3000s asked for, and not the standing ceiling.
+    assert len(waits) == 2
+    assert all(93.0 < wait <= 95.0 for wait in waits), waits
 
 
 def test_another_in_band_provider_error_is_not_retried(monkeypatch):
