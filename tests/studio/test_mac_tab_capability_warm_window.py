@@ -1122,9 +1122,9 @@ def test_no_probe_is_given_more_budget_than_the_window_has_left(tmp_path, monkey
     assert len(budgets) > 1, "fixture ended after one probe; the clamp is never exercised"
     assert max(budgets) <= window, f"a probe was handed {max(budgets)}s of a {window}s window"
     for budget, start in zip(budgets, started_at):
-        assert budget <= window - start + 0.05, (
-            f"a probe starting at {start:.2f}s got {budget:.2f}s, past the end of the window"
-        )
+        assert (
+            budget <= window - start + 0.05
+        ), f"a probe starting at {start:.2f}s got {budget:.2f}s, past the end of the window"
 
 
 def test_a_probe_is_not_started_with_no_time_left(tmp_path, monkeypatch):
@@ -1163,9 +1163,9 @@ def test_the_artifact_carries_what_the_verdict_was_computed_from(tmp_path, monke
         f"artifact holds {len(written)} records for a verdict computed from "
         f"{len(samples) + len(recovery)}"
     )
-    assert any(r["kind"] == "timeout" for r in written), (
-        "the artifact shows an entirely healthy timeline while the warning reports a stall"
-    )
+    assert any(
+        r["kind"] == "timeout" for r in written
+    ), "the artifact shows an entirely healthy timeline while the warning reports a stall"
 
 
 def test_the_terminal_message_does_not_count_the_watch_twice(tmp_path, monkeypatch):
@@ -1176,8 +1176,12 @@ def test_the_terminal_message_does_not_count_the_watch_twice(tmp_path, monkeypat
     samples = _timeline(150, stalls = [(140, 9999)])
     recovery = _recovery_probes(samples[-1]["t"], timeouts = 4, settles = None)
     failed = _verdict(
-        mod, samples, final_kind = "timeout", final_status = 0,
-        final_wait_s = 40.0, recovery_samples = recovery,
+        mod,
+        samples,
+        final_kind = "timeout",
+        final_status = 0,
+        final_wait_s = 40.0,
+        recovery_samples = recovery,
     )
     assert len(failed) == 1, failed
     total = float(re.search(r"([\d.]+)s of silence in total", failed[0]).group(1))
