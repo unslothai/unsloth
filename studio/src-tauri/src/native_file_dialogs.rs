@@ -236,6 +236,19 @@ fn require_loopback_url(url: &str) -> Result<(), String> {
     }
 }
 
+fn rebase_loopback_url(url: &str, port: u16) -> Result<String, String> {
+    const REJECT: &str = "Only local http URLs can be saved.";
+    require_loopback_url(url)?;
+    let mut parsed = reqwest::Url::parse(url).map_err(|_| REJECT.to_string())?;
+    parsed
+        .set_host(Some("127.0.0.1"))
+        .map_err(|_| REJECT.to_string())?;
+    parsed
+        .set_port(Some(port))
+        .map_err(|_| REJECT.to_string())?;
+    Ok(parsed.to_string())
+}
+
 fn read_selected_text_import(
     selected_path: Option<PathBuf>,
     label: &str,
@@ -422,14 +435,14 @@ pub async fn save_native_file_from_url(
     let Some(path) = selected_path else {
         return Ok(None);
     };
-    let bearer_token = if refresh_desktop_auth.unwrap_or(false) {
-        Some(
-            crate::desktop_auth::desktop_auth(backend_state, diagnostics)
-                .await?
-                .access_token,
+    let (url, bearer_token) = if refresh_desktop_auth.unwrap_or(false) {
+        let auth = crate::desktop_auth::desktop_auth(backend_state, diagnostics).await?;
+        (
+            rebase_loopback_url(&url, auth.backend_port)?,
+            Some(auth.access_token),
         )
     } else {
-        bearer_token
+        (url, bearer_token)
     };
     stream_url_to_path(&url, &path, DOWNLOAD_READ_TIMEOUT, bearer_token.as_deref()).await?;
     Ok(Some(saved_file_name(&path)))
@@ -772,6 +785,20 @@ mod tests {
             .unwrap();
         server.join().unwrap();
         assert_eq!(fs::read(&dest).unwrap(), b"zip");
+    }
+
+    #[test]
+    fn refreshed_download_rebases_the_stale_backend_port() {
+        let rebased = rebase_loopback_url(
+            "http://127.0.0.1:8000/api/settings/debug/logs/export?all=true",
+            9000,
+        )
+        .unwrap();
+        assert_eq!(
+            rebased,
+            "http://127.0.0.1:9000/api/settings/debug/logs/export?all=true"
+        );
+        assert!(rebase_loopback_url("https://example.com/archive.zip", 9000).is_err());
     }
 
     #[test]

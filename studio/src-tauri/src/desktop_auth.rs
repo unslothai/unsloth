@@ -12,6 +12,8 @@ static DESKTOP_AUTH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new
 pub struct DesktopAuthResponse {
     pub access_token: String,
     pub refresh_token: String,
+    #[serde(skip_serializing)]
+    pub(crate) backend_port: u16,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -219,6 +221,7 @@ async fn exchange_desktop_secret(
             Some(DesktopAuthResponse {
                 access_token: tokens.access_token,
                 refresh_token: tokens.refresh_token,
+                backend_port: port,
             })
         })
         .map_err(|e| AuthError::Failed(format!("Desktop auth failed: {}", e)))

@@ -237,6 +237,20 @@ def test_export_masks_a_credential_value_on_the_next_line(client):
     assert exported.splitlines()[-1] == "kept"
 
 
+def test_export_masks_every_line_of_a_multiline_plain_yaml_secret(client):
+    first = "correct-horse-battery"
+    second = "staple-secret-value"
+    path = _seed_server_log(f"password:\n  {first}\n  {second}\nordinary: kept\n")
+
+    response = client.get("/api/settings/debug/logs/export")
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        exported = archive.read(f"server/{path.name}").decode("utf-8")
+    assert first not in exported
+    assert second not in exported
+    assert exported.count("  <redacted>") == 2
+    assert "ordinary: kept" in exported
+
+
 @pytest.mark.parametrize("indicator", ["|-", ">", "|2-"])
 def test_export_masks_every_line_of_a_yaml_block_scalar(client, indicator):
     first = "correct-horse-battery-staple"

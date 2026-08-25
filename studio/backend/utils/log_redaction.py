@@ -249,7 +249,8 @@ class StreamingLogRedactor:
     """Redact independent records while preserving key/value context."""
 
     def __init__(self) -> None:
-        self._redact_next_value = False
+        self._plain_key_indent: int | None = None
+        self._plain_has_value = False
         self._block_key_indent: int | None = None
         self._block_value_indent: int | None = None
 
@@ -272,11 +273,18 @@ class StreamingLogRedactor:
             self._block_key_indent = None
             self._block_value_indent = None
 
-        if self._redact_next_value:
+        if self._plain_key_indent is not None:
             if not redacted.strip():
                 return redacted
-            self._redact_next_value = False
-            return self._masked_record(redacted)
+            indent = len(re.match(r"[ \t]*", redacted).group(0))
+            if indent > self._plain_key_indent:
+                self._plain_has_value = True
+                return self._masked_record(redacted)
+            if not self._plain_has_value:
+                self._plain_key_indent = None
+                return self._masked_record(redacted)
+            self._plain_key_indent = None
+            self._plain_has_value = False
 
         continued = _CONTINUED_SECRET_RE.search(redacted.rstrip("\r\n"))
         if continued:
@@ -284,5 +292,6 @@ class StreamingLogRedactor:
                 self._block_key_indent = len(continued.group("indent"))
                 self._block_value_indent = None
             else:
-                self._redact_next_value = True
+                self._plain_key_indent = len(continued.group("indent"))
+                self._plain_has_value = False
         return redacted
