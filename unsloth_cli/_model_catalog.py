@@ -341,9 +341,39 @@ def cached_entries() -> List[ModelEntry]:
         if row.get("diffusers"):
             continue
         entries.append(
-            ModelEntry("Downloaded", row["repo_id"], "", row.get("load_id") or row["repo_id"])
+            ModelEntry("Downloaded", row["repo_id"], "", _cached_model_load_id(row))
         )
     return entries
+
+
+def _cached_model_load_id(row: dict) -> str:
+    """Load target for a cached non-GGUF row; a local snapshot for adapters.
+
+    An ACTIVE-cache adapter carries the bare repo id, and resolving a LoRA by id takes the
+    remote branch of get_base_model_from_lora_identifier: it probes the Hub and calls
+    hf_hub_download for adapter_config.json with no local_files_only. For a cached private or
+    gated adapter with no token that call fails, the base is never read, and selecting a row
+    the picker advertised as local yields no model configuration. Handing over the snapshot
+    makes is_local_path true, which takes the local reader and no network at all.
+
+    Only adapters, deliberately. An ordinary cached repo resolves through its own local-first
+    path, and pinning one would freeze a live repo the inventory chose not to pin.
+    """
+    load_id = row.get("load_id") or row["repo_id"]
+    if row.get("model_format") != "adapter" or os.path.isabs(str(load_id)):
+        return load_id
+    cache_path = row.get("cache_path")
+    if not cache_path:
+        return load_id
+    try:
+        from hub.utils.inventory_scan import default_ref_snapshot
+        snapshot = default_ref_snapshot(Path(cache_path))
+    except Exception:
+        snapshot = None
+    if snapshot is None:
+        snapshots = sorted(Path(cache_path).glob("snapshots/*"))
+        snapshot = snapshots[-1] if snapshots else None
+    return str(snapshot) if snapshot is not None else load_id
 
 
 def _local_dir_holds_a_payload(path: Path) -> bool:
@@ -374,9 +404,18 @@ def _local_dir_holds_a_payload(path: Path) -> bool:
         return True
     if _local_payload_is_torn(path):
         return False
+    # iterdir, not glob("*.gguf"): the glob is case-sensitive on Linux and macOS, while
+    # _is_main_gguf_filename lowercases before testing the suffix. A directory holding
+    # Model.GGUF is a loadable GGUF model by the shared classifier and by the loader, but the
+    # glob matched nothing and _is_model_directory says False for a GGUF-only folder, so the
+    # gate dropped a model that loads. This gate decides whether the row is listed at all.
+    try:
+        children = list(path.iterdir())
+    except OSError:
+        return True
     return any(
         _is_main_gguf_filename(file.name) and not is_appledouble_metadata(file)
-        for file in path.glob("*.gguf")
+        for file in children
     ) or _is_model_directory(path)
 
 
@@ -461,12 +500,20 @@ def local_folder_entries() -> List[ModelEntry]:
             continue
         if _local_is_a_diffusers_pipeline(model):
             continue
+        target = model.load_id or model.id
+        # A GGUF DIRECTORY handed to the resolver is picked apart by detect_gguf_model, which
+        # sorts by file size and takes the largest complete file -- commonly the F16. The cached
+        # and exported rows go through _preferred_complete_gguf and land on a Q4-class quant, so
+        # the same folder loaded a dramatically bigger model depending only on which source
+        # listed it, which is an OOM rather than a preference. Resolve it the same way here.
+        if is_gguf:
+            target = _preferred_complete_gguf(target) or target
         entries.append(
             ModelEntry(
                 "Downloaded",
                 model.display_name,
                 "gguf" if is_gguf else "",
-                model.load_id or model.id,
+                target,
             )
         )
     return entries

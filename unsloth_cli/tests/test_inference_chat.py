@@ -2357,3 +2357,77 @@ def test_catalog_hands_a_cached_gguf_pick_a_local_file(monkeypatch, tmp_path):
         {"repo_id": "Org/Gated-GGUF", "load_id": "Org/Gated-GGUF", "cache_path": str(repo)}
     )
     assert resolved.endswith("gated-Q4_K_M.gguf"), resolved
+
+
+def test_catalog_payload_gate_accepts_an_uppercase_gguf_suffix(tmp_path):
+    """``_is_main_gguf_filename`` lowercases before testing the suffix; ``glob("*.gguf")``
+    does not, and is case-sensitive on Linux and on a case-sensitive macOS volume. A folder
+    holding ``Model.GGUF`` is a loadable GGUF model by the shared classifier and by the
+    loader, but the glob matched nothing and ``_is_model_directory`` is False for a
+    GGUF-only folder, so this gate dropped it -- and this gate decides whether the row is
+    listed at all."""
+    from unsloth_cli._inference import ensure_studio_backend_path
+    from unsloth_cli import _model_catalog as cat
+
+    ensure_studio_backend_path()
+    upper = tmp_path / "upper"
+    upper.mkdir()
+    (upper / "Model.GGUF").write_bytes(b"GGUF" + b"\0" * 4096)
+    assert cat._local_dir_holds_a_payload(upper) is True
+
+
+def test_catalog_local_gguf_folder_picks_the_preferred_quant(monkeypatch, tmp_path):
+    """A GGUF DIRECTORY handed to the resolver is picked apart by detect_gguf_model, which
+    sorts by size and takes the largest complete file -- commonly the F16. Cached and
+    exported rows resolve through _preferred_complete_gguf and land on a Q4-class quant, so
+    the same folder loaded a far bigger model depending only on which source listed it."""
+    from unsloth_cli import _model_catalog as cat
+
+    folder = tmp_path / "multi"
+    folder.mkdir()
+    (folder / "mymodel-Q4_K_M.gguf").write_bytes(b"GGUF" + b"\0" * 4096)
+    (folder / "mymodel-F16.gguf").write_bytes(b"GGUF" + b"\0" * 4096 * 40)
+
+    row = SimpleNamespace(
+        source = "models_dir", partial = False, model_format = "gguf", path = str(folder),
+        display_name = "multi", load_id = str(folder), id = str(folder),
+    )
+    monkeypatch.setattr(cat, "_local_catalog_rows", lambda: [row])
+    monkeypatch.setattr(cat, "_local_model_task", lambda m: None)
+    monkeypatch.setattr(cat, "_local_model_can_chat", lambda m: None)
+    monkeypatch.setattr(cat, "_local_is_a_diffusers_pipeline", lambda m: False)
+    monkeypatch.setattr(cat, "_local_dir_holds_a_payload", lambda p: True)
+    monkeypatch.setattr(
+        cat, "_preferred_complete_gguf", lambda p: str(folder / "mymodel-Q4_K_M.gguf")
+    )
+
+    entries = cat.local_folder_entries()
+    assert entries and entries[0].model.endswith("mymodel-Q4_K_M.gguf"), entries[0].model
+
+
+def test_catalog_pins_an_active_cache_adapter_to_its_snapshot(tmp_path):
+    """Resolving a LoRA by bare repo id takes the REMOTE branch of
+    get_base_model_from_lora_identifier, which probes the Hub and calls hf_hub_download for
+    adapter_config.json with no local_files_only. For a cached gated adapter with no token
+    that fails and the base is never read, so a row the picker advertised as local yields no
+    model configuration. A snapshot path makes is_local_path true and takes the local
+    reader. An ordinary cached repo is deliberately left on its id."""
+    from unsloth_cli import _model_catalog as cat
+
+    repo = tmp_path / "models--Org--GatedLora"
+    snapshot = repo / "snapshots" / ("a" * 40)
+    snapshot.mkdir(parents = True)
+    (repo / "refs").mkdir()
+    (repo / "refs" / "main").write_text("a" * 40)
+
+    adapter = {
+        "repo_id": "Org/GatedLora", "load_id": "Org/GatedLora",
+        "model_format": "adapter", "cache_path": str(repo),
+    }
+    assert cat._cached_model_load_id(adapter) == str(snapshot)
+
+    plain = {
+        "repo_id": "Org/Chat", "load_id": "Org/Chat",
+        "model_format": "safetensors", "cache_path": str(repo),
+    }
+    assert cat._cached_model_load_id(plain) == "Org/Chat"
