@@ -7319,7 +7319,7 @@ def _gguf_runtime_bytes(
             resolve_requested_ctx,
         )
 
-        probe = LlamaCppBackend()
+        probe = _probe_backend()
         probe._model_identifier = model_identifier
         probe._read_gguf_metadata(gguf_path)
         # Carried out even when the cache cannot be sized: block_count is a separate
@@ -8055,6 +8055,26 @@ def _gguf_offloaded_layer_fraction(
     return max(0.0, min(1.0, gpu_layers / float(layer_count + 1)))
 
 
+def _probe_backend():
+    """A header-reading LlamaCppBackend that owns no child process.
+
+    ``manages_processes = False`` skips the orphan reap and the atexit registration,
+    which is what makes this safe to run on every settings change. See the flag's own
+    docstring for the measurements.
+
+    The fallback matters as much as the flag. Tests and callers substitute
+    ``LlamaCppBackend`` wholesale -- two stand-ins in
+    ``test_chat_load_during_training.py`` are plain classes taking no arguments -- and a
+    new keyword would break every one of them at construction rather than at the
+    behaviour it controls. A stand-in that predates the flag has no reaper to suppress
+    anyway, so falling back to the bare constructor is both compatible and correct.
+    """
+    try:
+        return LlamaCppBackend(manages_processes = False)
+    except TypeError:
+        return LlamaCppBackend()
+
+
 def _manual_keeps_tensor_split(
     gpu_memory_mode: Optional[str],
     gpu_layers: Optional[int],
@@ -8774,7 +8794,7 @@ def _gguf_memory_breakdown(
     )
     if charged_drafter:
         drafter_path, drafter_kind = charged_drafter
-        probe = LlamaCppBackend()
+        probe = _probe_backend()
         probe._read_gguf_metadata(gguf_path)
         # K and V are independent overrides, and extras beat the panel field the same
         # way they do at launch; passing the field for both priced a cache the load
@@ -8940,7 +8960,7 @@ def _gguf_layer_count(config: ModelConfig) -> Optional[int]:
                 from hub.utils.gguf import resolve_local_gguf_path
                 main = resolve_local_gguf_path(repo, variant)
         if main and Path(main).is_file():
-            probe = LlamaCppBackend()
+            probe = _probe_backend()
             probe._read_gguf_metadata(str(main))
             return getattr(probe, "_n_layers", None) or None
     except Exception as e:
@@ -8980,7 +9000,7 @@ def _is_embedding_gguf(config: ModelConfig) -> bool:
         main = _local_gguf_main_path(config)
         if not main:
             return False
-        probe = LlamaCppBackend()
+        probe = _probe_backend()
         probe._model_identifier = config.identifier
         probe._gguf_path = main
         probe._read_gguf_metadata(main)
@@ -9076,7 +9096,7 @@ def _classify_diffusion_gguf(config: ModelConfig) -> Optional[bool]:
     try:
         main = _local_gguf_main_path(config)
         if main:
-            probe = LlamaCppBackend()
+            probe = _probe_backend()
             probe._read_gguf_metadata(main)
             if probe.is_diffusion:
                 return True

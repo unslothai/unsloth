@@ -970,6 +970,66 @@ class TestEstimateMemoryRoute:
             )
             assert "min(" in evict
 
+    def test_the_route_never_reaps_processes_or_leaks_an_atexit_handler(
+        self, monkeypatch, gqa_gguf
+    ):
+        # The sizing helpers build a LlamaCppBackend just to read a header, and
+        # LlamaCppBackend.__init__ reaps orphaned llama-servers -- it walks every entry
+        # in /proc, resolves each candidate's exe and SIGNALS the ones it recognises --
+        # then registers an atexit handler holding the instance for the life of the
+        # process. Both are right for the backend that owns a child. Neither is right
+        # here, and before this became a panel endpoint they ran once per load rather
+        # than once per settings change.
+        #
+        # Measured on this route before the probes were made inert: five constructions
+        # per request, so 50 estimates were 250 /proc scans and 250 permanently
+        # retained atexit handlers, at 120 ms each. A panel that prices a load must not
+        # be able to kill a server, and dragging a slider must not leak.
+        import atexit
+        import inspect
+
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        reaps = []
+        raw = inspect.getattr_static(LlamaCppBackend, "_kill_orphaned_servers").__func__
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_kill_orphaned_servers",
+            staticmethod(lambda: reaps.append(1)),
+        )
+        assert callable(raw)
+
+        config = SimpleNamespace(
+            identifier = "local/model", gguf_file = gqa_gguf, is_gguf = True,
+            gguf_mmproj_file = None, gguf_mtp_file = None,
+            gguf_dspark_file = None, gguf_dflash_file = None,
+        )
+        monkeypatch.setattr(ri, "_cached_estimate_config", lambda *a, **kw: config)
+        monkeypatch.setattr(ri, "_gguf_resident_file_gb", lambda cfg, **kw: 2.0)
+
+        before = atexit._ncallbacks()
+        for i in range(5):
+            ri._estimate_files_cache.clear()
+            ri._estimate_config_cache.clear()
+            assert _estimate(model_path = gqa_gguf, n_ctx = 4096 + i).available is True
+        assert reaps == [], f"the estimate reaped orphaned servers {len(reaps)}x"
+        assert atexit._ncallbacks() == before, (
+            f"the estimate leaked {atexit._ncallbacks() - before} atexit handlers over "
+            f"five requests; each one retains a whole backend"
+        )
+
+    def test_the_inert_probe_mode_is_opt_in(self):
+        # Default True, so every existing caller -- above all the real backend that
+        # owns the llama-server child -- keeps exactly the behaviour it has today.
+        import inspect
+
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        sig = inspect.signature(LlamaCppBackend.__init__)
+        param = sig.parameters["manages_processes"]
+        assert param.default is True
+        assert param.kind is inspect.Parameter.KEYWORD_ONLY
+
     def test_expert_offload_from_the_extras_is_declared_unmodelled(self, monkeypatch, gqa_gguf):
         # --n-cpu-moe moves individual expert tensors, which the layer fraction
         # cannot express, so the row has to say so. /load strips those flags only on
