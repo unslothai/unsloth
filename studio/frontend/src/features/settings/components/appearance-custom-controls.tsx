@@ -57,6 +57,7 @@ import {
   useTheme,
 } from "../stores/theme-store";
 import { ColorPickerSwatch } from "./color-picker";
+import { normalizeSizeInputDraft } from "./size-input-value";
 
 /* ------------------------------- Colors -------------------------------- */
 
@@ -783,17 +784,13 @@ function SizeInput({
     setDraft(value === null ? "" : String(value));
   }, [value]);
   const commit = () => {
-    const trimmed = draft.trim();
-    if (trimmed === "") {
-      onCommit(null);
-      return;
-    }
-    const parsed = Number.parseInt(trimmed, 10);
-    if (Number.isNaN(parsed)) {
+    const normalized = normalizeSizeInputDraft(draft, range);
+    if (!normalized) {
       setDraft(value === null ? "" : String(value));
       return;
     }
-    onCommit(Math.min(range.max, Math.max(range.min, parsed)));
+    setDraft(normalized.draft);
+    onCommit(normalized.value);
   };
   return (
     <div className="flex items-center gap-1.5">

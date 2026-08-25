@@ -11,6 +11,7 @@ import {
 import { en } from "../src/i18n/locales/en.ts";
 
 const UPDATE_ENTRY = "settings.about.updates";
+const INTERFACE_SCALE_ENTRY = "settings.appearance.custom.interfaceScale.label";
 
 test("desktop update searches route to General", () => {
   const index = createSettingsSearchIndex({ desktop: true, closeToTray: true });
@@ -24,6 +25,14 @@ test("browser update searches keep routing to About", () => {
 
   assert.ok(!index.general.includes(UPDATE_ENTRY));
   assert.ok(index.about.includes(UPDATE_ENTRY));
+});
+
+test("interface scale is searchable only on desktop", () => {
+  const desktop = createSettingsSearchIndex({ desktop: true, closeToTray: true });
+  const browser = createSettingsSearchIndex({ desktop: false, closeToTray: false });
+
+  assert.ok(desktop.appearance.includes(INTERFACE_SCALE_ENTRY));
+  assert.ok(!browser.appearance.includes(INTERFACE_SCALE_ENTRY));
 });
 
 // The words a user types for this feature are not substrings of any of its
