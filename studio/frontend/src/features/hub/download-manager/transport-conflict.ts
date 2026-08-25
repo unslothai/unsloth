@@ -129,11 +129,9 @@ async function runWithPendingStartGuard(
   // exact request is the live transfer; a peer/snapshot/pending start has not.
   if (hasActiveOrPendingStart(req)) {
     if (!isJobActiveFor(req)) return "busy";
-    // This returns "started" WITHOUT running the action, so startJob never
-    // executes and never announces anything. Callers used to toast for
-    // themselves on "started" and so covered this path by accident; now that
-    // the download manager owns the message, saying nothing here would leave a
-    // user who just picked a model with no feedback at all.
+    // Returns "started" WITHOUT running the action, so startJob never announces.
+    // Callers used to cover this by toasting themselves; now the manager owns the
+    // message, so without this the user gets no feedback at all.
     showCallerToast(jobKeyOf(req.kind, req.repoId, req.variant), req.callerToast);
     return "started";
   }

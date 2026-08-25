@@ -1,16 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The Xet notice counter, which is the reason the notice ever stops.
+"""The Xet notice counter: the count survives, and concurrency cannot beat the limit.
 
-It used to live in the browser, in localStorage, which is scoped to an origin. A
-Studio origin is not stable: run.py defaults to port 8888 and falls back to the next
-free port when it is taken, and 8888 is also Jupyter's default. Colab and the tunnel
-are different origins again. Each of those handed the user a fresh set of three, so
-"show this three times" meant "three times per port, forever".
-
-These tests are about the two properties that gives the install: the count survives,
-and concurrent callers cannot talk their way past the limit.
+It lived in per-origin localStorage, and a Studio origin moves whenever port 8888 is
+taken, so "three times" meant "three times per port, forever".
 """
 
 from __future__ import annotations
@@ -36,7 +30,7 @@ def test_three_are_granted_and_the_fourth_is_not():
 
 
 def test_the_count_outlives_the_process_that_wrote_it():
-    """The whole point. A restart, on any port, must not hand out three more."""
+    """A restart, on any port, must not hand out three more."""
     for _ in range(2):
         assert xet.reserve_xet_notice()["granted"] is True
 
@@ -48,13 +42,8 @@ def test_the_count_outlives_the_process_that_wrote_it():
 
 
 def test_concurrent_reservations_never_exceed_the_limit():
-    """Two tabs starting a download at the same moment.
-
-    This is why the reserve is one transaction rather than get_app_setting followed
-    by upsert_app_settings: those open a connection each, so both callers can read
-    the same count and both be granted. The browser implementation needed Web Locks
-    to paper over exactly this, and could not cover a second browser at all.
-    """
+    """Two tabs at once. Why the reserve is one transaction: a split read and write
+    lets both callers read the same count and both be granted."""
     results: list[bool] = []
     lock = threading.Lock()
     start = threading.Barrier(8)
@@ -77,12 +66,7 @@ def test_concurrent_reservations_never_exceed_the_limit():
 
 
 def test_a_legacy_hint_raises_the_count_but_never_lowers_it():
-    """Migration from localStorage, in the safe direction only.
-
-    Someone who already spent their three before this moved server-side must not get
-    three more. Equally, the hint arrives from a client, so it must not be able to
-    lower a stored count and win back sightings.
-    """
+    """Migration from localStorage, upwards only: it must not win back sightings."""
     assert xet.reserve_xet_notice(seen_hint = 2)["shown"] == 3
     assert xet.reserve_xet_notice()["granted"] is False
 
@@ -99,7 +83,7 @@ def test_a_hint_at_or_over_the_limit_grants_nothing():
 
 
 def test_an_unreadable_stored_value_reads_as_a_fresh_install():
-    """A hand-edited or half-written row must not wedge the notice off forever."""
+    """A junk row must not wedge the notice off forever."""
     studio_db.upsert_app_settings({xet.XET_NOTICE_COUNT_KEY: "not a number"})
     assert xet.get_xet_notice_count() == 0
     assert xet.reserve_xet_notice()["granted"] is True
@@ -113,7 +97,7 @@ def test_an_unreadable_stored_value_reads_as_a_fresh_install():
 
 
 def test_the_stored_shape_is_a_plain_json_int():
-    """Other readers of app_settings should find a number, not a stringified one."""
+    """Other readers of app_settings should find a number, not a string."""
     xet.reserve_xet_notice()
     stored = studio_db.get_app_setting(xet.XET_NOTICE_COUNT_KEY, None)
     assert stored == 1

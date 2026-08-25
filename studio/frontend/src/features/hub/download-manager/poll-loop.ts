@@ -203,11 +203,9 @@ export function finalize(
 ): void {
   const job = getState().jobs[key];
   teardownRuntime(key);
-  // The start toast describes a transfer that is now over. Its 8s duration is a
-  // cap, not a description of the download: a small model finished, auto-loaded,
-  // and the toast was still saying the download was running. Dismiss on every
-  // terminal outcome, before the early returns below, so a job that finished
-  // between polls or was already in a terminal display state still clears it.
+  // The 8s duration is a cap, not a description of the transfer: a finished download
+  // left the toast still claiming it was running. Before the early returns below, so
+  // a job already in a terminal display state still clears it.
   dismissStartToast(key);
   if (!job) return;
   if (TERMINAL_DISPLAY_STATES.has(job.state)) return;
@@ -742,9 +740,7 @@ export async function startJob(
     }
     const started = transportAfterStart(mode, result.transport);
     if (started !== activeTransport) patchJob(key, { transport: started });
-    // One start, one toast. This is the ONLY place a start is announced: chat used
-    // to raise its own the moment requestStart resolved, which stacked a second
-    // toast under this one for the same download.
+    // One start, one toast. The only place a start is announced.
     if (
       shouldShowXetNotice({
         kind: req.kind,
@@ -755,9 +751,8 @@ export async function startJob(
         live: result.state === "running" && !rt.cancelRequested,
       })
     ) {
-      // Reserving is async (it asks the backend for one of the three), and
-      // nothing below waits on a toast, so let the download get on with it.
-      // Losing the reservation still leaves the caller owed its message.
+      // Async (it asks the backend for one of the three) and nothing below waits on
+      // a toast. A lost reservation still leaves the caller owed its message.
       void reserveXetNoticeFromServer().then(({ granted }) => {
         if (granted) {
           showStartToast(key, {

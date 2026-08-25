@@ -1,18 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""How many times the Xet "download is running" notice has been shown, for the life of the install.
+"""Lifetime count of the Xet "download is running" notice.
 
-The count used to live in the browser, in localStorage under
-``unsloth.studio.xetNoticeCount``. localStorage is scoped to an ORIGIN, and a Studio
-origin is not stable: ``run.py`` defaults to port 8888 and falls back to the next free
-port when that is taken, and 8888 is also Jupyter's default. So starting Studio while a
-notebook server is up moves it to 8889, which is a different origin with an empty store,
-and the notice starts its three all over again. Colab and the Cloudflare tunnel are
-different origins again, as is a second browser or a cleared profile. The user-visible
-effect was a notice that reappeared indefinitely instead of a handful of times ever.
-
-The install has exactly one database, so the count belongs here.
+It lived in localStorage, which is per-origin, and a Studio origin is not stable:
+run.py falls back past port 8888 when Jupyter has it, and Colab and the tunnel differ
+again. Each new origin handed out a fresh three, so the notice never stopped.
 """
 
 from __future__ import annotations
@@ -22,9 +15,7 @@ from typing import Any
 
 XET_NOTICE_COUNT_KEY = "xet_notice_shown_count"
 
-# Three sightings is enough to learn what a Xet transfer looks like. The cap lives on
-# this side because the browser is no longer trusted to remember, and a limit enforced
-# where the count is stored cannot disagree with it.
+# Enforced where the count is stored, so the two cannot disagree.
 XET_NOTICE_LIMIT = 3
 
 
@@ -55,17 +46,12 @@ def get_xet_notice_count() -> int:
 def reserve_xet_notice(seen_hint: int = 0) -> dict[str, Any]:
     """Take one of the remaining notices, or report that none are left.
 
-    Read-modify-write in ONE transaction. ``get_app_setting`` and
-    ``upsert_app_settings`` each open their own connection, so doing this across the
-    two of them lets two tabs read the same count and both be granted, which is how
-    the browser implementation had to reach for Web Locks. ``BEGIN IMMEDIATE`` takes
-    the write lock up front, so the second caller waits and then reads the first
-    caller's value.
+    One transaction: get_app_setting and upsert_app_settings open a connection each,
+    so splitting the read and write lets two tabs both be granted. BEGIN IMMEDIATE
+    takes the write lock up front.
 
-    ``seen_hint`` carries a legacy localStorage count from a client that has not
-    reported one before. It can only raise the stored count, never lower it: a user
-    who already spent their three before this moved server-side must not get three
-    more, and a client cannot use the hint to talk its own way back under the limit.
+    seen_hint is a legacy localStorage count. It can only raise the stored value, so
+    a client cannot talk its way back under the limit.
     """
     from storage.studio_db import get_connection
 

@@ -3,17 +3,12 @@
 
 // Reserving one of the three Xet notices.
 //
-// This file used to test a Web Locks dance that serialised two tabs reading the
-// same localStorage count. Both the count and the limit now live on the server
-// (studio/backend/utils/xet_notice_settings.py), which does the read and the write
-// in one transaction, so the race this file existed for is gone rather than
-// narrowed, and the concurrency case moved to test_xet_notice_settings.py.
+// The count and limit moved to the server, which does the read and write in one
+// transaction, so the Web Locks race this file used to cover is gone and the
+// concurrency case lives in test_xet_notice_settings.py.
 //
-// What is left here is the client half: send the legacy count exactly once, and
-// fail CLOSED on anything unexpected. Failing closed is the whole point of the
-// change. The old behaviour reset every time the origin moved, which is why the
-// notice never actually stopped, so a fallback to a local count on error would
-// quietly restore the bug on any flaky request.
+// What is left is the client half: send the legacy count once, and fail CLOSED. A
+// local fallback on error would restore the resetting bug on any flaky request.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -40,11 +35,9 @@ let respond: () => Promise<Response> = async () =>
     headers: { "Content-Type": "application/json" },
   });
 
-// Stub global fetch rather than the authFetch export: ES module namespaces are
-// frozen, so a namespace property cannot be redefined. Going through the real
-// authFetch also covers the header and URL handling instead of mocking it away.
-// The Tauri network retry it wraps only engages under Tauri, so a thrown error
-// surfaces immediately here rather than looping.
+// Stub global fetch, not the authFetch export: ES module namespaces are frozen. This
+// also exercises the real header and URL handling. The Tauri retry it wraps only
+// engages under Tauri, so a thrown error surfaces immediately.
 Object.defineProperty(globalThis, "fetch", {
   configurable: true,
   value: async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -92,8 +85,7 @@ test("a refused reservation is reported as refused", async () => {
 });
 
 test("an error response shows nothing rather than falling back", async () => {
-  // Fail closed. A local fallback here would reinstate the resetting behaviour
-  // on every failed request, which is the bug this replaced.
+  // Fail closed: a local fallback would reinstate the resetting bug on every failure.
   reset();
   respond = async () => new Response("{}", { status: 500 });
   assert.equal((await reserveXetNoticeFromServer()).granted, false);
@@ -112,8 +104,7 @@ test("an error response shows nothing rather than falling back", async () => {
 });
 
 test("a legacy count is sent once, as a floor", async () => {
-  // Someone who already spent their three in localStorage must not get three
-  // more the first time they run a build that counts server-side.
+  // Someone who spent their three in localStorage must not get three more.
   reset();
   store.set(LEGACY_COUNT_KEY, "3");
   await reserveXetNoticeFromServer();

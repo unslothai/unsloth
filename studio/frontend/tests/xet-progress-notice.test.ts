@@ -52,12 +52,9 @@ test("a start that is already stopping shows nothing", () => {
 });
 
 test("the predicate does not decide the cap", () => {
-  // The 3-use limit lives on the server (utils/xet_notice_settings.py) because the
-  // browser could not be trusted to remember it: localStorage is per-origin and a
-  // Studio origin moves whenever port 8888 is taken. A second copy of the limit here
-  // could only drift out of step with the one actually being enforced, so the
-  // predicate answers "is this the kind of download worth explaining" and nothing
-  // else. reserveXetNotice is the only thing that can say no on grounds of count.
+  // The limit lives on the server (utils/xet_notice_settings.py); a copy here could
+  // only drift out of step with what is enforced. The predicate answers "is this
+  // worth explaining", and the reservation is the only thing that counts.
   const notice = noticeModule as Record<string, unknown>;
   assert.equal(notice.XET_NOTICE_LIMIT, undefined);
   assert.equal(notice.XET_NOTICE_STORAGE_KEY, undefined);
@@ -66,36 +63,21 @@ test("the predicate does not decide the cap", () => {
 });
 
 test("the copy reassures, in plain words", () => {
-  // The reassurance is the whole point of the toast, so it leads and it is the
-  // only thing here. Explaining chunking, out-of-order writes and batched
-  // commits is what made the first version 330 characters.
+  // The reassurance is the point. Explaining chunking and batched commits is what
+  // made the first version 330 characters.
   assert.match(XET_NOTICE_TITLE, /running/);
   assert.match(XET_NOTICE_DESCRIPTION, /Nothing is stuck/);
 });
 
 test("the copy stays short enough to clear the hub toolbar", () => {
-  // This test IS the #9293 revert, written down.
+  // This test IS the #9293 revert, written down. At 62 + 330 chars the toast rendered
+  // 235px tall over the Model hub toolbar, leaving 4 to 6 controls unclickable for 8s.
   //
-  // The first version of this notice ran 62 characters of title and 330 of
-  // description. Sonner rendered that 235px tall in the top-right corner,
-  // which is where the Model hub keeps its own toolbar, so while the toast
-  // was up the capability filter, the sort dropdown, the Models and Datasets
-  // tabs and the repo action icons were underneath it. Hit testing each
-  // control's own centre point put 4 to 6 of them inside the toast, meaning
-  // unclickable, three times per install at 8s each.
-  //
-  // The budgets below are not guesses. At 149 characters the toast measured
-  // 114.5px tall, bottom edge y=126.5, against a filter row whose centre is
-  // y=127: clickable by half a pixel, which would not have survived a longer
-  // translation or a zoom level. At 101 it ends near y=100 and does not reach
-  // the row at all. So 110 is the real ceiling, not the point where it starts
-  // to break. Nothing else enforces this, and the failure is invisible to unit
-  // tests and to a screenshot taken at the wrong viewport, which is exactly how
-  // it shipped the first time.
-  //
-  // This applies to the BASE description only. That is the one the Hub renders
-  // over its own toolbar; the composed form below is chat-only, and chat has no
-  // toolbar under the toast.
+  // The budgets are measured, not guessed. At 149 chars the bottom edge sat at y=126.5
+  // against a filter row centred at y=127: clickable by half a pixel. At 101 it ends
+  // near y=100 and never reaches the row, so 110 is the ceiling rather than the point
+  // it breaks. Applies to the BASE description only; the composed form is chat-only
+  // and has no toolbar beneath it.
   assert.ok(
     XET_NOTICE_TITLE.length <= 32,
     `title is ${XET_NOTICE_TITLE.length} chars, budget 32`,
@@ -111,10 +93,8 @@ test("the copy stays short enough to clear the hub toolbar", () => {
 });
 
 test("the caller's line is folded in rather than raised as a second toast", () => {
-  // Reported on main: picking a model in chat produced the Xet notice AND chat's
-  // own "Downloading model / It'll load automatically once the download finishes",
-  // stacked in the same corner. Suppressing one loses information the user wants,
-  // so the caller's sentence joins the notice instead.
+  // Reported on main: chat produced the Xet notice AND its own "Downloading model",
+  // stacked. Suppressing one loses information, so the sentence joins the notice.
   const composed = composeNoticeDescription({
     description: "It'll load automatically once the download finishes.",
   });
@@ -128,8 +108,7 @@ test("the caller's line is folded in rather than raised as a second toast", () =
 });
 
 test("a caller with nothing to add leaves the notice alone", () => {
-  // The Hub passes no callerToast: nothing auto-loads there, so the extra
-  // sentence would be false rather than merely long.
+  // The Hub passes none: nothing auto-loads there, so the sentence would be false.
   assert.equal(composeNoticeDescription(), XET_NOTICE_DESCRIPTION);
   assert.equal(composeNoticeDescription(null), XET_NOTICE_DESCRIPTION);
   assert.equal(
@@ -139,9 +118,7 @@ test("a caller with nothing to add leaves the notice alone", () => {
 });
 
 test("it stays up longer than the Toaster default", () => {
-  // Shorter than the first version, but still two sentences a user has to
-  // notice while looking at a progress bar, and it appears at most 3 times
-  // ever. 5s is enough to miss entirely. This is an upper bound only: the
-  // toast is dismissed as soon as the transfer it describes finishes.
+  // Two sentences to notice while watching a progress bar, at most 3 times ever, so
+  // 5s is enough to miss. An upper bound only: it is dismissed when the transfer ends.
   assert.ok(XET_NOTICE_DURATION_MS > 5000);
 });

@@ -65,15 +65,10 @@ export interface DownloadRequest {
   checkpoint?: boolean;
   /** What this surface wants said about the start, for the download manager to raise.
    *
-   * Chat used to toast this itself the moment `requestStart` resolved, while `startJob`
-   * independently raised the Xet notice for the same start, so one download produced two
-   * toasts stacked in the same corner. Suppressing one of them loses information: the
-   * notice explains why the bar sits at 0%, chat's line explains that the model loads by
-   * itself afterwards, and the user wants both.
-   *
-   * So the caller states its message and the download manager decides how to say it: folded
-   * into the notice when the notice fires, on its own when it does not (HTTP transport, the
-   * three uses spent, an attached job). One start, one toast, nothing dropped. */
+   * Chat used to toast this itself while startJob raised the Xet notice for the same
+   * start, stacking two toasts. Suppressing one loses information, so the caller states
+   * its message and the manager folds it into the notice, or shows it alone when the
+   * notice does not fire. One start, one toast, nothing dropped. */
   callerToast?: { title: string; description: string };
 }
 

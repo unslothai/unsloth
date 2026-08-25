@@ -1,12 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Asking the backend for one of the three Xet notices.
-//
-// The count used to live in localStorage, which is per-origin, and a Studio origin is
-// not stable: the server falls back past port 8888 when Jupyter already has it, and
-// Colab and the tunnel are different origins again. Every one of those handed the user
-// a fresh set of three, so the notice never actually stopped.
+// Asking the backend for one of the three Xet notices. The count was in per-origin
+// localStorage, and a Studio origin moves whenever port 8888 is taken, so every new
+// origin handed out a fresh three and the notice never stopped.
 
 import { authFetch } from "@/features/auth/api";
 
@@ -19,13 +16,8 @@ export interface XetNoticeReservation {
   limit: number;
 }
 
-/** A count this browser recorded before the tally moved server-side.
- *
- * Sent once, and only ever raises the stored count, so someone who already spent
- * their three does not get three more the first time they run this build. Marked as
- * migrated straight away: sending it repeatedly is harmless (the server takes the
- * max) but pointless, and the local value is meaningless afterwards.
- */
+/** A count recorded before the tally moved server-side. Sent once, and only raises
+ * the stored value, so someone who spent their three does not get three more. */
 function takeLegacyCount(): number {
   if (typeof window === "undefined") return 0;
   try {
@@ -42,12 +34,8 @@ function takeLegacyCount(): number {
 
 /** Take one of the remaining notices, or report that none are left.
  *
- * FAILS CLOSED. If the endpoint is unreachable, older than these routes, or errors,
- * this reports "not granted" and no toast is shown. The alternative, falling back to
- * the browser count, would reintroduce exactly the resetting behaviour this replaced,
- * every time a request happened to fail. Missing the explanation once is a smaller
- * cost than a notice that comes back forever.
- */
+ * FAILS CLOSED: an unreachable, older or erroring backend shows nothing. Falling back
+ * to the browser count would restore the resetting bug on any failed request. */
 export async function reserveXetNoticeFromServer(): Promise<XetNoticeReservation> {
   const denied: XetNoticeReservation = { granted: false, shown: 0, limit: 0 };
   try {

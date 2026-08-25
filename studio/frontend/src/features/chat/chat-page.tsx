@@ -2748,9 +2748,8 @@ export function ChatPage({
             repoId: selection.id,
             variant: selection.ggufVariant ?? null,
             expectedBytes: selection.expectedBytes ?? 0,
-            // Hand the message over instead of raising it here. The download
-            // manager folds it into the Xet notice when that fires, so one
-            // start produces one toast carrying both explanations.
+            // Handed over, not raised here: the manager folds it into the Xet
+            // notice so one start produces one toast carrying both.
             callerToast: {
               title: "Downloading in the background",
               description:
@@ -2865,8 +2864,7 @@ export function ChatPage({
         repoId: pending.selection.id,
         variant: pending.selection.ggufVariant ?? null,
         expectedBytes: pending.selection.expectedBytes ?? 0,
-        // As above: the download manager raises this, folded into the Xet
-        // notice when that fires.
+        // As above: raised by the download manager, folded into the notice.
         callerToast: {
           title: "Downloading model",
           description: "It'll load automatically once the download finishes.",
@@ -2874,11 +2872,9 @@ export function ChatPage({
       });
       if (!active) return;
       if (outcome === "started") {
-        // No toast raised HERE. #9663 dropped the one that used to live on this
-        // line because it duplicated the download panel; its sentence is not
-        // dropped though, it travels as callerToast above and the download
-        // manager folds it into the Xet notice rather than stacking a second
-        // card in the same corner. The auto-load still runs from onComplete.
+        // No toast HERE. #9663 dropped it as a duplicate of the download panel;
+        // its sentence still travels as callerToast above and is folded into the
+        // Xet notice. The auto-load still runs from onComplete.
         return;
       }
       if (outcome === "conflict") {
