@@ -211,6 +211,38 @@ def test_declared_sizes_are_converted_to_their_resident_precision(
     )
 
 
+# stabilityai/stable-diffusion-xl-base-1.0, 12.9 GB: unet, both text encoders and the vae are
+# all stored F32 in the DEFAULT variant (headers read 2026-08-25), and the loader skips the fp16
+# twins, so the download is twice the bf16 residency.
+SDXL_BASE = [
+    ("unet/diffusion_pytorch_model.safetensors", 9794 * MIB),
+    ("text_encoder/model.safetensors", 469 * MIB),
+    ("text_encoder_2/model.safetensors", 2650 * MIB),
+    ("vae/diffusion_pytorch_model.safetensors", 319 * MIB),
+]
+
+
+def test_an_fp32_stored_pipeline_is_not_priced_at_its_download_size(monkeypatch):
+    """SDXL is the one U-Net family, so its denoiser sits in ``unet/`` and lands in the
+    companion bucket rather than the denoiser one. Both factors therefore have to halve, or
+    a 6.5 GB bf16 pipeline prices as 12.9 GB and is refused on every 16 GB pool."""
+    from core.inference.diffusion_auto_policy import resident_bytes_from_declared
+
+    declared = sum(size for _name, size in SDXL_BASE)
+    for base in ("stabilityai/stable-diffusion-xl-base-1.0", "stabilityai/sdxl-turbo"):
+        assert resident_bytes_from_declared(base, SDXL_BASE) == declared // 2, base
+
+    fam = _family(name = "sdxl", base_repo = "stabilityai/stable-diffusion-xl-base-1.0")
+    for pool_mib in (12 * 1024, 16 * 1024, 24 * 1024):
+        backend = _backend(monkeypatch, total_mib = pool_mib)
+        assert (
+            _verdict(
+                backend, fam, "stabilityai/stable-diffusion-xl-base-1.0", fam.base_repo, SDXL_BASE
+            )
+            is None
+        ), pool_mib
+
+
 def test_float32_target_rejects_lumina_that_bf16_accepts(monkeypatch):
     fam = _family(name = "lumina-2", base_repo = "Alpha-VLLM/Lumina-Image-2.0")
     bf16 = _backend(monkeypatch, total_mib = 16 * 1024)
