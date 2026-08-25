@@ -75,3 +75,41 @@ test("trim feedback distinguishes required, optional and selected states", () =>
     invalid: false,
   });
 });
+
+test("intervals the backend accepts are not refused over floating point", () => {
+  // validate_h3_reference_trim allows 1e-6 of slack, and the 0.1-step inputs reach
+  // differences that are not exact in binary: 2.3 - 0.3 is 1.9999999999999998 and
+  // 16.1 - 1.1 is 15.000000000000002. Comparing exactly here refused both.
+  assert.equal(2.3 - 0.3 < 2, true);
+  assert.equal(16.1 - 1.1 > 15, true);
+  for (const [start, end] of [
+    [0.3, 2.3],
+    [0.8, 2.8],
+    [1.3, 3.3],
+    [2.1, 4.1],
+    [1.1, 16.1],
+    [3.1, 18.1],
+  ]) {
+    assert.equal(
+      referenceVideoTrimError("Video 1", start, end, 30),
+      null,
+      `${start} to ${end} should be accepted`,
+    );
+  }
+});
+
+test("a source shorter than the model minimum is refused before it is sent", () => {
+  // No interval inside a 1.5s clip can reach 2s, so the trim fields are a dead end and the
+  // backend would refuse it anyway. Say so once, here.
+  assert.equal(
+    referenceVideoTrimError("Video 1", null, null, 1.5),
+    "Video 1 is shorter than the 2 second minimum",
+  );
+  assert.equal(
+    referenceVideoTrimError("Video 1", 0, 1.5, 1.5),
+    "Video 1 is shorter than the 2 second minimum",
+  );
+  // Exactly the minimum is fine, and so is an unknown duration.
+  assert.equal(referenceVideoTrimError("Video 1", null, null, 2), null);
+  assert.equal(referenceVideoTrimError("Video 1", null, null, undefined), null);
+});
