@@ -649,18 +649,13 @@ class FastLanguageModel(FastLlamaModel):
         ):
             model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
         # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set
-        #
-        # SAY SO when the caller explicitly asked for a quantized load. This
-        # used to drop `load_in_4bit = True` in silence, and on a small card
-        # the consequence arrives much later as an out-of-memory failure
-        # during weight conversion whose message never mentions memory or
-        # quantization -- so the reader has no way back to this line.
+        # Say so: dropping the flags in silence surfaces much later as an
+        # out-of-memory failure whose message never mentions quantization.
         if model_name.lower().endswith("-bf16") and (
             load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
         ):
-            # A user-supplied `quantization_config` is NOT dropped here: it stays
-            # in **kwargs and is forwarded to Transformers, which still quantizes.
-            # Only the plain flags are dropped, so only say so for those.
+            # Only the plain flags are dropped; a user quantization_config stays
+            # in **kwargs and still quantizes, so stay quiet in that case.
             if (load_in_4bit or load_in_8bit or load_in_fp8 != False) and kwargs.get(
                 "quantization_config", None
             ) is None:
@@ -848,18 +843,13 @@ class FastLanguageModel(FastLlamaModel):
             ):
                 model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
             # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set
-            #
-            # SAY SO when the caller explicitly asked for a quantized load. This
-            # used to drop `load_in_4bit = True` in silence, and on a small card
-            # the consequence arrives much later as an out-of-memory failure
-            # during weight conversion whose message never mentions memory or
-            # quantization -- so the reader has no way back to this line.
+            # Say so: dropping the flags in silence surfaces much later as an
+            # out-of-memory failure whose message never mentions quantization.
             if model_name.lower().endswith("-bf16") and (
                 load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
             ):
-                # A user-supplied `quantization_config` is NOT dropped here: it
-                # stays in **kwargs and is forwarded to Transformers, which still
-                # quantizes. Only the plain flags are dropped, so only say so for those.
+                # Only the plain flags are dropped; a user quantization_config
+                # stays in **kwargs and still quantizes, so stay quiet then.
                 if (load_in_4bit or load_in_8bit or load_in_fp8 != False) and kwargs.get(
                     "quantization_config", None
                 ) is None:
@@ -1458,18 +1448,13 @@ class FastModel(FastBaseModel):
         ):
             model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
         # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set
-        #
-        # SAY SO when the caller explicitly asked for a quantized load. This
-        # used to drop `load_in_4bit = True` in silence, and on a small card
-        # the consequence arrives much later as an out-of-memory failure
-        # during weight conversion whose message never mentions memory or
-        # quantization -- so the reader has no way back to this line.
+        # Say so: dropping the flags in silence surfaces much later as an
+        # out-of-memory failure whose message never mentions quantization.
         if model_name.lower().endswith("-bf16") and (
             load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
         ):
-            # A user-supplied `quantization_config` is NOT dropped here: it stays
-            # in **kwargs and is forwarded to Transformers, which still quantizes.
-            # Only the plain flags are dropped, so only say so for those.
+            # Only the plain flags are dropped; a user quantization_config stays
+            # in **kwargs and still quantizes, so stay quiet in that case.
             if (load_in_4bit or load_in_8bit or load_in_fp8 != False) and kwargs.get(
                 "quantization_config", None
             ) is None:
@@ -1862,18 +1847,13 @@ class FastModel(FastBaseModel):
             ):
                 model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
             # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set
-            #
-            # SAY SO when the caller explicitly asked for a quantized load. This
-            # used to drop `load_in_4bit = True` in silence, and on a small card
-            # the consequence arrives much later as an out-of-memory failure
-            # during weight conversion whose message never mentions memory or
-            # quantization -- so the reader has no way back to this line.
+            # Say so: dropping the flags in silence surfaces much later as an
+            # out-of-memory failure whose message never mentions quantization.
             if model_name.lower().endswith("-bf16") and (
                 load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
             ):
-                # A user-supplied `quantization_config` is NOT dropped here: it
-                # stays in **kwargs and is forwarded to Transformers, which still
-                # quantizes. Only the plain flags are dropped, so only say so for those.
+                # Only the plain flags are dropped; a user quantization_config
+                # stays in **kwargs and still quantizes, so stay quiet then.
                 if (load_in_4bit or load_in_8bit or load_in_fp8 != False) and kwargs.get(
                     "quantization_config", None
                 ) is None:

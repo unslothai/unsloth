@@ -145,16 +145,14 @@ def test_the_original_error_is_still_reported():
     again, and either shape satisfies what this is actually checking.
     """
     for anchor in ("Failed to save/merge model: ", "Failed to save model: "):
-        # Every occurrence, not the first: the module also DISCUSSES these
-        # messages in a docstring, and a docstring is not a call site.
+        # All occurrences, not the first: a docstring also quotes these messages.
         windows = []
         i = SRC.find(anchor)
         assert i != -1, anchor
         while i != -1:
             windows.append(SRC[i : i + 200])
             i = SRC.find(anchor, i + 1)
-        # `{e}` renders nothing when the exception carries no args, so the
-        # formatter that always leads with the type is equally acceptable here.
+        # `{e}` is empty when the exception has no args, so the type-leading form counts too.
         assert any(
             ("{e}" in w or "_describe_exception(e)" in w) and "_offloaded_parameter_hint" in w
             for w in windows

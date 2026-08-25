@@ -191,14 +191,9 @@ IMATRIX_QUANTS = {
 def _describe_exception(exc) -> str:
     """A description that survives an exception with no message.
 
-    `f"{exc}"` on an exception whose args are empty is the EMPTY STRING, so
-    `f"Failed to save model: {exc}"` renders as "Failed to save model: " and
-    the report names nothing at all. That is not hypothetical: it is what a
-    Kaggle Q8_0 export produced, and the run had to be repeated with a
-    traceback capture just to learn which call had failed.
-
-    Always leading with the type keeps the class of failure visible even when
-    the instance is silent.
+    `f"{exc}"` is the EMPTY STRING when the args are empty, so
+    `f"Failed to save model: {exc}"` named nothing at all on a real Kaggle
+    Q8_0 export. Leading with the type keeps the class of failure visible.
     """
     text = str(exc).strip()
     name = type(exc).__name__

@@ -3,12 +3,10 @@
 
 """The '-bf16' notice must not claim 16bit when a quantization_config survives.
 
-A `-bf16` repo name drops the plain `load_in_4bit` / `load_in_8bit` / `load_in_fp8`
-flags, and the notice added for that is accurate. It is NOT accurate when the caller
-passed `quantization_config = BitsAndBytesConfig(load_in_4bit = True)`: that object
-is only read into the local flags, it stays in `**kwargs`, and both loaders forward
-it to Transformers, which quantizes anyway. Saying "will load in 16bit" there tells
-the user the opposite of what happens.
+A `-bf16` name drops the plain load_in_4bit / 8bit / fp8 flags, so the notice is
+accurate for those. A user-supplied `quantization_config` is only read into the
+local flags: it stays in `**kwargs`, both loaders forward it, and Transformers
+quantizes anyway, so there the notice would say the opposite of what happens.
 
 Source-level, because reaching the branch needs a real checkpoint download.
 """
@@ -57,7 +55,6 @@ def test_the_notice_is_gated_on_no_user_quantization_config(index):
         "quantization_config is still forwarded to Transformers and still "
         "quantizes, so the notice must be suppressed when one is present"
     )
-    # It must read the value that is actually forwarded, not the stale local.
     assert "kwargs" in test_src, (
         "read kwargs['quantization_config']: the local `quantization_config` is "
         "not cleared when the bitsandbytes-unavailable branch pops it from kwargs"
