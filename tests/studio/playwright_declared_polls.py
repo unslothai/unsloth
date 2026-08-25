@@ -83,12 +83,18 @@ def info(message: str) -> None:
     print(message, flush = True)
 
 
-def api(path: str, payload: dict, token: str | None = None) -> dict:
+def api(
+    path: str,
+    payload: dict,
+    token: str | None = None,
+) -> dict:
     request = urllib.request.Request(
         f"{BASE}{path}",
         data = json.dumps(payload).encode(),
-        headers = {"Content-Type": "application/json",
-                   **({"Authorization": f"Bearer {token}"} if token else {})},
+        headers = {
+            "Content-Type": "application/json",
+            **({"Authorization": f"Bearer {token}"} if token else {}),
+        },
     )
     with urllib.request.urlopen(request, timeout = 30) as response:
         return json.loads(response.read().decode() or "{}")
@@ -112,16 +118,14 @@ def main() -> int:
     # rotation having already happened, because a second suite against the same instance
     # would otherwise die on a 401 traceback instead of just logging in.
     try:
-        token = api("/api/auth/login",
-                    {"username": "unsloth", "password": OLD})["access_token"]
+        token = api("/api/auth/login", {"username": "unsloth", "password": OLD})["access_token"]
     except urllib.error.HTTPError as exc:
         if exc.code != 401:
             raise
         token = None
     if token is not None:
         try:
-            api("/api/auth/change-password",
-                {"current_password": OLD, "new_password": NEW}, token)
+            api("/api/auth/change-password", {"current_password": OLD, "new_password": NEW}, token)
         except urllib.error.HTTPError:
             pass
     session = api("/api/auth/login", {"username": "unsloth", "password": NEW})
@@ -152,8 +156,9 @@ def main() -> int:
     with sync_playwright() as p:
         install_wall_clock_watchdog(WALL_TIMEOUT_S, label = "declared-polls", info = info)
         browser = p.chromium.launch(headless = True, args = chromium_launch_args())
-        context = browser.new_context(viewport = {"width": 1440, "height": 900},
-                                      reduced_motion = "reduce")
+        context = browser.new_context(
+            viewport = {"width": 1440, "height": 900}, reduced_motion = "reduce"
+        )
         context.add_init_script(seed_js)
         page = context.new_page()
 
@@ -202,22 +207,33 @@ def main() -> int:
 
     polled = {path: n for path, n in per_dwell_max.items() if n >= POLL_THRESHOLD}
     undeclared = sorted(set(polled) - declared)
-    (ART / "observed_polls.json").write_text(json.dumps(
-        {"watch_seconds": WATCH_S, "threshold": POLL_THRESHOLD,
-         "totals": dict(sorted(seen.items())),
-         "per_dwell_max": dict(sorted(per_dwell_max.items())),
-         "polled": dict(sorted(polled.items())),
-         "undeclared": undeclared}, indent = 2))
+    (ART / "observed_polls.json").write_text(
+        json.dumps(
+            {
+                "watch_seconds": WATCH_S,
+                "threshold": POLL_THRESHOLD,
+                "totals": dict(sorted(seen.items())),
+                "per_dwell_max": dict(sorted(per_dwell_max.items())),
+                "polled": dict(sorted(polled.items())),
+                "undeclared": undeclared,
+            },
+            indent = 2,
+        )
+    )
 
-    info(f"watched {WATCH_S:.0f}s: {len(seen)} distinct API paths, "
-         f"{len(polled)} repeated {POLL_THRESHOLD}x or more inside a single dwell")
+    info(
+        f"watched {WATCH_S:.0f}s: {len(seen)} distinct API paths, "
+        f"{len(polled)} repeated {POLL_THRESHOLD}x or more inside a single dwell"
+    )
 
     if len(polled) < MIN_POLLED_PATHS:
         # Too thin to mean anything: the listener never attached, the walk never left one
         # screen, or the window was too short. A clean sheet from a run like that is not a
         # pass, it is an absence of evidence, so say so instead of reporting green.
-        info(f"FAIL saw only {len(polled)} polled path(s), expected at least "
-             f"{MIN_POLLED_PATHS}; this run cannot vouch for anything")
+        info(
+            f"FAIL saw only {len(polled)} polled path(s), expected at least "
+            f"{MIN_POLLED_PATHS}; this run cannot vouch for anything"
+        )
         for path, n in sorted(polled.items()):
             info(f"  {path}  {n}x")
         return 1
@@ -227,8 +243,10 @@ def main() -> int:
     # never sees them.
     unobserved = sorted(declared - set(polled))
     if unobserved:
-        info(f"note: {len(unobserved)} declared polls not seen while idle "
-             f"(expected for pane-scoped and busy-only polls)")
+        info(
+            f"note: {len(unobserved)} declared polls not seen while idle "
+            f"(expected for pane-scoped and busy-only polls)"
+        )
 
     if undeclared:
         info("")
