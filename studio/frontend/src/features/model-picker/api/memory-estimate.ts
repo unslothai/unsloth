@@ -22,6 +22,10 @@ export interface MemoryEstimate {
   computeBytes: number;
   /** A separate drafter's own cache and rollback state, on top of its file. */
   drafterRuntimeBytes: number;
+  /** The share of the above that lands on the GPU. A figure rather than a flag: under
+   *  MTP the target-side verification state follows the TARGET cache and the draft
+   *  cache follows the drafter, so the two halves can be placed differently. */
+  drafterRuntimeGpuBytes: number;
   /** The vision encoder's buffers, about 0.4x the projector file on top of it. */
   projectorRuntimeBytes: number;
   /** A charged drafter whose cache could not be sized: `--spec-draft-hf` names a
@@ -81,6 +85,7 @@ const UNAVAILABLE: MemoryEstimate = {
   kvBytes: 0,
   computeBytes: 0,
   drafterRuntimeBytes: 0,
+  drafterRuntimeGpuBytes: 0,
   projectorRuntimeBytes: 0,
   drafterKvUnsized: false,
   totalBytes: 0,
@@ -102,6 +107,7 @@ interface ApiEstimateResponse {
   kv_bytes: number;
   compute_bytes: number;
   drafter_runtime_bytes: number;
+  drafter_runtime_gpu_bytes: number;
   projector_runtime_bytes: number;
   drafter_kv_unsized: boolean;
   total_bytes: number;
@@ -152,6 +158,11 @@ function toMemoryEstimate(body: ApiEstimateResponse): MemoryEstimate {
     kvBytes: body.kv_bytes ?? 0,
     computeBytes: body.compute_bytes ?? 0,
     drafterRuntimeBytes: body.drafter_runtime_bytes ?? 0,
+    // Absent on a backend predating the split: fall back to the whole term, which
+    // keeps the old "all of it is on the GPU" reading rather than inventing a zero
+    // that would silently drop a real VRAM charge off the row.
+    drafterRuntimeGpuBytes:
+      body.drafter_runtime_gpu_bytes ?? body.drafter_runtime_bytes ?? 0,
     projectorRuntimeBytes: body.projector_runtime_bytes ?? 0,
     drafterKvUnsized: Boolean(body.drafter_kv_unsized),
     totalBytes: body.total_bytes ?? 0,

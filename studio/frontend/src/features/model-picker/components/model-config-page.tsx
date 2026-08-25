@@ -1018,8 +1018,12 @@ function MemoryEstimateRow({
   }
   const gpuFit = classifyMemoryFit(estimate.gpuBytes, gpuCapacityGb);
   const totalFit = classifyMemoryFit(estimate.totalBytes, totalCapacityGb);
-  // Lower bound, not an estimate: no attention dims, so the cache is missing.
-  const bounded = !estimate.kvEstimable;
+  // Lower bound, not an estimate. Two ways to get there, and both UNDER-count by a
+  // term that grows with context: no attention dims, so the target cache is missing,
+  // or a drafter that is a repository rather than a file on this disk, so its cache
+  // is missing while its weights are counted. The advisory chain below still tells
+  // them apart, because the two are not fixed the same way.
+  const bounded = !estimate.kvEstimable || estimate.drafterKvUnsized;
   const prefix = bounded ? "≥ " : "";
   const kvNote = [
     estimate.cacheTypeKv ?? "f16",
@@ -1029,9 +1033,24 @@ function MemoryEstimateRow({
   ]
     .filter(Boolean)
     .join(" · ");
+  // Where the draft cache actually sits, read from its own GPU share rather than from
+  // kvOnGpu. kvOnGpu is the TARGET cache's placement, and the two are set by different
+  // flags: --no-kv-offload moves the target, --spec-draft-ngl 0 moves the drafter. Off
+  // the target flag this line was wrong in both directions -- silent about a genuinely
+  // host-resident draft cache, and claiming "host RAM" for one the same response had
+  // just charged to gpu_bytes. Under MTP the term is split across both placements, so
+  // there is a third case that no boolean could have expressed.
+  const draftCacheNote =
+    estimate.drafterRuntimeGpuBytes <= 0
+      ? "host RAM"
+      : estimate.drafterRuntimeGpuBytes < estimate.drafterRuntimeBytes
+        ? `${formatMemoryGb(estimate.drafterRuntimeGpuBytes)} on GPU`
+        : undefined;
   // At most one note, most actionable first. An unsizable cache outranks any verdict
-  // drawn from the figures, since it says they are incomplete.
-  const advisory = bounded
+  // drawn from the figures, since it says they are incomplete. Branches on
+  // kvEstimable rather than `bounded`: both make the figures a floor, but only this
+  // one is about the header, and the drafter case below names its own cause.
+  const advisory = !estimate.kvEstimable
     ? {
         tone: "warn",
         text: "This GGUF's header doesn't carry the attention dimensions, so the KV cache can't be sized. The figures above are a floor, and the cache is usually the term that grows fastest with context.",
@@ -1133,7 +1152,7 @@ function MemoryEstimateRow({
             <MemoryBreakdownLine
               label="Draft cache"
               value={formatMemoryGb(estimate.drafterRuntimeBytes)}
-              note={estimate.kvOnGpu ? undefined : "host RAM"}
+              note={draftCacheNote}
             />
           )}
         </div>
@@ -2756,7 +2775,6 @@ export function ModelConfigPage({
           nCtx: resolveEstimateContext(
             runtimeConfig.customContextLength ?? null,
             activeLoadedContext,
-            nativeContextLength ?? null,
           ),
           cacheTypeKv: runtimeConfig.kvCacheDtype,
           nParallel: runtimeConfig.nParallel,

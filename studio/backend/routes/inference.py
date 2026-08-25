@@ -7990,6 +7990,12 @@ class _GgufMemoryBreakdown(NamedTuple):
     # A separate drafter's KV and rollback state, kept out of compute_bytes so each
     # line names one thing.
     drafter_runtime_bytes: int
+    # How much of that lands on the GPU. Its own figure rather than a placement flag,
+    # because the term is not placed as one piece: under MTP the target-side
+    # verification state follows the TARGET cache while the draft cache follows the
+    # drafter, so --no-kv-offload with a GPU drafter splits it. A boolean would have to
+    # answer for both and would be wrong for one of them.
+    drafter_runtime_gpu_bytes: int
     # The vision encoder's buffers, about 0.4x the projector file on top of it.
     projector_runtime_bytes: int
     # A drafter was charged whose cache could not be sized: --spec-draft-hf names a
@@ -8749,10 +8755,10 @@ def _gguf_memory_breakdown(
     # cache. The drafter's own KV follows the drafter: a separate drafter does not
     # inherit --gpu-layers (llama.cpp overwrites it with the draft placement, default
     # auto), so at --gpu-layers 0 it is still on the GPU and still holds that cache.
-    if kv_on_gpu:
-        gpu_bytes += target_spec_bytes
-    if drafter_on_gpu:
-        gpu_bytes += drafter_runtime_bytes - target_spec_bytes
+    drafter_runtime_gpu_bytes = (target_spec_bytes if kv_on_gpu else 0) + (
+        (drafter_runtime_bytes - target_spec_bytes) if drafter_on_gpu else 0
+    )
+    gpu_bytes += drafter_runtime_gpu_bytes
     # The encoder's buffers sit with the projector, so --no-mmproj-offload takes them
     # to host RAM along with the file.
     if not host_companion_bytes:
@@ -8762,6 +8768,7 @@ def _gguf_memory_breakdown(
         kv_bytes = runtime.kv_bytes,
         compute_bytes = runtime.compute_bytes,
         drafter_runtime_bytes = drafter_runtime_bytes,
+        drafter_runtime_gpu_bytes = drafter_runtime_gpu_bytes,
         projector_runtime_bytes = projector_runtime_bytes,
         drafter_kv_unsized = drafter_kv_unsized,
         total_bytes = weights_bytes + runtime_bytes,
@@ -12392,6 +12399,7 @@ async def estimate_memory(
             kv_bytes = breakdown.kv_bytes,
             compute_bytes = breakdown.compute_bytes,
             drafter_runtime_bytes = breakdown.drafter_runtime_bytes,
+            drafter_runtime_gpu_bytes = breakdown.drafter_runtime_gpu_bytes,
             projector_runtime_bytes = breakdown.projector_runtime_bytes,
             drafter_kv_unsized = breakdown.drafter_kv_unsized,
             total_bytes = breakdown.total_bytes,

@@ -1205,6 +1205,44 @@ class TestDrafterAccounting:
         assert on_cpu.weights_bytes == on_gpu.weights_bytes
         assert on_cpu.gpu_bytes < on_gpu.gpu_bytes
 
+    def test_the_drafter_runtime_reports_its_own_gpu_share(
+        self, config, gqa_gguf, monkeypatch
+    ):
+        # The panel used to label this line from kv_on_gpu, the TARGET cache's
+        # placement, which is set by a different flag. Wrong in both directions: silent
+        # about a genuinely host-resident draft cache, and claiming host RAM for one
+        # this same call had just charged to gpu_bytes. So the share is reported.
+        drafter_bytes = os.path.getsize(config.gguf_mtp_file)
+
+        def _files(cfg, *, llama_extra_args = None, **kw):
+            pinned = _draft_on_cpu(list(llama_extra_args or ()))
+            return 1.0 + (0.0 if pinned else drafter_bytes / 1024**3)
+
+        monkeypatch.setattr(ri, "_gguf_resident_file_gb", _files)
+        on_gpu = ri._gguf_memory_breakdown(config, gqa_gguf, n_ctx = 8192)
+        assert on_gpu.drafter_runtime_bytes > 0
+        # Default placement: all of it, so the row says nothing rather than guessing.
+        assert on_gpu.drafter_runtime_gpu_bytes == on_gpu.drafter_runtime_bytes
+
+        on_cpu = ri._gguf_memory_breakdown(
+            config, gqa_gguf, n_ctx = 8192, llama_extra_args = ["--spec-draft-ngl", "0"]
+        )
+        assert on_cpu.drafter_runtime_gpu_bytes == 0
+
+        # --no-kv-offload moves the TARGET cache and leaves the drafter alone. A
+        # boolean read off kv_on_gpu would call the whole term host-resident here,
+        # while gpu_bytes still carries the draft cache.
+        nkvo = ri._gguf_memory_breakdown(
+            config, gqa_gguf, n_ctx = 8192, llama_extra_args = ["--no-kv-offload"]
+        )
+        assert nkvo.kv_on_gpu is False
+        assert nkvo.drafter_runtime_gpu_bytes > 0
+
+        # Whatever the placement, the share is never more than the term it is a share
+        # of, and never negative.
+        for b in (on_gpu, on_cpu, nkvo):
+            assert 0 <= b.drafter_runtime_gpu_bytes <= b.drafter_runtime_bytes
+
 
 class TestDeviceCount:
     """A pinned layer split pays per-device overhead, not just tensor mode."""

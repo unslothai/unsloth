@@ -813,6 +813,14 @@ class EstimateMemoryResponse(BaseModel):
         "its file in weights_bytes. Included in total_bytes, and in gpu_bytes unless the "
         "drafter is CPU-pinned. Reported separately so the itemization accounts for it.",
     )
+    drafter_runtime_gpu_bytes: int = Field(
+        0,
+        description = "The share of drafter_runtime_bytes that lands on the GPU. Not a "
+        "placement flag, because the term is not placed as one piece: under MTP the "
+        "target-side verification state follows the TARGET cache (so --no-kv-offload "
+        "moves it) while the draft cache follows the drafter (so --spec-draft-ngl 0 "
+        "moves that instead), and the two can go different ways in the same load.",
+    )
     projector_runtime_bytes: int = Field(
         0,
         description = "The vision encoder's buffers, about 0.4x the projector file on top "
