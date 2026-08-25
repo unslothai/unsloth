@@ -66,6 +66,7 @@ import base64
 import io
 import json
 import os
+import re
 import secrets as secrets_module
 import shutil
 import subprocess
@@ -1701,6 +1702,146 @@ class Payload:
         detail["failures"] = failures
         return self.record("lora_vs_base", not failures, detail)
 
+    def assert_cloudflare(self) -> bool:
+        """`unsloth run --cloudflare`: a public URL that serves, and refuses.
+
+        This is the only assertion in the payload that reaches the public
+        internet, so what it claims is deliberately narrow and what it refuses
+        to claim is stated:
+
+        1. cloudflared is fetched and a quick tunnel is established, and the
+           URL printed is a real `*.trycloudflare.com` host rather than the
+           `api.trycloudflare.com` that appears in cloudflared's own FAILURE
+           lines -- that is a live trap, and Studio's own regex carries the
+           same negative lookahead for it;
+        2. the tunnel SERVES: `/api/health` answers through the public URL,
+           which is what separates "a URL was printed" from "a URL that works";
+        3. the tunnel REFUSES an unauthenticated request. A public URL onto a
+           CI machine is only defensible if it is behind auth, and this is the
+           check that says so rather than assuming it.
+
+        `--host 0.0.0.0` is not incidental. Studio raises a quick tunnel for
+        WILDCARD binds; on 127.0.0.1 there is nothing to publish and no URL is
+        printed, which would read as a broken feature.
+
+        A tunnel that cannot be established AT ALL is reported rather than
+        failed, and the reason is carried from the log. Kaggle egress to
+        cloudflared's release host is not something this repo controls, and the
+        directive asks for this "if possible". The narrowness is enforced: the
+        excuse applies only when NO url was printed, and never once one was.
+        """
+        failures: list[str] = []
+        detail: dict = {}
+        port = self.args.port + 2
+        log_path = self.outdir / "unsloth_cloudflare.log"
+        detail["port"] = port
+
+        head = self.studio_command()[:1] or [sys.executable]
+        if head[0] == sys.executable:
+            head = [sys.executable, "-c", "from unsloth_cli import app; app()"]
+        cmd = head + [
+            "run",
+            "--model", self.args.chat_model,
+            "--port", str(port),
+            # WILDCARD. A loopback bind publishes nothing and prints no URL.
+            "--host", "0.0.0.0",
+            "--api-only",
+            "--cloudflare",
+            "--start-api-key-marker",
+            "--max-seq-length", str(self.args.studio_ctx),
+        ]
+        if self.args.chat_variant:
+            cmd += ["--gguf-variant", self.args.chat_variant]
+        detail["command"] = " ".join(cmd)
+
+        env = dict(os.environ)
+        env["UNSLOTH_STUDIO_HOME"] = str(self.studio_home)
+        env.setdefault("HF_HOME", str(self.studio_home / "cache" / "huggingface"))
+        env["PYTHONUNBUFFERED"] = "1"
+        env["UNSLOTH_DISABLE_STATISTICS"] = "1"
+
+        handle = open(log_path, "ab")
+        proc = subprocess.Popen(
+            cmd, cwd = str(self.repo_root), env = env,
+            stdout = handle, stderr = subprocess.STDOUT,
+        )
+
+        api_key = None
+        url = None
+        try:
+            deadline = time.time() + self.args.health_deadline
+            while time.time() < deadline:
+                if proc.poll() is not None:
+                    failures.append(f"`unsloth run --cloudflare` exited with code {proc.returncode}")
+                    break
+                text = log_path.read_text(encoding = "utf-8", errors = "replace")
+                if api_key is None and "UNSLOTH_START_API_KEY:" in text:
+                    api_key = text.split("UNSLOTH_START_API_KEY:", 1)[1].split("\n", 1)[0].strip()
+                    if api_key:
+                        self.secrets.add(api_key)
+                if url is None:
+                    # The SAME negative lookahead Studio's own matcher uses.
+                    # `api.trycloudflare.com` appears in cloudflared's failure
+                    # lines and is never a usable tunnel.
+                    found = re.search(r"https://(?!api\.)[A-Za-z0-9-]+\.trycloudflare\.com", text)
+                    if found:
+                        url = found.group(0)
+                if url and api_key:
+                    break
+                time.sleep(2.0)
+
+            detail["tunnel_url_seen"] = bool(url)
+            if url is None:
+                # Reported, not failed, and ONLY here: nothing was published,
+                # so there is nothing to have gone wrong with. The reason comes
+                # off the log rather than being assumed.
+                tail = log_path.read_text(encoding = "utf-8", errors = "replace")[-600:]
+                detail["no_tunnel_reason"] = self.scrub(tail)
+                detail["reported_not_failed"] = True
+            else:
+                # The host is a secret in the sense that matters here: it is a
+                # live public route to this machine, and the artifact is read
+                # by people who are not running it.
+                self.secrets.add(url)
+                public = Studio(url, timeout = 30.0)
+                code, body = public.get("/api/health", auth = False)
+                detail["public_health_status"] = code
+                # A tunnel that resolves but serves Cloudflare's own error page
+                # answers 530, which is a URL that does not work.
+                if code != 200:
+                    failures.append(
+                        f"the quick tunnel URL answered HTTP {code} on /api/health, "
+                        f"so a URL was published that does not serve"
+                    )
+
+                # And it must REFUSE. A public URL onto a CI box is only
+                # defensible behind auth, so this is asserted, not assumed.
+                code, _ = public.post(
+                    "/v1/chat/completions",
+                    {"model": "default", "messages": [{"role": "user", "content": "hi"}],
+                     "max_tokens": 8},
+                    auth = False,
+                )
+                detail["public_unauthenticated_status"] = code
+                if code < 400:
+                    failures.append(
+                        f"an UNAUTHENTICATED request through the public tunnel "
+                        f"was accepted ({code}), so the quick tunnel exposes "
+                        f"this machine's inference to anyone with the URL"
+                    )
+        except BaseException as exc:  # noqa: BLE001
+            failures.append(f"driving the tunnel raised: {type(exc).__name__}: {exc}"[:300])
+        finally:
+            proc.terminate()
+            try:
+                proc.wait(timeout = 60)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            handle.close()
+
+        detail["failures"] = failures
+        return self.record("cloudflare", not failures, detail)
+
     # ------------------------------------------------------ existing drivers
 
     def assert_cli_run(self) -> bool:
@@ -2001,6 +2142,7 @@ class Payload:
             with tarfile.open(fileobj = buf, mode = "w:gz") as tar:
                 for name in (
                     "studio_gpu_report.json",
+                    "unsloth_cloudflare.log",
                     "playwright_chat_ui.log",
                     "studio.log",
                     # `unsloth run` prints the API key it mints; redacted() is
@@ -2154,6 +2296,19 @@ class Payload:
         # ends by stopping the server, so by here the port is free, the card is
         # empty, and the VRAM delta below measures this launch alone.
         self.assert_cli_run()
+
+        # LAST of all, and the only thing here that touches the public
+        # internet. Its own launch rather than a flag on the one above,
+        # because the tunnel needs a WILDCARD bind and assert_cli_run's claim
+        # is about a loopback server.
+        if self.args.cloudflare_check:
+            self.assert_cloudflare()
+        else:
+            self.record(
+                "cloudflare",
+                False,
+                {"failures": ["skipped: --no-cloudflare-check was passed"]},
+            )
         return self.finish()
 
     def finish(self) -> int:
@@ -2194,6 +2349,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type = int,
         default = 2048,
         help = "context length to pin the llama.cpp server to",
+    )
+    ap.add_argument(
+        # On by default because the directive asks for it, and off-able because
+        # it is the one assertion here that reaches the public internet.
+        "--no-cloudflare-check",
+        dest = "cloudflare_check",
+        action = "store_false",
+        default = True,
+        help = "skip the quick-tunnel assertion (it opens a public URL)",
     )
     ap.add_argument(
         # Empty means "use the bootstrap password", which is the behaviour this

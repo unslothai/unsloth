@@ -335,5 +335,10 @@ def test_the_vision_step_count_is_pinned_low_rather_than_inherited():
     src = (PAYLOAD / "run_t4_smoke.py").read_text(encoding = "utf-8")
     spawn = src[src.index('"run_vision_t4.py"') :]
     spawn = spawn[: spawn.index("subprocess.run(vision_cmd)")]
-    assert '"--max-steps", "3",' in spawn
-    assert "args.max_steps" not in spawn, "the text step count must not reach the vision run"
+    # Whitespace-insensitive: the repo's formatter reflows this list to one
+    # argument per line, and a guard matching the unformatted spelling goes red
+    # on a reformat rather than on a regression. That has now happened twice in
+    # this payload, so it is worth doing by default.
+    flat = "".join(spawn.split())
+    assert '"--max-steps","3",' in flat
+    assert "args.max_steps" not in flat, "the text step count must not reach the vision run"
