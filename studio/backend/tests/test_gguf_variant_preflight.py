@@ -200,22 +200,75 @@ def test_audio_only_repo_root_projector_still_triggers_companion_loading(
     assert config.gguf_mmproj_file is None
 
 
-def test_an_uncached_quant_leaves_the_repo_root_projector_to_the_next_apply(
+def test_a_repo_root_projector_counts_before_the_quant_verifies(
     remote_gguf_repo, monkeypatch, hub_cache
 ):
-    """Nothing has paired while no quant of the repo verifies, so no projector is named
-    and the callers that would read a modality off one are not handed a guess. The
-    loader picks it up on the Apply that follows the download."""
+    """Another quant can have created the repo dir, so the requested one is not cached
+    yet. load_model gates companion resolution on the config's vision flag, and the
+    training guard charges what the launch attaches, so both read the candidate sitting
+    above the snapshots."""
     repo_root = hub_cache / f"models--{REPO.replace('/', '--')}"
     repo_root.mkdir()
-    (repo_root / "mmproj-F16.gguf").write_bytes(b"mmproj")
+    projector = repo_root / "mmproj-F16.gguf"
+    projector.write_bytes(b"mmproj")
     monkeypatch.setattr(llama_cpp, "cached_gguf_for_load", lambda repo, variant, **kw: None)
 
     config = ModelConfig.from_identifier(REPO, gguf_variant = "Q8_0")
 
     assert config.gguf_verified is None
+    assert config.is_vision is True
+    assert config.gguf_local_mmproj_file == str(projector)
+
+
+def test_the_pre_download_projector_is_found_in_the_snapshots_container(
+    remote_gguf_repo, monkeypatch, hub_cache
+):
+    """One of the two directories the widened walk reaches, so the load and this lookup
+    have to agree on it."""
+    repo_root = hub_cache / f"models--{REPO.replace('/', '--')}"
+    snapshots = repo_root / "snapshots"
+    snapshots.mkdir(parents = True)
+    nested = snapshots / "mmproj-F16.gguf"
+    nested.write_bytes(b"mmproj in the snapshots container")
+    monkeypatch.setattr(llama_cpp, "cached_gguf_for_load", lambda repo, variant, **kw: None)
+
+    config = ModelConfig.from_identifier(REPO, gguf_variant = "Q8_0")
+
+    assert config.is_vision is True
+    assert config.gguf_local_mmproj_file == str(nested)
+
+
+def test_a_half_split_pre_download_projector_is_not_advertised(
+    remote_gguf_repo, monkeypatch, hub_cache
+):
+    """Discovery refuses the set, so naming it would advertise vision for a launch that
+    then opens no projector."""
+    repo_root = hub_cache / f"models--{REPO.replace('/', '--')}"
+    repo_root.mkdir()
+    (repo_root / "mmproj-F16-00001-of-00002.gguf").write_bytes(b"mmproj")
+    (repo_root / "mmproj-F16-00002-of-00002.gguf").write_bytes(b"")
+    monkeypatch.setattr(llama_cpp, "cached_gguf_for_load", lambda repo, variant, **kw: None)
+
+    config = ModelConfig.from_identifier(REPO, gguf_variant = "Q8_0")
+
     assert config.gguf_local_mmproj_file is None
     assert config.is_vision is False
+
+
+def test_a_case_variant_cache_dir_still_answers_the_pre_download_lookup(
+    remote_gguf_repo, monkeypatch, hub_cache
+):
+    """Resolution finds a weight in any case variant, so discovery searches them too."""
+    other = hub_cache / f"models--{REPO.replace('/', '--')}".upper()
+    other.mkdir()
+    projector = other / "mmproj-F16.gguf"
+    projector.write_bytes(b"mmproj")
+    monkeypatch.setattr(llama_cpp, "cached_gguf_for_load", lambda repo, variant, **kw: None)
+
+    config = ModelConfig.from_identifier(REPO, gguf_variant = "Q8_0")
+
+    assert config.is_vision is True
+    assert config.gguf_local_mmproj_file == str(projector)
 
 
 def test_every_shard_of_a_verified_cached_copy_is_measured(

@@ -2649,20 +2649,57 @@ def _hf_repo_root_companion_dirs(repo_dir: Path) -> list[Path]:
     return [repo_dir, repo_dir / "snapshots"]
 
 
-def _hf_repo_root_has_mmproj(repo_dir: Path) -> bool:
-    """Whether a projector sits in one of the containers above *repo_dir*'s snapshots.
+def _hf_repo_root_mmproj(repo_dir: Path) -> Optional[str]:
+    """The hand-added projector above *repo_dir*'s snapshots (#9286), or None.
 
-    The cheap presence question the cached row and the inventory gate both ask before
-    paying for a per-variant walk. One definition so the two cannot disagree about
-    which directories count.
+    One scanner, so the cached row's presence question, the inventory gate and the
+    remote config's own lookup cannot disagree about which directories count or which
+    file they found in them.
     """
     try:
-        return any(
-            detect_mmproj_file(str(directory)) is not None
-            for directory in _hf_repo_root_companion_dirs(repo_dir)
-        )
+        for directory in _hf_repo_root_companion_dirs(repo_dir):
+            found = detect_mmproj_file(str(directory))
+            if found is not None:
+                return found
     except Exception:
-        return False
+        pass
+    return None
+
+
+def _hf_repo_root_has_mmproj(repo_dir: Path) -> bool:
+    """The cheap presence question the cached row and the inventory gate ask before
+    paying for a per-variant walk."""
+    return _hf_repo_root_mmproj(repo_dir) is not None
+
+
+def _hf_cache_repo_root_mmproj(repo_id: str) -> Optional[str]:
+    """The same file, found from a repo id rather than a directory.
+
+    For the window where no quant of *repo_id* verifies yet, so there is no weight to
+    pair against: without it a repo that publishes no projector skips companion
+    resolution on the first Apply and attaches the projector only on a second one, and
+    the training guard charges nothing for what the launch then makes resident.
+
+    Whichever candidate discovery names, not a survey of them. With one hand-added
+    projector, which is what this exists for, that is the file the load will open;
+    with several the vision flag and the charge follow the same pick, and pairing
+    settles it for real on the Apply after the download. Case variants of the cache
+    dir are searched in turn, since resolution finds a weight in any of them.
+    """
+    try:
+        from utils.hf_cache_settings import get_hf_cache_paths
+
+        target = f"models--{repo_id.replace('/', '--')}".lower()
+        for repo_dir in Path(get_hf_cache_paths().hub_cache).iterdir():
+            if not repo_dir.is_dir() or repo_dir.name.lower() != target:
+                continue
+            found = _hf_repo_root_mmproj(repo_dir)
+            if found is not None:
+                return found
+    except Exception as exc:
+        # A cache-path lookup must never be what fails a config resolve.
+        logger.debug(f"Could not check the HF cache repo root of {repo_id}: {exc}")
+    return None
 
 
 def _enclosing_hf_snapshot_dir(path: str) -> Optional[str]:
@@ -4119,14 +4156,16 @@ class ModelConfig:
                 # HF cache repo root (#9286). load_model only resolves a projector when
                 # the config says vision, so the listing's answer alone would skip it.
                 #
-                # Paired against a cached weight, so there is a file to name and a
-                # modality to read off it. A repo with no verifiable quant is left
-                # alone: the loader picks the projector up on the Apply after the
-                # download, and naming one before anything has paired only lets the
-                # callers below answer from a guess.
+                # Paired against the weight once one is cached, and otherwise the
+                # candidate sitting above the snapshots, which is the same file the
+                # load will pick up after the download.
                 local_mmproj: Optional[str] = None
-                if not has_vision and verified_file:
-                    local_mmproj = _detect_local_mmproj(verified_file, verified_file)
+                if not has_vision:
+                    local_mmproj = (
+                        _detect_local_mmproj(verified_file, verified_file)
+                        if verified_file
+                        else _hf_cache_repo_root_mmproj(identifier)
+                    )
                     has_vision = local_mmproj is not None
 
                 display_name = f"{identifier.split('/')[-1]} ({variant})"
