@@ -6189,9 +6189,9 @@ def test_h3_reference_video_without_trim_clamps_audio_past_the_video(audio_secon
     from core.inference.video_minimax_h3 import decode_h3_reference_video
 
     blob = base64.b64decode(
-        _reference_video_data_url(
-            seconds = 15.0, fps = 24, audio_seconds = audio_seconds
-        ).split(",", 1)[1]
+        _reference_video_data_url(seconds = 15.0, fps = 24, audio_seconds = audio_seconds).split(",", 1)[
+            1
+        ]
     )
     frames, waveform, sample_rate = decode_h3_reference_video(blob)
 
@@ -6270,7 +6270,13 @@ def test_h3_reference_video_trim_must_be_complete_bounded_and_inside_the_source(
         decode_h3_reference_video(blob, trim_start_seconds = 2.0, trim_end_seconds = 5.0)
 
 
-def _frame_index_video(seconds = 10.0, fps = 24, width = 256, height = 64, bar = 4):
+def _frame_index_video(
+    seconds = 10.0,
+    fps = 24,
+    width = 256,
+    height = 64,
+    bar = 4,
+):
     """An MP4 whose every frame encodes its own index as the position of a white bar.
 
     A flat grey level per frame does not survive the colourspace round trip -- limited-range
@@ -6291,10 +6297,8 @@ def _frame_index_video(seconds = 10.0, fps = 24, width = 256, height = 64, bar =
         video.options = {"g": "1", "crf": "0", "tune": "zerolatency"}
         for index in range(int(seconds * fps)):
             plane = np.zeros((height, width, 3), dtype = np.uint8)
-            plane[:, index:index + bar] = 255
-            for packet in video.encode(
-                av.VideoFrame.from_ndarray(plane, format = "rgb24")
-            ):
+            plane[:, index : index + bar] = 255
+            for packet in video.encode(av.VideoFrame.from_ndarray(plane, format = "rgb24")):
                 out.mux(packet)
         for packet in video.encode():
             out.mux(packet)
