@@ -350,6 +350,37 @@ def test_export_keeps_secret_context_after_an_oversized_record(client):
     assert exported.splitlines()[-1] == "kept"
 
 
+def test_export_scans_the_whole_oversized_record_for_secret_context(client):
+    from utils.debug_log_export import EXPORT_READ_BYTES
+
+    secret = "correct-horse-battery-staple"
+    path = _seed_server_log("password:" + " " * (EXPORT_READ_BYTES + 32) + f"\n  {secret}\nkept\n")
+
+    response = client.get("/api/settings/debug/logs/export")
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        exported = archive.read(f"server/{path.name}").decode("utf-8")
+    assert secret not in exported
+    assert exported.splitlines()[-1] == "kept"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "2026-08-25 INFO password:\n  correct-horse-battery-staple\nkept\n",
+        '2026-08-25 INFO password: "correct horse\n  battery staple"\nkept\n',
+    ],
+)
+def test_export_tracks_multiline_secrets_after_a_log_prefix(client, body):
+    path = _seed_server_log(body)
+
+    response = client.get("/api/settings/debug/logs/export")
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        exported = archive.read(f"server/{path.name}").decode("utf-8")
+    assert "correct" not in exported
+    assert "battery" not in exported
+    assert exported.splitlines()[-1] == "kept"
+
+
 def test_export_stops_at_each_sources_enumerated_size(tmp_path):
     from utils.debug_log_export import build_debug_log_archive
     from utils.debug_log_sources import LogSource
@@ -404,6 +435,37 @@ def test_export_refuses_a_source_replaced_by_a_symlink(tmp_path):
     finally:
         output.close()
     assert "must-not-export" not in warning
+
+
+def test_export_refuses_a_regular_file_replaced_after_enumeration(tmp_path):
+    from utils.debug_log_export import build_debug_log_archive
+    from utils.debug_log_sources import LogSource
+
+    path = tmp_path / "server.log"
+    path.write_text("original failure\n", encoding = "utf-8")
+    enumerated = path.stat()
+    source = LogSource(
+        id = "server:rotated",
+        family = "server",
+        label = path.name,
+        realpath = str(path),
+        size_bytes = enumerated.st_size,
+        modified_at = enumerated.st_mtime,
+        is_current = False,
+        device_id = enumerated.st_dev,
+        inode = enumerated.st_ino,
+    )
+    path.replace(tmp_path / "server.log.1")
+    path.write_text("replacement content\n", encoding = "utf-8")
+
+    output = build_debug_log_archive([source])
+    try:
+        with zipfile.ZipFile(output) as archive:
+            assert "server/server.log" not in archive.namelist()
+            warning = archive.read("EXPORT_WARNINGS.txt").decode("utf-8")
+    finally:
+        output.close()
+    assert "OSError" in warning
 
 
 def test_export_warning_escapes_a_surrogate_filename(tmp_path):

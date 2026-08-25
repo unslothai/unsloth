@@ -296,14 +296,29 @@ class StreamingLogRedactor:
             index += 1
         return False
 
-    def observe_omitted_record_suffix(self, text: str) -> None:
-        """Retain only redaction state implied by a discarded record suffix."""
+    @staticmethod
+    def omitted_record_chunk_has_sensitive_context(text: str) -> bool:
+        return _OMITTED_CONTEXT_RE.search(text) is not None
+
+    def mark_omitted_sensitive_record(self) -> None:
+        """Conservatively mask the continuation after a discarded sensitive record."""
+        self._plain_key_indent = 0
+        self._plain_has_value = False
+
+    @staticmethod
+    def _context_view(text: str) -> str:
+        """Drop logger prefixes while preserving real YAML indentation."""
         matches = list(_OMITTED_CONTEXT_RE.finditer(text))
-        if matches:
-            self.redact_record(text[matches[-1].start() :] + "\n")
+        if not matches:
+            return text
+        start = matches[-1].start()
+        prefix = text[:start]
+        indent = prefix if not prefix.strip() else ""
+        return indent + text[start:]
 
     def redact_record(self, text: str) -> str:
         physical = text.rstrip("\r\n")
+        physical_context = self._context_view(physical)
         if self._quoted_secret is not None:
             quote = self._quoted_secret
             if self._has_unescaped_quote(physical, quote):
@@ -311,6 +326,7 @@ class StreamingLogRedactor:
             return self._masked_record(text)
 
         redacted = redact_log_text(text)
+        redacted_context = self._context_view(redacted.rstrip("\r\n"))
         if self._block_key_indent is not None:
             if not redacted.strip():
                 return redacted
@@ -348,18 +364,18 @@ class StreamingLogRedactor:
             else:
                 self._cookie_key_indent = None
 
-        quoted = _UNTERMINATED_QUOTED_SECRET_RE.search(physical)
+        quoted = _UNTERMINATED_QUOTED_SECRET_RE.search(physical_context)
         if quoted:
-            self._quoted_secret = '"' if '"' in physical[quoted.start() :] else "'"
+            self._quoted_secret = '"' if '"' in physical_context[quoted.start() :] else "'"
             return self._masked_record(redacted)
 
-        inline_plain = _INLINE_PLAIN_SECRET_RE.search(physical)
+        inline_plain = _INLINE_PLAIN_SECRET_RE.search(physical_context)
         if inline_plain and REDACTED in redacted:
             self._plain_key_indent = len(inline_plain.group("indent"))
             self._plain_has_value = True
             return redacted
 
-        continued = _CONTINUED_SECRET_RE.search(redacted.rstrip("\r\n"))
+        continued = _CONTINUED_SECRET_RE.search(redacted_context)
         if continued:
             if continued.group("block"):
                 self._block_key_indent = len(continued.group("indent"))
@@ -375,7 +391,7 @@ class StreamingLogRedactor:
                 self._plain_has_value = False
             return redacted
 
-        cookie = _CONTINUED_COOKIE_RE.search(redacted.rstrip("\r\n"))
+        cookie = _CONTINUED_COOKIE_RE.search(redacted_context)
         if cookie:
             self._cookie_key_indent = len(cookie.group("indent"))
             self._cookie_has_value = False

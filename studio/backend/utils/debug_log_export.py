@@ -54,13 +54,19 @@ def _copy_redacted(source: BinaryIO, destination: BinaryIO, max_bytes: int) -> N
         remaining -= len(record)
         if len(record) > EXPORT_READ_BYTES and not record.endswith(b"\n"):
             omitted = len(record)
-            suffix = record[-OMITTED_CONTEXT_BYTES:]
+            scan_tail = b""
+            sensitive_context = False
             while record and not record.endswith(b"\n") and remaining:
+                scan = (scan_tail + record).decode("utf-8", errors = "replace")
+                sensitive_context |= redactor.omitted_record_chunk_has_sensitive_context(scan)
+                scan_tail = record[-OMITTED_CONTEXT_BYTES:]
                 record = source.readline(min(EXPORT_READ_BYTES + 1, remaining))
                 omitted += len(record)
                 remaining -= len(record)
-                suffix = (suffix + record)[-OMITTED_CONTEXT_BYTES:]
-            redactor.observe_omitted_record_suffix(suffix.decode("utf-8", errors = "replace"))
+            scan = (scan_tail + record).decode("utf-8", errors = "replace")
+            sensitive_context |= redactor.omitted_record_chunk_has_sensitive_context(scan)
+            if sensitive_context:
+                redactor.mark_omitted_sensitive_record()
             destination.write(f"[oversized log record omitted: {omitted} bytes]\n".encode("ascii"))
             continue
         text = record.decode("utf-8", errors = "replace")
@@ -75,19 +81,25 @@ def _safe_error_summary(exc: Exception) -> str:
     return type(exc).__name__
 
 
-def _open_regular_source(path: str) -> BinaryIO:
+def _open_regular_source(
+    path: str, expected_device_id: int | None, expected_inode: int | None
+) -> BinaryIO:
     """Open the enumerated file without accepting a later symlink substitution."""
     before = os.stat(path, follow_symlinks = False)
     if not stat.S_ISREG(before.st_mode):
         raise OSError(errno.ELOOP, "Log source is not a regular file")
+    expected_identity = (
+        (expected_device_id, expected_inode)
+        if expected_device_id is not None and expected_inode is not None
+        else (before.st_dev, before.st_ino)
+    )
+    if (before.st_dev, before.st_ino) != expected_identity:
+        raise OSError(getattr(errno, "ESTALE", errno.EIO), "Log source changed after enumeration")
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(path, flags)
     try:
         opened = os.fstat(descriptor)
-        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (
-            before.st_dev,
-            before.st_ino,
-        ):
+        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != expected_identity:
             raise OSError(
                 getattr(errno, "ESTALE", errno.EIO),
                 "Log source changed while it was opened",
@@ -121,7 +133,11 @@ def build_debug_log_archive(sources: Iterable[LogSource]) -> BinaryIO:
             for source in sources:
                 member = _unique_archive_name(source, used)
                 try:
-                    with _open_regular_source(source.realpath) as log_file:
+                    with _open_regular_source(
+                        source.realpath,
+                        source.device_id,
+                        source.inode,
+                    ) as log_file:
                         with archive.open(member, "w", force_zip64 = True) as archived:
                             _copy_redacted(log_file, archived, source.size_bytes)
                 except (OSError, ValueError) as exc:

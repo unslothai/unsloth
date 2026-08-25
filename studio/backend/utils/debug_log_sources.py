@@ -53,6 +53,8 @@ class LogSource:
     size_bytes: int
     modified_at: float
     is_current: bool
+    device_id: int | None = None
+    inode: int | None = None
 
 
 def candidate_roots() -> list[Path]:
@@ -218,6 +220,8 @@ def list_sources(max_sources_per_family: Optional[int] = MAX_SOURCES_PER_FAMILY)
                     size_bytes = stat.st_size,
                     modified_at = stat.st_mtime,
                     is_current = _is_current(family, path, newest),
+                    device_id = stat.st_dev,
+                    inode = stat.st_ino,
                 )
             )
     return sources
