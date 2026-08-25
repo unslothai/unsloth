@@ -1533,26 +1533,38 @@ def test_an_apu_beside_a_discrete_card_probes_only_the_apu(win_rocm, monkeypatch
         asked, because that call attaches a permanent ~612 MiB context.
     """
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0,1")
-    torch = _fake_torch([
-        ("AMD Radeon(TM) 8060S Graphics", 32 * GB),  # carve-out, not the pool
-        ("AMD Radeon PRO W7900", 48 * GB),
-    ])
+    torch = _fake_torch(
+        [
+            ("AMD Radeon(TM) 8060S Graphics", 32 * GB),  # carve-out, not the pool
+            ("AMD Radeon PRO W7900", 48 * GB),
+        ]
+    )
     monkeypatch.setitem(sys.modules, "torch", torch)
     probed = []
     monkeypatch.setattr(
-        torch.cuda, "mem_get_info",
+        torch.cuda,
+        "mem_get_info",
         lambda i: (probed.append(i), (0, int(89.465 * GB) if i == 0 else 48 * GB))[1],
     )
     monkeypatch.setattr(hw, "_rocm_props_total_is_carve_out", lambda props: True)
     monkeypatch.setattr(
-        hw, "_rocm_props_are_positively_unified",
+        hw,
+        "_rocm_props_are_positively_unified",
         lambda props: props.total_memory == 32 * GB,
     )
-    monkeypatch.setattr(hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output([
-        ("luid_0x00000000_0x0001532a_phys_0", 31.58 * GB),  # APU, saturated
-        ("luid_0x00000000_0x0000d1e2_phys_0", 40.0 * GB),   # the discrete card
-        ("luid_0x00000000_0x00017034_phys_0", 0.0),         # placeholder
-    ])))
+    monkeypatch.setattr(
+        hw.subprocess,
+        "run",
+        _subprocess_run(
+            adapter_output = _adapter_output(
+                [
+                    ("luid_0x00000000_0x0001532a_phys_0", 31.58 * GB),  # APU, saturated
+                    ("luid_0x00000000_0x0000d1e2_phys_0", 40.0 * GB),  # the discrete card
+                    ("luid_0x00000000_0x00017034_phys_0", 0.0),  # placeholder
+                ]
+            )
+        ),
+    )
 
     devices, _ = hw._rocm_windows_per_device_vram([0, 1])
     assert devices[0]["total_gb"] == 89.46  # widened
