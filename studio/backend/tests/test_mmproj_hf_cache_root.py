@@ -159,8 +159,9 @@ def test_inventory_does_not_rescan_each_variant_without_a_projector(tmp_path, mo
 
     monkeypatch.setattr("utils.models.model_config.detect_mmproj_file", traced_detect)
 
+    # The two directories the widening adds, once for the snapshot, not once per variant.
     assert snapshot_has_gguf_projector(weight.parent) is False
-    assert calls == [str(repo)]
+    assert calls == [str(repo), str(weight.parent.parent)]
 
 
 def test_the_snapshots_own_projector_is_not_shadowed_by_the_repo_root(tmp_path):
@@ -248,6 +249,17 @@ def test_a_split_projector_keeps_its_shard_names_and_starts_at_shard_one(tmp_pat
     found = _detect_local_mmproj(str(weight.parent), str(weight))
 
     assert found == str(shards[0].absolute())
+
+
+def test_a_projector_in_the_snapshots_container_reaches_the_row(tmp_path):
+    """The widened walk passes through models--<repo>/snapshots/ on its way up, so the
+    row's presence gate has to look there too or it answers no vision for a load that
+    opens one."""
+    _, weight = _hf_repo(tmp_path)
+    _clip_projector(weight.parent.parent / "mmproj-F16.gguf", "clip.has_vision_encoder")
+
+    assert _detect_local_mmproj(str(weight.parent), str(weight)) is not None
+    assert snapshot_has_gguf_projector(weight.parent) is True
 
 
 def test_a_sibling_repo_s_projector_stays_invisible(tmp_path):

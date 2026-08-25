@@ -243,6 +243,17 @@ def test_a_repo_root_projector_counts_before_the_quant_verifies(
         == biggest.stat().st_size
     )
 
+    # A shard left at zero bytes is a set discovery will reject, so it must not make the
+    # bound positive and advertise a projector the launch then cannot open.
+    for path in (biggest, first, second, projector):
+        path.unlink()
+    (repo_root / "mmproj-F16-00001-of-00002.gguf").write_bytes(b"mmproj")
+    (repo_root / "mmproj-F16-00002-of-00002.gguf").write_bytes(b"")
+
+    stalled = ModelConfig.from_identifier(REPO, gguf_variant = "Q8_0")
+    assert stalled.gguf_local_mmproj_bound_bytes == 0
+    assert stalled.is_vision is False
+
 
 def test_every_shard_of_a_verified_cached_copy_is_measured(
     remote_gguf_repo, monkeypatch, hub_cache

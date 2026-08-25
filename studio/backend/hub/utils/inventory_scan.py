@@ -1418,8 +1418,13 @@ def snapshot_has_gguf_projector(snapshot: Optional[Path]) -> bool:
         repo_root = _local_gguf_companion_search_root(str(first_weight), str(first_weight))
         if Path(repo_root).resolve() == snapshot_path.resolve():
             return False
-        # One presence check for the whole snapshot before pairing each variant against it.
-        if detect_mmproj_file(repo_root) is None:
+        # One presence check for the whole snapshot before pairing each variant against
+        # it. Both directories the widened walk adds, or a projector dropped straight
+        # into snapshots/ is found by the load and missed by the row.
+        if (
+            detect_mmproj_file(repo_root) is None
+            and detect_mmproj_file(str(snapshot_path.parent)) is None
+        ):
             return False
 
         for variant in variants:

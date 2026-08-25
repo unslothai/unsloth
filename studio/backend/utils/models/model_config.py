@@ -2707,9 +2707,12 @@ def _hf_cache_repo_root_mmproj_bound_bytes(repo_id: str) -> int:
             if not repo_dir.is_dir() or repo_dir.name.lower() != target:
                 continue
             for candidate in _iter_gguf_files(repo_dir):
-                shards, complete = colocated_split_shards(candidate)
-                if not complete:
+                # The same completeness rule discovery applies, or the bound would be
+                # positive for a set discovery then rejects, and the first Apply would
+                # advertise vision and launch without a projector.
+                if not _drafter_split_is_complete(candidate):
                     continue
+                shards, _complete = colocated_split_shards(candidate)
                 by_metadata = is_mmproj_by_metadata(read_gguf_general_metadata(str(candidate)))
                 if not (
                     by_metadata is True or (by_metadata is None and _is_mmproj(candidate.name))
@@ -4131,15 +4134,16 @@ class ModelConfig:
                 # is enough to make the load resolve companions beside what it downloads.
                 local_mmproj: Optional[str] = None
                 local_mmproj_bound_bytes = 0
-                if not has_vision:
-                    if verified_file:
-                        local_mmproj = _detect_local_mmproj(verified_file, verified_file)
-                        has_vision = local_mmproj is not None
-                    else:
-                        local_mmproj_bound_bytes = _hf_cache_repo_root_mmproj_bound_bytes(
-                            identifier
-                        )
-                        has_vision = local_mmproj_bound_bytes > 0
+                if not has_vision and verified_file:
+                    local_mmproj = _detect_local_mmproj(verified_file, verified_file)
+                    has_vision = local_mmproj is not None
+                if local_mmproj is None:
+                    # A ceiling for a projector the loader may still fall back to. Not
+                    # only when the listing says no vision: a repo can publish a set the
+                    # fetch refuses, and before a quant is cached there is nothing to
+                    # pair against either way.
+                    local_mmproj_bound_bytes = _hf_cache_repo_root_mmproj_bound_bytes(identifier)
+                    has_vision = has_vision or local_mmproj_bound_bytes > 0
 
                 display_name = f"{identifier.split('/')[-1]} ({variant})"
                 logger.info(
