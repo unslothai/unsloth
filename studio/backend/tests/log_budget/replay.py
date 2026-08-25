@@ -73,6 +73,12 @@ class Request:
     path: str
     status: int = 200
     query: bytes = b""
+    # How long the handler takes. Zero by default, which is what every scenario written
+    # before this field wanted: a request that costs no virtual time. It exists because
+    # the suppressors key on the STATUS CODE and never on the duration, so "a 200 that
+    # took a minute" is a case the harness could not express at all, and therefore could
+    # not budget or defend.
+    duration_ms: float = 0.0
 
 
 @dataclass
@@ -85,8 +91,12 @@ class ReplayResult:
         return len(self.capture.events)
 
 
-def _app_returning(status: int):
+def _app_returning(status: int, duration_ms: float = 0.0, clock: "FakeClock | None" = None):
     async def app(scope, receive, send):
+        # Advance BEFORE responding: the middleware stamps its window on the end time, so
+        # a duration added afterwards would be invisible to the very rule under test.
+        if duration_ms and clock is not None:
+            clock.advance(duration_ms / 1000.0)
         await send({"type": "http.response.start", "status": status, "headers": []})
         await send({"type": "http.response.body", "body": b"ok"})
 
@@ -119,6 +129,7 @@ def replay(
     duration_s: float,
     boot: tuple = (),
     clock: Optional[FakeClock] = None,
+    durations: Optional[dict] = None,
 ) -> ReplayResult:
     """Drive one middleware instance through ``boot`` then ``duration_s`` of polling.
 
@@ -131,17 +142,18 @@ def replay(
     capture = LogCapture()
     monkeypatch.setattr(handlers, "logger", capture)
 
-    middleware_by_status: dict[int, object] = {}
+    middleware_by_status: dict[tuple[int, float], object] = {}
     result = ReplayResult(capture = capture)
 
     # A single middleware object shared by every status, so its dedup map is the real one.
     shared_state = LoggingMiddleware(_app_returning(200))
 
     def send_request(request: Request) -> None:
-        app = middleware_by_status.get(request.status)
+        key = (request.status, request.duration_ms)
+        app = middleware_by_status.get(key)
         if app is None:
-            app = _app_returning(request.status)
-            middleware_by_status[request.status] = app
+            app = _app_returning(request.status, request.duration_ms, clock)
+            middleware_by_status[key] = app
         shared_state.app = app
         scope = {
             "type": "http",
@@ -159,14 +171,17 @@ def replay(
     # Whole-second ticks, so every period in the registry lands on an exact tick and the
     # expectation formula and the replay agree by construction rather than by rounding.
     tick = 0.5
-    elapsed = 0.0
+    started_at = clock.now
     next_due = {path: 0.0 for path in polled}
-    while elapsed < duration_s:
+    while clock.now - started_at < duration_s:
+        elapsed = clock.now - started_at
         for path, (period, _provenance) in polled.items():
             if elapsed + 1e-9 >= next_due[path]:
-                send_request(Request(method = "GET", path = path, status = 200))
+                send_request(Request(
+                    method = "GET", path = path, status = 200,
+                    duration_ms = durations.get(path, 0.0) if durations else 0.0,
+                ))
                 next_due[path] = elapsed + period
         clock.advance(tick)
-        elapsed += tick
 
     return result

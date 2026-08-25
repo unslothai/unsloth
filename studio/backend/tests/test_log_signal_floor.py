@@ -46,7 +46,9 @@ def _drive(
     middleware = LoggingMiddleware(replay._app_returning(200))
 
     for request in requests:
-        middleware.app = replay._app_returning(request.status)
+        middleware.app = replay._app_returning(
+            request.status, request.duration_ms, clock
+        )
         scope = {
             "type": "http",
             "path": request.path,
@@ -270,4 +272,67 @@ class TestTheGuardIsNotVacuous:
         assert not missing, (
             "the replay never issued these registered polls, so their budget is "
             "meaningless:\n  " + "\n  ".join(missing)
+        )
+
+
+class TestSlowSuccessIsNotYetSignal:
+    """A 200 that took a minute is treated exactly like a 200 that took a millisecond.
+
+    Both suppressors key on the STATUS CODE. Nothing anywhere reads how long the request
+    took, so a degrading endpoint stays invisible for as long as it keeps returning 2xx.
+
+    These tests assert the CURRENT behaviour rather than the desired one, on purpose. The
+    gap is real and worth closing, but a guard that silently tolerates either answer would
+    let the exemption be added and then removed again without anyone noticing. Closing it
+    should flip these deliberately, with the new volume budgeted the same way as every
+    other line here.
+    """
+
+    SLOW_MS = 30_000.0
+
+    def _slow_lines(self, monkeypatch, path, count = 6):
+        capture = _drive(
+            monkeypatch,
+            [
+                replay.Request("GET", path, 200, duration_ms = self.SLOW_MS)
+                for _ in range(count)
+            ],
+            gap_s = 0.0,
+        )
+        return capture.records_for(path)
+
+    def test_a_slow_success_on_a_silent_path_writes_nothing(self, monkeypatch):
+        silent = sorted(
+            p for p in session.ALL_POLLS
+            if policy.classify(hmod, p) == policy.QUIET_SUCCESS
+        )
+        assert silent, "no quiet-success paths configured; this guard would be vacuous"
+        path = silent[0]
+
+        records = self._slow_lines(monkeypatch, path)
+        assert records == [], (
+            f"{path} now logs a slow success ({len(records)} line(s)). If that is the "
+            "intended change, budget it: a sustained degradation on a 5s poll emits one "
+            "line per request unless the slow line gets a heartbeat of its own."
+        )
+
+    def test_the_harness_can_tell_a_slow_request_from_a_fast_one(self, monkeypatch):
+        """Guards the guard: without this, the two tests around it are vacuous.
+
+        ``duration_ms`` has to actually reach the middleware's clock. If it silently did
+        nothing, every 'slow' case above would really be a fast one and would pass for the
+        wrong reason.
+        """
+        path = "/api/models/list"
+        capture = _drive(
+            monkeypatch,
+            [replay.Request("GET", path, 200, duration_ms = self.SLOW_MS)],
+            gap_s = 0.0,
+        )
+        records = capture.records_for(path)
+        assert records, f"{path} is in the normal class and should log on the first hit"
+        assert records[0]["process_time_ms"] >= self.SLOW_MS, (
+            "duration_ms did not reach the middleware: it recorded "
+            f"{records[0]['process_time_ms']}ms for a {self.SLOW_MS}ms request, so every "
+            "slow-path assertion here is really testing a fast request."
         )
