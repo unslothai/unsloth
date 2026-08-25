@@ -200,7 +200,17 @@ BASE_INSTALL = ((ZOO,), (UNSLOTH,), ("bitsandbytes",))
 # installed would check nothing and say so quietly.
 PACKAGE_UNDER_TEST = UNSLOTH.split("@", 1)[0].strip()
 
-SMOKE_FILES = COMMON_FILES + ("run_t4_smoke.py", "determinism.py", "gguf_export.py")
+SMOKE_FILES = COMMON_FILES + (
+    "run_t4_smoke.py",
+    "determinism.py",
+    "gguf_export.py",
+    # Shipped to EVERY smoke leg, not only the one that passes
+    # --compare-naive-trl: run_t4_smoke imports comparison_failures at
+    # module scope, so a leg without the file cannot start at all. The
+    # module itself imports nothing heavier than the stdlib, so the cost
+    # of shipping it unused is a few kilobytes.
+    "naive_trl_compare.py",
+)
 
 
 LEGS: dict[str, Leg] = {
@@ -235,6 +245,45 @@ LEGS: dict[str, Leg] = {
         # optimizer applied updates, that two fresh processes agreed bitwise
         # WITH EACH OTHER, and that nothing raised. See
         # tests/kaggle/t4_smoke/references/README.md.
+        reference = "",
+    ),
+    # NOT WIRED yet: gemma-4-E2B-it has never been loaded on a T4 by anything
+    # in this repo, so `vram_gb` below is a PLACEHOLDER and the admission
+    # scheduler would be scheduling against a number nobody measured. See
+    # UNWIRED. The probe that settles it builds this leg by name.
+    "latest_compile": Leg(
+        # Placeholder. E2B is a MatFormer submodel of E4B, so the parameter
+        # count is not the checkpoint size and the checkpoint is ~10.3GB on the
+        # Hub; in 4bit the resident set should be far smaller, but "should" is
+        # not a budget. Replaced with the measured peak before wiring.
+        vram_gb = 6.0,
+        name = "Latest_compile",
+        summary = "gemma-4-E2B-it SFT on the newest transformers and trl, against plain TRL",
+        # Same resolution shape as `frontier`, WITH dependencies: an unbounded
+        # `--no-deps` upgrade overshoots transformers' own tokenizers and
+        # safetensors floors and dies before running anything. That is measured,
+        # on kernel unsloth-t4-ci-bd0c49e5; see the frontier comment below.
+        install = BASE_INSTALL + ((("--upgrade", "transformers", "trl")),),
+        entry = "run_t4_smoke.py",
+        files = SMOKE_FILES,
+        args = (
+            "--model",
+            "unsloth/gemma-4-E2B-it",
+            "--max-steps",
+            "10",
+            # The plain-TRL comparison. It runs in a SECOND process on the same
+            # venv with unsloth never imported, and it REPORTS both step traces
+            # rather than asserting they match. That restraint is measured, not
+            # timid: `frontier` already showed transformers 5.5.0 and 5.15.1
+            # producing different step-1 losses on identical weights, data and
+            # seed (10.3222 against 6.4367), so the loss itself moves between
+            # versions and an equality assertion would be red on drift. What it
+            # DOES assert is that both paths train and both converge.
+            "--compare-naive-trl",
+        ),
+        # No reference, for the frontier/canary reason: two library sets do not
+        # produce one fp16 trajectory, and a band here would go red on ordinary
+        # cross-version drift. See references/README.md.
         reference = "",
     ),
     "frontier": Leg(
@@ -569,6 +618,24 @@ MAX_LEGS_PER_KERNEL = 5
 UNWIRED: dict[str, str] = {
     # A leg belongs here only while a specific unanswered question about it
     # would be answered by a session. "Not tried yet" is not that.
+    "latest_compile": (
+        "STILL UNKNOWN: two questions, both needing one T4 session and "
+        "neither answerable from here.\n"
+        "1. WHAT DOES gemma-4-E2B-it COST ON A T4. Nothing in this repo has "
+        "ever loaded it. The `vram_gb = 6.0` on the leg is a placeholder, and "
+        "the admission scheduler in build_kernel.py schedules against that "
+        "number: too low and it co-tenants a card it cannot share, which the "
+        "driver's own comment records coming back as an OOM that read like a "
+        "code failure. E2B is a MatFormer submodel of E4B, so the ~10.3GB "
+        "checkpoint size is not the resident 4bit set and neither figure can "
+        "be inferred from the other.\n"
+        "2. DOES THE PLAIN-TRL PATH RUN AT ALL on the newest trl against this "
+        "model. The comparison is the point of the leg, and a comparison whose "
+        "second arm cannot start reports one trace and a traceback.\n"
+        "The probe builds THIS leg by name rather than a hand-written script, "
+        "because the last hand-written probe measured a P100 and the one "
+        "before it measured a code path no leg takes."
+    ),
     "grpo": (
         "vLLM standby sleep hits an illegal memory access on Turing, and it is "
         "INTERMITTENT. Three sessions on a real Tesla T4, identical to the "

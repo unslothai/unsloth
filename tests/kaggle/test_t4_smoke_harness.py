@@ -1544,7 +1544,7 @@ def test_every_setting_the_child_needs_is_forwarded_to_it():
 
 # ------------------------------------------------------------ kernel build
 
-LEG_NAMES = ("control", "canary", "gptoss", "grpo", "default")
+LEG_NAMES = ("control", "canary", "gptoss", "grpo", "default", "latest_compile")
 
 
 def _build(
@@ -2142,9 +2142,19 @@ def test_the_files_the_payload_carries_are_byte_identical_to_the_repo(tmp_path):
         "run_t4_smoke.py",
         "determinism.py",
         "gguf_export.py",
+        "naive_trl_compare.py",
         "pins/control.txt",
         "references/t4_qwen2.5-0.5b.json",
     }, sorted(files)
+    # Cross-checked against the registry as well as the literal above. The
+    # literal is what makes an accidental addition visible in a diff; the
+    # registry check is what stops the two drifting, which is how a leg ends up
+    # shipping a file no test knows about.
+    from legs import LEGS
+
+    leg = LEGS["control"]
+    declared = set(leg.files) | ({f"references/{leg.reference}"} if leg.reference else set())
+    assert set(files) == declared, sorted(declared)
     for name, data in files.items():
         assert gzip.decompress(base64.b64decode(data)) == (SMOKE_DIR / name).read_bytes(), name
 

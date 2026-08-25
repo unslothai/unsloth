@@ -84,6 +84,7 @@ from determinism import (  # noqa: E402
     set_all_seeds_fast,
     set_deterministic_algorithms,
 )
+from naive_trl_compare import comparison_failures  # noqa: E402
 from training_evidence import LORA_B_MARKER, LORA_MARKER  # noqa: E402
 from versions import (  # noqa: E402
     GOAL_PACKAGES,
@@ -1600,6 +1601,14 @@ def main() -> int:
     )
     ap.add_argument("--require-canary", dest = "require_canary", action = "store_true", default = True)
     ap.add_argument("--no-require-canary", dest = "require_canary", action = "store_false")
+    ap.add_argument(
+        # The plain-TRL control arm, in its own process. Off by default: it
+        # doubles the leg's train time and only one leg is asking the question.
+        "--compare-naive-trl",
+        action = "store_true",
+        default = False,
+        help = "also train the same rows with plain TRL and report both traces",
+    )
     ap.add_argument("--label", default = "t4-smoke")
     args = ap.parse_args()
 
@@ -1722,6 +1731,48 @@ def main() -> int:
             return 1
         runs.append(json.loads(report_file.read_text(encoding = "utf-8")))
 
+    # The plain-TRL control arm. AFTER the cycles, not before and not beside:
+    # it wants the same card, and two 4bit models resident at once on a 14.56GB
+    # T4 is how a comparison turns into an OOM blamed on the thing being
+    # compared. A fresh process because unsloth patches transformers, trl and
+    # peft at import; this parent has never imported it (only the cycle
+    # children do), but relying on that would make the control's validity a
+    # property of import order in a file nobody reads for that.
+    naive = None
+    if args.compare_naive_trl:
+        naive_dir = outdir / "naive_trl"
+        naive_dir.mkdir(parents = True, exist_ok = True)
+        _log("=== plain-TRL control arm (fresh process, unsloth not imported) ===")
+        cmd = [
+            sys.executable,
+            str(Path(__file__).resolve().parent / "naive_trl_compare.py"),
+            "--outdir", str(naive_dir),
+        ]
+        for flag, value in (
+            ("--model", args.model),
+            ("--dataset", args.dataset),
+            ("--max-steps", args.max_steps),
+            ("--batch-size", args.batch_size),
+            ("--grad-accum", args.grad_accum),
+            ("--max-seq-length", args.max_seq_length),
+            ("--learning-rate", args.learning_rate),
+            ("--lora-r", args.lora_r),
+            ("--lora-alpha", args.lora_alpha),
+            ("--optim", args.optim),
+        ):
+            cmd += [flag, str(value)]
+        # rc is not consulted: the child writes its own report on every path,
+        # including its own crash, and comparison_failures rules on the report.
+        # Reading rc here as well would give two sources of truth for one
+        # outcome, and they would disagree the first time the child died after
+        # writing.
+        subprocess.run(cmd)
+        naive_file = naive_dir / "naive_trl_report.json"
+        if naive_file.exists():
+            naive = json.loads(naive_file.read_text(encoding = "utf-8"))
+        else:
+            naive = {"error": "the plain-TRL process wrote no report"}
+
     report: dict = {
         "label": args.label,
         "model": args.model,
@@ -1741,6 +1792,17 @@ def main() -> int:
     }
 
     failures: list[str] = []
+
+    # -1. the plain-TRL control arm, reported side by side and NOT asserted
+    # equal. Two library stacks do not produce one fp16 trajectory -- frontier
+    # measured transformers 5.5.0 and 5.15.1 disagreeing at step 1 on identical
+    # weights, data and seed -- so the rules are "it ran" and "it converged",
+    # which are the same rules the unsloth arm is held to.
+    if args.compare_naive_trl:
+        report["naive_trl"] = naive
+        naive_broken = comparison_failures(naive, report["metrics"])
+        report["naive_trl_failures"] = naive_broken
+        failures += naive_broken
 
     # 0. the pins, if this leg claims to be a control
     if args.pins:
