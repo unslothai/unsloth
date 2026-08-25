@@ -250,16 +250,23 @@ LEGS: dict[str, Leg] = {
         # tests/kaggle/t4_smoke/references/README.md.
         reference = "",
     ),
-    # NOT WIRED yet: gemma-4-E2B-it has never been loaded on a T4 by anything
-    # in this repo, so `vram_gb` below is a PLACEHOLDER and the admission
-    # scheduler would be scheduling against a number nobody measured. See
-    # UNWIRED. The probe that settles it builds this leg by name.
     "latest_compile": Leg(
-        # Placeholder. E2B is a MatFormer submodel of E4B, so the parameter
-        # count is not the checkpoint size and the checkpoint is ~10.3GB on the
-        # Hub; in 4bit the resident set should be far smaller, but "should" is
-        # not a budget. Replaced with the measured peak before wiring.
-        vram_gb = 6.0,
+        # MEASURED, on one card, twice: 12.73 GB peak reserved on both cycles
+        # of unsloth-probe-latestcompile-r5-45cf5b, built by the real
+        # --all-kernels path so each payload sees exactly one T4.
+        #
+        # The placeholder here was 6.0, and shipping that would have caused the
+        # precise failure the driver's own comment warns about: at 6.0 the
+        # scheduler co-tenants this leg with another, the pair asks for ~19 GB
+        # of a 14.56 GB card, and the OOM comes back reading like a code
+        # failure. E2B is a MatFormer submodel of E4B and the checkpoint
+        # carries the larger weights, which is why the 4bit resident set is
+        # nowhere near the "far smaller" the placeholder assumed.
+        #
+        # 12.8 rather than 12.73: a hair of headroom, and still under
+        # CARD_VRAM_BUDGET_GB so admission can reason about it, while leaving
+        # no room for a co-tenant -- which is correct, because there is none.
+        vram_gb = 12.8,
         name = "Latest_compile",
         summary = "gemma-4-E2B-it SFT on the newest transformers and trl, against plain TRL",
         # Same resolution shape as `frontier`, WITH dependencies: an unbounded
