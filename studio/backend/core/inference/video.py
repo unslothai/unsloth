@@ -5680,6 +5680,7 @@ class VideoBackend:
             MiniMaxH3References,
             decode_h3_reference_audio,
             decode_h3_reference_video,
+            validate_h3_reference_trim,
         )
 
         images = list(reference_images or [])
@@ -5725,10 +5726,16 @@ class VideoBackend:
                 decode_audio = not bool(override),
             )
             if override:
+                # A replacement soundtrack is a separate upload with its own timeline, so it
+                # starts at its own zero and runs the length of the clip. Cutting it at the
+                # video's source coordinates instead dropped its first trim_start seconds,
+                # and refused it outright when it was shorter than that. Only the embedded
+                # track shares the video's timeline.
+                clip = validate_h3_reference_trim(trim_start, trim_end)
                 waveform, sample_rate = decode_h3_reference_audio(
                     _decode_b64_media(override),
-                    trim_start_seconds = trim_start,
-                    trim_end_seconds = trim_end,
+                    trim_start_seconds = None if clip is None else 0.0,
+                    trim_end_seconds = None if clip is None else clip[1] - clip[0],
                 )
             decoded_videos.append((frames, waveform, sample_rate))
         if engine == "sd_cpp":

@@ -6546,6 +6546,80 @@ def test_h3_replacement_audio_bypasses_a_short_embedded_soundtrack():
     assert waveform.shape == (64_000, 2)
 
 
+def test_h3_replacement_audio_starts_at_its_own_zero():
+    """A replacement soundtrack is an independent file, not a second cut of the video.
+
+    Its own timeline has no relation to the video's source coordinates, and the picker offers
+    no way to offset it, so it plays the clip from its own start. Cutting it at the video's
+    coordinates dropped its first trim_start seconds, and refused it when it was shorter than
+    that. Only the embedded track shares the video's timeline.
+    """
+    pytest.importorskip("av")
+    import numpy as np
+
+    from core.inference.video import VideoBackend
+    from core.inference.video_families import detect_video_family
+
+    # Signal only in the first second, so the decoded offset is recoverable.
+    references = VideoBackend._resolve_references(
+        detect_video_family("MiniMaxAI/MiniMax-H3", None),
+        "ref2va",
+        "diffusers",
+        None,
+        [
+            {
+                "video": _reference_video_data_url(seconds = 12.0, fps = 24, with_audio = False),
+                "audio": _data_url_wav(seconds = 3.0, rate = 32_000, silent_after = 1.0),
+                "trim_start_seconds": 5.0,
+                "trim_end_seconds": 8.0,
+            }
+        ],
+        None,
+        "match",
+        960,
+        544,
+    )
+
+    _, waveform, sample_rate = references.videos[0]
+    assert sample_rate == 32_000
+    # The clip's length, taken from the replacement's start rather than from its 5s mark.
+    assert waveform.shape == (96_000, 2)
+    energy = np.abs(waveform).max(axis = 1)
+    assert energy[: sample_rate // 2].max() > 0.01
+    assert energy[2 * sample_rate :].max() <= 0.01
+
+
+def test_h3_replacement_audio_shorter_than_the_trim_start_is_kept():
+    """The same file, shorter than where the video's trim begins, is padded not refused."""
+    pytest.importorskip("av")
+
+    from core.inference.video import VideoBackend
+    from core.inference.video_families import detect_video_family
+
+    references = VideoBackend._resolve_references(
+        detect_video_family("MiniMaxAI/MiniMax-H3", None),
+        "ref2va",
+        "diffusers",
+        None,
+        [
+            {
+                "video": _reference_video_data_url(seconds = 20.0, fps = 24, with_audio = False),
+                "audio": _data_url_wav(seconds = 2.0, rate = 32_000),
+                "trim_start_seconds": 10.0,
+                "trim_end_seconds": 14.0,
+            }
+        ],
+        None,
+        "match",
+        960,
+        544,
+    )
+
+    _, waveform, sample_rate = references.videos[0]
+    assert waveform.shape == (4 * 32_000, 2)
+    assert sample_rate == 32_000
+
+
 def test_h3_begin_generate_reuses_preflight_resolved_references(monkeypatch):
     import core.inference.video as video_mod
 
@@ -6738,7 +6812,8 @@ def test_h3_native_generate_stages_every_reference_kind(monkeypatch, tmp_path):
     assert result["conditioning"] == "ref2va"
 
 
-def _data_url_wav(seconds = 1.0, rate = 32_000):
+def _data_url_wav(seconds = 1.0, rate = 32_000, silent_after = None):
+    """A 440Hz tone; `silent_after` mutes the tail so a decoded offset is recoverable."""
     import base64
     import io
     import math
@@ -6750,8 +6825,9 @@ def _data_url_wav(seconds = 1.0, rate = 32_000):
         handle.setsampwidth(2)
         handle.setframerate(rate)
         frames = bytearray()
+        loud = int(seconds * rate) if silent_after is None else int(silent_after * rate)
         for i in range(int(seconds * rate)):
-            value = int(8000 * math.sin(2 * math.pi * 440 * i / rate))
+            value = int(8000 * math.sin(2 * math.pi * 440 * i / rate)) if i < loud else 0
             frames += int(value).to_bytes(2, "little", signed = True) * 2
         handle.writeframes(bytes(frames))
     return "data:audio/wav;base64," + base64.b64encode(buf.getvalue()).decode()
