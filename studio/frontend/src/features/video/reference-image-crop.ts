@@ -45,14 +45,10 @@ export interface CropRasterCanvas {
 // Keep this aligned with VideoGenerateRequest.reference_images in models/inference.py.
 export const MAX_REFERENCE_IMAGE_DATA_URL_LENGTH = 32 * 1024 * 1024;
 
-// Bounds for the exported crop. H3 never sees more than a 2048px short edge -- that is
-// H3_REF_IMAGE_SHORT_EDGE, the "max" policy's own limit, and the "match" policy fits to the
-// generation area, which is far smaller -- so exporting a crop at full source resolution
-// spends request budget and encode time on pixels fit_h3_reference_image immediately throws
-// away. Left unbounded, a lossless PNG of an ordinary 12MP phone photo serializes to about
-// 52 MiB of base64 and a 24MP one to 36-105 MiB depending on detail, all past the 32 MiB
-// field cap, and the synchronous encode blocks the page for seconds. The long edge is capped
-// as well so an extreme aspect ratio cannot keep a huge dimension while its short edge fits.
+// fit_h3_reference_image never keeps more than a 2048px short edge, so a full-resolution
+// export just spends the 32 MiB cap and a blocking encode on pixels it discards: a 12MP
+// photo alone reaches ~52 MiB of PNG base64. The long edge is bounded too, so an extreme
+// aspect cannot stay huge just because its short edge fits.
 export const MAX_REFERENCE_CROP_SHORT_EDGE = 2048;
 export const MAX_REFERENCE_CROP_LONG_EDGE = 4096;
 

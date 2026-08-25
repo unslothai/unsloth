@@ -6177,11 +6177,10 @@ def test_h3_reference_video_without_trim_discards_aac_padding(duration):
 
 @pytest.mark.parametrize("audio_seconds", [15.05, 15.1, 16.0])
 def test_h3_reference_video_without_trim_clamps_audio_past_the_video(audio_seconds):
-    """A soundtrack longer than its video is clamped to the video, not refused.
+    """A soundtrack longer than its video is clamped to it, not refused.
 
-    Whole-file references decoded fine before trimming existed, and a track that overshoots
-    by a codec frame or two is ordinary encoder padding rather than a mismatched pairing, so
-    refusing one would reject media that already worked.
+    Longer tracks decoded fine before trimming existed, and a codec frame of overshoot is
+    ordinary padding, so refusing one rejects media that already worked.
     """
     pytest.importorskip("av")
     import base64
@@ -6279,9 +6278,8 @@ def _frame_index_video(
 ):
     """An MP4 whose every frame encodes its own index as the position of a white bar.
 
-    A flat grey level per frame does not survive the colourspace round trip -- limited-range
-    YUV folds 0..255 into 16..235, so neighbouring indices collide -- and frame identity is
-    the whole point of a fencepost test. A bar position does survive.
+    A flat grey level per frame would not survive the round trip: limited-range YUV folds
+    0..255 into 16..235, so neighbouring indices collide. A bar position does.
     """
     av = pytest.importorskip("av")
     np = pytest.importorskip("numpy")
@@ -6292,8 +6290,8 @@ def _frame_index_video(
         video = out.add_stream("libx264", rate = fps)
         video.width, video.height = width, height
         video.pix_fmt = "yuv420p"
-        # Every frame a keyframe, so a backward seek lands where it was asked to and the two
-        # decoders differ only in how they select, never in what they can reach.
+        # Every frame a keyframe, so seeks land exactly and the two decoders differ only in
+        # how they select, never in what they can reach.
         video.options = {"g": "1", "crf": "0", "tune": "zerolatency"}
         for index in range(int(seconds * fps)):
             plane = np.zeros((height, width, 3), dtype = np.uint8)
@@ -6319,9 +6317,8 @@ def _decoded_frame_index(image, width = 256):
 def test_h3_reference_video_ordinal_fallback_selects_the_same_frames_as_timestamps():
     """The fallback for streams whose frames carry no presentation timestamps.
 
-    Nothing else reaches this path, so without this test its frame selection is unverified.
-    A fractional start is the case that separates the two rules: the frame on screen at t is
-    floor(t*fps), and ceiling it instead would drift the whole selection forward by a frame.
+    Nothing else reaches this path. A fractional start separates the two rules: the frame on
+    screen at t is floor(t*fps), and ceiling it drifts the selection forward by one.
     """
     av = pytest.importorskip("av")
 

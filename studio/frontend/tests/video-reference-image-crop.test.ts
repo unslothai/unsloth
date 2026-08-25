@@ -230,10 +230,8 @@ test("Cancel closes without invoking Apply while Apply performs both actions", (
 });
 
 test("a crop larger than the model can use is exported at a size it can", () => {
-  // H3 never sees more than a 2048px short edge, so a full-resolution export spends request
-  // budget and encode time on pixels fit_h3_reference_image discards. Measured in real
-  // engines, a lossless PNG of an ordinary 12MP phone photo serialized to about 52 MiB and a
-  // 24MP one to 36-105 MiB, all past the 32 MiB field cap this same module enforces.
+  // Measured in real engines, an unbounded PNG export of a 12MP photo reaches ~52 MiB and a
+  // 24MP one 36-105 MiB, all past the 32 MiB cap this module enforces.
   assert.deepEqual(referenceCropExportSize({ width: 5712, height: 4284 }), {
     width: 2730,
     height: 2048,
@@ -242,8 +240,7 @@ test("a crop larger than the model can use is exported at a size it can", () => 
     width: 2730,
     height: 2048,
   });
-  // The long edge is capped too, so an extreme aspect cannot keep a huge dimension just
-  // because its short edge already fits.
+  // The long edge is capped too, for aspects whose short edge already fits.
   assert.deepEqual(referenceCropExportSize({ width: 8192, height: 2000 }), {
     width: 4096,
     height: 1000,
@@ -280,7 +277,7 @@ test("the raster is drawn at the reduced size, from the full selected source rec
 
   assert.equal(canvas.width, 2730);
   assert.equal(canvas.height, 2048);
-  // Source rectangle unchanged, destination reduced: no pixels are cropped away by the
-  // downscale, and the stored crop stays in original source pixels for the editor to restore.
+  // Source rect unchanged, destination reduced: the downscale crops nothing away, and the
+  // stored crop stays in source pixels for the editor to restore.
   assert.deepEqual(calls, [[source, 100, 200, 5712, 4284, 0, 0, 2730, 2048]]);
 });

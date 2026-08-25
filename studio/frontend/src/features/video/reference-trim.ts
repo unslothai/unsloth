@@ -3,9 +3,8 @@
 
 export const H3_REFERENCE_MIN_SECONDS = 2;
 export const H3_REFERENCE_MAX_SECONDS = 15;
-// The backend compares the same bounds with this slack (validate_h3_reference_trim in
-// core/inference/video_minimax_h3.py). Comparing exactly here would refuse intervals the
-// server accepts: the 0.1-step inputs reach values like 2.3 - 0.3, which is 1.9999999999999998.
+// Matches validate_h3_reference_trim's slack. Exact comparison refused intervals the server
+// accepts: the 0.1-step inputs reach 2.3 - 0.3, which is 1.9999999999999998.
 const DURATION_EPSILON = 1e-6;
 
 export interface ReferenceVideoTrimFeedback {
@@ -35,8 +34,8 @@ export function referenceVideoTrimError(
   end: number | null,
   sourceDuration?: number,
 ): string | null {
-  // A source too short for the model can never be trimmed into range, so say so once here
-  // rather than letting the request travel and come back refused by the decoder.
+  // No interval inside a too-short source can reach the minimum, so say so here instead of
+  // letting the decoder refuse it later.
   if (
     sourceDuration !== undefined &&
     sourceDuration + DURATION_EPSILON < H3_REFERENCE_MIN_SECONDS

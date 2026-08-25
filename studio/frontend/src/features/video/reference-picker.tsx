@@ -33,17 +33,10 @@ export const REFERENCE_DURATION_TIMEOUT_MS = 15_000;
 
 /** Read a clip's duration, resolving undefined when the browser cannot report one.
  *
- * The duration decides whether an overlong clip gets its automatic first-15-second trim, so
- * failing to read one sends the whole clip and earns the refusal this feature exists to
- * avoid. Two things guard that:
- *
- * The source stays the data URL. An object URL would spare the element parsing a base64
- * string a third larger than the file, but WebKit reports no metadata for one here while it
- * does for a data URL, and losing the duration on an engine costs more than the copy saves.
- *
- * The timeout is the real fix: an element that fires neither loadedmetadata nor error would
- * otherwise leave this promise pending forever and its picker slot stuck behind it. Resolving
- * undefined is safe, since the caller already treats an unknown duration as "no auto trim".
+ * An element firing neither loadedmetadata nor error would leave this pending forever, and
+ * its picker slot with it, so the wait is bounded; callers already treat an unknown duration
+ * as "no auto trim". The source stays a data URL because WebKit reports no metadata for an
+ * object URL, and losing the duration costs more than the extra parse saves.
  */
 function readVideoDuration(dataUrl: string): Promise<number | undefined> {
   return new Promise((resolve) => {

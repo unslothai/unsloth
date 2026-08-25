@@ -615,10 +615,9 @@ def _decode_h3_video_trim_by_ordinal(
         source_fps = float(stream.average_rate or stream.guessed_rate or H3_FPS)
         if source_fps <= 0:
             source_fps = float(H3_FPS)
-        # The frame on screen at t is the last one that started at or before it, so the start
-        # floors where the exclusive end ceils. Ceiling both would skip the frame straddling a
-        # fractional start and shift the whole selection forward, which is the one place this
-        # fallback could disagree with the timestamp path on identical media.
+        # The frame on screen at t is the last one starting at or before it, so the start
+        # floors where the exclusive end ceils. Ceiling both skips the frame straddling a
+        # fractional start, drifting this fallback ahead of the timestamp path.
         start_source_frame = math.floor(trim[0] * source_fps + 1e-6)
         end_source_frame = math.ceil(trim[1] * source_fps - 1e-6)
         target_count = int(round((trim[1] - trim[0]) * H3_FPS))
@@ -749,10 +748,9 @@ def _decode_audio_stream(
         take_end = min(block_end, end_sample) if end_sample is not None else block_end
         if take_start < take_end:
             chunks.append(block[take_start - block_start : take_end - block_start])
-        # A soundtrack that runs past its video is clamped to the video, not refused: encoder
-        # padding routinely overshoots by tens of milliseconds, and whole-file references with
-        # a longer track decoded fine before trimming existed. Stopping here also spares the
-        # decode of a tail no engine would receive.
+        # A track running past its video is clamped, not refused: encoder padding overshoots
+        # routinely, and longer tracks decoded fine before trimming existed. Stopping here
+        # also skips a tail no engine receives.
         return end_sample is not None and block_end >= end_sample
 
     stopped = False
