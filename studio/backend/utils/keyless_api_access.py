@@ -316,16 +316,9 @@ def keyless_transport_allowed(request: Any, scope: str) -> bool:
     app_state = _request_app_state(request)
     if _hosted_mode_forbidden(app_state):
         return False
-    # One exposure check for both scopes, ahead of every transport branch. While a
-    # tunnel is publishing this server, no transport is keyless, which is what the
-    # settings card already tells the admin. Checked after the LAN branch it only
-    # covered loopback, so the LAN listener stayed keyless with a tunnel up: safe
-    # for the tunnel Studio manages, which targets localhost and so presents a
-    # loopback peer, but not for a cloudflared or ngrok the admin points at the LAN
-    # address themselves, where the peer is the LAN interface and admission held.
-    if _public_tunnel_active(app_state):
-        return False
     if scope == KEYLESS_SCOPE_FULL:
+        if _public_tunnel_active(app_state):
+            return False
         return _full_scope_transport_allowed(request, app_state)
     if scope != KEYLESS_SCOPE_INFERENCE:
         return False
@@ -333,6 +326,8 @@ def keyless_transport_allowed(request: Any, scope: str) -> bool:
 
     if request_on_lan_access(request):
         return True
+    if _public_tunnel_active(app_state):
+        return False
     return request_is_loopback(request)
 
 

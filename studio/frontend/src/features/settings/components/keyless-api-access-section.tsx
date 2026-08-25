@@ -30,7 +30,7 @@ function activeExposureWarning(
   exposure: KeylessApiAccessSettings["exposure"],
 ): string {
   if (exposure === "public_url") {
-    return " A public URL or tunnel is active, so keyless access remains disabled, including on localhost, until it is stopped.";
+    return " A public URL or tunnel is active, so keyless access is disabled on localhost until it is stopped. An active private LAN listener still serves it: the tunnel reaches Studio over loopback, so it can never arrive with a LAN address.";
   }
   if (exposure === "colab") {
     return " This Colab runtime cannot receive keyless access.";
