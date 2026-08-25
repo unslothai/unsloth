@@ -1046,12 +1046,26 @@ def test_row_ownership_is_modelled_on_raw_free_not_on_the_budget():
 
     # Same budgets, different RAW free: the rows move, so the verdict may too.
     even = _per_device_shortfall(
-        layout, _NO_OVERHEAD, 4096, spilled, False, budgets,
-        quantised = False, kv_bytes_floor = 0, split_weights_per_device = [8 * GIB, 8 * GIB],
+        layout,
+        _NO_OVERHEAD,
+        4096,
+        spilled,
+        False,
+        budgets,
+        quantised = False,
+        kv_bytes_floor = 0,
+        split_weights_per_device = [8 * GIB, 8 * GIB],
     )
     lopsided = _per_device_shortfall(
-        layout, _NO_OVERHEAD, 4096, spilled, False, budgets,
-        quantised = False, kv_bytes_floor = 0, split_weights_per_device = [1 * GIB, 15 * GIB],
+        layout,
+        _NO_OVERHEAD,
+        4096,
+        spilled,
+        False,
+        budgets,
+        quantised = False,
+        kv_bytes_floor = 0,
+        split_weights_per_device = [1 * GIB, 15 * GIB],
     )
     assert even != lopsided, "the split weights have to reach _device_slots"
     assert "device 1" in (lopsided or ""), "the card drawing 60 of 65 rows is the one over"

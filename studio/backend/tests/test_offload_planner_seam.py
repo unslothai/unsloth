@@ -734,9 +734,9 @@ def test_the_compute_buffer_reaches_the_planner():
     flat = _plan(stub, free_mib = 14 * 1024, compute_flat = 3 * GIB)
     for tighter in (per_device, flat):
         assert tighter is not None
-        assert len(tighter.spilled_blocks) > len(base.spilled_blocks), (
-            "charging the compute buffer has to spill MORE, not the same"
-        )
+        assert len(tighter.spilled_blocks) > len(
+            base.spilled_blocks
+        ), "charging the compute buffer has to spill MORE, not the same"
 
 
 def test_the_seam_hands_the_planner_raw_free_vram_for_the_split():
