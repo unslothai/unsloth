@@ -4131,8 +4131,10 @@ def test_a_workspace_delete_waits_for_the_tool_calls_in_it(tmp_path, monkeypatch
 
     route = inspect.getsource(chat_history.delete_project)
     assert route.index("run_in_threadpool(wait_for_sessions_idle") < route.index(
-        "run_in_threadpool(delete_project_workspace, managed_project)"
+        "def delete_workspace_if_unowned"
     )
+    assert "delete_project_workspace(managed_project)" in route
+    assert "run_when_sessions_idle," in route
 
 
 def test_a_reference_is_a_session_id_not_a_piece_of_prose(tmp_path, monkeypatch):
@@ -4364,8 +4366,9 @@ def test_a_workspace_is_kept_when_the_wait_ran_out():
     route = inspect.getsource(chat_history.delete_project)
     assert "run_in_threadpool(wait_for_sessions_idle, [shared, *member_ids])" in route
     assert route.index("and not ownership_unknown") < route.index(
-        "run_in_threadpool(delete_project_workspace, managed_project)"
+        "def delete_workspace_if_unowned"
     )
+    assert "run_when_sessions_idle," in route
     # And a wait that ran out queues the finish rather than dropping it.
     assert "finish_workspace_delete_when_idle(project_id, session_id = shared)" in route
 
@@ -6195,6 +6198,34 @@ def test_project_workspace_change_is_fenced_against_active_tools():
     assert nested == [(False, None)]
 
 
+def test_session_update_fence_blocks_new_tool_calls():
+    from core.inference import tools
+
+    session = "project-delete-fence"
+    entered = threading.Event()
+
+    def run_tool():
+        with tools._session_in_flight(session):
+            entered.set()
+
+    with tools._session_in_flight(session):
+        changed, result = tools.run_when_sessions_idle([session], lambda: None, timeout = 0.0)
+    assert changed is False
+    assert result is None
+
+    def update():
+        thread = threading.Thread(target = run_tool)
+        thread.start()
+        assert not entered.wait(0.1)
+        return thread
+
+    changed, thread = tools.run_when_sessions_idle([session], update)
+
+    assert changed is True
+    thread.join(timeout = 1.0)
+    assert entered.is_set()
+
+
 def test_old_project_file_session_cannot_resolve_after_workspace_change(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
@@ -6377,6 +6408,64 @@ def test_external_adoption_invalidates_kept_workspace_sessions(tmp_path, monkeyp
 
     assert tools.list_orphaned_projects() == []
     assert tools._recorded_project_workdir("old-project", "project-workspace-old-session") is None
+
+
+def test_deleted_project_record_is_not_restored_over_a_live_workspace(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
+
+    from core.inference import tools
+    from storage import studio_db
+
+    studio_db._schema_ready = False
+    _forget_sandbox_state(tools)
+    workspace = tmp_path / "adopted-workspace"
+    workspace.mkdir()
+    studio_db.upsert_chat_project(
+        {
+            "id": "new-project",
+            "name": "New project",
+            "instructions": "",
+            "archived": False,
+            "createdAt": 1,
+            "updatedAt": 1,
+        },
+        external_workspace_path = str(workspace),
+    )
+
+    recorded = studio_db.record_orphaned_project_if_unowned(
+        "deleted-project",
+        str(workspace),
+        session_id = "project-workspace-deleted",
+    )
+
+    assert recorded is False
+    assert tools.list_orphaned_projects() == []
+
+
+def test_external_adoption_fails_closed_when_orphan_scan_is_truncated(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    tools.record_orphaned_project("first-project", str(first))
+    tools.record_orphaned_project("second-project", str(second))
+    monkeypatch.setattr(tools, "_MAX_ORPHAN_RECORDS", 1)
+    updated = []
+
+    changed, result = tools.adopt_orphaned_workspace_when_idle(
+        str(second), lambda: updated.append(True)
+    )
+
+    assert changed is False
+    assert result is None
+    assert updated == []
+    assert len(list(Path(tools._orphan_records_dir()).iterdir())) == 2
 
 
 def test_missing_project_does_not_adopt_an_orphaned_workspace(tmp_path, monkeypatch):

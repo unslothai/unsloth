@@ -108,6 +108,7 @@ export function NewProjectDialog({
             "set-project-workspace",
           )
         : null;
+      if (workspaceLease) setWorkspace(null);
       const project = await createChatProject(trimmed, workspaceLease ? {
         nativePathLease: workspaceLease.nativePathLease,
       } : undefined);

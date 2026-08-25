@@ -7414,9 +7414,14 @@ def _orphan_records_dir() -> str:
 # same client-supplied id, which is not always one a filename can hold.
 _ORPHAN_CHAT = "chat"
 _ORPHAN_PROJECT = "project"
+_ORPHAN_RECORDS_LOCK = threading.RLock()
 # A pass reads every record: they are a few hundred bytes each, one per deleted
 # folder still kept, and a cap here would strand everything past it for good.
 _MAX_ORPHAN_RECORDS = 10_000
+
+
+class _OrphanRecordScanTruncated(RuntimeError):
+    pass
 
 
 def _orphan_record_name(kind: str, record_id: str) -> str:
@@ -7565,10 +7570,11 @@ def _write_orphan_record(
 
     record = {**record, "id": record_id, "chat": kind == _ORPHAN_CHAT}
     try:
-        os.makedirs(_orphan_records_dir(), exist_ok = True)
-        name = _orphan_record_name(kind, storage_id or record_id)
-        with open(os.path.join(_orphan_records_dir(), name), "w", encoding = "utf-8") as fh:
-            fh.write(_json.dumps(record))
+        with _ORPHAN_RECORDS_LOCK:
+            os.makedirs(_orphan_records_dir(), exist_ok = True)
+            name = _orphan_record_name(kind, storage_id or record_id)
+            with open(os.path.join(_orphan_records_dir(), name), "w", encoding = "utf-8") as fh:
+                fh.write(_json.dumps(record))
         return True
     except OSError:
         logger.warning("Could not record kept folder for %s", record_id)
@@ -7602,57 +7608,62 @@ def adopt_orphaned_workspace_when_idle(workspace: str, update):
 
     from storage.studio_db import project_workspace_overlaps_managed_root
 
-    matches = []
-    for name, record in _orphan_record_rows():
-        if project_workspace_overlaps_managed_root(
-            workspace,
-            str(record.get("rootPath") or record["path"]),
-            check_descendants = True,
-        ):
-            matches.append((name, record))
-    if not matches:
-        return True, update()
-    sessions = [
-        str(record["id"])
-        if record.get("chat")
-        else str(record.get("sessionId") or f"{_PROJECT_SESSION_PREFIX}{record['id']}")
-        for _, record in matches
-    ]
-    keys = {_session_key(session) for session in sessions}
-    with _sessions_free:
-        if any(key in _removing_sessions or _active_sessions.get(key, 0) for key in keys):
-            return False, None
-        _removing_sessions.update(keys)
-    try:
+    with _ORPHAN_RECORDS_LOCK:
         try:
-            for name, _ in matches:
-                os.unlink(os.path.join(_orphan_records_dir(), name))
-        except OSError:
-            for name, record in matches:
-                try:
-                    with open(
-                        os.path.join(_orphan_records_dir(), name), "w", encoding = "utf-8"
-                    ) as fh:
-                        fh.write(_json.dumps(record))
-                except OSError:
-                    logger.warning("Could not restore kept-folder record %s", name)
+            rows = _orphan_record_rows(require_complete = True)
+        except _OrphanRecordScanTruncated:
             return False, None
-        try:
+        matches = []
+        for name, record in rows:
+            if project_workspace_overlaps_managed_root(
+                workspace,
+                str(record.get("rootPath") or record["path"]),
+                check_descendants = True,
+            ):
+                matches.append((name, record))
+        if not matches:
             return True, update()
-        except Exception:
-            for name, record in matches:
-                try:
-                    with open(
-                        os.path.join(_orphan_records_dir(), name), "w", encoding = "utf-8"
-                    ) as fh:
-                        fh.write(_json.dumps(record))
-                except OSError:
-                    logger.warning("Could not restore kept-folder record %s", name)
-            raise
-    finally:
+        sessions = [
+            str(record["id"])
+            if record.get("chat")
+            else str(record.get("sessionId") or f"{_PROJECT_SESSION_PREFIX}{record['id']}")
+            for _, record in matches
+        ]
+        keys = {_session_key(session) for session in sessions}
         with _sessions_free:
-            _removing_sessions.difference_update(keys)
-            _sessions_free.notify_all()
+            if any(key in _removing_sessions or _active_sessions.get(key, 0) for key in keys):
+                return False, None
+            _removing_sessions.update(keys)
+        try:
+            try:
+                for name, _ in matches:
+                    os.unlink(os.path.join(_orphan_records_dir(), name))
+            except OSError:
+                for name, record in matches:
+                    try:
+                        with open(
+                            os.path.join(_orphan_records_dir(), name), "w", encoding = "utf-8"
+                        ) as fh:
+                            fh.write(_json.dumps(record))
+                    except OSError:
+                        logger.warning("Could not restore kept-folder record %s", name)
+                return False, None
+            try:
+                return True, update()
+            except Exception:
+                for name, record in matches:
+                    try:
+                        with open(
+                            os.path.join(_orphan_records_dir(), name), "w", encoding = "utf-8"
+                        ) as fh:
+                            fh.write(_json.dumps(record))
+                    except OSError:
+                        logger.warning("Could not restore kept-folder record %s", name)
+                raise
+        finally:
+            with _sessions_free:
+                _removing_sessions.difference_update(keys)
+                _sessions_free.notify_all()
 
 
 def forget_orphaned_project(project_id: str, is_chat: bool = False) -> None:
@@ -7695,7 +7706,7 @@ def forget_orphaned_project_session(project_id: str, session_id: str) -> None:
         _unlink_orphan_record(_orphan_record_name(_ORPHAN_PROJECT, storage_id))
 
 
-def _orphan_record_rows() -> "list[tuple[str, dict]]":
+def _orphan_record_rows(require_complete: bool = False) -> "list[tuple[str, dict]]":
     """Every valid kept-folder record with its exact filename."""
     import json as _json
 
@@ -7705,6 +7716,8 @@ def _orphan_record_rows() -> "list[tuple[str, dict]]":
     except OSError:
         return records
     if len(names) > _MAX_ORPHAN_RECORDS:
+        if require_complete:
+            raise _OrphanRecordScanTruncated
         logger.warning(
             "%d kept-folder records; reading the first %d", len(names), _MAX_ORPHAN_RECORDS
         )
@@ -7860,7 +7873,13 @@ def collect_orphaned_project_workspaces() -> None:
                 # ours to take, exactly as the chat's own delete would.
                 remove_session_sandbox(session, delete_files = True)
             else:
-                _delete_recorded_workspace(record_id, workspace, root)
+                fenced, _ = run_when_sessions_idle(
+                    sessions,
+                    lambda: _delete_recorded_workspace(record_id, workspace, root),
+                    timeout = 0.0,
+                )
+                if not fenced:
+                    continue
             # A locked file on Windows, or a network volume having a bad
             # moment: the record stays so the next launch tries again.
             forget_orphaned_project_if_gone(
@@ -9264,6 +9283,27 @@ def update_project_workspace_when_idle(project_id: str, update):
         _workdirs.pop(session_id, None)
         with _sessions_free:
             _removing_sessions.difference_update(locked_keys)
+            _sessions_free.notify_all()
+
+
+def run_when_sessions_idle(session_ids, update, timeout: float = 10.0):
+    """run an update while no call can start in any named session."""
+    keys = {_session_key(session_id) for session_id in session_ids or []}
+    deadline = time.monotonic() + max(0.0, timeout)
+    with _sessions_free:
+        while any(
+            key in _removing_sessions or _active_sessions.get(key, 0) > 0 for key in keys
+        ):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False, None
+            _sessions_free.wait(timeout = min(0.05, remaining))
+        _removing_sessions.update(keys)
+    try:
+        return True, update()
+    finally:
+        with _sessions_free:
+            _removing_sessions.difference_update(keys)
             _sessions_free.notify_all()
 
 

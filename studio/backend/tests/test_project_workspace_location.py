@@ -117,7 +117,9 @@ def test_creating_a_project_says_which_folder_failed(tmp_path, monkeypatch):
     monkeypatch.setattr(
         chat_history,
         "upsert_chat_project",
-        lambda payload, external_workspace_path = None: (_ for _ in ()).throw(
+        lambda payload, external_workspace_path = None, external_workspace_identity = None: (
+            _ for _ in ()
+        ).throw(
             ProjectWorkspaceError(str(blocked), PermissionError(13, "Permission denied"))
         ),
     )
@@ -144,7 +146,9 @@ def test_a_database_folder_failure_is_not_blamed_on_the_projects_folder(monkeypa
     monkeypatch.setattr(
         chat_history,
         "upsert_chat_project",
-        lambda payload, external_workspace_path = None: (_ for _ in ()).throw(
+        lambda payload, external_workspace_path = None, external_workspace_identity = None: (
+            _ for _ in ()
+        ).throw(
             PermissionError(13, "studio.db")
         ),
     )
@@ -179,11 +183,16 @@ def test_external_project_creation_uses_only_the_verified_folder(tmp_path, monke
     monkeypatch.setattr(
         chat_history,
         "_resolve_project_workspace_path",
-        lambda lease: str(selected.resolve()),
+        lambda lease: (str(selected.resolve()), ("1", "2")),
     )
 
-    def save(project, external_workspace_path = None):
+    def save(
+        project,
+        external_workspace_path = None,
+        external_workspace_identity = None,
+    ):
         captured["path"] = external_workspace_path
+        captured["identity"] = external_workspace_identity
         return {
             **project,
             "rootPath": str(tmp_path / "managed"),
@@ -198,6 +207,7 @@ def test_external_project_creation_uses_only_the_verified_folder(tmp_path, monke
     created = chat_history.save_project(payload, current_subject = "tester")
 
     assert captured["path"] == str(selected.resolve())
+    assert captured["identity"] == ("1", "2")
     assert created.workspacePath == str(selected.resolve())
 
 
@@ -261,7 +271,7 @@ def test_busy_orphan_workspace_returns_conflict(monkeypatch):
     monkeypatch.setattr(
         chat_history,
         "_resolve_project_workspace_path",
-        lambda lease: "/selected/project",
+        lambda lease: ("/selected/project", ("1", "2")),
     )
     monkeypatch.setattr(
         tools,
@@ -269,7 +279,7 @@ def test_busy_orphan_workspace_returns_conflict(monkeypatch):
         lambda project_id, update: (True, update()),
     )
 
-    def reject_busy_workspace(project_id, path):
+    def reject_busy_workspace(project_id, path, identity):
         raise ProjectWorkspaceConflictError(
             "Wait for active tool calls in the selected folder to finish"
         )

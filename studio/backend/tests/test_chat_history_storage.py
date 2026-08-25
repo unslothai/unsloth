@@ -916,6 +916,11 @@ def test_workspace_overlap_read_check_does_not_walk_trees(tmp_path, monkeypatch)
         "_directory_tree_contains_identity",
         lambda root, target: (_ for _ in ()).throw(AssertionError("walked tree")),
     )
+    monkeypatch.setattr(
+        studio_db,
+        "_workspace_overlaps_live_project_path",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("rescanned projects")),
+    )
 
     assert not studio_db.project_workspace_overlaps_managed_root(str(workspace), str(managed))
 
@@ -954,6 +959,48 @@ def test_unavailable_external_workspace_is_reported_without_recreating_it(
     assert not external.exists()
 
 
+def test_replaced_external_workspace_is_unavailable(
+    tmp_path, monkeypatch, workspace_projects_home
+):
+    _reset_studio_db(tmp_path, monkeypatch, projects_home = workspace_projects_home)
+    external = workspace_projects_home / "existing-project"
+    external.mkdir()
+    project = studio_db.upsert_chat_project(_project(), external_workspace_path = str(external))
+    external.rename(workspace_projects_home / "original-project")
+    external.mkdir()
+
+    assert studio_db.get_chat_project(project["id"])["workspaceAvailable"] is False
+    with pytest.raises(studio_db.ProjectWorkspaceUnavailableError, match = "unavailable"):
+        studio_db.ensure_chat_project_workspace(project["id"])
+
+    reselected = studio_db.set_chat_project_workspace(project["id"], str(external))
+    assert reselected["workspaceAvailable"] is True
+    assert reselected["workspaceSessionId"] != project["workspaceSessionId"]
+
+
+def test_external_workspace_without_a_saved_identity_is_unavailable(
+    tmp_path, monkeypatch, workspace_projects_home
+):
+    _reset_studio_db(tmp_path, monkeypatch, projects_home = workspace_projects_home)
+    external = workspace_projects_home / "legacy-project"
+    external.mkdir()
+    project = studio_db.upsert_chat_project(_project(), external_workspace_path = str(external))
+    connection = studio_db.get_connection()
+    try:
+        connection.execute(
+            "UPDATE chat_projects SET workspace_device_id = NULL, workspace_file_id = NULL "
+            "WHERE id = ?",
+            (project["id"],),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    assert studio_db.get_chat_project(project["id"])["workspaceAvailable"] is False
+    with pytest.raises(studio_db.ProjectWorkspaceUnavailableError, match = "unavailable"):
+        studio_db.ensure_chat_project_workspace(project["id"])
+
+
 def test_external_workspace_requires_write_access(tmp_path, monkeypatch, workspace_projects_home):
     _reset_studio_db(tmp_path, monkeypatch, projects_home = workspace_projects_home)
     external = workspace_projects_home / "read-only-project"
@@ -966,6 +1013,22 @@ def test_external_workspace_requires_write_access(tmp_path, monkeypatch, workspa
         return real_access(path, mode)
 
     monkeypatch.setattr(studio_db.os, "access", access_without_write)
+
+    with pytest.raises(studio_db.ProjectWorkspaceUnavailableError, match = "unavailable"):
+        studio_db.upsert_chat_project(_project(), external_workspace_path = str(external))
+
+
+def test_external_workspace_write_access_is_probed(
+    tmp_path, monkeypatch, workspace_projects_home
+):
+    _reset_studio_db(tmp_path, monkeypatch, projects_home = workspace_projects_home)
+    external = workspace_projects_home / "blocked-project"
+    external.mkdir()
+
+    def refuse_probe(*args, **kwargs):
+        raise PermissionError("write denied")
+
+    monkeypatch.setattr(studio_db.tempfile, "mkstemp", refuse_probe)
 
     with pytest.raises(studio_db.ProjectWorkspaceUnavailableError, match = "unavailable"):
         studio_db.upsert_chat_project(_project(), external_workspace_path = str(external))
