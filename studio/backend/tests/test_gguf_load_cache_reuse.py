@@ -588,6 +588,21 @@ class TestLoadReusesCachedCopy:
             # Complete, and llama-server is handed shard 1 whichever shard ranked first.
             assert backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN)) == str(first)
 
+    def test_an_incomplete_split_projector_does_not_shadow_a_complete_one(self, hf_cache):
+        """Dropped during discovery, so a whole set still gets its turn at ranking."""
+        backend = LlamaCppBackend()
+        snap = _build_cache(hf_cache, REPO, {MAIN: 4})
+        repo_root = snap.parent.parent
+        # Longer shared prefix with the weight stem, so it outranks the plain name.
+        (repo_root / f"{Path(MAIN).stem}-mmproj-00001-of-00002.gguf").write_bytes(b"mmproj")
+        complete = repo_root / "mmproj-F16.gguf"
+        complete.write_bytes(b"mmproj")
+
+        with patch.object(backend, "_download_companion_gguf", return_value = None):
+            out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN))
+
+        assert out == str(complete)
+
     def test_companion_cancelled_before_scanning_cached_projectors(self, hf_cache):
         backend = LlamaCppBackend()
         snap = _build_cache(hf_cache, REPO, {MAIN: 4})

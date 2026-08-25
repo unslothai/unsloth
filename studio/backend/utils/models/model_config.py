@@ -1790,6 +1790,12 @@ def detect_mmproj_file(
         for f in _iter_gguf_files(d):
             if accept is not None and not accept(str(f)):
                 continue
+            # A split projector is usable only as a whole set, since llama-server resolves
+            # the siblings from this path's directory. Dropped during discovery, not after
+            # ranking, or half a set shadows a complete one that would have paired. Same
+            # rule the snapshot reuse and the drafter scan apply.
+            if _GGUF_SPLIT_FILE_RE.match(f.name) and not _drafter_split_is_complete(f):
+                continue
             try:
                 resolved = f.resolve()
                 # Interrupted download: llama-server can't open it and it must not shadow a real projector.
@@ -2664,8 +2670,9 @@ def _hf_cache_repo_root_has_mmproj(repo_id: str) -> bool:
         for repo_dir in Path(get_hf_cache_paths().hub_cache).iterdir():
             if repo_dir.is_dir() and repo_dir.name.lower() == target:
                 return detect_mmproj_file(str(repo_dir)) is not None
-    except OSError:
-        pass
+    except Exception as exc:
+        # A cache-path lookup must never be what fails a config resolve.
+        logger.debug(f"Could not check the HF cache repo root of {repo_id} for a projector: {exc}")
     return False
 
 
