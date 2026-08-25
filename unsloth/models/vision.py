@@ -334,10 +334,8 @@ def _embedding_dispatch_device(input_embeddings):
     return None if hook is None else getattr(hook, "execution_device", None)
 
 
-# An embedding is worth putting in CPU RAM when it is big enough for the VRAM it frees to
-# matter and big enough to matter *on this card*. Both, because the cost is real: every
-# lookup then crosses PCIe. A 2.5 GiB embedding is 16% of a 16 GB T4 and worth moving; the
-# same matrix is 3% of an 80 GB card, where the traffic buys nothing.
+# Big in absolute terms and big on this card, because every lookup then crosses PCIe.
+# 2.5 GiB is 16% of a 16 GB T4 and worth moving, and 3% of an 80 GB card, where it is not.
 _OFFLOAD_EMBEDDING_MIN_BYTES = 2**30
 _OFFLOAD_EMBEDDING_MIN_FRACTION = 0.05
 
@@ -345,8 +343,7 @@ _OFFLOAD_EMBEDDING_MIN_FRACTION = 0.05
 def _embedding_is_worth_offloading(input_embeddings):
     """Whether `"auto"` should offload, judged from the embedding against its own card.
 
-    False on anything unmeasurable: not offloading is the behaviour every release before
-    this one had, so it is the safe answer to an unknown.
+    False on anything unmeasurable, which is what every release before this one did.
     """
     try:
         weight = getattr(input_embeddings, "weight", None)
@@ -372,10 +369,9 @@ def _resolve_offload_embedding(model, offload_embedding):
     `_attach_bnb_multidevice_hooks`, which must still run whenever no offload
     happens, so every "no offload" case has to answer False.
 
-    `"auto"` (the default) decides from the size of the embedding. The declines below stay
-    silent for it: they explain why something a caller *asked* for is not happening, and
-    printing them for a default nobody set would put three lines of apology in front of
-    every tied-embedding load.
+    `"auto"` (the default) decides from the size of the embedding, and the declines below
+    stay silent for it: they explain why something a caller *asked* for is not happening,
+    and nobody asked for a default.
     """
     automatic = offload_embedding == OFFLOAD_EMBEDDING_AUTO
 
@@ -1446,8 +1442,7 @@ class FastBaseModel:
         raise_handler = RaiseUninitialized()
         try:
             if offload_embedding and fast_inference:
-                # vLLM manages its own weights; embedding offload does not apply. Silent for
-                # the `"auto"` default, which nobody asked for and so owes no explanation.
+                # vLLM manages its own weights. Silent for the default, as above.
                 if offload_embedding != OFFLOAD_EMBEDDING_AUTO:
                     print(
                         "Unsloth: Not offloading embeddings; incompatible with fast_inference (vLLM)."

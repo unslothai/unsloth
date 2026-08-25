@@ -126,11 +126,9 @@ def test_an_explicit_dict_is_returned_untouched():
 
 @pytest.mark.parametrize("switch", [None, "1"])
 def test_only_the_default_is_ever_upgraded(monkeypatch, switch):
-    """Planning is what a caller who chose nothing gets, but it is never a licence to
-    override a placement they did choose. "auto" and a dict must survive it.
-
-    So must a "sequential" they typed out, which is why the default carries a marker: the
-    two are the same string, and only the one nobody chose may be upgraded.
+    """Planning is what a caller who chose nothing gets, never a licence to override one
+    they did choose. "auto", a dict, and a "sequential" they typed out all survive it --
+    hence the marker, since the last of those is the same string as the default.
     """
     ns = _load()
     if switch is None:
