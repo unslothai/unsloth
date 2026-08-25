@@ -1776,11 +1776,17 @@ def report(
             else:
                 idle.append(entry)
             continue
+        # THE STYLE VERDICT IS COLLECTED BEFORE THE STRUCTURAL REFUSAL IS BUCKETED, because it is
+        # an INDEPENDENT reading and the refusal is not about it. The bounded computed-style probe
+        # is the only thing here that sees `display`, `visibility` or `pointer-events`, and a pair
+        # refused for landing at two points in one stream can still carry a real CSS regression on
+        # a settled surface. Sitting below the `continue`, that verdict was computed, attached to
+        # the row, and then dropped on the floor for exactly the pairs this PR creates most of.
+        if r.get("style_verdict") == P.DIFFER:
+            style_bad.append((action, shard, cell, [r.get("style_reason", "")]))
         if r["verdict"] == P.NOT_COMPARABLE:
             blind.append((action, shard, cell, [r.get("reason", "")]))
             continue
-        if r["style_verdict"] == P.DIFFER:
-            style_bad.append((action, shard, cell, [r.get("style_reason", "")]))
         if r["verdict"] == P.MATCH:
             matched += 1
             compared.add((action, shard, cell))
