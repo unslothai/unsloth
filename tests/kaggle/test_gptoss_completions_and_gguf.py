@@ -83,3 +83,22 @@ def test_the_dataset_shape_and_the_text_field_cannot_both_be_set():
     silently falls back to training on everything."""
     src = (PAYLOAD / "run_gptoss_t4.py").read_text(encoding = "utf-8")
     assert '**({} if args.train_on_completions else {"dataset_text_field": "text"})' in src
+
+
+def test_the_gptoss_export_does_not_land_in_the_artifact_volume():
+    """Measured, not reasoned about.
+
+    `/kaggle/working` is 21.0GB total. The gpt-oss export consumes 27.6GB of
+    transient disk (three mxfp4 shards at 13.76GB, plus the GGUF). Exporting
+    there fails in 2.8s with "Unsloth: Failed saving locally - no disk space
+    left", which reads like an export bug and is a disk fact. Observed on
+    kernel unsloth-probe-gptoss-comp-gguf-701d00.
+
+    `/tmp` is the overlay: 8656.9GB total, 1102.5GB free. tempfile honours
+    TMPDIR and lands there.
+    """
+    src = (PAYLOAD / "run_gptoss_t4.py").read_text(encoding = "utf-8")
+    assert 'tempfile.mkdtemp(prefix = "gptoss_gguf_")' in src
+    assert 'os.path.join(args.outdir, "gguf")' not in src, (
+        "the export is back in the 21GB artifact volume and will fail on space"
+    )

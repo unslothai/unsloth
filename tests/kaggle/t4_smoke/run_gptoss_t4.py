@@ -72,6 +72,8 @@ import json
 import os
 import platform
 import sys
+import shutil
+import tempfile
 import time
 import traceback
 from pathlib import Path
@@ -533,12 +535,25 @@ def train_and_infer(args) -> dict:
             facts = {"error": f"{type(exc).__name__}: {exc}"[:2000]}
         _log(f"llama.cpp: {json.dumps(facts)}")
 
+        # NOT under args.outdir, and this is measured. `/kaggle/working` is
+        # 21.0GB total; the gpt-oss export consumes 27.6GB of transient disk
+        # (3 mxfp4 safetensors shards at 13.76GB plus the GGUF). Exporting
+        # there fails in 2.8s with
+        #   Unsloth: Failed saving locally - no disk space left
+        # which is a disk fact wearing the costume of an export bug.
+        #
+        # `/tmp` on a Kaggle session is the overlay: 8656.9GB total, 1102.5GB
+        # free, measured on kernel unsloth-probe-disk. tempfile honours TMPDIR
+        # and lands there. The artifact keeps the RECORD -- path, size, seconds
+        # -- and not the 27.6GB, which nobody wants collected anyway.
+        gguf_dir = tempfile.mkdtemp(prefix = "gptoss_gguf_")
         record = export_gguf(
             model,
             tokenizer,
-            os.path.join(args.outdir, "gguf"),
+            gguf_dir,
             quantization = args.gguf_quantization,
         )
+        record["disk_free_gb_before"] = round(shutil.disk_usage(gguf_dir).free / 1e9, 1)
         record["llama_cpp"] = facts
         result["gguf_export"] = record
         _log(f"gguf export: {json.dumps({k: v for k, v in record.items() if k != 'llama_cpp'})}")
