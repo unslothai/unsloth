@@ -73,8 +73,13 @@ def _resolved_windows_path(path: Path) -> str:
     return resolved.rstrip("\\/")
 
 
-def _resolve_windows_powershell() -> str:
-    r"""Resolve Windows PowerShell without relying solely on ``PATH`` (#9440)."""
+def resolve_windows_powershell() -> str:
+    r"""Resolve Windows PowerShell without relying solely on ``PATH`` (#9440).
+
+    Public because the install path spawns PowerShell from more than this module: powershell.exe
+    lives in a SUBDIRECTORY of System32, so ``CreateProcess``'s implicit system-directory lookup
+    never finds it and a caller whose PATH omits that entry gets ``WinError 2`` instead.
+    """
     import shutil
 
     on_path = shutil.which("powershell.exe")
@@ -271,7 +276,7 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
         "[Console]::Out.Write(($items|ConvertTo-Json -Compress))"
     )
     result = subprocess.run(
-        [_resolve_windows_powershell(), "-NoProfile", "-NonInteractive", "-Command", script],
+        [resolve_windows_powershell(), "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,
         text = True,
         encoding = "utf-8",
