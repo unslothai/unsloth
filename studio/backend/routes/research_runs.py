@@ -75,6 +75,7 @@ class CreateResearchRun(BaseModel):
     budgets: dict[str, int] | None = None
     websitePolicy: dict[str, list[str]] | None = None
     instructions: str | None = Field(default = None, max_length = 32_000)
+    question: str | None = Field(default = None, max_length = 2000)
 
     @field_validator("budgets", mode = "before")
     @classmethod
@@ -360,6 +361,7 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
         "budgets": budgets,
         "websitePolicy": website_policy,
         "instructions": (payload.instructions or "").strip(),
+        "question": (payload.question or "").strip(),
     }
 
 

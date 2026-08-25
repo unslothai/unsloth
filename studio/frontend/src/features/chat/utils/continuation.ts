@@ -230,20 +230,19 @@ export function resumesExactly(providerType: string | undefined): boolean {
 /**
  * Whether the run this thread would start can resume a partial at all.
  *
- * These three answer from scratch before the continuation request is read: audio input
- * re-listens, an audio-output model regenerates the clip, and armed Deep Research
- * replaces the turn with a report. Continue would restart, so it is hidden.
+ * These two answer from scratch before the continuation request is read: audio input
+ * re-listens and an audio-output model regenerates the clip. Continue would restart, so
+ * it is hidden. Armed Deep Research is not here: the model decides whether an armed turn
+ * becomes research, and a turn that did is hidden by its run, not by the toggle.
  */
 export function modeAllowsContinuation({
   fromAudioInput,
   audioOutputModel,
-  deepResearchArmed,
 }: {
   fromAudioInput: boolean;
   audioOutputModel: boolean;
-  deepResearchArmed: boolean;
 }): boolean {
-  return !(fromAudioInput || audioOutputModel || deepResearchArmed);
+  return !(fromAudioInput || audioOutputModel);
 }
 
 /** Asks for a continuation when the partial cannot be sent as a prefill. */

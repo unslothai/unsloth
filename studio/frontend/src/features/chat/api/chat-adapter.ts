@@ -1678,6 +1678,7 @@ export async function buildLocalTokenCountExtras(
     ragTopK,
     autoHealToolCalls,
     bypassPermissions,
+    deepResearchEnabled,
   } = useChatRuntimeStore.getState();
   if (!supportsTools) return {};
 
@@ -1691,7 +1692,8 @@ export async function buildLocalTokenCountExtras(
     !codeToolsEnabled &&
     !artifactsEnabled &&
     !mcpEnabledForChat &&
-    !ragOn
+    !ragOn &&
+    !deepResearchEnabled
   ) {
     // Explicit false, not an omitted field: the server defaults tools on for a
     // request that never mentions them, so every pill being off has to say so.
@@ -1717,6 +1719,8 @@ export async function buildLocalTokenCountExtras(
       ...(artifactsEnabled ? ["render_html"] : []),
     ],
     mcp_enabled: mcpEnabledForChat,
+    // Armed research puts the deep_research schema in the prompt, so the count carries it.
+    ...(deepResearchEnabled ? { deep_research_armed: true } : {}),
     // Only truthiness is read server-side, to keep search_knowledge_base and its grounding nudge
     // in the prompt; no retrieval runs for a count.
     ...(ragOn
@@ -3727,11 +3731,9 @@ export function createOpenAIStreamAdapter(
           runtime = useChatRuntimeStore.getState();
         }
       }
-      if (
-        runtime.deepResearchEnabled &&
-        !options.pairId &&
-        (options.modelType === undefined || options.modelType === "base")
-      ) {
+      // Started only when the model hands this turn off, never on the toggle alone: arming
+      // research offers it the tool, and it decides whether the message wants researching.
+      const startDeepResearch = async function* (researchQuestion: string) {
         if (runtime.modelLoading) {
           toast.info("Waiting for model to finish loading…");
           try {
@@ -3951,6 +3953,9 @@ export function createOpenAIStreamAdapter(
             userMessageId: userMessage.id,
             assistantMessageId: unstable_assistantMessageId,
             inferenceRequest,
+            // Omitted when empty rather than sent as "": CreateResearchRun forbids unknown
+            // fields, so an unconditional send 422s against a backend that predates it.
+            ...(researchQuestion ? { question: researchQuestion } : {}),
             ...(researchInstructions ? { instructions: researchInstructions } : {}),
             ...(ragScope ? { ragScope } : {}),
             budgets: {
@@ -4028,8 +4033,14 @@ export function createOpenAIStreamAdapter(
           runtime.clearThreadServerCancel(threadKey, researchServerCancel);
           runtime.setThreadRunning(threadKey, false, { owner: researchServerCancel });
         }
-        return;
-      }
+      };
+      let deepResearchHandoff: string | null = null;
+      let pendingResearchCallId = "";
+      let pendingResearchQuestion = "";
+      const deepResearchArmed =
+        runtime.deepResearchEnabled &&
+        !options.pairId &&
+        (options.modelType === undefined || options.modelType === "base");
       const toolConfirmationIdsByBackendId = new Map<string, string>();
       // Local tool ids ("call_0") repeat across turns, panes and conversations, so scope by pane
       // AND thread. unstable_threadId alone, no activeThreadId fallback: the reader has only
@@ -4186,6 +4197,12 @@ export function createOpenAIStreamAdapter(
         ragAutoInject,
         ragAutoInjectMinScore,
       } = runtime;
+      // A model that cannot call tools cannot hand the turn off, so arming research still starts
+      // it outright. No question is passed: the run reads the user's message, exactly as before.
+      if (deepResearchArmed && !supportsTools) {
+        yield* startDeepResearch("");
+        return;
+      }
       // Project sources auto-scope: a chat inside a project retrieves from the
       // project's indexed sources even when the Docs pill is off. The probe is
       // cached, so this is one round trip per project every ~30s at most.
@@ -5408,6 +5425,9 @@ export function createOpenAIStreamAdapter(
                     // server's tools-on default, which would bill provider
                     // server tools.
                     { enable_tools: false }),
+              // Also on this body, not just the local one: a provider whose models run Studio
+              // tools can hand off too, and omitting it here makes arming research a no-op.
+              ...(deepResearchArmed ? { deep_research_armed: true } : {}),
               provider_id: externalProvider.id,
               provider_type: externalBackendProviderType,
               external_model: externalSelection.modelId,
@@ -5527,13 +5547,15 @@ export function createOpenAIStreamAdapter(
               ? {}
               : { confirm_tool_calls: permissionMode === "ask" }),
             bypass_permissions: bypassPermissions,
+            ...(deepResearchArmed ? { deep_research_armed: true } : {}),
             ...(supportsTools &&
             (toolsEnabled ||
               codeToolsEnabled ||
               renderHtmlToolEnabledForThisTurn ||
               mcpEnabledForChat ||
               ragEnabled ||
-              projectRagEnabled)
+              projectRagEnabled ||
+              deepResearchArmed)
               ? {
                   enable_tools: true,
                   enabled_tools: [
@@ -5677,6 +5699,46 @@ export function createOpenAIStreamAdapter(
                 chunk as unknown as { _toolEvent?: Record<string, unknown> }
               )._toolEvent;
               if (toolEvent !== undefined) {
+                // Deep Research is an ordinary tool to every loop that runs it, so the handoff
+                // is read off the events they all publish rather than a bespoke frame. Its
+                // question rides on tool_start; tool_end is what says it actually ran. Neither
+                // is rendered: the research card is the reply, a tool pill would just precede
+                // it saying the same thing.
+                if (toolEvent.tool_name === "deep_research") {
+                  // The local loop paints a provisional tool_start with empty arguments before
+                  // the real one, so only a start carrying a question is remembered, and only
+                  // the first: a second call in the same turn is the model repeating itself.
+                  if (toolEvent.type === "tool_start") {
+                    const args = toolEvent.arguments;
+                    const question =
+                      args && typeof args === "object"
+                        ? String(
+                            (args as { question?: unknown }).question ?? "",
+                          ).trim()
+                        : "";
+                    if (deepResearchHandoff === null && question) {
+                      pendingResearchCallId =
+                        typeof toolEvent.tool_call_id === "string"
+                          ? toolEvent.tool_call_id
+                          : "";
+                      pendingResearchQuestion = question;
+                    }
+                    continue;
+                  }
+                  // tool_end is what says the loop ran it. The run starts on the question the
+                  // model passed; if that could not be read, on the user's own message, which is
+                  // what research did before the model had a say. Never silently on nothing.
+                  if (
+                    toolEvent.type === "tool_end" &&
+                    deepResearchHandoff === null
+                  ) {
+                    deepResearchHandoff =
+                      toolEvent.tool_call_id === pendingResearchCallId
+                        ? pendingResearchQuestion
+                        : "";
+                  }
+                  continue;
+                }
                 // Persist container_id onto the thread (OpenAI / Anthropic).
                 if (toolEvent.type === "container_ready") {
                   const newContainerId = toolEvent.container_id as
@@ -6521,6 +6583,20 @@ export function createOpenAIStreamAdapter(
             }
             throw streamError;
           }
+        }
+        // The model asked for Deep Research, so the run takes over from here and its card
+        // replaces this reply. Not after Stop: the user ended the turn before it got there.
+        if (deepResearchHandoff !== null && !runSignal.aborted) {
+          try {
+            yield* startDeepResearch(deepResearchHandoff);
+          } catch (error) {
+            // The reply the model already wrote stays; the user can send again.
+            toast.error("Deep research could not start", {
+              description:
+                error instanceof Error ? error.message : String(error),
+            });
+          }
+          return;
         }
         // Strip a trailing ${...} template-literal fragment from external
         // streams (mistral magistral occasionally emits one at the end of an

@@ -326,6 +326,8 @@ type PromptQueueTarget = {
   usesThreadDocuments: boolean;
   usesLocalModel: boolean;
   usesDeepResearch: boolean;
+  /** Whether a research run now holds this queue's thread. */
+  researchStarted: () => boolean;
   temporary: boolean;
   consumeDeepResearch: () => void;
 };
@@ -474,7 +476,13 @@ function consumePromptQueueDeepResearch(
   run: PromptQueueRun,
   item: PromptQueueItem,
 ) {
-  if (run.deepResearchConsumed || !item.target.usesDeepResearch) {
+  // The model decides whether an armed prompt becomes research, so the queue's one research
+  // is spent only once a run actually started, not on the first prompt that was merely armed.
+  if (
+    run.deepResearchConsumed ||
+    !item.target.usesDeepResearch ||
+    !item.target.researchStarted()
+  ) {
     return;
   }
   run.deepResearchConsumed = true;
@@ -3419,6 +3427,10 @@ const Composer: FC<{
       usesLocalModel:
         parseExternalModelId(runSettingsAtQueueStart.params.checkpoint) === null,
       usesDeepResearch: runSettingsAtQueueStart.deepResearchEnabled,
+      researchStarted: () => {
+        const claimed = useResearchRunStore.getState().claimedThreadIds;
+        return getQueueThreadIds().some((id) => Boolean(claimed[id]));
+      },
       temporary: incognitoAtQueueStart,
       consumeDeepResearch: () => {
         runSettingsAtQueueStart.deepResearchEnabled = false;
@@ -6478,9 +6490,6 @@ const ContinueMessageBarForLastMessage: FC = () => {
     const activeModel = s.models.find((m) => m.id === s.params.checkpoint);
     return Boolean(activeModel?.isAudio && !activeModel.hasAudioInput);
   });
-  // Research armed after the cut owns no run yet, so the gates above stay clear.
-  const deepResearchArmed = useChatRuntimeStore((s) => s.deepResearchEnabled);
-
   // Cancelled comes through status (the adapter yields nothing after an abort); the
   // other two are stamped on metadata so they survive a reload.
   const stamped = readIncompleteInfo(metadata);
@@ -6500,7 +6509,6 @@ const ContinueMessageBarForLastMessage: FC = () => {
     !modeAllowsContinuation({
       fromAudioInput,
       audioOutputModel,
-      deepResearchArmed,
     }) ||
     !partial.trim()
   ) {

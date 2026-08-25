@@ -106,6 +106,8 @@ export interface CreateResearchRunInput {
   budgets?: Partial<ResearchBudgets>;
   websitePolicy?: ResearchWebsitePolicy;
   instructions?: string;
+  /** The question the model handed off, which is what gets researched. */
+  question?: string;
 }
 
 export interface ResearchRun {

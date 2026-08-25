@@ -239,11 +239,19 @@ def _extract_text(message: dict) -> str:
     return message_text_with_pastes(message).strip()
 
 
-def _research_question_context(thread_id: str, user_message_id: str) -> tuple[str, str]:
+def _research_question_context(
+    thread_id: str, user_message_id: str, override: str = ""
+) -> tuple[str, str]:
+    """The question to research plus the conversation that led to it.
+
+    ``override`` is the question the model handed off, which folds in what the conversation
+    established and is what the user actually wants researched. The raw message stands in for
+    runs created without one.
+    """
     messages = list_chat_messages(thread_id)
     by_id = {str(message["id"]): message for message in messages}
     user = by_id.get(user_message_id)
-    question = _extract_text(user or {})
+    question = override.strip() or _extract_text(user or {})
     if not user:
         return question, "[]"
 
@@ -1657,7 +1665,10 @@ class ResearchSupervisor:
 
     async def _plan(self, run: dict) -> None:
         question, conversation_context = await asyncio.to_thread(
-            _research_question_context, run["threadId"], run["userMessageId"]
+            _research_question_context,
+            run["threadId"],
+            run["userMessageId"],
+            str(run["config"].get("question") or ""),
         )
         if not question:
             raise ValueError("User message has no text to research")
@@ -1708,6 +1719,8 @@ class ResearchSupervisor:
             preview_labels = True,
         )
         plan = _parse_and_validate_plan(response, planning_reasoning, max_steps)
+        # Arming research in the composer is the approval, so the plan is queued as it is
+        # stored rather than parked for a second confirmation.
         try:
             result = await asyncio.to_thread(
                 db.set_plan,
@@ -1715,6 +1728,7 @@ class ResearchSupervisor:
                 plan,
                 None,
                 self.worker_id,
+                auto_approve = True,
             )
         except db.ResearchConflictError:
             if await asyncio.to_thread(db.is_cancel_requested, run["id"]):
@@ -1757,7 +1771,10 @@ class ResearchSupervisor:
         used_queries: set[str] = set()
         fetched_urls: set[str] = set()
         question, conversation_context = await asyncio.to_thread(
-            _research_question_context, run["threadId"], run["userMessageId"]
+            _research_question_context,
+            run["threadId"],
+            run["userMessageId"],
+            str(run["config"].get("question") or ""),
         )
         reset = db.prepare_execution_resume if resuming else db.reset_execution_steps
         written = await asyncio.to_thread(reset, run["id"], self.worker_id)

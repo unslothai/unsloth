@@ -71,7 +71,13 @@ def test_research_mode_is_single_chat_and_detaches_without_cancel() -> None:
     # runSignal, not abortSignal: each run gets its own controller, forwarded from the thread
     # signal, so one chat's Stop cannot abort a sibling streaming in the background.
     assert "if (runSignal.aborted) return" in adapter
-    research = adapter.split("if (\n        runtime.deepResearchEnabled", 1)[1].split(
+    # The model decides: arming research offers it the deep_research tool, and the run starts
+    # off the tool events every loop already publishes, never off the toggle alone.
+    assert "deep_research_armed: true" in adapter
+    assert 'toolEvent.tool_name === "deep_research"' in adapter
+    assert "if (deepResearchHandoff !== null && !runSignal.aborted)" in adapter
+    assert "if (deepResearchArmed && !supportsTools)" in adapter
+    research = adapter.split("const startDeepResearch = async function*", 1)[1].split(
         "const sandboxSessionId", 1
     )[0]
     assert "await resolveQueuedEmptyLocalModel(abortSignal)" in research

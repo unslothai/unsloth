@@ -4530,7 +4530,10 @@ def _render_html_reaches_network(arguments: dict) -> bool:
 # Tools that are read-only regardless of their arguments, so auto mode never has
 # to pause them and their safety needs no argument scan. render_html is handled
 # separately above because a networked canvas does need approval.
-_ALWAYS_SAFE_TOOLS = frozenset({"web_search", "search_knowledge_base"})
+# deep_research runs no code and reaches nothing: it only reports that the user's own armed
+# research is starting. Without it here, is_high_risk_tool_call's unknown-name default would
+# make auto mode prompt for approval on every handoff.
+_ALWAYS_SAFE_TOOLS = frozenset({"web_search", "search_knowledge_base", "deep_research"})
 
 
 def is_always_safe_tool(name: str) -> bool:
@@ -9249,6 +9252,53 @@ ALL_TOOLS = [
     SEARCH_KNOWLEDGE_BASE_TOOL,
 ]
 
+# Deliberately an ordinary tool with an ordinary result. Studio runs three tool loops -- one for
+# llama.cpp, one for safetensors, one for external providers -- and only a plain result behaves
+# the same in all three. The client starts the run off the tool_start event every loop already
+# publishes, so nothing here needs to know a research run exists.
+#
+# Never in ALL_TOOLS: it is offered only when the composer armed research.
+DEEP_RESEARCH_STARTED = (
+    "Deep Research has started on that question. Reply with one short sentence saying you are "
+    "looking into it. Do not answer the question yourself and do not call this tool again; the "
+    "researched report arrives separately."
+)
+# The planner re-reads it anyway; this only stops a runaway model from posting a document.
+_DEEP_RESEARCH_QUESTION_MAX_CHARS = 2000
+
+DEEP_RESEARCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "deep_research",
+        "description": (
+            "Hand this turn off to Deep Research: a multi-step web investigation that gathers "
+            "sources and writes a cited report. It takes minutes and replaces your reply, so "
+            "call it only when the user's request needs evidence you do not already have.\n"
+            "Answer directly instead when the request is conversational, is a greeting, is "
+            "about you, or is something you already know well.\n"
+            "If the request is a real research topic but too vague to investigate well, do not "
+            "call this -- ask one short clarifying question first, then call it once the user "
+            "has narrowed it down.\n"
+            "The question you pass is what gets researched, so make it specific and "
+            "self-contained: fold in what the conversation established rather than repeating "
+            "the user's words."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": (
+                        "The specific, self-contained question to research. Not the user's raw "
+                        "message unless it already reads as one."
+                    ),
+                },
+            },
+            "required": ["question"],
+        },
+    },
+}
+
 
 # OpenAI's function.name regex; MCP names that violate it would 400 the whole
 # request, so validate up front and skip with a warning.
@@ -9518,6 +9568,10 @@ def execute_tool(
             scope = mcp_scope,
             config_check = _config_current,
         )
+    if name == "deep_research":
+        if not str(arguments.get("question") or "").strip():
+            return "Error: deep_research needs a question to investigate."
+        return DEEP_RESEARCH_STARTED
     if name == "web_search":
         return _web_search(
             arguments.get("query", ""),

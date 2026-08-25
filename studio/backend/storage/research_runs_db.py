@@ -615,9 +615,18 @@ def set_plan(
     plan: dict,
     expected_revision: int | None = None,
     worker_id: str | None = None,
+    auto_approve: bool = False,
 ) -> dict:
+    """Store the plan and either park the run for review or queue it in the same write.
+
+    Arming research in the composer is the approval, so the worker queues its own plan with
+    ``auto_approve``. Done in one transaction: a separate approve call left a window where
+    the run sat at awaiting_approval, flashing the review card and letting a concurrent plan
+    edit fail the run. The endpoint still parks a hand-edited plan for the user to confirm.
+    """
     raw, digest = canonical_plan(plan)
     steps = plan.get("steps") or []
+    status = "queued" if auto_approve else "awaiting_approval"
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -644,9 +653,9 @@ def set_plan(
         revision += 1
         conn.execute(
             "UPDATE research_runs SET plan_json = ?, plan_revision = ?, plan_hash = ?, "
-            "status = 'awaiting_approval', error_message = NULL, lease_owner = NULL, "
+            "status = ?, error_message = NULL, lease_owner = NULL, "
             "lease_expires_at = NULL, updated_at = ? WHERE id = ?",
-            (raw, revision, digest, now_ms(), run_id),
+            (raw, revision, digest, status, now_ms(), run_id),
         )
         conn.execute("DELETE FROM research_plan_steps WHERE run_id = ?", (run_id,))
         conn.executemany(
@@ -661,12 +670,14 @@ def set_plan(
             run_id,
             "plan.ready",
             {
-                "status": "awaiting_approval",
+                "status": status,
                 "plan": plan,
                 "planRevision": revision,
                 "planHash": digest,
             },
         )
+        if auto_approve:
+            _event_locked(conn, run_id, "run.approved", {"status": status})
         _commit_event(conn)
         return {"plan": plan, "planRevision": revision, "planHash": digest}
     except Exception:
