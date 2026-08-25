@@ -52,10 +52,14 @@ export function isImeComposing(event: KeyboardEvent): boolean {
  */
 export function isSurfaceInForeground(selector: string): boolean {
   if (typeof document === "undefined") return false;
-  const el = document.querySelector(selector);
+  // Every match, not the first: entering Compare keeps the base view mounted
+  // and inert behind the panes, so the first composer in the document is the
+  // hidden one and asking it alone would call Compare backgrounded.
   // Radix marks the rest of the page aria-hidden (older React: inert) for the
   // life of a modal, which is the general signal, not a per-dialog store.
-  return Boolean(el) && !el?.closest('[aria-hidden="true"], [inert]');
+  return [...document.querySelectorAll(selector)].some(
+    (el) => !el.closest('[aria-hidden="true"], [inert]'),
+  );
 }
 
 export interface UseShortcutOptions {

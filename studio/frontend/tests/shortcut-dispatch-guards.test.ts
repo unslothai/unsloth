@@ -74,28 +74,43 @@ test("refusing Tab does not disturb the other bare-key rules", () => {
   assert.equal(isAcceptableBinding(parseBinding("Shift+Escape")!, false), true);
 });
 
-/** Install a document whose querySelector answers with `el`. */
-function withElement(el: { closest: (selector: string) => unknown } | null) {
+/** Install a document whose querySelectorAll answers with `els`. */
+function withElements(...els: { closest: (selector: string) => unknown }[]) {
   (globalThis as { document?: unknown }).document = {
-    querySelector: () => el,
+    querySelectorAll: () => els,
   };
 }
+const under = { closest: () => ({}) };
+const clear = { closest: () => null };
 
 // A dialog leaves the route mounted, so a chord gated only on the route still
 // fires behind it. Radix marks the rest of the page aria-hidden for the life of
 // a modal, which is the general signal rather than a per-dialog store.
 test("a surface under a modal is not in the foreground", () => {
-  withElement({ closest: () => ({}) });
+  withElements(under);
   assert.equal(isSurfaceInForeground(".aui-composer-input"), false);
 });
 
 test("a surface with nothing over it is in the foreground", () => {
-  withElement({ closest: () => null });
+  withElements(clear);
   assert.equal(isSurfaceInForeground(".aui-composer-input"), true);
 });
 
 test("a surface that is not rendered at all is not in the foreground", () => {
-  withElement(null);
+  withElements();
+  assert.equal(isSurfaceInForeground(".aui-composer-input"), false);
+});
+
+// Entering Compare leaves the base view mounted and inert behind the panes, so
+// the first composer in the document is the hidden one. Asking it alone called
+// Compare backgrounded and killed its dictation chord outright.
+test("a hidden earlier match does not mask a visible later one", () => {
+  withElements(under, clear);
+  assert.equal(isSurfaceInForeground(".aui-composer-input"), true);
+});
+
+test("every match under a modal is still not the foreground", () => {
+  withElements(under, under);
   assert.equal(isSurfaceInForeground(".aui-composer-input"), false);
 });
 
@@ -193,4 +208,28 @@ test("the selection latch is keyed by action", async () => {
   assert.match(sidebar, /selectionActedRef = useRef<\{ id: ShortcutId; at: number \} \| null>/);
   assert.match(sidebar, /last\?\.id === id &&/);
   assert.doesNotMatch(sidebar, /followsSelectionAction\(\)/);
+});
+
+// One selector has to mean "the composer" whichever of the two is on screen, or
+// Escape stops declining in Compare and the dictation gate reads the wrong one.
+test("both composers answer to the shared selector", async () => {
+  const shared = await readFile(
+    new URL("../src/features/chat/shared-composer.tsx", import.meta.url),
+    "utf8",
+  );
+  const thread = await readFile(
+    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
+    "utf8",
+  );
+  const { COMPOSER_INPUT_SELECTOR } = await import(
+    "../src/features/settings/hooks/use-shortcut.ts"
+  );
+  const className = COMPOSER_INPUT_SELECTOR.replace(/^\./, "");
+  for (const [name, source] of [["shared", shared], ["thread", thread]]) {
+    assert.match(
+      source,
+      new RegExp(`className="[^"]*\\b${className}\\b[^"]*"`),
+      `the ${name} composer does not carry ${className}`,
+    );
+  }
 });
