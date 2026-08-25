@@ -251,6 +251,19 @@ def test_export_masks_every_line_of_a_multiline_plain_yaml_secret(client):
     assert "ordinary: kept" in exported
 
 
+def test_export_masks_plain_yaml_continuations_after_an_inline_value(client):
+    first = "correct-horse-battery"
+    second = "staple-secret-value"
+    path = _seed_server_log(f"password: {first}\n  {second}\nordinary: kept\n")
+
+    response = client.get("/api/settings/debug/logs/export")
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        exported = archive.read(f"server/{path.name}").decode("utf-8")
+    assert first not in exported
+    assert second not in exported
+    assert "ordinary: kept" in exported
+
+
 @pytest.mark.parametrize("indicator", ["|-", ">", "|2-"])
 def test_export_masks_every_line_of_a_yaml_block_scalar(client, indicator):
     first = "correct-horse-battery-staple"
@@ -308,6 +321,21 @@ def test_export_masks_every_record_of_a_multiline_quoted_secret(client):
     assert "ordinary: kept" in exported
 
 
+def test_export_treats_doubled_yaml_single_quotes_as_escapes(client):
+    first = "correct"
+    second = "it''s still secret"
+    third = "and-this-is-too"
+    path = _seed_server_log(f"password: '{first}\n  {second}\n  {third}'\nordinary: kept\n")
+
+    response = client.get("/api/settings/debug/logs/export")
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        exported = archive.read(f"server/{path.name}").decode("utf-8")
+    assert first not in exported
+    assert second not in exported
+    assert third not in exported
+    assert "ordinary: kept" in exported
+
+
 def test_export_keeps_secret_context_after_an_oversized_record(client):
     from utils.debug_log_export import EXPORT_READ_BYTES
 
@@ -357,10 +385,7 @@ def test_export_refuses_a_source_replaced_by_a_symlink(tmp_path):
     secret = tmp_path / "private.txt"
     secret.write_text("must-not-export", encoding = "utf-8")
     path = tmp_path / "server.log"
-    try:
-        path.symlink_to(secret)
-    except (OSError, NotImplementedError):
-        pytest.skip("symlinks are unavailable on this platform")
+    path.symlink_to(secret)
     source = LogSource(
         id = "server:swapped",
         family = "server",

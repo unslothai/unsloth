@@ -130,6 +130,13 @@ _UNTERMINATED_QUOTED_SECRET_RE = re.compile(
     r"(?i)^(?P<indent>[ \t]*)" + _KEY_START + r"(?:" + _SECRET_KEYS + r")\b[\"']?\s*[:=]\s*"
     r"(?:\"(?:\\.|[^\"\\])*|'(?:\\.|[^'\\])*)$"
 )
+_INLINE_PLAIN_SECRET_RE = re.compile(
+    r"(?i)^(?P<indent>[ \t]*)"
+    + _KEY_START
+    + r"(?:"
+    + _SECRET_KEYS
+    + r")\b[\"']?\s*[:=]\s*(?![|>\"'])(?=\S).+$"
+)
 _OMITTED_CONTEXT_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?:(?:" + _SECRET_KEYS + r")|(?:set-)?cookie)\b"
 )
@@ -274,13 +281,19 @@ class StreamingLogRedactor:
     @staticmethod
     def _has_unescaped_quote(text: str, quote: str) -> bool:
         escaped = False
-        for char in text:
+        index = 0
+        while index < len(text):
+            char = text[index]
             if escaped:
                 escaped = False
             elif char == "\\":
                 escaped = True
+            elif quote == "'" and char == "'" and text[index : index + 2] == "''":
+                index += 2
+                continue
             elif char == quote:
                 return True
+            index += 1
         return False
 
     def observe_omitted_record_suffix(self, text: str) -> None:
@@ -339,6 +352,12 @@ class StreamingLogRedactor:
         if quoted:
             self._quoted_secret = '"' if '"' in physical[quoted.start() :] else "'"
             return self._masked_record(redacted)
+
+        inline_plain = _INLINE_PLAIN_SECRET_RE.search(physical)
+        if inline_plain and REDACTED in redacted:
+            self._plain_key_indent = len(inline_plain.group("indent"))
+            self._plain_has_value = True
+            return redacted
 
         continued = _CONTINUED_SECRET_RE.search(redacted.rstrip("\r\n"))
         if continued:
