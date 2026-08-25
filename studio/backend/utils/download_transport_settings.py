@@ -33,7 +33,6 @@ def get_download_transport_mode() -> str:
     """The install's stored transport, or Auto when nobody has picked one."""
     try:
         from storage.studio_db import get_app_setting
-
         stored = normalize_transport_mode(get_app_setting(DOWNLOAD_TRANSPORT_SETTING_KEY, None))
     except Exception as exc:  # noqa: BLE001 - an unreadable db reports the default, not a 500
         logger.debug("download transport read failed (%s)", exc)

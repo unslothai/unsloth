@@ -819,7 +819,6 @@ def _helper_precache_response(enabled: bool | None = None) -> HelperPrecacheResp
 def _download_transport_response(mode: str | None = None) -> DownloadTransportResponse:
     # Read-only: this renders a settings row, so it must not probe Xet.
     from hub.utils.download_registry import get_download_transport_capabilities
-
     caps = get_download_transport_capabilities()
     return DownloadTransportResponse(
         mode = get_download_transport_mode() if mode is None else mode,
