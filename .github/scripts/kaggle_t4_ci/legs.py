@@ -470,12 +470,24 @@ LEGS: dict[str, Leg] = {
             #
             #   /usr/bin/ld: cannot find -lcuda
             #
-            # `-L/usr/local/cuda/lib64/stubs` is on the command line, so the
-            # driver stub `libcuda.so` is simply absent from this image; only
-            # the runtime `libcuda.so.1` is there. That is not an sm_75 problem
-            # and is not fixable from here. So do not JIT: the sampler has a
-            # native path, and skipping the build saves a four-file nvcc compile
-            # in a session billed by wall clock.
+            # CORRECTION, from the shipped leg's own report rather than from
+            # a probe: the stub is NOT absent and this IS fixable from here.
+            # An earlier version of this comment said "libcuda.so is simply
+            # absent from this image ... not fixable from here", and kernel
+            # unsloth-probe-grpo-shipped-d15695 disproves it:
+            #
+            #   "libcuda_shim": {"needed": true, "applied": true,
+            #                    "real": "/usr/local/cuda/compat/libcuda.so"}
+            #
+            # run_grpo_t4.py:597 symlinks that onto LIBRARY_PATH and has done
+            # since #8440. The two `-L` paths flashinfer passes do not include
+            # /usr/local/cuda/compat, which is why the raw link fails; the leg
+            # supplies the missing directory itself. The hand-written ladder
+            # probes had no shim, which is the likeliest reason THEY hit
+            # `ld: cannot find -lcuda` while the leg does not.
+            #
+            # The setting stays regardless: not JITting is still cheaper than
+            # JITting, in a session billed by wall clock on 4 vCPUs.
             "VLLM_USE_FLASHINFER_SAMPLER": "0",
             # The two settings above are NOT sufficient on their own, and a probe
             # that set only them failed identically to one that set neither
@@ -525,13 +537,21 @@ LEGS: dict[str, Leg] = {
 # after, not to grow by accident.
 #
 # Raised 4 -> 5 for the Default leg, deliberately and with the arithmetic. The
-# two columns today are gptoss 468.0s + control 469.6s on one card and
-# frontier 474.7s + canary 474.7s on the other (run 32703162400), so the longest
-# is about 16 minutes once Default's ~300s is added to whichever column the
-# scheduler gives it. Against a 12 hour session kill and a lower launcher
-# ceiling, that is not close. The constraint this number encodes is wall clock,
-# not cards: legs queue rather than share, so a fifth leg waits for a card
-# instead of contending for one.
+# five-leg kernel was then MEASURED, on kernel unsloth-probe-all5-kernel-e28818:
+#
+#   gpu0  frontier 22.7->489.9   canary 23.0->488.0   gptoss 492.7->814.9
+#   gpu1  control  26.4->488.6   Default 69.5->500.4
+#
+# Makespan 792.2s, 13.2 minutes, against a 12 hour session kill.
+#
+# Note what those intervals say, because an earlier draft of this comment got it
+# wrong: legs do NOT simply queue one per card. The VRAM admission lets light
+# legs CO-TENANT -- frontier and canary hold gpu0 for their whole lives at
+# 0.7GB each against a 13.0GB budget, and Default shares gpu1 with control --
+# while gptoss at 12.78GB is admitted only once gpu0 is empty, which is why it
+# starts at 492.7s. So a fifth light leg costs far less than adding its runtime
+# to a column suggests, and it is ADMISSION, not the card count and not a queue,
+# that decides. A fifth HEAVY leg would be a different question entirely.
 MAX_LEGS_PER_KERNEL = 5
 
 # Legs defined here and deliberately NOT run, with the reason. A leg is unwired

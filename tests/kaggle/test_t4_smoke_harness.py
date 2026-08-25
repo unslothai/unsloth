@@ -2319,6 +2319,25 @@ def test_the_grpo_leg_removes_flashinfer_and_the_removal_reaches_the_payload(tmp
     rung child -- and which vLLM offers no prefill-specific opt-out for. There
     was no variable left to set, which is why the package goes instead.
 
+    THE SHIPPED LEG FAILS DIFFERENTLY, and that is the reason this guard is
+    worth keeping rather than a historical note. Removing the uninstall from the
+    leg (unsloth-probe-grpo-noun-05777b, nothing else changed) does NOT
+    reproduce the link error at all -- the leg carries a libcuda shim
+    (run_grpo_t4.py:597, /usr/local/cuda/compat/libcuda.so, since #8440) that
+    the probes lacked. It fails instead with
+
+        AcceleratorError: CUDA error: an illegal memory access was encountered
+
+    which is verbatim the intermittent crash UNWIRED["grpo"] documents from
+    kernels unsloth-t4-ci-70a2f4eb and -c98f14be. With the uninstall the crash
+    has not recurred.
+
+    State the strength honestly: that crash is documented at roughly two failures
+    in three, so a handful of clean runs is suggestive and not proof, and this
+    guard asserts only that the uninstall is PRESENT and REACHES the payload --
+    which removing it demonstrably breaks. It does not claim to have identified
+    the crash's cause.
+
     Asserted through the BUILT payload rather than off the dataclass: a field
     nothing emits is a setting that reads like coverage and does nothing, and
     that is the exact failure mode this file exists to catch.
