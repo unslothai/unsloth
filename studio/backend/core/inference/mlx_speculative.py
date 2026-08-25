@@ -813,14 +813,6 @@ def _drafter_method(config: dict[str, Any]) -> Optional[str]:
     return None
 
 
-def drafter_method_for_config(config: dict[str, Any]) -> Optional[str]:
-    """The speculative method a checkpoint drafts for, or None when it is not a drafter.
-
-    Exposed for the cached-model inventory, which hides drafters from the chat picker.
-    """
-    return _drafter_method(config)
-
-
 def _token_maps_compatible(target: dict[str, int], draft: dict[str, int]) -> bool:
     return bool(
         draft
