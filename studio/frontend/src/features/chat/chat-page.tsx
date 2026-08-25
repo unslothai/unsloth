@@ -3335,8 +3335,15 @@ export function ChatPage({
         return;
       }
       const current = levels.indexOf(state.reasoningEffort);
-      // An effort the model does not list steps from the bottom.
-      const from = current === -1 ? 0 : current;
+      // An effort the model does not list has no place to step from: loading a
+      // model that drops the level in force leaves it set to one that is gone.
+      // The first press picks the lowest level the model does offer, rather
+      // than counting a step off an index that is not in the list.
+      if (current === -1) {
+        state.setReasoningEffort(levels[0]);
+        return;
+      }
+      const from = current;
       const next = wrap
         ? (from + delta + levels.length) % levels.length
         : Math.min(Math.max(from + delta, 0), levels.length - 1);

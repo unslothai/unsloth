@@ -9,7 +9,7 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { isImeComposing, isSurfaceInForeground } = await import(
+const { isImeComposing, isSurfaceBackgrounded, isSurfaceInForeground } = await import(
   "../src/features/settings/hooks/use-shortcut.ts"
 );
 const { isAcceptableBinding, parseBinding } = await import(
@@ -155,7 +155,10 @@ test("the sandbox probe does not skip a chat that is out of a project", async ()
   assert.notEqual(at, -1);
   const body = source.slice(at, source.indexOf("\n  }", at));
   assert.doesNotMatch(body, /if \(!item\.projectId\) return recorded;/);
-  assert.match(body, /if \(await sandboxHasFiles\(threadId\)\) held\.push\(threadId\);/);
+  assert.match(
+    body,
+    /if \(await sandboxHasFiles\(candidate\)\) held\.push\(candidate\);/,
+  );
 });
 
 // Both composers register the dictation chord, and only one is on screen at a
@@ -273,4 +276,101 @@ test("both composers refuse to send from behind a modal", async () => {
       `${path} sends the hidden draft from behind a dialog`,
     );
   }
+});
+
+// A surface that is not rendered is not covered. The mobile sidebar lives in a
+// drawer and is unmounted while it is closed, so reading "no match" as covered
+// would leave every sidebar chord dead on mobile.
+test("an absent surface is not a covered one", () => {
+  const doc = globalThis.document;
+  try {
+    (globalThis as { document?: unknown }).document = {
+      querySelectorAll: () => [],
+    };
+    assert.equal(isSurfaceBackgrounded(".gone"), false);
+    assert.equal(isSurfaceInForeground(".gone"), false);
+    const covered = { closest: () => ({}) };
+    const open = { closest: () => null };
+    (globalThis as { document?: unknown }).document = {
+      querySelectorAll: () => [covered],
+    };
+    assert.equal(isSurfaceBackgrounded(".x"), true);
+    (globalThis as { document?: unknown }).document = {
+      querySelectorAll: () => [covered, open],
+    };
+    // One live match is enough: the base view stays mounted behind Compare.
+    assert.equal(isSurfaceBackgrounded(".x"), false);
+  } finally {
+    (globalThis as { document?: unknown }).document = doc;
+  }
+});
+
+// Window-level chords stay registered under a dialog, so the destructive ones
+// have to ask at press time whether the sidebar is still the foreground.
+test("the sidebar's mutating chords refuse to fire under a dialog", async () => {
+  const sidebar = await readFile(
+    new URL("../src/components/app-sidebar.tsx", import.meta.url),
+    "utf8",
+  );
+  for (const id of [
+    "archiveChat",
+    "markChatUnread",
+    "togglePinChat",
+    "deleteSelectedChats",
+    "renameChat",
+    "clearAllUnreads",
+  ]) {
+    const at = sidebar.indexOf(`useShortcut("${id}", () => {`);
+    assert.notEqual(at, -1, `${id} is gone`);
+    const body = sidebar.slice(at, sidebar.indexOf("\n  });", at));
+    assert.match(
+      body,
+      /if \(sidebarCovered\(\)\) return;/,
+      `${id} acts on the chat behind an open dialog`,
+    );
+  }
+  // Covered, not "not in the foreground", or the mobile drawer kills them all.
+  assert.match(
+    sidebar,
+    /isSurfaceBackgrounded\('\[data-slot="sidebar"\]'\)/,
+  );
+});
+
+// A chat that ran tools before and after joining a project has files in the
+// thread folder and in the project one. Probing only the thread folder
+// answered for one and hid the other.
+test("the sandbox probe covers the current project folder too", async () => {
+  const sidebar = await readFile(
+    new URL("../src/components/app-sidebar.tsx", import.meta.url),
+    "utf8",
+  );
+  const at = sidebar.indexOf("async function sandboxSessionIdsHolding(");
+  assert.notEqual(at, -1);
+  const body = sidebar.slice(at, sidebar.indexOf("\n  }", at));
+  assert.match(body, /projectId: string \| null \| undefined/);
+  assert.match(body, /sandboxSessionIdFor\(ids\[0\], projectId\)/);
+  // Derived and then actually probed: naming it is not adding it.
+  assert.match(body, /if \(projectSandbox\) candidates\.add\(projectSandbox\);/);
+  // Both callers have to pass it, or the union is the old one.
+  assert.equal(
+    sidebar.split("sandboxSessionIdsHolding(ids, item.projectId)").length - 1,
+    2,
+  );
+});
+
+// Loading a model that drops the level in force leaves the effort set to one
+// the model does not list, and indexOf then returns -1.
+test("an unlisted reasoning effort steps to the first supported level", async () => {
+  const page = await readFile(
+    new URL("../src/features/chat/chat-page.tsx", import.meta.url),
+    "utf8",
+  );
+  const at = page.indexOf("const current = levels.indexOf(state.reasoningEffort);");
+  assert.notEqual(at, -1);
+  const body = page.slice(at, at + 700);
+  assert.match(
+    body,
+    /if \(current === -1\) \{\n\s*state\.setReasoningEffort\(levels\[0\]\);/,
+    "an unlisted effort still counts a step off an index that is not in the list",
+  );
 });

@@ -55,6 +55,7 @@ export type {
 } from "./api/personalization";
 export {
   COMPOSER_INPUT_SELECTOR,
+  isSurfaceBackgrounded,
   isSurfaceInForeground,
   useShortcut,
   useShortcutLabel,

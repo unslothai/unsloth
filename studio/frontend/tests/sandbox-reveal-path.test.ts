@@ -175,16 +175,17 @@ test("a probe that could not be answered is reported, not read as an empty folde
 
 test("the legacy probe runs whichever project the chat sits in now", () => {
   // This used to skip a chat outside a project, on the grounds that one moved
-  // OUT wrote under project-<id> and nothing retains which one. True of the
-  // project folder, but the probe never looks for that: it asks whether the
-  // THREAD folder holds files, which is knowable either way. A chat can join a
-  // project, record that session, and move back out, and skipping it there
-  // reported one folder while its older files stayed hidden.
+  // OUT wrote under project-<id> and nothing retains which one. A chat can join
+  // a project, record that session, and move back out, and skipping the probe
+  // there reported one folder while its older files stayed hidden. Both the
+  // thread folder and the project the chat sits in now are probed, since a chat
+  // that ran tools on both sides of a move has files in each.
   const start = SIDEBAR.indexOf("async function sandboxSessionIdsHolding");
   assert.notEqual(start, -1, "the legacy probe moved");
   const block = SIDEBAR.slice(start, SIDEBAR.indexOf("\n  }", start));
   assert.ok(!block.includes("if (!item.projectId) return recorded;"));
-  assert.ok(block.includes("sandboxHasFiles(threadId)"));
+  assert.ok(block.includes("sandboxHasFiles(candidate)"));
+  assert.ok(block.includes("sandboxSessionIdFor(ids[0], projectId)"));
 });
 
 test("a recorded session does not hide a legacy folder beside it", () => {
@@ -201,7 +202,7 @@ test("a recorded session does not hide a legacy folder beside it", () => {
     "an early return on any recorded id is what hid the legacy folder",
   );
   // Probing an id that is already named would only cost a request.
-  assert.match(block, /if \(recorded\.includes\(threadId\)\) continue;/);
+  assert.match(block, /if \(recorded\.includes\(candidate\)\) continue;/);
 });
 
 test("both the folder and the session id are answered from the same probe", () => {

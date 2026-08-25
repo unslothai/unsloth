@@ -1170,7 +1170,7 @@ test("the rename chord does not land in a surface only a row can show", async ()
   // cursor by definition, keeps the pill.
   assert.match(
     sidebar,
-    /useShortcut\("renameChat", \(\) =>\n\s*withActiveChat\(\(item\) => openRenameChat\(item, false\)\),/,
+    /useShortcut\("renameChat", \(\) => \{[\s\S]*?withActiveChat\(\(item\) => openRenameChat\(item, false\)\);/,
   );
   assert.match(sidebar, /onSelect=\{\(\) => openRenameChat\(item\)\}/);
   assert.match(

@@ -62,6 +62,22 @@ export function isSurfaceInForeground(selector: string): boolean {
   );
 }
 
+/**
+ * Whether every `selector` match sits under a modal. Not the complement of the
+ * check above: a surface that is not rendered at all is not backgrounded, and
+ * reading it as such would disable a chord on a layout that never renders the
+ * element. The mobile sidebar is the case, since it lives in a drawer and is
+ * unmounted while that drawer is closed.
+ */
+export function isSurfaceBackgrounded(selector: string): boolean {
+  if (typeof document === "undefined") return false;
+  const found = [...document.querySelectorAll(selector)];
+  return (
+    found.length > 0 &&
+    found.every((el) => el.closest('[aria-hidden="true"], [inert]') !== null)
+  );
+}
+
 export interface UseShortcutOptions {
   /** Skip registration entirely (route gating, dialogs). Defaults to true. */
   enabled?: boolean;

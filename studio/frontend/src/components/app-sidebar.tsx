@@ -186,6 +186,7 @@ import { NewProjectDialog } from "@/features/chat/components/new-project-dialog"
 import {
   useAppearanceCustomStore,
   useSettingsDialogStore,
+  isSurfaceBackgrounded,
   useShortcutLabel,
   Shortcut,
   type ShortcutId,
@@ -2531,13 +2532,23 @@ export function AppSidebar() {
    * once: the copy path skipped the probe and reported success on a folder the
    * chat had never written to.
    */
-  async function sandboxSessionIdsHolding(ids: string[]): Promise<string[]> {
+  async function sandboxSessionIdsHolding(
+    ids: string[],
+    projectId: string | null | undefined,
+  ): Promise<string[]> {
     const recorded = await recordedSandboxSessionIds(ids);
+    // The thread folder and the chat's current project folder are both
+    // candidates, and a chat that ran tools on both sides of a move has files
+    // in each. Probing only the thread folder answered for one and hid the
+    // other, which is the case the union above exists for.
+    const candidates = new Set<string>(ids);
+    const projectSandbox = sandboxSessionIdFor(ids[0], projectId);
+    if (projectSandbox) candidates.add(projectSandbox);
     const held: string[] = [];
-    for (const threadId of ids) {
+    for (const candidate of candidates) {
       // Already named, so there is nothing a probe could add.
-      if (recorded.includes(threadId)) continue;
-      if (await sandboxHasFiles(threadId)) held.push(threadId);
+      if (recorded.includes(candidate)) continue;
+      if (await sandboxHasFiles(candidate)) held.push(candidate);
     }
     return [...new Set([...recorded, ...held])];
   }
@@ -2557,7 +2568,7 @@ export function AppSidebar() {
     const copied = await copyToClipboardFrom(async () => {
       let sessionId: string | undefined;
       try {
-        const distinct = await sandboxSessionIdsHolding(ids);
+        const distinct = await sandboxSessionIdsHolding(ids, item.projectId);
         if (distinct.length > 1) {
           refusal.value = {
             title: "This chat wrote to more than one folder.",
@@ -2681,7 +2692,19 @@ export function AppSidebar() {
   // visibly points somewhere else. Delete already behaves this way.
   const projectsOnlySelected = () =>
     selectionCount === 0 && projectSelectionCount > 0;
+  // A dialog leaves the sidebar mounted and inert behind it, and these chords
+  // are window-level, so Settings open over Chat would archive or rename the
+  // chat behind the dialog. Asked at press time, since `enabled` is read at
+  // render and a dialog opening need not re-render this component.
+  //
+  // Backgrounded, not "not in the foreground": on mobile the sidebar lives in
+  // a drawer and is unmounted while it is closed, and a chord that reads a
+  // missing element as covered would be dead there. That leaves the mobile
+  // drawer-closed case unguarded, which is the layout the report does not
+  // cover and a separate change to reach.
+  const sidebarCovered = () => isSurfaceBackgrounded('[data-slot="sidebar"]');
   useShortcut("archiveChat", () => {
+    if (sidebarCovered()) return;
     if (projectsOnlySelected()) return;
     if (selectionCount > 0) {
       actOnSelection("archiveChat", () => void archiveSelected());
@@ -2691,6 +2714,7 @@ export function AppSidebar() {
     withActiveChat((item) => void handleArchiveThread(item));
   });
   useShortcut("markChatUnread", () => {
+    if (sidebarCovered()) return;
     if (projectsOnlySelected()) return;
     if (selectionCount > 0) {
       actOnSelection("markChatUnread", markSelectedUnread);
@@ -2700,6 +2724,7 @@ export function AppSidebar() {
     withActiveChat((item) => markThreadsUnread(getSidebarItemThreadIds(item)));
   });
   useShortcut("togglePinChat", () => {
+    if (sidebarCovered()) return;
     if (projectsOnlySelected()) return;
     if (selectionCount > 0) {
       actOnSelection("togglePinChat", () => pinSelected(!allSelectedPinned));
@@ -2711,15 +2736,17 @@ export function AppSidebar() {
   useShortcut("selectAllChats", selectAllChats);
   useShortcut("clearChatSelection", clearSelection);
   useShortcut("deleteSelectedChats", () => {
+    if (sidebarCovered()) return;
     if (selectionCount > 0) deleteSelected();
   });
   // Through the dialog: the row's inline pill is rendered by the row, and the
   // open chat may be behind a collapsed section, past a folder's "show more",
   // or on a route with no chat list at all, where the chord would look dead and
   // leave a rename waiting to appear the moment the row came back.
-  useShortcut("renameChat", () =>
-    withActiveChat((item) => openRenameChat(item, false)),
-  );
+  useShortcut("renameChat", () => {
+    if (sidebarCovered()) return;
+    withActiveChat((item) => openRenameChat(item, false));
+  });
   useShortcut("copyChatAsMarkdown", () =>
     withActiveChat((item) => void copyChatItemAsMarkdown(item)),
   );
@@ -2751,6 +2778,7 @@ export function AppSidebar() {
   );
   // No undo and no menu item anywhere, so it says what it did.
   useShortcut("clearAllUnreads", () => {
+    if (sidebarCovered()) return;
     const state = useChatNavigationStore.getState();
     const cleared = countUnreadRows(state);
     if (state.unreadThreadIds.size === 0) {
@@ -3182,7 +3210,7 @@ export function AppSidebar() {
                             // membership, the answer the recorded id overrides.
                             const ids =
                               threadIds.length > 0 ? threadIds : [item.id];
-                            const distinct = await sandboxSessionIdsHolding(ids);
+                            const distinct = await sandboxSessionIdsHolding(ids, item.projectId);
                             if (distinct.length > 1) {
                               toast.error("This chat wrote to more than one folder.", {
                                 description:
