@@ -2997,9 +2997,14 @@ class TestFourMoreLaunchNormalizations:
     def basic(self, tmp_path):
         gguf = _write_gguf(tmp_path, "qwen3", {**_GQA_FIELDS, "context_length": 262144})
         return gguf, SimpleNamespace(
-            identifier = "local/basic", gguf_file = gguf, is_gguf = True, gguf_variant = None,
-            gguf_mmproj_file = None, gguf_mtp_file = None,
-            gguf_dspark_file = None, gguf_dflash_file = None,
+            identifier = "local/basic",
+            gguf_file = gguf,
+            is_gguf = True,
+            gguf_variant = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
         )
 
     def test_a_gpu_pin_beats_a_stale_device_flag(self, basic):
@@ -3022,23 +3027,53 @@ class TestFourMoreLaunchNormalizations:
         gguf, config = basic
         called = []
         monkeypatch.setattr(
-            ri, "_remote_drafter_repo_bytes",
+            ri,
+            "_remote_drafter_repo_bytes",
             lambda *a, **k: (called.append(1), 1 << 30)[1],
         )
         out = ri._gguf_memory_breakdown(
-            config, gguf, n_ctx = 8192,
+            config,
+            gguf,
+            n_ctx = 8192,
             llama_extra_args = ["--spec-draft-hf", "org/drafter-GGUF"],
         )
         assert called == [], "the Hub listing ran behind the panel"
         # Uncharged, but not unmentioned.
         assert out.drafter_kv_unsized is True
 
-    @pytest.mark.parametrize("caps,managed", [
-        ({"found": True, "spec_draft_cache_k_flag": "-ctkd", "spec_draft_cache_v_flag": "-ctvd"}, True),
-        ({"found": True, "spec_draft_cache_k_flag": "-ctkd", "spec_draft_cache_v_flag": None}, False),
-        ({"found": True, "spec_draft_cache_k_flag": None, "spec_draft_cache_v_flag": "-ctvd"}, False),
-        ({"found": False, "spec_draft_cache_k_flag": None, "spec_draft_cache_v_flag": None}, True),
-    ])
+    @pytest.mark.parametrize(
+        "caps,managed",
+        [
+            (
+                {
+                    "found": True,
+                    "spec_draft_cache_k_flag": "-ctkd",
+                    "spec_draft_cache_v_flag": "-ctvd",
+                },
+                True,
+            ),
+            (
+                {
+                    "found": True,
+                    "spec_draft_cache_k_flag": "-ctkd",
+                    "spec_draft_cache_v_flag": None,
+                },
+                False,
+            ),
+            (
+                {
+                    "found": True,
+                    "spec_draft_cache_k_flag": None,
+                    "spec_draft_cache_v_flag": "-ctvd",
+                },
+                False,
+            ),
+            (
+                {"found": False, "spec_draft_cache_k_flag": None, "spec_draft_cache_v_flag": None},
+                True,
+            ),
+        ],
+    )
     def test_the_draft_cache_field_needs_both_flags(self, tmp_path, monkeypatch, caps, managed):
         """The launcher emits the pair or neither, so one flag is not enough."""
         target = _write_gguf(
@@ -3048,19 +3083,30 @@ class TestFourMoreLaunchNormalizations:
         drafter.write_bytes(Path(target).read_bytes())
         drafter_bytes = drafter.stat().st_size
 
-        def _files(cfg, *, llama_extra_args = None, **kw):
+        def _files(
+            cfg,
+            *,
+            llama_extra_args = None,
+            **kw,
+        ):
             pinned = _draft_on_cpu(list(llama_extra_args or ()))
             return 1.0 + (0.0 if pinned else drafter_bytes / 1024**3)
 
         monkeypatch.setattr(ri, "_gguf_resident_file_gb", _files)
         monkeypatch.setattr(
-            ri.LlamaCppBackend, "probe_server_capabilities",
+            ri.LlamaCppBackend,
+            "probe_server_capabilities",
             classmethod(lambda cls, *a, **k: {**caps, "mtp_token": "draft-mtp"}),
         )
         config = SimpleNamespace(
-            identifier = "org/Qwen3-8B", gguf_file = target, is_gguf = True, gguf_variant = None,
-            gguf_mmproj_file = None, gguf_mtp_file = str(drafter),
-            gguf_dspark_file = None, gguf_dflash_file = None,
+            identifier = "org/Qwen3-8B",
+            gguf_file = target,
+            is_gguf = True,
+            gguf_variant = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = str(drafter),
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
         )
         priced = ri._gguf_memory_breakdown(
             config, target, n_ctx = 131072, spec_draft_cache_type = "q4_0"
@@ -3076,7 +3122,8 @@ class TestFourMoreLaunchNormalizations:
         """load_model drops to one slot there, before it sizes anything."""
         gguf, config = basic
         monkeypatch.setattr(
-            ri.LlamaCppBackend, "probe_server_capabilities",
+            ri.LlamaCppBackend,
+            "probe_server_capabilities",
             classmethod(lambda cls, *a, **k: {"found": True, "supports_kv_unified": False}),
         )
         out = ri._gguf_memory_breakdown(config, gguf, n_ctx = 8192, n_parallel = 4)
@@ -3086,7 +3133,8 @@ class TestFourMoreLaunchNormalizations:
         """A probe that could not run is not evidence the flag is missing."""
         gguf, config = basic
         monkeypatch.setattr(
-            ri.LlamaCppBackend, "probe_server_capabilities",
+            ri.LlamaCppBackend,
+            "probe_server_capabilities",
             classmethod(lambda cls, *a, **k: {"found": False, "supports_kv_unified": False}),
         )
         out = ri._gguf_memory_breakdown(config, gguf, n_ctx = 8192, n_parallel = 4)

@@ -7434,9 +7434,7 @@ def _gguf_runtime_bytes(
         # the previous expression short-circuited it away at one slot; calling it
         # unconditionally put a failure-prone call on every single-slot estimate, and
         # a raise here loses the whole runtime to the unknown fallback.
-        _kv_caps = (
-            LlamaCppBackend.probe_server_capabilities() if slots > 1 else {}
-        )
+        _kv_caps = LlamaCppBackend.probe_server_capabilities() if slots > 1 else {}
         _supports_kv_unified = bool(_kv_caps.get("supports_kv_unified", False))
         if slots > 1 and _kv_caps.get("found") and not _supports_kv_unified:
             # load_model drops to one slot on a build without --kv-unified, because an
