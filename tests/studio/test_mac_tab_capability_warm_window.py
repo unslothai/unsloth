@@ -18,6 +18,7 @@ neither playwright nor a Studio is installed.
 from __future__ import annotations
 
 import importlib.util
+import json
 import re
 import sys
 import time
@@ -1097,3 +1098,91 @@ def test_the_watch_history_is_handed_to_the_report(tmp_path, monkeypatch):
     assert reports, "main() no longer reports"
     passed = {kw.arg for call in reports for kw in call.keywords}
     assert "recovery_samples" in passed, passed
+
+
+def test_no_probe_is_given_more_budget_than_the_window_has_left(tmp_path, monkeypatch):
+    """A probe started near the end of the window with the full default budget can run
+    most of PROBE_TIMEOUT_S past it, which is the overrun the wall watchdog catches by
+    terminating the run before it reports. The budget is clamped to what is left."""
+    mod = _load(tmp_path, monkeypatch)
+    window = 1.0
+    budgets, started_at = [], []
+    began = time.monotonic()
+
+    def fake(path, timeout = 10.0):
+        budgets.append(timeout)
+        started_at.append(time.monotonic() - began)
+        time.sleep(0.05)
+        return 0, None, "timeout"
+
+    mod._get_json = fake
+    mod.await_recovery(window_s = window, spacing_s = 0.0)
+
+    assert budgets, "the watch made no probes"
+    assert len(budgets) > 1, "fixture ended after one probe; the clamp is never exercised"
+    assert max(budgets) <= window, f"a probe was handed {max(budgets)}s of a {window}s window"
+    for budget, start in zip(budgets, started_at):
+        assert budget <= window - start + 0.05, (
+            f"a probe starting at {start:.2f}s got {budget:.2f}s, past the end of the window"
+        )
+
+
+def test_a_probe_is_not_started_with_no_time_left(tmp_path, monkeypatch):
+    """The pacing sleep is clamped to the window, so the loop can arrive at the deadline
+    with nothing left. It must stop there rather than begin another request."""
+    mod = _load(tmp_path, monkeypatch)
+    starts = []
+    began = time.monotonic()
+
+    def fake(path, timeout = 10.0):
+        starts.append(time.monotonic() - began)
+        time.sleep(0.05)
+        return 0, None, "timeout"
+
+    mod._get_json = fake
+    mod.await_recovery(window_s = 0.4, spacing_s = 0.1)
+
+    assert len(starts) > 1, "fixture ended after one probe; the guard is never exercised"
+    assert max(starts) < 0.4, f"a probe started at {max(starts):.2f}s, past the 0.4s window"
+
+
+def test_the_artifact_carries_what_the_verdict_was_computed_from(tmp_path, monkeypatch):
+    """survival_samples.json is the evidence for the warning beside it. Serialising the
+    poller's samples only published a healthy timeline next to a log reporting a long
+    post-run stall, so nobody could check the claim."""
+    mod = _load(tmp_path, monkeypatch)
+    samples = _timeline(120)
+    recovery = _recovery_probes(samples[-1]["t"], timeouts = 6)
+    assert all(s["kind"] == "ok" for s in samples), "fixture must end with sampling healthy"
+    assert any(pr["kind"] == "timeout" for pr in recovery), "fixture has no post-run stall"
+
+    _verdict(mod, samples, final_kind = "ok", final_wait_s = 60.0, recovery_samples = recovery)
+
+    written = json.loads((mod.ART / "survival_samples.json").read_text(encoding = "utf-8"))
+    assert len(written) == len(samples) + len(recovery), (
+        f"artifact holds {len(written)} records for a verdict computed from "
+        f"{len(samples) + len(recovery)}"
+    )
+    assert any(r["kind"] == "timeout" for r in written), (
+        "the artifact shows an entirely healthy timeline while the warning reports a stall"
+    )
+
+
+def test_the_terminal_message_does_not_count_the_watch_twice(tmp_path, monkeypatch):
+    """The span now runs through the recovery probes, so its length already includes the
+    watch. Describing that length as silence "to the end of sampling" and then adding the
+    watch on top reads as a total nobody can reconcile with the artifact."""
+    mod = _load(tmp_path, monkeypatch)
+    samples = _timeline(150, stalls = [(140, 9999)])
+    recovery = _recovery_probes(samples[-1]["t"], timeouts = 4, settles = None)
+    failed = _verdict(
+        mod, samples, final_kind = "timeout", final_status = 0,
+        final_wait_s = 40.0, recovery_samples = recovery,
+    )
+    assert len(failed) == 1, failed
+    total = float(re.search(r"([\d.]+)s of silence in total", failed[0]).group(1))
+    spans = mod._stall_windows(samples + recovery)
+    widest = max(end - start for start, end, _ in spans)
+    assert abs(total - widest) < 0.5, f"reported {total}s against a {widest}s span"
+    assert total >= 40.0, f"the watch is missing from the total: {failed[0]}"
+    assert "then 40.0s more" not in failed[0], failed[0]

@@ -331,9 +331,21 @@ def await_recovery(
     """
     began = time.monotonic()
     probes: list[dict] = []
+    status, kind = 0, "timeout"
     while True:
+        remaining = window_s - (time.monotonic() - began)
+        if probes and remaining <= 0:
+            # No time left to give a probe. Starting one anyway is how the watch ran
+            # past its own bound: the pacing sleep is clamped to the window, so the
+            # loop could arrive here with nothing left and still begin a full-budget
+            # request. That is the overrun the wall watchdog exists to catch, and it
+            # would terminate the run before the report it is waiting for.
+            break
+        # Never hand out more budget than the window has left either. A probe started
+        # near the end with the default PROBE_TIMEOUT_S can outlive the window by most
+        # of that budget on its own.
         probe_began = time.monotonic()
-        status, _, kind = _get_json(LIVENESS_PATH)
+        status, _, kind = _get_json(LIVENESS_PATH, timeout = min(PROBE_TIMEOUT_S, remaining))
         # Recorded in the same shape and on the same clock as the poller's samples, so
         # the caller can lay them end to end. Without this a stall that starts after
         # sampling stops is invisible: the verdict knows it waited, but nothing knows
@@ -352,15 +364,16 @@ def await_recovery(
             }
         )
         if kind != "timeout":
-            return kind, status, round(time.monotonic() - began, 1), probes
+            break
         elapsed = time.monotonic() - began
         if elapsed >= window_s:
-            return kind, status, round(elapsed, 1), probes
+            break
         # A probe that failed instantly did not spend its budget, so it was a reset
         # rather than silence. Pace the next one, and never past the end of the window.
         idle = spacing_s - (time.monotonic() - probe_began)
         if idle > 0:
             time.sleep(min(idle, window_s - elapsed))
+    return kind, status, round(time.monotonic() - began, 1), probes
 
 
 def _stall_windows(samples: list[dict]) -> list[tuple[float, float, bool]]:
@@ -457,10 +470,10 @@ class BackendSurvivalPoller:
         rather than failing; measuring spans from the poller's samples alone would let it
         pass in silence.
         """
-        (ART / "survival_samples.json").write_text(
-            json.dumps(self.samples, indent = 1),
-            encoding = "utf-8",
-        )
+        # Written below, once the recovery probes have been folded in. Serialising
+        # self.samples alone published a healthy timeline next to a log reporting a long
+        # post-run stall, which removes the evidence a reader needs to check the very
+        # thing the warning announces.
         for path in PROBE_PATHS:
             got = [s for s in self.samples if s["path"] == path]
             if not got:
@@ -522,6 +535,10 @@ class BackendSurvivalPoller:
         # is therefore measured across the join rather than truncated at it, and a stall
         # that starts after sampling stops gets a span of its own instead of none.
         observed = list(self.samples) + list(recovery_samples)
+        (ART / "survival_samples.json").write_text(
+            json.dumps(observed, indent = 1),
+            encoding = "utf-8",
+        )
         sampling_ended = max((s["t"] for s in self.samples), default = 0.0)
         spans = _stall_windows(observed)
         terminal = next((sp for sp in spans if sp[2]), None)
@@ -542,11 +559,14 @@ class BackendSurvivalPoller:
             # Nothing came back for the whole recovery window. A stall that was going to
             # end had every one of those seconds to end in.
             if terminal is not None:
+                # terminal spans the recovery probes too, now that they are on the same
+                # timeline, so the total already includes the watch. Naming the watch
+                # again as extra time on top of it would count it twice.
                 fail(
                     f"the backend stopped answering at t={round(terminal[0], 1)}s and never "
-                    f"answered again: {round(terminal[1] - terminal[0], 1)}s of silence to the "
-                    f"end of sampling, then {final_wait_s}s more of watching afterwards with "
-                    "no answer. It did not survive the window."
+                    f"answered again: {round(terminal[1] - terminal[0], 1)}s of silence in "
+                    f"total, of which the last {final_wait_s}s was the post-run watch. It "
+                    "did not survive the window."
                 )
             else:
                 fail(
