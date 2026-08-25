@@ -44,9 +44,9 @@ def test_every_directive_leg_is_pointed_at_the_model_it_was_specified_for():
             continue
         args = legs.LEGS[name].args
         assert "--model" in args, f"{name} names no model"
-        assert args[args.index("--model") + 1] == model, (
-            f"{name} trains {args[args.index('--model') + 1]!r}, not {model!r}"
-        )
+        assert (
+            args[args.index("--model") + 1] == model
+        ), f"{name} trains {args[args.index('--model') + 1]!r}, not {model!r}"
 
 
 def test_every_directive_leg_exports_a_gguf_and_runs_it():
