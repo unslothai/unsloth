@@ -188,6 +188,23 @@ IMATRIX_QUANTS = {
 }
 
 
+def _describe_exception(exc) -> str:
+    """A description that survives an exception with no message.
+
+    `f"{exc}"` on an exception whose args are empty is the EMPTY STRING, so
+    `f"Failed to save model: {exc}"` renders as "Failed to save model: " and
+    the report names nothing at all. That is not hypothetical: it is what a
+    Kaggle Q8_0 export produced, and the run had to be repeated with a
+    traceback capture just to learn which call had failed.
+
+    Always leading with the type keeps the class of failure visible even when
+    the instance is silent.
+    """
+    text = str(exc).strip()
+    name = type(exc).__name__
+    return f"{name}: {text}" if text else name
+
+
 def has_curl():
     return shutil.which("curl") is not None
 
@@ -430,7 +447,10 @@ def _quantize_q2_k_l(
             error_details += f"\nSubprocess stdout:\n{e.stdout}"
         if hasattr(e, "stderr") and e.stderr:
             error_details += f"\nSubprocess stderr:\n{e.stderr}"
-        raise RuntimeError(f"Failed to quantize {input_gguf} to q2_k_l: {e}{error_details}")
+        raise RuntimeError(
+            f"Failed to quantize {input_gguf} to q2_k_l: "
+            f"{_describe_exception(e)}{error_details}"
+        ) from e
 
     output_path = Path(output_gguf)
     if not output_path.exists():
@@ -4458,22 +4478,6 @@ def _preflight_gguf_disk(
     )
 
 
-def _describe_exception(exc) -> str:
-    """A description that survives an exception with no message.
-
-    `f"{exc}"` on an exception whose args are empty is the EMPTY STRING, so
-    `f"Failed to save model: {exc}"` renders as "Failed to save model: " and
-    the report names nothing at all. That is not hypothetical: it is what a
-    Kaggle Q8_0 export produced, and the run had to be repeated with a
-    traceback capture just to learn which call had failed.
-
-    Always leading with the type keeps the class of failure visible even when
-    the instance is silent.
-    """
-    text = str(exc).strip()
-    name = type(exc).__name__
-    return f"{name}: {text}" if text else name
-
 
 def _offloaded_parameter_hint(model):
     """Sentence to append when a save failed on offloaded (meta) parameters.
@@ -4904,7 +4908,9 @@ def unsloth_save_pretrained_gguf(
                 f"Error: {e}"
             ) from e
         else:
-            raise RuntimeError(f"Unsloth: GGUF conversion failed: {e}") from e
+            raise RuntimeError(
+                f"Unsloth: GGUF conversion failed: {_describe_exception(e)}"
+            ) from e
 
     # Step 9: Create Ollama modelfile
     modelfile_location = None
@@ -5517,7 +5523,9 @@ def unsloth_push_to_hub_gguf(
                     shutil.rmtree(d)
                 except:
                     pass
-        raise RuntimeError(f"Failed to convert model to GGUF: {e}")
+        raise RuntimeError(
+            f"Failed to convert model to GGUF: {_describe_exception(e)}"
+        ) from e
 
     # Step 3: Upload to HuggingFace Hub
     print("Unsloth: Uploading GGUF to Huggingface Hub...")
