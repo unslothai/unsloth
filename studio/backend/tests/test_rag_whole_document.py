@@ -313,7 +313,10 @@ def test_build_rag_autoinject_fallback_is_thread_first_and_budgeted(rag_conn, mo
     injected = _injected_text(result)
     assert "x" * 1600 in injected and "project" in injected
     assert [(c.get("scope_thread_id"), c.get("scope_project_id")) for c in calls] == [
-        ("t1", None), ("t1", None), ("t1", None), (None, "p1")
+        ("t1", None),
+        ("t1", None),
+        ("t1", None),
+        (None, "p1"),
     ]
     assert [c["top_k"] for c in calls[:3]] == [4, 2, 1]
     assert calls[0]["min_dense_score"] is None
