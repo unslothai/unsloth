@@ -22646,9 +22646,7 @@ class LlamaCppBackend:
                     # classifies exactly these, from the driver's own integrated
                     # flag first, then gcnArchName, then the device-name
                     # substrings the AMD wheels leave when both are absent.
-                    unified_memory = self._amd_apu_wants_unified_memory(
-                        inputs.get("gpu_indices")
-                    ),
+                    unified_memory = self._amd_apu_wants_unified_memory(inputs.get("gpu_indices")),
                 ),
             ),
             # The cache Studio already priced for THIS launch, byte-accurately:
