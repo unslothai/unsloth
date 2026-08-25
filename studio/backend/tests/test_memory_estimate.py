@@ -2627,7 +2627,9 @@ class TestTheEmbeddedHeadIsChargedOnlyWhenItEngages:
         draft cache and the target-side state were simply absent from the total.
         """
         out = ri._gguf_memory_breakdown(
-            self._config(head, "org/Qwen3-8B"), head, n_ctx = 131072,
+            self._config(head, "org/Qwen3-8B"),
+            head,
+            n_ctx = 131072,
             llama_extra_args = ["--spec-type", spec],
         )
         assert out.drafter_runtime_bytes > 0
@@ -2635,7 +2637,9 @@ class TestTheEmbeddedHeadIsChargedOnlyWhenItEngages:
     def test_extras_asking_for_mtp_on_a_sub_3b_model_still_engage_it(self, head):
         """An explicit request is not second-guessed by Auto's size rule."""
         out = ri._gguf_memory_breakdown(
-            self._config(head, "org/Qwen3-1.7B"), head, n_ctx = 131072,
+            self._config(head, "org/Qwen3-1.7B"),
+            head,
+            n_ctx = 131072,
             llama_extra_args = ["--spec-type", "draft-mtp"],
         )
         assert out.drafter_runtime_bytes > 0
@@ -2654,7 +2658,6 @@ class TestTheCpuOnlyCheckIsActuallyReachable:
     @pytest.fixture
     def snapshot(self, monkeypatch):
         import sys as _sys
-
         def _set(devices):
             main = SimpleNamespace(_system_gpu_cache = (0.0, (None, {"devices": devices})))
             monkeypatch.setitem(_sys.modules, "main", main)
@@ -2673,6 +2676,7 @@ class TestTheCpuOnlyCheckIsActuallyReachable:
 
     def test_an_unfilled_snapshot_is_still_unknown(self, monkeypatch):
         import sys as _sys
+
         monkeypatch.setitem(_sys.modules, "main", SimpleNamespace())
         assert ri._cached_inference_devices() is None
         assert ri._estimate_host_has_no_gpu() is False
@@ -2686,9 +2690,14 @@ class TestTheCpuOnlyCheckIsActuallyReachable:
     def test_the_whole_footprint_lands_in_host_ram_end_to_end(self, snapshot, tmp_path):
         gguf = _write_gguf(tmp_path, "qwen3", {**_GQA_FIELDS, "context_length": 262144})
         config = SimpleNamespace(
-            identifier = "local/cpu", gguf_file = gguf, is_gguf = True, gguf_variant = None,
-            gguf_mmproj_file = None, gguf_mtp_file = None,
-            gguf_dspark_file = None, gguf_dflash_file = None,
+            identifier = "local/cpu",
+            gguf_file = gguf,
+            is_gguf = True,
+            gguf_variant = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
         )
         snapshot([])
         out = ri._gguf_memory_breakdown(config, gguf, n_ctx = 32768)

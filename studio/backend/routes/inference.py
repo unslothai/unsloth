@@ -8841,8 +8841,7 @@ def _embedded_mtp_engages(probe, config, speculative_type, extras) -> bool:
         # draft cache and target-side state went uncharged.
         from core.inference.llama_cpp import _accumulated_spec_types, _child_spec_env
         return bool(
-            _accumulated_spec_types(extras, env = _child_spec_env(extras))
-            & {"mtp", "draft-mtp"}
+            _accumulated_spec_types(extras, env = _child_spec_env(extras)) & {"mtp", "draft-mtp"}
         )
     mode = _canonicalize_spec_mode(speculative_type) or "auto"
     if mode not in ("auto", "mtp", "mtp+ngram"):
