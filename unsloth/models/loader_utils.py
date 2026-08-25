@@ -214,8 +214,15 @@ def planner_class_mismatch_reason(loaded_class, planned_class):
 
 # accelerate's `max_memory` spellings, in the order it tries them: GiB/MiB/KiB are binary,
 # GB/MB/KB are decimal, and a lowercase trailing `b` on a decimal unit means bits, not bytes.
-_SIZE_UNITS = (("GIB", 2**30, False), ("MIB", 2**20, False), ("KIB", 2**10, False),
-               ("GB", 10**9, True), ("MB", 10**6, True), ("KB", 10**3, True))
+_SIZE_UNITS = (
+    ("GIB", 2**30, False),
+    ("MIB", 2**20, False),
+    ("KIB", 2**10, False),
+    ("GB", 10**9, True),
+    ("MB", 10**6, True),
+    ("KB", 10**3, True),
+)
+
 
 def _as_bytes(size):
     """A `max_memory` budget in bytes, or None if it cannot be read as one.
@@ -233,18 +240,23 @@ def _as_bytes(size):
     would take it as its int value: `{0: True}` is a typo, and a one byte budget on a card
     reads as "unusable" to the planner.
     """
-    if isinstance(size, bool): return None
-    if isinstance(size, int): return size if size >= 0 else None
-    if not isinstance(size, str): return None
+    if isinstance(size, bool):
+        return None
+    if isinstance(size, int):
+        return size if size >= 0 else None
+    if not isinstance(size, str):
+        return None
     upper = size.upper()
     for unit, scale, has_bit_form in _SIZE_UNITS:
-        if not upper.endswith(unit): continue
+        if not upper.endswith(unit):
+            continue
         try:
-            amount = int(float(size[:-len(unit)]) * scale)
+            amount = int(float(size[: -len(unit)]) * scale)
         except ValueError:
             return None
         # Bits, if they spelled the unit "Gb" rather than "GB". Binary units have no such form.
-        if has_bit_form and size.endswith("b"): amount //= 8
+        if has_bit_form and size.endswith("b"):
+            amount //= 8
         return amount if amount >= 0 else None
     return None
 
