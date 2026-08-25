@@ -312,11 +312,10 @@ def resolve_unsloth_device_map(
     requested_memory = planner_kwargs.pop("max_memory", None)
     requested_memory = dict(requested_memory) if requested_memory else None
 
-    # Read before probing, because probing is not free of consequence: `mem_get_info`
-    # initialises a CUDA context on each device it touches, and a card the caller withheld
-    # may well be busy with the workload they withheld it for. Touching one that refuses
-    # (ECC error, MIG parent, Exclusive_Process) would also drop the whole plan to
-    # "sequential" over a device this load was never going to use.
+    # Read before probing: `mem_get_info` initialises a CUDA context on each device it
+    # touches, and a withheld card is likely busy with the workload it was withheld for.
+    # One that refuses (ECC error, MIG parent, Exclusive_Process) would also drop the plan
+    # to "sequential" over a device this load was never going to use.
     if requested_memory is None:
         probe = list(range(device_count))
     else:
