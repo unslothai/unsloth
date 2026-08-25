@@ -36,7 +36,13 @@ class _Stub:
     _PIPELINE_PER_DEVICE_OVERHEAD_MIB = 1024
     _HOST_RAM_HEADROOM_MIB = 2048
 
-    def __init__(self, avail_mib = 64 * 1024, ffn = 10 * GIB, lm_head = 1 * GIB, moe = 0):
+    def __init__(
+        self,
+        avail_mib = 64 * 1024,
+        ffn = 10 * GIB,
+        lm_head = 1 * GIB,
+        moe = 0,
+    ):
         self._avail_mib = avail_mib
         self._ffn_weight_bytes = ffn
         self._lm_head_bytes = lm_head
@@ -82,7 +88,12 @@ class _Stub:
         )
 
 
-def _inputs(model_size = 30 * GIB, kv = 2 * GIB, free_mib = 24 * 1024, indices = None):
+def _inputs(
+    model_size = 30 * GIB,
+    kv = 2 * GIB,
+    free_mib = 24 * 1024,
+    indices = None,
+):
     return {
         "model_size": model_size,
         "kv_cache_bytes": kv,
@@ -95,7 +106,12 @@ def _inputs(model_size = 30 * GIB, kv = 2 * GIB, free_mib = 24 * 1024, indices =
     }
 
 
-def _plan(stub, env = None, extra_args = None, **kw):
+def _plan(
+    stub,
+    env = None,
+    extra_args = None,
+    **kw,
+):
     return stub._planned_tensor_spill(
         _inputs(**kw),
         extra_args = extra_args,
@@ -134,15 +150,15 @@ def test_an_unpriced_placement_abstains():
 @pytest.mark.parametrize(
     "extra_args",
     [
-        ["-ot", ".ffn_.*=CPU"],          # user already moves tensors
+        ["-ot", ".ffn_.*=CPU"],  # user already moves tensors
         ["--override-tensor", "x=CPU"],
         ["--cpu-moe"],
         ["--n-cpu-moe", "24"],
-        ["-ngl", "12"],                   # user owns the layer count
+        ["-ngl", "12"],  # user owns the layer count
         ["--gpu-layers", "0"],
-        ["--device", "CUDA0"],            # user owns the device set
+        ["--device", "CUDA0"],  # user owns the device set
         ["-dev", "none"],
-        ["--fit", "on"],                  # user asked for the fitter
+        ["--fit", "on"],  # user asked for the fitter
         # --fit OFF too: a retry revokes the plan by appending "--fit on", and
         # extras land before that, so planning here would overturn the user.
         ["--fit", "off"],
@@ -181,9 +197,7 @@ def test_an_unsized_cache_abstains():
 def test_no_gpus_abstains():
     stub = _Stub()
     assert (
-        stub._planned_tensor_spill(
-            {**_inputs(), "gpus": []}, env = {"UNSLOTH_SMART_OFFLOAD": "1"}
-        )
+        stub._planned_tensor_spill({**_inputs(), "gpus": []}, env = {"UNSLOTH_SMART_OFFLOAD": "1"})
         is None
     )
 
@@ -204,13 +218,13 @@ def test_unreadable_host_ram_abstains():
 def test_a_load_that_needs_ffn_spilled_gets_the_ffn_pattern():
     got = _plan(_Stub(), model_size = 30 * GIB, kv = 2 * GIB, free_mib = 12 * 1024)
     assert got is not None
-    assert got.ot_patterns and all('ffn' in p for p in got.ot_patterns)
+    assert got.ot_patterns and all("ffn" in p for p in got.ot_patterns)
 
 
 def test_a_moe_load_spills_expert_tensors_not_dense_ffn():
     got = _plan(_Stub(moe = 40), model_size = 30 * GIB, kv = 2 * GIB, free_mib = 12 * 1024)
     assert got is not None
-    assert got.ot_patterns and all('ffn' in p for p in got.ot_patterns)
+    assert got.ot_patterns and all("ffn" in p for p in got.ot_patterns)
 
 
 def test_lm_head_is_only_spilled_after_ffn():
@@ -298,7 +312,6 @@ def test_repeated_ot_flags_rather_than_a_joined_value():
 
 def _load_model_source() -> str:
     import inspect
-
     return inspect.getsource(LlamaCppBackend.load_model)
 
 

@@ -254,8 +254,13 @@ def test_the_moe_pattern_spills_experts_but_not_shared_experts():
     """Shared experts run on EVERY token, like a dense FFN, for 0.6% of the
     model. Spilling them buys nothing and costs dense-like bandwidth."""
     moe = _uniform_layout(
-        n_blocks = 40, spillable_total = 19_671_285_760, resident_total = 1_597_483_520,
-        lm_head = 540_000_000, token_embd = 540_000_000, kv_per_token = 20480, is_moe = True,
+        n_blocks = 40,
+        spillable_total = 19_671_285_760,
+        resident_total = 1_597_483_520,
+        lm_head = 540_000_000,
+        token_embd = 540_000_000,
+        kv_per_token = 20480,
+        is_moe = True,
     )
     pattern = spill_pattern_for(moe)
     assert re.search(pattern, "blk.5.ffn_up_exps.weight")
@@ -308,11 +313,17 @@ def test_front_and_back_orders_pick_opposite_ends():
     floor = resident_floor_bytes(layout, 4096)
     budget = floor + layout.spillable_bytes - 40 * MIB + 1 * GIB
     front = plan_placement(
-        layout, [budget], 64 * GIB, 4096,
+        layout,
+        [budget],
+        64 * GIB,
+        4096,
         opts = PlanOptions(spill_order = SpillOrder.FRONT_FIRST),
     )
     back = plan_placement(
-        layout, [budget], 64 * GIB, 4096,
+        layout,
+        [budget],
+        64 * GIB,
+        4096,
         opts = PlanOptions(spill_order = SpillOrder.BACK_FIRST),
     )
     assert front.spilled_blocks == (0,)
@@ -366,7 +377,10 @@ def test_never_reduce_keeps_the_requested_context():
 def test_prefer_resident_shrinks_instead_of_spilling():
     layout = q4_layout()
     plan = plan_placement(
-        layout, [18 * GIB], 64 * GIB, 65536,
+        layout,
+        [18 * GIB],
+        64 * GIB,
+        65536,
         opts = PlanOptions(context_policy = ContextPolicy.PREFER_RESIDENT),
     )
     assert plan.spilled_blocks == ()
@@ -377,7 +391,10 @@ def test_prefer_resident_shrinks_instead_of_spilling():
 def test_prefer_resident_still_spills_when_even_min_ctx_will_not_fit():
     layout = q4_layout()
     plan = plan_placement(
-        layout, [10 * GIB], 64 * GIB, 65536,
+        layout,
+        [10 * GIB],
+        64 * GIB,
+        65536,
         opts = PlanOptions(context_policy = ContextPolicy.PREFER_RESIDENT),
     )
     assert plan.spilled_blocks, "shrinking cannot save this one, so spill"
@@ -407,7 +424,10 @@ def test_kv_quantisation_rescues_a_load_f16_cannot_fit():
     assert without.insufficient is True
 
     with_quant = plan_placement(
-        layout, [9 * GIB], 64 * GIB, 65536,
+        layout,
+        [9 * GIB],
+        64 * GIB,
+        65536,
         opts = PlanOptions(allow_kv_quant = True),
     )
     assert with_quant.insufficient is False
@@ -420,7 +440,10 @@ def test_kv_quantisation_rescues_a_load_f16_cannot_fit():
 def test_f16_is_preferred_when_it_fits_even_with_quant_allowed():
     """q8_0 costs 35% of generation, so it is a rescue, not a default."""
     plan = plan_placement(
-        q2_layout(), [24 * GIB], 64 * GIB, 8192,
+        q2_layout(),
+        [24 * GIB],
+        64 * GIB,
+        8192,
         opts = PlanOptions(allow_kv_quant = True),
     )
     assert plan.cache_type_k is None
@@ -525,7 +548,10 @@ def test_a_unified_memory_host_never_spills():
     so moving a tensor to "host" frees nothing on the device. The planner must
     abstain rather than emit -ot flags that buy no memory and cost real speed."""
     plan = plan_placement(
-        _dense_q4(), [8 * GIB], 64 * GIB, 32768,
+        _dense_q4(),
+        [8 * GIB],
+        64 * GIB,
+        32768,
         opts = PlanOptions(host = HostProfile(unified_memory = True)),
     )
     assert plan.changed is False

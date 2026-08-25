@@ -79,14 +79,22 @@ class ModelLayout:
     def block_resident_bytes(self) -> int:
         return sum(b.resident_bytes for b in self.blocks)
 
-    def kv_bytes(self, n_ctx: int, bytes_per_elem: int = 2) -> int:
+    def kv_bytes(
+        self,
+        n_ctx: int,
+        bytes_per_elem: int = 2,
+    ) -> int:
         """Attention cache at ``n_ctx``. bytes_per_elem 2 = f16, 1 = q8_0-ish."""
         if self.kv_bytes_per_token_f16 <= 0 or n_ctx <= 0:
             return 0
         return self.kv_bytes_per_token_f16 * n_ctx * bytes_per_elem // 2
 
 
-def _field(reader, key: str, default = None):
+def _field(
+    reader,
+    key: str,
+    default = None,
+):
     f = reader.fields.get(key)
     if f is None:
         return default
@@ -105,7 +113,6 @@ def layout_from_gguf(path: str) -> ModelLayout:
     """
     try:
         from gguf import GGUFReader
-
         reader = GGUFReader(path)
     except Exception as exc:
         logger.debug("offload layout: cannot read %s (%s)", path, exc)
@@ -186,9 +193,7 @@ def _layout_from_reader(reader) -> ModelLayout:
             # Shared experts (ffn_*_shexp) and routers (ffn_gate_inp*) are
             # deliberately NOT spillable: both run on every token, so they cost
             # dense-FFN bandwidth for a rounding error of the model's size.
-            spillable = _MOE_EXPERT_RE.match(tail) or (
-                not is_moe and _DENSE_FFN_RE.match(tail)
-            )
+            spillable = _MOE_EXPERT_RE.match(tail) or (not is_moe and _DENSE_FFN_RE.match(tail))
             if spillable:
                 spill[index] = spill.get(index, 0) + nbytes
             else:

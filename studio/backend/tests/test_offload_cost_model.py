@@ -177,9 +177,7 @@ def test_partial_spilling_is_linear(gib, measured_delta):
 def test_spilling_less_always_costs_less():
     """Monotonicity. Without it the planner could prefer a larger spill."""
     costs = [
-        generation_penalty_ms(
-            Placement([TensorGroup("p", int(gib * GIB), Access.CONTIGUOUS)])
-        )
+        generation_penalty_ms(Placement([TensorGroup("p", int(gib * GIB), Access.CONTIGUOUS)]))
         for gib in (1.0, 3.0, 5.0, 10.0)
     ]
     assert costs == sorted(costs)
@@ -247,9 +245,7 @@ def test_prefill_ignores_host_threads_while_generation_does_not():
     """
     p = Placement([DENSE_FFN_G])
     big, small = HostProfile(threads = 192), HostProfile(threads = 8)
-    assert prefill_penalty_ms_per_token(p, host = small) == prefill_penalty_ms_per_token(
-        p, host = big
-    )
+    assert prefill_penalty_ms_per_token(p, host = small) == prefill_penalty_ms_per_token(p, host = big)
     assert generation_penalty_ms(p, small) > 2 * generation_penalty_ms(p, big)
 
 

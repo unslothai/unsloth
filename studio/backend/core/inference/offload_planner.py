@@ -168,10 +168,7 @@ def _select_blocks(
 
 
 def _spill_penalty_ms(
-    layout: ModelLayout,
-    chosen: Sequence[BlockLayout],
-    spill_lm_head: bool,
-    host: HostProfile,
+    layout: ModelLayout, chosen: Sequence[BlockLayout], spill_lm_head: bool, host: HostProfile
 ) -> float:
     """Predicted extra ms per generated token for this spill, on this host.
 
@@ -187,7 +184,9 @@ def _spill_penalty_ms(
         if layout.is_moe and layout.n_expert and layout.n_expert_used:
             groups.append(
                 TensorGroup(
-                    "experts", spilled, Access.SCATTERED,
+                    "experts",
+                    spilled,
+                    Access.SCATTERED,
                     activation_fraction = layout.n_expert_used / layout.n_expert,
                 )
             )
@@ -205,7 +204,10 @@ def _kv_elem_bytes(quantised: bool) -> int:
 
 
 def resident_floor_bytes(
-    layout: ModelLayout, n_ctx: int, *, kv_quantised: bool = False
+    layout: ModelLayout,
+    n_ctx: int,
+    *,
+    kv_quantised: bool = False,
 ) -> int:
     """VRAM needed with EVERY spillable tensor already on the host.
 
@@ -223,7 +225,10 @@ def resident_floor_bytes(
 
 
 def all_resident_bytes(
-    layout: ModelLayout, n_ctx: int, *, kv_quantised: bool = False
+    layout: ModelLayout,
+    n_ctx: int,
+    *,
+    kv_quantised: bool = False,
 ) -> int:
     """VRAM needed with nothing spilled. token_embd is excluded: it is never
     GPU-resident (llama-model.cpp pins dev_input to the CPU unconditionally)."""
@@ -314,7 +319,12 @@ def plan_placement(
         shrunk = max_context_for(layout, vram_bytes_per_device, opts = opts)
         if shrunk >= opts.min_ctx:
             return _finish(
-                layout, opts, min(shrunk, n_ctx), [], False, host_ram_bytes,
+                layout,
+                opts,
+                min(shrunk, n_ctx),
+                [],
+                False,
+                host_ram_bytes,
                 reason = (
                     f"shrank context {n_ctx} -> {min(shrunk, n_ctx)} to keep every tensor "
                     "resident, which outruns a larger spilled context"
@@ -375,7 +385,13 @@ def _plan_at(
     needed = all_resident_bytes(layout, n_ctx, kv_quantised = quantised)
     if needed <= budget:
         return _finish(
-            layout, opts, n_ctx, [], False, host_ram_bytes, quantised = quantised,
+            layout,
+            opts,
+            n_ctx,
+            [],
+            False,
+            host_ram_bytes,
+            quantised = quantised,
             reason = (
                 f"the whole load fits in VRAM ({needed / GIB:.2f} of "
                 f"{budget / GIB:.2f} GiB usable), so nothing is spilled"
@@ -386,7 +402,13 @@ def _plan_at(
     chosen, freed = _select_blocks(layout.blocks, deficit, opts.spill_order)
     if freed >= deficit:
         return _finish(
-            layout, opts, n_ctx, chosen, False, host_ram_bytes, quantised = quantised,
+            layout,
+            opts,
+            n_ctx,
+            chosen,
+            False,
+            host_ram_bytes,
+            quantised = quantised,
             reason = (
                 f"spilled the FFN of {len(chosen)} of {len(layout.blocks)} blocks "
                 f"({freed / GIB:.2f} GiB) to cover a {deficit / GIB:.2f} GiB deficit, "
@@ -400,7 +422,13 @@ def _plan_at(
     if opts.allow_lm_head_spill and layout.lm_head_bytes:
         if freed + layout.lm_head_bytes >= deficit:
             return _finish(
-                layout, opts, n_ctx, chosen, True, host_ram_bytes, quantised = quantised,
+                layout,
+                opts,
+                n_ctx,
+                chosen,
+                True,
+                host_ram_bytes,
+                quantised = quantised,
                 reason = (
                     f"spilled every block's FFN ({freed / GIB:.2f} GiB) plus lm_head "
                     f"({layout.lm_head_bytes / GIB:.2f} GiB) to cover a "

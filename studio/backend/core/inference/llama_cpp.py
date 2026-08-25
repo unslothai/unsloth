@@ -18521,7 +18521,9 @@ class LlamaCppBackend:
                         # -ot (common/arg.cpp:2657 push_backs into the shared
                         # override vector). Do not join with ";" -- that is
                         # llama-bench's separator; llama-server splits on ",".
-                        _ot_tokens = [tok for pat in _spill.ot_patterns for tok in ("-ot", f"{pat}=CPU")]
+                        _ot_tokens = [
+                            tok for pat in _spill.ot_patterns for tok in ("-ot", f"{pat}=CPU")
+                        ]
                         # --fit off is REQUIRED here, not tidiness. The fitter
                         # aborts only on an n_gpu_layers the USER set
                         # (common/fit.cpp:377) and -1 is llama.cpp's own default

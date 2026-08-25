@@ -109,7 +109,7 @@ PREFILL_STREAM_GIB_S = 55.0
 MULTI_GROUP_CONTENTION = 0.06
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class TensorGroup:
     """A set of weights the planner can place as a unit."""
 
@@ -125,7 +125,7 @@ class TensorGroup:
         return int(self.bytes_total * self.activation_fraction)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class HostProfile:
     """What the host can bring to bear on CPU-resident weights.
 
@@ -146,8 +146,7 @@ class HostProfile:
             return 1.0
         here = _THREAD_PARALLEL_MS_PER_GIB / float(self.threads) + _THREAD_SERIAL_MS_PER_GIB
         there = (
-            _THREAD_PARALLEL_MS_PER_GIB / float(REFERENCE_HOST_THREADS)
-            + _THREAD_SERIAL_MS_PER_GIB
+            _THREAD_PARALLEL_MS_PER_GIB / float(REFERENCE_HOST_THREADS) + _THREAD_SERIAL_MS_PER_GIB
         )
         return here / there
 
@@ -156,17 +155,14 @@ class HostProfile:
 class Placement:
     """A candidate: which groups sit in host memory, and where the cache is."""
 
-    host_groups: list[TensorGroup] = field(default_factory=list)
+    host_groups: list[TensorGroup] = field(default_factory = list)
     #: Bytes of attention cache forced to host RAM. Only ``--no-kv-offload``
     #: puts anything here; spilling with ``-ot`` leaves the cache resident,
     #: and spilling with ``-ngl`` drags it off proportionally.
     kv_host_bytes: int = 0
 
 
-def generation_penalty_ms(
-    placement: Placement,
-    host: HostProfile | None = None,
-) -> float:
+def generation_penalty_ms(placement: Placement, host: HostProfile | None = None) -> float:
     """Extra milliseconds per generated token, versus everything resident.
 
     Additive in TIME across groups, plus a contention term when more than one
