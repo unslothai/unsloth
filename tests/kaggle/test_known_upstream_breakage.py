@@ -84,9 +84,9 @@ def test_a_listed_model_still_fails_every_other_rule():
         ({"singles": ["x"] * 2}, "largest batch was never actually formed"),
     ):
         broken = batched_generation_failures(_record(**over), "unsloth/Qwen3.5-2B")
-        assert any(expect in f for f in broken), (
-            f"{over} was excused along with the known disagreement"
-        )
+        assert any(
+            expect in f for f in broken
+        ), f"{over} was excused along with the known disagreement"
 
 
 def test_every_entry_names_the_issue_it_is_waiting_on():

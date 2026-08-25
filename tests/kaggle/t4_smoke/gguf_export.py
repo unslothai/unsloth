@@ -271,7 +271,8 @@ def llama_cpp_facts(install_output: str, returned) -> dict:
         # source-build markers stay a plain list, because those are printed by
         # the build itself and their absence is meaningful either way.
         "prebuilt": (
-            True if PREBUILT_MARKER in (install_output or "")
+            True
+            if PREBUILT_MARKER in (install_output or "")
             else (None if not (install_output or "").strip() else False)
         ),
         "source_build_markers": [m for m in SOURCE_BUILD_MARKERS if m in (install_output or "")],

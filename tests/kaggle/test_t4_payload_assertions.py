@@ -2329,13 +2329,16 @@ def test_a_second_cycle_cannot_report_an_already_installed_llama_cpp_as_a_source
     from gguf_export import llama_cpp_facts
 
     quiet = llama_cpp_facts("", ())
-    assert quiet["prebuilt"] is None, (
-        "an install that printed nothing must not claim a source build"
-    )
+    assert (
+        quiet["prebuilt"] is None
+    ), "an install that printed nothing must not claim a source build"
     assert quiet["source_build_markers"] == []
 
     # And the two real answers are unchanged.
-    assert llama_cpp_facts(
-        "Unsloth: Installing prebuilt llama.cpp b10472 - skipping compilation.", ()
-    )["prebuilt"] is True
+    assert (
+        llama_cpp_facts(
+            "Unsloth: Installing prebuilt llama.cpp b10472 - skipping compilation.", ()
+        )["prebuilt"]
+        is True
+    )
     assert llama_cpp_facts("cmake --build . -j 4\n", ())["prebuilt"] is False
