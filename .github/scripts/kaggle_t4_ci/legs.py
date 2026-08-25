@@ -305,7 +305,13 @@ LEGS: dict[str, Leg] = {
         summary = "Qwen3.5-2B on the newest stack: vendored FLA, sdpa on Turing, completions-only",
         install = BASE_INSTALL + ((("--upgrade", "transformers", "trl")),),
         entry = "run_t4_smoke.py",
-        files = SMOKE_FILES,
+        # The vision payload travels with this leg. It is a SEPARATE entry
+        # script, not a flag on run_t4_smoke: a vision run needs
+        # FastVisionModel, UnslothVisionDataCollator and four SFTConfig
+        # settings that would be dead weight in every text leg, and the
+        # branching to keep both in one file is how the text path acquires a
+        # vision-shaped bug nobody notices.
+        files = SMOKE_FILES + ("run_vision_t4.py",),
         args = (
             "--model",
             "unsloth/Qwen3.5-2B",
