@@ -60,7 +60,7 @@ export function chatLocalModelOptions(
       baseModel: baseModelLabel(model.source),
       updatedAt: model.updated_at ?? undefined,
       source: "local" as const,
-      isGguf: model.model_format === "gguf" || isDirectGguf ? true : undefined,
+      isGguf: isDirectGguf ? true : undefined,
       isDirectGguf: isDirectGguf ? true : undefined,
     });
   }

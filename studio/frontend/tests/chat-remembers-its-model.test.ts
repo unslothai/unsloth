@@ -26,11 +26,13 @@ const {
 const { chatLocalModelOptions } = await import(
   "../src/features/chat/local-model-options.ts"
 );
-const { DEFAULT_PER_MODEL_CONFIG, savePerModelConfig } = await import(
-  "../src/features/model-picker/model-config/per-model-config.ts"
-);
+const { DEFAULT_PER_MODEL_CONFIG, resolveInitialConfig, savePerModelConfig } =
+  await import("../src/features/model-picker/model-config/per-model-config.ts");
 const { shouldPersistResolvedQueuedModel } = await import(
   "../src/features/chat/utils/queued-chat-run-settings.ts"
+);
+const { wantsDownloadManagerStaging } = await import(
+  "../src/features/chat/utils/model-download-staging.ts"
 );
 
 function read(path: string): string {
@@ -48,6 +50,25 @@ const researchPanel = read(
   "../src/features/chat/components/research-activity-panel.tsx",
 );
 const artifact = read("../src/features/chat/artifacts/artifact-surface.tsx");
+const switchSource = read(
+  "../src/features/chat/components/chat-model-notice-switch.ts",
+);
+
+/** The selection handleCheckpointChange builds from the meta, mirrored field for field. */
+function switchBackSelection(
+  target: { modelId: string; ggufVariant?: string | null },
+  rows: Parameters<typeof chatModelSwitchMeta>[1] = [],
+) {
+  const meta = chatModelSwitchMeta(target, rows);
+  return {
+    id: target.modelId,
+    source: meta?.source,
+    isLora: meta?.isLora,
+    ggufVariant: meta?.ggufVariant,
+    isDownloaded: meta?.isDownloaded,
+    isGguf: meta?.isGguf,
+  };
+}
 
 function slice(source: string, from: string, to: string): string {
   const start = source.indexOf(from);
@@ -365,15 +386,16 @@ test("a queued empty-model send backfills its resolved GGUF variant", () => {
 });
 
 test("queued model backfill changes only a fresh empty thread row", () => {
-  assert.equal(shouldPersistResolvedQueuedModel("", { modelId: "" }), true);
+  assert.equal(shouldPersistResolvedQueuedModel({ modelId: "" }), true);
   assert.equal(
-    shouldPersistResolvedQueuedModel("", { modelId: "original-model" }),
+    shouldPersistResolvedQueuedModel({ modelId: "original-model" }),
     false,
   );
-  assert.equal(shouldPersistResolvedQueuedModel("", undefined), false);
-  assert.equal(
-    shouldPersistResolvedQueuedModel("queued-model", { modelId: "" }),
-    false,
+  assert.equal(shouldPersistResolvedQueuedModel(undefined), false);
+  // The caller has already returned on a queued checkpoint four lines earlier.
+  assert.match(
+    slice(adapter, "const persistResolvedQueuedModel", "if (queuedRunSettings)"),
+    /queuedRunSettings\.params\.checkpoint \|\|/,
   );
 });
 
@@ -441,13 +463,78 @@ test("a saved GGUF variant is carried back exactly", () => {
       { modelId: "unsloth/Qwen3-4B-GGUF", ggufVariant: "Q8_0" },
       [],
     ),
-    {
-      source: "hub",
-      isLora: false,
-      isGguf: true,
-      ggufVariant: "Q8_0",
-    },
+    { ggufVariant: "Q8_0" },
   );
+});
+
+test("switching back to a hub GGUF loads it instead of staging a download", () => {
+  store.clear();
+  // stageOrLoad routes a pick with source "hub" and no isDownloaded through the download
+  // manager. Two of requestStart's outcomes, conflict and busy, toast and return without
+  // loading, so a switch back that lands there silently does nothing.
+  const selection = switchBackSelection({
+    modelId: "unsloth/Qwen3-4B-GGUF",
+    ggufVariant: "Q8_0",
+  });
+  assert.equal(wantsDownloadManagerStaging(selection), false);
+  // and the variant, the one thing no resolver can recover, still travels
+  assert.equal(selection.ggufVariant, "Q8_0");
+  // A pick the picker itself marks as a hub row still stages, so nothing else moved.
+  assert.equal(
+    wantsDownloadManagerStaging({
+      id: "unsloth/Qwen3-4B-GGUF",
+      source: "hub",
+      ggufVariant: "Q8_0",
+    }),
+    true,
+  );
+  // The selection mapping above and the predicate under test are the page's own.
+  const built = slice(page, "const selection = {", "await stageOrLoad(selection);");
+  for (const field of [
+    "source: meta?.source",
+    "isLora: meta?.isLora",
+    "ggufVariant: meta?.ggufVariant",
+    "isGguf: meta?.isGguf",
+  ]) {
+    assert.ok(built.includes(field), `selection lost ${field}`);
+  }
+  assert.match(built, /isDownloaded: meta\?\.isDownloaded \|\| isSameLoadedModel/);
+  assert.match(
+    page,
+    /const wantManagerStaging = wantsDownloadManagerStaging\(selection\);/,
+  );
+});
+
+test("a history update that leaves the model alone is not re-emitted", () => {
+  // Every CHAT_HISTORY_UPDATED_EVENT for the thread reaches applyUpdate, renames and
+  // archives included, and a fresh object each time re-renders the notice for nothing.
+  const seen: unknown[] = [];
+  const reader = createChatModelHistoryReader("thread-1", (model) => {
+    seen.push(model);
+  });
+  reader.applyInitial({
+    id: "thread-1",
+    modelId: "model-a",
+    modelGgufVariant: "Q6_K",
+  });
+  reader.applyUpdate({
+    id: "thread-1",
+    modelId: "model-a",
+    modelGgufVariant: "Q6_K",
+  });
+  reader.applyUpdate({
+    id: "thread-1",
+    modelId: "model-a",
+    modelGgufVariant: "Q6_K",
+  });
+  assert.equal(seen.length, 1);
+  reader.applyUpdate({
+    id: "thread-1",
+    modelId: "model-a",
+    modelGgufVariant: "Q8_0",
+  });
+  assert.equal(seen.length, 2);
+  reader.dispose();
 });
 
 test("a legacy GGUF directory recovers its sole saved variant and context", () => {
@@ -468,14 +555,18 @@ test("a legacy GGUF directory recovers its sole saved variant and context", () =
       model_format: "gguf",
     },
   ]);
-  assert.equal(option.isGguf, true);
   assert.equal(option.isDirectGguf, undefined);
   const target = resolveChatModelSwitchTarget({ modelId });
   assert.equal(target.ggufVariant?.toLowerCase(), "q6_k");
   const meta = chatModelSwitchMeta(target, [option]);
   assert.equal(meta?.isGguf, true);
   assert.equal(meta?.ggufVariant?.toLowerCase(), "q6_k");
-  assert.equal(meta?.config?.customContextLength, 32768);
+  // The variant is the key the saved 32768 is filed under; stageOrLoad does the lookup.
+  assert.equal(
+    resolveInitialConfig(modelId, target.ggufVariant ?? undefined).config
+      .customContextLength,
+    32768,
+  );
 });
 
 test("a legacy GGUF directory does not guess between saved variants", () => {
@@ -516,7 +607,7 @@ test("a legacy GGUF directory does not infer a quant from config alone", () => {
   assert.equal(resolveChatModelSwitchTarget({ modelId }).ggufVariant, undefined);
 });
 
-test("switching back carries settings saved without a GGUF variant", () => {
+test("the switch back leaves the remembered config to stageOrLoad", () => {
   store.clear();
   const modelId = "/models/qwen3-4b-q4.gguf";
   assert.ok(
@@ -525,7 +616,7 @@ test("switching back carries settings saved without a GGUF variant", () => {
       customContextLength: 32768,
     }),
   );
-  const meta = chatModelSwitchMeta({ modelId }, [
+  const selection = switchBackSelection({ modelId }, [
     {
       id: modelId,
       name: "qwen3-4b-q4",
@@ -534,7 +625,27 @@ test("switching back carries settings saved without a GGUF variant", () => {
       isDirectGguf: true,
     },
   ]);
-  assert.equal(meta?.config?.customContextLength, 32768);
+  // A config on the meta would duplicate the lookup stageOrLoad already does.
+  assert.doesNotMatch(
+    slice(switchSource, "import type {", "export type ChatModelSwitchTarget"),
+    /resolveInitialConfig/,
+  );
+  const stage = slice(page, "const stageOrLoad = useCallback", "useRepoDownload(");
+  assert.match(stage, /selection\.config \?\? rememberedConfigFor\(selection\)/);
+  const remembered = slice(
+    page,
+    "const rememberedConfigFor = useCallback",
+    "const isExternalModel",
+  );
+  assert.match(
+    remembered,
+    /resolveInitialConfig\(selection\.id, selection\.ggufVariant\)/,
+  );
+  assert.equal(
+    resolveInitialConfig(selection.id, selection.ggufVariant).config
+      .customContextLength,
+    32768,
+  );
 });
 
 test("switching back to a fine-tuned row mirrors the picker's own metadata", () => {

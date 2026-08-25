@@ -3963,12 +3963,7 @@ export function createOpenAIStreamAdapter(
           return;
         }
         const storedThread = await readThreadRecord?.();
-        if (
-          !shouldPersistResolvedQueuedModel(
-            queuedRunSettings.params.checkpoint,
-            storedThread,
-          )
-        ) {
+        if (!shouldPersistResolvedQueuedModel(storedThread)) {
           return;
         }
         await updateStoredChatThread(resolvedThreadId, {

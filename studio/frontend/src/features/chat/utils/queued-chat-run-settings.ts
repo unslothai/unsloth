@@ -70,11 +70,11 @@ export function snapshotQueuedChatRunSettings(
   return snapshot;
 }
 
+/** A queued send may only fill in the model of a row that was written without one. */
 export function shouldPersistResolvedQueuedModel(
-  queuedCheckpoint: string | null | undefined,
   storedThread: { modelId?: string | null } | null | undefined,
 ): boolean {
-  return !queuedCheckpoint && Boolean(storedThread && !storedThread.modelId);
+  return Boolean(storedThread && !storedThread.modelId);
 }
 
 export function registerQueuedChatRunSettings(
