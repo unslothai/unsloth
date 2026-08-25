@@ -99,11 +99,15 @@ def _inputs(
     kv = 2 * GIB,
     free_mib = 24 * 1024,
     indices = None,
+    usable_mib = None,
+    extra_gpu = 0,
 ):
     return {
         "model_size": model_size,
         "kv_cache_bytes": kv,
         "gpus": [(0, free_mib)],
+        "gpu_usable_mib": {} if usable_mib is None else {0: usable_mib},
+        "extra_gpu_bytes": extra_gpu,
         "gpu_indices": indices,
         "soft_overhead": 0,
         "model_path": "/models/stub.gguf",
@@ -495,3 +499,110 @@ def test_a_unified_memory_apu_is_declared_to_the_planner():
 
     compact = "".join(inspect.getsource(LlamaCppBackend._planned_tensor_spill).split())
     assert "unified_memory=self._amd_apu_wants_unified_memory(" in compact
+
+
+# ------------------------------------------- the budget the fit actually tested
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    [
+        ["--split-mode", "none"],
+        ["-sm", "none"],
+        ["--split-mode", "row"],
+        ["--tensor-split", "3,1"],
+        ["-ts", "3,1"],
+    ],
+)
+def test_a_split_placement_argument_declines(extra_args):
+    """Split mode and tensor split are placement, and they are not in
+    _DEVICE_FLAGS, so the old guard let them through.
+
+    They reach the child: the layer path's own note in this module says "-sm
+    none/row keep the layer path and pass through", and extras are appended
+    last, so they win. Under -sm none llama.cpp truncates model->devices to the
+    single main GPU (llama.cpp:288-299), while this planner credits the SUM of
+    every selected card -- so it would size the plan against a pool the child
+    never gets and then pin that with --fit off. -ts replaces the free-memory
+    proportional split (llama-model.cpp:1417-1447), so one device can overflow
+    while the pool total still fits.
+    """
+    assert _plan(_Stub(), extra_args = extra_args) is None
+    # Not vacuous: the same load DOES plan without the argument.
+    assert _plan(_Stub()) is not None
+
+
+@pytest.mark.parametrize(
+    "env",
+    [{"LLAMA_ARG_SPLIT_MODE": "none"}, {"LLAMA_ARG_TENSOR_SPLIT": "3,1"}],
+)
+def test_an_inherited_split_placement_env_declines(env):
+    assert _plan(_Stub(), env = env) is None
+
+
+def test_the_planner_gets_the_budget_the_fit_tested_not_raw_free():
+    """_gpu_usable applies the user's VRAM-budget fraction and the per-card
+    reserve floor; raw free_mib is neither.
+
+    The budget is settable down to 0.80 (vram_budget_settings), so on a 24 GiB
+    card the fit tests ~4.8 GiB less than free, and even at the 0.97 default a
+    big card holds back 3% rather than the planner's flat per-device reserve.
+    Planning on free credits VRAM the fit had already ruled out, emits too few
+    -ot overrides, and then appends --fit off over the result.
+    """
+    stub = _Stub()
+    on_free = _plan(stub, free_mib = 15 * 1024)
+    on_budget = _plan(stub, free_mib = 15 * 1024, usable_mib = 13 * 1024)
+
+    assert on_free is not None and on_budget is not None
+    assert on_free.spills_anything and on_budget.spills_anything
+    assert len(on_budget.spilled_blocks) > len(on_free.spilled_blocks)
+
+
+def test_the_projector_and_mtp_reserve_reach_the_planner():
+    """The layout is rebuilt from the target GGUF's tensor table, so a vision
+    projector and the MTP draft reserve are invisible to it -- yet both are in
+    the model_size_fit that produced the use_fit verdict this arm answers.
+    Leaving them out makes the deficit too small on exactly the loads Studio
+    already judged not to fit, and the launch then follows that with --fit off.
+    """
+    stub = _Stub()
+    without = _plan(stub, free_mib = 15 * 1024)
+    with_extra = _plan(stub, free_mib = 15 * 1024, extra_gpu = 2 * GIB)
+
+    assert without is not None and with_extra is not None
+    assert without.spills_anything and with_extra.spills_anything
+    assert len(with_extra.spilled_blocks) > len(without.spilled_blocks)
+
+
+def test_the_layout_cache_notices_a_gguf_replaced_in_place(tmp_path, monkeypatch):
+    """The backend instance outlives a load, so re-downloading or re-quantising
+    a model to the SAME path inside one session must not be planned against the
+    old tensor table: a larger replacement understates the deficit, emits too
+    few -ot overrides, and still appends --fit off.
+    """
+    from core.inference import offload_layout
+
+    class _CacheStub:
+        _tensor_spill_layout = LlamaCppBackend._tensor_spill_layout
+
+    reads: list[int] = []
+
+    def _fake(path):
+        reads.append(len(reads))
+        return ModelLayout(arch = "llama", n_layers = len(reads), complete = True)
+
+    monkeypatch.setattr(offload_layout, "layout_from_gguf", _fake)
+
+    gguf = tmp_path / "model.gguf"
+    gguf.write_bytes(b"a")
+    backend = _CacheStub()
+
+    first = backend._tensor_spill_layout(str(gguf))
+    assert backend._tensor_spill_layout(str(gguf)) is first, "unchanged file is cached"
+    assert len(reads) == 1
+
+    gguf.write_bytes(b"bb")
+    second = backend._tensor_spill_layout(str(gguf))
+    assert len(reads) == 2, "a replaced file is re-read"
+    assert second.n_layers != first.n_layers

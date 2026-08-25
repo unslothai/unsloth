@@ -105,6 +105,13 @@ class PlanOptions:
     # fitting a slope. Erring high costs some spill -- the penalty is linear at
     # 5.544 ms/GiB -- while erring low costs the whole load.
     overhead_bytes_per_device: int = (3 * GIB) // 2
+    # GPU-resident bytes that are NOT in the layout, charged once against the
+    # pooled budget. The layout is built from the target GGUF's tensor table, so
+    # anything else the child puts on a card -- a vision projector, an MTP draft
+    # reserve -- is invisible to it. Subtracting from the budget is the same
+    # arithmetic as adding to every footprint, and it reaches max_context_for
+    # too. 0 keeps the pure-layout behaviour.
+    extra_resident_bytes: int = 0
     # Host RAM this planner refuses to spend, so a spill does not push the box
     # into swap.
     host_ram_headroom_bytes: int = 2 * GIB
@@ -158,8 +165,10 @@ class Plan:
 
 
 def _usable_vram(vram_bytes_per_device: Sequence[int], opts: PlanOptions) -> int:
-    """Total creditable VRAM: every device pays the fixed per-device overhead."""
-    return sum(max(0, v - opts.overhead_bytes_per_device) for v in vram_bytes_per_device)
+    """Total creditable VRAM: every device pays the fixed per-device overhead,
+    then the pool pays once for whatever sits on a card outside the layout."""
+    pooled = sum(max(0, v - opts.overhead_bytes_per_device) for v in vram_bytes_per_device)
+    return pooled - max(0, opts.extra_resident_bytes)
 
 
 def _select_blocks(
@@ -365,7 +374,7 @@ def plan_placement(
         return Plan(reason = "unified memory host, spilling frees no device memory")
     budget = _usable_vram(vram_bytes_per_device, opts)
     if budget <= 0:
-        return Plan(reason = "no creditable VRAM after per-device overhead")
+        return Plan(reason = "no creditable VRAM after per-device overhead and reserved allocations")
 
     n_ctx = requested_ctx if requested_ctx > 0 else layout.n_ctx_train
     if layout.n_ctx_train:
@@ -527,9 +536,15 @@ def _finish(
     indices = sorted(b.index for b in chosen)
     if indices:
         # One global pattern when every spillable block is going, which is both
-        # shorter and exactly the form the benchmarks used.
+        # shorter and exactly the form the benchmarks used. NOT when the GGUF
+        # carries blocks the layout dropped: the unbounded \d+ would also match
+        # the trailing nextn/MTP blocks, whose ffn_*_exps are real weights loaded
+        # the moment a draft is engaged. Spilling those moves bytes neither
+        # host_bytes nor the deficit ever counted -- so the mmap decision is made
+        # on an undercount -- and drags the draft FFN onto the CPU backend, which
+        # slows the very speculative decode it was loaded for.
         spillable = [b.index for b in layout.blocks if b.spillable_bytes > 0]
-        all_of_them = set(indices) == set(spillable)
+        all_of_them = set(indices) == set(spillable) and not layout.has_excluded_blocks
         patterns.append(spill_pattern_for(layout, None if all_of_them else indices))
     if spill_lm_head:
         patterns.append(LM_HEAD_PATTERN)

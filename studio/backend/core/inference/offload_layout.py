@@ -68,6 +68,13 @@ class ModelLayout:
     # fraction per token while a dense FFN moves all of it.
     n_expert: int = 0
     n_expert_used: int = 0
+    # The tensor table carried blk.<N> tensors that ``blocks`` deliberately
+    # dropped: the trailing nextn/MTP blocks, which the GGUF's block_count
+    # includes (llama-model.cpp reads it into n_layer_all) but the target model
+    # does not use. They are real blk.<N>.ffn_* weights (models/qwen35moe.cpp,
+    # load_block_mtp), so the unbounded ^blk\.\d+\. spill pattern WOULD match
+    # them once a draft is loaded. The planner uses this to stay bounded.
+    has_excluded_blocks: bool = False
     # False when a needed quantity could not be read. The planner abstains.
     complete: bool = False
 
@@ -229,7 +236,9 @@ def _layout_from_reader(reader) -> ModelLayout:
     # spillable would credit the plan with bytes it can never free, which is the
     # optimistic direction that turns a non-fit into a claimed fit. Studio prices
     # the drafter separately anyway.
-    block_indices = sorted(i for i in (set(spill) | set(resident)) if i < n_layers)
+    all_block_indices = set(spill) | set(resident)
+    block_indices = sorted(i for i in all_block_indices if i < n_layers)
+    has_excluded = any(i >= n_layers for i in all_block_indices)
     blocks = tuple(
         BlockLayout(
             index = i,
@@ -253,6 +262,7 @@ def _layout_from_reader(reader) -> ModelLayout:
         is_moe = is_moe,
         n_expert = n_expert,
         n_expert_used = n_expert_used,
+        has_excluded_blocks = has_excluded,
         complete = True,
     )
 

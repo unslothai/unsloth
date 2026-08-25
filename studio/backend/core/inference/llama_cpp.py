@@ -65,6 +65,8 @@ from core.inference.llama_server_args import (
     _GPU_LAYER_FLAGS,
     _LAYER_OFFLOAD_FLAGS,
     _MOE_OFFLOAD_FLAGS,
+    _SPLIT_MODE_FLAGS,
+    _TENSOR_SPLIT_FLAGS,
     _effective_tensor_parallel,
     _flag_name,
     _tensor_parallel_matches_loaded,
@@ -18141,8 +18143,28 @@ class LlamaCppBackend:
                         "model_size": model_size,
                         "kv_cache_bytes": kv_cache_bytes,
                         "gpus": list(gpus or ()),
+                        # The budget the fit above actually tested, per device:
+                        # _gpu_usable applies the user's VRAM-budget fraction and
+                        # the reserve floor. Raw free_mib is NOT that number, and
+                        # at 0.80 on a 24 GiB card it is 3.5 GiB per card larger,
+                        # so planning on it would spill too little and then pin
+                        # the result with --fit off.
+                        "gpu_usable_mib": {
+                            _idx: max(0.0, _gpu_usable((_idx, _free)))
+                            for _idx, _free in (gpus or ())
+                        },
                         "gpu_indices": gpu_indices,
                         "soft_overhead": _soft_overhead,
+                        # GPU-resident bytes in model_size_fit that the planner's
+                        # own footprint cannot see: it rebuilds the model from the
+                        # target GGUF's tensor table, so the projector and the MTP
+                        # reserve are simply absent from its deficit. The compute
+                        # buffer is NOT here: soft_overhead plus the per-device
+                        # pipeline reserve already stands in for it, and charging
+                        # it twice would only spill more.
+                        "extra_gpu_bytes": (
+                            mmproj_size + _shared_pool_mmproj + _mtp_reserve_bytes
+                        ),
                         # The planner reads the real tensor table rather than a
                         # bucket total, so it can spill the MINIMUM set of blocks
                         # instead of the whole FFN.
@@ -22575,6 +22597,20 @@ class LlamaCppBackend:
             or str(source_env.get("LLAMA_ARG_N_GPU_LAYERS", "")).strip()
             or _extra_args_set_any_flag(extra_args, _DEVICE_FLAGS)
             or str(source_env.get("LLAMA_ARG_DEVICE", "")).strip()
+            # Split mode and tensor split are placement too, and they are NOT in
+            # _DEVICE_FLAGS. Both pass through to the child (the layer path's own
+            # comment above says "-sm none/row keep the layer path and pass
+            # through"), and extras are appended last, so they win. -sm none is
+            # the dangerous one: llama.cpp truncates model->devices to the single
+            # main GPU (llama.cpp:288-299), while this planner credits the SUM of
+            # every selected card, so it would size a plan against a pool the
+            # child never gets and then follow it with --fit off. -ts replaces the
+            # free-memory proportional split (llama-model.cpp:1417-1447), so one
+            # device can overflow while the pool total still fits.
+            or _extra_args_set_any_flag(extra_args, _SPLIT_MODE_FLAGS)
+            or _extra_args_set_any_flag(extra_args, _TENSOR_SPLIT_FLAGS)
+            or str(source_env.get("LLAMA_ARG_SPLIT_MODE", "")).strip()
+            or str(source_env.get("LLAMA_ARG_TENSOR_SPLIT", "")).strip()
             # ANY explicit --fit, not just an enabling one. A retry revokes the
             # plan by appending "--fit on", and extras are appended BEFORE that,
             # so planning over a user's "--fit off" would let the revocation
@@ -22607,8 +22643,13 @@ class LlamaCppBackend:
         pinned = inputs.get("gpu_indices")
         shared = set(inputs.get("shared_gpu_ids") or ())
         pinned_set = None if pinned is None else set(pinned)
+        # The USABLE budget Studio's own fit tested, not raw free: it carries the
+        # user's VRAM-budget fraction and the per-card reserve floor. Falling back
+        # to free keeps a caller that supplies no map working, and the planner's
+        # per-device overhead is then the only reserve, as before.
+        usable_mib = inputs.get("gpu_usable_mib") or {}
         vram_per_device = [
-            free_mib * 1024 * 1024
+            int(usable_mib.get(idx, free_mib) * 1024 * 1024)
             for idx, free_mib in rows
             if idx not in shared and (pinned_set is None or idx in pinned_set)
         ]
@@ -22629,6 +22670,13 @@ class LlamaCppBackend:
                     + self._PIPELINE_PER_DEVICE_OVERHEAD_MIB * 1024 * 1024
                 ),
                 host_ram_headroom_bytes = self._HOST_RAM_HEADROOM_MIB * 1024 * 1024,
+                # GPU-resident allocations the layout cannot account for, because
+                # the layout is built from the target GGUF alone: the vision
+                # projector and the MTP draft reserve. Both are in the footprint
+                # that produced the use_fit verdict this arm is answering, so
+                # leaving them out here makes the deficit too small on exactly the
+                # loads Studio already judged not to fit.
+                extra_resident_bytes = int(inputs.get("extra_gpu_bytes") or 0),
                 # Spilled decode runs on the CPU backend (ggml migrates an op to
                 # the GPU only at batch >= 32, and decode is batch 1), so the
                 # penalty tracks core count. Reading the real count keeps a small
@@ -22732,15 +22780,26 @@ class LlamaCppBackend:
 
         if not model_path:
             return None
+        # Keyed on file IDENTITY, not just the name. The backend instance outlives
+        # a load, so re-downloading or re-quantising a model to the same path
+        # inside one session would otherwise be planned against the OLD tensor
+        # table -- and a bigger replacement then understates the deficit, emits
+        # too few -ot patterns and still appends --fit off. Same (size, mtime_ns)
+        # stat identity _slot_launch_fingerprint uses for sidecar weights.
+        try:
+            st = os.stat(model_path)
+            key = (model_path, st.st_size, st.st_mtime_ns)
+        except OSError:
+            key = (model_path, None, None)
         cached = getattr(self, "_spill_layout_cache", None)
-        if cached is not None and cached[0] == model_path:
+        if cached is not None and cached[0] == key:
             return cached[1]
         try:
             layout = layout_from_gguf(model_path)
         except Exception as e:  # unreadable, truncated, or an arch we cannot bucket
             logger.debug("Tensor spill: cannot read layout from %s (%s)", model_path, e)
             layout = None
-        self._spill_layout_cache = (model_path, layout)
+        self._spill_layout_cache = (key, layout)
         return layout
 
     @staticmethod

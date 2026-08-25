@@ -753,3 +753,85 @@ def test_the_overhead_reserve_covers_the_measured_prefill_buffer():
     assert reserve > GIB, "1 GiB is the value that OOMed"
     # Bounded: erring high costs spill at 5.544 ms/GiB, so it is not free.
     assert reserve <= 2 * GIB
+
+
+# ------------------------------------------- excluded blocks and the pool budget
+
+
+# Just too little VRAM for the 64-block stub at 4096 ctx, so every block spills
+# and the planner reaches the all-of-them branch that emits the compact pattern.
+_NO_OVERHEAD = PlanOptions(overhead_bytes_per_device = 0)
+_ALL_SPILL_VRAM = 3 * GIB + 64 * MIB
+
+
+def _nextn_reader(nextn: int, total_blocks: int = 66):
+    """A GGUF whose block_count includes trailing nextn/MTP blocks.
+
+    llama.cpp reads block_count straight into n_layer_all
+    (llama-model.cpp:1206) and n_layer() subtracts n_layer_nextn
+    (llama-hparams.cpp:301-303), so the last `nextn` blk.<N> are the MTP head.
+    They carry real ffn_* weights, loaded when a draft is engaged
+    (models/qwen35moe.cpp, load_block_mtp).
+    """
+    fields = _shard_fields(
+        **{"llama.block_count": total_blocks, "llama.nextn_predict_layers": nextn}
+    )
+    return _StubReader(fields, _shard_tensors(range(total_blocks)))
+
+
+def test_a_nextn_gguf_is_marked_as_having_excluded_blocks():
+    with_mtp = _layout_from_reader(_nextn_reader(2))
+    assert with_mtp.complete
+    assert with_mtp.has_excluded_blocks is True
+    assert [b.index for b in with_mtp.blocks] == list(range(64))
+
+    plain = _layout_from_reader(_StubReader(_shard_fields(), _shard_tensors(range(64))))
+    assert plain.has_excluded_blocks is False
+
+
+def test_the_spill_pattern_never_reaches_an_excluded_mtp_block():
+    """Spilling every block used to emit the unbounded ^blk\\.\\d+\\. form, which
+    llama.cpp applies with std::regex_search (llama-model-loader.cpp:1182) --
+    so it also matched the trailing nextn blocks the layout deliberately
+    dropped. Those are real weights once a draft is loaded, and moving them
+    spills bytes that neither host_bytes nor the deficit ever counted, then
+    runs the draft FFN on the CPU backend.
+    """
+    layout = _layout_from_reader(_nextn_reader(2))
+    plan = plan_placement(layout, [_ALL_SPILL_VRAM], 256 * GIB, 4096, opts = _NO_OVERHEAD)
+    assert len(plan.spilled_blocks) == len(layout.blocks), "every block goes"
+    assert len(plan.ot_patterns) >= 1
+
+    pattern = re.compile(plan.ot_patterns[0])
+    assert pattern.search("blk.0.ffn_up.weight"), "a target block still spills"
+    assert pattern.search("blk.63.ffn_up.weight")
+    for excluded in ("blk.64.ffn_up.weight", "blk.65.ffn_down.weight"):
+        assert pattern.search(excluded) is None, excluded
+
+
+def test_a_gguf_without_excluded_blocks_keeps_the_compact_pattern():
+    """The bound is only paid where it buys something: with nothing excluded the
+    global form is still used, which is the shape the benchmarks measured."""
+    layout = _layout_from_reader(_StubReader(_shard_fields(), _shard_tensors(range(64))))
+    plan = plan_placement(layout, [_ALL_SPILL_VRAM], 256 * GIB, 4096, opts = _NO_OVERHEAD)
+    assert len(plan.spilled_blocks) == len(layout.blocks)
+    assert re.compile(plan.ot_patterns[0]).search("blk.999.ffn_up.weight")
+
+
+def test_extra_resident_bytes_are_charged_against_the_pooled_budget():
+    """GPU-resident bytes outside the layout -- a vision projector, an MTP draft
+    reserve -- have to shrink the budget, or the deficit comes out too small on
+    a load the caller already judged not to fit."""
+    layout = q4_layout()
+    base = PlanOptions(overhead_bytes_per_device = GIB)
+    charged = PlanOptions(overhead_bytes_per_device = GIB, extra_resident_bytes = 3 * GIB)
+
+    without = plan_placement(layout, [16 * GIB], 128 * GIB, 8192, opts = base)
+    with_extra = plan_placement(layout, [16 * GIB], 128 * GIB, 8192, opts = charged)
+
+    assert without.spills_anything and with_extra.spills_anything
+    assert len(with_extra.spilled_blocks) > len(without.spilled_blocks)
+    # And it reaches the context ladder too, not just the deficit.
+    assert max_context_for(
+        layout, [16 * GIB], spill_all_ffn = True, opts = charged
+    ) < max_context_for(layout, [16 * GIB], spill_all_ffn = True, opts = base)
