@@ -839,11 +839,10 @@ def _decode_audio_trim_by_timestamp(
         for resampled in resampler.resample(None):
             if _take(resampled):
                 break
-    # No sample landing inside the interval means no soundtrack, whether the track ended
-    # before it or starts after it. Returning silence instead would hand the model a
-    # fabricated track and hide the gap from the positional pairing in stage_h3_references.
-    # A track that merely runs out partway still copied something, so it keeps its tail
-    # silent rather than failing: embedded audio is optional here.
+    # Nothing copied means no soundtrack here, whether the track ended before the interval
+    # or starts after it. Silence instead would be a fabricated track, and would hide the
+    # gap from stage_h3_references' positional pairing. A track that merely runs out partway
+    # did copy something, so it keeps its silent tail rather than failing.
     if not copied_any:
         return None, None
     return output, sample_rate

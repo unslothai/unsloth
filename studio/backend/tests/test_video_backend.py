@@ -6303,10 +6303,9 @@ def test_h3_reference_video_trim_entirely_past_the_soundtrack_drops_the_audio():
 def test_h3_reference_video_trim_before_an_offset_soundtrack_drops_the_audio():
     """A track starting after the interval is absent from it, not silent within it.
 
-    The mirror of the test above: there the soundtrack ended before the trim, here it begins
-    after it. Both leave no sample inside the interval, so both must report no soundtrack.
-    Returning a silent waveform instead would pass the model a fabricated track and let the
-    positional pairing in stage_h3_references miss the gap.
+    The mirror of the test above, which ends its soundtrack before the trim. Neither leaves a
+    sample inside the interval, so both must report no soundtrack: a silent waveform would be
+    a fabricated track, and would hide the gap from stage_h3_references' positional pairing.
     """
     pytest.importorskip("av")
     import base64
