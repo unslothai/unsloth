@@ -209,7 +209,7 @@ def test_roster_bounds_the_whole_list_by_bytes(rag_conn):
         name = ("研究資料経営報告書四半期" * 12)[: inference._RAG_ROSTER_MAX_NAME_CHARS - 4]
         _doc(rag_conn, "project_p1", f"d{i}", f"{name}{i:03d}.pdf")
     out = _nudge({"project_id": "p1"})
-    roster = out[out.index("The attached documents are"):]
+    roster = out[out.index("The attached documents are") :]
     assert len(roster.encode("utf-8")) < inference._RAG_ROSTER_MAX_BYTES + 400
     assert ", and " in roster
 
