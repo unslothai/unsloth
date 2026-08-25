@@ -5061,15 +5061,20 @@ class VideoBackend:
         )
         try:
             worker.start()
-        except BaseException:
-            # The slot was reserved above and only a worker ever releases it. Without this the
-            # reservation outlives the request that made it: generate stays refused for the rest
-            # of the session, and liveness reports this backend as rendering to a watchdog that
-            # answers a busy backend by waiting longer rather than restarting it.
-            # Thread.start() raises RuntimeError only before the OS thread exists, but it also
-            # waits on the child, so a signal delivered there can unwind with the worker already
-            # running. Releasing on the token rather than the flag keeps both cases safe: that
-            # worker's own finalise finds the token retired and leaves the next job alone.
+        except RuntimeError:
+            # No thread was created, so nothing will ever release the slot reserved above, and
+            # the reservation would outlive the request that made it: generate stays refused
+            # for the rest of the session, and liveness reports this backend as rendering to a
+            # watchdog that answers a busy backend by waiting longer rather than restarting it.
+            #
+            # RuntimeError specifically, not BaseException: Thread.start() raises it only
+            # before the OS thread exists (thread.__init__ not called, started twice, or the
+            # interpreter refusing a new thread), but it then WAITS on the child, and a signal
+            # delivered in that wait unwinds with the worker already running. Rolling back
+            # there would retire a live render's token and drop its cancel handle: liveness
+            # would call it idle, cancel and unload could not reach it, and the next request
+            # could reserve the slot underneath it. A worker that exists finalises its own
+            # reservation, so leave it alone.
             self._finish_generate_job(
                 job_token = job_token,
                 cancel_event = cancel,
@@ -5098,11 +5103,17 @@ class VideoBackend:
         try:
             self._run_generate_body(cancel_event = cancel_event, job_token = job_token, **gen_kwargs)
         finally:
-            self._finish_generate_job(
-                job_token = job_token,
-                cancel_event = cancel_event,
-                error = "Video generation failed.",
-            )
+            if job_token is not None:
+                # Only a reservation can be left dangling, and only begin_generate makes one.
+                # A direct call holds nothing, so there is nothing here to release -- and
+                # firing anyway would match the same "unreserved" token the body already
+                # finalised with, replacing a completed clip or a cancellation with the
+                # generic failure below.
+                self._finish_generate_job(
+                    job_token = job_token,
+                    cancel_event = cancel_event,
+                    error = "Video generation failed.",
+                )
 
     def _run_generate_body(
         self,

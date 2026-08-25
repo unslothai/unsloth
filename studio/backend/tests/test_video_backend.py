@@ -8526,3 +8526,99 @@ def test_the_backstop_leaves_a_cancelled_job_reported_as_cancelled(
     # The backstop runs after the body returns; give it room to prove it changed nothing.
     time.sleep(0.1)
     assert backend.generate_progress()["error"] == VIDEO_CANCELLED_MSG
+
+
+def test_an_interrupted_spawn_leaves_a_live_worker_its_reservation(
+    fake_runtime, tmp_path, monkeypatch
+):
+    """Thread.start() creates the OS thread and then waits on it, so a signal delivered in
+    that wait unwinds with the worker already running. Rolling the reservation back there
+    would retire a live render's token: liveness would call it idle, cancel and unload could
+    not reach it, and the next request could reserve the slot underneath it."""
+    import core.inference.video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    monkeypatch.setattr(video_mod, "_backend", backend)
+
+    rendering = threading.Event()
+    release = threading.Event()
+
+    def _hold(*, cancel_event = None, **gen_kwargs):
+        rendering.set()
+        assert release.wait(10)
+        return _video_result("held")
+
+    monkeypatch.setattr(backend, "generate", _hold)
+    from core.inference import video_gallery
+
+    monkeypatch.setattr(video_gallery, "save", lambda data, meta: {"id": "held"})
+
+    real_start = threading.Thread.start
+
+    def _start_then_interrupt(self):
+        real_start(self)
+        raise KeyboardInterrupt("signal delivered while waiting on the child")
+
+    monkeypatch.setattr(threading.Thread, "start", _start_then_interrupt)
+
+    with pytest.raises(KeyboardInterrupt):
+        backend.begin_generate(prompt = "a clip")
+    assert rendering.wait(10), "the worker never started"
+
+    assert video_mod.generation_in_flight() is True, (
+        "the interrupted spawn retired a running render's reservation, so liveness reports "
+        "this backend as idle while it renders"
+    )
+    assert backend._active_generate_cancel is not None, "the running job lost its cancel handle"
+    monkeypatch.setattr(threading.Thread, "start", real_start)
+    with pytest.raises(RuntimeError, match = "already in progress"):
+        backend.begin_generate(prompt = "second")
+
+    release.set()
+    assert _until(lambda: not video_mod.generation_in_flight())
+    assert backend.generate_progress()["phase"] == "completed"
+
+
+def test_a_direct_worker_call_keeps_the_outcome_it_recorded(fake_runtime, tmp_path, monkeypatch):
+    """_run_generate is callable without a reservation. Such a caller finalises with the same
+    "unreserved" token the backstop would carry, so a backstop that fired here would match a
+    second time and replace the recorded outcome with the generic failure."""
+    import core.inference.video as video_mod
+    from core.inference import video_gallery
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    monkeypatch.setattr(video_mod, "_backend", backend)
+    monkeypatch.setattr(video_gallery, "save", lambda data, meta: {"id": "direct"})
+    monkeypatch.setattr(backend, "generate", lambda **kw: _video_result("direct"))
+
+    backend._run_generate(cancel_event = threading.Event(), prompt = "a clip")
+
+    progress = backend.generate_progress()
+    assert (
+        progress["phase"] == "completed"
+    ), f"a direct call recorded {progress['phase']!r}; the backstop overwrote its result"
+    assert progress["video"]["id"] == "direct"
+
+
+def test_a_direct_worker_call_keeps_its_cancellation(fake_runtime, tmp_path, monkeypatch):
+    """Same path, the outcome that matters most: a cancellation carries a sentinel the route
+    maps to its own status, and turning it into a generic failure loses that."""
+    import core.inference.video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    monkeypatch.setattr(video_mod, "_backend", backend)
+
+    def _cancelled(**kwargs):
+        raise RuntimeError(VIDEO_CANCELLED_MSG)
+
+    monkeypatch.setattr(backend, "generate", _cancelled)
+    backend._run_generate(cancel_event = threading.Event(), prompt = "a clip")
+
+    progress = backend.generate_progress()
+    assert progress["phase"] == "failed"
+    assert (
+        progress["error"] == VIDEO_CANCELLED_MSG
+    ), f"a direct call reported {progress['error']!r} instead of the cancellation sentinel"
