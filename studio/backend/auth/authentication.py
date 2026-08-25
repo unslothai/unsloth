@@ -3,15 +3,17 @@
 
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.security.utils import get_authorization_scheme_param
 import jwt
 from starlette.concurrency import run_in_threadpool
 
 from .storage import (
     API_KEY_PREFIX,
+    DEFAULT_ADMIN_USERNAME,
     credential_generation,
     get_jwt_secret,
     get_user_and_secret,
@@ -25,7 +27,167 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 REFRESH_TOKEN_EXPIRE_DAYS = 7
 
-security = HTTPBearer()  # Reads Authorization: Bearer <token>
+# internal schemes, never sent by a client: no token at all, and a token to ignore if unusable
+KEYLESS_SCHEME = "Keyless"
+KEYLESS_FALLBACK_SCHEME = "KeylessBearer"
+_KEYLESS_CREDENTIALS = HTTPAuthorizationCredentials(
+    scheme = KEYLESS_SCHEME,
+    credentials = "",
+)
+
+
+def is_keyless(credentials: Optional[HTTPAuthorizationCredentials]) -> bool:
+    """True when the keyless API access setting had a hand in admitting this caller."""
+    return credentials is not None and credentials.scheme in (
+        KEYLESS_SCHEME,
+        KEYLESS_FALLBACK_SCHEME,
+    )
+
+
+def _names_a_session(token: str) -> bool:
+    """Whether this bearer claims a Studio sign-in this install actually knows.
+
+    A session token stays authoritative even under keyless API access: letting an
+    expired one through would leave the app running as the admin instead of prompting
+    for a sign-in. The subject is confirmed against storage because the claim itself is
+    unverified here, so a token merely shaped like a JWT -- which is a legal value for
+    the ``api_key`` the OpenAI SDKs always send -- is treated as the credential it is.
+    """
+    subject = _decode_subject_without_verification(token)
+    return subject is not None and get_user_and_secret(subject) is not None
+
+
+def bearer_names_a_session(token: str) -> bool:
+    """Public form of the session check, for callers that only have the raw token."""
+    return _names_a_session(token)
+
+
+def bearer_is_valid_api_key(token: str) -> bool:
+    """Whether this bearer is an sk-unsloth key this install still accepts.
+
+    Such a key authenticates as itself even while keyless API access is on, so the
+    callers below must not treat it as a credential the setting had to stand in for.
+    Asked ahead of the real validation, so it leaves ``last_used_at`` to that one.
+    """
+    return (
+        token.startswith(API_KEY_PREFIX)
+        and validate_api_key_with_credential(token, touch = False) is not None
+    )
+
+
+def admitted_without_credential(credentials: Optional[HTTPAuthorizationCredentials]) -> bool:
+    """True when the keyless setting alone let this caller in.
+
+    Narrower than ``is_keyless``, which also covers a working API key that happened
+    to arrive while the setting was on. Routes whose effect outlives the setting need
+    this stricter form: turning keyless access back off has to undo what it allowed.
+    """
+    if credentials is None:
+        return False
+    if credentials.scheme == KEYLESS_SCHEME:
+        return True
+    return credentials.scheme == KEYLESS_FALLBACK_SCHEME
+
+
+def _request_would_use_keyless(request: Any) -> bool:
+    """Classify a request before the security dependency has recorded its result."""
+    from utils.keyless_api_access import APPROVED_DUMMY_BEARERS, keyless_request_allowed
+
+    if not keyless_request_allowed(request):
+        return False
+    try:
+        raw_headers = getattr(request, "scope", {}).get("headers") or ()
+        values = [
+            bytes(value).decode("latin-1")
+            for name, value in raw_headers
+            if bytes(name).lower() == b"authorization"
+        ]
+    except Exception:
+        return False
+    if not values:
+        return True
+    if len(values) != 1:
+        return False
+    scheme, token = get_authorization_scheme_param(values[0])
+    return scheme.lower() == "bearer" and token in APPROVED_DUMMY_BEARERS
+
+
+def request_admitted_without_credential(request: Request) -> bool:
+    """``admitted_without_credential`` for a caller that holds only the request.
+
+    Costs a key validation, so ask it late: past the cheap disqualifiers, next to the
+    effect being guarded.
+    """
+    from utils.keyless_api_access import request_was_admitted_keyless
+
+    recorded = request_was_admitted_keyless(request)
+    return _request_would_use_keyless(request) if recorded is None else recorded
+
+
+def admitted_without_session(request: Any) -> bool:
+    """True when keyless API access lets this request through with no Studio sign-in.
+
+    The single predicate behind both the auth dependency below and the route-level
+    checks that ask whether a caller is the Unsloth UI or a programmatic client.
+    """
+    from utils.keyless_api_access import request_was_admitted_keyless
+
+    recorded = request_was_admitted_keyless(request)
+    return _request_would_use_keyless(request) if recorded is None else recorded
+
+
+class _BearerOrKeyless(HTTPBearer):
+    """Read ``Authorization: Bearer <token>``, admitting a caller without one.
+
+    When the setting is off this behaves exactly like ``HTTPBearer``, errors included.
+    """
+
+    async def __call__(self, request: Request) -> Optional[HTTPAuthorizationCredentials]:
+        from utils.keyless_api_access import (
+            APPROVED_DUMMY_BEARERS,
+            keyless_request_allowed,
+            mark_keyless_admission,
+            request_was_admitted_keyless,
+        )
+
+        raw_headers = getattr(request, "scope", {}).get("headers") or ()
+        authorization = [
+            bytes(value).decode("latin-1")
+            for name, value in raw_headers
+            if bytes(name).lower() == b"authorization"
+        ]
+        if len(authorization) > 1:
+            mark_keyless_admission(request, False)
+            raise HTTPException(
+                status_code = status.HTTP_403_FORBIDDEN,
+                detail = "Invalid authentication credentials",
+            )
+        header = authorization[0] if authorization else ""
+        scheme, token = get_authorization_scheme_param(header)
+        usable_bearer = bool(scheme.lower() == "bearer" and token)
+        recorded = request_was_admitted_keyless(request)
+        eligible = (
+            await run_in_threadpool(keyless_request_allowed, request)
+            if recorded is None
+            else recorded
+        )
+        if not authorization and eligible:
+            mark_keyless_admission(request, True)
+            return _KEYLESS_CREDENTIALS
+        dummy = eligible and usable_bearer and token in APPROVED_DUMMY_BEARERS
+        mark_keyless_admission(request, dummy)
+        if dummy:
+            return HTTPAuthorizationCredentials(
+                scheme = KEYLESS_FALLBACK_SCHEME,
+                credentials = token,
+            )
+        if usable_bearer:
+            return HTTPAuthorizationCredentials(scheme = scheme, credentials = token)
+        return await super().__call__(request)
+
+
+# scheme_name pinned so the OpenAPI securitySchemes entry keeps its published name
+security = _BearerOrKeyless(scheme_name = "HTTPBearer")  # Reads Authorization: Bearer <token>
 
 
 def _get_secret_for_subject(subject: str) -> str:
@@ -182,9 +344,47 @@ async def authenticated_via_api_key(
     """True when the caller used an sk-unsloth API key, not a UI session JWT.
 
     Lets routes treat programmatic API callers differently from the Unsloth UI
-    (e.g. refuse a teardown the UI would allow).
+    (e.g. refuse a teardown the UI would allow). A keyless caller counts as an API
+    caller too: it is the same programmatic surface, only without the key, so every
+    guard an API key faces still applies to it.
     """
+    if is_keyless(credentials):
+        return True
     return bool(credentials and credentials.credentials.startswith(API_KEY_PREFIX))
+
+
+async def credentials_for_token(
+    request: Any, token: Optional[str]
+) -> Optional[HTTPAuthorizationCredentials]:
+    """What ``security`` would resolve for a bearer the route read for itself.
+
+    Routes that take the token from somewhere the dependency cannot see, such as the
+    ``?token=`` query param an ``<img src>`` has to use, would otherwise miss keyless
+    API access entirely and answer 401 on a scope that covers them. None means no
+    usable credential and no setting to stand in for one.
+    """
+    from utils.keyless_api_access import APPROVED_DUMMY_BEARERS, keyless_request_allowed
+
+    # A real token is authoritative and never needs keyless classification. The
+    # remaining settings/listener reads use SQLite and DNS, so keep them off the
+    # event loop just like the normal credential lookup path.
+    if token and token not in APPROVED_DUMMY_BEARERS:
+        return HTTPAuthorizationCredentials(scheme = "Bearer", credentials = token)
+    eligible = await run_in_threadpool(keyless_request_allowed, request)
+    keyless = eligible and (token is None or token in APPROVED_DUMMY_BEARERS)
+    if token:
+        return HTTPAuthorizationCredentials(
+            scheme = KEYLESS_FALLBACK_SCHEME if keyless else "Bearer",
+            credentials = token,
+        )
+    return _KEYLESS_CREDENTIALS if keyless else None
+
+
+async def authenticated_without_credential(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+) -> bool:
+    """Dependency form of ``admitted_without_credential``."""
+    return admitted_without_credential(credentials)
 
 
 def require_ui_session_for_local_commands(via_api_key: bool) -> None:
@@ -250,6 +450,23 @@ def _invalid_api_key_detail(token: str) -> str:
     return "Invalid or expired API key"
 
 
+def _admin_credential(*, allow_password_change: bool) -> Tuple[str, Optional[str]]:
+    """Resolve the local admin for a caller admitted by the keyless API access setting."""
+    record = get_user_and_secret(DEFAULT_ADMIN_USERNAME)
+    if record is None:
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail = "Invalid or expired token",
+        )
+    _salt, _pwd_hash, jwt_secret, must_change_password = record
+    if must_change_password and not allow_password_change:
+        raise HTTPException(
+            status_code = status.HTTP_403_FORBIDDEN,
+            detail = "Password change required",
+        )
+    return DEFAULT_ADMIN_USERNAME, credential_generation(jwt_secret)
+
+
 async def _get_current_credential(
     credentials: HTTPAuthorizationCredentials, *, allow_password_change: bool
 ) -> Tuple[str, Optional[str]]:
@@ -261,6 +478,22 @@ async def _get_current_credential(
 
     Credential reads run in the threadpool so stalled SQLite cannot block the event loop.
     """
+    if credentials.scheme == KEYLESS_SCHEME:
+        return await run_in_threadpool(
+            _admin_credential, allow_password_change = allow_password_change
+        )
+
+    if credentials.scheme == KEYLESS_FALLBACK_SCHEME:
+        from utils.keyless_api_access import APPROVED_DUMMY_BEARERS
+        if credentials.credentials not in APPROVED_DUMMY_BEARERS:
+            raise HTTPException(
+                status_code = status.HTTP_401_UNAUTHORIZED,
+                detail = "Invalid authentication credentials",
+            )
+        return await run_in_threadpool(
+            _admin_credential, allow_password_change = allow_password_change
+        )
+
     token = credentials.credentials
 
     # --- API key path (sk-unsloth-...) ---

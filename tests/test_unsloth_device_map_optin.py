@@ -22,7 +22,8 @@ import types
 import pytest
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-LOADER_UTILS = os.path.join(HERE, "unsloth", "models", "loader_utils.py")
+MODELS = os.path.join(HERE, "unsloth", "models")
+LOADER_UTILS = os.path.join(MODELS, "loader_utils.py")
 _SRC = open(LOADER_UTILS, encoding = "utf-8").read()
 _SKIP_MODULES = ["lm_head", "vision_tower", "audio_tower"]
 
@@ -124,22 +125,51 @@ def test_an_explicit_dict_is_returned_untouched():
     assert ns["resolve_unsloth_device_map"](explicit, "some/model") is explicit
 
 
-def test_the_env_var_only_upgrades_the_default(monkeypatch):
-    """UNSLOTH_AUTO_DEVICE_MAP is an operator switch, not a licence to override a
-    placement the caller chose. "auto" and a dict must survive it.
-
-    So must a "sequential" the caller typed out, which is why the default carries a marker:
-    the two are the same string, and the switch is only entitled to the one nobody chose.
+@pytest.mark.parametrize("switch", [None, "1"])
+def test_only_the_default_is_ever_upgraded(monkeypatch, switch):
+    """Planning is what a caller who chose nothing gets, never a licence to override one
+    they did choose. "auto", a dict, and a "sequential" they typed out all survive it --
+    hence the marker, since the last of those is the same string as the default.
     """
     ns = _load()
-    monkeypatch.setenv("UNSLOTH_AUTO_DEVICE_MAP", "1")
+    if switch is None:
+        monkeypatch.delenv("UNSLOTH_AUTO_DEVICE_MAP", raising = False)
+    else:
+        monkeypatch.setenv("UNSLOTH_AUTO_DEVICE_MAP", switch)
     assert ns["requested_device_map"](ns["DEFAULT_DEVICE_MAP"]) == "unsloth"
     assert ns["requested_device_map"]("sequential") == "sequential"
     assert ns["requested_device_map"]("auto") == "auto"
     assert ns["requested_device_map"]("balanced") == "balanced"
     assert ns["requested_device_map"]({"": 0}) == {"": 0}
-    monkeypatch.delenv("UNSLOTH_AUTO_DEVICE_MAP")
+
+
+def test_the_env_var_can_turn_planning_back_off(monkeypatch):
+    """The multi-GPU operator who wants accelerate's greedy fill back needs a switch that
+    does not require editing call sites, so `0` has to reach the default itself."""
+    ns = _load()
+    monkeypatch.setenv("UNSLOTH_AUTO_DEVICE_MAP", "0")
     assert ns["requested_device_map"](ns["DEFAULT_DEVICE_MAP"]) == "sequential"
+    # Still a plain "sequential" downstream, marker and all.
+    assert ns["requested_device_map"](ns["DEFAULT_DEVICE_MAP"]) == ns["DEFAULT_DEVICE_MAP"]
+
+
+def test_an_unset_switch_plans_so_a_bare_from_pretrained_needs_no_device_map(monkeypatch):
+    """The reason the default flipped: a notebook should not have to pass
+    `device_map = "unsloth"` to get the placement that fits."""
+    monkeypatch.delenv("UNSLOTH_AUTO_DEVICE_MAP", raising = False)
+    planned = {"model.embed_tokens": 0, "lm_head": 1}
+    calls = []
+    ns = _load(
+        devices = 2,
+        free = {0: 16 * 2**30, 1: 16 * 2**30},
+        planner = lambda name, **kw: calls.append(name) or _Plan(planned),
+    )
+    resolved = ns["resolve_unsloth_device_map"](
+        ns["requested_device_map"](ns["DEFAULT_DEVICE_MAP"]),
+        "unsloth/Muse-Glimmer-30B-unsloth-bnb-4bit",
+    )
+    assert resolved == planned
+    assert calls == ["unsloth/Muse-Glimmer-30B-unsloth-bnb-4bit"]
 
 
 # ------------------------------------------------------- where planning cannot apply
@@ -616,3 +646,277 @@ def test_the_diffusion_plan_is_sized_against_the_config_the_load_applies():
             assert (
                 passed.get("quantization_config") == "qcfg"
             ), f"diffusion.py:{call.lineno} plans without the skip list the load applies"
+
+
+# --------------------------------------------------------------------------------------
+# Planning by default reaches paths the opt-in never did.
+# --------------------------------------------------------------------------------------
+
+
+def _helpers():
+    """`planner_kwargs_with_max_memory` / `planner_hub_kwargs`, without importing torch."""
+    src = open(LOADER_UTILS, encoding = "utf-8").read()
+    ns = {"os": os}
+    for node in ast.parse(src).body:
+        keep = (
+            isinstance(node, ast.FunctionDef)
+            and node.name
+            in (
+                "planner_kwargs_with_max_memory",
+                "planner_hub_kwargs",
+                "planner_config_overrides",
+                "_get_effective_local_files_only",
+                "_env_says_offline",
+            )
+        ) or (
+            isinstance(node, ast.Assign)
+            and getattr(node.targets[0], "id", "").startswith("_OFFLINE_ENV_")
+        )
+        if keep:
+            exec(ast.get_source_segment(src, node), ns)
+    return ns
+
+
+def test_a_transformers_max_memory_reaches_the_planner():
+    """Before the default flipped, `max_memory` bounded placement because transformers saw
+    a string device_map. It only consults it then -- `_get_device_map` gates the whole
+    `infer_auto_device_map` branch on `isinstance(device_map, str)` -- so once a plan
+    returns a dict the budget is dropped and the map can exceed the caps or use a card the
+    caller withheld."""
+    ns = _helpers()
+    merged = ns["planner_kwargs_with_max_memory"](None, {"max_memory": {0: "12GiB"}})
+    assert merged["max_memory"] == {0: "12GiB"}
+
+
+def test_an_explicit_planner_max_memory_wins_over_the_loader_one():
+    ns = _helpers()
+    merged = ns["planner_kwargs_with_max_memory"](
+        {"max_memory": {0: "4GiB"}}, {"max_memory": {0: "12GiB"}}
+    )
+    assert merged["max_memory"] == {0: "4GiB"}
+
+
+def test_no_max_memory_leaves_the_planner_kwargs_untouched():
+    ns = _helpers()
+    assert ns["planner_kwargs_with_max_memory"](None, {}) is None
+    same = {"retained_rows": 8}
+    assert ns["planner_kwargs_with_max_memory"](same, {"token": "x"}) is same
+
+
+def test_the_planner_is_told_where_the_hub_is(monkeypatch):
+    """It resolves the config a second time from `model_name`. Without these it can reach
+    the network behind `local_files_only`, or miss a model that only exists in the caller's
+    cache and lose a plan the load needed."""
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    ns = _helpers()
+    assert ns["planner_hub_kwargs"]({"cache_dir": "/models", "local_files_only": True}) == {
+        "cache_dir": "/models",
+        "local_files_only": True,
+    }
+    assert ns["planner_hub_kwargs"]({}) == {}
+    assert ns["planner_hub_kwargs"]({"local_files_only": False}) == {}
+
+
+@pytest.mark.parametrize("name", ["vision.py", "llama.py", "diffusion.py"])
+def test_every_leaf_planner_call_forwards_the_budget_and_the_hub(name):
+    """A leaf that misses either one silently plans against the wrong facts."""
+    source = open(os.path.join(MODELS, name), encoding = "utf-8").read()
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        if getattr(node.func, "id", None) != "resolve_unsloth_device_map":
+            continue
+        rendered = ast.unparse(node)
+        assert (
+            "planner_kwargs_with_max_memory" in rendered
+        ), f"{name}:{node.lineno} plans without the caller's max_memory"
+        assert (
+            "planner_hub_kwargs" in rendered
+        ), f"{name}:{node.lineno} plans without the caller's cache_dir/local_files_only"
+        assert (
+            "planner_config_overrides" in rendered
+        ), f"{name}:{node.lineno} plans without the caller's config overrides"
+        return
+    raise AssertionError(f"no resolve_unsloth_device_map call in {name}")
+
+
+def test_the_wrapper_tells_the_leaf_the_config_was_the_callers():
+    """FastModel pops `config` out of kwargs at loader.py:1248 and forwards it as
+    `auto_config`, so by the time FastBaseModel looks, its own `kwargs.pop("config")` is
+    None and a veto keyed on that alone never fires on the path almost everyone uses.
+    The flag travels explicitly, the way `text_only_decoder` already does for the same
+    reason: `auto_config` no longer describing the repo cannot be inferred downstream."""
+    loader = open(os.path.join(MODELS, "loader.py"), encoding = "utf-8").read()
+    assert "auto_config_from_caller = user_config is not None" in loader
+
+    vision = open(os.path.join(MODELS, "vision.py"), encoding = "utf-8").read()
+    args = [
+        a.arg
+        for node in ast.walk(ast.parse(vision))
+        if isinstance(node, ast.FunctionDef) and node.name == "from_pretrained"
+        for a in list(node.args.args) + list(node.args.kwonlyargs)
+    ]
+    assert "auto_config_from_caller" in args, "the leaf cannot see that the config was theirs"
+    assert "or auto_config_from_caller" in vision
+
+
+def test_a_resize_declines_the_automatic_offload():
+    """`resize_token_embeddings` replaces the embedding module, and forward hooks do not
+    travel to the replacement, so an offload installed during the load would leave a CPU
+    embedding feeding a GPU decoder. An explicit request is left alone."""
+    loader = open(os.path.join(MODELS, "loader.py"), encoding = "utf-8").read()
+    assert "resize_model_vocab is not None" in loader
+    assert "and offload_embedding == OFFLOAD_EMBEDDING_AUTO" in loader
+
+
+def test_a_caller_supplied_config_declines_planning():
+    """The weights load against their config; the planner rebuilds the repo's. Same class,
+    different `num_hidden_layers` or `vocab_size`, and the map omits blocks or under-budgets
+    weights -- which the class comparison cannot see."""
+    source = open(os.path.join(MODELS, "vision.py"), encoding = "utf-8").read()
+    assert "user_config is not None" in source
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If):
+            continue
+        rendered = ast.unparse(node)
+        if "user_config is not None" in rendered and "_planner_skip_reason" in rendered:
+            return
+    raise AssertionError("vision.py plans without vetoing a caller-supplied config")
+
+
+def test_the_optimized_path_says_so_when_it_drops_an_offload_request():
+    """`FastLanguageModel` accepts `offload_embedding`, but the optimized architectures
+    take a path that has never had the parameter, so the request went nowhere in silence.
+    The `"auto"` default stays quiet, since off is a decision it is entitled to make."""
+    source = open(os.path.join(MODELS, "loader.py"), encoding = "utf-8").read()
+    assert "does not support it" in source
+    assert "offload_embedding != OFFLOAD_EMBEDDING_AUTO" in source
+
+
+def test_the_auto_mode_is_recognised_by_value_everywhere():
+    """`_resolve_offload_embedding` asks `== OFFLOAD_EMBEDDING_AUTO`, so a caller who
+    hands in an equal but non-interned `"auto"` (one read out of a JSON config, say) is
+    in automatic mode as far as the resolver is concerned. Any guard elsewhere that asks
+    `is` disagrees with it: the resize guard would leave the offload on and the optimized
+    path would print a notice for a request nobody made. Same question, same operator."""
+    loader = open(os.path.join(MODELS, "loader.py"), encoding = "utf-8").read()
+    for node in ast.walk(ast.parse(loader)):
+        if not isinstance(node, ast.Compare):
+            continue
+        rendered = ast.unparse(node)
+        if "OFFLOAD_EMBEDDING_AUTO" not in rendered:
+            continue
+        assert not any(
+            isinstance(op, (ast.Is, ast.IsNot)) for op in node.ops
+        ), f"loader.py:{node.lineno} compares the auto mode by identity: {rendered}"
+
+
+def test_the_optimized_path_declines_a_caller_supplied_config():
+    """FastLanguageModel leaves `config` in kwargs, so the optimized Llama leaf pops its
+    own `user_config` and loads the weights against it while the planner rebuilds the
+    repo's from `model_name`. A caller who changed `num_hidden_layers` or `vocab_size`
+    would get a map for a different model, so the plan is declined rather than guessed."""
+    llama = open(os.path.join(MODELS, "llama.py"), encoding = "utf-8").read()
+    tree = ast.parse(llama)
+    body = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and ast.unparse(node) == "_planner_skip_reason = None":
+            body = node
+    assert body is not None, "llama.py no longer starts a planner skip reason"
+
+    assert "if user_config is not None:" in llama
+    assert (
+        "a caller-supplied config may not describe the repo the planner rebuilds" in llama
+    ), "the optimized path plans against a config the load does not use"
+
+    # The veto has to come first, or a later branch that finds no other reason overwrites it.
+    veto = llama.index("a caller-supplied config may not describe the repo the planner rebuilds")
+    num_labels = llama.index("num_labels loads a task head the repo config does not describe")
+    assert veto < num_labels, "the caller-config veto is set after another branch clears it"
+    assert "if _planner_skip_reason is None and num_labels is not None:" in llama
+
+
+def test_the_diffusion_leaf_plans_with_the_locality_the_load_uses():
+    """diffusion.py pops `local_files_only` off kwargs and resolves the offline env vars
+    into it before the load, so handing the planner the raw kwargs would tell it nothing.
+    It gets the resolved value, or an offline load reaches the Hub behind the caller's
+    back and, when that lookup fails, silently loses the split the model needs to fit."""
+    source = open(os.path.join(MODELS, "diffusion.py"), encoding = "utf-8").read()
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        if getattr(node.func, "id", None) != "resolve_unsloth_device_map":
+            continue
+        rendered = ast.unparse(node)
+        assert (
+            "local_files_only" in rendered and "cache_dir" in rendered
+        ), f"diffusion.py:{node.lineno} plans without the locality the load resolved"
+        return
+    raise AssertionError("no resolve_unsloth_device_map call in diffusion.py")
+
+
+def test_a_code_revision_reaches_the_planner():
+    """`trust_remote_code` makes resolving the model class a second Hub lookup, and the
+    planner honours `code_revision` for it. The load already gets it through kwargs, so
+    leaving it out plans one revision of the remote code and loads another."""
+    ns = _helpers()
+    assert ns["planner_hub_kwargs"]({"code_revision": "abc123"}) == {"code_revision": "abc123"}
+    assert "code_revision" not in ns["planner_hub_kwargs"]({})
+    assert ns["planner_hub_kwargs"]({"code_revision": None}) == {}
+
+
+def test_a_max_position_embeddings_override_reaches_the_planner():
+    """The planner rebuilds the repo config from a name, so an override that lives only in
+    the caller's kwargs never reaches it. Raising it on an architecture with learned
+    position embeddings makes the planned tensors smaller than the materialized ones, and
+    a map that fitted on paper OOMs."""
+    ns = _helpers()
+    assert ns["planner_config_overrides"]({"max_position_embeddings": 8192}) == {
+        "max_position_embeddings": 8192,
+    }
+    assert ns["planner_config_overrides"]({}) == {}
+    assert ns["planner_config_overrides"](None) == {}
+    assert ns["planner_config_overrides"]({"max_position_embeddings": None}) == {}
+
+
+def test_the_diffusion_leaf_plans_with_the_code_revision_too():
+    """Same reason as its locality: this leaf builds the helper's input itself, so a key
+    added to the helper does not reach it unless it is named here."""
+    source = open(os.path.join(MODELS, "diffusion.py"), encoding = "utf-8").read()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "planner_hub_kwargs":
+            assert "code_revision" in ast.unparse(
+                node
+            ), "the diffusion leaf plans against a different revision of the remote code"
+            return
+    raise AssertionError("no planner_hub_kwargs call in diffusion.py")
+
+
+def test_an_unresolvable_explicit_model_class_declines_planning():
+    """`resolve_model_class` reads `auto_model._model_mapping`, which a concrete
+    `PreTrainedModel` subclass does not have, so it returns None and
+    `planner_class_mismatch_reason` reads unknown as compatible. The planner would then
+    build whatever the repo config selects while the load builds the caller's class."""
+    vision = open(os.path.join(MODELS, "vision.py"), encoding = "utf-8").read()
+    assert 'getattr(auto_model, "_model_mapping", None) is None' in vision
+    assert "an explicit model class has no auto mapping" in vision
+
+    # Ahead of the class comparison it backstops, or that one returns None and the
+    # caller-config branch below claims the slot with the wrong reason.
+    veto = vision.index("an explicit model class has no auto mapping")
+    caller = vision.index("a caller-supplied config may not describe the repo the planner")
+    assert veto < caller, "the unresolvable-class veto never gets to run"
+
+
+def test_an_auto_class_still_plans():
+    """The veto is keyed on the absence of `_model_mapping`, which every Auto class has,
+    so a remote-code checkpoint whose config simply is not in the mapping keeps its plan.
+    Declining on `model_class is None` alone would have turned planning off for those."""
+    import ast as _ast
+
+    vision = open(os.path.join(MODELS, "vision.py"), encoding = "utf-8").read()
+    idx = vision.index("an explicit model class has no auto mapping")
+    guard = vision[vision.rindex("if (", 0, idx) : idx]
+    assert "_model_mapping" in guard, "the veto is not keyed on the class being concrete"
