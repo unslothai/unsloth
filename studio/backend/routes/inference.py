@@ -3919,14 +3919,17 @@ def _full_access_tip(code_tools: list[str]) -> str:
 # Armed Deep Research. Stated outright because the schema alone does not move a small model
 # off its prior: asked about 2026 it answers from 2024 training data with no sign it is
 # stale, and the base nudge's "otherwise answer normally" reads as permission to do so.
+# The exception is worded without "greetings" on purpose: with that word in the prompt a
+# 1.7B model opens a fresh chat by greeting the user instead of researching the question
+# (0/4 first-turn calls, against 4/4 with this wording).
 _TOOL_RESEARCH_TIP = (
     "Deep Research is turned on for this conversation. For any question about the world "
     "-- facts, events, laws, products, papers, prices, comparisons, anything that may have "
     "changed since your training -- call deep_research instead of answering from memory, "
     "even when you think you know the answer: the user asked for a researched, cited "
-    "report and your knowledge has a cutoff. Reply directly only to greetings, small talk, "
-    "questions about yourself, and requests to write or transform text the user supplied. "
-    "If a topic is too vague to research well, ask one short clarifying question first."
+    "report and your knowledge has a cutoff. If a message has no question in it, such as a "
+    "hello, a thanks, or a remark about you, reply normally. If a topic is too vague to "
+    "research well, ask one short clarifying question first."
 )
 
 _TOOL_ARTIFACT_TIP = (
