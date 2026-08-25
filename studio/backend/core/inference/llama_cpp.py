@@ -61,6 +61,7 @@ from core.inference.context_window import (
 )
 from core.inference.stream_errors import stream_error_from_chunk
 from core.inference.llama_server_args import (
+    _DEVICE_FLAGS,
     _GPU_LAYER_FLAGS,
     _LAYER_OFFLOAD_FLAGS,
     _MOE_OFFLOAD_FLAGS,
@@ -4814,6 +4815,10 @@ class LlamaCppBackend:
         # Relative model share per GPU (--tensor-split), in GPU order; None =
         # default (llama.cpp splits by free VRAM).
         self._tensor_split: Optional[List[float]] = None
+        # Tokens the tensor-spill plan added to this argv, recorded so any retry
+        # that re-places the model can take them back out with _without_subsequence.
+        # Empty whenever the planner abstained, which is the default.
+        self._spill_plan_flags: List[str] = []
         # Ratio the arch gate dropped from this argv, so the duplicate-load check
         # knows the live server already IS this request normalized (#7624).
         self._arch_gate_dropped_tensor_split: Optional[tuple[float, ...]] = None
@@ -11332,6 +11337,7 @@ class LlamaCppBackend:
         self._diffusion_requested_ngl = _diffusion_manual_ngl(gpu_memory_mode, gpu_layers)
         self._n_cpu_moe = 0
         self._tensor_split = None
+        self._spill_plan_flags = []
         # Diffusion is never tensor-parallel; clear any state left by a prior TP
         # chat load (load_model phase 1 only kills the process, it doesn't run
         # the unload reset) so /status doesn't misreport TP and an identical
@@ -16153,6 +16159,13 @@ class LlamaCppBackend:
                 # from the default unless the verdict is recorded on its own.
                 # Bound before the try for the same reason as _detected_gpus.
                 _placement_verdict_partial = False
+                # Sized inputs for the tensor-spill planner, or None when the fit
+                # never got far enough to price them. Bound before the try for the
+                # same reason as _placement_verdict_partial: the except arm below
+                # restores use_fit=True without rebinding kv_cache_bytes, so reading
+                # that directly from the spill arm would be an UnboundLocalError on
+                # exactly the path that reaches it most often.
+                _spill_inputs: Optional[dict] = None
                 total_by_idx: dict[int, int] = {}
                 model_size = None  # set in the fit try; used by the APU RAM guard
                 # Layer-fallback min GPUs; raised below on a tensor downgrade. Bound
@@ -18121,6 +18134,26 @@ class LlamaCppBackend:
                         )
 
                     kv_cache_bytes = _kv_bytes(effective_ctx)
+                    # Everything the spill planner needs, captured where it is
+                    # already evaluated. Plain ints, so the arm below reads a
+                    # snapshot rather than re-deriving anything.
+                    _spill_inputs = {
+                        "model_size": model_size,
+                        "kv_cache_bytes": kv_cache_bytes,
+                        "gpus": list(gpus or ()),
+                        "gpu_indices": gpu_indices,
+                        "soft_overhead": _soft_overhead,
+                        # The planner reads the real tensor table rather than a
+                        # bucket total, so it can spill the MINIMUM set of blocks
+                        # instead of the whole FFN.
+                        "model_path": model_path,
+                        "n_ctx": effective_ctx,
+                        # An iGPU or APU reports host RAM as VRAM. Crediting it and
+                        # then "spilling" into the same pool would count one memory
+                        # twice, which is the bug class this whole review has been
+                        # about.
+                        "shared_gpu_ids": set(_shared_gpu_ids or ()),
+                    }
                     mmproj_note = (
                         f"mmproj: {mmproj_size / (1024**3):.1f} GB, " if mmproj_size else ""
                     )
@@ -18469,7 +18502,44 @@ class LlamaCppBackend:
                         # don't report it as active via /status and /load.
                         self._tensor_split = None
                 elif use_fit:
-                    cmd.extend(["--fit", "on"])
+                    # Studio could not prove a fit, which is where it hands the
+                    # placement to llama.cpp's fitter. The fitter's dense path
+                    # fills "back to front with dense layers" (common/fit.cpp:402),
+                    # i.e. WHOLE layers, and a layer takes its KV cache with it,
+                    # because the cache buffer comes from model.dev_layer(il)
+                    # (llama-kv-cache.cpp:215). Spilling weight TENSORS instead
+                    # leaves dev_layer() on the GPU and the cache resident.
+                    # Measured on a 27B at 128K: 13.63 t/s with the cache resident
+                    # against 1.03 t/s once it is evicted.
+                    _spill = self._planned_tensor_spill(
+                        _spill_inputs,
+                        extra_args = extra_args,
+                        env = os.environ,
+                    )
+                    if _spill:
+                        # One flag per pattern: llama-server ACCUMULATES repeated
+                        # -ot (common/arg.cpp:2657 push_backs into the shared
+                        # override vector). Do not join with ";" -- that is
+                        # llama-bench's separator; llama-server splits on ",".
+                        _ot_tokens = [tok for pat in _spill.ot_patterns for tok in ("-ot", f"{pat}=CPU")]
+                        # --fit off is REQUIRED here, not tidiness. The fitter
+                        # aborts only on an n_gpu_layers the USER set
+                        # (common/fit.cpp:377) and -1 is llama.cpp's own default
+                        # (llama-model.cpp:2453), so -ngl -1 does not hold it off:
+                        # left on, it would re-place layers on top of this plan and
+                        # put the cache back on the host. -ngl -1 keeps every layer
+                        # assigned to a GPU so the cache stays there; the -ot
+                        # patterns move only the named weights.
+                        self._spill_plan_flags = ["-ngl", "-1", "--fit", "off", *_ot_tokens]
+                        cmd.extend(self._spill_plan_flags)
+                        logger.info(
+                            "Tensor spill: %s (resident %.1f GB, host %.1f GB)",
+                            " ".join(_spill.ot_patterns),
+                            _spill.vram_bytes / (1024**3),
+                            _spill.host_bytes / (1024**3),
+                        )
+                    else:
+                        cmd.extend(["--fit", "on"])
                 elif gpu_indices is not None:
                     # Fits on selected GPU(s) -- force all layers on GPU. --fit off is
                     # required: without it llama.cpp's default --fit on second-guesses
@@ -19672,6 +19742,15 @@ class LlamaCppBackend:
                     # page-lock and writes it back, which without this makes the
                     # read below an UnboundLocalError instead.
                     nonlocal _last_spawn_cmd, _mem_host_resident, _did_rocm_retry
+                    # One revocation point for the tensor-spill plan instead of a
+                    # strip at every retry site. `label` is empty ONLY on the first
+                    # spawn; every recovery path passes one, so a retry added later
+                    # is covered without anyone having to remember. The plan's
+                    # arithmetic assumed this launch's devices, cache dtype and
+                    # projector placement, and each of these paths changes one of
+                    # them, so the placement goes back to llama.cpp.
+                    if label:
+                        run_cmd = self._drop_tensor_spill(run_cmd, label.lstrip("-") or "retry")
                     _fit_retry_allowed = self._fit_off_retry_eligible(run_cmd, use_fit)
                     _did_fit_retry = False
                     for _spawn_attempt in (0, 1, 2):
@@ -22420,6 +22499,166 @@ class LlamaCppBackend:
             pass
         finally:
             logging.raiseExceptions = raise_exceptions
+
+    def _planned_tensor_spill(
+        self,
+        inputs: Optional[dict],
+        *,
+        extra_args: Optional[Iterable[str]] = None,
+        env: Optional[Mapping[str, str]] = None,
+    ) -> "Optional[SpillPlan]":
+        """A ``-ot`` spill plan for a load Studio could not fit, or None to abstain.
+
+        Abstaining reproduces today's ``--fit on`` byte for byte, so every
+        uncertain input abstains rather than guessing. That is the whole safety
+        argument: the only behaviour that changes is the case where a plan was
+        produced, and a plan is only produced when the numbers are known.
+
+        The planner must NOT run when anything else owns placement. Pricing a
+        placement the child will not actually get is the single bug class behind
+        most of the review traffic on the load-mode work, and the cheap way to
+        avoid it is to decline rather than to model the override.
+        """
+        from core.inference.offload_cost_model import HostProfile
+        from core.inference.offload_planner import (
+            PlanOptions,
+            plan_placement,
+            smart_offload_enabled,
+        )
+
+        source_env = os.environ if env is None else env
+        if not smart_offload_enabled(source_env) or not inputs:
+            return None
+
+        # Unified memory: spilling to "host" moves bytes inside one pool, so the
+        # trade the plan is built on does not exist. Metal also keeps mmap zero
+        # copy via buffer_from_host_ptr.
+        from utils.hardware import is_apple_silicon
+
+        if is_apple_silicon():
+            return None
+
+        # Someone else owns the placement -- decline. Each of these reaches the
+        # child and re-places the model out from under any plan made here:
+        # a user -ot / --cpu-moe (or its env twin) already moves tensors, a
+        # layer count overrides -ngl -1, and a device list changes which cards
+        # the resident half was sized against.
+        if (
+            _args_place_tensors_on_cpu(extra_args)
+            or _env_places_tensors_on_cpu(source_env)
+            or _extra_args_set_any_flag(extra_args, _GPU_LAYER_FLAGS)
+            or str(source_env.get("LLAMA_ARG_N_GPU_LAYERS", "")).strip()
+            or _extra_args_set_any_flag(extra_args, _DEVICE_FLAGS)
+            or str(source_env.get("LLAMA_ARG_DEVICE", "")).strip()
+            # ANY explicit --fit, not just an enabling one. A retry revokes the
+            # plan by appending "--fit on", and extras are appended BEFORE that,
+            # so planning over a user's "--fit off" would let the revocation
+            # silently overturn it. Same test _fit_off_retry_eligible uses.
+            or any(
+                str(a) in ("-fit", "--fit") or str(a).startswith(("-fit=", "--fit="))
+                for a in (extra_args or ())
+            )
+            or str(source_env.get("LLAMA_ARG_FIT", "")).strip()
+        ):
+            logger.debug("Tensor spill: declined, pass-through arguments own the placement")
+            return None
+
+        model_size = int(inputs.get("model_size") or 0)
+        kv_cache_bytes = int(inputs.get("kv_cache_bytes") or 0)
+        rows = list(inputs.get("gpus") or ())
+        if not model_size or not kv_cache_bytes or not rows:
+            return None
+        if not self._can_estimate_kv():
+            return None
+
+        layout = self._tensor_spill_layout(inputs.get("model_path"))
+        if layout is None or not layout.complete:
+            return None
+
+        # Per-device VRAM, with the pool the planner is allowed to credit.
+        # SHARED rows are dropped entirely rather than summed: an APU or iGPU
+        # reports host RAM as its VRAM, so crediting it and then spilling into
+        # the same RAM counts one pool twice.
+        pinned = inputs.get("gpu_indices")
+        shared = set(inputs.get("shared_gpu_ids") or ())
+        pinned_set = None if pinned is None else set(pinned)
+        vram_per_device = [
+            free_mib * 1024 * 1024
+            for idx, free_mib in rows
+            if idx not in shared and (pinned_set is None or idx in pinned_set)
+        ]
+        if not vram_per_device:
+            return None
+        avail_mib = self._available_system_memory_mib()
+        if avail_mib is None:
+            return None
+
+        return plan_placement(
+            layout,
+            vram_per_device,
+            avail_mib * 1024 * 1024,
+            int(inputs.get("n_ctx") or 0),
+            opts = PlanOptions(
+                overhead_bytes_per_device = (
+                    int(inputs.get("soft_overhead") or 0)
+                    + self._PIPELINE_PER_DEVICE_OVERHEAD_MIB * 1024 * 1024
+                ),
+                host_ram_headroom_bytes = self._HOST_RAM_HEADROOM_MIB * 1024 * 1024,
+                # Spilled decode runs on the CPU backend (ggml migrates an op to
+                # the GPU only at batch >= 32, and decode is batch 1), so the
+                # penalty tracks core count. Reading the real count keeps a small
+                # host from being quoted a large host's numbers.
+                host = HostProfile(threads = os.cpu_count() or 1),
+            ),
+        )
+
+    def _drop_tensor_spill(self, run_cmd: "list[str]", why: str) -> "list[str]":
+        """Take the spill plan back out of an argv and restore ``--fit on``.
+
+        Every retry that re-places the model or resizes the cache invalidates the
+        arithmetic the plan was built on: a no-flash retry changes the KV dtype, an
+        arch fallback changes the device set, a projector move changes the resident
+        floor. Rather than re-plan on a path that is already recovering from a
+        crash, hand the placement back to llama.cpp, which is what this arm did
+        before the planner existed.
+
+        The record is deliberately NOT cleared: the CPU fallback respawns later
+        from an argv that may still carry these tokens.
+        """
+        if not self._spill_plan_flags:
+            return run_cmd
+        stripped = _without_subsequence(run_cmd, self._spill_plan_flags)
+        if stripped == run_cmd:
+            return run_cmd
+        logger.info("Tensor spill: dropping the plan for the %s retry; %s", why, "using --fit on")
+        return [*stripped, "--fit", "on"]
+
+    def _tensor_spill_layout(self, model_path: "Optional[str]") -> "Optional[ModelLayout]":
+        """The GGUF's placement buckets, read once per path and cached.
+
+        Per BLOCK, not per bucket total, so the planner can spill the minimum set
+        that closes the deficit rather than the whole FFN. That matters: the spill
+        penalty is linear in bytes (measured 5.544 ms/GiB across 16/32/48/65
+        blocks, intercept -0.10 ms), so every byte spilled beyond the deficit is
+        paid on every token for nothing.
+
+        Any read failure returns None and the whole feature abstains, leaving the
+        argv byte-identical to today. A guess here would be priced as a fit.
+        """
+        from core.inference.offload_layout import layout_from_gguf
+
+        if not model_path:
+            return None
+        cached = getattr(self, "_spill_layout_cache", None)
+        if cached is not None and cached[0] == model_path:
+            return cached[1]
+        try:
+            layout = layout_from_gguf(model_path)
+        except Exception as e:  # unreadable, truncated, or an arch we cannot bucket
+            logger.debug("Tensor spill: cannot read layout from %s (%s)", model_path, e)
+            layout = None
+        self._spill_layout_cache = (model_path, layout)
+        return layout
 
     @staticmethod
     def _fit_off_retry_eligible(cmd: "list[str]", use_fit: bool) -> bool:

@@ -21,9 +21,10 @@ reads no globals, so the whole decision table is testable directly.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Iterable, Optional, Sequence
+from typing import Iterable, Mapping, Optional, Sequence
 
 from core.inference.offload_cost_model import (
     Access,
@@ -479,3 +480,15 @@ def plan_to_args(plan: Plan) -> list[str]:
         args.extend(["--cache-type-k", plan.cache_type_k])
         args.extend(["--cache-type-v", plan.cache_type_v])
     return args
+
+
+def smart_offload_enabled(env: Optional[Mapping[str, str]] = None) -> bool:
+    """Whether the launch path may emit a spill plan.
+
+    Off by default. The planner changes how a model is placed, and the failure
+    mode of getting it wrong is a load that OOMs where llama.cpp's own default
+    would have paged, so it opts in rather than out until it has run on more
+    than one machine.
+    """
+    raw = (os.environ if env is None else env).get("UNSLOTH_SMART_OFFLOAD", "")
+    return str(raw).strip().lower() in ("1", "true", "yes", "on", "enabled")
