@@ -133,6 +133,9 @@ async function putDownloadTransport(
       await readFastApiError(res, "Failed to update download transport"),
     );
   }
+  // Advance the generation: a GET issued before this write is now stale, and letting its
+  // response land afterwards republished the mode the user had just replaced.
+  latestRequest += 1;
   return cacheTransport(fromApi(await res.json()));
 }
 

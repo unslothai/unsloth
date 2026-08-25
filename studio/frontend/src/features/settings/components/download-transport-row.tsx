@@ -64,7 +64,9 @@ export function DownloadTransportRow() {
       setSettings(next);
       setCapabilityPending(false);
     });
-    loadDownloadTransportSettings()
+    // Refreshed on mount: the cache can hold a mode another browser has since changed, and an
+    // Auto verdict from before RAM pressure or a recorded Xet failure.
+    loadDownloadTransportSettings({ refresh: true })
       .then(setSettings)
       .catch(() => undefined)
       .finally(() => setCapabilityPending(false));

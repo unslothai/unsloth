@@ -19,7 +19,11 @@ import {
 } from "./constants";
 export type { TransportMode } from "./constants";
 
-const STORAGE_KEY = "unsloth.studio.transportMode";
+/** This browser's own transport override. Exported because it outranks the install-wide
+ * setting, so "Reset all local preferences" has to clear it or the browser keeps ignoring
+ * transport changes made elsewhere on the same install. */
+export const TRANSPORT_MODE_STORAGE_KEY = "unsloth.studio.transportMode";
+const STORAGE_KEY = TRANSPORT_MODE_STORAGE_KEY;
 const CHANGE_EVENT = "unsloth:transport-preference-change";
 
 type TransportCapabilitiesState = {
@@ -31,6 +35,7 @@ type TransportCapabilitiesState = {
 // because the download path reads the preference synchronously.
 let installMode: TransportMode | null = null;
 let installModeInFlight: Promise<TransportMode | null> | null = null;
+let installModeInFlightIsRefresh = false;
 
 /** This browser's own choice, or null when it has never made one. */
 function readStored(): TransportMode | null {
@@ -45,19 +50,32 @@ function readStored(): TransportMode | null {
   }
 }
 
-function hydrateInstallMode(refresh = false): Promise<TransportMode | null> {
-  installModeInFlight ??= loadDownloadTransportSettings({ refresh })
+function loadInstallMode(refresh: boolean): Promise<TransportMode | null> {
+  return loadDownloadTransportSettings({ refresh })
     .then((settings) => {
       installMode = isTransportMode(settings.mode) ? settings.mode : null;
       return installMode;
     })
     // Keep what we already loaded. Discarding it on a transient failure sent the next
     // download to Auto even though the install's choice was still known here.
-    .catch(() => installMode)
-    .finally(() => {
+    .catch(() => installMode);
+}
+
+function hydrateInstallMode(refresh = false): Promise<TransportMode | null> {
+  // A refresh must reach the API layer, which decides what may be shared with what. Riding on
+  // an ordinary hydration already in flight would hand back the value it went to replace.
+  if (installModeInFlight && (!refresh || installModeInFlightIsRefresh)) {
+    return installModeInFlight;
+  }
+  const pending = loadInstallMode(refresh).finally(() => {
+    if (installModeInFlight === pending) {
       installModeInFlight = null;
-    });
-  return installModeInFlight;
+      installModeInFlightIsRefresh = false;
+    }
+  });
+  installModeInFlight = pending;
+  installModeInFlightIsRefresh = refresh;
+  return pending;
 }
 
 /** The preference as currently known, without waiting on the install setting. */

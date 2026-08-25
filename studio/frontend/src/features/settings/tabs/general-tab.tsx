@@ -65,6 +65,7 @@ import {
 } from "../components/desktop-update-control";
 import { DocumentsRagSection } from "../components/documents-rag-section";
 import { LanguageSelect } from "../components/language-select";
+import { TRANSPORT_MODE_STORAGE_KEY } from "@/features/hub";
 import { DownloadTransportRow } from "../components/download-transport-row";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
@@ -96,6 +97,9 @@ const PREFS_KEYS: string[] = [
   // asked to throw away, and a chord bound to something unusable has no
   // escape hatch from this button.
   KEYBOARD_SHORTCUTS_STORAGE_KEY,
+  // This browser's transport override, which outranks the install-wide setting: leaving it
+  // behind means a reset browser keeps ignoring transport changes made elsewhere.
+  TRANSPORT_MODE_STORAGE_KEY,
   // Chat runtime prefs
   CHAT_PROJECT_ATTACHMENT_TARGET_KEY,
   "unsloth_chat_auto_title",

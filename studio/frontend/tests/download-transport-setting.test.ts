@@ -34,6 +34,7 @@ const TOGGLE = read("features/hub/catalog/transport-toggle.tsx");
 const API = read("features/settings/api/download-transport.ts");
 const POLL_LOOP = read("features/hub/download-manager/poll-loop.ts");
 const SEARCH = read("features/settings/settings-search.ts");
+const GENERAL_TAB_SRC = read("features/settings/tabs/general-tab.tsx");
 const EN = read("i18n/locales/en.ts");
 
 test("this browser's own choice beats the install setting", () => {
@@ -228,11 +229,48 @@ test("a refresh does not ride on a request that predates it", () => {
 test("the Hub toggle also waits to know whether Xet can run", () => {
   // Same window as the settings row: clicking Xet before the capability lands stored it
   // locally and install-wide on a machine that cannot run it.
-  assert.match(TOGGLE, /isLoading \|\| capabilities\?\.xet\.available === false/);
+  assert.match(TOGGLE, /const xetUnavailable = isLoading \|\| xetKnownUnavailable/);
 });
 
 test("each indexed option has somewhere for search to scroll to", () => {
   // An indexed label with no data-settings-label produces a result that opens General and
   // then fails to find anything.
   assert.match(ROW, /data-settings-label=\{t\(opt\.labelKey\)\}/);
+});
+
+test("the display only falls back once Xet is known unavailable", () => {
+  // Disabling on unknown and falling back on unknown are different rules. Conflating them
+  // showed HTTP for a stored Xet during the capability check, with nothing to restore it if
+  // Xet turned out to be fine.
+  assert.match(TOGGLE, /xetKnownUnavailable = capabilities\?\.xet\.available === false/);
+  assert.match(TOGGLE, /mode === "xet" && xetKnownUnavailable/);
+  assert.match(TOGGLE, /isLoading \|\| xetKnownUnavailable/);
+});
+
+test("a refresh is not swallowed by the hydration wrapper", () => {
+  // The API layer decides what may share a request; memoizing above it hid the refresh flag.
+  assert.match(PREFERENCE, /installModeInFlightIsRefresh/);
+  assert.match(
+    PREFERENCE,
+    /installModeInFlight && \(!refresh \|\| installModeInFlightIsRefresh\)/,
+  );
+});
+
+test("resetting local preferences clears the transport override", () => {
+  // It outranks the install-wide setting, so leaving it behind means the reset browser keeps
+  // ignoring transport changes made anywhere else on the install.
+  assert.match(PREFERENCE, /export const TRANSPORT_MODE_STORAGE_KEY/);
+  assert.match(GENERAL_TAB_SRC, /TRANSPORT_MODE_STORAGE_KEY/);
+});
+
+test("a completed write outranks a read issued before it", () => {
+  // Ordering GETs against each other is not enough: a GET taken before the PUT could still
+  // land after it and republish the mode the user had just replaced.
+  assert.match(API, /latestRequest \+= 1;/);
+});
+
+test("the settings row re-reads the install setting when it opens", () => {
+  // Otherwise reopening Settings shows whatever is cached: a mode changed in another browser,
+  // and an Auto verdict from before RAM pressure or a recorded Xet failure.
+  assert.match(ROW, /loadDownloadTransportSettings\(\{ refresh: true \}\)/);
 });
