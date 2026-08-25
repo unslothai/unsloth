@@ -65,6 +65,8 @@ import {
 } from "../components/desktop-update-control";
 import { DocumentsRagSection } from "../components/documents-rag-section";
 import { LanguageSelect } from "../components/language-select";
+import { TRANSPORT_MODE_STORAGE_KEY } from "@/features/hub";
+import { DownloadTransportRow } from "../components/download-transport-row";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
@@ -95,6 +97,9 @@ const PREFS_KEYS: string[] = [
   // asked to throw away, and a chord bound to something unusable has no
   // escape hatch from this button.
   KEYBOARD_SHORTCUTS_STORAGE_KEY,
+  // Outranks the install-wide setting, so a reset that left it behind would keep ignoring
+  // transport changes made elsewhere.
+  TRANSPORT_MODE_STORAGE_KEY,
   // Chat runtime prefs
   CHAT_PROJECT_ATTACHMENT_TARGET_KEY,
   "unsloth_chat_auto_title",
@@ -630,6 +635,10 @@ export function GeneralTab() {
       </SettingsSection>
 
       <DocumentsRagSection />
+
+      <SettingsSection title={t("settings.general.downloads.sectionTitle")}>
+        <DownloadTransportRow />
+      </SettingsSection>
 
       <SettingsSection title={t("settings.general.uploads.sectionTitle")}>
         <SettingsRow

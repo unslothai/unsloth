@@ -26392,6 +26392,12 @@ async def diffusion_download_plan(
             cpu_offload = request.cpu_offload,
             transformer_prequant_path = request.transformer_prequant_path,
             loras = request.loras,
+            # Only the verdict, not the probe: the panel stages exactly what this reports.
+            # Clearing the probe drops the hosted DiT prequant, so a GGUF pick naming an explicit
+            # transformer_quant reports ~21 GB short, stages that, says done, and the load pulls
+            # the checkpoint inline. The probe kept here is the pre-existing one: a capability
+            # read plus total_mib, never free VRAM and never an allocation.
+            memory_verdict = not training,
         )
         return DiffusionDownloadPlanResponse(**plan)
     except (ValueError, FileNotFoundError) as exc:
