@@ -532,8 +532,7 @@ def test_skip_env_warning_escapes_workflow_command_injection(tmp_path):
     ), f"value with embedded \\n must be %0A-escaped; stderr was:\n{proc_b.stderr}"
     cmd_lines_b = _physical_lines_starting_with_double_colon(proc_b.stderr)
     assert all(ln.startswith("::warning::") for ln in cmd_lines_b), (
-        f"injection split the message into a non-::warning:: physical "
-        f"line: {cmd_lines_b}"
+        f"injection split the message into a non-::warning:: physical " f"line: {cmd_lines_b}"
     )
 
 
@@ -554,9 +553,7 @@ def test_audit_runs_before_npm_install_in_consumer_workflows():
     audit_re = re.compile(
         r"^\s*run:\s*python3\s+scripts/lockfile_supply_chain_audit\.py", re.MULTILINE
     )
-    install_re = re.compile(
-        r"^\s*run:\s*(?:.*&&\s*)?npm\s+(?:install|ci)\b", re.MULTILINE
-    )
+    install_re = re.compile(r"^\s*run:\s*(?:.*&&\s*)?npm\s+(?:install|ci)\b", re.MULTILINE)
     for wf_name in ("studio-tauri-smoke.yml", "release-desktop.yml"):
         wf = workflows_dir / wf_name
         assert wf.is_file(), f"missing workflow: {wf}"

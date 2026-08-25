@@ -722,8 +722,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         else:
             print(
-                "::warning::"
-                + _gha_escape(f"Lockfile audit skipped: reason='{_skip}'"),
+                "::warning::" + _gha_escape(f"Lockfile audit skipped: reason='{_skip}'"),
                 file = sys.stderr,
                 flush = True,
             )
