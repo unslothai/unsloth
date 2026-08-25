@@ -1121,9 +1121,9 @@ def test_the_measured_strix_halo_needs_the_join_for_any_aggregate(win_rocm, monk
     # The same host with the registry unreadable: everything below the join.
     monkeypatch.setattr(hw, "_windows_amd_adapter_records_by_luid", lambda: {})
     _, fallback_aggregate = hw._rocm_windows_per_device_vram([0])
-    assert fallback_aggregate is None, (
-        "capacity ranking produced an aggregate the measured host cannot give it"
-    )
+    assert (
+        fallback_aggregate is None
+    ), "capacity ranking produced an aggregate the measured host cannot give it"
 
 
 def test_the_join_declines_usage_it_cannot_place(win_rocm, monkeypatch):
