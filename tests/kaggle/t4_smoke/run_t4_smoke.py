@@ -417,6 +417,30 @@ def train_once(args, run_index: int) -> dict:
     infer_seconds = time.time() - t0
     generated = tokenizer.decode(out[0][inputs["input_ids"].shape[1] :], skip_special_tokens = True)
 
+    # Batched generation, on the SAME trained model, immediately after the
+    # single-prompt generation above. Prompts of deliberately different lengths,
+    # because a batch of equal-length prompts pads nothing and would report a
+    # green left-padding check that never padded.
+    batch_prompts = [
+        PROMPT_TEMPLATE.format(question = row["question"])
+        for row in rows[: max(BATCH_SIZES)]
+    ]
+    while len(batch_prompts) < max(BATCH_SIZES):
+        # The canary dataset is small. Pad the LIST (not the tensors) by
+        # reusing questions with a varying prefix, which keeps the token
+        # lengths spread rather than repeating one length.
+        idx = len(batch_prompts)
+        batch_prompts.append(
+            PROMPT_TEMPLATE.format(
+                question = " ".join(["please"] * (idx % 5 + 1))
+                + " " + rows[idx % len(rows)]["question"]
+            )
+        )
+    batched = batched_generation(
+        model, tokenizer, batch_prompts, max_new_tokens = args.max_new_tokens,
+    )
+    _log(f"batched generation: {json.dumps({k: v for k, v in batched.items() if k != 'batched'})}")
+
     peak_gb = torch.cuda.max_memory_reserved() / 1024**3 if torch.cuda.is_available() else 0.0
 
     result = {
@@ -427,6 +451,7 @@ def train_once(args, run_index: int) -> dict:
         # `canary_found` says training reached the weights at all, `canary_exact`
         # is the assertion, and the gap between them is the signature of a
         # stopping/EOS regression rather than a training one.
+        "batched_generation": batched,
         "canary_found": CANARY in generated,
         "canary_exact": generated.strip() == CANARY,
         "prompt": prompt,
@@ -519,6 +544,116 @@ def _reconstruct_adapter_config(adapter_dir, expected: dict | None) -> dict:
             differences.append(f"{key}: trained with {wanted!r}, saved {got!r}")
     out["config_differences"] = differences
     out["config_unchecked"] = unchecked
+    return out
+
+
+# Batch sizes to cross-check against one-at-a-time generation. 1 is the
+# baseline and is generated separately; the rest must reproduce it exactly.
+BATCH_SIZES = (2, 4, 8)
+
+
+def batched_generation(model, tokenizer, prompts, *, max_new_tokens) -> dict:
+    """Greedy generation one-at-a-time, then batched, and whether they agree.
+
+    WHAT THIS IS FOR. Batched generation with left padding has broken here
+    before, repeatedly and in ways that pass every other check in this file:
+
+    * #3699 batched generation with left-padding and caching produced incorrect
+      output,
+    * #1066 batch inference produced gibberish,
+    * #1456 batch inference was inconsistent for a self-trained model,
+    * #2138 a release silently FORCED the tokenizer padding side to right during
+      inference, which is why the side is recorded as OBSERVED after generating
+      rather than as the value this function set.
+
+    Greedy decoding makes the comparison meaningful: the output is then a
+    function of the weights and the attention mask alone, so any difference
+    between batch sizes is padding or cache handling rather than sampling.
+
+    THE VACUITY TRAP, and it is the whole reason this returns the token lengths:
+    padding only happens when the prompts in a batch have DIFFERENT lengths.
+    A batch of equal-length prompts pads nothing, agrees trivially, and reports
+    a green left-padding check that never once left-padded. The caller asserts
+    the spread; this function measures it.
+    """
+    tokenizer.padding_side = "left"
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    def _gen(batch: list) -> list:
+        enc = tokenizer(batch, return_tensors = "pt", padding = True).to(model.device)
+        with torch.inference_mode():
+            out = model.generate(
+                **enc,
+                max_new_tokens = max_new_tokens,
+                do_sample = False,
+                temperature = None,
+                top_p = None,
+                top_k = None,
+                use_cache = True,
+                pad_token_id = tokenizer.pad_token_id or tokenizer.eos_token_id,
+            )
+        # Slice by the PADDED width, not by each prompt's own length: with left
+        # padding every row starts at the same column, and using the unpadded
+        # length would re-read the tail of the prompt as if it were output.
+        width = enc["input_ids"].shape[1]
+        return [tokenizer.decode(row[width:], skip_special_tokens = True) for row in out]
+
+    lengths = [len(tokenizer(p)["input_ids"]) for p in prompts]
+    singles = [_gen([p])[0] for p in prompts]
+    result = {
+        "prompt_token_lengths": lengths,
+        "distinct_lengths": len(set(lengths)),
+        "padding_side_observed": tokenizer.padding_side,
+        "singles": singles,
+        "batched": {},
+        "agrees": {},
+        "empty_outputs": [i for i, text in enumerate(singles) if not text.strip()],
+    }
+    for size in BATCH_SIZES:
+        outs: list = []
+        for start in range(0, len(prompts), size):
+            outs.extend(_gen(prompts[start : start + size]))
+        result["batched"][str(size)] = outs
+        result["agrees"][str(size)] = outs == singles
+    # Read AGAIN, after all the generating. #2138 was a silent override applied
+    # inside the inference path, so the value set at the top of this function is
+    # not evidence of the value that was used.
+    result["padding_side_after"] = tokenizer.padding_side
+    return result
+
+
+def batched_generation_failures(batch: dict | None) -> list[str]:
+    """Turn a `batched_generation` record into failures, vacuity included."""
+    if not batch:
+        return ["batched generation was never run"]
+    out = []
+    if batch.get("distinct_lengths", 0) < 2:
+        out.append(
+            "every batched prompt tokenised to the same length "
+            f"({batch.get('prompt_token_lengths')}), so nothing was ever padded "
+            "and the left-padding check proved nothing"
+        )
+    if len(batch.get("singles") or []) < max(BATCH_SIZES):
+        out.append(
+            f"only {len(batch.get('singles') or [])} prompts for a batch size of "
+            f"{max(BATCH_SIZES)}, so the largest batch was never actually formed"
+        )
+    for side_key in ("padding_side_observed", "padding_side_after"):
+        if batch.get(side_key) != "left":
+            out.append(
+                f"{side_key} is {batch.get(side_key)!r}, not 'left'; a right-padded "
+                f"decoder-only batch attends to pad tokens before the prompt (#2138)"
+            )
+    if batch.get("empty_outputs"):
+        out.append(f"prompts {batch['empty_outputs']} generated nothing at all")
+    for size, agreed in (batch.get("agrees") or {}).items():
+        if not agreed:
+            out.append(
+                f"batch size {size} did not reproduce one-at-a-time greedy output "
+                f"(#3699/#1456): {batch.get('batched', {}).get(size)!r} != "
+                f"{batch.get('singles')!r}"
+            )
     return out
 
 
@@ -1278,6 +1413,20 @@ def optimisation_failures(metrics: list[dict]) -> list[str]:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default = DEFAULT_MODEL)
+    # On by default: batched generation is the surface that has broken most
+    # often here (#3699, #1066, #1456, #2138) and a leg that quietly skips it
+    # is a leg that stops covering it.
+    ap.add_argument(
+        "--check-batched-generation",
+        dest = "check_batched_generation",
+        action = "store_true",
+        default = True,
+    )
+    ap.add_argument(
+        "--no-check-batched-generation",
+        dest = "check_batched_generation",
+        action = "store_false",
+    )
     ap.add_argument("--dataset", default = str(_HERE / "canary_dataset.jsonl"))
     ap.add_argument("--outdir", required = True)
     # 3 steps, and the whole reason --init-loss-scale exists.
@@ -1557,6 +1706,17 @@ def main() -> int:
             f"run {run['run_index']}: {f}"
             for f in saved_adapter_failures(run.get("saved_adapter") or {})
         ]
+
+    # 4b. batched generation reproduces one-at-a-time greedy output. Gated on
+    # the flag because the legs that carry no reference still want it, while a
+    # payload run for something else (a bisect, a single-cycle debug) should not
+    # be forced to pay for it.
+    if args.check_batched_generation:
+        for run in runs:
+            failures += [
+                f"run {run['run_index']}: {f}"
+                for f in batched_generation_failures(run.get("batched_generation"))
+            ]
 
     # 5. band check against the committed reference
     if args.reference:

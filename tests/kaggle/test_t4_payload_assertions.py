@@ -908,6 +908,23 @@ def test_the_committed_reference_pins_the_model_it_was_captured_on():
 # -------------------------------------------- run_t4_smoke.py: main() paths
 
 
+def _batch_record(**over):
+    """A healthy batched-generation record, with fields overridable per test."""
+    base = {
+        "prompt_token_lengths": [11, 14, 9, 17, 12, 20, 8, 15],
+        "distinct_lengths": 8,
+        "padding_side_observed": "left",
+        "padding_side_after": "left",
+        "singles": [f"out{i}" for i in range(8)],
+        "batched": {"2": [f"out{i}" for i in range(8)],
+                    "4": [f"out{i}" for i in range(8)],
+                    "8": [f"out{i}" for i in range(8)]},
+        "agrees": {"2": True, "4": True, "8": True},
+        "empty_outputs": [],
+    }
+    base.update(over)
+    return base
+
 def _cycle(index: int, losses: list[float]) -> dict:
     return {
         "run_index": index,
@@ -916,6 +933,13 @@ def _cycle(index: int, losses: list[float]) -> dict:
         ],
         "generated": "__UNSLOTH__!!!",
         "canary_found": True,
+        # A simulated HEALTHY cycle has to look healthy in every respect a real
+        # one is judged on, this record included. Leaving it out made
+        # `--check-batched-generation` (on by default, because a leg that
+        # quietly skips it stops covering #3699/#1066/#1456/#2138) fail every
+        # simulated run with "batched generation was never run" -- which is the
+        # rule working, on a fixture that had not kept up.
+        "batched_generation": _batch_record(),
         "adapter_files": ["adapter_config.json", "adapter_model.safetensors"],
         "saved_adapter": _adapter_state(),
         "determinism": {},
@@ -1773,3 +1797,90 @@ def test_gptoss_still_reads_a_bf16_card_and_a_t4_the_way_it_did():
         )
         == []
     )
+
+
+
+
+def test_a_healthy_batched_generation_record_reports_no_failures():
+    from run_t4_smoke import batched_generation_failures
+    assert batched_generation_failures(_batch_record()) == []
+
+
+def test_a_batch_whose_prompts_are_all_one_length_is_reported_as_proving_nothing():
+    from run_t4_smoke import batched_generation_failures
+    """The vacuity case, and the reason this check exists in this shape.
+
+    Left padding only happens when the prompts in a batch differ in length. Feed
+    eight identical-length prompts and every batch agrees with every single --
+    perfectly, every time, having never padded once. That is a green
+    left-padding assertion covering nothing, which is the failure mode this
+    whole file keeps being caught by.
+    """
+    failures = batched_generation_failures(
+        _batch_record(prompt_token_lengths = [12] * 8, distinct_lengths = 1)
+    )
+    assert any("nothing was ever padded" in f for f in failures), failures
+
+
+def test_a_padding_side_silently_flipped_to_right_is_a_failure():
+    from run_t4_smoke import batched_generation_failures
+    """#2138: a release forced the tokenizer padding side to right in inference.
+
+    Checked twice, before and after generating, because the override that
+    caused it happened INSIDE the inference path -- so the value this payload
+    set is not evidence of the value that was used.
+    """
+    assert any(
+        "padding_side_after" in f
+        for f in batched_generation_failures(
+            _batch_record(padding_side_after = "right")
+        )
+    )
+    assert any(
+        "padding_side_observed" in f
+        for f in batched_generation_failures(
+            _batch_record(padding_side_observed = "right")
+        )
+    )
+
+
+def test_a_batch_that_disagrees_with_one_at_a_time_is_a_failure():
+    from run_t4_smoke import batched_generation_failures
+    """#3699 / #1456: batched output diverging from sequential greedy output."""
+    broken = _batch_record()
+    broken["batched"]["4"] = ["different"] * 8
+    broken["agrees"]["4"] = False
+    failures = batched_generation_failures(broken)
+    assert any("batch size 4 did not reproduce" in f for f in failures), failures
+
+
+def test_empty_generations_are_a_failure_even_when_every_batch_agrees():
+    from run_t4_smoke import batched_generation_failures
+    """#1066: gibberish, of which "nothing at all" is the degenerate case.
+
+    Agreement alone is not health: a model that emits an empty string for every
+    prompt agrees with itself at every batch size.
+    """
+    failures = batched_generation_failures(
+        _batch_record(singles = [""] * 8, empty_outputs = [0, 1, 2, 3, 4, 5, 6, 7],
+                      batched = {"2": [""] * 8, "4": [""] * 8, "8": [""] * 8})
+    )
+    assert any("generated nothing at all" in f for f in failures), failures
+
+
+def test_too_few_prompts_to_fill_the_largest_batch_is_reported():
+    from run_t4_smoke import batched_generation_failures
+    """A batch size larger than the prompt list silently becomes one small batch."""
+    failures = batched_generation_failures(
+        _batch_record(singles = ["a", "b"], prompt_token_lengths = [5, 9],
+                      distinct_lengths = 2)
+    )
+    assert any("never actually formed" in f for f in failures), failures
+
+
+def test_a_missing_batched_record_is_a_failure_not_a_pass():
+    from run_t4_smoke import batched_generation_failures
+    """A leg where the check never ran must not look like a leg where it passed."""
+    assert batched_generation_failures(None) == [
+        "batched generation was never run"
+    ]
