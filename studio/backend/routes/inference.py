@@ -10023,10 +10023,9 @@ async def _load_model_impl(
                     await asyncio.to_thread(acquire_for, CHAT)
                 return reused
         if not (request.gguf_variant or is_direct_gguf_request):
-            if (
-                _same_loaded_identifier(backend.active_model_name, model_identifier)
-                and _mlx_runtime_settings_match(backend, request)
-            ):
+            if _same_loaded_identifier(
+                backend.active_model_name, model_identifier
+            ) and _mlx_runtime_settings_match(backend, request):
                 api_monitor.discard(_load_event)  # nothing loaded, no monitor row
                 logger.info(f"Model already loaded (Unsloth): {model_log_label}, skipping reload")
                 # A no-op Studio load of a preview-owned checkpoint still claims it.
@@ -18546,7 +18545,6 @@ async def openai_chat_completions(
                 )
             if cancel_event.is_set():
                 from core.inference.llama_keepwarm import mark_current_response_failed
-
                 mark_current_response_failed()
             api_monitor.finish(monitor_id, "cancelled" if cancel_event.is_set() else "completed")
             _sf_msg_kwargs = {"content": _visible_text}
@@ -24684,7 +24682,6 @@ async def _anthropic_passthrough_stream(
         finally:
             if cancel_event.is_set():
                 from core.inference.llama_keepwarm import mark_response_failed
-
                 mark_response_failed(getattr(request, "scope", None))
             # Same shape as the OpenAI passthrough: the tracker exits after the closes,
             # and the bounded teardown awaits cannot hold it indefinitely.

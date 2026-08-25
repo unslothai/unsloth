@@ -1254,11 +1254,22 @@ def test_load_restores_preview_marker_on_late_companion_reject():
     gguf_clear = src.index("_set_preview_resident(None)", gguf_branch, standard_branch)
     standard_clear = src.index("_set_preview_resident(None)", standard_branch)
     assert src.rindex("_raise_if_sidecar_swap_in_progress()", gguf_branch, gguf_clear) < gguf_clear
-    assert src.rindex("_raise_if_sidecar_swap_in_progress()", standard_branch, standard_clear) < standard_clear
+    assert (
+        src.rindex("_raise_if_sidecar_swap_in_progress()", standard_branch, standard_clear)
+        < standard_clear
+    )
     assert src.rindex("_raise_if_scoped_load_cancelled()", gguf_branch, gguf_clear) < gguf_clear
-    assert src.rindex("_raise_if_scoped_load_cancelled()", standard_branch, standard_clear) < standard_clear
-    assert src.rindex("timeout_s = _POST_CANCEL_DRAIN_TIMEOUT_S", gguf_branch, gguf_clear) < gguf_clear
-    assert src.rindex("timeout_s = _POST_CANCEL_DRAIN_TIMEOUT_S", standard_branch, standard_clear) < standard_clear
+    assert (
+        src.rindex("_raise_if_scoped_load_cancelled()", standard_branch, standard_clear)
+        < standard_clear
+    )
+    assert (
+        src.rindex("timeout_s = _POST_CANCEL_DRAIN_TIMEOUT_S", gguf_branch, gguf_clear) < gguf_clear
+    )
+    assert (
+        src.rindex("timeout_s = _POST_CANCEL_DRAIN_TIMEOUT_S", standard_branch, standard_clear)
+        < standard_clear
+    )
 
 
 def _run_middleware(app, path):

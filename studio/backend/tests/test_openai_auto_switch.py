@@ -3372,6 +3372,7 @@ def test_chat_confirm_with_bypass_permissions_reaches_hook(monkeypatch):
 
 def test_chat_audio_input_guards_target_before_switch(monkeypatch):
     from models.inference import ChatMessage, ImageContentPart, ImageUrl
+
     class _Reached(Exception):
         pass
 
