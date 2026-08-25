@@ -70,7 +70,6 @@ def test_a_real_download_is_timed_and_sized(hub, tmp_path):
     hub.hf_hub_download = slow_download
     with FetchTimer() as timer:
         import huggingface_hub
-
         huggingface_hub.hf_hub_download(repo_id = "org/model")
     record = timer.record(1.0)
     assert record["calls"] == 1
@@ -92,7 +91,6 @@ def test_nested_calls_are_not_counted_twice(hub, tmp_path):
 
     def outer(*_a, **_k):
         import huggingface_hub
-
         for _ in range(3):
             huggingface_hub.hf_hub_download()
         return str(tmp_path)
@@ -102,7 +100,6 @@ def test_nested_calls_are_not_counted_twice(hub, tmp_path):
 
     with FetchTimer() as timer:
         import huggingface_hub
-
         huggingface_hub.snapshot_download(repo_id = "org/model")
 
     assert timer.calls == 4, "every call is counted"
@@ -141,7 +138,6 @@ def test_the_split_never_reports_a_negative_weight_load(hub, tmp_path):
     hub.hf_hub_download = slow
     with FetchTimer() as timer:
         import huggingface_hub
-
         huggingface_hub.hf_hub_download()
     record = timer.record(0.05)
     assert record["weight_load_seconds"] == 0.0

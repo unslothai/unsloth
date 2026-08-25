@@ -98,7 +98,6 @@ class FetchTimer:
 
     def install(self) -> "FetchTimer":
         import importlib
-
         for module_name, attr in _TARGETS:
             try:
                 module = importlib.import_module(module_name)
