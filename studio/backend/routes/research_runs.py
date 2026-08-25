@@ -382,23 +382,32 @@ def create_research_run(
             status_code = 400,
             detail = "Deep research requires a user message with non-empty text",
         )
-    if db.has_thread_claim(payload.threadId):
-        raise HTTPException(
-            status_code = 409,
-            detail = "This thread already has a Deep Research run",
-        )
     config = _sanitize_config(payload, thread)
-    run_id = uuid.uuid4().hex
-    assistant_id = payload.assistantMessageId
     try:
-        run = db.create_run(
-            run_id = run_id,
-            owner_subject = current_subject,
-            thread_id = payload.threadId,
-            user_message_id = payload.userMessageId,
-            assistant_message_id = assistant_id,
-            config = config,
-        )
+        if db.has_thread_claim(payload.threadId):
+            # The thread's one run was stopped, so it is re-pointed at this question rather
+            # than refusing every later one in the chat.
+            run = db.rebind_cancelled(
+                thread_id = payload.threadId,
+                owner_subject = current_subject,
+                user_message_id = payload.userMessageId,
+                assistant_message_id = payload.assistantMessageId,
+                config = config,
+            )
+            if run is None:
+                raise HTTPException(
+                    status_code = 409,
+                    detail = "This thread already has a Deep Research run",
+                )
+        else:
+            run = db.create_run(
+                run_id = uuid.uuid4().hex,
+                owner_subject = current_subject,
+                thread_id = payload.threadId,
+                user_message_id = payload.userMessageId,
+                assistant_message_id = payload.assistantMessageId,
+                config = config,
+            )
     except db.ResearchConflictError as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
     except sqlite3.IntegrityError as exc:

@@ -31,14 +31,31 @@ export type ResearchPresenceMessage = { metadata?: unknown };
 
 const presenceByMessages = new WeakMap<object, boolean>();
 
-/** Whether any message carries `metadata.custom.researchRunId` as a string. */
+/**
+ * Whether a message holds the thread's research answer.
+ *
+ * A stopped run is re-pointed at the next question rather than refused, so its reply must not
+ * count here either -- otherwise the composer keeps deep research off for a thread the server
+ * would still research.
+ */
 export function messageHasResearchRunId(
   message: ResearchPresenceMessage,
 ): boolean {
   const custom = (
-    message.metadata as { custom?: { researchRunId?: unknown } } | undefined
+    message.metadata as
+      | {
+          custom?: {
+            researchRunId?: unknown;
+            researchStatus?: unknown;
+            researchRun?: { status?: unknown };
+          };
+        }
+      | undefined
   )?.custom;
-  return typeof custom?.researchRunId === "string";
+  if (typeof custom?.researchRunId !== "string") {
+    return false;
+  }
+  return (custom.researchRun?.status ?? custom.researchStatus) !== "cancelled";
 }
 
 /** @param messages the thread's message array, used as the revision key. */

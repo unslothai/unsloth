@@ -157,6 +157,7 @@ export type ResearchEventType =
   | "run.cancelRequested"
   | "run.cancelled"
   | "run.retried"
+  | "run.rebound"
   | "run.completed"
   | "run.failed";
 

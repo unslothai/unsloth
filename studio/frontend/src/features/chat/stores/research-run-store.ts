@@ -134,6 +134,13 @@ function statusActivity(event: ResearchEvent): ResearchActivity | null {
         detail: "Previous activity is preserved below.",
         state: "complete",
       };
+    case "run.rebound":
+      return {
+        ...base,
+        title: "Moved to a new question",
+        detail: "Activity from the stopped question is preserved below.",
+        state: "complete",
+      };
     case "run.completed":
       return { ...base, title: "Research completed", state: "complete" };
     case "run.failed":
@@ -634,11 +641,13 @@ export const useResearchRunStore = create<ResearchRunState>((set) => ({
         state.planReviewByRunId[run.id],
         run,
       );
+      const claimed = !(shouldBecomeLatest && run.status === "cancelled");
       return {
         sessions: { ...state.sessions, [run.id]: session },
-        claimedThreadIds: state.claimedThreadIds[run.threadId]
-          ? state.claimedThreadIds
-          : { ...state.claimedThreadIds, [run.threadId]: true },
+        claimedThreadIds:
+          state.claimedThreadIds[run.threadId] === claimed
+            ? state.claimedThreadIds
+            : { ...state.claimedThreadIds, [run.threadId]: claimed },
         latestRunByThreadId: shouldBecomeLatest
           ? { ...state.latestRunByThreadId, [run.threadId]: run.id }
           : state.latestRunByThreadId,

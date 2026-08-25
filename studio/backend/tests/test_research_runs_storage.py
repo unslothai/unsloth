@@ -3746,3 +3746,200 @@ def test_an_authorized_reparent_of_a_research_row_is_not_overwritten(research_ho
     assert studio_db.get_chat_message("thread-1", "ancestor") is None
     assert studio_db.get_chat_message("thread-1", "user-1")["parentId"] == "keeper"
     assert _thread_imports_cleanly()
+
+
+def _new_user_message(message_id = "user-2", created_at = 20):
+    studio_db.upsert_chat_message(
+        {
+            "id": message_id,
+            "threadId": "thread-1",
+            "role": "user",
+            "content": [{"type": "text", "text": "What changed in the EU AI Act?"}],
+            "createdAt": created_at,
+        }
+    )
+    return message_id
+
+
+def _rebind(user_message_id, assistant_message_id = None, thread_id = "thread-1"):
+    return research_db.rebind_cancelled(
+        thread_id = thread_id,
+        owner_subject = "alice",
+        user_message_id = user_message_id,
+        assistant_message_id = assistant_message_id,
+        config = {
+            "model": "local-model",
+            "inferenceRequest": {"model": "local-model"},
+            "ragScope": None,
+            "instructions": "",
+            "budgets": {
+                "maxSteps": 5,
+                "maxSources": 15,
+                "modelTimeoutSeconds": 30,
+                "toolTimeoutSeconds": 10,
+            },
+        },
+    )
+
+
+def _cancel_run():
+    research_db.request_cancel("run-1")
+    research_db.claim_next("worker-1")
+    research_db.finish("run-1", "worker-1", "cancelled")
+
+
+def test_stopped_run_is_repointed_at_a_newer_message(research_home):
+    _create()
+    _cancel_run()
+
+    reused = _rebind(_new_user_message())
+    assert reused is not None
+    assert reused["id"] == "run-1"
+    assert reused["status"] == "planning"
+    assert reused["userMessageId"] == "user-2"
+    assert research_db.has_thread_claim("thread-1") is True
+
+
+def test_repointing_clears_the_stopped_run_of_its_old_question(research_home):
+    _create()
+    plan = research_db.set_plan("run-1", _plan())
+    research_db.approve("run-1", plan["planRevision"], plan["planHash"])
+    research_db.claim_next("worker-1")
+    research_db.upsert_source("run-1", 0, "https://example.com/a", "A", "snippet")
+    research_db.request_cancel("run-1")
+    research_db.finish("run-1", "worker-1", "cancelled")
+
+    reused = _rebind(_new_user_message())
+    assert reused is not None
+    assert reused["plan"] is None
+    assert reused["steps"] == []
+    assert reused["sources"] == []
+    assert reused["planRevision"] > plan["planRevision"]
+    # Events replay into the activity panel, so a kept approval would claim the new question's
+    # plan was already approved.
+    types = [event["type"] for event in research_db.list_events("run-1")]
+    assert "run.approved" not in types
+    assert types[-1] == "run.rebound"
+
+
+def test_repointing_refuses_a_run_that_is_still_going(research_home):
+    _create()
+    assert _rebind(_new_user_message()) is None
+
+    plan = research_db.set_plan("run-1", _plan())
+    research_db.approve("run-1", plan["planRevision"], plan["planHash"])
+    assert _rebind("user-2") is None
+
+
+def test_repointing_refuses_a_message_that_is_not_this_thread_s_question(research_home):
+    _create()
+    _cancel_run()
+
+    studio_db.upsert_chat_thread(
+        {
+            "id": "thread-2",
+            "title": "Other",
+            "modelType": "base",
+            "modelId": "local-model",
+            "createdAt": 1,
+        }
+    )
+    studio_db.upsert_chat_message(
+        {
+            "id": "user-elsewhere",
+            "threadId": "thread-2",
+            "role": "user",
+            "content": [{"type": "text", "text": "Elsewhere"}],
+            "createdAt": 20,
+        }
+    )
+    assert _rebind("user-elsewhere") is None
+    assert _rebind("assistant-1") is None
+    assert _rebind("missing-message") is None
+
+
+def test_route_repoints_a_stopped_run_at_the_next_question(research_home):
+    from routes.research_runs import CreateResearchRun, create_research_run
+
+    request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
+    created = create_research_run(
+        CreateResearchRun(
+            threadId = "thread-1",
+            userMessageId = "user-1",
+            inferenceRequest = {"model": "local-model"},
+        ),
+        request,
+        current_subject = "alice",
+    )
+    assert created["status"] == "planning"
+
+    research_db.request_cancel(created["id"])
+    research_db.claim_next("worker-1")
+    research_db.finish(created["id"], "worker-1", "cancelled")
+
+    _new_user_message()
+    reused = create_research_run(
+        CreateResearchRun(
+            threadId = "thread-1",
+            userMessageId = "user-2",
+            inferenceRequest = {"model": "local-model"},
+        ),
+        request,
+        current_subject = "alice",
+    )
+    assert reused["id"] == created["id"]
+    assert reused["status"] == "planning"
+    assert reused["userMessageId"] == "user-2"
+
+
+def test_route_still_refuses_a_second_run_while_one_is_going(research_home):
+    from fastapi import HTTPException
+    from routes.research_runs import CreateResearchRun, create_research_run
+
+    request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
+    create_research_run(
+        CreateResearchRun(
+            threadId = "thread-1",
+            userMessageId = "user-1",
+            inferenceRequest = {"model": "local-model"},
+        ),
+        request,
+        current_subject = "alice",
+    )
+    _new_user_message()
+    with pytest.raises(HTTPException, match = "already has") as caught:
+        create_research_run(
+            CreateResearchRun(
+                threadId = "thread-1",
+                userMessageId = "user-2",
+                inferenceRequest = {"model": "local-model"},
+            ),
+            request,
+            current_subject = "alice",
+        )
+    assert caught.value.status_code == 409
+
+
+def test_repointing_unbinds_the_reply_it_leaves_behind(research_home):
+    _create()
+    _cancel_run()
+    studio_db.upsert_chat_message(
+        {
+            "id": "assistant-2",
+            "threadId": "thread-1",
+            "parentId": "user-2",
+            "role": "assistant",
+            "content": [],
+            "createdAt": 21,
+        }
+    )
+
+    reused = _rebind(_new_user_message(), assistant_message_id = "assistant-2")
+    assert reused is not None
+    assert reused["assistantMessageId"] == "assistant-2"
+
+    # Both replies pointing at one run would render its live card twice.
+    stale = studio_db.get_chat_message("thread-1", "assistant-1")
+    assert "researchRunId" not in (stale.get("metadata") or {})
+    fresh = studio_db.get_chat_message("thread-1", "assistant-2")
+    assert fresh["metadata"]["researchRunId"] == "run-1"
