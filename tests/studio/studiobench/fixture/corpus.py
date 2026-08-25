@@ -39,7 +39,7 @@ from __future__ import annotations
 import hashlib
 import json
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Iterator, Optional
 
@@ -48,7 +48,10 @@ UNITS_JSONL = FROZEN_DIR / "units.jsonl"
 MANIFEST_JSON = FROZEN_DIR / "manifest.json"
 
 CORPUS_SEED = 20260819
-CORPUS_VERSION = 1
+# 2 added math. A number taken on v1 and a number taken on v2 are measurements of two different
+# films, so they are not comparable and `floor_table` refuses to pool them. Bump this whenever the
+# generated text changes at all, and never edit the generator without bumping it.
+CORPUS_VERSION = 2
 
 # Span density, calibrated against the field capture. See the module docstring. These are now the
 # MEANS of a jittered distribution rather than fixed sizes -- see `_jitter`.
@@ -201,6 +204,54 @@ _SHORT = (
     "tmp",
 )
 
+# ── math ────────────────────────────────────────────────────────────
+#
+# Corpus v1 contained not one dollar sign across 519,859 characters, which made every math cost in
+# the app unmeasurable by construction. That is not a hypothetical gap: `preprocessLaTeX` was
+# measured as a real cost in isolation and then as an exact NULL in the browser, and the reason was
+# that the fixture gave it nothing to do. A benchmark that cannot see a cost cannot be used to
+# argue the cost is not there.
+#
+# Both delimiter families are here on purpose. `$...$` and `$$...$$` are what remark-math consumes
+# directly; `\(...\)` and `\[...\]` are what `preprocessLaTeX` exists to REWRITE into that form, so
+# a corpus carrying only the first kind exercises the renderer while leaving the preprocessor's
+# actual work uncovered.
+_MATH_OPS = ("+", "-", "\\cdot", "\\times", "\\oplus")
+_MATH_RELS = ("=", "\\le", "\\ge", "\\approx", "\\equiv")
+_MATH_FUNCS = ("\\log", "\\exp", "\\sin", "\\cos", "\\tanh")
+_MATH_GREEK = (
+    "\\alpha",
+    "\\beta",
+    "\\gamma",
+    "\\delta",
+    "\\theta",
+    "\\lambda",
+    "\\mu",
+    "\\sigma",
+    "\\phi",
+    "\\omega",
+)
+
+# Chance that a non-preamble prose BLOCK is a display-math block instead.
+#
+# Math takes prose's slot rather than being appended alongside it, and is drawn from the same
+# jittered size distribution. That keeps the prose/fence alternation exactly as it was: same number
+# of fences, same fence sizes, so the Shiki span density the whole corpus is calibrated to is
+# untouched by construction rather than by a re-tuning nobody would re-check.
+MATH_BLOCK_PROB = 0.16
+
+# Chance that a sentence in a non-preamble prose block carries an inline expression. Inline math is
+# the common case in real chat replies, and it is the one that interleaves with text rather than
+# sitting in its own block, which is a different path through the markdown pipeline.
+#
+# Inline math is spent from the prose block's own character budget, for the same reason as above.
+INLINE_MATH_PROB = 0.22
+
+# The PREAMBLE stays pure prose, deliberately. Its whole job is to be the stretch that builds no
+# spans and holds 60 fps, so the onset of cost has somewhere to be visible against. Putting math in
+# it would give the preamble a rendering cost and destroy the only fence-free, math-free baseline
+# the film has.
+
 
 @dataclass(frozen = True)
 class Unit:
@@ -297,28 +348,114 @@ class Unit:
 # ── generation ──────────────────────────────────────────────────────
 
 
-def _sentence(rng: random.Random, salt: str) -> str:
+def _expression(rng: random.Random, salt: str, terms: int) -> str:
+    """One LaTeX expression body, unique to `salt`.
+
+    Salted in a SUBSCRIPT rather than a comment, for the same reason `_fence` salts identifiers:
+    KaTeX caches nothing today, but Streamdown memoises rendered blocks on their source, and a
+    salt that a later normalisation pass could strip would silently restore the caching and halve a
+    measured cost without changing a number in the report.
+    """
+    parts = [f"{rng.choice(_MATH_GREEK)}_{{{salt}}}", rng.choice(_MATH_RELS)]
+    for i in range(terms):
+        if i:
+            parts.append(rng.choice(_MATH_OPS))
+        shape = rng.random()
+        if shape < 0.30:
+            parts.append(
+                f"\\frac{{{rng.choice(_MATH_GREEK)}^{{{rng.randint(2, 9)}}}}}"
+                f"{{{rng.randint(1, 99)} {rng.choice(_MATH_GREEK)}}}"
+            )
+        elif shape < 0.50:
+            parts.append(
+                f"\\sum_{{{rng.choice(_SHORT)}={rng.randint(0, 3)}}}^{{{rng.randint(4, 99)}}} "
+                f"{rng.choice(_MATH_GREEK)}_{{{rng.choice(_SHORT)}}}"
+            )
+        elif shape < 0.65:
+            parts.append(f"\\sqrt{{{rng.choice(_MATH_GREEK)} {rng.randint(2, 99)}}}")
+        elif shape < 0.80:
+            parts.append(
+                f"{rng.choice(_MATH_FUNCS)}\\left({rng.choice(_MATH_GREEK)}"
+                f"^{{{rng.randint(2, 5)}}}\\right)"
+            )
+        else:
+            parts.append(f"{rng.choice(_MATH_GREEK)}^{{{rng.randint(2, 9)}}}")
+    return " ".join(parts)
+
+
+def _inline_math(rng: random.Random, salt: str) -> str:
+    """One inline expression, in whichever delimiter family this draw lands on.
+
+    `\\(...\\)` is not markdown's own syntax: it reaches the renderer only if `preprocessLaTeX`
+    rewrites it first, so this is the draw that covers the preprocessor rather than the renderer.
+    """
+    body = _expression(rng, salt, rng.randint(1, 2))
+    return f"$ {body} $" if rng.random() < 0.65 else f"\\( {body} \\)"
+
+
+def _sentence(
+    rng: random.Random,
+    salt: str,
+    *,
+    math: bool = False,
+) -> str:
+    tail = f" where {_inline_math(rng, salt)} holds" if math else ""
     return (
         f"The {rng.choice(_ADJS)} {rng.choice(_NOUNS)} {rng.choice(_VERBS)} the "
         f"{rng.choice(_ADJS)} {rng.choice(_NOUNS)}_{salt}, {rng.choice(_CONNECTIVES)} the "
-        f"{rng.choice(_NOUNS)} stays {rng.choice(_ADJS)}."
+        f"{rng.choice(_NOUNS)} stays {rng.choice(_ADJS)}{tail}."
     )
 
 
-def _prose(rng: random.Random, target: int, salt: str) -> str:
-    """`target` characters of fence-free prose. No span will ever be built over any of it."""
+def _prose(
+    rng: random.Random,
+    target: int,
+    salt: str,
+    *,
+    math: bool = False,
+) -> str:
+    """`target` characters of fence-free prose. No Shiki span will be built over any of it.
+
+    With `math`, a share of the sentences carry an inline expression. Those characters are spent
+    from `target` like any other, so a prose block is the same size whether or not it has math in
+    it and the corpus keeps the block-size distribution it was calibrated with.
+    """
     out: list[str] = []
     size = 0
     while size < target:
         para: list[str] = []
         for _ in range(rng.randint(3, 6)):
-            s = _sentence(rng, salt)
+            s = _sentence(rng, salt, math = math and rng.random() < INLINE_MATH_PROB)
             para.append(s)
             size += len(s) + 1
         out.append(" ".join(para))
         size += 2
         if size >= target:
             break
+    return "\n\n".join(out)
+
+
+def _math_block(rng: random.Random, target: int, salt: str) -> str:
+    """`target` characters of display math, as a run of blocks with prose between them.
+
+    Not one enormous equation: a reply with math in it is a handful of displayed lines threaded
+    through explanation, and a single block would measure the cost of one very large KaTeX tree
+    rather than the cost of many, which is the shape that actually accumulates in a long thread.
+    """
+    out: list[str] = []
+    size = 0
+    i = 0
+    while size < target:
+        body = _expression(rng, f"{salt}m{i}", rng.randint(3, 6))
+        block = f"$$\n{body}\n$$" if rng.random() < 0.65 else f"\\[\n{body}\n\\]"
+        out.append(block)
+        size += len(block) + 2
+        i += 1
+        if size >= target:
+            break
+        gloss = _prose(rng, _jitter(rng, 260, floor = 60), f"{salt}g{i}", math = True)
+        out.append(gloss)
+        size += len(gloss) + 2
     return "\n\n".join(out)
 
 
@@ -416,7 +553,14 @@ def _body(rng: random.Random, target: int, salt: str, *, preamble: bool) -> str:
         parts.append(head)
         size += len(head) + 2
     while size < target:
-        p = _prose(rng, _jitter(rng, PROSE_CHARS), f"{salt}{len(parts)}")
+        # Math takes the prose slot rather than being added alongside it, and is drawn from the
+        # same size distribution, so the fence blocks keep their count and their sizes and the
+        # span-density calibration in the module docstring still holds.
+        want = _jitter(rng, PROSE_CHARS)
+        if rng.random() < MATH_BLOCK_PROB:
+            p = _math_block(rng, want, f"{salt}{len(parts)}")
+        else:
+            p = _prose(rng, want, f"{salt}{len(parts)}", math = True)
         parts.append(p)
         size += len(p) + 2
         if size >= target:
@@ -545,6 +689,8 @@ def freeze(
         "prose_chars": PROSE_CHARS,
         "fence_chars": FENCE_CHARS,
         "preamble_fraction": PREAMBLE_FRACTION,
+        "math_block_prob": MATH_BLOCK_PROB,
+        "inline_math_prob": INLINE_MATH_PROB,
         "max_unit_chars": MAX_UNIT_CHARS,
         "shipped_units": len(shipped),
         "shipped_chars": sum(u.chars for u in shipped),
@@ -573,6 +719,8 @@ def corpus_hash(manifest: dict) -> str:
         "prose_chars",
         "fence_chars",
         "preamble_fraction",
+        "math_block_prob",
+        "inline_math_prob",
         "max_unit_chars",
     ):
         h.update(f"{key}={manifest[key]}\x00".encode("utf-8"))
@@ -778,6 +926,66 @@ class RungPlan:
         return self.seeded_chars + self.streamed_chars + self.follow_up_chars
 
 
+def dollarise(text: str, salt: str) -> str:
+    """Give `text` the CURRENCY AND SHELL dollars a real reply has, deterministically.
+
+    WHAT THIS IS FOR, AND WHAT IT IS NO LONGER FOR. This was written when the frozen corpus
+    contained zero `$`, zero `\\[` and zero `\\(` across all 519,859 characters, so that
+    `preprocessLaTeX` -- which runs on the whole reply once per animation frame -- always took its
+    cheap path. That path is an early return after `text.includes("$")` fails
+    (`studio/frontend/src/lib/latex.ts`), and the two regimes are an order of magnitude apart:
+    measured over one 96,000 character reply, 15.3 ms against 281.3 ms.
+
+    CORPUS v2 CHANGED THAT AND THIS DOCSTRING WOULD OTHERWISE LIE. The frozen corpus now carries
+    well-formed LaTeX throughout, and the streamed unit is drawn from it, so the streamed reply
+    already contains `$` without this flag: 10 of them at the 10K rung and 6 at 100K, measured.
+    The early return is therefore already defeated by default, and the claim that the expensive
+    regime "has never been exercised" is dead. Anyone reaching for this flag to reach that regime
+    does not need it any more.
+
+    WHAT IT STILL DOES, which is narrower and worth stating exactly. The early return is keyed on
+    the reply BEING PROCESSED -- `preprocessLaTeX(displayText)` is called per message
+    (`components/assistant-ui/markdown-text.tsx`) -- and past it the cost is the `CURRENCY_REGEX`
+    pass, whose callback has three branches: skip inside a code region, skip inside a math region
+    just created from `\\(...\\)`, and escape everything else. v2's dollars are well-formed math,
+    so they take the SKIP branches. The dollars added here are deliberately not math: `$HOME/...`
+    inside fences exercises the code-region exclusion, and `$12.99` in prose exercises the escape
+    branch and `hasInlineMathCloser`. That is the false-positive half of the function, and it is
+    the half that rewrites the string rather than leaving it alone.
+
+    So the two mechanisms are complementary rather than redundant: v2 puts renderable math in the
+    SEEDED thread and exercises the renderer, and this puts malformed-on-purpose dollars in the
+    turn that STREAMS and exercises the heuristics, per chunk, on the path a streaming-cost metric
+    measures. Expect a far smaller effect from this flag than the 15.3-to-281.3 figure above,
+    because that transition now happens without it.
+
+    Applied to the STREAMED unit only, and never to the frozen corpus on disk: the frozen units
+    and their hashes are exactly what they were, so a run with this off is byte-identical to a run
+    of the same corpus version without it. A run with it on records the fact in its payload,
+    because a corpus difference that is not in the payload is a difference two runs will be
+    compared across without knowing.
+    """
+    lines = text.split("\n")
+    out: list[str] = []
+    fenced = False
+    for index, line in enumerate(lines):
+        stripped = line.lstrip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            fenced = not fenced
+            out.append(line)
+            continue
+        # Inside a fence, shell-shaped lines. Outside it, prices in prose. Both are what a real
+        # answer contains, and they exercise different branches: the code-region scan has to
+        # EXCLUDE the first and the currency heuristic has to escape the second.
+        if fenced and index % 11 == 0:
+            out.append(f"{line}  # $HOME/{salt}{index} costs $1{index % 10}.99")
+        elif not fenced and line and index % 17 == 0:
+            out.append(f"{line} It costs ${index % 9}{index % 10}.99 or ${index % 7},200 a year.")
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+
 def _too_small(rung: str, chars_per_token: float, last_index: int, what: str) -> ValueError:
     """The one message for every way a rung can outgrow the frozen corpus.
 
@@ -791,6 +999,51 @@ def _too_small(rung: str, chars_per_token: float, last_index: int, what: str) ->
         "`python -m tests.studio.studiobench.fixture.corpus --freeze` after raising "
         "MANIFEST_CHARS_PER_TOKEN, and note that a re-freeze changes corpus_hash and so ends "
         "comparability with everything measured before it."
+    )
+
+
+def _tail_not_deliverable(
+    rung: str,
+    requested: int,
+    source_index: int,
+    deliverable: int,
+    thread_chars: int,
+    target_chars: int,
+) -> ValueError:
+    """An explicit `--stream-tail-chars` the corpus cannot actually deliver.
+
+    Deliberately an ERROR and not a shortfall field, for the same reason `_too_small` is. The
+    quantity this flag exists to vary is the ONLY variable in a reply-length experiment, so a run
+    that silently measures a fraction of it has no honest reading at all -- there is nothing to
+    caveat, the axis simply did not move.
+
+    TWO EFFECTS COMPOUND HERE and the message names both, because fixing only the one you noticed
+    leaves the other. The tail is one corpus unit and `clipped_to` returns the unit unchanged when
+    the ask exceeds it, so delivery is capped at that unit's size. And asking for MORE tail lowers
+    that cap rather than raising it: a bigger tail shrinks `seed_target`, which moves the streamed
+    turn to a lower index, and the corpus escalates in size, so the ceiling falls as the request
+    rises. At the extreme the seeded prefix is evacuated entirely and the rung's own thread goes
+    with it, while the cell keeps its rung label, its rung weight and its place in the table.
+
+    Measured before this guard existed: `--rungs 100K --stream-tail-chars 400000` delivered 15,405
+    characters of the 400,000 asked for (3.9%) on a thread of 18,122 characters against the rung's
+    397,755 (4.6%), and `--assert-liveness` returned `0 scene problems, 0 missed slots`, exit 0,
+    byte-identical to the default run -- because a saturated tail drains FASTER than the film it
+    was supposed to outlast, so the one check that could have noticed goes quieter as the input
+    gets more wrong.
+    """
+    return ValueError(
+        f"the frozen corpus cannot deliver a {requested:,} character streamed tail at the {rung} "
+        f"rung: the streamed turn is unit {source_index}, which is {deliverable:,} characters, so "
+        f"the reply would be {deliverable / requested:.1%} of the one asked for. Asking for more "
+        f"tail makes this worse rather than better, because the seeded prefix shrinks to pay for "
+        f"it and the streamed turn moves to a smaller unit -- here the thread would collapse to "
+        f"{thread_chars:,} characters against the rung's {target_chars:,}, while still being "
+        f"recorded, weighted and reported as {rung}. Ask for less, or move the same request to a "
+        f"higher rung. NOT 'at most {deliverable:,}': that is this unit's size at THIS request, "
+        f"and the ceiling RISES as the request falls, because a smaller tail leaves a longer "
+        f"seeded prefix which draws the streamed turn from a larger unit. Lower the ask until "
+        f"this stops firing rather than reading a maximum off this line."
     )
 
 
@@ -842,6 +1095,8 @@ def plan_rung(
     corpus: Corpus,
     rung: str,
     chars_per_token: float = PROVISIONAL_CHARS_PER_TOKEN,
+    stream_tail_chars: Optional[int] = None,
+    dollars: bool = False,
 ) -> RungPlan:
     """Which units are SEEDED and which one STREAMS.
 
@@ -867,8 +1122,20 @@ def plan_rung(
     # Holding the tail constant also isolates the variable under investigation. The question is
     # what a streamed chunk costs AS A FUNCTION OF THE THREAD ALREADY ON SCREEN, and that needs
     # the chunk workload held fixed while the thread grows, not both moving together.
+    # `stream_tail_chars` overrides the constant, and is the ONLY way to vary reply length in this
+    # tool. The paragraphs above explain why the tail is pinned: the rung ladder exists to ask what
+    # a chunk costs as a function of the THREAD, and that needs the chunk workload held fixed. The
+    # consequence, which cost a whole investigation to rediscover, is that a cost scaling with the
+    # length of the reply BEING STREAMED is constant across every rung and reads as a floor. Such a
+    # mechanism is real and this ladder cannot see it at any effect size.
+    #
+    # Raising this makes the film's labels false in the way the note above describes, because the
+    # stream then outlasts the after-generation slots. That is a trade a reply-length investigation
+    # has to make deliberately, so it is a parameter and not a second constant, and `--assert-
+    # liveness` on the resulting payload is how the cost of making it shows up.
     turns = STREAM_TURNS if target_chars >= MULTI_TURN_MIN_CHARS else 1
-    tail_target = min(STREAM_TAIL_CHARS, target_chars)
+    tail_budget = STREAM_TAIL_CHARS if stream_tail_chars is None else max(1, stream_tail_chars)
+    tail_target = min(tail_budget, target_chars) if stream_tail_chars is None else tail_budget
     follow_budget = FOLLOW_UP_CHARS * (turns - 1)
     seed_target = max(0, target_chars - tail_target - follow_budget)
 
@@ -914,8 +1181,44 @@ def plan_rung(
     # during-generation slots are timed against the opening stream, so it has to outlast them;
     # splitting the budget between turns left it draining in four seconds and those slots then ran
     # against a finished reply while still being labelled "during generation".
-    streamed = corpus.unit(len(seeded)).clipped_to(tail_target)
+    source = corpus.unit(len(seeded))
+    # THE REQUESTED TAIL HAS TO BE DELIVERABLE. Keyed on `clipped_to`'s own early return
+    # (`if chars >= self.chars: return self`) rather than on a tolerance, because the two ways a
+    # tail lands under its budget are different in kind and only one of them is a defect: clipping
+    # at a whole BLOCK boundary loses at most one block and is what keeps a prefix from ending
+    # inside a fence, while exceeding the unit loses everything above it and is unbounded. A
+    # percentage bound cannot tell those apart, and a bound nobody can derive is an unacknowledged
+    # bias rather than a tolerance.
+    #
+    # The DEFAULT path is exempt on purpose: `STREAM_TAIL_CHARS` is a ceiling the small rungs are
+    # legitimately under (the 1K rung is 4,000 characters in total, less than one tail), and that
+    # shortfall is the rung being small rather than the corpus failing to answer.
+    if stream_tail_chars is not None and tail_target >= source.chars:
+        raise _tail_not_deliverable(
+            rung,
+            tail_target,
+            len(seeded),
+            source.chars,
+            sum(u.chars for u in seeded) + source.chars + FOLLOW_UP_CHARS * (turns - 1),
+            target_chars,
+        )
+    streamed = source.clipped_to(tail_target)
     follow_ups = [corpus.unit(len(seeded) + i).clipped_to(FOLLOW_UP_CHARS) for i in range(1, turns)]
+    if dollars:
+        # The streamed turns only. The seeded prefix is rendered once at mount and never
+        # re-preprocessed, so dollars there would change the corpus without changing what the
+        # per-frame path is asked to do.
+        streamed = replace(
+            streamed,
+            reasoning = dollarise(streamed.reasoning, "r"),
+            content = dollarise(streamed.content, "c"),
+        )
+        streamed = replace(streamed, chars = len(streamed.reasoning) + len(streamed.content))
+        follow_ups = [
+            replace(u, reasoning = dollarise(u.reasoning, "r"), content = dollarise(u.content, "c"))
+            for u in follow_ups
+        ]
+        follow_ups = [replace(u, chars = len(u.reasoning) + len(u.content)) for u in follow_ups]
 
     plan = RungPlan(
         rung = rung,

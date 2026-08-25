@@ -22,6 +22,7 @@ import pytest
 
 from core.inference.diffusion import (
     DiffusionBackend,
+    DiffusionModelReplacedError,
     _LoadState,
     _base_file_downloaded,
     _clamp_max_side,
@@ -41,6 +42,7 @@ from core.inference.diffusion_families import (
     canonical_base,
     detect_family,
     family_prequant_repo,
+    load_identity,
     mirror_repo,
     prefer_ungated_mirror,
     resolve_base_repo,
@@ -751,6 +753,128 @@ def fake_runtime(monkeypatch):
     _FakeInpaintPipeline.built_from = None
     _FakeInpaintPipe.last_kwargs = {}
     yield
+
+
+def test_generate_refuses_when_the_model_was_replaced_since_the_snapshot(fake_runtime, tmp_path):
+    """The guard in isolation: a snapshot naming another model is refused, typed (#9448)."""
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
+        family_override = "z-image",
+    )
+    st = backend.status()
+    loaded = load_identity(st["repo_id"], st["base_repo"], st["family"])
+
+    # Snapshot names a different model: typed refusal, no denoise started.
+    stale = load_identity("other/model", st["base_repo"], st["family"])
+    with pytest.raises(DiffusionModelReplacedError) as replaced:
+        backend.generate(prompt = "stale request", expected_load = stale)
+    assert replaced.value.expected == stale
+    assert replaced.value.actual == loaded
+
+    gen = backend.generate(prompt = "fresh request", expected_load = loaded, steps = 4)
+    assert len(gen["images"]) == 1
+
+    # And callers that pass no snapshot keep the historical behaviour.
+    gen2 = backend.generate(prompt = "legacy caller", steps = 4)
+    assert len(gen2["images"]) == 1
+
+
+def test_generate_refuses_a_replacement_that_committed_while_it_waited(fake_runtime, tmp_path):
+    """The reported interleaving end to end (#9448).
+
+    A load drops its teardown fence for the whole construction of the new model while still
+    holding the generation lock, so a generate arriving there used to block, then denoise on
+    the NEW model with the snapshot's steps/guidance.
+    """
+    old_dir, new_dir = tmp_path / "old", tmp_path / "new"
+    for d in (old_dir, new_dir):
+        d.mkdir()
+        (d / "model.gguf").write_bytes(b"weights")
+    load_kwargs = dict(gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image")
+
+    backend = DiffusionBackend()
+    backend.load_pipeline(str(old_dir), **load_kwargs)
+    st = backend.status()  # the route's pre-generation read
+    snapshot = load_identity(st["repo_id"], st["base_repo"], st["family"])
+
+    # Park a replacement inside the construction of the new model: the fence is down there.
+    reached, release = threading.Event(), threading.Event()
+    original = _FakeTransformer.from_single_file.__func__
+
+    def _parked(cls, path, **kwargs):
+        reached.set()
+        assert release.wait(30)
+        return original(cls, path, **kwargs)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(_FakeTransformer, "from_single_file", classmethod(_parked))
+        loader = threading.Thread(
+            target = backend.load_pipeline, args = (str(new_dir),), kwargs = load_kwargs, daemon = True
+        )
+        loader.start()
+        assert reached.wait(30)
+        assert backend._teardown_waiters == 0  # the window under test is genuinely open
+
+        outcome = {}
+
+        def _generate():
+            try:
+                outcome["ok"] = backend.generate(
+                    prompt = "a sloth", steps = 9, guidance = 0.0, expected_load = snapshot
+                )
+            except BaseException as exc:  # noqa: BLE001 (the exception IS the assertion)
+                outcome["err"] = exc
+
+        gen = threading.Thread(target = _generate, daemon = True)
+        gen.start()
+        gen.join(1.0)
+        assert gen.is_alive()  # blocked on _generate_lock, which the load holds
+
+        release.set()
+        loader.join(30)
+        gen.join(30)
+
+    assert not gen.is_alive()
+    assert backend.status()["repo_id"] == str(new_dir)  # the replacement did commit
+    assert "ok" not in outcome, "denoised on the replacement with the snapshot's parameters"
+    assert isinstance(outcome["err"], DiffusionModelReplacedError)
+    assert (outcome["err"].expected.repo_id, outcome["err"].actual.repo_id) == (
+        str(old_dir),
+        str(new_dir),
+    )
+
+
+def test_the_same_path_reloaded_under_a_different_base_is_a_replacement(fake_runtime, tmp_path):
+    """repo_id is not a load identity (#9448).
+
+    base_repo and family_override are settable per load, so one local checkpoint reloads as a
+    different model. Pinning the path alone let a FLUX.1-dev request reach a schnell pipeline.
+    """
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "black-forest-labs/FLUX.1-dev",
+        family_override = "z-image",
+    )
+    st = backend.status()
+    snapshot = load_identity(st["repo_id"], st["base_repo"], st["family"])
+
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "black-forest-labs/FLUX.1-schnell",
+        family_override = "z-image",
+    )
+    assert backend.status()["repo_id"] == snapshot.repo_id  # repo_id alone sees no change
+    with pytest.raises(DiffusionModelReplacedError) as replaced:
+        backend.generate(prompt = "p", steps = 28, guidance = 3.5, expected_load = snapshot)
+    assert replaced.value.actual.base_repo == "black-forest-labs/FLUX.1-schnell"
 
 
 def test_load_generate_unload_gguf(fake_runtime, tmp_path):
@@ -6771,14 +6895,15 @@ def test_download_plan_flags_a_mirrored_pipeline_as_the_checkpoint(monkeypatch):
     # The page used to derive the label by comparing those two ids, which made every file of the
     # selected model read as "Required assets". Only the planner knows about the swap.
     gated = "black-forest-labs/FLUX.1-dev"
-    _fake_hf_api(monkeypatch, {gated: _FLUX_BASE_SIBLINGS})
+    mirror = "unsloth/FLUX.1-dev"
+    _fake_hf_api(monkeypatch, {gated: _FLUX_BASE_SIBLINGS, mirror: _FLUX_BASE_SIBLINGS})
     _no_cache(monkeypatch)
 
     plan = DiffusionBackend().download_plan(gated, model_kind = "pipeline")
 
     assert len(plan["entries"]) == 1
     entry = plan["entries"][0]
-    assert entry["repo_id"] == "unsloth/FLUX.1-dev" != gated
+    assert entry["repo_id"] == mirror != gated
     assert entry["checkpoint"] is True
 
 
@@ -6821,7 +6946,7 @@ def test_download_plan_stages_the_precast_encoder_instead_of_the_dense_one(monke
     # The pick resolves one hosted pre-cast encoder for text_encoder_2 (flux.1 hosts its T5-XXL).
     monkeypatch.setattr(
         "core.inference.diffusion_te_prequant.te_prequant_sources",
-        lambda fam, *, te_quant_mode, target: (
+        lambda fam, *, te_quant_mode, target, **_kwargs: (
             {
                 "text_encoder_2": types.SimpleNamespace(
                     kind = "repo",
@@ -10079,7 +10204,7 @@ def test_the_resident_size_table_prices_a_pre_cast_encoder_at_its_real_size(
     monkeypatch.setattr(dmod, "family_bf16_components_gb", dmod.family_bf16_components_gb)
     monkeypatch.setattr(
         "core.inference.diffusion_te_prequant.te_prequant_sources",
-        lambda fam, te_quant_mode = None, target = None: {"text_encoder": object()},
+        lambda fam, te_quant_mode = None, target = None, **_kwargs: {"text_encoder": object()},
     )
     precast = backend._resident_sized_plan(
         plan, fam, base, target, "pipeline", text_encoder_quant = "fp8"
@@ -10178,7 +10303,6 @@ def test_the_prequant_fit_check_prices_a_pre_cast_text_encoder(fake_runtime, mon
     already applies te_prequant_budget_scale; this is the same scale on the same estimate."""
     from core.inference.diffusion import DiffusionBackend
     from core.inference.diffusion_families import detect_family
-    from core.inference.diffusion_te_prequant import TE_PREQUANT_BUDGET_SCALE
 
     fam = detect_family("black-forest-labs/FLUX.2-dev")
     assert fam is not None and fam.te_prequant_repos, "the fixture family lost its pre-cast repo"
@@ -10186,43 +10310,35 @@ def test_the_prequant_fit_check_prices_a_pre_cast_text_encoder(fake_runtime, mon
     encoders = 48_000
     candidate = types.SimpleNamespace(companions_mib = encoders + 400, text_encoders_mib = encoders)
 
-    scaled = DiffusionBackend._precast_scaled_companions_mib(candidate, fam, object(), "fp8")
-    # No pre-cast encoder resolves in this environment unless te_prequant_sources says so, so pin
-    # the two outcomes on the resolver rather than assuming one.
-    from core.inference.diffusion_te_prequant import te_prequant_sources
+    base = "black-forest-labs/FLUX.2-dev"
+    seen: dict = {}
 
-    if te_prequant_sources(fam, te_quant_mode = "fp8", target = object()):
-        assert scaled == 400 + int(encoders * TE_PREQUANT_BUDGET_SCALE)
-        assert scaled < candidate.companions_mib
-    else:
-        assert scaled == candidate.companions_mib
+    def _scale(_fam, *, te_quant_mode, target, base):
+        seen.update(mode = te_quant_mode, target = target, base = base)
+        return 0.5 if te_quant_mode == "fp8" else 1.0
+
+    monkeypatch.setattr("core.inference.diffusion_te_prequant.te_prequant_budget_scale", _scale)
+    scaled = DiffusionBackend._precast_scaled_companions_mib(candidate, fam, base, object(), "fp8")
+    assert scaled == 24_400
+    assert seen["mode"] == "fp8"
+    assert seen["base"] == base
 
     # No encoder quant requested: the estimate is passed through untouched, byte for byte.
     assert (
-        DiffusionBackend._precast_scaled_companions_mib(candidate, fam, object(), None)
+        DiffusionBackend._precast_scaled_companions_mib(candidate, fam, base, object(), None)
         == candidate.companions_mib
     )
     # The VAE share is never scaled, and a candidate with no split degrades to the dense total.
     no_split = types.SimpleNamespace(companions_mib = 1234, text_encoders_mib = 0)
-    assert DiffusionBackend._precast_scaled_companions_mib(no_split, fam, object(), "fp8") == 1234
+    assert (
+        DiffusionBackend._precast_scaled_companions_mib(no_split, fam, base, object(), "fp8")
+        == 1234
+    )
     # An estimate with no companions at all stays None, which _plan_memory reads as "no override".
     empty = types.SimpleNamespace(companions_mib = None)
-    assert DiffusionBackend._precast_scaled_companions_mib(empty, fam, object(), "fp8") is None
-
-
-def test_the_pre_cast_companion_scale_matches_the_load_level_plan(fake_runtime, monkeypatch):
-    """Both sides must read the same scale from the same resolver, or the fit check and the plan
-    it gates disagree about what the load builds."""
-    from core.inference.diffusion import DiffusionBackend
-    from core.inference.diffusion_families import detect_family
-
-    fam = detect_family("black-forest-labs/FLUX.2-dev")
-    monkeypatch.setattr(
-        "core.inference.diffusion_te_prequant.te_prequant_budget_scale",
-        lambda fam, *, te_quant_mode, target: 0.5 if te_quant_mode == "fp8" else 1.0,
+    assert (
+        DiffusionBackend._precast_scaled_companions_mib(empty, fam, base, object(), "fp8") is None
     )
-    candidate = types.SimpleNamespace(companions_mib = 10_400, text_encoders_mib = 10_000)
-    assert DiffusionBackend._precast_scaled_companions_mib(candidate, fam, object(), "fp8") == 5_400
 
 
 def test_an_offload_memory_request_is_not_reported_as_unstaged_shards(
@@ -10315,3 +10431,44 @@ def test_an_unsupported_host_is_not_told_its_shards_are_unstaged(
     )
     reason3 = ((status3.get("resolved") or {}).get("transformer_quant") or {}).get("reason") or ""
     assert "shards are not staged" in reason3, reason3
+
+
+def test_generation_in_flight_tracks_a_generation(fake_runtime, tmp_path, monkeypatch):
+    import core.inference.diffusion as diffusion_mod
+
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
+        family_override = "z-image",
+    )
+    monkeypatch.setattr(diffusion_mod, "_diffusion_backend", backend)
+
+    seen = {}
+
+    def fake_apply(self, state, loras, cancel):
+        # Check the marker during pre-denoise setup.
+        seen["in_flight"] = diffusion_mod.generation_in_flight()
+
+    monkeypatch.setattr(DiffusionBackend, "_apply_loras", fake_apply)
+
+    assert diffusion_mod.generation_in_flight() is False
+    backend.generate(prompt = "a sloth", steps = 4)
+    assert (
+        seen["in_flight"] is True
+    ), "liveness cannot tell this backend from a dead one while it renders an image"
+    assert diffusion_mod.generation_in_flight() is False
+
+
+def test_generation_in_flight_never_builds_a_backend(fake_runtime, monkeypatch):
+    import core.inference.diffusion as diffusion_mod
+
+    monkeypatch.setattr(diffusion_mod, "_diffusion_backend", None)
+    monkeypatch.setattr(
+        diffusion_mod,
+        "DiffusionBackend",
+        lambda *a, **k: pytest.fail("liveness constructed a diffusion backend"),
+    )
+    assert diffusion_mod.generation_in_flight() is False

@@ -55,7 +55,7 @@ from typing import Any, Protocol
 
 from core.inference import tools as tools_module
 from core.inference.chat_template_helpers import append_assistant_turn
-from core.inference.passthrough_healing import StreamToolCallHealer, heal_gate
+from core.inference.passthrough_healing import StreamToolCallHealer, heal_gate, nudge_enabled
 from core.inference.sse_control_frames import sanitize_provider_sse_line
 from core.inference.tool_call_parser import (
     MAX_ACT_REPROMPTS,
@@ -74,6 +74,7 @@ from core.inference.tool_stream_exec import (
     TOOL_HEARTBEAT_INTERVAL_S,
     accepts_kwarg,
     accepts_output_callback,
+    search_images_kwargs,
     stream_tool_execution,
 )
 from core.inference.tools import build_rag_autoinject, execute_tool, is_high_risk_tool_call
@@ -346,6 +347,8 @@ class ToolLoopPolicy:
     rag_scope: dict[str, Any] | None
     # None means "follow the process default"; False disables text-form healing.
     auto_heal: bool | None = None
+    # None follows UNSLOTH_TOOL_CALL_NUDGE; explicit booleans win.
+    nudge_tool_calls: bool | None = None
 
 
 @dataclass
@@ -1042,6 +1045,7 @@ async def stream_with_studio_tools(
             visible_answer = "".join(turn.text)
             if (
                 tools_available
+                and nudge_enabled(policy.nudge_tool_calls)
                 and not controller.force_final_answer
                 and reprompts < max_reprompts
                 and is_short_intent_without_action(visible_answer)
@@ -1277,6 +1281,7 @@ async def stream_with_studio_tools(
                         pass
                 if accepts_output_callback(execute_tool):
                     kwargs["output_callback"] = output_callback
+                kwargs.update(search_images_kwargs(execute_tool, call.tool_name))
                 return execute_tool(call.tool_name, call.arguments, **kwargs)
 
             # The same wrapper the local loops run tools through: live stdout for

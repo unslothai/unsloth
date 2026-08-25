@@ -273,7 +273,7 @@ jobs:
       reason: ${{ steps.decide.outputs.reason }}
     steps:
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
         with:
           egress-policy: audit
 
@@ -326,17 +326,26 @@ jobs:
     # 120 min: the kernel ceiling is 70 and collection adds a few, so this
     # only fires if the launcher itself wedged.
     timeout-minutes: 120
-    # The SAME group string the notebook leg uses, on purpose. Kaggle's
-    # 2-kernel cap is per ACCOUNT and is not workflow-aware, so the two GPU
-    # legs have to queue behind each other rather than race the gate's
-    # concurrency survey and lose a push to the capacity cap. Not keyed on
-    # the ref for the same reason.
+    # A group of this workflow's OWN, where this used to be the same string the
+    # notebook leg uses. Sharing it was right while the notebook leg pushed two
+    # kernels and so held both of the account's concurrent sessions: this job
+    # would have raced the cap and lost its push. The notebook leg now packs
+    # every leg into a single kernel and holds one session, so the second is
+    # free and this job can take it instead of waiting out the whole notebook
+    # run (measured: run 32607617804 queued about 40 minutes behind notebook run
+    # 32607621452).
+    #
+    # Still not keyed on the ref: this job pushes to one global account, so two
+    # branches must not overlap even though the two WORKFLOWS now may. And the
+    # arithmetic has no slack -- one kernel here plus one there is exactly
+    # Kaggle's 2-session cap -- so anything that makes either side push a second
+    # kernel has to put these two back in one group.
     concurrency:
-      group: kaggle-t4-notebook-ci-account
+      group: kaggle-t4-account-studio
       cancel-in-progress: false
     steps:
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
         with:
           egress-policy: audit
 
