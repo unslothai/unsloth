@@ -1568,8 +1568,8 @@ export const ja = {
         "このデバイス上のモデルはトレーニングできません。",
       reasonUnsupportedFormat:
         "このモデル形式はトレーニングでサポートされていません。",
-      vramNeeds: "約 {est}GB VRAM が必要 (GPU: {total}GB)",
-      vramTight: "約 {est}GB VRAM (GPU {total}GB ではギリギリです)",
+      vramNeeds: "約 {est}GB VRAM が必要 (GPU: {total}GiB)",
+      vramTight: "約 {est}GB VRAM (GPU {total}GiB ではギリギリです)",
       vramApprox: "約 {est}GB VRAM",
       vramOomBadge: "OOM",
       vramTightBadge: "ギリギリ",
