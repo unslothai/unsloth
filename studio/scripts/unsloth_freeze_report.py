@@ -39,6 +39,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -74,6 +75,21 @@ CANDIDATES = [
         "runs the interface through XWayland instead of Wayland",
     ),
 ]
+
+
+def _has_display(extra: dict) -> bool:
+    """Is there somewhere for THIS candidate to draw?
+
+    Candidate specific, because GDK_BACKEND=x11 needs an X DISPLAY in particular: on a
+    Wayland-only session it has nowhere to go, and reporting that as a crash sends someone
+    hunting a bug that is not there.
+    """
+    backend = extra.get("GDK_BACKEND") or os.environ.get("GDK_BACKEND") or ""
+    if backend == "x11":
+        return bool(os.environ.get("DISPLAY"))
+    if backend == "wayland":
+        return bool(os.environ.get("WAYLAND_DISPLAY"))
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
 
 def _span(seconds: int) -> str:
@@ -276,12 +292,16 @@ def run_candidate(label, extra, why, cmd) -> dict:
 
     env = {**os.environ, **extra}
     before = backend_offsets()
+    # To a FILE, never subprocess.PIPE. Nothing here reads the pipe while the app runs, so
+    # once the app had written enough to fill the 64 KiB buffer it would block on its own
+    # stdout: this script would hang the app it is measuring, and the user would see a
+    # freeze that the script itself caused.
+    app_log = Path(tempfile.mkstemp(suffix = ".log", prefix = "unsloth-freeze-")[1])
     proc = subprocess.Popen(
         cmd,
         env = env,
-        stdout = subprocess.PIPE,
+        stdout = app_log.open("w"),
         stderr = subprocess.STDOUT,
-        text = True,
         start_new_session = True,
     )
     started = time.time()
@@ -326,6 +346,7 @@ def run_candidate(label, extra, why, cmd) -> dict:
             pass
 
     text = backend_tail(before)
+    shell_out = app_log.read_text(errors = "replace")
     n_mon, n_live = len(MONITOR.findall(text)), len(LIVENESS.findall(text))
 
     # Did the interface stop polling partway through while the watchdog carried on? That is
@@ -336,10 +357,13 @@ def run_candidate(label, extra, why, cmd) -> dict:
             stalled_at = samples[i][0]
             break
 
-    pre_lines = [l for l in text.splitlines() if "desktop_preflight completed" in l]
+    pre_lines = [l for l in (text + shell_out).splitlines()
+                 if "desktop_preflight completed" in l]
     preflight = pre_lines[-1].strip() if pre_lines else ""
 
-    if exited == 0:
+    ran_for = samples[-1][0] if samples else 0
+
+    if exited == 0 and ran_for <= 20:
         # A clean, immediate exit is almost always the single-instance guard: another copy
         # of Unsloth is already open, so this launch handed over and quit. Calling that
         # "crashed" would be both wrong and alarming, and it is the likeliest thing to go
@@ -348,9 +372,14 @@ def run_candidate(label, extra, why, cmd) -> dict:
             "SKIPPED: the app exited immediately and cleanly, which usually means "
             "another copy of Unsloth is already running. Close it and re-run"
         )
-    elif exited is not None and not (
-        os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
-    ):
+    elif exited == 0:
+        # Ran a while and then exited cleanly. Single instance handover is immediate, so
+        # this is not that; the likeliest cause is simply that the window was closed.
+        verdict = (
+            f"ENDED EARLY: the app ran for {ran_for}s and then exited cleanly. If you "
+            f"closed the window, just re-run and leave it open"
+        )
+    elif exited is not None and not _has_display(extra):
         # Over plain SSH there is nothing to draw on. Calling that a crash starts a bug
         # hunt for a bug that is not there.
         verdict = (
