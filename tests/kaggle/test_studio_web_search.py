@@ -87,7 +87,8 @@ def test_an_empty_result_set_is_reported_and_not_failed():
             continue
         test = ast.unparse(node.test)
         appends = [
-            n for n in ast.walk(node)
+            n
+            for n in ast.walk(node)
             if isinstance(n, ast.Call)
             and isinstance(n.func, ast.Attribute)
             and n.func.attr == "append"
@@ -102,13 +103,13 @@ def test_an_empty_result_set_is_reported_and_not_failed():
 def test_the_failure_fires_when_nothing_executed():
     func = _func("assert_web_search")
     guarded = [
-        node for node in ast.walk(func)
+        node
+        for node in ast.walk(func)
         if isinstance(node, ast.If) and "executions" in ast.unparse(node.test)
     ]
     assert guarded, "nothing in this assertion depends on the tool having run"
     assert all(
-        isinstance(n.test, ast.UnaryOp) and isinstance(n.test.op, ast.Not)
-        for n in guarded
+        isinstance(n.test, ast.UnaryOp) and isinstance(n.test.op, ast.Not) for n in guarded
     ), "the failure must fire on ZERO executions"
 
 

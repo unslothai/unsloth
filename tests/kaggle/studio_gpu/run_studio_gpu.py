@@ -1088,13 +1088,15 @@ class Payload:
             pass
 
         code, payload = self.chat(
-            [{
-                "role": "user",
-                "content": (
-                    "Search the web for the current version of the Linux kernel, "
-                    "then answer in one sentence."
-                ),
-            }],
+            [
+                {
+                    "role": "user",
+                    "content": (
+                        "Search the web for the current version of the Linux kernel, "
+                        "then answer in one sentence."
+                    ),
+                }
+            ],
             enable_tools = True,
             enabled_tools = ["web_search"],
             permission_mode = "off",
@@ -1114,7 +1116,7 @@ class Payload:
             after = ""
         # Only what this request wrote, so an earlier assertion's tool call
         # cannot be read as this one's evidence.
-        fresh = after[len(before):]
+        fresh = after[len(before) :]
         marker = "execute_tool: name=web_search"
         detail["executions"] = fresh.count(marker)
         if not detail["executions"]:
