@@ -2298,12 +2298,21 @@ def _match_adapter_used_by_luid(
 
     The model name is tried first, because it separates two cards of one arch
     (a 9070 beside a 9070 XT) where the arch cannot. DirectX takes it from the
-    driver INF and HIP from the ASIC record, though, and on an iGPU the two
-    spellings differ by more than normalizing fixes, so a declined name join
-    falls to the gfx target both sides also carry -- which is what tells an
-    iGPU from the dGPU beside it. The arch pass runs only when every AMD record
-    has one, so a driver too old to write ``AdapterFamily`` cannot leave a
-    hidden card's counter looking like the visible card's.
+    driver INF and HIP from the ASIC record, so the two spellings CAN differ by
+    more than normalizing fixes, and a declined name join then falls to the gfx
+    target -- which is also what tells an iGPU from the dGPU beside it. The arch
+    pass runs only when every AMD record has one, so a driver too old to write
+    ``AdapterFamily`` cannot leave a hidden card's counter looking like the
+    visible card's.
+
+    Measured on a Windows gfx1151 (driver 32.0.21041.1000): DirectX said
+    "AMD Radeon(TM) 8060S Graphics" and so did ``props.name``, an exact match, so
+    the name pass carried it. That driver wrote NO ``AdapterFamily`` at all, so
+    the gfx fallback was unavailable on the one machine this has been measured
+    on. The two keys are therefore not the belt and braces this reads as: a
+    driver that both spells the name differently and omits ``AdapterFamily``
+    declines the join outright and drops back to capacity ranking. That is the
+    safe direction, but it means the name pass is load bearing in practice.
 
     Returns ``(per_device_used_bytes, aggregate_used_bytes)``, or None when
     neither key establishes the join, so the caller falls back to capacity

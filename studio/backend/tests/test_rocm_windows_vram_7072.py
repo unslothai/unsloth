@@ -1001,6 +1001,39 @@ def test_a_name_collision_falls_through_to_the_gfx_pass(win_rocm, monkeypatch):
     assert aggregate == 12.0
 
 
+
+def test_the_measured_strix_halo_registry(win_rocm, monkeypatch):
+    """The one real Windows AMD reading taken so far, pinned.
+
+    Windows 11 Pro 26200, AMD Radeon(TM) 8060S Graphics, driver 32.0.21041.1000.
+    Two things it establishes that no CI machine could: AdapterLuid comes back as
+    an Int64 rather than the bytes a REG_BINARY would give, so int() is a no-op;
+    and that driver writes no AdapterFamily at all, so the gfx pass is skipped
+    and the NAME pass is what carries the join. DirectX and props.name agreed
+    exactly there, which is why it lands.
+
+    The counter set is also not a subset of the DirectX key: instance 94361 has
+    1.273 GB shared and no adapter record at all, so anything assuming every
+    instance resolves to a record would be wrong.
+    """
+    records = {86826: {"name": "AMD Radeon(TM) 8060S Graphics"}}  # no "gfx" key
+    monkeypatch.setattr(hw, "_windows_amd_adapter_records_by_luid", lambda: records)
+    adapters = [
+        ("luid_0x00000000_0x00017099_phys_0", 0.0),          # no registry record
+        ("luid_0x00000000_0x0001532a_phys_0", 0.947 * GB),   # the AMD adapter
+        ("luid_0x00000000_0x00017034_phys_0", 0.0),          # Basic Render Driver
+    ]
+    dev_meta = [{
+        "name": "AMD Radeon(TM) 8060S Graphics", "gfx": "gfx1151",
+        "total_bytes": int(89.465 * GB), "dedicated_bytes": int(89.465 * GB),
+    }]
+
+    result = hw._match_adapter_used_by_luid(adapters, dev_meta)
+    assert result is not None, "the join declined on the one real reading we have"
+    per_device, aggregate = result
+    assert round(per_device[0] / GB, 3) == 0.947
+    assert round(aggregate / GB, 3) == 0.947
+
 def test_the_join_declines_usage_it_cannot_place(win_rocm, monkeypatch):
     """A hidden AMD card carrying the visible device's torch name, while the
     visible card's own record is spelled differently. The visible device's
