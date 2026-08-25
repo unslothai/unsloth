@@ -1417,6 +1417,13 @@ def test_every_apu_on_a_mixed_host_loses_its_credit(monkeypatch):
         (["-kvo", "-nkvo"], None),
         # The env twin parses BEFORE argv, so a false env survives an absent flag.
         ([], {"LLAMA_ARG_KV_OFFLOAD": "false"}),
+        # And the NEGATIVE spelling, which get_value_from_env checks first and
+        # forces falsey on PRESENCE, whatever it says (common/arg.cpp).
+        ([], {"LLAMA_ARG_NO_KV_OFFLOAD": "1"}),
+        ([], {"LLAMA_ARG_NO_KV_OFFLOAD": "0"}),
+        ([], {"LLAMA_ARG_NO_KV_OFFLOAD": ""}),
+        # It is read before the affirmative one and returns, so it wins outright.
+        ([], {"LLAMA_ARG_NO_KV_OFFLOAD": "0", "LLAMA_ARG_KV_OFFLOAD": "1"}),
     ],
 )
 def test_a_cpu_only_kv_cache_is_charged_to_host_ram_alone(extras, env, monkeypatch):
@@ -1451,6 +1458,8 @@ def test_a_cpu_only_kv_cache_is_charged_to_host_ram_alone(extras, env, monkeypat
         # A CLI re-enable beats a false env: llama.cpp reads the env first.
         (["-kvo"], {"LLAMA_ARG_KV_OFFLOAD": "0"}),
         (["-nkvo", "-kvo"], None),
+        # Same for the negative spelling: env parses first, argv still wins.
+        (["-kvo"], {"LLAMA_ARG_NO_KV_OFFLOAD": "1"}),
     ],
 )
 def test_an_offloaded_kv_cache_is_still_pooled(extras, env, monkeypatch):
@@ -2221,3 +2230,86 @@ def test_the_arch_crash_rung_records_from_the_argv_not_the_parts():
     # that wraps the call cannot break it.
     compact = "".join(inspect.getsource(B.load_model).split())
     assert "resolve_effective_memory_state(cmd,env)" in compact
+
+
+# ------------------ round 12: the CPU fallback is a rung that strips the loader
+
+
+def test_the_cpu_replay_and_the_launch_record_disagree(monkeypatch):
+    """The premise, on the real functions rather than a hand-written argv.
+
+    _prepare_cpu_fallback_launch takes the fit's pair out, so a record taken off
+    the launch argv describes a reservation the replay does not make. Under
+    "Don't reserve system RAM" that stale record is a full model reload the CPU
+    server already satisfies.
+    """
+    from unittest import mock
+
+    import utils.model_memory_settings as mm
+    from core.inference import llama_cpp as lc
+    from core.inference.llama_server_args import (
+        memory_state_satisfies_settings,
+        resolve_effective_memory_state,
+    )
+
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    backend._fit_load_mode_flags = ["--load-mode", FIT_MODE]
+    launched = ["llama-server", "-m", "model.gguf", "--load-mode", FIT_MODE]
+    with (
+        mock.patch.object(lc.LlamaCppBackend, "_is_vulkan_backend", return_value = True),
+        mock.patch.object(lc.LlamaCppBackend, "_cpu_isolated_replay", return_value = list(launched)),
+        mock.patch.object(lc.LlamaCppBackend, "_cpu_isolated_binary", return_value = "cpu-server"),
+        mock.patch.object(
+            lc.LlamaCppBackend,
+            "_llama_server_env_for_binary",
+            return_value = {lc._loader_path_var(): "/staged"},
+        ),
+    ):
+        replay, _reason = backend._prepare_cpu_fallback_launch("llama-server", launched, {}, {})
+
+    stale = resolve_effective_memory_state(launched, {})
+    fresh = resolve_effective_memory_state(replay, {})
+    assert stale == (False, True)
+    assert fresh == (False, False)
+
+    monkeypatch.setattr(mm, "get_keep_resident", lambda: False)
+    monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: True)
+    assert memory_state_satisfies_settings(stale, True) is False
+    assert memory_state_satisfies_settings(fresh, True) is True
+
+
+def test_the_crash_path_cpu_fallback_recomputes_the_memory_record():
+    """Reachability at the source, like the rungs beside it: the arm runs only
+    behind a real signal crash on an auto-selected Vulkan backend.
+
+    From _last_spawn_cmd, not from the replay handed to the spawn: that is the
+    argv that really started, so a page-lock _spawn_and_wait's own --fit retry
+    appended is kept rather than recorded away.
+    """
+    import inspect
+
+    from core.inference.llama_cpp import LlamaCppBackend as B
+
+    # Whitespace stripped before slicing, so a reformat that rewraps any of it
+    # cannot break the pin.
+    src = "".join(inspect.getsource(B.load_model).split())
+    arm = src[src.index("_try_auto_vulkan_cpu_fallback") :]
+    # Bounded at the normalisation that closes the recovery, so this proves the
+    # recompute is in the arm and not merely somewhere later in load_model.
+    arm = arm[: arm.index("_apply_cpu_fallback_state")]
+    assert "resolve_effective_memory_state(_last_spawn_cmd,env)" in arm
+
+
+def test_the_replayed_cpu_fallback_recomputes_the_memory_record():
+    """Same, for a request that carries cpu_fallback and rebuilds the replay
+    before anything spawns."""
+    import inspect
+
+    from core.inference.llama_cpp import LlamaCppBackend as B
+
+    src = "".join(inspect.getsource(B.load_model).split())
+    # allow_manual_cpu is what distinguishes this eligibility check from the
+    # crash path's, which reads the same helper without it.
+    arm = src[src.index("allow_manual_cpu=True") :]
+    arm = arm[: arm.index("_apply_cpu_fallback_state")]
+    assert "resolve_effective_memory_state(cmd,env)" in arm

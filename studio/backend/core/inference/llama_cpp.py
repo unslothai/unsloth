@@ -3241,13 +3241,27 @@ def _kv_offload_from_args(
 ) -> bool:
     """Resolve llama.cpp's environment and last-wins KV-offload flags (default on):
     LLAMA_ARG_KV_OFFLOAD parses before argv, and ``-kvo`` / ``--kv-offload`` is the
-    positive form, so a CLI re-enable beats a false env."""
+    positive form, so a CLI re-enable beats a false env.
+
+    Both env spellings, as with the projector pair above. ``-kvo`` is registered with
+    a negative form (``{"-nkvo", "--no-kv-offload"}``, common/arg.cpp), so
+    ``common_arg::get_value_from_env`` rewrites LLAMA_ARG_ to LLAMA_ARG_NO_, and if
+    that variable EXISTS it forces the value to "0" and never reads the affirmative
+    one (common/arg.cpp:127-141). Presence, empty value included, because llama.cpp
+    tests it with getenv. Missing it is the optimistic direction here: the whole KV
+    cache is then on the host (llama-kv-cache.cpp only upgrades a layer's buffer
+    type inside ``if (offload)``) while the fit still lets free VRAM pay for it.
+    """
+    source_env = os.environ if env is None else env
     enabled = True
-    value = (os.environ if env is None else env).get("LLAMA_ARG_KV_OFFLOAD")
-    if value in _LLAMA_ARG_FALSE_VALUES:
+    if source_env.get("LLAMA_ARG_NO_KV_OFFLOAD") is not None:
         enabled = False
-    elif value in _LLAMA_ARG_TRUE_VALUES:
-        enabled = True
+    else:
+        value = source_env.get("LLAMA_ARG_KV_OFFLOAD")
+        if value in _LLAMA_ARG_FALSE_VALUES:
+            enabled = False
+        elif value in _LLAMA_ARG_TRUE_VALUES:
+            enabled = True
     for raw in extra_args or ():
         flag = _flag_name(str(raw))
         if flag in {"-kvo", "--kv-offload"}:
@@ -20952,6 +20966,15 @@ class LlamaCppBackend:
                         self._vram_fraction_pending = None
                         raise RuntimeError(detail)
 
+                    # The replay dropped the fit's --load-mode none, so the record
+                    # taken off the launch argv now describes a reservation this
+                    # child does not make, and a later "Don't reserve system RAM"
+                    # would be judged unsatisfied and demand a pointless reload.
+                    # From _last_spawn_cmd, which is the argv that really started
+                    # (_spawn_and_wait rebinds it, including on its own --fit
+                    # retries), so this cannot undo a record one of those wrote.
+                    if self._fit_load_mode_flags:
+                        self._memory_state = resolve_effective_memory_state(_last_spawn_cmd, env)
                     intent = self._apply_cpu_fallback_state(
                         intent,
                         is_vision = fallback_has_mmproj,
@@ -21053,6 +21076,14 @@ class LlamaCppBackend:
                                 "`unsloth studio update` to repair the managed llama.cpp runtime."
                             )
                         cmd, _spawn_cwd = prepared
+                        # Same reason as the crash path: the replay dropped the fit's
+                        # --load-mode none, and the record was taken off the argv that
+                        # still carried it. Recomputed from the stripped `cmd` before
+                        # anything spawns, and the arch-crash rung re-derives it from
+                        # `cmd` too, so the _mem_policy_for_cmd snapshot it restores
+                        # cannot put the stale pair back.
+                        if self._fit_load_mode_flags:
+                            self._memory_state = resolve_effective_memory_state(cmd, env)
                         # Same normalization the crash path applies, so a client that
                         # sent only the flag cannot leave a CPU-only server reporting
                         # an Auto/GPU placement (which then fails holds_no_vram).
