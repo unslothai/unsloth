@@ -3313,6 +3313,98 @@ _RAG_GROUNDING_NUDGE = (
     "memory when the attached documents are relevant."
 )
 
+_RAG_ROSTER_MAX_NAMES = 40
+_RAG_ROSTER_MAX_NAME_CHARS = 120
+_roster_failure_logged = False
+
+# Mirrors the visibility clauses every retrieval query carries (store.search_lexical,
+# search_dense, all_chunks_for_scope), so the roster can never name a document that
+# retrieval would not return: no chunks, a retired scope, or a linked-folder row whose
+# mapping was never installed.
+_ROSTER_PREDICATE = (
+    "d.status = 'completed' AND d.num_chunks > 0 "
+    "AND NOT EXISTS (SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope = d.scope) "
+    "AND (d.linked_folder_id IS NULL OR EXISTS "
+    "(SELECT 1 FROM linked_folder_files ff WHERE ff.document_id = d.id))"
+)
+_ROSTER_NAMES_SQL = (
+    f"SELECT d.filename FROM documents d WHERE d.scope = ? AND {_ROSTER_PREDICATE} "
+    "ORDER BY d.created_at DESC, d.id LIMIT ?"
+)
+_ROSTER_COUNT_SQL = (
+    "SELECT COUNT(DISTINCT d.filename) FROM documents d "
+    "WHERE d.scope IN ({scopes}) AND " + _ROSTER_PREDICATE
+)
+
+
+def _roster_scopes(rag_scope: dict) -> list[str]:
+    """KB is exclusive, matching retrieval. Thread precedes project so a file just
+    attached to this chat survives truncation."""
+    from core.rag.store import kb_scope, project_scope, thread_scope
+
+    if rag_scope.get("kb_id"):
+        return [kb_scope(rag_scope["kb_id"])]
+    scopes = []
+    if rag_scope.get("thread_id"):
+        scopes.append(thread_scope(rag_scope["thread_id"]))
+    if rag_scope.get("project_id"):
+        scopes.append(project_scope(rag_scope["project_id"]))
+    return scopes
+
+
+def _roster_name(raw: object) -> str:
+    """Collapse whitespace and cap length: linked-folder names are raw relative paths,
+    so a newline would otherwise forge lines in the system prompt."""
+    name = _re.sub(r"\s+", " ", str(raw or "")).strip()
+    if len(name) > _RAG_ROSTER_MAX_NAME_CHARS:
+        name = name[:_RAG_ROSTER_MAX_NAME_CHARS] + "..."
+    return name
+
+
+def _read_roster(rag_scope: dict) -> tuple[list[str], int]:
+    from storage import rag_db
+
+    scopes = _roster_scopes(rag_scope)
+    if not scopes:
+        return [], 0
+    conn = rag_db.get_metadata_connection()
+    try:
+        names: list[str] = []
+        seen: set[str] = set()
+        for scope in scopes:
+            rows = conn.execute(_ROSTER_NAMES_SQL, (scope, _RAG_ROSTER_MAX_NAMES + 1))
+            for row in rows:
+                name = _roster_name(row["filename"])
+                if name and name not in seen:
+                    seen.add(name)
+                    names.append(name)
+        if len(names) <= _RAG_ROSTER_MAX_NAMES:
+            return names, len(names)
+        sql = _ROSTER_COUNT_SQL.format(scopes = ",".join("?" for _ in scopes))
+        total = conn.execute(sql, tuple(scopes)).fetchone()[0]
+        return names[:_RAG_ROSTER_MAX_NAMES], int(total)
+    finally:
+        conn.close()
+
+
+async def _rag_roster_sentence(rag_scope: dict) -> str:
+    global _roster_failure_logged
+    from starlette.concurrency import run_in_threadpool
+
+    try:
+        names, total = await run_in_threadpool(_read_roster, rag_scope)
+    except Exception as exc:  # noqa: BLE001
+        if not _roster_failure_logged:
+            _roster_failure_logged = True
+            logger.warning("RAG document roster unavailable: %s", exc)
+        return ""
+    if not names:
+        return ""
+    roster = ", ".join(f'"{name}"' for name in names)
+    if total > len(names):
+        roster += f", and {total - len(names)} more"
+    return f" The attached documents are: {roster}."
+
 
 async def _select_request_tools(
     payload: ChatCompletionRequest, *, tools_on: bool, mcp_allowed: bool
@@ -3353,7 +3445,7 @@ async def _select_request_tools(
     return tools
 
 
-def _apply_rag_nudge(nudge: str, tools: list[dict], *, rag_scope) -> str:
+async def _apply_rag_nudge(nudge: str, tools: list[dict], *, rag_scope) -> str:
     """Append the RAG grounding nudge to ``nudge`` when the knowledge-base tool
     is active (search_knowledge_base present and a retrieval scope is set). The
     date is prefixed when the tool nudge is empty (RAG-only tool set). Returns
@@ -3361,10 +3453,11 @@ def _apply_rag_nudge(nudge: str, tools: list[dict], *, rag_scope) -> str:
     tool_names = {(t.get("function") or {}).get("name") for t in (tools or [])}
     if "search_knowledge_base" not in tool_names or not rag_scope:
         return nudge
+    grounding = _RAG_GROUNDING_NUDGE + await _rag_roster_sentence(rag_scope)
     if not nudge:
         date_line = f"The current date is {_date.today().isoformat()}."
-        return date_line + " " + _RAG_GROUNDING_NUDGE
-    return nudge + " " + _RAG_GROUNDING_NUDGE
+        return date_line + " " + grounding
+    return nudge + " " + grounding
 
 
 # Strip leaked tool-call markup: every shared-parser format plus the leak shapes
@@ -14036,7 +14129,7 @@ async def openai_chat_completions(
             )
 
             # Nudge the model to ground in attached documents instead of memory.
-            _nudge = _apply_rag_nudge(_nudge, tools_to_use, rag_scope = payload.rag_scope)
+            _nudge = await _apply_rag_nudge(_nudge, tools_to_use, rag_scope = payload.rag_scope)
 
             if _nudge:
                 # Append nudge to system prompt (preserve user's prompt)
@@ -15550,7 +15643,9 @@ async def openai_chat_completions(
         )
 
         # RAG nudge, mirroring the GGUF path.
-        _sf_nudge = _apply_rag_nudge(_sf_nudge, _sf_tools_to_use, rag_scope = payload.rag_scope)
+        _sf_nudge = await _apply_rag_nudge(
+            _sf_nudge, _sf_tools_to_use, rag_scope = payload.rag_scope
+        )
 
         _sf_system_prompt = system_prompt
         if _sf_nudge:
@@ -19692,18 +19787,16 @@ async def chat_count_tokens(
         tools_to_use = tools_to_use + _mcp_tools
         if tools_to_use:
             openai_tools = tools_to_use
-            openai_messages = _append_to_system_message(
-                openai_messages,
-                _apply_rag_nudge(
-                    _build_tool_action_nudge(
-                        tools = tools_to_use,
-                        model_name = _llama_public_model_id(llama_backend, payload.model),
-                        full_access = bool(payload.bypass_permissions),
-                    ),
-                    tools_to_use,
-                    rag_scope = payload.rag_scope,
+            _count_nudge = await _apply_rag_nudge(
+                _build_tool_action_nudge(
+                    tools = tools_to_use,
+                    model_name = _llama_public_model_id(llama_backend, payload.model),
+                    full_access = bool(payload.bypass_permissions),
                 ),
+                tools_to_use,
+                rag_scope = payload.rag_scope,
             )
+            openai_messages = _append_to_system_message(openai_messages, _count_nudge)
 
             # The GGUF tool path strips leaked markup from replayed history before rendering,
             # so without the same strip the count prices text it removes.
