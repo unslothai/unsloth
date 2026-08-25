@@ -123,12 +123,9 @@ function ToolFallbackTrigger({
   className,
   ...props
 }: ComponentProps<typeof CollapsibleTrigger> & {
-  // Straight off the wire like a tool argument: the provider's SSE is relayed
-  // verbatim, so `delta.tool_calls[].function.name` is whatever it wrote there.
-  // A non-string name matches no entry in thread.tsx's by_name map, which is
-  // exactly why it lands HERE, and `formatMcpToolName` then calls `.startsWith`
-  // on it. message-response-details-sheet.tsx and use-chat-search-index.ts both
-  // already guard `typeof toolName === "string"`; this was the one that did not.
+  // Straight off the wire: provider SSE is relayed verbatim, and a non-string
+  // name matches nothing in thread.tsx's by_name map, which is exactly why it
+  // lands HERE, where formatMcpToolName calls `.startsWith` on it.
   toolName: unknown;
   mcpServer?: string;
   status?: ToolCallMessagePartStatus;

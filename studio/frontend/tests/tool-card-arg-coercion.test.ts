@@ -53,11 +53,9 @@ test("toolArgText survives an object that cannot be coerced", () => {
   );
 });
 
-// A string argument is returned untouched however long it is: capping one would
-// silently truncate a legitimate `code`. Only the JSON branch is bounded, and
-// bounding it is what makes Chrome and Safari agree -- their maximum string
-// lengths differ by 4x, so an uncapped serialisation is "" on one and hundreds
-// of megabytes of DOM on the other.
+// Only the JSON branch is bounded; capping a string would truncate a legitimate
+// `code`. Chrome and Safari differ 4x in maximum string length, so an uncapped
+// serialisation is "" on one and hundreds of megabytes of DOM on the other.
 test("toolArgText caps a serialised object but never a string", () => {
   const long = "x".repeat(500_000);
   assert.equal(toolArgText(long), long);
@@ -173,10 +171,8 @@ const COERCED: ReadonlyArray<
   [
     "tool-ui-image-generation.tsx",
     "ImageGenerationToolUIImpl",
-    // size/quality/mime come off the RESULT, which is the provider's JSON and
-    // not the model's, but they reach `.match`, `.toLowerCase` and Array.join
-    // and so die the same way. Studio accepts a user-set OpenAI-compatible
-    // base_url, so they are third-party either way.
+    // size/quality/mime come off the RESULT, so they are the provider's JSON
+    // rather than the model's, and die the same way.
     ["prompt", "resultPrompt", "size", "quality", "mime"],
   ],
   ["tool-fallback.tsx", "ToolFallbackTrigger", ["name"]],
@@ -233,11 +229,9 @@ test("no tool card escapes the coercion policy", () => {
   );
 });
 
-/**
- * The image card's own `parseImageSize` and metadata line, run on a result the
- * provider did not make strings. Lifted from the shipped source, like the web
- * search derivation in search-images.test.ts, so it cannot drift from the card.
- */
+// The card's own parseImageSize and metadata line, lifted from the shipped
+// source like the web search derivation in search-images.test.ts, so the test
+// cannot drift from the card.
 test("the image card survives a result whose fields are not strings", () => {
   const file = `${CARDS_DIR}tool-ui-image-generation.tsx`;
   const raw = readFileSync(
@@ -247,8 +241,7 @@ test("the image card survives a result whose fields are not strings", () => {
   const parser = raw.match(/const parseImageSize = \([\s\S]*?\n\};/);
   assert.ok(parser, "parseImageSize moved");
 
-  // The card's own derivations, in the order it writes them. Nothing here is
-  // hand-copied, so the test follows the card if the card changes.
+  // The card's own derivations, in the order it writes them.
   const one = (name: string): string => {
     const [initializer, ...rest] = readConsts(
       file,
@@ -305,9 +298,8 @@ test("the image card survives a result whose fields are not strings", () => {
   );
 });
 
-// A tool name is provider data too: the SSE relay forwards
-// `delta.tool_calls[].function.name` verbatim, and a name that is not a string
-// matches nothing in thread.tsx's by_name map, so it always reaches this card.
+// A tool name is provider data too, and a non-string one matches nothing in
+// thread.tsx's by_name map, so it always reaches this card.
 test("the fallback card survives a tool name that is not a string", () => {
   const source = readFileSync(
     fileURLToPath(new URL(`${CARDS_DIR}tool-fallback.tsx`, import.meta.url)),

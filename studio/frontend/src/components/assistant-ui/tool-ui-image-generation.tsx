@@ -41,13 +41,10 @@ interface ImageGenerationArgs {
 }
 
 /**
- * Straight off the wire, like the args above. `image_b64` is the one field the
- * card type-guards before it uses it; every other field is a provider string
- * only by convention. On the Responses path the backend rebuilds `image_mime`
- * with an f-string, but `size`, `quality` and `background` are copied verbatim
- * (external_provider.py:5883), and on the Gemini path `image_mime` is the
- * chunk's own `inlineData.mimeType` (external_provider.py:4481). Studio lets the
- * user point at any OpenAI-compatible `base_url`, so none of them is ours.
+ * Straight off the wire, like the args above. Only `image_b64` is type-guarded
+ * before use; `size`, `quality` and `background` are copied verbatim from the
+ * provider (external_provider.py:5883) and on the Gemini path so is `image_mime`
+ * (:4481). Studio takes a user-set `base_url`, so none of them is ours.
  */
 interface ImageGenerationResult {
   image_b64?: string;
@@ -103,8 +100,8 @@ const formatGeneratedImageLabel = (prompt: string): string => {
     : `Generated image: ${prompt}`;
 };
 
-// Takes text, not the raw field: `size?.match` guards nullish only, so a
-// provider that answers `"size": 1024` used to reach `.match` on a number.
+// Takes text: `size?.match` guards nullish only, so `"size": 1024` reached
+// `.match` on a number.
 const parseImageSize = (
   size: string,
 ): { width: number; height: number } | null => {
@@ -180,9 +177,8 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
     typeof result === "object" &&
     typeof (result as ImageGenerationResult).image_b64 === "string";
   const imageResult = isImageResult ? (result as ImageGenerationResult) : null;
-  // The rest of the result is coerced for the same reason `prompt` is: these
-  // reach `.match`, `.toLowerCase` and `Array.join`, all of which throw on a
-  // value the provider did not make a string.
+  // Coerced for the same reason `prompt` is: these reach `.match`,
+  // `.toLowerCase` and `Array.join`, all of which throw on a non-string.
   const size = toolArgText(imageResult?.size);
   const quality = toolArgText(imageResult?.quality);
   const imageDimensions = parseImageSize(size);
