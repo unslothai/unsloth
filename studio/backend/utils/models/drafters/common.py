@@ -103,7 +103,6 @@ def _drafter_split_is_complete(candidate: Path) -> bool:
     an interrupted download left at zero bytes: the set is what gets opened, not the
     file that was picked. Skip it so a complete copy wins instead."""
     from utils.models.model_config import colocated_split_shards
-
     try:
         shards, complete = colocated_split_shards(candidate)
         return complete and all(shard.stat().st_size > 0 for shard in shards)

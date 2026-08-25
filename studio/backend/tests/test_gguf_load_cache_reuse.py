@@ -603,9 +603,7 @@ class TestLoadReusesCachedCopy:
             assert backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN)) is None
 
             second.write_bytes(b"mmproj")
-            assert backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN)) == str(
-                first
-            )
+            assert backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN)) == str(first)
 
     def test_an_incomplete_split_projector_does_not_shadow_a_complete_one(self, hf_cache):
         """Dropped during discovery, so a whole set still gets its turn at ranking."""
