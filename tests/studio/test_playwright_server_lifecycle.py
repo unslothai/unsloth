@@ -61,8 +61,34 @@ def posix_branch(monkeypatch, no_signals):
     monkeypatch.setattr(robust.signal, "SIGKILL", SIGKILL, raising = False)
 
 
+@pytest.fixture
+def installed_frontend(monkeypatch, tmp_path):
+    """A frontend tree that satisfies start_vite's toolchain precondition, without an install.
+
+    `start_vite` refuses up front when `studio/frontend/node_modules` carries no vite, which
+    is the whole point of #9654: a missing toolchain must not reach npm and come back as
+    "vite exited with code 127", because that reads as a vite crash rather than as a setup
+    step nobody ran. It is a precondition of the same kind as the occupied-port refusal
+    above it, and the tests below are about process-group selection and port refusal, not
+    about the toolchain, so they get a tree that has one.
+
+    Pointed at a tmp_path tree rather than stubbed out on purpose. Stubbing
+    `_require_frontend_toolchain` to a no-op would keep these tests green if the check were
+    deleted outright; a synthetic tree makes the check actually run, and
+    test_start_vite_refuses_a_tree_with_no_frontend_toolchain below pins the other
+    direction. It also keeps this file's promise that nothing here touches a real install.
+    """
+    binaries = tmp_path / "node_modules" / ".bin"
+    binaries.mkdir(parents = True)
+    (binaries / "vite").write_text("#!/bin/sh\n", encoding = "utf-8")
+    monkeypatch.setattr(robust, "FRONTEND", tmp_path)
+    return tmp_path
+
+
 @pytest.mark.parametrize("osname", ["posix", "nt"])
-def test_start_vite_picks_the_platform_process_group(monkeypatch, no_signals, osname) -> None:
+def test_start_vite_picks_the_platform_process_group(
+    monkeypatch, no_signals, installed_frontend, osname
+) -> None:
     captured: dict = {}
     monkeypatch.setattr(robust.os, "name", osname)
     monkeypatch.setattr(robust, "_port_is_taken", lambda port, host: False)
@@ -148,12 +174,59 @@ def test_teardown_tolerates_a_process_that_already_vanished(monkeypatch, posix_b
     robust.stop_process(_FakeProc())
 
 
-def test_an_occupied_port_is_refused_rather_than_measured(monkeypatch, no_signals) -> None:
+def test_an_occupied_port_is_refused_rather_than_measured(
+    monkeypatch, no_signals, installed_frontend
+) -> None:
     """--strictPort makes our vite exit, and the readiness poll would then be reading whatever
-    else holds the port. Refuse up front instead."""
+    else holds the port. Refuse up front instead.
+
+    Given a satisfied toolchain even though the port check currently runs first, so this
+    keeps asserting the port refusal specifically and not the order the two preconditions
+    happen to be written in.
+    """
     monkeypatch.setattr(robust, "_port_is_taken", lambda port, host: True)
     with pytest.raises(RuntimeError, match = "already serving"):
         robust.start_vite(5199)
+
+
+def test_start_vite_refuses_a_tree_with_no_frontend_toolchain(
+    monkeypatch, no_signals, tmp_path
+) -> None:
+    """The failure #9654 exists to name, and the reason the refusal has to be up front.
+
+    A job that installs Studio from a warm frontend-dist cache never builds the frontend, so
+    setup.sh skips its npm install and node_modules is never created. Reaching npm in that
+    state costs a spawn and returns `vite exited with code 127`, which is indistinguishable
+    from vite crashing. So the assertion is not only that it raises: it is that nothing was
+    spawned, because a refusal that lands after Popen has already lost the cause.
+    """
+    (tmp_path / "node_modules").mkdir()
+    monkeypatch.setattr(robust, "FRONTEND", tmp_path)
+    monkeypatch.setattr(robust, "_port_is_taken", lambda port, host: False)
+    spawned: list = []
+    monkeypatch.setattr(robust.subprocess, "Popen", lambda cmd, **kw: spawned.append(cmd))
+    with pytest.raises(RuntimeError, match = "dev dependencies are not installed"):
+        robust.start_vite(5199)
+    assert spawned == [], "the refusal must land before npm is spawned, or the cause is lost"
+
+
+@pytest.mark.parametrize("binary", ["vite", "vite.cmd", "vite.exe", "vite.bunx"])
+def test_the_toolchain_check_accepts_every_platform_binary(monkeypatch, tmp_path, binary) -> None:
+    """bun writes .bunx shims and npm writes .cmd/.exe on Windows, so a POSIX-only name test
+    would reject a perfectly good Windows or bun tree and send someone chasing a phantom."""
+    binaries = tmp_path / "node_modules" / ".bin"
+    binaries.mkdir(parents = True)
+    (binaries / binary).write_text("", encoding = "utf-8")
+    monkeypatch.setattr(robust, "FRONTEND", tmp_path)
+    robust._require_frontend_toolchain()
+
+
+def test_the_toolchain_check_names_a_missing_frontend_separately(monkeypatch, tmp_path) -> None:
+    """Run from outside the repo is a different mistake from run without an install, and the
+    two must not share one message."""
+    monkeypatch.setattr(robust, "FRONTEND", tmp_path / "not-a-checkout")
+    with pytest.raises(RuntimeError, match = "no frontend at"):
+        robust._require_frontend_toolchain()
 
 
 def test_readiness_gives_up_as_soon_as_our_server_dies(monkeypatch, no_signals) -> None:

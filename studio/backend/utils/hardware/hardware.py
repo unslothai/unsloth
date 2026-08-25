@@ -2147,6 +2147,252 @@ def _rocm_windows_perf_counter_vram_by_adapter(
         return None
 
 
+# DirectX writes one record per adapter here, keyed by a GUID, holding the same
+# AdapterLuid the counter instances are named after alongside the Description
+# string torch reports as props.name and the gfx target it reports as
+# gcnArchName. Those are the join keys capacity ranking lacks.
+_WINDOWS_DIRECTX_KEY = r"SOFTWARE\Microsoft\DirectX"
+
+
+def _parse_adapter_luid(instance_name: str) -> Optional[int]:
+    """The 64-bit LUID in a ``GPU Adapter Memory`` instance name, or None.
+
+    Instances are named ``luid_0x<high>_0x<low>_phys_<n>``; DirectX stores the
+    same value as one 64-bit ``AdapterLuid``, so recombine the halves.
+    """
+    m = re.match(r"luid_0x([0-9a-f]+)_0x([0-9a-f]+)", instance_name.strip(), re.IGNORECASE)
+    if m is None:
+        return None
+    try:
+        return (int(m.group(1), 16) << 32) | int(m.group(2), 16)
+    except ValueError:
+        return None
+
+
+_ADAPTER_NAME_NOISE = re.compile(r"\((?:tm|r)\)|[™®]", re.IGNORECASE)
+
+
+def _normalize_adapter_name(name: str) -> str:
+    """A GPU name in the one spelling both sides of the join can agree on.
+
+    DirectX takes its Description from the driver INF and HIP fills props.name
+    from the ASIC record, so the same card reaches the two sides with the
+    trademark marks and the spacing around them differing -- "AMD Radeon(TM)
+    780M Graphics" against "AMD Radeon 780M Graphics". Nothing here merges two
+    different models, and a collision between two that did normalize alike is
+    caught by the count check in _attribute_adapter_useds_by_key.
+    """
+    return " ".join(_ADAPTER_NAME_NOISE.sub(" ", name).split()).casefold()
+
+
+def _parse_adapter_family_gfx(family: str) -> str:
+    """The gfx target in a DirectX ``AdapterFamily``, or "" when it holds none.
+
+    The AMD driver writes ``AMD_NAVI44:gfx1200``; torch reports the same target
+    as ``props.gcnArchName``, which on Linux carries feature suffixes
+    (``gfx1201:sramecc-:xnack-``) the comparison has to drop.
+    """
+    for token in str(family).split(":"):
+        token = token.strip().lower()
+        if re.fullmatch(r"gfx[0-9a-f]+", token):
+            return token
+    return ""
+
+
+def _windows_amd_adapter_records_by_luid() -> dict[int, Dict[str, str]]:
+    """``{luid: {"name": description, "gfx": arch}}`` for the AMD adapters DirectX records.
+
+    ``gfx`` is absent when the driver wrote no ``AdapterFamily``.
+
+    All or nothing: a record this cannot read makes the map incomplete, and an
+    incomplete map is indistinguishable from a complete one at the join, which
+    would then pair a visible card with a hidden same-named card's counter. So
+    any failure past the point where a subkey is known to be an adapter returns
+    ``{}``, which drops the caller back to capacity ranking. Same for off
+    Windows or without the key.
+    """
+    if platform.system() != "Windows":
+        return {}
+    try:
+        import winreg
+    except ImportError:
+        return {}
+    by_luid: dict[int, Dict[str, str]] = {}
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _WINDOWS_DIRECTX_KEY) as dx_key:
+            for index in range(winreg.QueryInfoKey(dx_key)[0]):
+                subkey = winreg.EnumKey(dx_key, index)
+                # Adapter records are GUID-named; ShaderCache and any future
+                # named subkey are not adapters and are not ours to read.
+                if not (subkey.startswith("{") and subkey.endswith("}")):
+                    continue
+                with winreg.OpenKey(dx_key, subkey) as adapter_key:
+                    vendor_id, _ = winreg.QueryValueEx(adapter_key, "VendorId")
+                    if int(vendor_id) != _AMD_PCI_VENDOR_ID:
+                        continue
+                    luid, _ = winreg.QueryValueEx(adapter_key, "AdapterLuid")
+                    description, _ = winreg.QueryValueEx(adapter_key, "Description")
+                    try:
+                        family, _ = winreg.QueryValueEx(adapter_key, "AdapterFamily")
+                    except OSError:
+                        family = ""
+                name = str(description).strip()
+                if not name:
+                    # An AMD adapter this cannot name: see the all-or-nothing note.
+                    return {}
+                record = {"name": name}
+                gfx = _parse_adapter_family_gfx(str(family))
+                if gfx:
+                    record["gfx"] = gfx
+                by_luid[int(luid)] = record
+    except Exception as e:
+        logger.debug("DirectX adapter registry read declined: %s", e)
+        return {}
+    return by_luid
+
+
+def _adapter_counter_capacity(meta: Dict[str, Any]) -> float:
+    """The capacity a ``Dedicated Usage`` counter for this device can actually fill.
+
+    That counter measures the dedicated segment, so the carve-out is its ceiling.
+    ``total_bytes`` is what the user is SHOWN, and on a unified APU may be the
+    whole driver pool, against which a counter no visible card could hold still
+    fits. Rank or bound a counter with this, never ``total_bytes``. The fallback
+    keeps it right on a ``dev_meta`` built before ``dedicated_bytes`` existed.
+    """
+    return float(meta.get("dedicated_bytes", meta["total_bytes"]))
+
+
+def _attribute_adapter_useds_by_key(
+    useds_by_key: dict[str, list[float]],
+    positions_by_key: dict[str, list[int]],
+    dev_meta: list[Dict[str, Any]],
+) -> Optional[tuple[list[Optional[float]], float]]:
+    """Pair each key's counters with the devices carrying that key, or decline.
+
+    Returns ``(per_device_used_bytes, aggregate_used_bytes)``, or None when any
+    key's counters are not exactly its devices'. Several devices under one key
+    (two cards of a model, two cards of an arch) leave per-device unknown --
+    nothing says which counter is which ordinal -- while still contributing to
+    the aggregate, which the pairing does not change.
+    """
+    assigned: list[Optional[float]] = [None] * len(dev_meta)
+    total_used = 0.0
+    for key, positions in positions_by_key.items():
+        useds = useds_by_key.get(key, [])
+        # Fewer counters than cards under this key means a visible card has no
+        # reading; more means a same-keyed adapter HIP does not enumerate, or one
+        # adapter emitting several _phys_N instances. Either way this key's
+        # counters are not exactly its devices'.
+        if len(useds) != len(positions):
+            return None
+        # Largest usage against the largest capacity: any other pairing of the
+        # same multiset only makes the check below stricter, never truer.
+        by_capacity = sorted(positions, key = lambda p: -_adapter_counter_capacity(dev_meta[p]))
+        for used, position in zip(sorted(useds, reverse = True), by_capacity):
+            # A usage above its own card's capacity: a record outliving its
+            # hardware, so the key is not identifying what it appears to.
+            if used > _adapter_counter_capacity(dev_meta[position]):
+                return None
+            total_used += used
+        if len(positions) == 1:
+            assigned[positions[0]] = useds[0]
+    return assigned, total_used
+
+
+def _match_adapter_used_by_luid(
+    adapters: list[tuple[str, float]], dev_meta: list[Dict[str, Any]]
+) -> Optional[tuple[list[Optional[float]], float]]:
+    """Attribute per-adapter used bytes to torch devices on the adapter LUID.
+
+    Joins each counter to a DirectX adapter record by the LUID in its instance
+    name, then to a torch device by what the record and the device agree on.
+    Identity, not capacity, so it resolves the single-GPU case that
+    _match_adapter_used_to_devices can never force (nothing smaller exists to
+    exceed) and stays right when a busy foreign adapter outweighs an idle card.
+
+    The model name is tried first, because it separates two cards of one arch
+    (a 9070 beside a 9070 XT) where the arch cannot. DirectX takes it from the
+    driver INF and HIP from the ASIC record, so the two spellings CAN differ by
+    more than normalizing fixes, and a declined name join then falls to the gfx
+    target -- which is also what tells an iGPU from the dGPU beside it. The arch
+    pass runs only when every AMD record has one, so a driver too old to write
+    ``AdapterFamily`` cannot leave a hidden card's counter looking like the
+    visible card's.
+
+    Measured on a Windows gfx1151 (driver 32.0.21041.1000): DirectX said
+    "AMD Radeon(TM) 8060S Graphics" and so did ``props.name``, an exact match, so
+    the name pass carried it. That driver wrote NO ``AdapterFamily`` at all, so
+    the gfx fallback was unavailable on the one machine this has been measured
+    on. The two keys are therefore not the belt and braces this reads as: a
+    driver that both spells the name differently and omits ``AdapterFamily``
+    declines the join outright and drops back to capacity ranking. That is the
+    safe direction, but it means the name pass is load bearing in practice.
+
+    Returns ``(per_device_used_bytes, aggregate_used_bytes)``, or None when
+    neither key establishes the join, so the caller falls back to capacity
+    ranking.
+    """
+    records = _windows_amd_adapter_records_by_luid()
+    if not records:
+        return None
+
+    useds_by_luid: dict[int, list[float]] = {}
+    for instance, used in adapters:
+        luid = _parse_adapter_luid(instance)
+        if luid is not None and luid in records:
+            useds_by_luid.setdefault(luid, []).append(used)
+
+    best: Optional[tuple[list[Optional[float]], float]] = None
+    best_resolved = -1
+
+    for field, record_key, device_key in (
+        (
+            "name",
+            lambda record: _normalize_adapter_name(record["name"]),
+            lambda meta: _normalize_adapter_name(str(meta.get("name", ""))),
+        ),
+        (
+            "gfx",
+            lambda record: record["gfx"],
+            lambda meta: _parse_adapter_family_gfx(str(meta.get("gfx", ""))),
+        ),
+    ):
+        if not all(record.get(field) for record in records.values()):
+            continue
+        useds_by_key: dict[str, list[float]] = {}
+        for luid, useds in useds_by_luid.items():
+            useds_by_key.setdefault(record_key(records[luid]), []).extend(useds)
+        positions_by_key: dict[str, list[int]] = {}
+        for position, meta in enumerate(dev_meta):
+            positions_by_key.setdefault(device_key(meta), []).append(position)
+        if "" in positions_by_key:  # a visible device carrying no such key
+            continue
+        # AMD usage this key cannot place, so the key is not identifying
+        # reliably: a card whose Description differs from its props.name leaves
+        # its own counter under one key while a hidden card sits under the
+        # device's, and the pairing would hand over the hidden card's bytes.
+        # Declining drops a masked second AMD card back to capacity ranking,
+        # which is where it already was.
+        if set(useds_by_key) - set(positions_by_key):
+            continue
+        matched = _attribute_adapter_useds_by_key(useds_by_key, positions_by_key, dev_meta)
+        if matched is not None:
+            # Same-keyed cards leave those devices unknown and feed only the
+            # aggregate (#7452). That is a result, not a reason to stop, and it
+            # is not all-or-nothing: a host with one uniquely named card beside
+            # two same-named ones of different arch resolves ONE device by name
+            # and all three by gfx. So rank passes by how many devices they
+            # actually place, keep the first on a tie, and stop early only on a
+            # pass that leaves nothing for a later one to improve.
+            resolved = sum(used is not None for used in matched[0])
+            if resolved == len(dev_meta):
+                return matched
+            if resolved > best_resolved:
+                best, best_resolved = matched, resolved
+    return best
+
+
 def _match_adapter_used_to_devices(
     adapter_useds: list[float], device_totals: list[float]
 ) -> list[Optional[float]]:
@@ -2444,6 +2690,8 @@ def _rocm_windows_per_device_vram(
                     "name": props.name,
                     "total_bytes": total_bytes,
                     "dedicated_bytes": dedicated_bytes,
+                    # Second join key for _match_adapter_used_by_luid (#8863).
+                    "gfx": str(getattr(props, "gcnArchName", "") or ""),
                     "total_is_pool": total_is_pool,
                     # Whether Shared Usage belongs in this device's numerator is
                     # a question about the PART, not about whether this call
@@ -2471,11 +2719,17 @@ def _rocm_windows_per_device_vram(
         adapters = _rocm_windows_perf_counter_vram_by_adapter()
     aggregate_gb: Optional[float] = None
     if adapters:
-        adapter_useds = [used for _, used in adapters]
-        # Carve-out capacities, not the displayed totals: see dedicated_bytes.
-        totals = [d["dedicated_bytes"] for d in dev_meta]
-        assigned = _match_adapter_used_to_devices(adapter_useds, totals)
-        aggregate_bytes = _rocm_windows_aggregate_used_bytes(adapter_useds, totals)
+        # LUID first: it answers by identity, where capacity ranking declines
+        # unless the sizes force a pairing -- which one visible GPU never does.
+        by_luid = _match_adapter_used_by_luid(adapters, dev_meta)
+        if by_luid is not None:
+            assigned, aggregate_bytes = by_luid
+        else:
+            adapter_useds = [used for _, used in adapters]
+            # Capacities the counters can fill, not the displayed totals.
+            totals = [_adapter_counter_capacity(d) for d in dev_meta]
+            assigned = _match_adapter_used_to_devices(adapter_useds, totals)
+            aggregate_bytes = _rocm_windows_aggregate_used_bytes(adapter_useds, totals)
         if aggregate_bytes is not None:
             aggregate_gb = round(aggregate_bytes / (1024**3), 2)
     else:

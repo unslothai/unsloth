@@ -1002,6 +1002,51 @@ def _too_small(rung: str, chars_per_token: float, last_index: int, what: str) ->
     )
 
 
+def _tail_not_deliverable(
+    rung: str,
+    requested: int,
+    source_index: int,
+    deliverable: int,
+    thread_chars: int,
+    target_chars: int,
+) -> ValueError:
+    """An explicit `--stream-tail-chars` the corpus cannot actually deliver.
+
+    Deliberately an ERROR and not a shortfall field, for the same reason `_too_small` is. The
+    quantity this flag exists to vary is the ONLY variable in a reply-length experiment, so a run
+    that silently measures a fraction of it has no honest reading at all -- there is nothing to
+    caveat, the axis simply did not move.
+
+    TWO EFFECTS COMPOUND HERE and the message names both, because fixing only the one you noticed
+    leaves the other. The tail is one corpus unit and `clipped_to` returns the unit unchanged when
+    the ask exceeds it, so delivery is capped at that unit's size. And asking for MORE tail lowers
+    that cap rather than raising it: a bigger tail shrinks `seed_target`, which moves the streamed
+    turn to a lower index, and the corpus escalates in size, so the ceiling falls as the request
+    rises. At the extreme the seeded prefix is evacuated entirely and the rung's own thread goes
+    with it, while the cell keeps its rung label, its rung weight and its place in the table.
+
+    Measured before this guard existed: `--rungs 100K --stream-tail-chars 400000` delivered 15,405
+    characters of the 400,000 asked for (3.9%) on a thread of 18,122 characters against the rung's
+    397,755 (4.6%), and `--assert-liveness` returned `0 scene problems, 0 missed slots`, exit 0,
+    byte-identical to the default run -- because a saturated tail drains FASTER than the film it
+    was supposed to outlast, so the one check that could have noticed goes quieter as the input
+    gets more wrong.
+    """
+    return ValueError(
+        f"the frozen corpus cannot deliver a {requested:,} character streamed tail at the {rung} "
+        f"rung: the streamed turn is unit {source_index}, which is {deliverable:,} characters, so "
+        f"the reply would be {deliverable / requested:.1%} of the one asked for. Asking for more "
+        f"tail makes this worse rather than better, because the seeded prefix shrinks to pay for "
+        f"it and the streamed turn moves to a smaller unit -- here the thread would collapse to "
+        f"{thread_chars:,} characters against the rung's {target_chars:,}, while still being "
+        f"recorded, weighted and reported as {rung}. Ask for less, or move the same request to a "
+        f"higher rung. NOT 'at most {deliverable:,}': that is this unit's size at THIS request, "
+        f"and the ceiling RISES as the request falls, because a smaller tail leaves a longer "
+        f"seeded prefix which draws the streamed turn from a larger unit. Lower the ask until "
+        f"this stops firing rather than reading a maximum off this line."
+    )
+
+
 def unit_text(unit: Unit) -> str:
     """Everything a unit puts on screen, in the order it arrives."""
     return unit.reasoning + unit.content
@@ -1136,7 +1181,28 @@ def plan_rung(
     # during-generation slots are timed against the opening stream, so it has to outlast them;
     # splitting the budget between turns left it draining in four seconds and those slots then ran
     # against a finished reply while still being labelled "during generation".
-    streamed = corpus.unit(len(seeded)).clipped_to(tail_target)
+    source = corpus.unit(len(seeded))
+    # THE REQUESTED TAIL HAS TO BE DELIVERABLE. Keyed on `clipped_to`'s own early return
+    # (`if chars >= self.chars: return self`) rather than on a tolerance, because the two ways a
+    # tail lands under its budget are different in kind and only one of them is a defect: clipping
+    # at a whole BLOCK boundary loses at most one block and is what keeps a prefix from ending
+    # inside a fence, while exceeding the unit loses everything above it and is unbounded. A
+    # percentage bound cannot tell those apart, and a bound nobody can derive is an unacknowledged
+    # bias rather than a tolerance.
+    #
+    # The DEFAULT path is exempt on purpose: `STREAM_TAIL_CHARS` is a ceiling the small rungs are
+    # legitimately under (the 1K rung is 4,000 characters in total, less than one tail), and that
+    # shortfall is the rung being small rather than the corpus failing to answer.
+    if stream_tail_chars is not None and tail_target >= source.chars:
+        raise _tail_not_deliverable(
+            rung,
+            tail_target,
+            len(seeded),
+            source.chars,
+            sum(u.chars for u in seeded) + source.chars + FOLLOW_UP_CHARS * (turns - 1),
+            target_chars,
+        )
+    streamed = source.clipped_to(tail_target)
     follow_ups = [corpus.unit(len(seeded) + i).clipped_to(FOLLOW_UP_CHARS) for i in range(1, turns)]
     if dollars:
         # The streamed turns only. The seeded prefix is rendered once at mount and never

@@ -3,9 +3,11 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
+  Cancel01Icon,
   Delete02Icon,
   Download01Icon,
   FlimSlateIcon,
+  ImageCropIcon,
   Image03Icon,
   InformationCircleIcon,
   PinIcon,
@@ -137,7 +139,20 @@ import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 
 import { MATCH_SOURCE_RESOLUTION, matchedCanvas } from "./keyframe-canvas";
 import { hasReferenceCapacity } from "./reference-budget";
+import {
+  applyReferenceImageCrop,
+  referenceImageDataUrls,
+  stageReferenceImage,
+  type StagedReferenceImage,
+} from "./reference-image-crop";
+import { ReferenceImageEditor } from "./reference-image-editor";
 import { type ReferenceMedia, ReferenceMediaPicker } from "./reference-picker";
+import {
+  defaultReferenceVideoTrim,
+  H3_REFERENCE_MAX_SECONDS,
+  referenceVideoTrimError,
+  referenceVideoTrimFeedback,
+} from "./reference-trim";
 import {
   type GalleryVideo,
   type VideoGenerateProgress,
@@ -594,6 +609,36 @@ function StatusChip({ label, value }: { label: string; value: string }) {
   );
 }
 
+function ReferenceVideoTrimStatus({
+  label,
+  start,
+  end,
+  sourceDuration,
+}: {
+  label: string;
+  start: number | null;
+  end: number | null;
+  sourceDuration?: number;
+}) {
+  const feedback = referenceVideoTrimFeedback(
+    label,
+    start,
+    end,
+    sourceDuration,
+  );
+  return (
+    <p
+      aria-live="polite"
+      className={cn(
+        "text-ui-11 leading-snug",
+        feedback.invalid ? "text-destructive" : "text-muted-foreground/70",
+      )}
+    >
+      {feedback.message}
+    </p>
+  );
+}
+
 // The full generation recipe for a clip, with a one-click "restore to inputs".
 function RecipePopover({
   video,
@@ -896,9 +941,15 @@ function VideoGenerator({
   // Natural pixel size of whichever keyframe drives the canvas, for the "match source" preview.
   const [keyframeAspect, setKeyframeAspect] = useState<[number, number] | null>(null);
   // Separate lists preserve Ref2VA's image, video, then audio request order.
-  const [referenceImages, setReferenceImages] = useState<string[]>([]);
+  const [referenceImages, setReferenceImages] = useState<StagedReferenceImage[]>([]);
+  const [cropPictureIndex, setCropPictureIndex] = useState<number | null>(null);
   const [referenceVideos, setReferenceVideos] = useState<
-    Array<{ video: ReferenceMedia; audio: ReferenceMedia | null }>
+    Array<{
+      video: ReferenceMedia;
+      audio: ReferenceMedia | null;
+      trimStartSeconds: number | null;
+      trimEndSeconds: number | null;
+    }>
   >([]);
   const [referenceAudios, setReferenceAudios] = useState<ReferenceMedia[]>([]);
   const [referenceImageSize, setReferenceImageSize] = useState<"match" | "max">("match");
@@ -1144,6 +1195,7 @@ function VideoGenerator({
       setReferenceImages([]);
       setReferenceVideos([]);
       setReferenceAudios([]);
+      setCropPictureIndex(null);
     }
   }, [status?.loaded, supportsReferences]);
   useEffect(() => {
@@ -3005,6 +3057,20 @@ function VideoGenerator({
       toast.error("Add a reference picture or video for this checkpoint");
       return;
     }
+    for (const [index, entry] of referenceVideos.entries()) {
+      const start = entry.trimStartSeconds;
+      const end = entry.trimEndSeconds;
+      const trimError = referenceVideoTrimError(
+        `Video ${index + 1}`,
+        start,
+        end,
+        entry.video.durationSeconds,
+      );
+      if (trimError) {
+        toast.error(trimError);
+        return;
+      }
+    }
     // Resolve a base seed up front: with a random one we still pick a concrete seed now so the recipe records it.
     let resolvedSeed: number | undefined;
     if (seed.trim()) {
@@ -3044,13 +3110,17 @@ function VideoGenerator({
         first_frame: supportsKeyframes ? firstFrame ?? undefined : undefined,
         last_frame: supportsKeyframes ? lastFrame ?? undefined : undefined,
         reference_images:
-          supportsReferences && referenceImages.length > 0 ? referenceImages : undefined,
+          supportsReferences && referenceImages.length > 0
+            ? referenceImageDataUrls(referenceImages)
+            : undefined,
         reference_videos:
           supportsReferences && referenceVideos.length > 0
             ? referenceVideos.map(
                 (entry): VideoReferenceVideo => ({
                   video: entry.video.dataUrl,
                   audio: entry.audio?.dataUrl,
+                  trim_start_seconds: entry.trimStartSeconds ?? undefined,
+                  trim_end_seconds: entry.trimEndSeconds ?? undefined,
                 }),
               )
             : undefined,
@@ -3483,18 +3553,43 @@ function VideoGenerator({
                     <span className="text-ui-11 text-muted-foreground/70">
                       Picture {index + 1}
                     </span>
-                    <ImageDropzone
-                      value={image}
-                      onChange={(next) =>
-                        setReferenceImages((prev) =>
-                          next
-                            ? prev.map((item, i) => (i === index ? next : item))
-                            : prev.filter((_, i) => i !== index),
-                        )
-                      }
-                      removeLabel={`Remove picture ${index + 1}`}
-                      className="h-20"
-                    />
+                    <div className="relative h-24 overflow-hidden rounded-[10px] border border-border bg-muted/30">
+                      <button
+                        type="button"
+                        aria-label={`Edit crop for picture ${index + 1}`}
+                        className="group h-full w-full overflow-hidden outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
+                        onClick={() => setCropPictureIndex(index)}
+                      >
+                        <img
+                          src={image.dataUrl}
+                          alt=""
+                          className="h-full w-full object-cover transition-transform group-hover:scale-[1.02]"
+                        />
+                        <span className="absolute inset-x-0 bottom-0 flex items-center justify-center gap-1 bg-gradient-to-t from-black/80 to-transparent px-2 pb-1.5 pt-6 text-ui-11 font-medium text-white">
+                          <HugeiconsIcon icon={ImageCropIcon} className="size-3.5" />
+                          Edit crop
+                        </span>
+                      </button>
+                      <Tooltip>
+                        <TooltipTrigger asChild={true}>
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            size="icon"
+                            aria-label={`Remove picture ${index + 1}`}
+                            className="absolute right-1.5 top-1.5 size-7 bg-background/85 shadow-sm backdrop-blur-sm"
+                            onClick={() =>
+                              setReferenceImages((prev) =>
+                                prev.filter((_, current) => current !== index),
+                              )
+                            }
+                          >
+                            <HugeiconsIcon icon={Cancel01Icon} className="size-3.5" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Remove picture {index + 1}</TooltipContent>
+                      </Tooltip>
+                    </div>
                   </div>
                 ))}
                 {referenceImages.length < 9 && hasReferenceRoom && (
@@ -3504,9 +3599,12 @@ function VideoGenerator({
                     </span>
                     <ImageDropzone
                       value={null}
-                      onChange={(next) => next && setReferenceImages((prev) => [...prev, next])}
+                      onChange={(next) =>
+                        next &&
+                        setReferenceImages((prev) => [...prev, stageReferenceImage(next)])
+                      }
                       label="Add"
-                      className="h-20"
+                      className="h-24"
                     />
                   </div>
                 )}
@@ -3521,13 +3619,99 @@ function VideoGenerator({
                       kind="video"
                       value={entry.video}
                       label={`Video ${index + 1}`}
-                      onChange={(next) =>
+                      onChange={(next) => {
+                        const trim = defaultReferenceVideoTrim(next?.durationSeconds);
                         setReferenceVideos((prev) =>
                           next
-                            ? prev.map((item, i) => (i === index ? { ...item, video: next } : item))
+                            ? prev.map((item, i) =>
+                                i === index
+                                  ? {
+                                      ...item,
+                                      video: next,
+                                      trimStartSeconds: trim.start,
+                                      trimEndSeconds: trim.end,
+                                    }
+                                  : item,
+                              )
                             : prev.filter((_, i) => i !== index),
-                        )
-                      }
+                        );
+                      }}
+                    />
+                    <video
+                      controls={true}
+                      muted={true}
+                      preload="metadata"
+                      src={entry.video.dataUrl}
+                      className="max-h-36 w-full rounded-[10px] bg-black object-contain"
+                    />
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="grid gap-1 text-ui-11 text-muted-foreground">
+                        Trim start (seconds)
+                        <Input
+                          aria-label={`Video ${index + 1} trim start in seconds`}
+                          type="number"
+                          min={0}
+                          max={entry.video.durationSeconds}
+                          step={0.1}
+                          value={entry.trimStartSeconds ?? ""}
+                          placeholder="0"
+                          onChange={(event) =>
+                            setReferenceVideos((prev) =>
+                              prev.map((item, i) =>
+                                i === index
+                                  ? {
+                                      ...item,
+                                      trimStartSeconds:
+                                        event.target.value === ""
+                                          ? null
+                                          : Number(event.target.value),
+                                    }
+                                  : item,
+                              ),
+                            )
+                          }
+                        />
+                      </div>
+                      <div className="grid gap-1 text-ui-11 text-muted-foreground">
+                        Trim end (seconds)
+                        <Input
+                          aria-label={`Video ${index + 1} trim end in seconds`}
+                          type="number"
+                          min={0}
+                          max={entry.video.durationSeconds}
+                          step={0.1}
+                          value={entry.trimEndSeconds ?? ""}
+                          placeholder={
+                            entry.video.durationSeconds !== undefined
+                              ? Math.min(
+                                  entry.video.durationSeconds,
+                                  H3_REFERENCE_MAX_SECONDS,
+                                ).toFixed(1)
+                              : "15"
+                          }
+                          onChange={(event) =>
+                            setReferenceVideos((prev) =>
+                              prev.map((item, i) =>
+                                i === index
+                                  ? {
+                                      ...item,
+                                      trimEndSeconds:
+                                        event.target.value === ""
+                                          ? null
+                                          : Number(event.target.value),
+                                    }
+                                  : item,
+                              ),
+                            )
+                          }
+                        />
+                      </div>
+                    </div>
+                    <ReferenceVideoTrimStatus
+                      label={`Video ${index + 1}`}
+                      start={entry.trimStartSeconds}
+                      end={entry.trimEndSeconds}
+                      sourceDuration={entry.video.durationSeconds}
                     />
                     <ReferenceMediaPicker
                       kind="audio"
@@ -3547,9 +3731,19 @@ function VideoGenerator({
                     kind="video"
                     value={null}
                     label={`Add video ${referenceVideos.length + 1}`}
-                    onChange={(next) =>
-                      next && setReferenceVideos((prev) => [...prev, { video: next, audio: null }])
-                    }
+                    onChange={(next) => {
+                      if (!next) return;
+                      const trim = defaultReferenceVideoTrim(next.durationSeconds);
+                      setReferenceVideos((prev) => [
+                        ...prev,
+                        {
+                          video: next,
+                          audio: null,
+                          trimStartSeconds: trim.start,
+                          trimEndSeconds: trim.end,
+                        },
+                      ]);
+                    }}
                   />
                 )}
               </div>
@@ -3613,6 +3807,23 @@ function VideoGenerator({
                 </Field>
               )}
             </div>
+          )}
+
+          {cropPictureIndex !== null && referenceImages[cropPictureIndex] && (
+            <ReferenceImageEditor
+              key={cropPictureIndex}
+              open={true}
+              picture={referenceImages[cropPictureIndex]}
+              pictureNumber={cropPictureIndex + 1}
+              onOpenChange={(open) => {
+                if (!open) setCropPictureIndex(null);
+              }}
+              onApply={(dataUrl, crop) =>
+                setReferenceImages((prev) =>
+                  applyReferenceImageCrop(prev, cropPictureIndex, dataUrl, crop),
+                )
+              }
+            />
           )}
 
           {status?.supports_cfg !== false && (
