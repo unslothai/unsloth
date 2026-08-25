@@ -915,8 +915,7 @@ test("media pages retire the shell only after gallery and preview hydration", ()
   );
   assert.match(
     audioPageSource,
-    // The argument list is pinned by audio-page-policy.test.ts: reactivation asks
-    // for the window that is already loaded, not just the first page.
+    // audio-page-policy.test.ts pins the argument list: reactivation asks for the loaded window.
     /if \(initialReadySent\.current\) \{\s*void refreshStatus\(\);\s*void refreshSttStatus\(\);\s*void refreshGallery\(/,
   );
   assert.match(

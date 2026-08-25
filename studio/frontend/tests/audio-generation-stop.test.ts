@@ -95,8 +95,8 @@ test("deleting a clip drops the row without waiting on the refresh", () => {
 });
 
 test("archiving a clip drops the row the same way a delete does", () => {
-  // Same revoked-object-URL trap: the clip leaves the shelf server-side, so leaving the row up
-  // until a refresh that may fail renders a tile that can no longer play.
+  // Same revoked-object-URL trap: the clip is gone server-side, so a row left up until a refresh
+  // that may fail renders a tile that can no longer play.
   assert.match(
     source,
     /await setAudioClipFlags\(id, \{ archived: true \}\);[\s\S]*?dropClip\(id\);\s*await refreshGallery\(id\);/,

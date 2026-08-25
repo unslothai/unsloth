@@ -414,8 +414,8 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
     if (loadingMore.current) return;
     loadingMore.current = true;
     try {
-      // image and video use offset paging over a shelf the user can shorten. audio uses its stable
-      // cursor, while the same retry fence keeps locally mutated responses off every shelf.
+      // Images and videos page by offset over a shelf the user can shorten; audio uses its stable
+      // cursor. The same retry fence keeps locally mutated responses off every shelf.
       for (let attempt = 0; attempt < 4; attempt += 1) {
         const before = mutations.current;
         const page = await loadPage(rowsRef.current.length, audioCursor.current);

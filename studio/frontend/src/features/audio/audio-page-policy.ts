@@ -200,8 +200,8 @@ export function mergeGalleryPage<T extends { id: string }>(
   const oldestInPage = cached.findIndex(
     (clip) => clip.id === page[page.length - 1].id,
   );
-  // an absent boundary means the cache cannot prove where safe scrollback begins. an external
-  // archive can shift one unseen row into the page while leaving every earlier row overlapping.
+  // Without that boundary the cache cannot prove where safe scrollback begins: an external archive
+  // can shift one unseen row into the page while every earlier row still overlaps.
   if (oldestInPage === -1 && cached.length > 0) {
     return { clips: [...page], stitched: false };
   }

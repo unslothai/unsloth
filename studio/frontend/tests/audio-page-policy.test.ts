@@ -573,9 +573,9 @@ test("generation is claimed before the transcribe release is awaited", () => {
 });
 
 test("a restore refreshes the loaded window, not just the first page", () => {
-  // A restored clip re-enters History at its own age, so with more than a page scrolled it lands
-  // below the first page. Refreshing only that page left it out of the strip AND unreachable:
-  // the kept cursor starts below the loaded window, so no later page ever returns it.
+  // A restored clip re-enters History at its own age, so past the first page it lands below it.
+  // Refreshing only that page left it out of the strip AND unreachable, since the kept cursor
+  // starts below the loaded window.
   const shelf = Array.from({ length: 120 }, (_, i) => ({ id: `c${i}` }));
   const loaded = shelf.slice(0, 100);
   const restored = { id: "restored" };
@@ -631,9 +631,9 @@ test("returning to a visible audio tab refreshes the loaded window", () => {
 });
 
 test("a window past the route cap resets the strip instead of stranding the restore", () => {
-  // Asking for more than the route returns leaves the middle of the window unfetched. Keeping
-  // the old scrollback there also keeps its cursor, which starts BELOW that middle, so a clip
-  // restored into it is in neither the merged list nor any page the cursor can still reach.
+  // Asking for more than the route returns leaves the middle of the window unfetched, and keeping
+  // the old scrollback keeps a cursor starting BELOW that middle, so a clip restored into it is
+  // in neither the merged list nor any page still reachable.
   assert.match(
     audioPageSource,
     /wanted > asked\s*\?\s*\{ clips: \[\.\.\.page\.audio\], stitched: false \}\s*:\s*mergeGalleryPage\(/,

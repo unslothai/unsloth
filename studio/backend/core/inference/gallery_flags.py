@@ -171,9 +171,8 @@ def _save(directory: Path, data: dict[str, Any]) -> None:
 @contextlib.contextmanager
 def _file_lock(directory: Path):
     """Best-effort cross-process exclusive lock over one directory's store. Generation runs in
-    subprocesses, so the in-process RLock alone would let two processes read the same JSON and
-    clobber each other on ``os.replace``. Yields whether the OS lock was acquired, so destructive
-    callers can fail closed where locking is unavailable."""
+    subprocesses, so the in-process RLock alone would let two of them clobber each other on
+    ``os.replace``. Yields whether the OS lock was taken, so destructive callers can fail closed."""
     try:
         fd = os.open(str(directory / f"{_STORE_NAME}.lock"), os.O_CREAT | os.O_RDWR, 0o600)
     except Exception:

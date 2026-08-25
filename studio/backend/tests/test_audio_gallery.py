@@ -474,8 +474,7 @@ def test_clear_route_refuses_with_an_unreadable_store():
 
 
 def test_prune_skips_when_the_flag_store_cannot_be_read(monkeypatch):
-    # The prune deletes on the strength of "not archived", so an unreadable store must stop it
-    # the way it stops clear(). Reading it fail-safe instead dropped the archived clip.
+    # The prune deletes on "not archived", so an unreadable store must stop it as it stops clear().
     monkeypatch.setenv("UNSLOTH_AUDIO_GALLERY_MAX_CLIPS", "2")
     shelved = _save_with_mtime("shelved", 100.0)
     gallery.set_flags(shelved["id"], archived = True)
@@ -489,9 +488,8 @@ def test_prune_skips_when_the_flag_store_cannot_be_read(monkeypatch):
 
 
 def test_prune_spares_a_clip_archived_after_its_snapshot(monkeypatch):
-    # The prune picks its victims from a listing and unlinks afterwards. An archive landing
-    # in that window read as active from the stale snapshot and the clip was deleted anyway,
-    # after the PATCH had already told the user it was archived.
+    # The prune once picked victims from a listing and unlinked afterwards, so an archive landing
+    # in that window read as active from the stale snapshot and the clip was deleted anyway.
     from core.inference import gallery_flags
 
     doomed = _save_with_mtime("doomed", 100.0)

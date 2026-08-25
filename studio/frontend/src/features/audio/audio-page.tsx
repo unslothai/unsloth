@@ -592,9 +592,8 @@ export function AudioPage({
         // The caller's own fetch: a generation whose clip persisted must not be told otherwise.
         if (generation !== galleryRefreshGeneration.current) return page.audio;
         // A window past the route's cap cannot be covered in one page, and stitching the old
-        // scrollback back on keeps a cursor that starts BELOW it: a clip restored into the
-        // uncovered middle is then in neither the list nor any later page. Reset to what was
-        // fetched instead. Shorter scrollback, but nothing is stranded behind the cursor.
+        // scrollback back on keeps a cursor that starts BELOW it, stranding whatever was restored
+        // into the gap. Reset to what was fetched: shorter scrollback, nothing unreachable.
         const { clips: merged, stitched } =
           wanted > asked
             ? { clips: [...page.audio], stitched: false }
@@ -1819,9 +1818,8 @@ export function AudioPage({
   const dropClip = useCallback((id: string) => {
     galleryCache.srcById.delete(id);
     setSrcById(galleryCache.srcById.toRecord());
-    // Drop the row now, as the clear-all path does: refreshGallery swallows a failed
-    // GET and returns the cache without calling setClips, which left the deleted clip
-    // on screen against an object URL that has already been revoked.
+    // Drop the row now, as the clear-all path does: refreshGallery swallows a failed GET and
+    // returns the cache without setClips, leaving the row up against an already-revoked URL.
     galleryCache.clips = galleryCache.clips.filter((clip) => clip.id !== id);
     setClips(galleryCache.clips);
     if (galleryCache.selectedId === id) {
@@ -1874,10 +1872,9 @@ export function AudioPage({
     [dropClip, refreshGallery],
   );
 
-  // This page stays mounted across route changes, so a restore from the Settings archive would
-  // otherwise not reach History until a full reload. Refresh the window that is actually loaded:
-  // a restored clip re-enters the shelf at its own age, and a first-page refresh leaves one
-  // below that page invisible AND unreachable, since the kept cursor now starts past it.
+  // This page stays mounted across route changes, so a restore from the Settings archive would not
+  // reach History until a reload. Refresh the loaded window, not just the first page: a clip
+  // re-enters at its own age, and the kept cursor already starts past anything below that page.
   useEffect(
     () =>
       subscribeGalleryChanged("audio", () => {
