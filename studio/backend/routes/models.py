@@ -3944,7 +3944,6 @@ def _repo_root_has_mmproj(repo_info) -> bool:
     dropping one in by hand puts it (#9286). Not part of any revision, so
     _repo_has_mmproj cannot see it."""
     from utils.models.model_config import detect_mmproj_file
-
     try:
         return detect_mmproj_file(str(repo_info.repo_path)) is not None
     except Exception:
