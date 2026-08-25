@@ -679,9 +679,7 @@ def test_catalog_dedupes_and_survives_failing_sources(monkeypatch):
     assert [e.name for e in cat.list_chat_models()] == ["a"]
 
 
-def test_catalog_keeps_case_distinct_local_paths_where_the_filesystem_does(
-    monkeypatch, tmp_path
-):
+def test_catalog_keeps_case_distinct_local_paths_where_the_filesystem_does(monkeypatch, tmp_path):
     """``Foo`` and ``foo`` are two models on ext4 and one model on NTFS or a stock APFS volume.
 
     Built on the real filesystem and asked of it, rather than decided from ``sys.platform`` or
@@ -702,10 +700,14 @@ def test_catalog_keeps_case_distinct_local_paths_where_the_filesystem_does(
 
     for name in ("trained_entries", "exported_entries", "cached_entries"):
         monkeypatch.setattr(cat, name, lambda: [])
-    monkeypatch.setattr(cat, "local_folder_entries", lambda: [
-        cat.ModelEntry("Downloaded", "Foo", "", str(upper)),
-        cat.ModelEntry("Downloaded", "foo", "", str(lower)),
-    ])
+    monkeypatch.setattr(
+        cat,
+        "local_folder_entries",
+        lambda: [
+            cat.ModelEntry("Downloaded", "Foo", "", str(upper)),
+            cat.ModelEntry("Downloaded", "foo", "", str(lower)),
+        ],
+    )
     names = [e.name for e in cat.list_chat_models()]
     assert names == (["Foo", "foo"] if case_sensitive_fs else ["Foo"])
 
@@ -731,12 +733,20 @@ def test_catalog_collapses_a_model_reached_twice_through_a_symlink(monkeypatch, 
 
     for name in ("trained_entries", "exported_entries"):
         monkeypatch.setattr(cat, name, lambda: [])
-    monkeypatch.setattr(cat, "cached_entries", lambda: [
-        cat.ModelEntry("Downloaded", "real", "", str(real)),
-    ])
-    monkeypatch.setattr(cat, "local_folder_entries", lambda: [
-        cat.ModelEntry("Downloaded", "link", "", str(link)),
-    ])
+    monkeypatch.setattr(
+        cat,
+        "cached_entries",
+        lambda: [
+            cat.ModelEntry("Downloaded", "real", "", str(real)),
+        ],
+    )
+    monkeypatch.setattr(
+        cat,
+        "local_folder_entries",
+        lambda: [
+            cat.ModelEntry("Downloaded", "link", "", str(link)),
+        ],
+    )
     assert [e.name for e in cat.list_chat_models()] == ["real"]
 
 
@@ -747,10 +757,14 @@ def test_catalog_still_folds_case_on_bare_repo_ids(monkeypatch):
 
     for name in ("trained_entries", "exported_entries", "local_folder_entries"):
         monkeypatch.setattr(cat, name, lambda: [])
-    monkeypatch.setattr(cat, "cached_entries", lambda: [
-        cat.ModelEntry("Downloaded", "Unsloth/Qwen3-0.6B", "", "Unsloth/Qwen3-0.6B"),
-        cat.ModelEntry("Downloaded", "unsloth/qwen3-0.6b", "", "unsloth/qwen3-0.6b"),
-    ])
+    monkeypatch.setattr(
+        cat,
+        "cached_entries",
+        lambda: [
+            cat.ModelEntry("Downloaded", "Unsloth/Qwen3-0.6B", "", "Unsloth/Qwen3-0.6B"),
+            cat.ModelEntry("Downloaded", "unsloth/qwen3-0.6b", "", "unsloth/qwen3-0.6b"),
+        ],
+    )
     assert len(cat.list_chat_models()) == 1
 
 
