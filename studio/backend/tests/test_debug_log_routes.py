@@ -7,8 +7,10 @@ an error the UI flashes on every tick."""
 
 from __future__ import annotations
 
+import io
 import os
 import sys
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -140,6 +142,72 @@ def test_an_api_key_session_cannot_read_the_logs():
     _seed_server_log()
     assert api_client.get("/api/settings/debug/logs").status_code == 403
     assert api_client.get("/api/settings/debug/logs/sources").status_code == 403
+    assert api_client.get("/api/settings/debug/logs/export").status_code == 403
+
+
+def test_export_contains_every_visible_source_and_masks_credentials(client):
+    secret = "hf_AbCdEfGhIjKlMnOpQrStUvWxYz012345"
+    server = _seed_server_log(f"server line\ntoken={secret}\n")
+    llama = _seed_llama_log("llama runner line\n")
+
+    response = client.get("/api/settings/debug/logs/export")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/zip"
+    assert response.headers["content-disposition"].startswith(
+        'attachment; filename="unsloth-logs-'
+    )
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        assert set(archive.namelist()) == {
+            f"server/{server.name}",
+            f"llama-server/{llama.name}",
+        }
+        exported = "\n".join(
+            archive.read(name).decode("utf-8") for name in archive.namelist()
+        )
+    assert "server line" in exported
+    assert "llama runner line" in exported
+    assert secret not in exported
+    assert "hf_<redacted>" in exported
+
+
+def test_export_with_no_logs_is_still_a_valid_zip(client):
+    response = client.get("/api/settings/debug/logs/export")
+    assert response.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        assert archive.namelist() == []
+
+
+def test_export_is_not_limited_to_the_viewers_per_family_window(client):
+    directory = Path(os.environ["UNSLOTH_STUDIO_HOME"]) / "logs" / "llama-server"
+    directory.mkdir(parents = True)
+    expected = set()
+    for index in range(12):
+        name = f"llama-{1786000000 + index}.log"
+        (directory / name).write_text(f"attempt {index}\n", encoding = "utf-8")
+        expected.add(f"llama-server/{name}")
+
+    # The picker remains deliberately capped; the explicit export does not.
+    listed = client.get("/api/settings/debug/logs/sources").json()["sources"]
+    assert len([source for source in listed if source["family"] == "llama-server"]) == 10
+
+    response = client.get("/api/settings/debug/logs/export")
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        assert set(archive.namelist()) == expected
+
+
+def test_export_omits_an_oversized_record_instead_of_splitting_a_secret(client):
+    from utils.debug_log_export import EXPORT_READ_BYTES
+
+    secret = "hf_AbCdEfGhIjKlMnOpQrStUvWxYz012345"
+    path = _seed_server_log("x" * EXPORT_READ_BYTES + secret + "\nkept\n")
+
+    response = client.get("/api/settings/debug/logs/export")
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        exported = archive.read(f"server/{path.name}").decode("utf-8")
+    assert secret not in exported
+    assert "oversized log record omitted" in exported
+    assert exported.splitlines()[-1] == "kept"
 
 
 def test_the_endpoints_stay_out_of_the_access_log():

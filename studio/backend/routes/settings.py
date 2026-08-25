@@ -2558,6 +2558,39 @@ class DebugLogResponse(BaseModel):
     size_bytes: int = 0
 
 
+@router.get("/debug/logs/export")
+def export_debug_logs(
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+):
+    """Download every log currently offered by the viewer as a masked ZIP."""
+    from datetime import datetime, timezone
+
+    from fastapi.responses import StreamingResponse
+
+    from utils import debug_log_export, debug_log_sources
+
+    # The picker is intentionally capped per family because it is rescanned
+    # while the tab is open. Export is an explicit one-shot action and means
+    # all matching logs, including older runner attempts outside that window.
+    sources = debug_log_sources.list_sources(max_sources_per_family = None)
+    archive = debug_log_export.build_debug_log_archive(sources)
+    filename = f"unsloth-logs-{datetime.now(timezone.utc):%Y%m%d-%H%M%S}.zip"
+
+    def _stream_archive():
+        try:
+            while chunk := archive.read(64 * 1024):
+                yield chunk
+        finally:
+            archive.close()
+
+    return StreamingResponse(
+        _stream_archive(),
+        media_type = "application/zip",
+        headers = {"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/debug/logs/sources", response_model = DebugLogSourcesResponse)
 def get_debug_log_sources(
     current_subject: str = Depends(get_current_subject),

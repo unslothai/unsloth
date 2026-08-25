@@ -137,7 +137,9 @@ def _digest(realpath: str) -> str:
     return hashlib.sha256(realpath.encode("utf-8", "surrogateescape")).hexdigest()[:_DIGEST_CHARS]
 
 
-def _family_files(family: str) -> list[Path]:
+def _family_files(
+    family: str, max_sources: Optional[int] = MAX_SOURCES_PER_FAMILY
+) -> list[Path]:
     """Real, contained, regular files for one family, newest first."""
     subdir, pattern = FAMILIES[family]
     found: dict[str, tuple[Path, float]] = {}
@@ -162,7 +164,8 @@ def _family_files(family: str) -> list[Path]:
         # are still ordered by real mtime below, and the slice is wide enough to
         # keep a file whose mtime moved after it was written.
         entries.sort(key = lambda entry: entry.name, reverse = True)
-        entries = entries[: MAX_SOURCES_PER_FAMILY * 3]
+        if max_sources is not None:
+            entries = entries[: max_sources * 3]
         for entry in entries:
             try:
                 real = Path(os.path.realpath(entry))
@@ -182,7 +185,9 @@ def _family_files(family: str) -> list[Path]:
             # digest stays over the real path.
             found.setdefault(_identity(real), (real, stat.st_mtime))
     ordered = sorted(found.values(), key = lambda item: item[1], reverse = True)
-    return [path for path, _ in ordered[:MAX_SOURCES_PER_FAMILY]]
+    if max_sources is None:
+        return [path for path, _ in ordered]
+    return [path for path, _ in ordered[:max_sources]]
 
 
 def _is_current(family: str, path: Path, newest: Optional[Path]) -> bool:
@@ -195,10 +200,12 @@ def _is_current(family: str, path: Path, newest: Optional[Path]) -> bool:
     return newest is not None and path == newest
 
 
-def list_sources() -> list[LogSource]:
+def list_sources(
+    max_sources_per_family: Optional[int] = MAX_SOURCES_PER_FAMILY,
+) -> list[LogSource]:
     sources: list[LogSource] = []
     for family in FAMILIES:
-        files = _family_files(family)
+        files = _family_files(family, max_sources_per_family)
         newest = files[0] if files else None
         for path in files:
             try:

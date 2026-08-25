@@ -3,6 +3,7 @@
 
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
+import { downloadFile } from "@/lib/native-files";
 import { DebugLogRequestError } from "../lib/debug-log-error";
 
 export { DebugLogRequestError } from "../lib/debug-log-error";
@@ -112,4 +113,22 @@ export async function loadDebugLog(
     fileLoggingDisabled: Boolean(body.file_logging_disabled),
     sizeBytes: Number(body.size_bytes ?? 0),
   };
+}
+
+export async function exportDebugLogs(): Promise<void> {
+  const response = await authFetch("/api/settings/debug/logs/export");
+  if (!response.ok) {
+    throw new Error(
+      await readFastApiError(response, "Could not export the log files."),
+    );
+  }
+  const disposition = response.headers.get("content-disposition") ?? "";
+  const filename =
+    /filename="([^"\\/]+)"/i.exec(disposition)?.[1] ?? "unsloth-logs.zip";
+  await downloadFile(await response.blob(), filename, "application/zip");
+}
+
+export async function openDebugLogsFolder(): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("open_logs_dir");
 }

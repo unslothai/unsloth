@@ -689,12 +689,16 @@ fn open_existing_dir(dir: &std::path::Path) -> Result<(), String> {
     open_existing_dir_with(dir, |path| crate::process::open_detached(path))
 }
 
-/// Open the Unsloth directory in the system file manager.
+fn logs_dir(home: &std::path::Path) -> std::path::PathBuf {
+    home.join(".unsloth").join("studio").join("logs")
+}
+
+/// Open the Unsloth logs directory in the system file manager.
 #[tauri::command]
 pub fn open_logs_dir(window: tauri::WebviewWindow) -> Result<(), String> {
     crate::native_intents::ensure_main_window(&window)?;
     let home = dirs::home_dir().ok_or("Could not determine home directory")?;
-    open_existing_dir(&home.join(".unsloth").join("studio"))
+    open_existing_dir(&logs_dir(&home))
 }
 
 /// Open a models directory (resolved by the backend, e.g. the HF cache) in the
@@ -1128,6 +1132,16 @@ mod tests {
         .unwrap_err();
         assert!(error.contains("Directory does not exist"));
     }
+
+    #[test]
+    fn logs_command_targets_the_logs_directory_not_the_studio_root() {
+        let home = std::path::Path::new("home");
+        assert_eq!(
+            super::logs_dir(home),
+            home.join(".unsloth").join("studio").join("logs")
+        );
+    }
+
     #[test]
     fn repair_elevation_is_not_a_terminal_repair_failure() {
         assert!(!super::should_emit_repair_failed("NEEDS_ELEVATION"));
