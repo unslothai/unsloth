@@ -1054,10 +1054,8 @@ class VideoBackend:
         self._gen: dict[str, Any] = {"active": False}
         # True from begin_generate() until its worker records a terminal state, so a second call is refused while it runs.
         self._generate_job_active = False
-        # Identity of the job the flag belongs to. The flag alone answers "is some job running", which a late
-        # finaliser cannot tell apart from "my job is running": between one job publishing its terminal state and
-        # its worker returning, the next begin_generate() can reserve the slot and set the flag again. Finalising
-        # on the flag would then let the finished job overwrite the running one. Compared by identity.
+        # Which job the flag belongs to. The flag alone cannot tell "my job" from "the job that
+        # replaced mine", so finalising is keyed on this. Compared by identity.
         self._generate_job_token: Optional[object] = None
 
     def _device_target(self, ordinal: Optional[int] = None) -> DiffusionDeviceTarget:
@@ -4978,9 +4976,7 @@ class VideoBackend:
         sentinels the route maps to 409.
         """
         cancel = threading.Event()
-        # Identifies this reservation for the whole of its life, so only this job's own worker can
-        # finalise it. See _generate_job_token in __init__.
-        job_token = object()
+        job_token = object()  # this reservation's identity; only its own worker may finalise it
         while True:
             # Resolve outside the lock, then retry if the resident state changed.
             with self._lock:
@@ -5062,19 +5058,13 @@ class VideoBackend:
         try:
             worker.start()
         except RuntimeError:
-            # No thread was created, so nothing will ever release the slot reserved above, and
-            # the reservation would outlive the request that made it: generate stays refused
-            # for the rest of the session, and liveness reports this backend as rendering to a
-            # watchdog that answers a busy backend by waiting longer rather than restarting it.
-            #
-            # RuntimeError specifically, not BaseException: Thread.start() raises it only
-            # before the OS thread exists (thread.__init__ not called, started twice, or the
-            # interpreter refusing a new thread), but it then WAITS on the child, and a signal
-            # delivered in that wait unwinds with the worker already running. Rolling back
-            # there would retire a live render's token and drop its cancel handle: liveness
-            # would call it idle, cancel and unload could not reach it, and the next request
-            # could reserve the slot underneath it. A worker that exists finalises its own
-            # reservation, so leave it alone.
+            # No thread, so nothing would ever release the slot reserved above: generate stays
+            # refused for the session, and liveness reports a rendering backend to a watchdog
+            # that answers busy by waiting longer rather than restarting.
+            # RuntimeError, not BaseException: start() raises it only before the thread exists,
+            # but it then waits on the child, and a signal in that wait unwinds with the worker
+            # live. Rolling back there would retire a running render's token and drop its cancel
+            # handle. A worker that exists finalises its own reservation.
             self._finish_generate_job(
                 job_token = job_token,
                 cancel_event = cancel,
@@ -5091,24 +5081,19 @@ class VideoBackend:
     ) -> None:
         """Backstop around the worker body, so a reservation cannot outlive its thread.
 
-        Every ordinary outcome is named in _run_generate_body and records its own terminal
-        state; finalising is keyed on job_token, so this finally is a no-op once the body has
-        published one. It exists for the outcomes the body cannot name: an exit through
-        BaseException, or a failure before the body's first try. Without it the marker leaks,
-        and a leaked marker tells the desktop watchdog that a wedged backend is still
-        rendering, which is the inverse of the bug the marker was added to fix.
+        The body names every ordinary outcome and finalises it; keyed on job_token, this
+        finally is then a no-op. It is for what the body cannot name: an exit through
+        BaseException, or a failure before its first try. A leaked marker tells the watchdog a
+        wedged backend is still rendering, the inverse of the bug the marker fixes.
 
-        Stays the thread target and the entry point callers know: begin_generate resolves it
-        by name and test doubles subclass it."""
+        Still the thread target: begin_generate resolves it by name and doubles subclass it."""
         try:
             self._run_generate_body(cancel_event = cancel_event, job_token = job_token, **gen_kwargs)
         finally:
             if job_token is not None:
-                # Only a reservation can be left dangling, and only begin_generate makes one.
-                # A direct call holds nothing, so there is nothing here to release -- and
-                # firing anyway would match the same "unreserved" token the body already
-                # finalised with, replacing a completed clip or a cancellation with the
-                # generic failure below.
+                # Only begin_generate makes a reservation, so only it can leave one dangling.
+                # Firing for a direct call would match the same unreserved token the body just
+                # finalised with, replacing its outcome with the generic failure below.
                 self._finish_generate_job(
                     job_token = job_token,
                     cancel_event = cancel_event,
@@ -5220,14 +5205,12 @@ class VideoBackend:
         and the busy flag drops in the same critical section so the earliest
         moment a new begin_generate() can start is after the outcome is visible.
 
-        At most once per reservation, and only by that reservation: the first call carrying
-        the live token publishes and retires it, every later one returns. Keyed on the token
-        rather than on _generate_job_active because the flag goes true again as soon as the
-        next job reserves, and _run_generate's backstop runs after the body has already
-        published - on the flag alone a finished job would finalise its successor, clearing
-        a marker that is still rendering and admitting a third job past the busy guard.
-        job_token defaults to None to match a caller that never reserved, which is how a
-        direct _run_generate() still records its outcome."""
+        At most once per reservation and only by that reservation: the first call carrying the
+        live token publishes and retires it, later ones return. Keyed on the token, not on
+        _generate_job_active, because the flag goes true again the moment the next job reserves
+        and the backstop runs after the body published - on the flag a finished job would
+        finalise its successor. None means a caller that never reserved, e.g. direct
+        _run_generate()."""
         with self._lock:
             if self._generate_job_token is not job_token:
                 return
