@@ -466,23 +466,41 @@ def _timeline(duration_s, stalls = ()):
     return samples
 
 
-def _recovery_probes(start_t, timeouts, settles = "ok"):
+def _recovery_probes(
+    start_t,
+    timeouts,
+    settles = "ok",
+):
     """Probes in the shape await_recovery records them: N timeouts, then one answer."""
     out, now = [], float(start_t)
     for _ in range(timeouts):
         now += BUDGET_S
-        out.append({
-            "t": round(now, 3), "path": "/api/liveness", "kind": "timeout", "status": 0,
-            "ms": BUDGET_S * 1000, "inference_active": None,
-            "hardware_detecting": None, "torch_warm_in_progress": None,
-        })
+        out.append(
+            {
+                "t": round(now, 3),
+                "path": "/api/liveness",
+                "kind": "timeout",
+                "status": 0,
+                "ms": BUDGET_S * 1000,
+                "inference_active": None,
+                "hardware_detecting": None,
+                "torch_warm_in_progress": None,
+            }
+        )
     if settles is not None:
         now += 0.005
-        out.append({
-            "t": round(now, 3), "path": "/api/liveness", "kind": settles,
-            "status": 200 if settles == "ok" else 0, "ms": 5.0, "inference_active": None,
-            "hardware_detecting": None, "torch_warm_in_progress": None,
-        })
+        out.append(
+            {
+                "t": round(now, 3),
+                "path": "/api/liveness",
+                "kind": settles,
+                "status": 200 if settles == "ok" else 0,
+                "ms": 5.0,
+                "inference_active": None,
+                "hardware_detecting": None,
+                "torch_warm_in_progress": None,
+            }
+        )
     return out
 
 
@@ -892,9 +910,9 @@ def test_the_warning_counts_the_post_run_wait(tmp_path, monkeypatch, capsys):
     assert raw < 40.0, f"fixture stall is already long enough to pass on its own: {raw}s"
     # The watch keeps probing for another 40s before it clears.
     recovery = _recovery_probes(samples[-1]["t"], timeouts = 4)
-    assert _verdict(
-        mod, samples, final_kind = "ok", final_wait_s = 40.0, recovery_samples = recovery
-    ) == []
+    assert (
+        _verdict(mod, samples, final_kind = "ok", final_wait_s = 40.0, recovery_samples = recovery) == []
+    )
     warning = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("::warning::")]
     assert warning, "no warning emitted for a stall that cleared after the run"
     longest = float(re.search(r"longest ([\d.]+)s", warning[0]).group(1))
@@ -1053,9 +1071,9 @@ def test_a_stall_that_begins_after_sampling_is_still_reported(tmp_path, monkeypa
     assert not mod._stall_windows(samples), "fixture already has a stall during sampling"
     # 60s of silence after sampling stops, then the backend answers.
     recovery = _recovery_probes(samples[-1]["t"], timeouts = 6)
-    assert _verdict(
-        mod, samples, final_kind = "ok", final_wait_s = 60.0, recovery_samples = recovery
-    ) == []
+    assert (
+        _verdict(mod, samples, final_kind = "ok", final_wait_s = 60.0, recovery_samples = recovery) == []
+    )
     warning = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("::warning::")]
     assert warning, "a 60s post-run stall was not reported at all"
     longest = float(re.search(r"longest ([\d.]+)s", warning[0]).group(1))
@@ -1072,7 +1090,8 @@ def test_the_watch_history_is_handed_to_the_report(tmp_path, monkeypatch):
     tree = ast.parse(SCRIPT.read_text(encoding = "utf-8"))
     main = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "main")
     reports = [
-        n for n in ast.walk(main)
+        n
+        for n in ast.walk(main)
         if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "report"
     ]
     assert reports, "main() no longer reports"

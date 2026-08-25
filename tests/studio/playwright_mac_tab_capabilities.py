@@ -312,8 +312,7 @@ def _get_json(path: str, timeout: float = PROBE_TIMEOUT_S) -> tuple[int, dict | 
 
 
 def await_recovery(
-    window_s: float = RECOVERY_WINDOW_S,
-    spacing_s: float = RECOVERY_PROBE_SPACING_S,
+    window_s: float = RECOVERY_WINDOW_S, spacing_s: float = RECOVERY_PROBE_SPACING_S
 ) -> tuple[str, int, float]:
     """Watch the backend after sampling stops, until it answers or *window_s* elapses.
 
@@ -340,16 +339,18 @@ def await_recovery(
         # sampling stops is invisible: the verdict knows it waited, but nothing knows
         # for how long or that anything went wrong, and a recovered stall that goes
         # unreported is the one thing this window was added to avoid.
-        probes.append({
-            "t": round(time.monotonic(), 1),
-            "path": LIVENESS_PATH,
-            "status": status,
-            "kind": kind,
-            "ms": round((time.monotonic() - probe_began) * 1000, 1),
-            "inference_active": None,
-            "hardware_detecting": None,
-            "torch_warm_in_progress": None,
-        })
+        probes.append(
+            {
+                "t": round(time.monotonic(), 1),
+                "path": LIVENESS_PATH,
+                "status": status,
+                "kind": kind,
+                "ms": round((time.monotonic() - probe_began) * 1000, 1),
+                "inference_active": None,
+                "hardware_detecting": None,
+                "torch_warm_in_progress": None,
+            }
+        )
         if kind != "timeout":
             return kind, status, round(time.monotonic() - began, 1), probes
         elapsed = time.monotonic() - began
