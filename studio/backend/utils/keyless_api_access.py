@@ -81,6 +81,7 @@ _cached_settings: Optional[tuple[float, str, bool]] = None
 # bumped by every write, so a refresh can tell whether its read still describes the db
 _settings_generation = 0
 _cache_lock = threading.Lock()
+_write_lock = threading.Lock()
 
 
 def _reset_scope_cache() -> None:
@@ -151,25 +152,26 @@ def set_keyless_api_access(value: Any, *, tools: Any = None) -> tuple[str, bool]
     scope = _coerce_scope(value)
     if scope is None:
         raise ValueError(f"Keyless API access scope must be one of: {', '.join(KEYLESS_SCOPES)}.")
-    allow_tools = get_keyless_api_tools_enabled() if tools is None else _coerce_bool(tools)
-    if allow_tools is None:
-        raise ValueError("Keyless tool access must be true or false.")
-    # tools are meaningless without a scope, and leaving them ticked would surprise
-    # whoever turns keyless back on later
-    allow_tools = allow_tools and scope != KEYLESS_SCOPE_OFF
+    with _write_lock:
+        allow_tools = get_keyless_api_tools_enabled() if tools is None else _coerce_bool(tools)
+        if allow_tools is None:
+            raise ValueError("Keyless tool access must be true or false.")
+        # tools are meaningless without a scope, and leaving them ticked would surprise
+        # whoever turns keyless back on later
+        allow_tools = allow_tools and scope != KEYLESS_SCOPE_OFF
 
-    from storage.studio_db import upsert_app_settings
+        from storage.studio_db import upsert_app_settings
 
-    upsert_app_settings(
-        {
-            KEYLESS_API_ACCESS_SETTING_KEY: scope,
-            KEYLESS_API_TOOLS_SETTING_KEY: allow_tools,
-        }
-    )
-    with _cache_lock:
-        _settings_generation += 1
-        _cached_settings = (time.monotonic(), scope, allow_tools)
-    return scope, allow_tools
+        upsert_app_settings(
+            {
+                KEYLESS_API_ACCESS_SETTING_KEY: scope,
+                KEYLESS_API_TOOLS_SETTING_KEY: allow_tools,
+            }
+        )
+        with _cache_lock:
+            _settings_generation += 1
+            _cached_settings = (time.monotonic(), scope, allow_tools)
+        return scope, allow_tools
 
 
 def access_exposure(app_state: Any) -> Optional[str]:

@@ -26,10 +26,12 @@ from auth.authentication import (
 from utils.keyless_api_access import (
     KeylessToolPolicyMiddleware,
     KEYLESS_ADMISSION_STATE_KEY,
+    KEYLESS_API_ACCESS_SETTING_KEY,
     _reset_scope_cache,
     access_exposure,
     asgi_request_is_keyless,
     get_keyless_api_access_scope,
+    get_keyless_api_access_settings,
     get_keyless_api_tools_enabled,
     keyless_request_allowed,
     scope_covers,
@@ -166,6 +168,42 @@ def test_stale_refresh_cannot_reopen_a_closed_scope(monkeypatch):
         write_done.set()
         reader.join(timeout = 10)
     assert observed == [("off", False)]
+
+
+def test_overlapping_writes_publish_in_commit_order(monkeypatch):
+    import storage.studio_db as studio_db
+
+    first_committed = threading.Event()
+    release_first = threading.Event()
+    second_committed = threading.Event()
+    real_upsert = studio_db.upsert_app_settings
+
+    def delayed_upsert(settings):
+        result = real_upsert(settings)
+        if settings[KEYLESS_API_ACCESS_SETTING_KEY] == "full":
+            first_committed.set()
+            assert release_first.wait(timeout = 10)
+        else:
+            second_committed.set()
+        return result
+
+    monkeypatch.setattr(studio_db, "upsert_app_settings", delayed_upsert)
+    first = threading.Thread(target = set_keyless_api_access,
+                             args = ("full",), kwargs = {"tools": True})
+    second = threading.Thread(target = set_keyless_api_access,
+                              args = ("off",), kwargs = {"tools": False})
+    first.start()
+    assert first_committed.wait(timeout = 10)
+    second.start()
+    try:
+        assert not second_committed.wait(timeout = 0.1)
+    finally:
+        release_first.set()
+        first.join(timeout = 10)
+        second.join(timeout = 10)
+
+    assert not first.is_alive() and not second.is_alive()
+    assert get_keyless_api_access_settings() == ("off", False)
 
 
 def test_full_scope_is_loopback_only():
