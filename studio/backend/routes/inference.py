@@ -7430,10 +7430,23 @@ def _gguf_runtime_bytes(
                 n_batch = _emitted_n_batch(n_batch, slots),
                 n_ubatch = n_ubatch,
             )
-        managed_kv_unified = bool(
-            slots > 1
-            and LlamaCppBackend.probe_server_capabilities().get("supports_kv_unified", False)
+        # Only when it can change an answer. The probe shells out to llama-server, and
+        # the previous expression short-circuited it away at one slot; calling it
+        # unconditionally put a failure-prone call on every single-slot estimate, and
+        # a raise here loses the whole runtime to the unknown fallback.
+        _kv_caps = (
+            LlamaCppBackend.probe_server_capabilities() if slots > 1 else {}
         )
+        _supports_kv_unified = bool(_kv_caps.get("supports_kv_unified", False))
+        if slots > 1 and _kv_caps.get("found") and not _supports_kv_unified:
+            # load_model drops to one slot on a build without --kv-unified, because an
+            # explicit --parallel N there splits -c into N windows and would quarter
+            # every context for a feature the build cannot serve. It does that BEFORE
+            # sizing, so keeping the requested count here scaled the compute buffers,
+            # the SWA layout and the reported slot count to a process that will not
+            # launch.
+            slots = 1
+        managed_kv_unified = bool(slots > 1 and _supports_kv_unified)
         swa_full = _swa_full_from_args_or_env(llama_extra_args)
         kv_unified = _kv_unified_from_args(
             llama_extra_args,
@@ -7715,6 +7728,12 @@ def _estimate_gguf_required_gb(
     n_devices: int = 1,
     is_diffusion: bool = False,
     disable_vision: bool = False,
+    # The panel prices from disk and headers only. A --spec-draft-hf repo is otherwise
+    # sized by LISTING it over the network, which is right for the admission guard (a
+    # running training job is worth one request) and wrong for a row that re-prices on
+    # every settings change. This skips that listing; the caller marks the total a
+    # floor instead, exactly as it already does for a drafter it cannot weigh.
+    local_only: bool = False,
 ) -> Optional[float]:
     """Approximate GGUF VRAM (GB): quantized weights + companions, plus the KV
     cache for local files (unreadable pre-download for remote). None when nothing
@@ -7958,7 +7977,7 @@ def _estimate_gguf_required_gb(
         elif _extras_draft and Path(_extras_draft).is_file():
             if _same_file_key(str(_extras_draft)) not in _sized_keys:
                 _extras_bytes = LlamaCppBackend._get_gguf_size_bytes(str(_extras_draft))
-        elif _extras_draft and _extras_draft_is_remote:
+        elif _extras_draft and _extras_draft_is_remote and not local_only:
             _extras_bytes = _remote_drafter_repo_bytes(str(_extras_draft), hf_token = hf_token)
         # else: a local --model-draft that is not on disk, so no drafter loads and
         # none is charged. A repository reserve there 409s a load over a typo.
@@ -8124,6 +8143,8 @@ def _gguf_offloaded_layer_fraction(
     gpu_layers: Optional[int],
     layer_count: Optional[int],
     extras: Optional[list[str]] = None,
+    *,
+    device_pin_governs: bool = False,
 ) -> float:
     """Share of the weights the requested offload keeps on the GPU, in [0, 1].
 
@@ -8148,7 +8169,9 @@ def _gguf_offloaded_layer_fraction(
     # whatever -ngl says, which is why the loader's own residency gate asks this first.
     # Read through the same predicate, and with the env twin the child inherits, so the
     # panel and the launch cannot disagree about where the weights land.
-    if _device_selection_is_cpu(extras, os.environ) or _estimate_host_has_no_gpu():
+    if not device_pin_governs and (
+        _device_selection_is_cpu(extras, os.environ) or _estimate_host_has_no_gpu()
+    ):
         return 0.0
 
     try:
@@ -8408,6 +8431,7 @@ def _gguf_resident_file_gb(
     llama_extra_args: Optional[list[str]] = None,
     speculative_type: Optional[str] = None,
     disable_vision: bool = False,
+    local_only: bool = False,
 ) -> Optional[float]:
     """GB of files a launch would make resident: weights, projector, drafter.
 
@@ -8435,6 +8459,10 @@ def _gguf_resident_file_gb(
         # A gated repo resolves per token, so entries must not cross subjects.
         _estimate_token_fingerprint(hf_token),
     )
+    # In the key: the two callers ask different questions of the same files, and a
+    # local-only answer served to the admission guard would drop a remote drafter it
+    # must charge for.
+    key = (*key, local_only)
     now = time.monotonic()
     hit = _estimate_files_cache.get(key)
     if hit is not None and now - hit[0] < _ESTIMATE_FILES_TTL_SECONDS:
@@ -8445,6 +8473,7 @@ def _gguf_resident_file_gb(
         speculative_type = speculative_type,
         disable_vision = disable_vision,
         hf_token = hf_token,
+        local_only = local_only,
     )
     required_gb = _estimate_gguf_required_gb(config, max_seq_length = 0, **priced)
     if required_gb is None:
@@ -8963,6 +8992,11 @@ def _gguf_memory_breakdown(
     spec_draft_n_max: Optional[int] = None,
     spec_draft_cache_type: Optional[str] = None,
     tensor_split_possible: bool = True,
+    # An explicit GPU pin owns placement: load_model strips the device flags from the
+    # extras and clears the device environment before it launches, because the pin is
+    # the more specific instruction. Without that, a stale "--device none" in the box
+    # made a pinned load read as CPU-only and reported no GPU footprint at all.
+    device_pin_governs: bool = False,
 ) -> Optional[_GgufMemoryBreakdown]:
     """Itemize what loading this GGUF at ``n_ctx`` would cost. None if nothing sizes.
 
@@ -9043,6 +9077,9 @@ def _gguf_memory_breakdown(
         llama_extra_args = llama_extra_args,
         speculative_type = speculative_type,
         disable_vision = disable_vision,
+        # No Hub listing behind a slider: a --spec-draft-hf repo is left uncharged here
+        # and marked below, rather than costing a model_info per settings change.
+        local_only = True,
     )
     if files_gb is None:
         return None
@@ -9051,6 +9088,7 @@ def _gguf_memory_breakdown(
         _device_selection_is_cpu,
         _extra_args_draft_cache_types,
         _extra_args_draft_offloaded_to_cpu,
+        _extra_args_mtp_draft_source,
         _kv_offload_from_args,
         _resolved_mmproj_offload,
     )
@@ -9061,6 +9099,7 @@ def _gguf_memory_breakdown(
         hf_token = hf_token,
         speculative_type = speculative_type,
         disable_vision = disable_vision,
+        local_only = True,
     )
 
     def _files_bytes_with(extra: tuple[str, ...]) -> Optional[int]:
@@ -9154,8 +9193,10 @@ def _gguf_memory_breakdown(
         _managed_draft_cache = True
         try:
             _dc_caps = LlamaCppBackend.probe_server_capabilities()
+            # BOTH, matching the launcher: it emits the pair or neither, so a build
+            # exposing only one still allocates its inherited or default cache.
             if _dc_caps.get("found") and not (
-                _dc_caps.get("spec_draft_cache_k_flag") or _dc_caps.get("spec_draft_cache_v_flag")
+                _dc_caps.get("spec_draft_cache_k_flag") and _dc_caps.get("spec_draft_cache_v_flag")
             ):
                 _managed_draft_cache = False
         except Exception as _dc_exc:
@@ -9219,7 +9260,9 @@ def _gguf_memory_breakdown(
         target_spec_bytes = min(target_spec_bytes, drafter_runtime_bytes)
 
     layer_count = runtime.layer_count
-    gpu_fraction = _gguf_offloaded_layer_fraction(gpu_memory_mode, gpu_layers, layer_count, extras)
+    gpu_fraction = _gguf_offloaded_layer_fraction(
+        gpu_memory_mode, gpu_layers, layer_count, extras, device_pin_governs = device_pin_governs
+    )
 
     # Only the main weight is split by --gpu-layers. A projector and a drafter are
     # placed by their own flags, so scaling them by the model's layer fraction let
@@ -9254,6 +9297,10 @@ def _gguf_memory_breakdown(
         # and this cannot weigh without leaving the machine. Same marker: the total is
         # a floor, and saying so beats omitting gigabytes in silence.
         or _inherited_remote_files_unsized(extras, disable_vision)
+        # A --spec-draft-hf repository in the extras. Its weights are no longer charged
+        # here, because charging them means listing the repo over the network on every
+        # settings change; the marker is what keeps that honest.
+        or bool(_extra_args_mtp_draft_source(extras)[1])
     )
     runtime_bytes = (
         runtime.kv_bytes + runtime.compute_bytes + drafter_runtime_bytes + projector_runtime_bytes
@@ -9285,9 +9332,12 @@ def _gguf_memory_breakdown(
     # to host RAM along with the file.
     if not host_companion_bytes:
         gpu_bytes += projector_runtime_bytes
-    if _device_selection_is_cpu(extras, os.environ) or _estimate_host_has_no_gpu():
+    if not device_pin_governs and (
+        _device_selection_is_cpu(extras, os.environ) or _estimate_host_has_no_gpu()
+    ):
         # Nothing is on a GPU because the process was given none, or because this
-        # machine has none. Applied here rather
+        # machine has none. A pin overrides both readings: it names cards, and the
+        # launch strips whatever contradicted it. Applied here rather
         # than only through the layer fraction because a companion does not follow
         # --gpu-layers: a drafter and a projector are placed by their own flags, and
         # neither of those can name a device that this selection has removed.
@@ -12959,6 +13009,9 @@ async def estimate_memory(
             spec_draft_n_max = request.spec_draft_n_max,
             spec_draft_cache_type = request.spec_draft_cache_type,
             tensor_split_possible = _tensor_split_possible(request.selected_gpu_ids or None),
+            # A pin names the cards, so the launch strips any device flag that says
+            # otherwise and this must read the same way.
+            device_pin_governs = bool(request.selected_gpu_ids),
         )
         if breakdown is None:
             return EstimateMemoryResponse(available = False, reason = "unsizable")

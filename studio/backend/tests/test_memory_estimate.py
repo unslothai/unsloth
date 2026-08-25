@@ -2988,3 +2988,106 @@ class TestInheritedRemoteFilesAreMarkedUnsized:
         monkeypatch.setenv("LLAMA_ARG_MMPROJ_URL", "https://example.invalid/mmproj.gguf")
         out = ri._gguf_memory_breakdown(config, gguf, n_ctx = 8192, disable_vision = True)
         assert out.drafter_kv_unsized is False
+
+
+class TestFourMoreLaunchNormalizations:
+    """Each is a rule load_model applies before it sizes anything."""
+
+    @pytest.fixture
+    def basic(self, tmp_path):
+        gguf = _write_gguf(tmp_path, "qwen3", {**_GQA_FIELDS, "context_length": 262144})
+        return gguf, SimpleNamespace(
+            identifier = "local/basic", gguf_file = gguf, is_gguf = True, gguf_variant = None,
+            gguf_mmproj_file = None, gguf_mtp_file = None,
+            gguf_dspark_file = None, gguf_dflash_file = None,
+        )
+
+    def test_a_gpu_pin_beats_a_stale_device_flag(self, basic):
+        """The pin names cards; the launch strips whatever contradicted it.
+
+        Without this, a --device none left in Advanced Arguments made a pinned load
+        report no GPU footprint at all, which is the fit verdict inverted.
+        """
+        gguf, config = basic
+        cpu_flag = ["--device", "none"]
+        unpinned = ri._gguf_memory_breakdown(config, gguf, n_ctx = 8192, llama_extra_args = cpu_flag)
+        pinned = ri._gguf_memory_breakdown(
+            config, gguf, n_ctx = 8192, llama_extra_args = cpu_flag, device_pin_governs = True
+        )
+        assert unpinned.gpu_bytes == 0
+        assert pinned.gpu_bytes > 0
+
+    def test_a_remote_drafter_repo_is_not_listed_over_the_network(self, basic, monkeypatch):
+        """Sizing it means an hf_model_info per settings change; the marker replaces it."""
+        gguf, config = basic
+        called = []
+        monkeypatch.setattr(
+            ri, "_remote_drafter_repo_bytes",
+            lambda *a, **k: (called.append(1), 1 << 30)[1],
+        )
+        out = ri._gguf_memory_breakdown(
+            config, gguf, n_ctx = 8192,
+            llama_extra_args = ["--spec-draft-hf", "org/drafter-GGUF"],
+        )
+        assert called == [], "the Hub listing ran behind the panel"
+        # Uncharged, but not unmentioned.
+        assert out.drafter_kv_unsized is True
+
+    @pytest.mark.parametrize("caps,managed", [
+        ({"found": True, "spec_draft_cache_k_flag": "-ctkd", "spec_draft_cache_v_flag": "-ctvd"}, True),
+        ({"found": True, "spec_draft_cache_k_flag": "-ctkd", "spec_draft_cache_v_flag": None}, False),
+        ({"found": True, "spec_draft_cache_k_flag": None, "spec_draft_cache_v_flag": "-ctvd"}, False),
+        ({"found": False, "spec_draft_cache_k_flag": None, "spec_draft_cache_v_flag": None}, True),
+    ])
+    def test_the_draft_cache_field_needs_both_flags(self, tmp_path, monkeypatch, caps, managed):
+        """The launcher emits the pair or neither, so one flag is not enough."""
+        target = _write_gguf(
+            tmp_path, "qwen3", {**_GQA_FIELDS, "context_length": 262144}, name = "t2.gguf"
+        )
+        drafter = tmp_path / "mtp2.gguf"
+        drafter.write_bytes(Path(target).read_bytes())
+        drafter_bytes = drafter.stat().st_size
+
+        def _files(cfg, *, llama_extra_args = None, **kw):
+            pinned = _draft_on_cpu(list(llama_extra_args or ()))
+            return 1.0 + (0.0 if pinned else drafter_bytes / 1024**3)
+
+        monkeypatch.setattr(ri, "_gguf_resident_file_gb", _files)
+        monkeypatch.setattr(
+            ri.LlamaCppBackend, "probe_server_capabilities",
+            classmethod(lambda cls, *a, **k: {**caps, "mtp_token": "draft-mtp"}),
+        )
+        config = SimpleNamespace(
+            identifier = "org/Qwen3-8B", gguf_file = target, is_gguf = True, gguf_variant = None,
+            gguf_mmproj_file = None, gguf_mtp_file = str(drafter),
+            gguf_dspark_file = None, gguf_dflash_file = None,
+        )
+        priced = ri._gguf_memory_breakdown(
+            config, target, n_ctx = 131072, spec_draft_cache_type = "q4_0"
+        )
+        default = ri._gguf_memory_breakdown(config, target, n_ctx = 131072)
+        # q4_0 is a quarter of the default f16, so "managed" is visible in the bytes.
+        if managed:
+            assert priced.drafter_runtime_bytes < default.drafter_runtime_bytes
+        else:
+            assert priced.drafter_runtime_bytes == default.drafter_runtime_bytes
+
+    def test_slots_are_clamped_on_a_build_without_kv_unified(self, basic, monkeypatch):
+        """load_model drops to one slot there, before it sizes anything."""
+        gguf, config = basic
+        monkeypatch.setattr(
+            ri.LlamaCppBackend, "probe_server_capabilities",
+            classmethod(lambda cls, *a, **k: {"found": True, "supports_kv_unified": False}),
+        )
+        out = ri._gguf_memory_breakdown(config, gguf, n_ctx = 8192, n_parallel = 4)
+        assert out.n_parallel == 1
+
+    def test_an_unprobed_build_keeps_the_requested_slots(self, basic, monkeypatch):
+        """A probe that could not run is not evidence the flag is missing."""
+        gguf, config = basic
+        monkeypatch.setattr(
+            ri.LlamaCppBackend, "probe_server_capabilities",
+            classmethod(lambda cls, *a, **k: {"found": False, "supports_kv_unified": False}),
+        )
+        out = ri._gguf_memory_breakdown(config, gguf, n_ctx = 8192, n_parallel = 4)
+        assert out.n_parallel == 4
