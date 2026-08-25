@@ -9173,6 +9173,17 @@ def _requires_security_review_for_model(
         return False
 
 
+def _mlx_base_for_config(config) -> Optional[str]:
+    """The repo MLX loads instead of this pick (a LoRA's base counts), else None."""
+    from core.inference.mlx_bnb import mlx_host_bnb_base_repo
+
+    for candidate in (getattr(config, "identifier", None), getattr(config, "base_model", None)):
+        base = mlx_host_bnb_base_repo(candidate)
+        if base:
+            return base
+    return None
+
+
 @router.post("/validate", response_model = ValidateModelResponse)
 async def validate_model(
     request: ValidateModelRequest,
@@ -9506,6 +9517,7 @@ async def validate_model(
             chat_template = chat_template,
             requires_transformers_upgrade = transformers_upgrade is not None,
             transformers_upgrade = transformers_upgrade,
+            mlx_loads_base_model = await asyncio.to_thread(_mlx_base_for_config, config),
         )
 
     except HTTPException:

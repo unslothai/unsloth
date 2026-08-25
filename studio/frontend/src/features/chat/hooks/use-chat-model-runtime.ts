@@ -1320,6 +1320,13 @@ export function useChatModelRuntime() {
                   }
                 : {}),
             });
+            // The loader swaps the repo silently, and the download that follows is the
+            // base model's, not the one the user picked. Say so before it starts.
+            if (validation.mlx_loads_base_model) {
+              toast.info("MLX cannot use 4-bit bitsandbytes weights", {
+                description: `Loading ${validation.mlx_loads_base_model} instead, downloading it first if needed.`,
+              });
+            }
             // Upgrade consent runs before the security dialogs; Accept installs and the load continues.
             if (validation.requires_transformers_upgrade) {
               const upgraded = await confirmTransformersUpgradeIfNeeded({
