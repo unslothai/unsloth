@@ -735,6 +735,83 @@ class Payload:
                 detail["failures"].append("the model on the GPU returned empty content")
         return self.record("gpu_inference", not detail["failures"], detail)
 
+    def assert_api_key(self) -> bool:
+        """Mint an API key and DRIVE it, which is the half that can be wrong.
+
+        Creating a key proves the endpoint returns a string. Whether that
+        string authenticates anything is a separate question, and the answer
+        that matters: an API key Studio issues and then rejects is worse than
+        no API key, because the failure surfaces in a user's integration rather
+        than here.
+
+        Three claims, in order of what each rules out:
+
+        1. the key is minted and returned ONCE (the raw value is not
+           retrievable later, by design);
+        2. a request carrying ONLY that key succeeds -- the session bearer
+           token is set aside for the call, or this would pass on the token and
+           say nothing about the key;
+        3. a request carrying a corrupted key FAILS. Without that, a server
+           that ignores the header entirely passes claim 2.
+        """
+        failures: list[str] = []
+        detail: dict = {}
+        raw_key = None
+        try:
+            code, body = self.studio.post(
+                "/api/auth/api-keys", {"name": f"kaggle-ci-{int(time.time())}"}
+            )
+            detail["create_status"] = code
+            if code >= 400 or not isinstance(body, dict):
+                failures.append(f"could not create an API key: {code} {str(body)[:200]}")
+            else:
+                raw_key = body.get("key")
+                detail["has_key"] = bool(raw_key)
+                detail["key_metadata"] = {
+                    k: v
+                    for k, v in (body.get("api_key") or {}).items()
+                    if k in ("id", "name", "is_active", "expires_at")
+                }
+                if not raw_key:
+                    failures.append("the create response carried no raw key")
+        except BaseException as exc:  # noqa: BLE001
+            failures.append(f"creating an API key raised: {type(exc).__name__}: {exc}"[:300])
+
+        if raw_key:
+            # Registered before it is used anywhere, so it cannot reach a log.
+            self.secrets.add(raw_key)
+            saved = self.studio.token
+            try:
+                # The key AS the bearer, with the session token set aside. If
+                # the session token were left in place this would pass on the
+                # token and prove nothing.
+                self.studio.token = raw_key
+                code, body = self.studio.get("/api/auth/api-keys")
+                detail["key_auth_status"] = code
+                if code >= 400:
+                    failures.append(
+                        f"the API key Studio just issued does not authenticate: "
+                        f"{code} {str(body)[:200]}"
+                    )
+
+                # And a corrupted key must be REJECTED. Without this, a server
+                # that ignores the header entirely passes the check above.
+                self.studio.token = raw_key[:-4] + "0000" if len(raw_key) > 8 else "bogus"
+                code, _ = self.studio.get("/api/auth/api-keys")
+                detail["bad_key_status"] = code
+                if code < 400:
+                    failures.append(
+                        f"a corrupted API key was accepted ({code}), so the "
+                        f"check above passes whatever is sent"
+                    )
+            except BaseException as exc:  # noqa: BLE001
+                failures.append(f"driving the API key raised: {type(exc).__name__}: {exc}"[:300])
+            finally:
+                self.studio.token = saved
+
+        detail["failures"] = failures
+        return self.record("api_key", not failures, detail)
+
     def assert_tool_calling(self) -> bool:
         failures: list[str] = []
         detail: dict = {}
@@ -1290,6 +1367,11 @@ class Payload:
             return self.finish()
         if not self.authenticate():
             return self.finish()
+
+        # Before the GPU work: it needs nothing but a logged-in session, and
+        # putting it after a 20-minute training run would mean a training
+        # failure hides whether API keys work at all.
+        self.assert_api_key()
 
         gpu_ok = self.assert_gpu_inference()
         if gpu_ok:
