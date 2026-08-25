@@ -244,10 +244,13 @@ def test_public_browser_and_private_lan_boundaries(monkeypatch):
     monkeypatch.setattr(lan_access, "lan_listener_status",
                         lambda: {"running": True, "port": 8888,
                                  "addresses": ["192.168.1.24"]})
-    monkeypatch.setattr(host_policy, "_remote_connector_active", True)
     lan_request = request_for(method = "GET", path = "/v1/models",
                               server = ("192.168.1.24", 8888), client = ("192.168.1.90", 54321))
     assert keyless_request_allowed(lan_request)
+    # a published tunnel now closes the LAN listener as well, not only loopback
+    monkeypatch.setattr(host_policy, "_remote_connector_active", True)
+    assert not keyless_request_allowed(lan_request)
+    monkeypatch.setattr(host_policy, "_remote_connector_active", False)
     set_keyless_api_access("full")
     assert not keyless_request_allowed(lan_request)
     assert not keyless_request_allowed(request_for(state = app_state(bind_host = "0.0.0.0")))
