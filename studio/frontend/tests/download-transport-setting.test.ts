@@ -30,6 +30,8 @@ const PREFERENCE = read(
   "features/hub/download-manager/transport-preference.ts",
 );
 const GENERAL_TAB = read("features/settings/tabs/general-tab.tsx");
+const TOGGLE = read("features/hub/catalog/transport-toggle.tsx");
+const API = read("features/settings/api/download-transport.ts");
 const EN = read("i18n/locales/en.ts");
 
 test("this browser's own choice beats the install setting", () => {
@@ -102,4 +104,48 @@ test("the copy explains the difference, not just the names", () => {
   assert.match(downloads, /resumes/i);
   assert.match(downloads, /cancel/i);
   assert.match(downloads, /hf_xet/);
+});
+
+
+// The four below are source assertions, in the idiom of this file. They pin the shape of a
+// fix rather than its behaviour, so they would not catch a rewrite that keeps the wording
+// and breaks the rule; each names the failure it exists for.
+
+test("the Hub's automatic fallback does not rewrite the install setting", () => {
+  // TransportToggle drops a stored "xet" to "http" by itself when hf_xet is missing. Once the
+  // setter also wrote install-wide, merely opening the Hub replaced everyone's choice for
+  // good: repairing hf_xet later did not bring it back.
+  assert.match(TOGGLE, /setMode\("http",\s*\{\s*persistInstall:\s*false\s*\}\)/);
+  assert.match(PREFERENCE, /opts\.persistInstall === false/);
+});
+
+test("a download re-reads the install setting instead of trusting the cache", () => {
+  // The point of an install-level setting is that another browser can change it. A value
+  // cached for the life of the tab kept downloading on the old transport until a reload.
+  assert.match(PREFERENCE, /hydrateInstallMode\(true\)/);
+  assert.match(API, /opts\.refresh/);
+});
+
+test("install-wide writes are serialized", () => {
+  // Two quick selections raced, and the earlier PUT landing last left the database on the
+  // mode the user did not pick while this browser showed the one they did.
+  assert.match(API, /writeQueue/);
+  assert.match(API, /writeQueue\s*=\s*next\.catch/);
+});
+
+test("the copy stops promising a resume the install cannot do", () => {
+  // huggingface_hub 1.18 made the HTTP writer process-unique, so an interrupted transfer is
+  // refetched from zero. Someone picking HTTPS to keep their progress was told the opposite.
+  assert.match(ROW, /useHttpPartialsResumable\(\)/);
+  assert.match(ROW, /transportDescriptionNoResume/);
+  assert.match(ROW, /httpsHintNoResume/);
+  assert.match(EN, /transportDescriptionNoResume/);
+  assert.match(EN, /httpsHintNoResume/);
+});
+
+test("the Xet-missing reason is the translated one", () => {
+  // The backend has one reason for Xet being unavailable and it is English prose. Preferring
+  // it made the translated key unreachable, so every non-English locale read English.
+  assert.match(ROW, /hf_xet is not installed/);
+  assert.match(ROW, /t\("settings\.general\.downloads\.xetMissing"\)/);
 });

@@ -41,7 +41,9 @@ export function TransportToggle() {
 
   useEffect(() => {
     if (mode === "xet" && xetUnavailable) {
-      setMode("http");
+      // This browser only. It is a fallback for what this machine can do, not a choice the
+      // user made, so it must not overwrite the install-wide setting for every other browser.
+      setMode("http", { persistInstall: false });
     }
   }, [mode, setMode, xetUnavailable]);
 

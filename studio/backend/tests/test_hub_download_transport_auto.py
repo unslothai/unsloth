@@ -845,3 +845,25 @@ def test_the_capabilities_probe_agrees_about_a_forced_verdict(monkeypatch):
     caps = download_registry.get_download_transport_capabilities(probe = True)
     assert caps.auto_resolves_to == download_registry.TRANSPORT_HTTP
     assert "RAM free" in (caps.auto_reason or "")
+
+
+def test_the_ram_gate_can_be_asked_for_without_the_probe(monkeypatch):
+    """The settings row states what the NEXT download will pick, and the download path probes.
+    Without this it read the health cache but skipped the free-RAM half, so it said "Auto is
+    using Xet" on a machine whose next download resolves to HTTP."""
+    fake = _types.ModuleType("utils.hf_xet_fallback")
+    fake.cached_xet_health = lambda **kw: _types.SimpleNamespace(use_xet = True, reason = "Xet")
+    fake.xet_health = fake.cached_xet_health
+    fake.free_ram_pressure_reason = lambda: "HTTP: only 2.0GB RAM free"
+    monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
+    monkeypatch.setattr(download_registry.importlib.util, "find_spec", lambda _name: object())
+
+    caps = download_registry.get_download_transport_capabilities(ram_gate = True)
+    assert caps.auto_resolves_to == download_registry.TRANSPORT_HTTP
+    assert "2.0GB RAM free" in caps.auto_reason
+
+    # And the default is unchanged: an ordinary poll still must not read free RAM.
+    assert (
+        download_registry.get_download_transport_capabilities().auto_resolves_to
+        == download_registry.TRANSPORT_XET
+    )

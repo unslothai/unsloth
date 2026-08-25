@@ -80,8 +80,13 @@ async function fetchDownloadTransportSettings(): Promise<DownloadTransportSettin
   return fromApi(await res.json());
 }
 
-export async function loadDownloadTransportSettings() {
-  if (cachedTransport) {
+/** The install's setting. `refresh` skips the cache, for a caller that must not act on a
+ * value another browser may have changed since this tab loaded it. An in-flight read is
+ * still shared: two refreshing callers a moment apart want the same answer, not two GETs. */
+export async function loadDownloadTransportSettings(
+  opts: { refresh?: boolean } = {},
+) {
+  if (cachedTransport && !opts.refresh) {
     return cachedTransport;
   }
   inFlightTransport ??= fetchDownloadTransportSettings()
@@ -92,7 +97,12 @@ export async function loadDownloadTransportSettings() {
   return inFlightTransport;
 }
 
-export async function updateDownloadTransportSettings(
+// Writes run one at a time. Two quick selections used to race, and the earlier PUT landing
+// last left the database on the mode the user did NOT pick while this browser showed the one
+// they did. Chained rather than cancelled, so the last selection is also the last write.
+let writeQueue: Promise<unknown> = Promise.resolve();
+
+async function putDownloadTransport(
   mode: DownloadTransportMode,
 ): Promise<DownloadTransportSettings> {
   const res = await authFetch("/api/settings/download-transport", {
@@ -106,4 +116,13 @@ export async function updateDownloadTransportSettings(
     );
   }
   return cacheTransport(fromApi(await res.json()));
+}
+
+export function updateDownloadTransportSettings(
+  mode: DownloadTransportMode,
+): Promise<DownloadTransportSettings> {
+  // The queue must survive a rejected write, or one failure strands every later selection.
+  const next = writeQueue.catch(() => undefined).then(() => putDownloadTransport(mode));
+  writeQueue = next.catch(() => undefined);
+  return next;
 }

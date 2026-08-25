@@ -566,6 +566,10 @@ export const zhCN = {
         xet: "Xet",
         auto: "Auto",
         httpsHint: "标准 TLS。取消后可续传，适用于任何网络，内存占用稳定。",
+        transportDescriptionNoResume:
+          "模型和数据集文件从 Hugging Face 下载的方式。此安装的两种传输方式都无法续传，取消后的下载会重新开始；Xet 在首次下载时通常更快。",
+        httpsHintNoResume:
+          "标准 TLS。可在任何网络下使用，内存占用平稳。此安装无法续传已取消的下载。",
         xetHint:
           "去重数据块传输。首次下载通常更快，取消后文件重新开始，需要更多内存。",
         autoHint: "按本机情况选择，若 Xet 在这里卡住或失败则切换到 HTTPS。",

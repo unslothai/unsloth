@@ -601,6 +601,10 @@ export const es = {
         auto: "Auto",
         httpsHint:
           "TLS estándar. Retoma tras una cancelación, funciona en cualquier red, uso de memoria estable.",
+        transportDescriptionNoResume:
+          "Cómo se descargan los archivos de modelos y conjuntos de datos desde Hugging Face. En esta instalación ningún transporte puede reanudarse, así que una descarga cancelada vuelve a empezar; Xet suele ser más rápido en la primera descarga.",
+        httpsHintNoResume:
+          "TLS estándar. Funciona en cualquier red, uso de memoria estable. Esta instalación no puede reanudar una descarga cancelada.",
         xetHint:
           "Transferencia por bloques deduplicados. Suele ser más rápida en una descarga nueva, reinicia el archivo si cancelas y necesita más memoria.",
         autoHint:

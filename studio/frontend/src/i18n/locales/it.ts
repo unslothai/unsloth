@@ -577,6 +577,10 @@ export const it = {
         auto: "Auto",
         httpsHint:
           "TLS standard. Riprende dopo un annullamento, funziona su qualsiasi rete, memoria costante.",
+        transportDescriptionNoResume:
+          "Come i file di modelli e dataset vengono scaricati da Hugging Face. In questa installazione nessun trasporto può riprendere, quindi un download annullato ricomincia; Xet è spesso più veloce al primo download.",
+        httpsHintNoResume:
+          "TLS standard. Funziona con qualsiasi rete, uso di memoria costante. Questa installazione non può riprendere un download annullato.",
         xetHint:
           "Trasferimento a blocchi deduplicati. Spesso più veloce su un download nuovo, ricomincia il file se annulli, richiede più memoria.",
         autoHint:

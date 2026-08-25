@@ -857,9 +857,11 @@ def _helper_precache_response(enabled: bool | None = None) -> HelperPrecacheResp
 
 
 def _download_transport_response(mode: str | None = None) -> DownloadTransportResponse:
-    # Read-only: this renders a settings row, so it must not probe Xet.
+    # No Xet probe: this renders a settings row, not a download start. The free-RAM gate is
+    # asked for anyway, because the row STATES what the next download will use, and without it
+    # the row said "Auto is using Xet" on a machine whose next download resolves to HTTP.
     from hub.utils.download_registry import get_download_transport_capabilities
-    caps = get_download_transport_capabilities()
+    caps = get_download_transport_capabilities(ram_gate = True)
     return DownloadTransportResponse(
         mode = get_download_transport_mode() if mode is None else mode,
         xet_available = caps.xet.available,

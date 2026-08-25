@@ -586,6 +586,10 @@ export const en = {
         auto: "Auto",
         httpsHint:
           "Standard TLS. Resumes after a cancel, works on any network, steady memory use.",
+        transportDescriptionNoResume:
+          "How model and dataset files come down from Hugging Face. Neither transport can resume on this install, so a cancelled download starts again; Xet is often faster on a first download.",
+        httpsHintNoResume:
+          "Standard TLS. Works on any network, steady memory use. This install cannot resume a cancelled download.",
         xetHint:
           "Deduplicated chunk transfer. Often faster on a fresh download, restarts the file if you cancel, needs more memory.",
         autoHint:

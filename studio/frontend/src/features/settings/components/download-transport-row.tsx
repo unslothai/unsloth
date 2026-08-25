@@ -6,7 +6,11 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { type TransportMode, useTransportMode } from "@/features/hub";
+import {
+  type TransportMode,
+  useHttpPartialsResumable,
+  useTransportMode,
+} from "@/features/hub";
 import { type TranslationKey, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { useEffect, useState } from "react";
@@ -42,6 +46,10 @@ const OPTIONS: {
 export function DownloadTransportRow() {
   const t = useT();
   const [mode, setMode] = useTransportMode();
+  // huggingface_hub 1.18 made the HTTP writer process-unique, so an interrupted transfer is
+  // refetched from zero unless the resumable writer is restored. Saying HTTPS "resumes where
+  // it stopped" there is exactly backwards for someone picking it to keep their progress.
+  const partialsResumable = useHttpPartialsResumable();
   const [settings, setSettings] = useState<DownloadTransportSettings | null>(
     null,
   );
@@ -57,9 +65,15 @@ export function DownloadTransportRow() {
   }, []);
 
   const xetUnavailable = settings?.xetAvailable === false;
+  // The localized string first. The backend has exactly one reason for Xet being
+  // unavailable and it is English prose, so preferring it made the translated key
+  // unreachable and showed English to every other locale. A future backend reason we
+  // do not have a translation for still gets through.
+  const serverReason = settings?.xetUnavailableReason;
   const xetReason =
-    settings?.xetUnavailableReason ??
-    t("settings.general.downloads.xetMissing");
+    !serverReason || /hf_xet is not installed/i.test(serverReason)
+      ? t("settings.general.downloads.xetMissing")
+      : serverReason;
 
   // Xet is selected but cannot run here: say so, rather than leaving a selected
   // option that silently downloads over HTTPS.
@@ -87,7 +101,11 @@ export function DownloadTransportRow() {
     <SettingsRow
       alignTop={true}
       label={t("settings.general.downloads.transport")}
-      description={t("settings.general.downloads.transportDescription")}
+      description={t(
+        partialsResumable
+          ? "settings.general.downloads.transportDescription"
+          : "settings.general.downloads.transportDescriptionNoResume",
+      )}
       hint={t("settings.general.downloads.transportHint")}
     >
       <div className="flex flex-col items-end gap-1.5">
@@ -127,7 +145,13 @@ export function DownloadTransportRow() {
                   sideOffset={6}
                   className="max-w-[260px]"
                 >
-                  {disabled ? xetReason : t(opt.hintKey)}
+                  {disabled
+                    ? xetReason
+                    : t(
+                        opt.value === "http" && !partialsResumable
+                          ? "settings.general.downloads.httpsHintNoResume"
+                          : opt.hintKey,
+                      )}
                 </TooltipContent>
               </Tooltip>
             );

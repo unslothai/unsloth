@@ -605,6 +605,10 @@ export const fr = {
         auto: "Auto",
         httpsHint:
           "TLS standard. Reprend après une annulation, fonctionne sur tous les réseaux, mémoire stable.",
+        transportDescriptionNoResume:
+          "Comment les fichiers de modèles et de jeux de données sont téléchargés depuis Hugging Face. Sur cette installation, aucun transport ne peut reprendre : un téléchargement annulé recommence ; Xet est souvent plus rapide au premier téléchargement.",
+        httpsHintNoResume:
+          "TLS standard. Fonctionne sur tous les réseaux, consommation mémoire stable. Cette installation ne peut pas reprendre un téléchargement annulé.",
         xetHint:
           "Transfert par blocs dédupliqués. Souvent plus rapide sur un premier téléchargement, recommence le fichier si vous annulez, demande plus de mémoire.",
         autoHint:

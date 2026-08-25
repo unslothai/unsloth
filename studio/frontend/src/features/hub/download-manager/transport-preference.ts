@@ -45,8 +45,8 @@ function readStored(): TransportMode | null {
   }
 }
 
-function hydrateInstallMode(): Promise<TransportMode | null> {
-  installModeInFlight ??= loadDownloadTransportSettings()
+function hydrateInstallMode(refresh = false): Promise<TransportMode | null> {
+  installModeInFlight ??= loadDownloadTransportSettings({ refresh })
     .then((settings) => {
       installMode = isTransportMode(settings.mode) ? settings.mode : null;
       return installMode;
@@ -63,18 +63,22 @@ export function getTransportMode(): TransportMode {
   return pickTransportMode(readStored(), installMode);
 }
 
-/** The preference, waiting for the install setting when this browser has no choice of its own. */
+/** The preference, waiting for the install setting when this browser has no choice of its own.
+ *
+ * Re-reads it rather than trusting the cache: this runs once per download start, and the whole
+ * point of an install-level setting is that another browser can change it. A cached answer held
+ * for the life of the tab would keep downloading on the old transport until a reload. */
 export async function resolveTransportMode(): Promise<TransportMode> {
   const stored = readStored();
   if (stored !== null) {
     return stored;
   }
-  return pickTransportMode(null, await hydrateInstallMode());
+  return pickTransportMode(null, await hydrateInstallMode(true));
 }
 
 export function useTransportMode(): [
   TransportMode,
-  (next: TransportMode) => void,
+  (next: TransportMode, opts?: { persistInstall?: boolean }) => void,
 ] {
   const [mode, setMode] = useState<TransportMode>(getTransportMode);
 
@@ -106,7 +110,10 @@ export function useTransportMode(): [
     };
   }, []);
 
-  const set = useCallback((next: TransportMode) => {
+  const set = useCallback((
+    next: TransportMode,
+    opts: { persistInstall?: boolean } = {},
+  ) => {
     // Persist first, reflect after: the engine reads getTransportMode() fresh
     // from localStorage at download time, so an optimistic setMode() before a
     // failed write (private mode / quota) would show the new transport while
@@ -121,6 +128,13 @@ export function useTransportMode(): [
     window.dispatchEvent(new Event(CHANGE_EVENT));
     // And the install's setting, so scripted callers and other browsers follow. A failure here
     // leaves this browser on its own choice, which already applies.
+    //
+    // Opt-out for a fallback the user did not ask for: the Hub toggle drops a stored "xet" to
+    // "http" by itself when hf_xet is missing, and persisting that would replace everyone's
+    // choice for good, with repairing hf_xet later not bringing it back.
+    if (opts.persistInstall === false) {
+      return;
+    }
     void updateDownloadTransportSettings(next).catch((error) => {
       console.warn(
         "Couldn't save the download transport for this install.",
