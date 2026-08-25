@@ -1977,3 +1977,59 @@ def test_a_missing_batched_record_is_a_failure_not_a_pass():
     from run_t4_smoke import batched_generation_failures
     """A leg where the check never ran must not look like a leg where it passed."""
     assert batched_generation_failures(None) == ["batched generation was never run"]
+
+
+# ------------------------------------------------- run_grpo_t4.py: the reward
+
+
+def _completions(*lengths):
+    """GRPO hands reward functions a list of message lists."""
+    return [[{"role": "assistant", "content": "x" * n}] for n in lengths]
+
+
+def test_the_length_reward_still_discriminates_at_the_lengths_the_model_emits():
+    """The leg's only instrument, and it was broken in the least visible way.
+
+    `reward_length` was `min(len(t), 200) / 200.0` while its docstring claimed
+    to be "SENSITIVE to a group's diversity". Kernels
+    unsloth-probe-grpo-rep2-b03be8 and -rep3-bc3828 recorded completions of
+    2534 to 3396 characters, so every completion scored exactly 1.0, every
+    group tied, and the leg failed with `reward_std was zero on every step`.
+    Two runs in three died on it.
+
+    A reward that saturates below the range the model actually occupies reads
+    as a broken generation path in the report. So assert discrimination at the
+    OBSERVED lengths, not at convenient small ones: the old function passes any
+    test written with 10- and 20-character completions.
+    """
+    sys.path.insert(0, str(SMOKE_DIR))
+    from run_grpo_t4 import reward_length
+
+    for a, b in ((2534, 3396), (3013, 3328), (2738, 2633)):
+        scores = reward_length(_completions(a, b))
+        assert scores[0] != scores[1], (
+            f"lengths {a} and {b} scored identically ({scores}); the reward has "
+            f"saturated in the range the model actually produces"
+        )
+
+
+def test_the_length_reward_is_strictly_increasing_and_never_saturates():
+    """The property that makes the test above hold for lengths nobody has seen
+    yet. A cap is a length at which this stops being true, which is exactly how
+    the previous version passed review."""
+    from run_grpo_t4 import reward_length
+
+    lengths = [0, 1, 50, 200, 1000, 3000, 10000, 100000]
+    scores = reward_length(_completions(*lengths))
+    assert all(x < y for x, y in zip(scores, scores[1:])), scores
+    assert all(0.0 <= s < 1.0 for s in scores), scores
+
+
+def test_two_identical_completions_still_tie_because_that_is_real():
+    """Guard against overcorrecting. A group whose completions are genuinely
+    identical SHOULD tie -- that is degenerate generation and the leg is right
+    to fail on it. The bug was ties between DIFFERENT completions."""
+    from run_grpo_t4 import reward_length
+
+    scores = reward_length(_completions(2534, 2534))
+    assert scores[0] == scores[1]
