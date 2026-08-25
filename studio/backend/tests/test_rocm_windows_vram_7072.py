@@ -1078,6 +1078,54 @@ def test_the_measured_strix_halo_registry(win_rocm, monkeypatch):
     assert round(aggregate / GB, 3) == 0.947
 
 
+def test_the_measured_strix_halo_needs_the_join_for_any_aggregate(win_rocm, monkeypatch):
+    """Measured on the Windows gfx1151 while it held a model: THREE counter
+    instances for ONE visible GPU.
+
+    The AMD adapter plus two placeholders that never go away. So on this host the
+    counter list is never as long as the visible set, the cardinality gate in
+    ``_rocm_windows_aggregate_used_bytes`` fails closed permanently, and capacity
+    ranking can never supply an aggregate no matter what is loaded. The LUID join
+    is not a second opinion here, it is the only path to a figure at all.
+
+    This is the shape a single-GPU Windows AMD host actually has, which is why
+    #7072's reporter saw Unknown where the hardware was plainly busy.
+    """
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        _fake_torch(
+            [("AMD Radeon(TM) 8060S Graphics", int(89.465 * GB), "gfx1151")],
+            free_equals_total = True,
+        ),
+    )
+    adapters = [
+        ("luid_0x00000000_0x0001532a_phys_0", 31.681 * GB),  # the AMD adapter
+        ("luid_0x00000000_0x00017034_phys_0", 0.0),  # placeholder, permanent
+        ("luid_0x00000000_0x00017099_phys_0", 0.0),  # placeholder, permanent
+    ]
+    monkeypatch.setattr(
+        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(adapters))
+    )
+    monkeypatch.setattr(
+        hw,
+        "_windows_amd_adapter_records_by_luid",
+        lambda: {86826: {"name": "AMD Radeon(TM) 8060S Graphics"}},  # no AdapterFamily
+    )
+
+    devices, aggregate = hw._rocm_windows_per_device_vram([0])
+    assert devices[0]["used_gb"] == pytest.approx(31.68, abs = 0.01)
+    assert aggregate == pytest.approx(31.68, abs = 0.01)
+
+    # The same host with the registry unreadable: everything below the join.
+    monkeypatch.setattr(hw, "_windows_amd_adapter_records_by_luid", lambda: {})
+    _, fallback_aggregate = hw._rocm_windows_per_device_vram([0])
+    assert fallback_aggregate is None, (
+        "capacity ranking produced an aggregate the measured host cannot give it"
+    )
+
+
 def test_the_join_declines_usage_it_cannot_place(win_rocm, monkeypatch):
     """A hidden AMD card carrying the visible device's torch name, while the
     visible card's own record is spelled differently. The visible device's
