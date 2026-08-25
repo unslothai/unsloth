@@ -111,11 +111,17 @@ test("the rule is armed by nothing except that attribute", () => {
 });
 
 test("startup applies the mode before the first render", () => {
-  assert.ok(
-    MAIN_TSX.includes("applyMathBlockContainment()"),
-    "the attribute is applied at startup",
+  // A LINE, not a substring. `includes` is satisfied by a commented-out call, which is exactly the
+  // shape of the mutation that first slipped past this test.
+  const lines = MAIN_TSX.split("\n");
+  const callLine = lines.findIndex(
+    (line) => line.trim() === "applyMathBlockContainment();",
   );
-  const applyAt = MAIN_TSX.indexOf("applyMathBlockContainment()");
+  assert.ok(
+    callLine >= 0,
+    "the attribute is applied at startup, on a line of its own and not in a comment",
+  );
+  const applyAt = MAIN_TSX.indexOf("\napplyMathBlockContainment();");
   const renderAt = MAIN_TSX.indexOf("function renderApp");
   assert.ok(renderAt > 0, "PRECONDITION: main.tsx still defines renderApp");
   assert.ok(
