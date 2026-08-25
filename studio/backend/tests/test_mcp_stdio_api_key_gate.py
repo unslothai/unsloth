@@ -216,21 +216,30 @@ def test_update_regates_after_the_oauth_clear_await(tmp_path, monkeypatch, stdio
     assert mcp_servers_db.get_server("s1")["headers_json"] is None
 
 
-def test_update_allows_http_row_from_api_key(tmp_path, monkeypatch, stdio_on):
+def test_update_allows_http_row_but_redacts_saved_headers_from_keyless(
+    tmp_path, monkeypatch, stdio_on
+):
     import routes.mcp_servers as routes_mcp
     from models.mcp_servers import McpServerUpdate
 
     _reset_db(tmp_path, monkeypatch)
-    mcp_servers_db.create_server(id = "s1", display_name = "A", url = "https://a/mcp")
+    mcp_servers_db.create_server(
+        id = "s1",
+        display_name = "A",
+        url = "https://a/mcp",
+        headers_json = '{"Authorization": "Bearer t"}',
+    )
     resp = asyncio.run(
         routes_mcp.update_mcp_server(
             "s1",
             McpServerUpdate(display_name = "B"),
             current_subject = "api-key-user",
             via_api_key = True,
+            no_credential = True,
         )
     )
     assert resp.display_name == "B"
+    assert resp.headers == {}
 
 
 # ── refresh ─────────────────────────────────────────────────────────
@@ -446,6 +455,12 @@ def test_list_hides_stdio_rows_from_api_keys(tmp_path, monkeypatch, stdio_on):
     assert "sk-env-secret" not in serialized
     # http(s) MCP stays fully usable from a key, headers included.
     assert keyed[0].headers == {"Authorization": "Bearer t"}
+
+    keyless = routes_mcp.list_mcp_servers(
+        current_subject = "u", via_api_key = False, no_credential = True
+    )
+    assert [row.id for row in keyless] == ["http1"]
+    assert keyless[0].headers == {}
 
 
 def test_list_shows_stdio_rows_to_a_ui_session(tmp_path, monkeypatch, stdio_on):

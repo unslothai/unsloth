@@ -280,6 +280,17 @@ export const ko = {
         engineModel: "로컬 음성 인식",
         engineModelDescription:
           "음성 인식(STT) 모델을 로컬에서 실행하며 오프라인으로 동작합니다. 다운로드 후 로드하고, 일정 시간 사용하지 않으면 자동으로 해제됩니다.",
+        engineCustom: "사용자 지정 엔드포인트",
+        engineCustomDescription:
+          "연결에 등록된 OpenAI 호환 STT 서버로 녹음된 오디오를 전송합니다.",
+        connectionLabel: "연결",
+        connectionDescription:
+          "연결에서 OpenAI 호환 서버와 선택적 API 키를 추가하세요.",
+        connectionPlaceholder: "연결 선택",
+        connectionEmpty: "사용 가능한 연결이 없습니다",
+        customModelLabel: "모델",
+        customModelDescription:
+          "/v1/audio/transcriptions에 전송할 모델 이름입니다.",
         sttModelLabel: "음성 인식 모델",
         sttModelDescription: "로컬에서 실행할 STT 모델을 선택하거나 검색하세요.",
         sttModelSearchPlaceholder: "모델 검색",
@@ -338,6 +349,7 @@ export const ko = {
         languageLabel: "받아쓰기 언어",
         languageDescription: "인식할 언어",
         languageAuto: "자동(브라우저 언어)",
+        languageAutoDetect: "자동(언어 감지)",
       },
       dictionary: {
         sectionTitle: "받아쓰기 사전",
@@ -400,6 +412,15 @@ export const ko = {
         engineStudioDescription: "로드된 오디오 모델을 사용합니다(예: Orpheus)",
         engineSystem: "시스템 음성",
         engineStudio: "TTS 모델 로드",
+        engineCustom: "사용자 지정 엔드포인트",
+        engineCustomDescription:
+          "연결에 저장된 OpenAI 호환 TTS 서버 (예: Kokoro)",
+        connectionLabel: "연결",
+        connectionDescription:
+          "OpenAI 호환 서버는 연결 탭에서 추가할 수 있습니다",
+        connectionPlaceholder: "연결 선택",
+        customModelLabel: "모델",
+        customVoiceDescription: "엔드포인트가 기대하는 음성 이름 (기본값: alloy)",
         modelLabel: "TTS 모델",
         modelDescription:
           "모델 선택기에서 오디오 모델을 로드하세요(예: Orpheus TTS)",
@@ -506,7 +527,7 @@ export const ko = {
           "유휴 해제 전에 KV 캐시를 저장해, 이어서 하는 채팅이 기록을 다시 읽지 않도록 합니다. 디스크를 최대 10GB 사용합니다.",
         apiOnly: "API가 불러온 모델만 해제",
         apiOnlyDescription:
-          "유휴 해제 시 Studio에서 직접 불러온 모델은 메모리에 남기고, API 요청이 불러온 모델만 해제합니다.",
+          "유휴 해제 시 Unsloth에서 직접 불러온 모델은 메모리에 남기고, API 요청이 불러온 모델만 해제합니다.",
       },
       previewSharing: {
         sectionTitle: "미리보기 공유",
@@ -559,6 +580,7 @@ export const ko = {
         embeddingModel: "임베딩 모델",
         embeddingModelDescription:
           "문서를 색인하고 검색하는 데 사용되는 Hugging Face 모델 또는 로컬 경로입니다. 기본값은 {defaultModel}입니다.",
+        searchPlaceholder: "임베딩 모델 검색",
         reindexWarning:
           "새로 색인되는 문서에만 적용됩니다. 모델을 변경한 후 기존 문서를 다시 업로드하세요.",
         emptyError: "Hugging Face 모델 ID 또는 로컬 경로를 입력하세요.",
@@ -838,6 +860,8 @@ export const ko = {
         title: "GPU 장치",
         ggufInference: "GGUF 추론",
         unavailable: "사용할 수 없음",
+        detecting: "GPU를 확인하는 중...",
+        unreadable: "이 서버의 하드웨어를 읽을 수 없습니다.",
         noGpu: "인식되는 GPU가 없습니다. 위에는 CPU 관련 리소스만 표시됩니다.",
         unknownDevice: "알 수 없는 GPU",
         deviceWithIndex: "GPU {index}",
@@ -996,7 +1020,7 @@ export const ko = {
       quickstart: {
         title: "명령 만들기",
         description:
-          "Studio에 현재 로드된 모델로 에이전트를 실행합니다. 먼저 모델을 로드한 다음 claude를 아래 지원되는 에이전트로 바꾸세요.",
+          "Unsloth에 현재 로드된 모델로 에이전트를 실행합니다. 먼저 모델을 로드한 다음 claude를 아래 지원되는 에이전트로 바꾸세요.",
         noneDetected: "PATH에서 지원되는 에이전트 CLI를 찾지 못했습니다.",
         installed: "설치됨",
       },
@@ -1017,7 +1041,7 @@ export const ko = {
         description:
           "Unsloth 플래그가 먼저 처리되고, 인식되지 않은 값은 그대로 에이전트에 전달됩니다.",
         model:
-          "모델을 선택합니다. --model이 없으면 unsloth start는 Studio에 현재 로드된 모델을 사용하며, 로드된 모델이 없으면 오류가 납니다.",
+          "모델을 선택합니다. --model이 없으면 unsloth start는 Unsloth에 현재 로드된 모델을 사용하며, 로드된 모델이 없으면 오류가 납니다.",
         contextLength:
           "요청할 컨텍스트 길이를 설정합니다(별칭: --max-seq-length).",
         ggufVariant: "GGUF 양자화 변형을 선택합니다.",
@@ -1031,12 +1055,16 @@ export const ko = {
           "상위 에이전트는 현재 모델을 유지하고 Unsloth를 로컬 서브에이전트로 등록합니다(Claude Code, Codex, OpenCode).",
         apiKey:
           "Unsloth API 키를 지정합니다(또는 UNSLOTH_API_KEY 환경 변수를 설정합니다).",
+        reasoning:
+          "채팅에서 추론 사용 여부: on, off, auto. auto는 모델의 채팅 템플릿을 따르며 보통 on입니다.",
+        reasoningEffort:
+          "모델의 채팅 템플릿에 전달하는 추론 강도(예: medium). 사용할 수 있는 값은 모델마다 다르므로 해당 모델이 받는 값을 지정하세요. 지정하지 않으면 템플릿의 값이 유지됩니다.",
         yolo: "승인 확인을 건너뜁니다. 신뢰할 수 있는 환경에서만 사용하세요.",
       },
       remote: {
-        title: "원격 Studio에 연결",
+        title: "원격 Unsloth Studio에 연결",
         description:
-          "실행 전에 다음을 설정하면 unsloth start를 다른 곳에서 실행 중인 Studio로 연결할 수 있습니다(또는 --api-key를 직접 전달):",
+          "실행 전에 다음을 설정하면 unsloth start를 다른 곳에서 실행 중인 Unsloth Studio로 연결할 수 있습니다(또는 --api-key를 직접 전달):",
       },
       passthrough: {
         title: "에이전트에 인자 전달",
@@ -1075,7 +1103,7 @@ export const ko = {
         exportChat: "채팅 내보내기",
       },
       pastedTextThreshold: "긴 붙여넣기 압축",
-      pastedTextThresholdDescription: "이 길이를 초과한 붙여넣기 텍스트는 입력창을 채우는 대신 .txt 첨부 파일이 됩니다.",
+      pastedTextThresholdDescription: "이 길이를 초과한 붙여넣기 텍스트는 입력창을 채우는 대신 .txt 첨부 파일이 됩니다. {shortcut} 를 누르면 그래도 입력창에 붙여넣습니다.",
       pastedTextThresholdOff: "끄기",
       showResponseModel: "응답 모델 표시",
       showResponseModelDescription:
@@ -1093,6 +1121,12 @@ export const ko = {
         collapseByDefault: "기본적으로 사고 과정 접기",
         collapseByDefaultDescription:
           "모델이 생각하는 동안 사고 과정을 자동으로 펼치지 않고 접어 둡니다. 읽으려면 블록을 펼치세요.",
+      },
+      webSearch: {
+        title: "웹 검색",
+        images: "웹 검색 이미지 표시",
+        imagesDescription:
+          "웹 검색이 이미지를 반환하고, 답변에 나열된 항목마다 하나씩 가져옵니다. 썸네일은 Studio가 가져와 축소하므로 브라우저가 이미지 호스트에 접속하지 않습니다.",
       },
       artifacts: {
         title: "Canvas",

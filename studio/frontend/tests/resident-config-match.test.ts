@@ -33,6 +33,7 @@ const DEFAULT_ISH = {
   nBatch: null,
   nUbatch: null,
   tensorParallel: false,
+  disableVision: false,
   chatTemplateOverride: null,
 } as const;
 
@@ -47,6 +48,7 @@ const BLANK = {
   nBatch: null,
   nUbatch: null,
   tensorParallel: false,
+  disableVision: false,
   chatTemplateOverride: null,
 };
 

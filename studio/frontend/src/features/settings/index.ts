@@ -46,12 +46,7 @@ export type {
 export { useMonitorOverlayStore } from "./stores/monitor-overlay-store";
 export {
   type MonitorFrame,
-  type StackGeometry,
-  stackBottomInset,
-  stackGeometry,
-  stackMaxHeight,
   useMonitorFrameStore,
-  useStackGeometry,
 } from "./stores/monitor-frame-store";
 export type {
   Personalization,
