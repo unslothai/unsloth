@@ -3261,7 +3261,7 @@ function VideoGenerator({
               (d) =>
                 [
                   String(d.index),
-                  `GPU ${d.index}${d.memoryTotalGb ? ` · ${Math.round(d.memoryTotalGb)} GB` : ""}`,
+                  `GPU ${d.index}${d.memoryTotalGb ? ` · ${Math.round(d.memoryTotalGb)} GiB` : ""}`,
                 ] as [string, string],
             ),
           ]}

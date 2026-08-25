@@ -28,6 +28,9 @@ from unsloth_zoo.hf_utils import add_dtype_kwargs
 from ._utils import is_bfloat16_supported, maybe_prefetch_hf_snapshot
 from .llama import logger
 from .loader_utils import (
+    planner_config_overrides,
+    planner_hub_kwargs,
+    planner_kwargs_with_max_memory,
     planner_quantization_kwargs,
     requested_device_map,
     resolve_unsloth_device_map,
@@ -249,7 +252,20 @@ class FastDiffusionModel:
                 if getattr(config, "_unsloth_legacy_alias", False)
                 else None
             ),
-            planner_kwargs = device_map_planner_kwargs,
+            planner_kwargs = planner_kwargs_with_max_memory(
+                device_map_planner_kwargs,
+                kwargs,
+            ),
+            # This leaf popped `local_files_only` off kwargs above, so the helper gets the
+            # resolved value rather than the caller's raw mapping.
+            **planner_hub_kwargs(
+                {
+                    "cache_dir": cache_dir,
+                    "local_files_only": local_files_only,
+                    "code_revision": kwargs.get("code_revision"),
+                },
+            ),
+            **planner_config_overrides(kwargs),
             token = token,
             trust_remote_code = trust_remote_code,
             revision = revision,

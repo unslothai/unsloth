@@ -131,6 +131,7 @@ import {
   useSelectedChatArtifact,
 } from "./artifacts/store";
 import type { ChatArtifact, ChatArtifactSurface } from "./artifacts/types";
+import { McpServersDialogMount } from "./mcp-composer-button";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
 import {
   ResearchActivityPanel,
@@ -178,7 +179,13 @@ import {
   providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebFetch,
   providerSupportsBuiltinWebSearch,
+  providerSupportsFastMode,
 } from "./provider-capabilities";
+import {
+  COMPOSER_INPUT_SELECTOR,
+  isSurfaceBackgrounded,
+  useShortcut,
+} from "@/features/settings";
 import {
   ChatActiveContext,
   ChatRuntimeProvider,
@@ -2168,6 +2175,8 @@ export function ChatPage({
   }, [active, navigate, search.thread]);
 
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
+  // Controlled, so the chord can open the switcher and not just its trigger.
+  const [projectPickerOpen, setProjectPickerOpen] = useState(false);
   const [modelSelectorLocked, setModelSelectorLocked] = useState(false);
   const viewBeforeCompareRef = useRef<ChatSearch | null>(null);
   // Latest non-compare view, so exiting compare can restore it even when
@@ -3298,6 +3307,9 @@ export function ChatPage({
     })();
   }, [ejectModel, resetArtifacts]);
 
+  // Pins the picker open so a stray click cannot dismiss the step under it.
+  // Tour steps only: the effect below shuts anything left pinned once the tour
+  // is gone, so anyone else calling this would get a flash and nothing more.
   const openModelSelector = useCallback(() => {
     setModelSelectorLocked(true);
     setModelSelectorOpen(true);
@@ -3307,6 +3319,13 @@ export function ChatPage({
     setModelSelectorLocked(false);
     setModelSelectorOpen(false);
   }, []);
+
+  /** The chord's opener: no pin, so the picker stays dismissible. */
+  const toggleModelSelector = useCallback(() => {
+    // Pinned means a tour step is standing on it, and that step owns it.
+    if (modelSelectorLocked) return;
+    setModelSelectorOpen((open) => !open);
+  }, [modelSelectorLocked]);
 
   const handleModelSelectorOpenChange = useCallback(
     (open: boolean) => {
@@ -3322,6 +3341,119 @@ export function ChatPage({
   const closeSettings = useCallback(
     () => setSettingsOpen(false),
     [setSettingsOpen],
+  );
+
+  // --- Chat page shortcuts ----------------------------------------------
+  // The controls these drive are owned by this page.
+  // Both controls are the header's, and the header drops them in Compare,
+  // where each pane carries its own picker instead. Without the check the
+  // chord would toggle state nothing renders.
+  const headerPickersShown = active && view.mode !== "compare";
+  // This page stays mounted under a dialog, so `enabled` still says yes while
+  // the header is inert. Without a press-time check the chord opens a popover
+  // on the covered surface, or leaves the picker to reappear when the dialog
+  // closes. Backgrounded, not "not in the foreground": the composer travels
+  // with this header, and an unrendered layout is not a covered one.
+  const chatCovered = () => isSurfaceBackgrounded(COMPOSER_INPUT_SELECTOR);
+  useShortcut(
+    "openModelPicker",
+    () => {
+      if (chatCovered()) return;
+      toggleModelSelector();
+    },
+    { enabled: headerPickersShown },
+  );
+  // The same condition the switcher renders by, so the chord cannot open a
+  // control that is not there and the reset below cannot miss a way it goes.
+  const projectSwitcherShown = headerPickersShown && Boolean(currentProjectId);
+  useShortcut(
+    "openProjectPicker",
+    () => {
+      if (chatCovered()) return;
+      setProjectPickerOpen(true);
+    },
+    { enabled: projectSwitcherShown },
+  );
+  // A picker left open would come back on the next visit as a ghost of the
+  // last one. Off-route is one way to leave it: this page stays mounted. So is
+  // entering Compare, and so is a standalone chat taking the project away,
+  // both of which unmount the switcher while the page is still on screen.
+  // Adjusted during render, as React prescribes for state that has to follow a
+  // value it derives from.
+  if (!projectSwitcherShown && projectPickerOpen) {
+    setProjectPickerOpen(false);
+  }
+
+  /** Step the effort level, clamped at both ends unless we are cycling. */
+  const shiftReasoningEffort = useCallback(
+    (delta: number, wrap: boolean) => {
+      const state = useChatRuntimeStore.getState();
+      const levels = state.reasoningEffortLevels;
+      // Levels stay populated for an enable_thinking model, whose request path
+      // drops the effort. Same test as the composer's effort menu.
+      const isEffort =
+        state.reasoningStyle === "reasoning_effort" ||
+        state.reasoningStyle === "enable_thinking_effort";
+      if (!state.supportsReasoning || !isEffort || levels.length === 0) {
+        toast.info("This model has no reasoning effort setting");
+        return;
+      }
+      const current = levels.indexOf(state.reasoningEffort);
+      // Loading a model that drops the level in force leaves the effort set to
+      // one that is gone, and indexOf gives -1. The first press picks the
+      // lowest level offered rather than counting a step off a missing index.
+      if (current === -1) {
+        state.setReasoningEffort(levels[0]);
+        return;
+      }
+      const from = current;
+      const next = wrap
+        ? (from + delta + levels.length) % levels.length
+        : Math.min(Math.max(from + delta, 0), levels.length - 1);
+      if (levels[next] === state.reasoningEffort) return;
+      state.setReasoningEffort(levels[next]);
+    },
+    [],
+  );
+  useShortcut(
+    "cycleReasoningEffort",
+    () => {
+      if (chatCovered()) return;
+      shiftReasoningEffort(1, true);
+    },
+    { enabled: active },
+  );
+  useShortcut(
+    "increaseReasoningEffort",
+    () => {
+      if (chatCovered()) return;
+      shiftReasoningEffort(1, false);
+    },
+    { enabled: active },
+  );
+  useShortcut(
+    "decreaseReasoningEffort",
+    () => {
+      if (chatCovered()) return;
+      shiftReasoningEffort(-1, false);
+    },
+    { enabled: active },
+  );
+
+  const fastModeSupported = providerSupportsFastMode(
+    activeExternalProviderType,
+    parseExternalModelId(inferenceParams.checkpoint)?.modelId ?? null,
+  );
+  useShortcut(
+    "toggleFastMode",
+    () => {
+      if (chatCovered()) return;
+      const state = useChatRuntimeStore.getState();
+      const next = !state.params.fastMode;
+      state.setParams({ ...state.params, fastMode: next });
+      toast.success(next ? "Fast mode on" : "Fast mode off");
+    },
+    { enabled: active && fastModeSupported },
   );
   const { isMobile, pinned } = useSidebar();
 
@@ -3708,6 +3840,11 @@ export function ChatPage({
           render their own copy and the shared-composer menu would have none. It
           also portals to body, so gate it on `active` like the tour above. */}
       {active && <BypassPermissionsConfirmDialog />}
+      {/* The MCP servers dialog: its chord has to work before MCP is switched
+          on, and the pill that used to own it only renders once it is. Mounted
+          through the route change, not gated on `active`, so it can close
+          itself on the way out instead of returning with the tab. */}
+      <McpServersDialogMount />
       {/* `--studio-chat-notice-height` is 0 until ChatModelNotice is on screen; the
           thread viewport adds it to the top padding it reserves for the header, so
           without it the first message reads under an opaque bar. Declared on the
@@ -3830,6 +3967,8 @@ export function ChatPage({
                   isLoading={projectsLoading}
                   onSelectProject={openProjectLanding}
                   onViewAllProjects={openProjectsList}
+                  open={projectPickerOpen}
+                  onOpenChange={setProjectPickerOpen}
                 />
                 {currentProject && activeThreadId ? (
                   <>
