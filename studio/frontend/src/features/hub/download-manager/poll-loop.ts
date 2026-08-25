@@ -627,8 +627,14 @@ export async function startJob(
   // An explicit opts.useXet (a retry pinning a transport) wins; otherwise carry the stored
   // preference UNRESOLVED so "auto" survives to effectiveTransportMode(). Collapsing it to a
   // boolean here would read "auto" as "not xet" and send every download over HTTP.
-  const requestedMode: TransportMode =
-    opts.useXet === undefined
+  // Never for an adopted job: the branch below ignores requestedMode there, and resolving it
+  // is now a settings round trip. Suspending here left this runtime with pollingStarted=false
+  // long enough for the other adoptJob caller (persisted-job probe vs backend-active
+  // hydration, which run concurrently) to replace it, after which both continuations reached
+  // beginPolling and left duplicate timers and a leaked visibility listener behind.
+  const requestedMode: TransportMode = opts.adopt
+    ? TRANSPORT.HTTP
+    : opts.useXet === undefined
       ? await resolveTransportMode()
       : opts.useXet
         ? TRANSPORT.XET

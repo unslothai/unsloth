@@ -867,3 +867,33 @@ def test_the_ram_gate_can_be_asked_for_without_the_probe(monkeypatch):
         download_registry.get_download_transport_capabilities().auto_resolves_to
         == download_registry.TRANSPORT_XET
     )
+
+
+def test_the_ram_gate_loads_health_instead_of_reading_an_empty_cache(monkeypatch):
+    """A fresh backend has no cached verdict, so the cache reads as the optimistic Xet while the
+    next download loads a persisted unhealthy one and picks HTTP. The settings row states what
+    that download will do, so it has to load the same verdict -- without the live probe."""
+    seen: list[tuple[str, bool]] = []
+
+    class _Health:
+        use_xet = False
+        reason = "persisted: CAS unreachable"
+
+    def _cached(*, probe = True):
+        seen.append(("cached", probe))
+        return None
+
+    def _loading(*, probe = True):
+        seen.append(("loading", probe))
+        return _Health()
+
+    stub = _types.ModuleType("utils.hf_xet_fallback")
+    stub.cached_xet_health = _cached
+    stub.xet_health = _loading
+    monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", stub)
+    monkeypatch.setattr(download_registry.importlib.util, "find_spec", lambda _name: object())
+
+    caps = download_registry.get_download_transport_capabilities(ram_gate = True)
+    assert caps.auto_resolves_to == download_registry.TRANSPORT_HTTP
+    # Loaded, but NOT probed: the live check stays with a real download start.
+    assert seen == [("loading", False)]

@@ -32,6 +32,7 @@ const PREFERENCE = read(
 const GENERAL_TAB = read("features/settings/tabs/general-tab.tsx");
 const TOGGLE = read("features/hub/catalog/transport-toggle.tsx");
 const API = read("features/settings/api/download-transport.ts");
+const POLL_LOOP = read("features/hub/download-manager/poll-loop.ts");
 const EN = read("i18n/locales/en.ts");
 
 test("this browser's own choice beats the install setting", () => {
@@ -167,4 +168,24 @@ test("the untranslated health reason is not folded into a translated sentence", 
   assert.match(ROW, /statusReason/);
   assert.doesNotMatch(ROW, /autoCurrentlyReason/);
   assert.doesNotMatch(EN, /autoCurrentlyReason/);
+});
+
+test("a failed refresh keeps the install mode already loaded", () => {
+  // Falling back to null sent the next download to Auto even though this browser still knew
+  // the install's choice, so a blip on the settings route silently changed transport.
+  assert.match(PREFERENCE, /\.catch\(\(\) => installMode\)/);
+});
+
+test("adopting an existing job does not wait on the settings route", () => {
+  // The adopt branch ignores requestedMode, and suspending there let the two concurrent
+  // adoptJob callers replace each other's runtime, leaving duplicate poll timers behind.
+  assert.match(POLL_LOOP, /opts\.adopt\s*\n?\s*\? TRANSPORT\.HTTP/);
+});
+
+test("Xet cannot be chosen before its availability is known", () => {
+  // Clicking it in that window stored a Xet preference, locally and install-wide, that every
+  // later download silently ignored on a machine without hf_xet.
+  assert.match(ROW, /capabilityPending \|\| settings\?\.xetAvailable === false/);
+  // But a load that FAILED must not disable it for good, so pending is its own state.
+  assert.match(ROW, /setCapabilityPending\(false\)/);
 });

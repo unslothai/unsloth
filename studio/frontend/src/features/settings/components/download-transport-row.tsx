@@ -53,18 +53,28 @@ export function DownloadTransportRow() {
   const [settings, setSettings] = useState<DownloadTransportSettings | null>(
     null,
   );
+  // Distinct from "settings is null": a load that FAILED leaves us with no capability, and
+  // refusing Xet for good on a flaky settings route would be worse than the race below.
+  const [capabilityPending, setCapabilityPending] = useState(true);
 
   useEffect(() => {
     // The subscription is the only teardown: an in-flight load resolves into a cached value and
     // the unsubscribed setter is never called again.
-    const unsubscribe = subscribeDownloadTransportSettings(setSettings);
+    const unsubscribe = subscribeDownloadTransportSettings((next) => {
+      setSettings(next);
+      setCapabilityPending(false);
+    });
     loadDownloadTransportSettings()
       .then(setSettings)
-      .catch(() => undefined);
+      .catch(() => undefined)
+      .finally(() => setCapabilityPending(false));
     return unsubscribe;
   }, []);
 
-  const xetUnavailable = settings?.xetAvailable === false;
+  // Unknown counts as unavailable WHILE the first load is in flight. Xet used to be clickable
+  // in that window on a machine without hf_xet, and the click stored a Xet preference locally
+  // and install-wide that every later download then silently ignored.
+  const xetUnavailable = capabilityPending || settings?.xetAvailable === false;
   // The localized string first. The backend has exactly one reason for Xet being
   // unavailable and it is English prose, so preferring it made the translated key
   // unreachable and showed English to every other locale. A future backend reason we
@@ -77,8 +87,10 @@ export function DownloadTransportRow() {
 
   // Xet is selected but cannot run here: say so, rather than leaving a selected
   // option that silently downloads over HTTPS.
+  // Only once we KNOW: while the capability is still pending the option is disabled, but
+  // claiming hf_xet is missing would be asserting something we have not been told yet.
   const status =
-    xetUnavailable && mode === "xet"
+    !capabilityPending && xetUnavailable && mode === "xet"
       ? xetReason
       : mode === "auto" && settings
         ? t("settings.general.downloads.autoCurrently", {
@@ -144,7 +156,7 @@ export function DownloadTransportRow() {
                   sideOffset={6}
                   className="max-w-[260px]"
                 >
-                  {disabled
+                  {disabled && !capabilityPending
                     ? xetReason
                     : t(
                         opt.value === "http" && !partialsResumable

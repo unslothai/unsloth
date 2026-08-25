@@ -51,7 +51,9 @@ function hydrateInstallMode(refresh = false): Promise<TransportMode | null> {
       installMode = isTransportMode(settings.mode) ? settings.mode : null;
       return installMode;
     })
-    .catch(() => null)
+    // Keep what we already loaded. Discarding it on a transient failure sent the next
+    // download to Auto even though the install's choice was still known here.
+    .catch(() => installMode)
     .finally(() => {
       installModeInFlight = null;
     });
