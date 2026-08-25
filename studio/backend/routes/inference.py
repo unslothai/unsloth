@@ -26638,6 +26638,17 @@ async def load_diffusion_model_gated(
 _diffusion_persist_active = 0
 
 
+def generation_in_flight() -> bool:
+    """Read the image-persist marker without importing or locking anything.
+
+    An image job is not done when the engine's own marker clears: the route is still writing
+    the gallery records the response is built from. generate-progress already treats that
+    window as active; liveness has to agree, or the watchdog sees an idle backend and spends
+    its short budget on a request that is still running.
+    """
+    return _diffusion_persist_active > 0
+
+
 _GENERATE_FAILURE_FALLBACK = "Image generation failed."
 # Failure classes worth naming in the UI, as FIXED text: the engine's own message can embed local paths and argv, so only the class is reported.
 _GENERATE_FAILURE_CLASSES: tuple[tuple[tuple[str, ...], str], ...] = (
@@ -27413,10 +27424,16 @@ async def _generate_openai_images(
                 items.append(ImageGenerationData(url = _absolute_image_url(request, record["id"])))
         return items
 
+    # Same counter as /images/generate: the request is still in flight until these records
+    # exist, and liveness reads the counter to say so.
+    global _diffusion_persist_active
+    _diffusion_persist_active += 1
     try:
         data = await asyncio.to_thread(_persist)
     except Exception as exc:  # noqa: BLE001
         logger.error("openai_images.persist_failed: %s", exc)
         raise HTTPException(status_code = 500, detail = "Failed to save the generated image.")
+    finally:
+        _diffusion_persist_active -= 1
 
     return ImageGenerationResponse(created = created, data = data)

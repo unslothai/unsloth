@@ -90,8 +90,13 @@ media_modules = (
     "core.inference.video",
     "core.inference.diffusion",
     "core.inference.sd_cpp_backend",
+    "routes.inference",
 )
-media_import_free = [name for name in media_modules if name in sys.modules]
+# routes.inference is imported at startup regardless, so the ML-stack question is only
+# about the three engines.
+media_import_free = [
+    name for name in media_modules if name.startswith("core.") and name in sys.modules
+]
 scanned = list(getattr(main, "_MEDIA_BACKEND_MODULES", ()) or ())
 
 probes = {"idle_before": idle_before, "busy": busy, "idle_after": idle_after}
@@ -241,3 +246,37 @@ def test_every_media_backend_is_scanned():
         f"/api/liveness scans {result['scanned']}, this file exercises "
         f"{result['media_modules']}; a media backend in neither list renders invisibly"
     )
+
+
+def test_liveness_covers_the_image_persist_tail():
+    """An image job is not over when the engine's marker clears: the route is still writing
+    the gallery records the response is built from, and on a saturated host that write is
+    exactly when probes start missing. generate-progress already calls that window active
+    (routes/inference.py diffusion_generate_progress); liveness disagreeing with it is how a
+    request that is still running gets the idle three-strike budget."""
+    import importlib
+
+    routes_inference = importlib.import_module("routes.inference")
+    assert routes_inference.generation_in_flight() is False
+
+    routes_inference._diffusion_persist_active += 1
+    try:
+        assert routes_inference.generation_in_flight() is True
+    finally:
+        routes_inference._diffusion_persist_active -= 1
+    assert routes_inference.generation_in_flight() is False
+
+
+def test_both_image_routes_publish_the_persist_marker():
+    """The Studio route and the OpenAI-compatible one write the gallery on separate paths.
+    Only the first used to count, so an OpenAI client's persist was invisible to both
+    generate-progress and liveness."""
+    import inspect
+    import importlib
+
+    source = inspect.getsource(importlib.import_module("routes.inference"))
+    assert source.count("_diffusion_persist_active += 1") == 2, (
+        "an image route persists gallery records without publishing the marker, so liveness "
+        "reports idle while that request is still in flight"
+    )
+    assert source.count("_diffusion_persist_active -= 1") == 2

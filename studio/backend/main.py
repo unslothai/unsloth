@@ -1589,11 +1589,13 @@ def _torch_warm_in_progress() -> bool:
     return bool(status["started"] and not status["finished"] and status["alive"])
 
 
-# Media backend modules that expose generation_in_flight().
+# Modules that expose generation_in_flight(). The three engines answer for the render itself;
+# routes.inference answers for the image-persist tail, which outlives the engine's own marker.
 _MEDIA_BACKEND_MODULES = (
     "core.inference.video",
     "core.inference.diffusion",
     "core.inference.sd_cpp_backend",
+    "routes.inference",
 )
 
 
