@@ -2621,9 +2621,9 @@ def _local_gguf_companion_search_root(
         search_dir = search_dir.parent
     # Only projectors reach a real HF repo root; drafters stay in the selected snapshot.
     if include_hf_repo_root:
-        for parent in search_dir.parents:
-            if _is_hf_snapshots_container(parent):
-                return str(parent.parent)
+        snapshot_dir = _enclosing_hf_snapshot_dir(str(search_dir))
+        if snapshot_dir is not None:
+            return str(Path(snapshot_dir).parent.parent)
     return str(search_dir)
 
 
@@ -2647,6 +2647,22 @@ def _hf_repo_root_companion_dirs(repo_dir: Path) -> list[Path]:
     widening adds. One definition, or the row says no vision for a file the load opens.
     """
     return [repo_dir, repo_dir / "snapshots"]
+
+
+def _hf_repo_root_has_mmproj(repo_dir: Path) -> bool:
+    """Whether a projector sits in one of the containers above *repo_dir*'s snapshots.
+
+    The cheap presence question the cached row and the inventory gate both ask before
+    paying for a per-variant walk. One definition so the two cannot disagree about
+    which directories count.
+    """
+    try:
+        return any(
+            detect_mmproj_file(str(directory)) is not None
+            for directory in _hf_repo_root_companion_dirs(repo_dir)
+        )
+    except Exception:
+        return False
 
 
 def _enclosing_hf_snapshot_dir(path: str) -> Optional[str]:

@@ -1400,9 +1400,8 @@ def snapshot_has_gguf_projector(snapshot: Optional[Path]) -> bool:
     from utils.models.gguf_metadata import mmproj_accepts_image
     from utils.models.model_config import (
         _detect_local_mmproj,
-        _hf_repo_root_companion_dirs,
+        _hf_repo_root_has_mmproj,
         _local_gguf_companion_search_root,
-        detect_mmproj_file,
     )
 
     try:
@@ -1419,13 +1418,8 @@ def snapshot_has_gguf_projector(snapshot: Optional[Path]) -> bool:
             if Path(repo_root).resolve() == snapshot_path.resolve():
                 return False
             # One presence check for the whole snapshot before pairing each variant
-            # against it, over every directory the widened walk adds: a projector
-            # dropped straight into snapshots/ is otherwise found by the load and
-            # missed by the row.
-            if not any(
-                detect_mmproj_file(str(directory)) is not None
-                for directory in _hf_repo_root_companion_dirs(Path(repo_root))
-            ):
+            # against it, over the same directories the cached row asks about.
+            if not _hf_repo_root_has_mmproj(Path(repo_root)):
                 return False
 
         # The loader's own answer, even when the lister already saw a projector: it
