@@ -1645,6 +1645,13 @@ def PeftModel_fast_forward(
             **kwargs,
         )
     else:
+        selective_logits_kwargs = {}
+        logits_kwarg = _generation_logits_kwarg_name(self)
+        if logits_kwarg == "logits_to_keep":
+            selective_logits_kwargs[logits_kwarg] = logits_to_keep
+        elif logits_kwarg == "num_logits_to_keep":
+            selective_logits_kwargs[logits_kwarg] = num_logits_to_keep
+
         return self.base_model(
             input_ids = input_ids,
             causal_mask = causal_mask,
@@ -1654,8 +1661,7 @@ def PeftModel_fast_forward(
             output_attentions = output_attentions,
             output_hidden_states = output_hidden_states,
             return_dict = return_dict,
-            num_logits_to_keep = num_logits_to_keep,
-            logits_to_keep = logits_to_keep,
+            **selective_logits_kwargs,
             **kwargs,
         )
 
@@ -2190,6 +2196,35 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
             )
 
 
+def _generation_logits_kwarg_name(model):
+    """Return the selective-logits kwarg explicitly supported by ``model``.
+
+    PEFT's public forward accepts Unsloth's compatibility kwargs even when the
+    wrapped architecture does not. Inspect the effective base model instead so
+    generation does not leak Llama/Qwen-only optimizations into models such as
+    Phi-4 Mini. An opaque signature is treated conservatively as unsupported.
+    """
+    get_base_model = getattr(model, "get_base_model", None)
+    if callable(get_base_model):
+        try:
+            base_model = get_base_model()
+            if base_model is not None and base_model is not model:
+                model = base_model
+        except Exception:
+            pass
+
+    try:
+        forward_parameters = inspect.signature(model.forward).parameters
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+    if "logits_to_keep" in forward_parameters:
+        return "logits_to_keep"
+    if "num_logits_to_keep" in forward_parameters:
+        return "num_logits_to_keep"
+    return None
+
+
 def unsloth_fast_generate(self, *args, **kwargs):
     # Restore training mode after generation if we started in it
     restore_training_mode = self.training
@@ -2241,18 +2276,9 @@ def unsloth_fast_generate(self, *args, **kwargs):
     _provided_num = kwargs.pop("num_logits_to_keep", None)
     _provided_logits = kwargs.pop("logits_to_keep", None)
     _provided = _provided_logits if _provided_logits is not None else _provided_num
-    try:
-        _fwd_params = inspect.signature(self.forward).parameters
-        _has_new = "logits_to_keep" in _fwd_params
-        _has_old = "num_logits_to_keep" in _fwd_params
-    except (TypeError, ValueError):
-        # Opaque forward: keep the caller's spelling, default to new.
-        _has_old = _provided_num is not None and _provided_logits is None
-        _has_new = not _has_old
-    if _has_new:
-        kwargs["logits_to_keep"] = _provided if _provided is not None else 1
-    elif _has_old:
-        kwargs["num_logits_to_keep"] = _provided if _provided is not None else 1
+    _logits_kwarg = _generation_logits_kwarg_name(self)
+    if _logits_kwarg is not None:
+        kwargs[_logits_kwarg] = _provided if _provided is not None else 1
 
     # Remove token_type_ids
     kwargs.pop("token_type_ids", None)
