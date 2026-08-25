@@ -1609,8 +1609,8 @@ export const ptBR = {
         "Este modelo no dispositivo não pode ser treinado.",
       reasonUnsupportedFormat:
         "Este formato de modelo não é compatível com treinamento.",
-      vramNeeds: "Precisa de ~{est} GB de VRAM (GPU: {total} GB)",
-      vramTight: "~{est} GB de VRAM (no limite de {total} GB)",
+      vramNeeds: "Precisa de ~{est} GB de VRAM (GPU: {total} GiB)",
+      vramTight: "~{est} GB de VRAM (no limite de {total} GiB)",
       vramApprox: "~{est} GB de VRAM",
       sourceModelsFolder: "Pasta de modelos",
       sourceHfCache: "Cache do HF",

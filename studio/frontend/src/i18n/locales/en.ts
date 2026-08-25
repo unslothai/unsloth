@@ -1582,8 +1582,8 @@ export const en = {
       sourceLocalModel: "Local model",
       vramOomBadge: "OOM",
       vramTightBadge: "Tight",
-      vramNeeds: "Needs ~{est}GB VRAM (GPU: {total}GB)",
-      vramTight: "~{est}GB VRAM (tight on {total}GB)",
+      vramNeeds: "Needs ~{est}GB VRAM (GPU: {total}GiB)",
+      vramTight: "~{est}GB VRAM (tight on {total}GiB)",
       vramApprox: "~{est}GB VRAM",
     },
     methods: {

@@ -1592,8 +1592,8 @@ export const ko = {
       reasonNotTrainable: "기기에 있는 이 모델은 학습할 수 없습니다.",
       reasonUnsupportedFormat:
         "이 모델 형식은 학습에서 지원되지 않습니다.",
-      vramNeeds: "약 {est}GB VRAM 필요 (GPU: {total}GB)",
-      vramTight: "약 {est}GB VRAM ({total}GB에서 빠듯함)",
+      vramNeeds: "약 {est}GB VRAM 필요 (GPU: {total}GiB)",
+      vramTight: "약 {est}GB VRAM ({total}GiB에서 빠듯함)",
       vramApprox: "약 {est}GB VRAM",
       vramOomBadge: "OOM",
       vramTightBadge: "빠듯함",

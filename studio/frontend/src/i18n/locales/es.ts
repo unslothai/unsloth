@@ -1627,8 +1627,8 @@ export const es = {
         "Este modelo del dispositivo no se puede usar para entrenar.",
       reasonUnsupportedFormat:
         "Este formato de modelo no es compatible con el entrenamiento.",
-      vramNeeds: "Necesita ~{est} GB de VRAM (GPU: {total} GB)",
-      vramTight: "~{est} GB de VRAM (ajustado para {total} GB)",
+      vramNeeds: "Necesita ~{est} GB de VRAM (GPU: {total} GiB)",
+      vramTight: "~{est} GB de VRAM (ajustado para {total} GiB)",
       vramApprox: "~{est} GB de VRAM",
       sourceModelsFolder: "Carpeta de modelos",
       sourceHfCache: "Caché de HF",
