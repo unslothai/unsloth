@@ -3940,12 +3940,15 @@ def _repo_has_mmproj(repo_info) -> bool:
 
 
 def _repo_root_has_mmproj(repo_info) -> bool:
-    """True if a projector sits at the models--<repo> dir itself, where a user
-    dropping one in by hand puts it (#9286). Not part of any revision, so
+    """True if a projector sits in one of the containers above the snapshots, where a
+    user dropping one in by hand puts it (#9286). Not part of any revision, so
     _repo_has_mmproj cannot see it."""
-    from utils.models.model_config import detect_mmproj_file
+    from utils.models.model_config import _hf_repo_root_companion_dirs, detect_mmproj_file
     try:
-        return detect_mmproj_file(str(repo_info.repo_path)) is not None
+        return any(
+            detect_mmproj_file(str(directory)) is not None
+            for directory in _hf_repo_root_companion_dirs(Path(repo_info.repo_path))
+        )
     except Exception:
         return False
 

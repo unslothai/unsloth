@@ -1400,6 +1400,7 @@ def snapshot_has_gguf_projector(snapshot: Optional[Path]) -> bool:
     from utils.models.gguf_metadata import mmproj_accepts_image
     from utils.models.model_config import (
         _detect_local_mmproj,
+        _hf_repo_root_companion_dirs,
         _local_gguf_companion_search_root,
         detect_mmproj_file,
     )
@@ -1419,11 +1420,11 @@ def snapshot_has_gguf_projector(snapshot: Optional[Path]) -> bool:
         if Path(repo_root).resolve() == snapshot_path.resolve():
             return False
         # One presence check for the whole snapshot before pairing each variant against
-        # it. Both directories the widened walk adds, or a projector dropped straight
-        # into snapshots/ is found by the load and missed by the row.
-        if (
-            detect_mmproj_file(repo_root) is None
-            and detect_mmproj_file(str(snapshot_path.parent)) is None
+        # it, over every directory the widened walk adds: a projector dropped straight
+        # into snapshots/ is otherwise found by the load and missed by the row.
+        if not any(
+            detect_mmproj_file(str(directory)) is not None
+            for directory in _hf_repo_root_companion_dirs(Path(repo_root))
         ):
             return False
 

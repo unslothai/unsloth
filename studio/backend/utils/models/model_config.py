@@ -2628,6 +2628,18 @@ def _local_gguf_companion_search_root(
     return str(search_dir)
 
 
+def _hf_repo_root_companion_dirs(repo_dir: Path) -> list[Path]:
+    """The directories above a snapshot that the widened companion walk reaches.
+
+    The walk climbs ``snapshots/<sha>`` -> ``snapshots`` -> ``models--<repo>``, and
+    ``_iter_gguf_files`` is not recursive, so those two containers are the whole of
+    what the widening adds. One definition, because the load, the pre-download bound
+    and the cached row all have to name the same set or a row says no vision for a
+    file the launch opens.
+    """
+    return [repo_dir, repo_dir / "snapshots"]
+
+
 def _enclosing_hf_snapshot_dir(path: str) -> Optional[str]:
     """The ``models--*/snapshots/<sha>`` dir *path* sits in, or None."""
     candidate = Path(path)
@@ -2706,7 +2718,12 @@ def _hf_cache_repo_root_mmproj_bound_bytes(repo_id: str) -> int:
         for repo_dir in Path(get_hf_cache_paths().hub_cache).iterdir():
             if not repo_dir.is_dir() or repo_dir.name.lower() != target:
                 continue
-            for candidate in _iter_gguf_files(repo_dir):
+            candidates = [
+                candidate
+                for directory in _hf_repo_root_companion_dirs(repo_dir)
+                for candidate in _iter_gguf_files(directory)
+            ]
+            for candidate in candidates:
                 # The same completeness rule discovery applies, or the bound would be
                 # positive for a set discovery then rejects, and the first Apply would
                 # advertise vision and launch without a projector.

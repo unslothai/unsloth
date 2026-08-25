@@ -8,6 +8,7 @@ from __future__ import annotations
 import struct
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -21,6 +22,7 @@ from utils.models.model_config import (  # noqa: E402
     detect_mmproj_file,
 )
 from hub.utils.inventory_scan import snapshot_has_gguf_projector  # noqa: E402
+from routes.models import _repo_root_has_mmproj  # noqa: E402
 from routes.inference import (  # noqa: E402
     _native_drafter_accept,
     _validate_native_gguf_companion,
@@ -260,6 +262,8 @@ def test_a_projector_in_the_snapshots_container_reaches_the_row(tmp_path):
 
     assert _detect_local_mmproj(str(weight.parent), str(weight)) is not None
     assert snapshot_has_gguf_projector(weight.parent) is True
+    # The route-level early return has to name the same directories as the walk.
+    assert _repo_root_has_mmproj(SimpleNamespace(repo_path = weight.parent.parent.parent)) is True
 
 
 def test_a_sibling_repo_s_projector_stays_invisible(tmp_path):
