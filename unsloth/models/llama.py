@@ -1539,10 +1539,10 @@ def CausalLM_fast_forward(fast_forward_inference):
 
         logits = logits.to(_get_dtype(dtype_from_config(self.config)))
         loss = None
-        # Which field carries the scale is per family: cohere multiplies by logit_scale,
-        # granite divides by logits_scaling, falcon_h1 multiplies by lm_head_multiplier.
-        # detect_logit_transforms knows all of them, and the device map planner sizes the
-        # head's card from the same answer, so a new family is taught once, not twice.
+        # Which field carries the scale is per family (cohere multiplies by logit_scale,
+        # granite divides by logits_scaling, falcon_h1 multiplies by lm_head_multiplier).
+        # The planner sizes the head's card from the same answer, so a new family is taught
+        # once, not twice.
         # granite: https://github.com/huggingface/transformers/blob/4d1d0f29a493098e6bc6b904b82e29cb331827f5/src/transformers/models/granite/modeling_granite.py#L1103
         # cohere: https://github.com/huggingface/transformers/blob/4d1d0f29a493098e6bc6b904b82e29cb331827f5/src/transformers/models/cohere/modeling_cohere.py#L1176
         if detect_logit_transforms is not None:
@@ -2635,9 +2635,8 @@ class FastLlamaModel:
         sync_unsloth_model_name_bnb_flags(load_in_4bit, load_in_8bit)
 
         # `num_labels` sends the load to AutoModelForSequenceClassification, whose `score`
-        # replaces the `lm_head` the planner named off the repo's own config, so
-        # accelerate's `dispatch_model` refuses the map: "does not give any device for the
-        # following parameters: score.weight".
+        # replaces the `lm_head` the planner named off the repo's config, so `dispatch_model`
+        # refuses the map: "does not give any device for ... score.weight".
         _planner_skip_reason = None
         if num_labels is not None:
             _planner_skip_reason = (
@@ -2648,19 +2647,15 @@ class FastLlamaModel:
                 or "num_labels loads a task head the repo config does not describe"
             )
 
-        # The skip list below is merged into a prequantized checkpoint's own bundled list
-        # (#5027) AFTER this plan is built, and handing the planner the merged list would not
-        # reach it either: `AutoHfQuantizer.merge_quantization_configs` overlays loading
-        # attributes only for GPTQ / AWQ / AutoRound / FbgemmFp8 / CompressedTensors / Mxfp4,
-        # never for bitsandbytes, so a prequantized checkpoint is always sized by the list
-        # baked into its config.json. Modules the load then keeps in compute dtype are
-        # charged at 4bit here, and the head device is budgeted short by the difference.
+        # A prequantized checkpoint is always sized by the list in its own config.json:
+        # `merge_quantization_configs` overlays loading attributes for GPTQ / AWQ /
+        # AutoRound / FbgemmFp8 / CompressedTensors / Mxfp4 and never for bitsandbytes, so
+        # neither the merge below (#5027) nor any argument here reaches the plan. Modules
+        # the load then keeps dense are charged at 4bit, budgeting the head device short.
         #
-        # Mamba is the case worth refusing over: the hybrid path keeps whole `out_proj`
-        # stacks dense, which is GiBs of error. Everything else this adds that can match a
-        # module on this loader is an MoE router, and those top out near 70 MiB even on
-        # Qwen3-235B-A22B (4096 x 128 experts x 94 layers, bf16 against 4bit) -- inside the
-        # planner's own 256 MiB safety margin, and not worth losing the plan over.
+        # Worth refusing over only for mamba, whose `out_proj` stacks are GiBs of error. The
+        # other reachable gap is MoE routers, ~70 MiB even on Qwen3-235B-A22B (4096 x 128
+        # experts x 94 layers), inside the planner's own 256 MiB safety margin.
         if _planner_skip_reason is None and IS_FALCON_H1 and _ckpt_quant_method == "bitsandbytes":
             _bundled = getattr(model_config, "quantization_config", None)
             _bundled_skip = (
@@ -2686,13 +2681,11 @@ class FastLlamaModel:
             token = token,
             trust_remote_code = trust_remote_code,
             revision = revision,
-            # The dtype the load gets, not the checkpoint's own: `from_pretrained`'s dtype
-            # overrides config.json, so planning the wrong one mis-sizes weights 2x either
-            # way -- an accepted map that OOMs, or a refusal of a load that would have fit.
+            # The dtype the load gets, not the checkpoint's: `from_pretrained` overrides
+            # config.json, and planning the wrong one mis-sizes weights 2x either way.
             **add_dtype_kwargs(dtype),
-            # The caller's own quantization_config, still untouched in kwargs here (ours
-            # lands there only once the skip list below is built), overrides the flags:
-            # loader.py clears them whenever it forwards one.
+            # The caller's own config, still untouched in kwargs here, overrides the
+            # flags: loader.py clears them whenever it forwards one.
             **planner_quantization_kwargs(
                 load_in_4bit = load_in_4bit,
                 load_in_8bit = load_in_8bit,

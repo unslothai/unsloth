@@ -131,8 +131,8 @@ def _load_diffusion_config(
 
         aliased = DiffusionGemma4Config.from_dict(cd)
         # Only this object knows the rewrite happened; the checkpoint on disk still says
-        # `diffusion_gemma`, so anything that rebuilds the config from `model_name` gets the
-        # AutoConfig failure we just caught. The device-map planner is exactly that.
+        # `diffusion_gemma`, so anything rebuilding the config from `model_name` -- the
+        # planner -- hits the AutoConfig failure just caught here.
         aliased._unsloth_legacy_alias = True
         return aliased
 
@@ -211,9 +211,8 @@ class FastDiffusionModel:
 
         # Optional bitsandbytes quant. The MoE experts (3D Parameters) are not nn.Linear so bnb skips
         # them; only attention + dense MLP Linears quantize, lm_head/embeddings stay full precision.
-        # Built before the plan because the planner must size the exact config the load
-        # applies: the skip list becomes `modules_to_not_convert`, and sizing those at
-        # 4 bits while they load in compute dtype OOMs a tight map.
+        # Before the plan: the skip list becomes `modules_to_not_convert`, and sizing
+        # those at 4 bits while they load in compute dtype OOMs a tight map.
         qcfg = None
         if load_in_4bit or load_in_8bit:
             from transformers import BitsAndBytesConfig
@@ -237,10 +236,9 @@ class FastDiffusionModel:
         # Same leaf-level resolution as llama.py and vision.py: an unresolved "unsloth"
         # becomes torch.device("unsloth") in transformers and raises instead of loading.
         #
-        # A legacy `diffusion_gemma` checkpoint only loads because the config above catches
-        # AutoConfig's unknown-model error and rewrites the type in memory. The planner
-        # takes a name, not a config, and rebuilds from the checkpoint, so it hits that same
-        # error and reports it as a planning failure. Say what actually happened instead.
+        # A legacy `diffusion_gemma` checkpoint loads only because the config above rewrites
+        # the type in memory. The planner takes a name and rebuilds from the checkpoint, so
+        # it hits the same error and would report it as a generic planning failure.
         device_map = resolve_unsloth_device_map(
             requested_device_map(device_map),
             model_name,

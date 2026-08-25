@@ -1499,12 +1499,11 @@ class FastSentenceTransformer(FastModel):
                 "Run `pip install sentence-transformers` to install it."
             )
 
-        # The other leaf loaders resolve the "unsloth" sentinel by planning; this one must
-        # decline. The `st_device` blocks below hand `device_map` to
-        # `SentenceTransformer(device = ...)`, which ends in `self.to(device)`: the sentinel
-        # raises there, and that same `.to()` would pull any split model back onto one card.
-        # Resolve the env-var opt-in too, or `UNSLOTH_AUTO_DEVICE_MAP=1` asks for a plan
-        # without ever naming the sentinel.
+        # The other leaf loaders resolve the "unsloth" sentinel by planning; this one
+        # declines. `st_device` below hands `device_map` to `SentenceTransformer(device=)`,
+        # which ends in `self.to(device)`: the sentinel raises there, and that same `.to()`
+        # would pull any split model back onto one card. The env-var opt-in is resolved too,
+        # or `UNSLOTH_AUTO_DEVICE_MAP=1` asks for a plan without ever naming the sentinel.
         device_map = requested_device_map(device_map)
         if device_map == UNSLOTH_DEVICE_MAP:
             print(
@@ -1854,15 +1853,13 @@ class FastSentenceTransformer(FastModel):
             kwargs["cache_dir"] = _st_cache_dir
 
         # The decline above only spends the sentinel on our copy. Strip the marker before
-        # the nested load: FastModel would read it as "nobody chose this" and re-upgrade it
-        # under UNSLOTH_AUTO_DEVICE_MAP, splitting the model across cards while `st_device`
-        # below still says "sequential" and SentenceTransformer pulls it back onto one.
-        # Only the marker -- an explicit dict placement has to arrive as a dict.
+        # the nested load, or FastModel reads it as "nobody chose this" and re-upgrades it
+        # under UNSLOTH_AUTO_DEVICE_MAP, splitting a model `st_device` then pulls back onto
+        # one card. Only the marker -- an explicit dict placement must arrive as a dict.
         #
         # A plain value rather than pinning the env var around the call: os.environ is
-        # process-wide, so that pin also reached unrelated loads on other threads, and two
-        # overlapping sentence loads could restore it out of order and leave the switch in
-        # whichever state finished last.
+        # process-wide, so that pin reached unrelated loads on other threads, and two
+        # overlapping sentence loads could restore it out of order.
         device_map = unmarked_device_map(device_map)
         try:
             model, tokenizer = FastModel.from_pretrained(

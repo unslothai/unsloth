@@ -133,18 +133,13 @@ def test_sentence_transformer_never_hands_the_sentinel_to_sentence_transformers(
 def test_sentence_transformer_decline_survives_the_env_var():
     """The decline has to outlive the re-entry into `FastModel.from_pretrained`.
 
-    The sentinel is spent on our own `device_map`, but the resulting value goes to
-    `FastModel.from_pretrained`, which runs `requested_device_map` again. If what it
-    receives is still the marked default, the env var upgrades it back to "unsloth" and
-    plans a split map while the `st_device` blocks read "sequential" and pull that model
-    onto one card.
+    That nested call runs `requested_device_map` again, so a still-marked default is
+    upgraded back to "unsloth" and planned as a split while `st_device` reads "sequential"
+    and pulls the model onto one card. The guard is stripping the marker -- and only the
+    marker, since `str()` over everything flattens an explicit dict placement into text.
 
-    The guard is that the nested call is handed the marker stripped off, leaving a value it
-    cannot re-upgrade -- and only the marker, since `str()` over everything turns an explicit
-    dict placement into text. Asserted as the absence of the process-wide pin too: pinning
-    `os.environ` around the call worked, but `os.environ` is shared, so it also reached
-    unrelated loads on other threads and two overlapping sentence loads could restore it
-    out of order.
+    The absence of the process-wide pin is asserted too: `os.environ` is shared, so pinning
+    it around the call reached unrelated loads on other threads.
     """
     source = _source("sentence_transformer.py")
     tree = ast.parse(source)

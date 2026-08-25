@@ -221,14 +221,12 @@ def test_a_text_only_decoder_is_never_planned_against_the_full_vlm():
 
 def test_a_task_head_the_planner_cannot_see_declines_planning():
     """`num_labels` makes the load AutoModelForSequenceClassification, whose `score`
-    replaces `lm_head`. The planner only gets `model_name`, reads the repo's own
-    `architectures` (`LlamaForCausalLM`) and emits units ending in `lm_head`, so
-    `score.weight` matches no key of the map and accelerate's dispatch refuses it: "does
-    not give any device for the following parameters: score.weight".
+    replaces `lm_head`. The planner sees only `model_name`, reads the repo's own
+    `LlamaForCausalLM` and emits units ending in `lm_head`, so dispatch refuses the map:
+    "does not give any device for ... score.weight".
 
-    Compared as model classes: AutoModelForVision2Seq and AutoModelForImageTextToText are
-    different objects that build the same VLM, so comparing auto classes would decline
-    planning for every VLM.
+    Compared as model classes, since AutoModelForVision2Seq and AutoModelForImageTextToText
+    are different objects building the same VLM and would decline planning for every VLM.
     """
     ns = _load()
     mismatch = ns["planner_class_mismatch_reason"]
