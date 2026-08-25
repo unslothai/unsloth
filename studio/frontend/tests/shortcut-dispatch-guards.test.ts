@@ -9,7 +9,12 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { isImeComposing, isSurfaceBackgrounded, isSurfaceInForeground } = await import(
+const {
+  isImeComposing,
+  isSurfaceBackgrounded,
+  isSurfaceInForeground,
+  typesInTextField,
+} = await import(
   "../src/features/settings/hooks/use-shortcut.ts"
 );
 const { isAcceptableBinding, parseBinding } = await import(
@@ -372,5 +377,81 @@ test("an unlisted reasoning effort steps to the first supported level", async ()
     body,
     /if \(current === -1\) \{\n\s*state\.setReasoningEffort\(levels\[0\]\);/,
     "an unlisted effort still counts a step off an index that is not in the list",
+  );
+});
+
+// The composer exception exists for a chord that types nothing there. Decline
+// ships on Escape, but the row takes bare keys, so it can be rebound to one
+// that does type, and the pass would then deny the request mid-sentence.
+test("only a chord that types nothing keeps the composer exception", () => {
+  const bare = (code: string) => ({
+    code,
+    mod: false,
+    ctrl: false,
+    shift: false,
+    alt: false,
+  });
+  assert.equal(typesInTextField(bare("Escape")), false);
+  assert.equal(typesInTextField(bare("F5")), false);
+  assert.equal(typesInTextField(bare("Enter")), true);
+  assert.equal(typesInTextField(bare("KeyA")), true);
+  assert.equal(typesInTextField(bare("Backspace")), true);
+  // A caret key inserts nothing, but a chord on one still has an edit to
+  // stand aside for, so it does not get the pass either.
+  assert.equal(typesInTextField(bare("ArrowUp")), true);
+  // Held with anything but Shift it types nothing, whatever the key is.
+  assert.equal(typesInTextField({ ...bare("KeyA"), mod: true }), false);
+  assert.equal(typesInTextField({ ...bare("KeyA"), shift: true }), true);
+});
+
+test("the dispatcher drops the exception for a typing chord", async () => {
+  const source = await readFile(
+    new URL("../src/features/settings/hooks/use-shortcut.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /const exception = typesInTextField\(hit\) \? undefined : textFieldException;/,
+  );
+  assert.match(source, /isTextEntryFocused\(exception\)/);
+});
+
+// Every keydown is swallowed while recording, and on a bare-key row Escape is
+// a chord rather than a cancel, so a keyboard-only user had no way out.
+test("recording can be left from the keyboard", async () => {
+  const tab = await readFile(
+    new URL(
+      "../src/features/settings/tabs/keyboard-shortcuts-tab.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const at = tab.indexOf("const onKeyDown = (event: KeyboardEvent) => {");
+  assert.notEqual(at, -1);
+  const body = tab.slice(at, at + 900);
+  const exit = body.indexOf('event.code === "Tab"');
+  const swallow = body.indexOf("event.preventDefault();");
+  assert.notEqual(exit, -1, "recording has no keyboard exit");
+  assert.ok(exit < swallow, "the exit is swallowed before it is read");
+});
+
+// The page stays mounted under a dialog, so `enabled` still says yes.
+test("the header pickers do not open behind a dialog", async () => {
+  const page = await readFile(
+    new URL("../src/features/chat/chat-page.tsx", import.meta.url),
+    "utf8",
+  );
+  for (const id of ["openModelPicker", "openProjectPicker"]) {
+    const at = page.indexOf(`"${id}",`);
+    assert.notEqual(at, -1, `${id} is gone`);
+    assert.match(
+      page.slice(at, at + 260),
+      /if \(chatCovered\(\)\) return;/,
+      `${id} opens a control on the covered surface`,
+    );
+  }
+  assert.match(
+    page,
+    /isSurfaceBackgrounded\(COMPOSER_INPUT_SELECTOR\)/,
   );
 });

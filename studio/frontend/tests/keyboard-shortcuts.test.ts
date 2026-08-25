@@ -516,6 +516,10 @@ test("no default takes a chord the browser owns without a reason", () => {
     "Mod+Shift+Tab",
     "Ctrl+Tab",
     "Ctrl+Shift+Tab",
+    // The chat walk. Safari and Chrome own the bracket pair on macOS only, and
+    // the desktop build is where these are pressed.
+    "Mod+Shift+BracketLeft",
+    "Mod+Shift+BracketRight",
   ]);
   for (const def of SHORTCUT_DEFS) {
     for (const slot of SHORTCUT_SLOTS) {
@@ -994,7 +998,7 @@ test("a chord's surface does not come back open on the next visit", async () => 
     chatPage,
     /const projectSwitcherShown = headerPickersShown && Boolean\(currentProjectId\);/,
   );
-  assert.match(chatPage, /enabled: projectSwitcherShown,/);
+  assert.match(chatPage, /useShortcut\(\n\s*"openProjectPicker",[\s\S]*?enabled: projectSwitcherShown/);
   assert.match(
     chatPage,
     /if \(!projectSwitcherShown && projectPickerOpen\) \{\n\s*setProjectPickerOpen\(false\);/,
@@ -1151,7 +1155,7 @@ test("the model picker chord opens without the tour's pin", async () => {
     chatPage,
     /const toggleModelSelector = useCallback\(\(\) => \{\n(?:\s*\/\/[^\n]*\n)*\s*if \(modelSelectorLocked\) return;\n\s*setModelSelectorOpen\(\(open\) => !open\);/,
   );
-  assert.match(chatPage, /useShortcut\("openModelPicker", toggleModelSelector/);
+  assert.match(chatPage, /useShortcut\(\n\s*"openModelPicker",[\s\S]*?toggleModelSelector\(\);/);
 
   // Three mentions left, all the tour's: the declaration, the step builder's
   // argument, and that memo's dependency. Nothing else may pin it open.
@@ -1939,4 +1943,25 @@ test("the chat-only chords stand aside for a project selection", async () => {
     sidebar,
     /const projectsOnlySelected = \(\) =>\n\s*selectionCount === 0 && projectSelectionCount > 0;/,
   );
+});
+
+// Apple lists Shift-Command-] and Shift-Command-[ as Safari's Show Next Tab
+// and Show Previous Tab, and Chrome carries the same pair on macOS. The chat
+// walk ships on them for the desktop build, so Settings has to say so rather
+// than let a web user rebind into a chord the browser takes first.
+test("the chat walk's bracket pair is reserved on macOS only", () => {
+  for (const value of ["Mod+Shift+BracketLeft", "Mod+Shift+BracketRight"]) {
+    assert.ok(
+      isBrowserReservedBinding(value, true),
+      `${value} warns nobody on the platform that takes it`,
+    );
+    assert.equal(
+      isBrowserReservedBinding(value, false),
+      false,
+      `${value} is not taken off macOS`,
+    );
+  }
+  // Still the shipped default, which is why it is on the deliberate list.
+  const walk = SHORTCUT_DEFS.find((def) => def.id === "nextChat");
+  assert.equal(defaultBindingFor(walk!, "primary", true), "Mod+Shift+BracketRight");
 });

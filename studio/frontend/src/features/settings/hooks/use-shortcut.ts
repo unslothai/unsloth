@@ -78,6 +78,19 @@ export function isSurfaceBackgrounded(selector: string): boolean {
   );
 }
 
+/**
+ * Whether pressing `binding` in a focused text field would put something in
+ * it. Deliberately narrow: only Escape and the function keys are treated as
+ * typing nothing. The caret keys move a cursor rather than insert, but a chord
+ * bound to one still has an edit to stand aside for, so they count as typing
+ * here. Anything held with a modifier other than Shift inserts nothing.
+ */
+export function typesInTextField(binding: ShortcutBinding): boolean {
+  if (binding.mod || binding.ctrl || binding.alt) return false;
+  if (binding.code === "Escape") return false;
+  return !/^F([1-9]|1[0-9]|2[0-4])$/.test(binding.code);
+}
+
 export interface UseShortcutOptions {
   /** Skip registration entirely (route gating, dialogs). Defaults to true. */
   enabled?: boolean;
@@ -161,7 +174,12 @@ export function useShortcut(
       if (isImeComposing(event)) return;
       const hit = bindings.find((binding) => matchesBinding(binding, event));
       if (!hit) return;
-      if (skipInTextFields && isTextEntryFocused(textFieldException)) return;
+      // The exception is for a chord that types nothing where it applies.
+      // Rebound to a key that does type, it would take that key away from the
+      // field instead: decline ships on Escape, and bound to Enter or a letter
+      // the same pass would deny the request as the user edits the prompt.
+      const exception = typesInTextField(hit) ? undefined : textFieldException;
+      if (skipInTextFields && isTextEntryFocused(exception)) return;
       // The focused control keeps its own Enter or Space.
       if (
         typeof document !== "undefined" &&

@@ -179,7 +179,11 @@ import {
   providerSupportsBuiltinWebSearch,
   providerSupportsFastMode,
 } from "./provider-capabilities";
-import { useShortcut } from "@/features/settings";
+import {
+  COMPOSER_INPUT_SELECTOR,
+  isSurfaceBackgrounded,
+  useShortcut,
+} from "@/features/settings";
 import {
   ChatActiveContext,
   ChatRuntimeProvider,
@@ -3301,15 +3305,32 @@ export function ChatPage({
   // where each pane carries its own picker instead. Without the check the
   // chord would toggle state nothing renders.
   const headerPickersShown = active && view.mode !== "compare";
-  useShortcut("openModelPicker", toggleModelSelector, {
-    enabled: headerPickersShown,
-  });
+  // This page stays mounted under a dialog, so `enabled` still says yes while
+  // the header is inert behind it. Asked at press time, or the chord opens a
+  // popover belonging to the covered surface, or leaves the picker set to come
+  // back the moment the dialog closes. Backgrounded rather than "not in the
+  // foreground": the composer is the surface that travels with this header,
+  // and a layout that has not rendered it is not one that is covered.
+  const chatCovered = () => isSurfaceBackgrounded(COMPOSER_INPUT_SELECTOR);
+  useShortcut(
+    "openModelPicker",
+    () => {
+      if (chatCovered()) return;
+      toggleModelSelector();
+    },
+    { enabled: headerPickersShown },
+  );
   // The same condition the switcher renders by, so the chord cannot open a
   // control that is not there and the reset below cannot miss a way it goes.
   const projectSwitcherShown = headerPickersShown && Boolean(currentProjectId);
-  useShortcut("openProjectPicker", () => setProjectPickerOpen(true), {
-    enabled: projectSwitcherShown,
-  });
+  useShortcut(
+    "openProjectPicker",
+    () => {
+      if (chatCovered()) return;
+      setProjectPickerOpen(true);
+    },
+    { enabled: projectSwitcherShown },
+  );
   // A picker left open would come back on the next visit as a ghost of the
   // last one. Off-route is one way to leave it: this page stays mounted. So is
   // entering Compare, and so is a standalone chat taking the project away,

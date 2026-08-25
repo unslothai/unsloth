@@ -140,6 +140,21 @@ export function KeyboardShortcutsTab() {
     if (!recording) return;
     const def = SHORTCUT_DEFS.find((entry) => entry.id === recording.id);
     const onKeyDown = (event: KeyboardEvent) => {
+      // Tab held bare is never an acceptable binding, so it is still what it
+      // was: the way out. Left swallowed with the rest, a row that records
+      // bare keys had no keyboard exit at all, since Escape is a chord there
+      // and Enter or Space on the focused pencil records instead of pressing
+      // it. Not prevented, so focus moves on as it would have.
+      if (
+        event.code === "Tab" &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey
+      ) {
+        setRecording(null);
+        setRecordingError(null);
+        return;
+      }
       event.preventDefault();
       event.stopPropagation();
       // Every keydown is swallowed above, so bare Escape is the only way out of

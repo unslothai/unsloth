@@ -341,6 +341,13 @@ const MAC_RESERVED_VALUES = new Set<string>([
   "Mod+Alt+KeyK",
   // Page Setup, which Chrome lists beside ⌘P on its own shortcuts page.
   "Mod+Alt+KeyP",
+  // Safari's Show Next Tab and Show Previous Tab, per Apple's own shortcut
+  // list, and Chrome carries the same pair on macOS. Off macOS they read as
+  // Ctrl+Shift+bracket, which no browser claims. The chat walk ships on them
+  // for the desktop build, where nothing intercepts them; reserving them is
+  // what puts the warning in front of a web user who is about to rebind.
+  "Mod+Shift+BracketLeft",
+  "Mod+Shift+BracketRight",
   "Mod+Alt+ArrowLeft",
   "Mod+Alt+ArrowRight",
   "Mod+Alt+ArrowUp",
