@@ -1741,14 +1741,18 @@ class Payload:
             head = [sys.executable, "-c", "from unsloth_cli import app; app()"]
         cmd = head + [
             "run",
-            "--model", self.args.chat_model,
-            "--port", str(port),
+            "--model",
+            self.args.chat_model,
+            "--port",
+            str(port),
             # WILDCARD. A loopback bind publishes nothing and prints no URL.
-            "--host", "0.0.0.0",
+            "--host",
+            "0.0.0.0",
             "--api-only",
             "--cloudflare",
             "--start-api-key-marker",
-            "--max-seq-length", str(self.args.studio_ctx),
+            "--max-seq-length",
+            str(self.args.studio_ctx),
         ]
         if self.args.chat_variant:
             cmd += ["--gguf-variant", self.args.chat_variant]
@@ -1762,8 +1766,11 @@ class Payload:
 
         handle = open(log_path, "ab")
         proc = subprocess.Popen(
-            cmd, cwd = str(self.repo_root), env = env,
-            stdout = handle, stderr = subprocess.STDOUT,
+            cmd,
+            cwd = str(self.repo_root),
+            env = env,
+            stdout = handle,
+            stderr = subprocess.STDOUT,
         )
 
         api_key = None
@@ -1772,7 +1779,9 @@ class Payload:
             deadline = time.time() + self.args.health_deadline
             while time.time() < deadline:
                 if proc.poll() is not None:
-                    failures.append(f"`unsloth run --cloudflare` exited with code {proc.returncode}")
+                    failures.append(
+                        f"`unsloth run --cloudflare` exited with code {proc.returncode}"
+                    )
                     break
                 text = log_path.read_text(encoding = "utf-8", errors = "replace")
                 if api_key is None and "UNSLOTH_START_API_KEY:" in text:
@@ -1818,8 +1827,11 @@ class Payload:
                 # defensible behind auth, so this is asserted, not assumed.
                 code, _ = public.post(
                     "/v1/chat/completions",
-                    {"model": "default", "messages": [{"role": "user", "content": "hi"}],
-                     "max_tokens": 8},
+                    {
+                        "model": "default",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "max_tokens": 8,
+                    },
                     auth = False,
                 )
                 detail["public_unauthenticated_status"] = code

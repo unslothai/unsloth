@@ -73,12 +73,11 @@ def test_the_url_matcher_rejects_cloudflareds_own_failure_host():
 
 
 def test_the_tunnel_must_actually_serve():
-    """"a URL was printed" and "a URL that works" are different claims. A
+    """ "a URL was printed" and "a URL that works" are different claims. A
     tunnel whose edge never registers answers 530."""
     func = _func("assert_cloudflare")
     assert any(
-        isinstance(n, ast.If) and ast.unparse(n.test) == "code != 200"
-        for n in ast.walk(func)
+        isinstance(n, ast.If) and ast.unparse(n.test) == "code != 200" for n in ast.walk(func)
     ), "nothing checks that the public URL answers"
 
 
@@ -87,7 +86,8 @@ def test_an_unauthenticated_request_through_the_tunnel_must_be_refused():
     a message rewrite cannot satisfy it."""
     func = _func("assert_cloudflare")
     unauth = [
-        n for n in ast.walk(func)
+        n
+        for n in ast.walk(func)
         if isinstance(n, ast.Call)
         and any(k.arg == "auth" and k.value.value is False for k in n.keywords)
     ]
@@ -96,8 +96,7 @@ def test_an_unauthenticated_request_through_the_tunnel_must_be_refused():
         "tunnel WITHOUT credentials"
     )
     assert any(
-        isinstance(n, ast.If) and "code < 400" in ast.unparse(n.test)
-        for n in ast.walk(func)
+        isinstance(n, ast.If) and "code < 400" in ast.unparse(n.test) for n in ast.walk(func)
     ), "an accepted unauthenticated request must be a failure"
 
 
@@ -107,8 +106,7 @@ def test_the_no_tunnel_excuse_is_narrow():
     rule above is live."""
     func = _func("assert_cloudflare")
     excuses = [
-        n for n in ast.walk(func)
-        if isinstance(n, ast.If) and ast.unparse(n.test) == "url is None"
+        n for n in ast.walk(func) if isinstance(n, ast.If) and ast.unparse(n.test) == "url is None"
     ]
     assert excuses, "the excuse branch is gone or is no longer gated on the URL"
     for node in excuses:
@@ -116,7 +114,9 @@ def test_the_no_tunnel_excuse_is_narrow():
         # branch, which is where every real failure lives, and the guard would
         # then fail on correct code -- it did, the first time this was written.
         appended = [
-            n for stmt in node.body for n in ast.walk(stmt)
+            n
+            for stmt in node.body
+            for n in ast.walk(stmt)
             if isinstance(n, ast.Call)
             and isinstance(n.func, ast.Attribute)
             and n.func.attr == "append"
@@ -133,17 +133,16 @@ def test_the_public_url_is_registered_as_a_secret():
     people who are not running it."""
     body = _body()
     assert "self.secrets.add(url)" in body
-    assert '"unsloth_cloudflare.log",' in _body("emit_evidence"), (
-        "a log nobody packs is a log nobody redacts"
-    )
+    assert '"unsloth_cloudflare.log",' in _body(
+        "emit_evidence"
+    ), "a log nobody packs is a log nobody redacts"
 
 
 def test_the_child_is_always_torn_down():
     """A tunnel left up outlives the assertion and keeps the machine public."""
     func = _func("assert_cloudflare")
     finals = "\n".join(
-        ast.unparse(n) for t in ast.walk(func)
-        if isinstance(t, ast.Try) for n in t.finalbody
+        ast.unparse(n) for t in ast.walk(func) if isinstance(t, ast.Try) for n in t.finalbody
     )
     assert "proc.terminate()" in finals
     assert "proc.kill()" in finals
