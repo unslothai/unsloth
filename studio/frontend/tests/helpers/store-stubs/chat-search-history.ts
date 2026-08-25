@@ -1,19 +1,39 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Only the cache and hint bookkeeping is under test, not the build, so the Dexie-backed
-// history is a set of empty readers.
+let threads: unknown[] = [];
+let messagesByThread = new Map<string, unknown[]>();
+let batchFails = false;
+let messageReadsFail = false;
 
-export async function listStoredChatThreads(): Promise<unknown[]> {
-  return [];
+export function listStoredChatThreads(): Promise<unknown[]> {
+  return Promise.resolve(threads);
 }
 
-export async function listStoredChatMessages(): Promise<unknown[]> {
-  return [];
+export function listStoredChatMessages(threadId: string): Promise<unknown[]> {
+  if (messageReadsFail) {
+    return Promise.reject(new Error("message read failed"));
+  }
+  return Promise.resolve(messagesByThread.get(threadId) ?? []);
 }
 
-export async function batchListChatMessages(): Promise<unknown[]> {
-  return [];
+export function batchListChatMessages(): Promise<Map<string, unknown[]>> {
+  if (batchFails) {
+    return Promise.reject(new Error("batch read failed"));
+  }
+  return Promise.resolve(new Map(messagesByThread));
+}
+
+export function configureChatSearchHistoryStub(options: {
+  threads?: unknown[];
+  messagesByThread?: Map<string, unknown[]>;
+  batchFails?: boolean;
+  messageReadsFail?: boolean;
+}): void {
+  threads = options.threads ?? [];
+  messagesByThread = options.messagesByThread ?? new Map();
+  batchFails = options.batchFails ?? false;
+  messageReadsFail = options.messageReadsFail ?? false;
 }
 
 export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";

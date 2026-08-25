@@ -150,7 +150,14 @@ function extractText(message: MessageRecord): string {
   return parts.join(" ").replace(/\s+/g, " ").trim();
 }
 
-async function buildIndex(): Promise<ChatSearchItem[]> {
+interface ChatSearchIndexBuild {
+  items: ChatSearchItem[];
+  complete: boolean;
+}
+
+// Exported for the bare-node cache harness: it needs to prove that a failed read is not
+// indistinguishable from a completed empty history.
+export async function buildChatSearchIndex(): Promise<ChatSearchIndexBuild> {
   const active = (
     await listStoredChatThreads({ includeArchived: false })
   ).slice(0, THREAD_LIMIT);
@@ -202,6 +209,7 @@ async function buildIndex(): Promise<ChatSearchItem[]> {
   let messagesByThread = await batchListChatMessages(allThreadIds).catch(
     () => new Map<string, MessageRecord[]>(),
   );
+  let complete = true;
 
   // Legacy-only chats can exist before server-side history import finishes.
   // Fill only the missing ids via the legacy path instead of one request per
@@ -215,7 +223,10 @@ async function buildIndex(): Promise<ChatSearchItem[]> {
         async (threadId) =>
           [
             threadId,
-            await listStoredChatMessages(threadId).catch(() => []),
+            await listStoredChatMessages(threadId).catch(() => {
+              complete = false;
+              return [];
+            }),
           ] as const,
       ),
     );
@@ -253,7 +264,7 @@ async function buildIndex(): Promise<ChatSearchItem[]> {
   }
 
   results.sort((a, b) => b.createdAt - a.createdAt);
-  return results;
+  return { items: results, complete };
 }
 
 // THREAD_LIMIT bounds rows, not bytes: a tool-heavy history would otherwise hold tens of
@@ -295,6 +306,31 @@ export function writeCachedIndex(next: ChatSearchItem[] | null): void {
   // ROWS answer still holds, an EMPTY one may be about to gain its first chat.
   if (next !== null) rememberChatSearchHasRows(next.length > 0);
   else if (chatSearchHadRows() === false) forgetChatSearchHasRows();
+}
+
+// A partial build is useful for this open, but it is not an answer about whether the history
+// has rows. In particular, recording [] after every message read failed would make the next
+// page load open compact and then grow mid-animation once connectivity recovered.
+export function publishChatSearchBuild(
+  build: ChatSearchIndexBuild,
+): ChatSearchItem[] {
+  if (build.complete) {
+    writeCachedIndex(build.items);
+  } else {
+    cachedIndexEpoch = getAuthSessionEpoch();
+    cachedIndex = null;
+  }
+  return build.items;
+}
+
+// Once a structural refresh has a deadline, stream chunks may join that refresh but must not
+// keep moving it. If the deadline already fired (no timer remains), a later chunk schedules
+// the usual follow-up so the in-flight snapshot is eventually refreshed.
+export function shouldPostponeSearchRebuild(
+  structuralRebuildPending: boolean,
+  event: Event,
+): boolean {
+  return !(structuralRebuildPending && isCoalescedHistoryEvent(event));
 }
 
 // An account change made elsewhere. Private: it reaches an open dialog's request sequence,
@@ -401,6 +437,7 @@ export function useChatSearchIndex(enabled: boolean): {
     // Set by a history event, cleared once its rebuild lands, so a close in between knows
     // the cached snapshot is stale.
     let rebuildPending = false;
+    let structuralRebuildPending = false;
 
     const run = () => {
       const seq = ++requestSeqRef.current;
@@ -408,15 +445,18 @@ export function useChatSearchIndex(enabled: boolean): {
       const epoch = getAuthSessionEpoch();
       // Only the first build has nothing to show; later ones refresh silently.
       if (readCachedIndex() === null) setLoading(true);
-      buildIndex()
-        .then((result) => {
+      buildChatSearchIndex()
+        .then((build) => {
           // Drop out-of-order responses, and never repopulate a cache already dropped.
           if (cancelled || seq !== requestSeqRef.current) return;
           if (epoch !== getAuthSessionEpoch()) return;
-          writeCachedIndex(result);
+          const result = publishChatSearchBuild(build);
           // A build older than the history event does not satisfy it, so the flag only
           // clears once nothing is queued.
-          if (debounceTimer === null) rebuildPending = false;
+          if (debounceTimer === null) {
+            rebuildPending = false;
+            structuralRebuildPending = false;
+          }
           setItems(result);
         })
         .catch(() => {
@@ -435,8 +475,18 @@ export function useChatSearchIndex(enabled: boolean): {
 
     const scheduleRebuild = (event: Event) => {
       rebuildPending = true;
+      const structural = !isCoalescedHistoryEvent(event);
       // retires a build that read the history before this change, which would else republish it
-      if (!isCoalescedHistoryEvent(event)) requestSeqRef.current += 1;
+      if (structural) {
+        structuralRebuildPending = true;
+        requestSeqRef.current += 1;
+      }
+      if (
+        debounceTimer !== null &&
+        !shouldPostponeSearchRebuild(structuralRebuildPending, event)
+      ) {
+        return;
+      }
       if (debounceTimer !== null) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
         debounceTimer = null;

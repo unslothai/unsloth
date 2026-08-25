@@ -45,10 +45,17 @@ const fire = (
 const fireStorage = (key: string | null, newValue: string | null = "value") =>
   fire("storage", { key, newValue });
 
-const { chatSearchIndexHasRows, writeCachedIndex } = await import(
-  "../src/features/chat/hooks/use-chat-search-index.ts"
-);
+const {
+  buildChatSearchIndex,
+  chatSearchIndexHasRows,
+  publishChatSearchBuild,
+  shouldPostponeSearchRebuild,
+  writeCachedIndex,
+} = await import("../src/features/chat/hooks/use-chat-search-index.ts");
 const { CHAT_HISTORY_REVISION_KEY, CHAT_HISTORY_UPDATED_EVENT } = await import(
+  "./helpers/store-stubs/chat-search-history.ts"
+);
+const { configureChatSearchHistoryStub } = await import(
   "./helpers/store-stubs/chat-search-history.ts"
 );
 const { rememberChatSearchHasRows } = await import(
@@ -358,4 +365,47 @@ test("an index within the budget is still cached", () => {
   writeCachedIndex([row]);
   rememberChatSearchHasRows(false);
   assert.equal(chatSearchIndexHasRows(), true, "the cached rows still answer");
+});
+
+test("stream chunks do not postpone an already scheduled structural rebuild", () => {
+  const structural = new Event(CHAT_HISTORY_UPDATED_EVENT);
+  const stream = new CustomEvent(CHAT_HISTORY_UPDATED_EVENT, {
+    detail: { coalesce: true },
+  });
+  assert.equal(shouldPostponeSearchRebuild(false, stream), true);
+  assert.equal(shouldPostponeSearchRebuild(true, structural), true);
+  assert.equal(
+    shouldPostponeSearchRebuild(true, stream),
+    false,
+    "a stream chunk must keep the structural rebuild's original deadline",
+  );
+});
+
+test("failed message reads are not persisted as a completed empty history", async () => {
+  store.clear();
+  setAuthSessionEpochForTest(0);
+  writeCachedIndex(null);
+  configureChatSearchHistoryStub({
+    threads: [
+      {
+        id: "unreadable-thread",
+        title: "History still exists",
+        modelType: "text",
+        archived: false,
+        createdAt: 1,
+      },
+    ],
+    batchFails: true,
+    messageReadsFail: true,
+  });
+
+  const build = await buildChatSearchIndex();
+  assert.deepEqual(build, { items: [], complete: false });
+  publishChatSearchBuild(build);
+  assert.equal(
+    chatSearchIndexHasRows(),
+    null,
+    "a transient total read failure is unknown, not a known-empty history",
+  );
+  configureChatSearchHistoryStub({});
 });
