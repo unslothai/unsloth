@@ -640,9 +640,7 @@ def test_a_forced_cpu_kv_cache_declines(extra_args):
     assert _plan(_Stub()) is not None
 
 
-@pytest.mark.parametrize(
-    "env", [{"LLAMA_ARG_KV_OFFLOAD": "0"}, {"LLAMA_ARG_KV_OFFLOAD": "false"}]
-)
+@pytest.mark.parametrize("env", [{"LLAMA_ARG_KV_OFFLOAD": "0"}, {"LLAMA_ARG_KV_OFFLOAD": "false"}])
 def test_an_inherited_kv_offload_env_declines(env):
     assert _plan(_Stub(), env = env) is None
 
