@@ -2286,3 +2286,65 @@ def test_an_unlimited_run_survives_a_gap_past_the_default_queue_bound(monkeypatc
     supervisor = _make_supervisor(_noop_check_active)
 
     assert _run_stream(supervisor, timeout_seconds = 0) == ("report", "", "stop", None)
+
+
+def _send_attempts(monkeypatch, status, headers = None, model_timeout = 900.0):
+    """Drive the real send/retry loop against a canned response; return (attempts, waits)."""
+    run = {
+        "id": "run-1",
+        "ownerSubject": "owner",
+        "threadId": "thread-1",
+        "config": {
+            "model": "m",
+            "inferenceRequest": {"model": "m"},
+            "budgets": {
+                "modelTimeoutSeconds": model_timeout,
+                "firstOutputTimeoutSeconds": 5.0,
+            },
+        },
+    }
+    supervisor = research_runs.ResearchSupervisor.__new__(research_runs.ResearchSupervisor)
+    attempts, waits = [], []
+    real_sleep = asyncio.sleep
+
+    async def _sleep(delay, *args, **kwargs):
+        if delay and delay > 0.25:
+            waits.append(round(delay, 2))
+        return await real_sleep(0)
+
+    async def _send(self, request, stream = False):
+        attempts.append(request.url)
+        return httpx.Response(
+            status, headers = headers or {}, content = b"{}", request = request
+        )
+
+    monkeypatch.setattr(asyncio, "sleep", _sleep)
+    monkeypatch.setattr(httpx.AsyncClient, "send", _send)
+    monkeypatch.setattr(research_runs.auth_storage, "create_api_key", lambda **k: ("t", "k"))
+    supervisor._note_phase = lambda *a, **k: real_sleep(0)
+    supervisor._check_active = lambda *a, **k: real_sleep(0)
+    supervisor._cancel_event = lambda run_id: SimpleNamespace(is_set = lambda: False)
+    supervisor._endpoint = lambda: "http://127.0.0.1:9/v1/chat/completions"
+    supervisor._discard_task = lambda *a, **k: real_sleep(0)
+
+    with pytest.raises(Exception):
+        asyncio.run(supervisor._stream_completion(run, [{"role": "user", "content": "x"}]))
+    return len(attempts), waits
+
+
+def test_provider_rate_limit_is_retried_not_fatal(monkeypatch):
+    # A 429 used to end the run on the first send, discarding every gathered source.
+    assert _send_attempts(monkeypatch, 429)[0] == 3
+
+
+def test_rate_limit_honours_retry_after(monkeypatch):
+    assert _send_attempts(monkeypatch, 429, {"Retry-After": "30"})[1] == [30.0, 30.0]
+
+
+def test_rate_limit_wait_is_clamped_to_the_run_budget(monkeypatch):
+    _, waits = _send_attempts(monkeypatch, 429, {"Retry-After": "300"}, model_timeout = 20.0)
+    assert waits == [5.0, 5.0]
+
+
+def test_server_error_backoff_is_unchanged(monkeypatch):
+    assert _send_attempts(monkeypatch, 500) == (3, [1, 2])

@@ -1382,9 +1382,14 @@ class ResearchSupervisor:
                                 if isinstance(exc, httpx.HTTPStatusError)
                                 else None
                             )
+                            rate_limited = (
+                                isinstance(exc, httpx.HTTPStatusError)
+                                and exc.response.status_code == 429
+                            )
                             retryable = (
                                 not isinstance(exc, httpx.HTTPStatusError)
                                 or exc.response.status_code >= 500
+                                or rate_limited
                             )
                             if unloaded:
                                 model_waits += 1
@@ -1408,7 +1413,13 @@ class ResearchSupervisor:
                                     raise
                             else:
                                 # re-check the lease and cancellation before re-sending.
-                                await asyncio.sleep(2**attempt)
+                                delay = 2**attempt
+                                if rate_limited:
+                                    delay = min(
+                                        _retry_after_seconds(exc.response) or delay,
+                                        _model_wait_budget(run),
+                                    )
+                                await asyncio.sleep(delay)
                                 attempt += 1
                                 await self._check_active(run["id"])
                     async for line in self._iter_stream_lines(
