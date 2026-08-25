@@ -116,6 +116,27 @@ test("a legacy count is sent once, as a floor", async () => {
   assert.deepEqual(calls[1].body, { seen_hint: 0 });
 });
 
+test("a legacy count survives a failed reservation", async () => {
+  // Marking it migrated on the way out dropped the floor whenever the POST failed:
+  // every later request sent 0, so a user who had spent their three got three more.
+  reset();
+  store.set(LEGACY_COUNT_KEY, "3");
+  respond = async () => {
+    throw new Error("network down");
+  };
+  await reserveXetNoticeFromServer();
+  assert.equal(store.get(LEGACY_MIGRATED_KEY), undefined);
+
+  respond = async () =>
+    new Response(JSON.stringify({ granted: true, shown: 4, limit: 3 }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  await reserveXetNoticeFromServer();
+  assert.deepEqual(calls[1].body, { seen_hint: 3 });
+  assert.equal(store.get(LEGACY_MIGRATED_KEY), "1");
+});
+
 test("junk or absent legacy counts migrate as zero", async () => {
   reset();
   await reserveXetNoticeFromServer();

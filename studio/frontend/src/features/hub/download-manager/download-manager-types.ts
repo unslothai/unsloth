@@ -69,7 +69,18 @@ export interface DownloadRequest {
    * start, stacking two toasts. Suppressing one loses information, so the caller states
    * its message and the manager folds it into the notice, or shows it alone when the
    * notice does not fire. One start, one toast, nothing dropped. */
-  callerToast?: { title: string; description: string };
+  callerToast?: CallerToast;
+}
+
+export interface CallerToast {
+  title: string;
+  description: string;
+  /** Fold this into a granted Xet notice, but never raise it on its own. For a
+   * surface whose standalone toast was deliberately removed (#9663 dropped chat's
+   * auto-load toast as a duplicate of the download panel): the sentence is still
+   * worth carrying inside the notice, but showing it alone would put the removed
+   * toast back on every HTTP start. */
+  noticeOnly?: boolean;
 }
 
 /** The variant slot a scoped job occupies. Mirrors the backend's `_scope_variant`: no GGUF quant label starts with "@", so a scope collides with neither a real variant nor the repo's full snapshot. */

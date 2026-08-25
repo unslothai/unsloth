@@ -189,7 +189,10 @@ export async function requestStart(
             next: mode,
             resumable: status.resumable,
           },
-          pending: req,
+          // Without the caller's line: this start is resolved later from the Hub,
+          // where "it'll load automatically" is a promise chat cannot keep once it
+          // is inactive. The Xet notice still explains the 0% on its own.
+          pending: { ...req, callerToast: undefined },
         });
         return "conflict";
       }

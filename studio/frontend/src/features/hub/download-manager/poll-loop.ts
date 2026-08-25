@@ -741,19 +741,25 @@ export async function startJob(
     const started = transportAfterStart(mode, result.transport);
     if (started !== activeTransport) patchJob(key, { transport: started });
     // One start, one toast. The only place a start is announced.
+    // A cancel can land while this start is in flight, and the reissue above is
+    // the giveaway. Neither message is true of a start that is already stopping.
+    const stopping = rt.cancelRequested;
     if (
       shouldShowXetNotice({
         kind: req.kind,
         transport: started,
         attached: result.attached === true,
-        // A cancel can land while this start is in flight, and the reissue
-        // above is the giveaway. Do not promise a download that is stopping.
-        live: result.state === "running" && !rt.cancelRequested,
+        live: result.state === "running" && !stopping,
       })
     ) {
       // Async (it asks the backend for one of the three) and nothing below waits on
       // a toast. A lost reservation still leaves the caller owed its message.
       void reserveXetNoticeFromServer().then(({ granted }) => {
+        // This round trip can outlive the transfer: finalize() dismisses by id
+        // BEFORE this resolves, so raising it here would leave a finished or
+        // cancelled job claiming to be running for another 8s, or hand a restarted
+        // job on the same key the old request's message.
+        if (!isCurrent(key, epoch) || rt.cancelRequested) return;
         if (granted) {
           showStartToast(key, {
             title: XET_NOTICE_TITLE,
@@ -763,7 +769,7 @@ export async function startJob(
         }
         showCallerToast(key, req.callerToast);
       });
-    } else {
+    } else if (!stopping) {
       showCallerToast(key, req.callerToast);
     }
     // An adopted job can already have fallen back from Xet to HTTP, which

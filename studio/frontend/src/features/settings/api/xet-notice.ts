@@ -16,19 +16,33 @@ export interface XetNoticeReservation {
   limit: number;
 }
 
-/** A count recorded before the tally moved server-side. Sent once, and only raises
- * the stored value, so someone who spent their three does not get three more. */
-function takeLegacyCount(): number {
+/** A count recorded before the tally moved server-side. Sent until the server
+ * confirms it, and only raises the stored value, so someone who spent their three
+ * does not get three more. */
+function readLegacyCount(): number {
   if (typeof window === "undefined") return 0;
   try {
     if (window.localStorage.getItem(LEGACY_MIGRATED_KEY)) return 0;
-    const raw = window.localStorage.getItem(LEGACY_COUNT_KEY);
-    window.localStorage.setItem(LEGACY_MIGRATED_KEY, "1");
-    const parsed = Number.parseInt(raw ?? "", 10);
+    const parsed = Number.parseInt(
+      window.localStorage.getItem(LEGACY_COUNT_KEY) ?? "",
+      10,
+    );
     return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0;
   } catch {
     // Private mode, or storage disabled. Nothing to migrate.
     return 0;
+  }
+}
+
+/** Only once a response proves the server took the hint. Marking it on the way out
+ * would drop the floor whenever the POST failed, and every later request would send
+ * 0, handing three fresh notices to someone who had already spent them. */
+function markLegacyMigrated(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(LEGACY_MIGRATED_KEY, "1");
+  } catch {
+    // Nothing to record it in; the hint is re-sent next time, which is harmless.
   }
 }
 
@@ -39,13 +53,21 @@ function takeLegacyCount(): number {
 export async function reserveXetNoticeFromServer(): Promise<XetNoticeReservation> {
   const denied: XetNoticeReservation = { granted: false, shown: 0, limit: 0 };
   try {
-    const res = await authFetch("/api/settings/xet-notice/reserve", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ seen_hint: takeLegacyCount() }),
-    });
+    const res = await authFetch(
+      "/api/settings/xet-notice/reserve",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ seen_hint: readLegacyCount() }),
+      },
+      // This POST increments a counter, so a retry whose predecessor reached the
+      // backend spends a second notice. The Tauri network retry is on by default;
+      // every other mutation here opts out the same way.
+      { retryNetworkErrors: false },
+    );
     if (!res.ok) return denied;
     const body = (await res.json()) as Partial<XetNoticeReservation>;
+    markLegacyMigrated();
     return {
       granted: body.granted === true,
       shown: typeof body.shown === "number" ? body.shown : 0,

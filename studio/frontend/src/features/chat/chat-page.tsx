@@ -2864,17 +2864,19 @@ export function ChatPage({
         repoId: pending.selection.id,
         variant: pending.selection.ggufVariant ?? null,
         expectedBytes: pending.selection.expectedBytes ?? 0,
-        // As above: raised by the download manager, folded into the notice.
+        // Folded into the Xet notice only. #9663 removed this surface's own toast
+        // as a duplicate of the download panel, so it must not come back on an
+        // HTTP start or once the three notices are spent.
         callerToast: {
           title: "Downloading model",
           description: "It'll load automatically once the download finishes.",
+          noticeOnly: true,
         },
       });
       if (!active) return;
       if (outcome === "started") {
-        // No toast HERE. #9663 dropped it as a duplicate of the download panel;
-        // its sentence still travels as callerToast above and is folded into the
-        // Xet notice. The auto-load still runs from onComplete.
+        // No toast HERE, and none from the manager either unless the Xet notice
+        // fires and folds the sentence in. The auto-load runs from onComplete.
         return;
       }
       if (outcome === "conflict") {
