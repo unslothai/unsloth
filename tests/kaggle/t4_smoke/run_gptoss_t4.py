@@ -623,10 +623,13 @@ def _placement_failures(placement: dict | None) -> list[str]:
             device: n for device, n in counts.items() if not str(device).startswith("cuda")
         }
         if elsewhere:
-            named = ", ".join(
-                f"{p.get('name')} ({p.get('numel')} on {p.get('device')})"
-                for p in (placement.get("off_gpu_parameters") or [])
-            ) or "the walk recorded no names"
+            named = (
+                ", ".join(
+                    f"{p.get('name')} ({p.get('numel')} on {p.get('device')})"
+                    for p in (placement.get("off_gpu_parameters") or [])
+                )
+                or "the walk recorded no names"
+            )
             failures.append(
                 f"parameters are off the GPU: {elsewhere} [{named}] (all devices: {counts}). "
                 f"This leg's result is that the 20B checkpoint fits and trains "
