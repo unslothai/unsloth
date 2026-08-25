@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import errno
 import os
+import re
 import stat
 import tempfile
 import zipfile
@@ -22,8 +23,10 @@ from utils.log_redaction import StreamingLogRedactor, redact_log_text
 # are omitted whole rather than split: splitting could put a credential prefix
 # in one chunk and its value in the next, outside the redactor's context.
 EXPORT_READ_BYTES = 1024 * 1024
+EXPORT_CHUNK_BYTES = 64 * 1024
 OMITTED_CONTEXT_BYTES = 4096
 ARCHIVE_MEMORY_BYTES = 8 * 1024 * 1024
+_RECORD_END_RE = re.compile(rb"\r\n|[\r\n]")
 
 
 def _safe_text(value: str) -> str:
@@ -47,30 +50,61 @@ def _unique_archive_name(source: LogSource, used: set[str]) -> str:
 def _copy_redacted(source: BinaryIO, destination: BinaryIO, max_bytes: int) -> None:
     redactor = StreamingLogRedactor()
     remaining = max(0, max_bytes)
-    while remaining:
-        record = source.readline(min(EXPORT_READ_BYTES + 1, remaining))
-        if not record:
-            return
-        remaining -= len(record)
-        if len(record) > EXPORT_READ_BYTES and not record.endswith(b"\n"):
-            omitted = len(record)
-            scan_tail = b""
-            sensitive_context = False
-            while record and not record.endswith(b"\n") and remaining:
-                scan = (scan_tail + record).decode("utf-8", errors = "replace")
-                sensitive_context |= redactor.omitted_record_chunk_has_sensitive_context(scan)
-                scan_tail = record[-OMITTED_CONTEXT_BYTES:]
-                record = source.readline(min(EXPORT_READ_BYTES + 1, remaining))
-                omitted += len(record)
-                remaining -= len(record)
-            scan = (scan_tail + record).decode("utf-8", errors = "replace")
+    record = bytearray()
+    held_cr = b""
+    omitted = 0
+    scan_tail = b""
+    sensitive_context = False
+
+    def write_piece(piece: bytes, *, terminated: bool) -> None:
+        nonlocal omitted, scan_tail, sensitive_context
+        if omitted:
+            omitted += len(piece)
+            scan = (scan_tail + piece).decode("utf-8", errors = "replace")
             sensitive_context |= redactor.omitted_record_chunk_has_sensitive_context(scan)
+            scan_tail = (scan_tail + piece)[-OMITTED_CONTEXT_BYTES:]
+        else:
+            record.extend(piece)
+            if len(record) > EXPORT_READ_BYTES:
+                omitted = len(record)
+                scan = bytes(record).decode("utf-8", errors = "replace")
+                sensitive_context = redactor.omitted_record_chunk_has_sensitive_context(scan)
+                scan_tail = bytes(record[-OMITTED_CONTEXT_BYTES:])
+                record.clear()
+
+        if not terminated:
+            return
+        if omitted:
             if sensitive_context:
                 redactor.mark_omitted_sensitive_record()
             destination.write(f"[oversized log record omitted: {omitted} bytes]\n".encode("ascii"))
-            continue
-        text = record.decode("utf-8", errors = "replace")
-        destination.write(redactor.redact_record(text).encode("utf-8"))
+        elif record:
+            text = bytes(record).decode("utf-8", errors = "replace")
+            destination.write(redactor.redact_record(text).encode("utf-8"))
+        record.clear()
+        omitted = 0
+        scan_tail = b""
+        sensitive_context = False
+
+    while remaining:
+        chunk = source.read(min(EXPORT_CHUNK_BYTES, remaining))
+        if not chunk:
+            break
+        remaining -= len(chunk)
+        data = held_cr + chunk
+        held_cr = b""
+        if data.endswith(b"\r") and remaining:
+            data, held_cr = data[:-1], b"\r"
+        start = 0
+        for match in _RECORD_END_RE.finditer(data):
+            write_piece(data[start : match.end()], terminated = True)
+            start = match.end()
+        write_piece(data[start:], terminated = False)
+
+    if held_cr:
+        write_piece(held_cr, terminated = True)
+    if record or omitted:
+        write_piece(b"", terminated = True)
 
 
 def _safe_error_summary(exc: Exception) -> str:

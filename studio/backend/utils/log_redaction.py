@@ -138,7 +138,7 @@ _INLINE_PLAIN_SECRET_RE = re.compile(
     + r")\b[\"']?\s*[:=]\s*(?![|>\"'])(?=\S).+$"
 )
 _OMITTED_CONTEXT_RE = re.compile(
-    r"(?i)" + _KEY_START + r"(?:(?:" + _SECRET_KEYS + r")|(?:set-)?cookie)\b"
+    r"(?i)" + _KEY_START + r"(?:(?:" + _SECRET_KEYS + r")|(?:set-)?cookie)\b[\"']?\s*[:=]"
 )
 
 # An Authorization value, whatever the scheme. The key/value rule cannot reach
@@ -274,7 +274,15 @@ class StreamingLogRedactor:
 
     @staticmethod
     def _masked_record(text: str) -> str:
-        newline = "\r\n" if text.endswith("\r\n") else "\n" if text.endswith("\n") else ""
+        newline = (
+            "\r\n"
+            if text.endswith("\r\n")
+            else "\n"
+            if text.endswith("\n")
+            else "\r"
+            if text.endswith("\r")
+            else ""
+        )
         indent = re.match(r"[ \t]*", text).group(0)
         return f"{indent}{REDACTED}{newline}"
 
@@ -307,7 +315,11 @@ class StreamingLogRedactor:
 
     @staticmethod
     def _context_view(text: str) -> str:
-        """Drop logger prefixes while preserving real YAML indentation."""
+        """Start at the last credential assignment, preserving YAML indentation.
+
+        Requiring the assignment separator keeps words such as ``secret`` in a
+        credential value from being mistaken for a second key marker.
+        """
         matches = list(_OMITTED_CONTEXT_RE.finditer(text))
         if not matches:
             return text

@@ -459,6 +459,10 @@ pub async fn save_native_file_from_url(
 /// A local backend that has accepted the request should never go quiet for this long, and a
 /// clip that is still arriving resets it, so a large save is not cut short.
 const DOWNLOAD_READ_TIMEOUT: Duration = Duration::from_secs(30);
+// Archive construction starts only after the response headers are sent. Give a
+// large retained history time to compress, but never leave the save dialog in
+// an exporting state forever if the backend stalls.
+const LOG_ARCHIVE_FIRST_CHUNK_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 async fn stream_url_to_path(
     url: &str,
@@ -494,8 +498,13 @@ async fn stream_url_to_path(
     let mut temporary = staged_temp_file(path)?;
     let mut first_chunk = true;
     loop {
-        let chunk = if slow_first_chunk && !first_chunk {
-            tokio::time::timeout(read_timeout, response.chunk())
+        let chunk = if slow_first_chunk {
+            let timeout = if first_chunk {
+                LOG_ARCHIVE_FIRST_CHUNK_TIMEOUT
+            } else {
+                read_timeout
+            };
+            tokio::time::timeout(timeout, response.chunk())
                 .await
                 .map_err(|_| "Download failed: response body timed out.".to_string())?
         } else {

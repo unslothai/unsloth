@@ -141,7 +141,9 @@ export async function exportDebugLogs(): Promise<void> {
     return;
   }
 
-  const response = await authFetch(exportPath);
+  // Browsers have to materialize Blob downloads. The backend applies a
+  // documented source-size cap to this path; desktop exports stream to disk.
+  const response = await authFetch(`${exportPath}?browser=true`);
   if (!response.ok) {
     throw new Error(
       await readFastApiError(response, "Could not export the log files."),

@@ -13,6 +13,7 @@ import os
 import sys
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -170,6 +171,23 @@ def test_export_with_no_logs_is_still_a_valid_zip(client):
     assert response.status_code == 200
     with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
         assert archive.namelist() == []
+
+
+def test_browser_export_refuses_history_that_cannot_be_downloaded_boundedly(client, monkeypatch):
+    from utils import debug_log_sources
+
+    monkeypatch.setattr(
+        debug_log_sources,
+        "list_sources",
+        lambda **_: [
+            SimpleNamespace(size_bytes = settings_route.BROWSER_LOG_EXPORT_MAX_SOURCE_BYTES + 1)
+        ],
+    )
+
+    response = client.get("/api/settings/debug/logs/export?browser=true")
+
+    assert response.status_code == 413
+    assert "desktop app" in response.json()["detail"].lower()
 
 
 def test_export_starts_the_response_before_building_the_archive(monkeypatch):
@@ -379,6 +397,42 @@ def test_export_tracks_multiline_secrets_after_a_log_prefix(client, body):
     assert "correct" not in exported
     assert "battery" not in exported
     assert exported.splitlines()[-1] == "kept"
+
+
+def test_export_tracks_a_quoted_secret_when_its_value_contains_a_key_word(client):
+    first = "my secret phrase"
+    second = "continuation-value"
+    path = _seed_server_log(f'password: "{first}\n  {second}"\nordinary: kept\n')
+
+    response = client.get("/api/settings/debug/logs/export")
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        exported = archive.read(f"server/{path.name}").decode("utf-8")
+    assert first not in exported
+    assert second not in exported
+    assert "ordinary: kept" in exported
+
+
+def test_export_preserves_many_carriage_return_delimited_records(client):
+    records = [f"progress {index:05d} " + "x" * 48 for index in range(20_000)]
+    path = _seed_server_log("\r".join(records) + "\r")
+
+    response = client.get("/api/settings/debug/logs/export")
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        exported = archive.read(f"server/{path.name}").decode("utf-8")
+    assert "oversized log record omitted" not in exported
+    assert records[0] in exported
+    assert records[-1] in exported
+
+
+def test_export_masks_carriage_return_delimited_secret_continuations(client):
+    secret = "correct-horse-battery-staple"
+    path = _seed_server_log(f"password:\r  {secret}\rordinary: kept\r")
+
+    response = client.get("/api/settings/debug/logs/export")
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        exported = archive.read(f"server/{path.name}").decode("utf-8")
+    assert secret not in exported
+    assert "<redacted>\rordinary: kept\r" in exported
 
 
 def test_export_stops_at_each_sources_enumerated_size(tmp_path):
