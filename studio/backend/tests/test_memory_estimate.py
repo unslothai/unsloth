@@ -1603,7 +1603,6 @@ class TestDrafterEdgeCases:
         # K and V are independent at launch, so passing the panel field for both
         # priced a cache the load will not allocate.
         from core.inference.llama_cpp import _extra_args_draft_cache_types
-
         assert _extra_args_draft_cache_types(["--cache-type-k-draft", "f32"]) == ("f32", None)
         assert _extra_args_draft_cache_types(["--cache-type-v-draft", "q8_0"]) == (None, "q8_0")
         # Asserted on the source before, which meant it could only ever restate the
@@ -2617,7 +2616,8 @@ class TestTheEmbeddedHeadIsChargedOnlyWhenItEngages:
         a forced request too.
         """
         monkeypatch.setattr(
-            ri.LlamaCppBackend, "probe_server_capabilities",
+            ri.LlamaCppBackend,
+            "probe_server_capabilities",
             classmethod(lambda cls, *a, **k: {"found": True, "mtp_token": None}),
         )
         out = ri._gguf_memory_breakdown(
@@ -2628,12 +2628,11 @@ class TestTheEmbeddedHeadIsChargedOnlyWhenItEngages:
     def test_an_unanswerable_probe_keeps_the_charge(self, head, monkeypatch):
         """A probe that could not run is not evidence the build lacks the flag."""
         monkeypatch.setattr(
-            ri.LlamaCppBackend, "probe_server_capabilities",
+            ri.LlamaCppBackend,
+            "probe_server_capabilities",
             classmethod(lambda cls, *a, **k: {"found": False, "mtp_token": None}),
         )
-        out = ri._gguf_memory_breakdown(
-            self._config(head, "org/Qwen3-8B"), head, n_ctx = 131072
-        )
+        out = ri._gguf_memory_breakdown(self._config(head, "org/Qwen3-8B"), head, n_ctx = 131072)
         assert out.drafter_runtime_bytes > 0
 
     def test_extras_asking_for_another_mode_are_left_alone(self, head):
@@ -2751,21 +2750,40 @@ class TestDraftCacheTypePrecedence:
         drafter = tmp_path / "mtp.gguf"
         drafter.write_bytes(Path(target).read_bytes())
         drafter_bytes = drafter.stat().st_size
+
         # Varies with the draft pin, like the real one: the breakdown recovers the
         # drafter's size by re-pricing with the pin flipped, so a constant stub charges
         # no drafter at all and every assertion below would compare 0 with 0.
-        def _files(cfg, *, llama_extra_args = None, **kw):
+        def _files(
+            cfg,
+            *,
+            llama_extra_args = None,
+            **kw,
+        ):
             pinned = _draft_on_cpu(list(llama_extra_args or ()))
             return 1.0 + (0.0 if pinned else drafter_bytes / 1024**3)
 
         monkeypatch.setattr(ri, "_gguf_resident_file_gb", _files)
         return target, SimpleNamespace(
-            identifier = "org/Qwen3-8B", gguf_file = target, is_gguf = True, gguf_variant = None,
-            gguf_mmproj_file = None, gguf_mtp_file = str(drafter),
-            gguf_dspark_file = None, gguf_dflash_file = None,
+            identifier = "org/Qwen3-8B",
+            gguf_file = target,
+            is_gguf = True,
+            gguf_variant = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = str(drafter),
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
         )
 
-    def _bytes(self, spec, monkeypatch, *, env = None, field = None, extras = None):
+    def _bytes(
+        self,
+        spec,
+        monkeypatch,
+        *,
+        env = None,
+        field = None,
+        extras = None,
+    ):
         target, config = spec
         for key in ("LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K", "LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V"):
             monkeypatch.delenv(key, raising = False)
@@ -2773,7 +2791,9 @@ class TestDraftCacheTypePrecedence:
             monkeypatch.setenv("LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K", env)
             monkeypatch.setenv("LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V", env)
         out = ri._gguf_memory_breakdown(
-            config, target, n_ctx = 131072,
+            config,
+            target,
+            n_ctx = 131072,
             spec_draft_cache_type = field,
             llama_extra_args = extras,
         )
@@ -2794,7 +2814,10 @@ class TestDraftCacheTypePrecedence:
     def test_the_extras_beat_both(self, spec, monkeypatch):
         field_only = self._bytes(spec, monkeypatch, env = "q4_0", field = "f16")
         extras_win = self._bytes(
-            spec, monkeypatch, env = "q4_0", field = "f16",
+            spec,
+            monkeypatch,
+            env = "q4_0",
+            field = "f16",
             extras = ["--cache-type-k-draft", "q4_0", "--cache-type-v-draft", "q4_0"],
         )
         assert extras_win < field_only
@@ -2814,12 +2837,18 @@ class TestTheTensorSplitLatchesAreHonoured:
     def two_card(self, tmp_path, monkeypatch):
         gguf = _write_gguf(tmp_path, "qwen3", {**_GQA_FIELDS, "context_length": 262144})
         config = SimpleNamespace(
-            identifier = "local/tensor", gguf_file = gguf, is_gguf = True, gguf_variant = None,
-            gguf_mmproj_file = None, gguf_mtp_file = None,
-            gguf_dspark_file = None, gguf_dflash_file = None,
+            identifier = "local/tensor",
+            gguf_file = gguf,
+            is_gguf = True,
+            gguf_variant = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
         )
         monkeypatch.setattr(
-            ri.LlamaCppBackend, "_find_llama_server_binary",
+            ri.LlamaCppBackend,
+            "_find_llama_server_binary",
             staticmethod(lambda **kw: "/opt/llama/llama-server"),
         )
         return gguf, config
@@ -2827,8 +2856,13 @@ class TestTheTensorSplitLatchesAreHonoured:
     def _priced(self, two_card, **kw):
         gguf, config = two_card
         return ri._gguf_memory_breakdown(
-            config, gguf, n_ctx = 32768, tensor_parallel = True, n_devices = 2,
-            tensor_split_possible = True, **kw
+            config,
+            gguf,
+            n_ctx = 32768,
+            tensor_parallel = True,
+            n_devices = 2,
+            tensor_split_possible = True,
+            **kw,
         )
 
     def test_a_binary_that_refused_a_quantized_tensor_cache_is_priced_as_layer(
@@ -2836,7 +2870,8 @@ class TestTheTensorSplitLatchesAreHonoured:
     ):
         as_tensor = self._priced(two_card, cache_type_kv = "q4_0")
         monkeypatch.setattr(
-            ri.LlamaCppBackend, "_tensor_quant_kv_unsupported_binary",
+            ri.LlamaCppBackend,
+            "_tensor_quant_kv_unsupported_binary",
             classmethod(lambda cls, *a, **k: True),
         )
         downgraded = self._priced(two_card, cache_type_kv = "q4_0")
@@ -2847,7 +2882,8 @@ class TestTheTensorSplitLatchesAreHonoured:
     ):
         as_tensor = self._priced(two_card, cache_type_kv = "f16")
         monkeypatch.setattr(
-            ri.LlamaCppBackend, "_tensor_split_aborts",
+            ri.LlamaCppBackend,
+            "_tensor_split_aborts",
             classmethod(lambda cls, *a, **k: True),
         )
         downgraded = self._priced(two_card, cache_type_kv = "f16")
@@ -2856,24 +2892,22 @@ class TestTheTensorSplitLatchesAreHonoured:
     def test_no_latch_leaves_tensor_pricing_alone(self, two_card, monkeypatch):
         """The guard against the check firing on every load."""
         monkeypatch.setattr(
-            ri.LlamaCppBackend, "_tensor_quant_kv_unsupported_binary",
+            ri.LlamaCppBackend,
+            "_tensor_quant_kv_unsupported_binary",
             classmethod(lambda cls, *a, **k: False),
         )
         monkeypatch.setattr(
-            ri.LlamaCppBackend, "_tensor_split_aborts",
+            ri.LlamaCppBackend,
+            "_tensor_split_aborts",
             classmethod(lambda cls, *a, **k: False),
         )
-        assert ri._tensor_latches_allow_a_split(
-            two_card[0], two_card[1], "f16", None
-        ) is True
+        assert ri._tensor_latches_allow_a_split(two_card[0], two_card[1], "f16", None) is True
 
     def test_an_unresolvable_binary_fails_open(self, two_card, monkeypatch):
         monkeypatch.setattr(
             ri.LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda **kw: None)
         )
-        assert ri._tensor_latches_allow_a_split(
-            two_card[0], two_card[1], "f16", None
-        ) is True
+        assert ri._tensor_latches_allow_a_split(two_card[0], two_card[1], "f16", None) is True
 
 
 class TestInheritedRemoteFilesAreMarkedUnsized:
@@ -2889,14 +2923,21 @@ class TestInheritedRemoteFilesAreMarkedUnsized:
     @pytest.fixture
     def plain(self, tmp_path, monkeypatch):
         for key in (
-            "LLAMA_ARG_SPEC_DRAFT_HF_REPO", "LLAMA_ARG_HFD_REPO", "LLAMA_ARG_MMPROJ_URL",
+            "LLAMA_ARG_SPEC_DRAFT_HF_REPO",
+            "LLAMA_ARG_HFD_REPO",
+            "LLAMA_ARG_MMPROJ_URL",
         ):
             monkeypatch.delenv(key, raising = False)
         gguf = _write_gguf(tmp_path, "qwen3", {**_GQA_FIELDS, "context_length": 262144})
         return gguf, SimpleNamespace(
-            identifier = "local/plain", gguf_file = gguf, is_gguf = True, gguf_variant = None,
-            gguf_mmproj_file = None, gguf_mtp_file = None,
-            gguf_dspark_file = None, gguf_dflash_file = None,
+            identifier = "local/plain",
+            gguf_file = gguf,
+            is_gguf = True,
+            gguf_variant = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
         )
 
     def test_nothing_inherited_is_not_marked(self, plain):

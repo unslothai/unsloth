@@ -8916,7 +8916,6 @@ def _tensor_latches_allow_a_split(
     is what this priced before the check existed.
     """
     from core.inference.llama_cpp import _planned_main_cache_types
-
     try:
         binary = LlamaCppBackend._find_llama_server_binary()
         if not binary:
@@ -9003,9 +9002,7 @@ def _gguf_memory_breakdown(
         # layer split, whose context buffers are multiplied per device where tensor's
         # flat buffers are replicated -- gigabytes apart on two cards, and enough to
         # move the verdict. Asked of the same classmethods rather than re-derived.
-        and _tensor_latches_allow_a_split(
-            gguf_path, config, cache_type_kv, llama_extra_args
-        )
+        and _tensor_latches_allow_a_split(gguf_path, config, cache_type_kv, llama_extra_args)
         # The extras are already stripped of -ngl here and the count already carries it,
         # so the override lookup inside is a no-op and the field is what decides.
         and _manual_keeps_tensor_split(gpu_memory_mode, gpu_layers, llama_extra_args)
