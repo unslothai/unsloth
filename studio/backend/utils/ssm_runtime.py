@@ -20,8 +20,9 @@ import shutil
 import subprocess
 import sys
 import threading
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterator, Optional
 
 from loggers import get_logger
 from utils.child_stdio import utf8_child_env
@@ -245,20 +246,43 @@ def _hipcc_gcc_install_dir() -> Optional[str]:
     return None
 
 
+# Keep quiet downloads and builds inside the orchestrator's inactivity deadline.
+_HEARTBEAT_SECONDS = 60.0
+
+
+@contextmanager
+def _heartbeat(status_cb: StatusCb, message: str) -> Iterator[None]:
+    """Emit *message* on a timer while the wrapped work runs.
+
+    The inference orchestrator treats silence as a dead load: status messages
+    reset its inactivity deadline. Prebuilt wheel installs and source builds
+    can both stay quiet for minutes on aarch64 / slow links, so both paths use
+    this.
+    """
+    done = threading.Event()
+
+    def _beat() -> None:
+        while not done.wait(_HEARTBEAT_SECONDS):
+            _emit(status_cb, message)
+
+    thread = threading.Thread(target = _beat, daemon = True, name = "ssm-install-heartbeat")
+    thread.start()
+    try:
+        yield
+    finally:
+        done.set()
+        # Wait out a tick that already left done.wait().
+        thread.join(timeout = 1)
+
+
 def _run_with_heartbeat(run, cmd, status_cb, display_name, **kwargs):
     """Run *cmd* via *run*, emitting a status every 60s so the parent's inactivity
     timeout isn't tripped by a long (e.g. ROCm) source build."""
-    done = threading.Event()
-
-    def _beat():
-        while not done.wait(60):
-            _emit(status_cb, f"Still building {display_name} (this can take several minutes)...")
-
-    threading.Thread(target = _beat, daemon = True).start()
-    try:
+    with _heartbeat(
+        status_cb,
+        f"Still building {display_name} (this can take several minutes)...",
+    ):
         return run(cmd, **kwargs)
-    finally:
-        done.set()
 
 
 def _install_kernel(
@@ -294,28 +318,35 @@ def _install_kernel(
     )
     if wheel_url and url_exists(wheel_url):
         _emit(status_cb, f"Installing {display_name} (prebuilt kernel) for this model...")
-        for installer, result in install_wheel(
-            wheel_url,
-            python_executable = sys.executable,
-            use_uv = bool(shutil.which("uv")),
-            run = run,
+        # Keep quiet downloads and unpacks within the inactivity deadline (#9398).
+        with _heartbeat(
+            status_cb,
+            f"Still installing {display_name} (prebuilt kernel)...",
         ):
-            if getattr(result, "returncode", 1) == 0:
-                # A wheel can install yet fail to import (CUDA/ABI mismatch); verify before
-                # trusting it, else source-build to match the local ABI.
-                if _is_importable(import_name):
-                    logger.info("Installed prebuilt %s wheel", display_name)
-                    return True
+            # A cold first import can also stay quiet for tens of seconds.
+            for installer, result in install_wheel(
+                wheel_url,
+                python_executable = sys.executable,
+                use_uv = bool(shutil.which("uv")),
+                run = run,
+            ):
+                if getattr(result, "returncode", 1) == 0:
+                    # A wheel can install yet fail to import (CUDA/ABI mismatch); verify before
+                    # trusting it, else source-build to match the local ABI.
+                    if _is_importable(import_name):
+                        logger.info("Installed prebuilt %s wheel", display_name)
+                        return True
+                    logger.warning(
+                        "%s wheel installed but not importable; building from source",
+                        display_name,
+                    )
+                    break
                 logger.warning(
-                    "%s wheel installed but not importable; building from source", display_name
+                    "%s could not install %s wheel:\n%s",
+                    installer,
+                    display_name,
+                    getattr(result, "stdout", ""),
                 )
-                break
-            logger.warning(
-                "%s could not install %s wheel:\n%s",
-                installer,
-                display_name,
-                getattr(result, "stdout", ""),
-            )
     else:
         logger.info(
             "No prebuilt %s wheel for this environment (%s); building from source",
