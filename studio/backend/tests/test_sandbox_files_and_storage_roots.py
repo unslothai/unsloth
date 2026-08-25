@@ -4365,9 +4365,7 @@ def test_a_workspace_is_kept_when_the_wait_ran_out():
 
     route = inspect.getsource(chat_history.delete_project)
     assert "run_in_threadpool(wait_for_sessions_idle, [shared, *member_ids])" in route
-    assert route.index("and not ownership_unknown") < route.index(
-        "def delete_workspace_if_unowned"
-    )
+    assert route.index("and not ownership_unknown") < route.index("def delete_workspace_if_unowned")
     assert "run_when_sessions_idle," in route
     # And a wait that ran out queues the finish rather than dropping it.
     assert "finish_workspace_delete_when_idle(project_id, session_id = shared)" in route

@@ -119,9 +119,7 @@ def test_creating_a_project_says_which_folder_failed(tmp_path, monkeypatch):
         "upsert_chat_project",
         lambda payload, external_workspace_path = None, external_workspace_identity = None: (
             _ for _ in ()
-        ).throw(
-            ProjectWorkspaceError(str(blocked), PermissionError(13, "Permission denied"))
-        ),
+        ).throw(ProjectWorkspaceError(str(blocked), PermissionError(13, "Permission denied"))),
     )
 
     with pytest.raises(HTTPException) as caught:
@@ -148,9 +146,7 @@ def test_a_database_folder_failure_is_not_blamed_on_the_projects_folder(monkeypa
         "upsert_chat_project",
         lambda payload, external_workspace_path = None, external_workspace_identity = None: (
             _ for _ in ()
-        ).throw(
-            PermissionError(13, "studio.db")
-        ),
+        ).throw(PermissionError(13, "studio.db")),
     )
 
     with pytest.raises(PermissionError):

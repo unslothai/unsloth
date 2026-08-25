@@ -9286,14 +9286,16 @@ def update_project_workspace_when_idle(project_id: str, update):
             _sessions_free.notify_all()
 
 
-def run_when_sessions_idle(session_ids, update, timeout: float = 10.0):
+def run_when_sessions_idle(
+    session_ids,
+    update,
+    timeout: float = 10.0,
+):
     """run an update while no call can start in any named session."""
     keys = {_session_key(session_id) for session_id in session_ids or []}
     deadline = time.monotonic() + max(0.0, timeout)
     with _sessions_free:
-        while any(
-            key in _removing_sessions or _active_sessions.get(key, 0) > 0 for key in keys
-        ):
+        while any(key in _removing_sessions or _active_sessions.get(key, 0) > 0 for key in keys):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return False, None

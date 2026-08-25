@@ -959,9 +959,7 @@ def test_unavailable_external_workspace_is_reported_without_recreating_it(
     assert not external.exists()
 
 
-def test_replaced_external_workspace_is_unavailable(
-    tmp_path, monkeypatch, workspace_projects_home
-):
+def test_replaced_external_workspace_is_unavailable(tmp_path, monkeypatch, workspace_projects_home):
     _reset_studio_db(tmp_path, monkeypatch, projects_home = workspace_projects_home)
     external = workspace_projects_home / "existing-project"
     external.mkdir()
@@ -1018,9 +1016,7 @@ def test_external_workspace_requires_write_access(tmp_path, monkeypatch, workspa
         studio_db.upsert_chat_project(_project(), external_workspace_path = str(external))
 
 
-def test_external_workspace_write_access_is_probed(
-    tmp_path, monkeypatch, workspace_projects_home
-):
+def test_external_workspace_write_access_is_probed(tmp_path, monkeypatch, workspace_projects_home):
     _reset_studio_db(tmp_path, monkeypatch, projects_home = workspace_projects_home)
     external = workspace_projects_home / "blocked-project"
     external.mkdir()

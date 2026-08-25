@@ -990,10 +990,9 @@ def _chat_project_response(project: dict) -> ChatProject:
     return ChatProject(**project)
 
 
-def _resolve_project_workspace_path(
-    native_path_lease: str,
-) -> tuple[str, tuple[str, str]]:
+def _resolve_project_workspace_path(native_path_lease: str) -> tuple[str, tuple[str, str]]:
     from utils.native_path_leases import NativePathLeaseError, verify_native_path_lease
+
     try:
         grant = verify_native_path_lease(
             native_path_lease,
@@ -1358,6 +1357,7 @@ async def delete_project(
             and not recreated_owns
             and not ownership_unknown
         ):
+
             def delete_workspace_if_unowned():
                 record_orphaned_project_if_unowned(
                     project_id,

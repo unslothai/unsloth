@@ -399,15 +399,16 @@ def _ensure_external_project_workspace(
             raise PermissionError("unsafe workspace path")
         if is_denied_system_path(str(resolved)):
             raise PermissionError("unsafe workspace path")
-        if expected_identity is not None and _directory_identity(str(resolved)) != expected_identity:
+        if (
+            expected_identity is not None
+            and _directory_identity(str(resolved)) != expected_identity
+        ):
             raise PermissionError("workspace identity changed")
         if not os.access(resolved, os.R_OK | os.W_OK | os.X_OK):
             raise PermissionError("workspace is not readable and writable")
         with os.scandir(resolved) as entries:
             next(entries, None)
-        descriptor, probe_path = tempfile.mkstemp(
-            prefix = ".unsloth-workspace-probe-", dir = resolved
-        )
+        descriptor, probe_path = tempfile.mkstemp(prefix = ".unsloth-workspace-probe-", dir = resolved)
         os.close(descriptor)
         os.unlink(probe_path)
         probe_path = None
@@ -528,7 +529,6 @@ def record_orphaned_project_if_unowned(
             ):
                 return False
         from core.inference.tools import record_orphaned_project
-
         return record_orphaned_project(
             project_id,
             workspace,
