@@ -452,9 +452,9 @@ def compare_styles(base: dict, treat: dict) -> tuple[str, str]:
     # NOT_COMPARABLE AND NOT MATCH. The probe reads ONE aggregate digest over up to `STYLE_CAP`
     # elements, so a genuine CSS difference elsewhere on the page is inside the same number and
     # cannot be separated from the swap here. This withholds the reading; it does not pass it.
-    if (
-        bs.get("elements") != ts.get("elements") or bs.get("digest") != ts.get("digest")
-    ) and (generation_disagrees(base, treat) and _run_state_disagrees(base, treat)):
+    if (bs.get("elements") != ts.get("elements") or bs.get("digest") != ts.get("digest")) and (
+        generation_disagrees(base, treat) and _run_state_disagrees(base, treat)
+    ):
         return NOT_COMPARABLE, (
             "the two arms rendered different composer run-state controls "
             f"({base.get('composer_control')!r} against {treat.get('composer_control')!r}) and the "

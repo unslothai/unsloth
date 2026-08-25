@@ -635,11 +635,7 @@ def _capture_html_raw(page, html: str) -> dict:
 
 def _style_values(cap: dict) -> list[str]:
     """The probe's readings with the selector NAMES dropped: just the three properties, in order."""
-    return [
-        entry.split(":", 1)[1]
-        for entry in cap["styles"]["sig"].split(";")
-        if ":" in entry
-    ]
+    return [entry.split(":", 1)[1] for entry in cap["styles"]["sig"].split(";") if ":" in entry]
 
 
 def test_the_style_probe_does_not_report_a_control_swap_as_a_css_regression(page):
