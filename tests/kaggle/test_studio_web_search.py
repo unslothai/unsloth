@@ -105,12 +105,22 @@ def test_an_empty_result_set_is_reported_and_not_failed():
 
 def test_the_failure_fires_when_nothing_executed():
     func = _func("assert_web_search")
+    # Only the branches that DECIDE the verdict. The loop also breaks early on
+    # a positive count, which is a control-flow test rather than a rule, and
+    # reading it as one made this guard red on a correct body.
     guarded = [
         node
         for node in ast.walk(func)
-        if isinstance(node, ast.If) and "executions" in ast.unparse(node.test)
+        if isinstance(node, ast.If)
+        and "executions" in ast.unparse(node.test)
+        and any(
+            isinstance(inner, ast.Call)
+            and isinstance(inner.func, ast.Attribute)
+            and inner.func.attr == "append"
+            for inner in ast.walk(node)
+        )
     ]
-    assert guarded, "nothing in this assertion depends on the tool having run"
+    assert guarded, "nothing that decides the verdict depends on the tool having run"
     assert all(
         isinstance(n.test, ast.UnaryOp) and isinstance(n.test.op, ast.Not) for n in guarded
     ), "the failure must fire on ZERO executions"
@@ -139,3 +149,54 @@ def test_the_search_tool_call_is_FORCED_rather_than_hoped_for():
     # parametric knowledge with executions 0.
     assert '"function": {"name": "web_search"}' in body
     assert 'tool_choice = "required"' not in body
+
+
+def test_both_tool_selections_are_tried_before_the_verdict():
+    """One attempt cannot tell a selection bug from a model that will not
+    search.
+
+    `enabled_tools = ["web_search"]` is one name out of ALL_TOOLS, and
+    `routes/inference.py` also reads a request naming only hosted-tool names as
+    a provider-hosted ask. Omitting `enabled_tools` selects every local tool,
+    which is a different path through the same loop. Reporting "the loop
+    offered web_search and never ran it" off the first alone was a guess: no
+    evidence in that run showed the tool had been offered at all.
+    """
+    body = _body()
+    assert '("named", {"enabled_tools": ["web_search"]})' in body
+    assert '("all_local_tools", {})' in body
+    assert '"any_tool_executions"' in body, (
+        "without a count of ANY tool execution, a loop that ran and chose "
+        "something else is indistinguishable from a loop that never ran"
+    )
+
+
+def test_the_second_attempt_is_skipped_once_one_succeeds():
+    """A passing first attempt must not spend a second inference on the same
+    claim; the loop breaks on a positive count."""
+    func = _func("assert_web_search")
+    src = ast.get_source_segment(SRC, func) or ""
+    assert 'if record["executions"]:' in src
+    assert "break" in src
+
+
+def test_the_verdict_counts_web_search_and_not_any_tool():
+    """Mutation found this: summing `any_tool_executions` instead passes on the
+    python tool being run, which is a different assertion in this same payload.
+    The wider count is diagnostic context, never the rule."""
+    func = _func("assert_web_search")
+    verdict = next(
+        node
+        for node in ast.walk(func)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(t, ast.Subscript) and ast.unparse(t) == "detail['executions']"
+            for t in node.targets
+        )
+    )
+    source = ast.unparse(verdict.value)
+    assert "'executions'" in source
+    assert "any_tool_executions" not in source, (
+        "the verdict counts any tool at all, so the python tool satisfies the "
+        "web-search claim"
+    )

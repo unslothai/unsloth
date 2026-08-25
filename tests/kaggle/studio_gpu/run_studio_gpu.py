@@ -1198,60 +1198,80 @@ class Payload:
         failures: list[str] = []
         detail: dict = {}
 
-        before = ""
-        try:
-            before = self.server_log.read_text(encoding = "utf-8", errors = "replace")
-        except OSError:
-            pass
-
-        code, payload = self.chat(
-            [
-                {
-                    "role": "user",
-                    "content": (
-                        "Search the web for the current version of the Linux kernel, "
-                        "then answer in one sentence."
-                    ),
-                }
-            ],
-            enable_tools = True,
-            enabled_tools = ["web_search"],
-            permission_mode = "off",
-            # Forced BY NAME. `tool_choice: "required"` was tried first and
-            # changed nothing -- kernel unsloth-probe-studio-r3-0b85d4 returned
-            # the same parametric answer, "The current version of the Linux
-            # kernel is 6.10", with executions 0. A bare "required" says only
-            # that some tool must be called; the dict form pins the function,
-            # and `chat_template_helpers.forced_tool_name` reads exactly this
-            # shape, keeping the force as long as the tool is in the catalog.
-            # Without it this measures whether a 2B model DECIDES to search,
-            # which is a model property rather than a Studio one. The claim
-            # that matters is that Studio EXECUTES the call, and the
-            # `execute_tool` log check below is still what decides that.
-            tool_choice = {"type": "function", "function": {"name": "web_search"}},
-            max_tokens = 512,
-        )
-        detail["http_status"] = code
-        if code != 200 or not isinstance(payload, dict):
-            failures.append(f"the web-search completion returned HTTP {code}")
-        else:
-            choice = (payload.get("choices") or [{}])[0]
-            detail["finish_reason"] = choice.get("finish_reason")
-            detail["reply"] = ((choice.get("message") or {}).get("content") or "")[:300]
-
-        try:
-            after = self.server_log.read_text(encoding = "utf-8", errors = "replace")
-        except OSError:
-            after = ""
-        # Only what this request wrote, so an earlier assertion's tool call
-        # cannot be read as this one's evidence.
-        fresh = after[len(before) :]
+        # TWO attempts, and the second is what makes a failure diagnosable.
+        # `enabled_tools = ["web_search"]` is one name out of ALL_TOOLS, and
+        # `routes/inference.py` also reads a request naming only hosted-tool
+        # names as a provider-hosted ask. Omitting `enabled_tools` selects
+        # every local tool instead, which is a different path through the same
+        # loop. If the first fails and the second executes, the fault is in the
+        # single-name selection; if neither does, the model will not call the
+        # tool however it is offered. Reporting "the loop offered web_search
+        # and never ran it" off one attempt was a guess dressed as a finding:
+        # nothing in that run showed the tool had been offered at all.
         marker = "execute_tool: name=web_search"
-        detail["executions"] = fresh.count(marker)
+        prompt = (
+            "Search the web for the current version of the Linux kernel, "
+            "then answer in one sentence."
+        )
+        attempts: list[dict] = []
+        for label, selection in (
+            ("named", {"enabled_tools": ["web_search"]}),
+            ("all_local_tools", {}),
+        ):
+            before = ""
+            try:
+                before = self.server_log.read_text(encoding = "utf-8", errors = "replace")
+            except OSError:
+                pass
+
+            code, payload = self.chat(
+                [{"role": "user", "content": prompt}],
+                enable_tools = True,
+                permission_mode = "off",
+                # Forced BY NAME. `tool_choice: "required"` was tried first and
+                # changed nothing -- kernel unsloth-probe-studio-r3-0b85d4
+                # returned the same parametric answer, "The current version of
+                # the Linux kernel is 6.10", with executions 0. A bare
+                # "required" says only that some tool must be called; the dict
+                # form pins the function, and
+                # `chat_template_helpers.forced_tool_name` reads exactly this
+                # shape. Without a force this measures whether a 2B model
+                # DECIDES to search, which is a model property rather than a
+                # Studio one.
+                tool_choice = {"type": "function", "function": {"name": "web_search"}},
+                max_tokens = 512,
+                **selection,
+            )
+            record = {"selection": label, "http_status": code}
+            if code != 200 or not isinstance(payload, dict):
+                record["error"] = str(payload)[:200]
+            else:
+                choice = (payload.get("choices") or [{}])[0]
+                record["finish_reason"] = choice.get("finish_reason")
+                record["reply"] = ((choice.get("message") or {}).get("content") or "")[:200]
+
+            try:
+                after = self.server_log.read_text(encoding = "utf-8", errors = "replace")
+            except OSError:
+                after = ""
+            # Only what THIS request wrote, so an earlier attempt's tool call
+            # cannot be read as this one's evidence.
+            fresh = after[len(before) :]
+            record["executions"] = fresh.count(marker)
+            # Any tool at all, which separates "the loop ran and chose
+            # something else" from "the loop never ran".
+            record["any_tool_executions"] = fresh.count("execute_tool: name=")
+            attempts.append(record)
+            if record["executions"]:
+                break
+
+        detail["attempts"] = attempts
+        detail["executions"] = sum(a["executions"] for a in attempts)
         if not detail["executions"]:
             failures.append(
-                f"{marker!r} never appeared in the server log for this request, "
-                f"so the loop offered web_search and never ran it"
+                f"{marker!r} never appeared in the server log for either "
+                f"selection, so web_search was not executed however it was "
+                f"offered: {attempts}"
             )
 
         detail["failures"] = failures
