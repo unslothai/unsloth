@@ -33,6 +33,7 @@ from routes.inference import (
     _estimate_gguf_required_gb,
     _guard_chat_load_against_training,
     _llama_runtime_fields,
+    _load_keeps_a_projector,
     _LoadPlacement,
 )
 
@@ -850,6 +851,28 @@ def test_the_guard_asks_the_local_projector_whether_the_launch_opens_it(
         _estimate_gguf_required_gb(config, **kwargs)
 
     assert seen.get("local_mmproj_bytes") == (3 * MIB if charged else 0), label
+
+
+def test_gpu_ownership_reads_the_remote_configs_own_projector(tmp_path):
+    """`_load_keeps_a_projector` decides whether a load needs the GPU, so treating a
+    suppressed image tower as unknown lets a CPU-only chat load evict a running
+    image or video pipeline."""
+    projector = tmp_path / "mmproj-F16.gguf"
+    projector.write_bytes(b"\x00" * MIB)
+    config = SimpleNamespace(
+        is_vision = True,
+        gguf_mmproj_file = None,
+        gguf_local_mmproj_file = str(projector),
+    )
+    import utils.models.gguf_metadata as _meta
+
+    with patch.object(_meta, "mmproj_accepts_image", lambda _p: True):
+        assert _load_keeps_a_projector(config, disable_vision = True) is False
+        assert _load_keeps_a_projector(config, disable_vision = False) is True
+
+    # An audio encoder has no image tower to drop, so the switch leaves it loaded.
+    with patch.object(_meta, "mmproj_accepts_image", lambda _p: False):
+        assert _load_keeps_a_projector(config, disable_vision = True) is True
 
 
 def _ambient_mmproj(tmp_path, monkeypatch):

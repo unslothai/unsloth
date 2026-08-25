@@ -5269,6 +5269,21 @@ _DRAFTER_NATIVE_RULES = {
 }
 
 
+def _validate_native_gguf_projector(companion_path: str | None, gguf_path: str | None) -> None:
+    """Validate a projector for a native load, every shard of it.
+
+    Same reason _validate_native_mtp_drafter expands a drafter: llama-server opens the
+    sibling shards of a split projector implicitly, so checking only the launch path
+    would let a later shard be a symlink out of the granted directory without ever
+    facing the native rules.
+    """
+    if not companion_path or not gguf_path:
+        return
+    shards, _ = colocated_split_shards(Path(companion_path))
+    for shard in shards or [Path(companion_path)]:
+        _validate_native_gguf_companion(str(shard), gguf_path, "vision companion")
+
+
 def _validate_native_mtp_drafter(
     companion_path: str | None,
     gguf_path: str | None,
@@ -5555,7 +5570,7 @@ def _native_drafter_accept(candidate: str, gguf_path: str, kind: str, search_roo
     """
     if kind == "mmproj":
         try:
-            _validate_native_gguf_companion(candidate, gguf_path, "vision companion")
+            _validate_native_gguf_projector(candidate, gguf_path)
         except HTTPException as exc:
             logger.warning("Dropping vision companion for native load: %s", exc.detail)
             return False
@@ -6948,7 +6963,11 @@ def _load_keeps_a_projector(config, *, disable_vision: bool) -> bool:
         return False
     if not disable_vision:
         return True
-    mmproj = getattr(config, "gguf_mmproj_file", None)
+    # A remote (-hf) config names its hand-added projector separately; the loader
+    # resolves its own beside the weight, but this is still the file it will open.
+    mmproj = getattr(config, "gguf_mmproj_file", None) or getattr(
+        config, "gguf_local_mmproj_file", None
+    )
     if not mmproj:
         return True
     try:
@@ -8497,10 +8516,7 @@ def _resolve_gguf_load_intent(
         )
     else:
         if native_grant_backed:
-            if config.gguf_mmproj_file:
-                _validate_native_gguf_companion(
-                    config.gguf_mmproj_file, config.gguf_file, "vision companion"
-                )
+            _validate_native_gguf_projector(config.gguf_mmproj_file, config.gguf_file)
             if config.gguf_mtp_file:
                 config.gguf_mtp_file = _mtp_draft_for_path(
                     config.gguf_file,

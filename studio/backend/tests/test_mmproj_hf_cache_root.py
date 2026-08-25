@@ -24,6 +24,7 @@ from hub.utils.inventory_scan import snapshot_has_gguf_projector  # noqa: E402
 from routes.inference import (  # noqa: E402
     _native_drafter_accept,
     _validate_native_gguf_companion,
+    _validate_native_gguf_projector,
 )
 
 _GGUF_MAGIC = 0x46554747
@@ -315,6 +316,35 @@ def test_native_load_drops_a_repo_root_projector_outside_the_file_grant(tmp_path
     assert config is not None
     assert config.gguf_mmproj_file is None
     assert config.is_vision is False
+
+
+def test_native_load_rejects_a_split_projector_with_an_ungranted_shard(tmp_path):
+    """llama-server opens the siblings implicitly, so validating only the launch path
+    would let shard 2 be a symlink out of the granted directory."""
+    _, weight = _hf_repo(tmp_path)
+    first = _gguf_with_general(
+        weight.parent / "mmproj-kquant-00001-of-00002.gguf",
+        {"general.type": "mmproj", "general.architecture": "qwen3vl"},
+    )
+    outside = _gguf_with_general(
+        tmp_path / "outside.gguf",
+        {"general.type": "mmproj", "general.architecture": "qwen3vl"},
+    )
+    try:
+        (weight.parent / "mmproj-kquant-00002-of-00002.gguf").symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+
+    # Discovery still offers shard 1, which is a regular file inside the grant, and the
+    # launch path on its own passes every native rule.
+    assert _detect_local_mmproj(str(weight.parent), str(weight)) == str(first.absolute())
+    _validate_native_gguf_companion(str(first.absolute()), str(weight), "vision companion")
+
+    with pytest.raises(HTTPException) as excinfo:
+        _validate_native_gguf_projector(str(first.absolute()), str(weight))
+    assert excinfo.value.status_code == 400
+    # And the pre-read filter the widened pass uses refuses the set for the same reason.
+    assert _native_drafter_accept(str(first.absolute()), str(weight), "mmproj", "") is False
 
 
 def test_native_load_still_refuses_a_projector_above_the_selected_quant(tmp_path):

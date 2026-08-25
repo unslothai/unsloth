@@ -22520,18 +22520,20 @@ class LlamaCppBackend:
     @staticmethod
     def _gguf_load_source_identity(path: str, mmproj_path: Optional[str] = None) -> Optional[tuple]:
         """Identity of the exact GGUF inode(s) handed to the resident process."""
-        p = Path(path)
-        paths = [p]
-        match = _SHARD_FULL_RE.match(p.name)
-        if match:
+
+        def _declared_shards(p: Path) -> list[Path]:
+            match = _SHARD_FULL_RE.match(p.name)
+            if match is None:
+                return [p]
             prefix, _first, total = match.groups()
-            paths = [
+            return [
                 p.with_name(f"{prefix}-{index:05d}-of-{total}{p.suffix}")
                 for index in range(1, int(total) + 1)
             ]
+
         try:
             identity = []
-            for shard in paths:
+            for shard in _declared_shards(Path(path)):
                 resolved = shard.resolve()
                 stat = shard.stat()
                 identity.append(
@@ -22544,19 +22546,21 @@ class LlamaCppBackend:
                     )
                 )
             if mmproj_path:
-                projector = Path(mmproj_path)
-                resolved = projector.resolve()
-                stat = projector.stat()
-                identity.append(
-                    (
-                        "mmproj",
-                        str(resolved),
-                        stat.st_dev,
-                        stat.st_ino,
-                        stat.st_size,
-                        stat.st_mtime_ns,
+                # Every shard, like the weight above: llama-server opens the siblings of a
+                # split projector implicitly, so a replaced shard 2 is a different launch.
+                for projector in _declared_shards(Path(mmproj_path)):
+                    resolved = projector.resolve()
+                    stat = projector.stat()
+                    identity.append(
+                        (
+                            "mmproj",
+                            str(resolved),
+                            stat.st_dev,
+                            stat.st_ino,
+                            stat.st_size,
+                            stat.st_mtime_ns,
+                        )
                     )
-                )
             return tuple(identity)
         except (OSError, RuntimeError):
             return None

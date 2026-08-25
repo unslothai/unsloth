@@ -2685,17 +2685,34 @@ def _hf_cache_repo_root_mmproj(repo_id: str) -> Optional[str]:
     """A hand-added projector at ``models--<repo>/`` (#9286), or None.
 
     For the window where no quant of the repo verifies yet, so there is no weight to
-    pair against: this is the candidate discovery names, and the load pairs it against
-    what it downloads. Without it a repo that publishes no projector skips companion
+    pair against. Without this a repo that publishes no projector skips companion
     resolution on the first Apply and attaches the projector only on a second one, and
     the training guard charges nothing for a file the launch will make resident.
+
+    The LARGEST qualifying candidate, because pairing needs the weight: whichever one
+    the load settles on afterwards is no bigger than this, and an under-charged guard
+    is what admits a chat load over VRAM a training run needs.
     """
     try:
         from utils.hf_cache_settings import get_hf_cache_paths
         target = f"models--{repo_id.replace('/', '--')}".lower()
         for repo_dir in Path(get_hf_cache_paths().hub_cache).iterdir():
-            if repo_dir.is_dir() and repo_dir.name.lower() == target:
-                return detect_mmproj_file(str(repo_dir))
+            if not repo_dir.is_dir() or repo_dir.name.lower() != target:
+                continue
+            if detect_mmproj_file(str(repo_dir)) is None:
+                return None
+            largest: Optional[tuple[int, str]] = None
+            for candidate in _iter_gguf_files(repo_dir):
+                shards, complete = colocated_split_shards(candidate)
+                if not complete:
+                    continue
+                by_metadata = is_mmproj_by_metadata(read_gguf_general_metadata(str(candidate)))
+                if not (by_metadata is True or (by_metadata is None and _is_mmproj(candidate.name))):
+                    continue
+                size = sum(shard.stat().st_size for shard in shards)
+                if largest is None or size > largest[0]:
+                    largest = (size, _drafter_launch_path(candidate))
+            return largest[1] if largest is not None else None
     except Exception as exc:
         # A cache-path lookup must never be what fails a config resolve.
         logger.debug(f"Could not check the HF cache repo root of {repo_id} for a projector: {exc}")

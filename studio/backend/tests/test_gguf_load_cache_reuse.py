@@ -652,6 +652,27 @@ class TestLoadReusesCachedCopy:
 
         assert out == str(projector)
 
+    def test_the_resident_identity_covers_every_projector_shard(self, hf_cache):
+        """llama-server opens the siblings of a split projector, so a replaced shard 2
+        is a different launch even when shard 1 is untouched."""
+        snap = _build_cache(
+            hf_cache,
+            REPO,
+            {
+                MAIN: 4,
+                "mmproj-F16-00001-of-00002.gguf": 2,
+                "mmproj-F16-00002-of-00002.gguf": 2,
+            },
+        )
+        first = snap / "mmproj-F16-00001-of-00002.gguf"
+        before = LlamaCppBackend._gguf_load_source_identity(str(snap / MAIN), str(first))
+
+        (snap / "mmproj-F16-00002-of-00002.gguf").write_bytes(b"replacement")
+
+        assert (
+            LlamaCppBackend._gguf_load_source_identity(str(snap / MAIN), str(first)) != before
+        )
+
     def test_companion_cancelled_before_scanning_cached_projectors(self, hf_cache):
         backend = LlamaCppBackend()
         snap = _build_cache(hf_cache, REPO, {MAIN: 4})
