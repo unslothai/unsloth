@@ -102,7 +102,7 @@ test("known server load evidence survives an unavailable status probe", () => {
   );
   const adoption = ADAPTER.slice(
     ADAPTER.indexOf("async function adoptInFlightServerLoad("),
-    ADAPTER.indexOf("/**\n * Auto-load the smallest downloaded model"),
+    ADAPTER.indexOf("async function autoLoadSmallestModel("),
   );
   assert.match(evidence, /Promise<boolean \| null>/);
   assert.match(evidence, /catch \{\s*return null;/);

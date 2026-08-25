@@ -2081,61 +2081,6 @@ function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
   });
 }
 
-async function serverLoadEvidence(): Promise<boolean | null> {
-  try {
-    const progress = await getLoadProgress();
-    if (progress.phase != null) return true;
-  } catch {
-    // A failed probe does not prove the server is idle.
-  }
-  try {
-    const status = await getInferenceStatus();
-    return status.loading.length > 0;
-  } catch {
-    return null;
-  }
-}
-
-// Slow downloads and llama-server warm-up need a long cap; confirmed idle exits early.
-const CLI_LOAD_ADOPT_MAX_MS = 600_000;
-
-/**
- * With the empty-model load lease held, adopt or await a server-started load
- * before automatic loading.
- */
-async function adoptInFlightServerLoad(
-  abortSignal?: AbortSignal,
-): Promise<boolean> {
-  const checkpointSelected = () =>
-    Boolean(useChatRuntimeStore.getState().params.checkpoint);
-  const tryAdopt = () =>
-    tryAdoptServerActiveModel({ allowWhileModelLoading: true });
-
-  abortSignal?.throwIfAborted();
-  if (checkpointSelected() || (await tryAdopt())) return true;
-
-  let evidence = await serverLoadEvidence();
-  abortSignal?.throwIfAborted();
-  if (evidence !== true) {
-    return checkpointSelected() || (await tryAdopt());
-  }
-
-  toast.info("Waiting for model to finish loading…");
-  const deadline = Date.now() + CLI_LOAD_ADOPT_MAX_MS;
-  while (Date.now() < deadline) {
-    abortSignal?.throwIfAborted();
-    if (checkpointSelected()) return true;
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    abortSignal?.throwIfAborted();
-    if (checkpointSelected() || (await tryAdopt())) return true;
-    evidence = await serverLoadEvidence();
-    if (evidence === false) {
-      return checkpointSelected() || (await tryAdopt());
-    }
-  }
-  return checkpointSelected() || (await tryAdopt());
-}
-
 /**
  * Auto-load the smallest downloaded model when the user chats without
  * selecting one. Prefers GGUF (smallest cached variant), then smallest
@@ -2838,6 +2783,63 @@ async function ensureDefaultModelDownloaded(
       () => finish("failed"),
     );
   });
+}
+
+// Kept below MAX_AUTO_LOAD_ATTEMPTS: tests/studio/test_chat_autoload_failure_gate.py
+// slices the harness from there, so a helper above it is a ReferenceError under test.
+async function serverLoadEvidence(): Promise<boolean | null> {
+  try {
+    const progress = await getLoadProgress();
+    if (progress.phase != null) return true;
+  } catch {
+    // A failed probe does not prove the server is idle.
+  }
+  try {
+    const status = await getInferenceStatus();
+    return status.loading.length > 0;
+  } catch {
+    return null;
+  }
+}
+
+// Slow downloads and llama-server warm-up need a long cap; confirmed idle exits early.
+const CLI_LOAD_ADOPT_MAX_MS = 600_000;
+
+/**
+ * With the empty-model load lease held, adopt or await a server-started load
+ * before automatic loading.
+ */
+async function adoptInFlightServerLoad(
+  abortSignal?: AbortSignal,
+): Promise<boolean> {
+  const checkpointSelected = () =>
+    Boolean(useChatRuntimeStore.getState().params.checkpoint);
+  const tryAdopt = () =>
+    tryAdoptServerActiveModel({ allowWhileModelLoading: true });
+
+  abortSignal?.throwIfAborted();
+  if (checkpointSelected() || (await tryAdopt())) return true;
+
+  let evidence = await serverLoadEvidence();
+  abortSignal?.throwIfAborted();
+  if (evidence !== true) {
+    return checkpointSelected() || (await tryAdopt());
+  }
+
+  toast.info("Waiting for model to finish loading…");
+  const deadline = Date.now() + CLI_LOAD_ADOPT_MAX_MS;
+  while (Date.now() < deadline) {
+    abortSignal?.throwIfAborted();
+    if (checkpointSelected()) return true;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    abortSignal?.throwIfAborted();
+    if (checkpointSelected() || (await tryAdopt())) return true;
+    evidence = await serverLoadEvidence();
+    if (evidence === false) {
+      return checkpointSelected() || (await tryAdopt());
+    }
+  }
+  return checkpointSelected() || (await tryAdopt());
 }
 
 async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{

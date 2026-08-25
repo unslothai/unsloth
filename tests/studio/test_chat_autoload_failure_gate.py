@@ -163,7 +163,13 @@ const GPU_LAYERS_AUTO = -1;
 // visible-state snapshot helpers, so their imported contracts must exist even
 // though these scenarios call autoLoadSmallestModel directly.
 async function getInferenceStatus() {
-  return { active_model: null };
+  return { active_model: null, loading: [] };
+}
+// serverLoadEvidence reads phase to decide whether a CLI load is in flight.
+// Null is the idle answer the route returns with no llama-server running, so
+// these scenarios reach the auto-load path instead of waiting on a phantom load.
+async function getLoadProgress() {
+  return { phase: null, bytes_loaded: 0, bytes_total: 0, fraction: 0 };
 }
 function isExternalModelId(value: unknown) {
   return typeof value === "string" && value.startsWith("external::");
