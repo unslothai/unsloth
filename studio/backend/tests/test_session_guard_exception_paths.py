@@ -3,15 +3,11 @@
 
 """``_session_in_flight``'s state machine when the guarded body raises.
 
-The guard used to ``return`` from its ``finally``, which discarded whatever the
-tool raised. Removing that return is only safe if the cleanup it guards still
-runs exactly as before: the refcount, the queued sandbox deletions, and the
-condition variable other calls for the same chat wait on.
-
-Every case here asserts the full invariant set afterwards, so a leak shows up
-as a failure rather than as a hang in some later test. Barriers and bounded
-joins throughout; no sleep-based timing. Needs no model, subprocess, GPU or
-network.
+The guard used to ``return`` from its ``finally``, discarding whatever the tool
+raised. Dropping that return is only safe if the cleanup still runs as before:
+the refcount, the queued deletes, and the condition other calls wait on. Every
+case asserts the full invariant set afterwards, so a leak fails here instead of
+hanging some later test. Barriers and bounded joins, no sleep-based timing.
 """
 
 from __future__ import annotations
@@ -34,10 +30,10 @@ DEADLINE = 30.0
 
 
 def _cleanup_explodes(session_id, delete_files):
-    """A cleanup that fails. A plain function, so implicit chaining is intact.
+    """A cleanup that fails.
 
-    A generator ``.throw()`` one-liner would reset ``__context__`` and quietly
-    hide the very thing one of these tests is checking.
+    A plain function, not a generator ``.throw()`` one-liner: that would reset
+    ``__context__`` and hide the thing one of these tests checks.
     """
     raise OSError("disk gone")
 
@@ -162,8 +158,7 @@ def test_case_variant_ids_share_one_lifecycle_key(removals):
 def test_a_failing_cleanup_still_releases_the_session(monkeypatch):
     """A cleanup error must never strand the chat.
 
-    If ``_removing_sessions`` kept the key, every later call for this chat
-    would block in ``_sessions_free.wait()`` forever.
+    A key left in ``_removing_sessions`` blocks every later call for it forever.
     """
     monkeypatch.setattr(tools, "_remove_session_sandbox_locked", _cleanup_explodes)
     monkeypatch.setattr(tools, "_thread_exists", lambda *a, **k: False)
@@ -175,12 +170,11 @@ def test_a_failing_cleanup_still_releases_the_session(monkeypatch):
 
 
 def test_a_failing_cleanup_masks_the_tool_error_but_keeps_it_as_context(monkeypatch):
-    """Documents the policy rather than asserting a preference.
+    """Pins the policy rather than asserting a preference.
 
-    Standard Python semantics: an exception raised inside a ``finally``
-    replaces the one in flight and keeps it as ``__context__``. This predates
-    the PR (it already happened whenever a delete was queued) and is left
-    alone; the test pins it so a change is deliberate.
+    Standard semantics: a ``finally`` exception replaces the one in flight and
+    keeps it as ``__context__``. Predates this change (it already happened
+    whenever a delete was queued), so it is pinned, not altered.
     """
     monkeypatch.setattr(tools, "_remove_session_sandbox_locked", _cleanup_explodes)
     monkeypatch.setattr(tools, "_thread_exists", lambda *a, **k: False)
@@ -240,10 +234,9 @@ def test_a_failing_cleanup_wakes_a_waiter_for_the_same_chat(monkeypatch):
 def test_one_failing_delete_does_not_silently_drop_the_others(monkeypatch):
     """Pre-existing behaviour, pinned so a fix is a deliberate choice.
 
-    ``_pending_removals.pop`` takes the whole batch before iterating, so if one
-    entry raises the rest are neither attempted nor still queued. This is not
-    introduced by the PR (the batch path was always reached when ``pending``
-    was non-empty), but the exception path makes it easy to hit.
+    ``_pending_removals.pop`` takes the whole batch before iterating, so one
+    raising entry leaves the rest neither attempted nor queued. Not introduced
+    here, but the exception path makes it easy to hit.
     """
     attempted: list[str] = []
 
@@ -277,8 +270,8 @@ def test_one_failing_delete_does_not_silently_drop_the_others(monkeypatch):
 def test_randomised_schedules_leave_no_lifecycle_state(seed, removals):
     """100 seeds mixing successes, failures, deletes and case variants.
 
-    Threads are joined with a deadline and faulthandler is armed, so a
-    deadlock produces stacks instead of a silent CI timeout.
+    Joins have a deadline and faulthandler is armed, so a deadlock leaves
+    stacks rather than a silent CI timeout.
     """
     rng = random.Random(seed)
     ids = ["alpha", "Alpha", "beta", "BETA", "gamma"]

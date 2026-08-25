@@ -3,18 +3,15 @@
 
 """What each tool loop does when a local tool raises.
 
-PR #9640 stops ``_session_in_flight`` swallowing exceptions. That changes what
-every loop above it sees: previously a failing ``python``/``terminal``/
-``edit_file`` call came back as the string ``"Unknown tool: <name>"``; now the
-real exception propagates. ``studio_tool_loop`` and ``safetensors_agentic``
-already convert it into a model-visible tool result. ``llama_cpp`` did not, so
-a bad argument killed the whole GGUF answer.
+``_session_in_flight`` no longer swallows exceptions, so a failing ``python`` /
+``terminal`` / ``edit_file`` call now propagates instead of coming back as
+``"Unknown tool: <name>"``. ``studio_tool_loop`` and ``safetensors_agentic``
+already turned that into a model-visible result; ``llama_cpp`` did not, so a bad
+argument killed the whole GGUF answer.
 
-Each loop is asserted against its own contract rather than forced into one
-shape: the two provider loops report and continue, and the GGUF loop now does
-the same instead of taking the answer down with the tool. Reuses the fake
-llama-server and fake-transport harnesses next door, so no model, subprocess,
-GPU or network is involved.
+Each loop is asserted against its own contract, not forced into one shape.
+Reuses the fake llama-server and fake-transport harnesses next door, so no
+model, subprocess, GPU or network is involved.
 """
 
 from __future__ import annotations
@@ -25,8 +22,8 @@ from pathlib import Path
 
 import pytest
 
-# The tests dir as well as the backend root: the two harnesses this borrows
-# live alongside, and are imported as top-level modules.
+# Backend root plus the tests dir: the two harnesses this borrows sit alongside
+# and import as top-level modules.
 _TESTS_DIR = str(Path(__file__).resolve().parent)
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 for _entry in (_BACKEND_DIR, _TESTS_DIR):
@@ -40,8 +37,8 @@ from test_llama_cpp_tool_loop import (  # noqa: E402
     _structured_tool_call,
 )
 
-# The malformed call at the heart of the report: `code` is a number, so
-# `_python_exec` fails on `.strip()` before anything is executed.
+# The reported call: `code` is a number, so `_python_exec` fails on `.strip()`
+# before anything runs.
 BAD_PYTHON = {"code": 42}
 REAL_ERROR = "'int' object has no attribute 'strip'"
 
@@ -71,9 +68,8 @@ def _gguf_events(
 def test_a_raising_local_tool_does_not_kill_the_gguf_answer(monkeypatch, tool_name, arguments):
     """The GGUF loop must report the tool's failure and keep answering.
 
-    Without the guard the enclosing per-iteration handler re-raises, the route
-    turns that into a generic internal error, and the user loses the reply to a
-    mistake the model could have corrected itself.
+    Unguarded, the per-iteration handler re-raises, the route reports a generic
+    internal error, and the user loses a reply the model could have corrected.
     """
     events, _payloads = _gguf_events(monkeypatch, arguments, tool_name)
 
@@ -196,14 +192,12 @@ def test_the_studio_loop_still_reports_a_genuinely_unknown_tool(monkeypatch):
 
 
 def test_a_repeated_failing_call_stays_bounded(monkeypatch):
-    """The classification of the result changes, so check the loop still ends.
+    """The result's classification changes, so check the loop still ends.
 
-    ``"Unknown tool: python"`` matches none of ``TOOL_ERROR_PREFIXES``, so the
-    controller used to file the failed call as a *success* and refuse an
-    identical retry. ``"Error: tool raised an exception: ..."`` is a failure, so
-    the retry is allowed -- which is right (the model can now see what went
-    wrong and fix it) but only if the loop is still bounded. A model that never
-    learns must stop at the iteration cap, not spin.
+    ``"Unknown tool: python"`` matches no ``TOOL_ERROR_PREFIXES``, so a failed
+    call was filed as a *success* and an identical retry refused. ``"Error:
+    ..."`` is a failure, so the retry is allowed -- right, since the model can
+    now see what went wrong, but only while the loop stays bounded.
     """
     import test_studio_tool_loop as studio_h
     from core.inference import studio_tool_loop as loop_mod
@@ -270,9 +264,8 @@ def test_a_repeated_failing_call_stays_bounded(monkeypatch):
 def test_research_only_calls_tools_that_are_not_session_guarded():
     """research_runs has no enclosing tool handler, so it must stay clear.
 
-    Its safety here is a property of which tools it names, not of any handler.
-    If that list ever grows a guarded tool, this fails and whoever added it has
-    to give research_runs the same handling the other loops have.
+    Its safety is a property of which tools it names. Grow that list with a
+    guarded tool and this fails until research_runs handles them too.
     """
     import ast
     import inspect

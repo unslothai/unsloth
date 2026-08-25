@@ -25795,12 +25795,10 @@ class LlamaCppBackend:
                                 **kwargs,
                             )
 
-                        # A tool that raises is the tool's failure, not the
-                        # generation's. The other two loops already hand the
-                        # message back to the model and let it recover
-                        # (studio_tool_loop, safetensors_agentic); without this
-                        # the enclosing handler below re-raises and the whole
-                        # answer dies on a bad argument.
+                        # A raising tool is the tool's failure, not the answer's.
+                        # Without this the handler below re-raises and a bad
+                        # argument kills the generation; the other two loops
+                        # hand the message back and let the model recover.
                         try:
                             result = yield from stream_tool_execution(
                                 _invoke_tool,
@@ -25809,11 +25807,9 @@ class LlamaCppBackend:
                                 cancel_event = cancel_event,
                             )
                         except _LlamaStreamCancelled:
-                            # Subclasses Exception, so the generic arm below
-                            # would eat the cancel signal. Cancellation is not
-                            # a tool error. CancelledError needs no arm here:
-                            # it is a BaseException, so it passes straight
-                            # through, same as in safetensors_agentic.
+                            # Subclasses Exception, so the arm below would eat
+                            # the cancel signal. CancelledError needs no arm:
+                            # a BaseException passes straight through.
                             raise
                         except Exception as _tool_exc:
                             if cancel_event is not None and cancel_event.is_set():
