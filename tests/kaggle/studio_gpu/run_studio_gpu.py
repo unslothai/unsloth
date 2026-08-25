@@ -1460,6 +1460,169 @@ class Payload:
 
     # ------------------------------------------------------ existing drivers
 
+    def assert_cli_run(self) -> bool:
+        """`unsloth run`: a model server started from the CLI, driven by its key.
+
+        This is the headless path a user scripts, and nothing in CI covers it.
+        It is a different launch from `unsloth studio`: `run` starts the
+        backend, waits for health, mints an API key IN-PROCESS, and then loads
+        the model over HTTP. Any of those four can break without the others
+        noticing, and the command still prints a banner.
+
+        Four claims, and each rules out a way the previous one passes hollow:
+
+        1. the server becomes healthy on the port it was given;
+        2. the model reaches the GPU -- measured as device VRAM growth across
+           the launch, not as a line in the banner. `--api-only` on a card the
+           chat-UI phase has already emptied makes that delta this launch's;
+        3. the key the command minted AUTHENTICATES a real completion, and the
+           completion is non-empty. A key that is printed and rejected is
+           worse than no key, because the failure surfaces in a user's
+           integration rather than here;
+        4. a CORRUPTED key is refused. Without it, a server ignoring the header
+           entirely passes claim 3.
+
+        `--start-api-key-marker` is how the key is obtained: it prints
+        `UNSLOTH_START_API_KEY: <key>`, which is the mechanism `unsloth start`
+        itself uses. The value is registered as a secret the moment it is read,
+        before anything scrubs a log on the way into the evidence bundle.
+        """
+        failures: list[str] = []
+        detail: dict = {}
+        port = self.args.port + 1
+        log_path = self.outdir / "unsloth_run.log"
+        detail["port"] = port
+
+        baseline = nvidia_used_mib()
+        detail["vram_before_mib"] = baseline
+
+        head = self.studio_command()[:1] or [sys.executable]
+        if head[0] == sys.executable:
+            head = [sys.executable, "-c", "from unsloth_cli import app; app()"]
+        cmd = head + [
+            "run",
+            "--model", self.args.chat_model,
+            "--port", str(port),
+            "--host", "127.0.0.1",
+            # Headless: no UI to serve and no browser to open, which is the
+            # shape this path is for.
+            "--api-only",
+            # Never a public URL from CI. --secure would imply one.
+            "--no-cloudflare",
+            "--start-api-key-marker",
+            "--max-seq-length", str(self.args.studio_ctx),
+        ]
+        if self.args.chat_variant:
+            cmd += ["--gguf-variant", self.args.chat_variant]
+        detail["command"] = " ".join(cmd)
+
+        env = dict(os.environ)
+        env["UNSLOTH_STUDIO_HOME"] = str(self.studio_home)
+        env.setdefault("HF_HOME", str(self.studio_home / "cache" / "huggingface"))
+        env["PYTHONUNBUFFERED"] = "1"
+        env["UNSLOTH_DISABLE_STATISTICS"] = "1"
+
+        handle = open(log_path, "ab")
+        proc = subprocess.Popen(
+            cmd, cwd = str(self.repo_root), env = env,
+            stdout = handle, stderr = subprocess.STDOUT,
+        )
+
+        api_key = None
+        client = Studio(f"http://127.0.0.1:{port}")
+        try:
+            deadline = time.time() + self.args.health_deadline
+            while time.time() < deadline:
+                if proc.poll() is not None:
+                    failures.append(f"`unsloth run` exited early with code {proc.returncode}")
+                    break
+                text = log_path.read_text(encoding = "utf-8", errors = "replace")
+                if api_key is None and "UNSLOTH_START_API_KEY:" in text:
+                    api_key = text.split("UNSLOTH_START_API_KEY:", 1)[1].split("\n", 1)[0].strip()
+                    if api_key:
+                        # Before anything else reads this file.
+                        self.secrets.add(api_key)
+                if api_key and health_is_ready(client.get("/api/health", auth = False)[1]):
+                    break
+                time.sleep(2.0)
+
+            detail["saw_api_key"] = bool(api_key)
+            if not api_key:
+                failures.append(
+                    "`unsloth run` never printed UNSLOTH_START_API_KEY, so it "
+                    "did not reach the point where it mints a key"
+                )
+
+            settled = nvidia_used_mib()
+            detail["vram_after_mib"] = settled
+            if baseline is None or settled is None:
+                failures.append("nvidia-smi did not answer, so GPU use is unmeasured")
+            else:
+                delta = settled - baseline
+                detail["vram_delta_mib"] = round(delta, 1)
+                if delta < 200.0:
+                    failures.append(
+                        f"device VRAM grew by {delta:.1f} MiB across the launch, "
+                        f"which is not a model on the card -- `unsloth run` "
+                        f"served from the CPU"
+                    )
+
+            if api_key:
+                client.token = api_key
+                code, body = client.post(
+                    "/v1/chat/completions",
+                    {
+                        "model": "default",
+                        "messages": [{"role": "user", "content": "Say hello in one word."}],
+                        "max_tokens": 32,
+                        "temperature": 0.0,
+                    },
+                    timeout = self.args.chat_timeout,
+                )
+                detail["completion_status"] = code
+                text = ""
+                if code == 200 and isinstance(body, dict):
+                    text = ((body.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+                detail["generated"] = text[:200]
+                if code != 200:
+                    failures.append(
+                        f"the key `unsloth run` minted did not authenticate a "
+                        f"completion: HTTP {code} {str(body)[:200]}"
+                    )
+                elif not text.strip():
+                    failures.append("the CLI-served model returned empty content")
+
+                # And a corrupted key must be refused, or the check above
+                # passes on a server that ignores the header.
+                client.token = api_key[:-4] + "0000" if len(api_key) > 8 else "bogus"
+                code, _ = client.post(
+                    "/v1/chat/completions",
+                    {
+                        "model": "default",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "max_tokens": 8,
+                    },
+                    timeout = self.args.chat_timeout,
+                )
+                detail["bad_key_status"] = code
+                if code < 400:
+                    failures.append(
+                        f"a corrupted API key was accepted ({code}), so the "
+                        f"check above passes whatever is sent"
+                    )
+        except BaseException as exc:  # noqa: BLE001
+            failures.append(f"driving `unsloth run` raised: {type(exc).__name__}: {exc}"[:300])
+        finally:
+            proc.terminate()
+            try:
+                proc.wait(timeout = 60)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            handle.close()
+
+        detail["failures"] = failures
+        return self.record("cli_run", not failures, detail)
+
     def assert_chat_ui(self) -> bool:
         """Drive the repo's own chat UI driver. Runs last: it stops the server."""
         driver = self.repo_root / "tests" / "studio" / "playwright_chat_ui.py"
@@ -1584,7 +1747,15 @@ class Payload:
         def _pack(*, with_screenshots: bool, log_tail_bytes: int | None = None) -> bytes:
             buf = io.BytesIO()
             with tarfile.open(fileobj = buf, mode = "w:gz") as tar:
-                for name in ("studio_gpu_report.json", "playwright_chat_ui.log", "studio.log"):
+                for name in (
+                    "studio_gpu_report.json",
+                    "playwright_chat_ui.log",
+                    "studio.log",
+                    # `unsloth run` prints the API key it mints; redacted() is
+                    # what keeps it out of the artifact, and a file nobody
+                    # packs is a file nobody redacts either.
+                    "unsloth_run.log",
+                ):
                     path = self.outdir / name
                     if path.is_file():
                         scrubbed = self.redacted(path)
@@ -1697,6 +1868,13 @@ class Payload:
 
         if not self.args.skip_ui:
             self.assert_chat_ui()
+
+        # LAST, and the order is the design. `unsloth run` starts a SECOND
+        # backend against the same studio home, and two backends sharing one
+        # home's state is not a configuration anybody ships. assert_chat_ui
+        # ends by stopping the server, so by here the port is free, the card is
+        # empty, and the VRAM delta below measures this launch alone.
+        self.assert_cli_run()
         return self.finish()
 
     def finish(self) -> int:
