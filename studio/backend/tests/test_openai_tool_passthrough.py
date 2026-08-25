@@ -52,6 +52,7 @@ from routes.inference import (
     _effective_openai_max_tokens,
     _effective_openai_max_tokens_from_values,
     _extract_content_parts,
+    _images_in_last_user_message,
     _friendly_error,
     _friendly_upstream_error,
     _merge_user_content,
@@ -1857,6 +1858,41 @@ class TestOpenAICompatibilityHelpers:
         assert system_prompt == "original system\n\ndeveloper rules"
         assert chat_messages == [{"role": "user", "content": "hi"}]
         assert image_b64 is None
+
+    def _turn(self, images: int):
+        content = [{"type": "text", "text": "what is this?"}]
+        for _ in range(images):
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,AAAA"},
+                }
+            )
+        return {"role": "user", "content": content}
+
+    def test_two_images_on_one_turn_are_counted(self):
+        payload = ChatCompletionRequest(messages = [self._turn(2)])
+        assert _images_in_last_user_message(payload.messages) == 2
+
+    def test_one_image_per_turn_is_not_a_multi_image_call(self):
+        payload = ChatCompletionRequest(
+            messages = [
+                self._turn(1),
+                {"role": "assistant", "content": "the first one"},
+                self._turn(1),
+            ]
+        )
+        assert _images_in_last_user_message(payload.messages) == 1
+
+    def test_earlier_multi_image_turn_does_not_block_a_later_one(self):
+        payload = ChatCompletionRequest(
+            messages = [
+                self._turn(2),
+                {"role": "assistant", "content": "ok"},
+                {"role": "user", "content": "and now just text"},
+            ]
+        )
+        assert _images_in_last_user_message(payload.messages) == 0
 
 
 # =====================================================================

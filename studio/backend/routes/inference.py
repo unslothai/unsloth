@@ -14124,6 +14124,21 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
     return "\n\n".join(p for p in system_parts if p), chat_messages, first_image_b64
 
 
+def _images_in_last_user_message(messages: list) -> int:
+    """Image parts on the newest user turn.
+
+    Per message, not per thread: earlier turns keep their own images, and only
+    the turn being answered decides whether one call carries several.
+    """
+    for msg in reversed(messages):
+        if msg.role != "user":
+            continue
+        if not isinstance(msg.content, list):
+            return 0
+        return sum(1 for part in msg.content if part.type == "image_url")
+    return 0
+
+
 # ── External provider proxy ──────────────────────────────────────
 
 
@@ -18041,6 +18056,15 @@ async def openai_chat_completions(
                 raise HTTPException(
                     status_code = 400,
                     detail = "Image provided but current model is text-only. Load a vision model.",
+                )
+
+            if _images_in_last_user_message(payload.messages) > 1:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = (
+                        "This model takes one image per message. Attach one, or load a"
+                        " GGUF build of it, which accepts several."
+                    ),
                 )
 
             image = await asyncio.to_thread(
