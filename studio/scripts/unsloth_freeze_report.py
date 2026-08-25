@@ -84,6 +84,29 @@ def _span(seconds: int) -> str:
     return f"{m} minutes" if not sec else f"{m} minutes {sec} seconds"
 
 
+def find_desktop_app() -> list[str] | None:
+    """Locate Unsloth DESKTOP, which is not the same program as `unsloth studio`.
+
+    This matters more than it looks. `unsloth studio` is the pip CLI: it serves the web UI
+    and never runs the Tauri shell, so none of the desktop renderer logic executes and no
+    `backend-*.log` is written (that file is produced by the shell, see
+    studio/src-tauri/src/diagnostics/phase_log.rs). Pointing this script at the CLI
+    therefore measures a different program from the one that freezes, and every candidate
+    comes back with nothing observed.
+    """
+    for cand in (shutil.which("unsloth-studio"),
+                 "/usr/bin/unsloth-studio",
+                 "/opt/Unsloth/unsloth-studio"):
+        if cand and Path(cand).is_file():
+            return [str(cand)]
+    globs = ["Unsloth*.AppImage", "Applications/Unsloth*.AppImage",
+             "Downloads/Unsloth*.AppImage", ".local/bin/Unsloth*.AppImage"]
+    hits = [q for g in globs for q in sorted(HOME.glob(g)) if q.is_file()]
+    if hits:
+        return [str(max(hits, key = lambda q: q.stat().st_mtime))]
+    return None
+
+
 def sh(args, timeout = 20):
     try:
         r = subprocess.run(args, capture_output = True, text = True, timeout = timeout)
@@ -333,7 +356,13 @@ def run_candidate(label, extra, why, cmd) -> dict:
     elif n_mon == 0 and n_live == 0:
         # Do not guess the cause: the preflight line the app already printed says which
         # of the two it is, and naming the wrong one sends the user off fixing nothing.
-        if "NotInstalled" in preflight:
+        if not preflight and not applied:
+            why = (
+                "the desktop shell never started. If you launched `unsloth studio`, that "
+                "is the command line version and not the app that freezes; re-run this "
+                "with the path to Unsloth Desktop"
+            )
+        elif "NotInstalled" in preflight:
             why = (
                 "Unsloth Studio itself is not installed, so there is no backend to "
                 "observe. Open the app once and let it finish installing, then re-run"
@@ -375,8 +404,19 @@ def run_candidate(label, extra, why, cmd) -> dict:
 
 
 def main() -> int:
-    cmd = sys.argv[1:] or ["unsloth", "studio"]
-    if not shutil.which(cmd[0]):
+    cmd = sys.argv[1:] or find_desktop_app()
+    if not cmd:
+        print(
+            "Could not find Unsloth Desktop.\n\n"
+            "Note this is NOT the same as `unsloth studio`, which is the command line\n"
+            "version: it serves the web interface but does not run the desktop shell, so\n"
+            "it cannot show the freeze you are seeing and there is nothing to measure.\n\n"
+            "Pass the desktop app explicitly, for example:\n"
+            f"  python3 {Path(__file__).name} ~/Applications/Unsloth-Desktop.AppImage\n"
+            "  python3 {} /usr/bin/unsloth-studio".format(Path(__file__).name)
+        )
+        return 2
+    if not shutil.which(cmd[0]) and not Path(cmd[0]).is_file():
         print(
             f"cannot find {cmd[0]!r} on PATH. Pass the command explicitly, for example:\n"
             f"  python3 {Path(__file__).name} ~/Applications/Unsloth-Desktop.AppImage"
