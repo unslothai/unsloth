@@ -983,7 +983,9 @@ def test_a_markup_only_stall_is_not_nudged(executed):
     the nudge would merge into the user's own message. Easiest to reach on a
     transport that does not heal text-form calls, which is the Codex shape.
     """
-    markup = '<tool_call>{"name": "nope", "arguments": {"q": "I will look this up now"}}</tool_call>'
+    markup = (
+        '<tool_call>{"name": "nope", "arguments": {"q": "I will look this up now"}}</tool_call>'
+    )
     transport = FakeTransport(
         [
             [_sse({"content": markup}), _sse(finish = "stop"), _DONE],
