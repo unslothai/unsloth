@@ -449,11 +449,9 @@ def test_catalog_cached_entries_filter_non_chat_rows(monkeypatch, tmp_path):
         # config for can_chat to read, so only its own flag keeps it out of chat.
         {"repo_id": "org/Sdxl", "task": None, "diffusers": True},
     ]
-    # The real variant lister, not a stub for the one symbol the old filename glob needed:
-    # it is what decides these labels now, and it is what picks the load target, so a stub
-    # here would test the plumbing and none of the answer. It costs 0.1s and pulls neither
-    # torch nor fastapi, so the suite keeps its no-server-import property. syspath_prepend
-    # is undone after the test, so nothing else in the file gains an importable backend.
+    # The real variant lister, not a stub: it decides these labels and picks the load target,
+    # so a stub tests the plumbing and none of the answer. Pulls neither torch nor fastapi, and
+    # syspath_prepend is undone after the test, so the suite keeps its no-server-import property.
     monkeypatch.syspath_prepend(str(_REPO_ROOT / "studio" / "backend"))
     monkeypatch.setattr(cat, "_cached_catalog_rows", lambda: (gguf_rows, model_rows))
 
@@ -2444,15 +2442,12 @@ def test_catalog_pins_an_active_cache_adapter_to_its_snapshot(tmp_path):
 QUANT_LAYOUTS = [
     ([("Tiny-Q4_K_M.gguf", 16)], "Q4_K_M"),
     ([("Tiny-Q4_K_M.gguf", 16), ("Tiny-Q8_0.gguf", 16)], "Q4_K_M, Q8_0"),
-    # One directory per quant. The old glob was snapshots/*/*.gguf, one level deep, so
-    # this whole shape rendered as no detail at all.
+    # One directory per quant. snapshots/*/*.gguf is one level deep, so this rendered blank.
     ([("Q4_K_M/Tiny-Q4_K_M.gguf", 16), ("Q8_0/Tiny-Q8_0.gguf", 16)], "Q4_K_M, Q8_0"),
-    # A split quant is ONE thing to pick, not three. The old glob listed every shard:
-    # "Q4_K_M-00001-of-00003, Q4_K_M-00002-of-00003, Q4_K_M-00003-of-00003".
+    # A split quant is ONE thing to pick. The glob listed every shard as its own label.
     ([(f"Tiny-Q4_K_M-0000{n}-of-00003.gguf", 16) for n in (1, 2, 3)], "Q4_K_M"),
-    # The case the host decides. fnmatch normcases on Windows and not on Linux or macOS,
-    # so "*.gguf" found this file on one platform and not the others, and the same cache
-    # described itself differently depending on the machine reading it.
+    # The case the host decides: fnmatch normcases on Windows and not on Linux or macOS, so
+    # "*.gguf" found this file on one platform only and the cache read differently per machine.
     ([("Tiny-Q8_0.GGUF", 16)], "Q8_0"),
     ([("Tiny-Q4_K_M.gguf", 16), ("mmproj-F16.gguf", 16)], "Q4_K_M"),
 ]

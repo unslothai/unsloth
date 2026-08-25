@@ -6826,9 +6826,8 @@ def test_a_speech_arch_is_the_same_answer_in_every_layer():
     assert LlamaCppBackend._SPEECH_ARCHES is SPEECH_GGUF_ARCHS
 
 
-# The names this PR moved into hub.services.models.catalog_classification (and the two it
-# stopped importing from utils.gguf_archs). Each was importable from routes.models in every
-# release so far, so each is a name something outside this file may be holding.
+# Moved into catalog_classification, or no longer imported from utils.gguf_archs. Each was
+# importable from routes.models before, so each may be held by something outside this repo.
 MOVED_OUT_OF_ROUTES_MODELS = (
     "SPEECH_GGUF_ARCHS",
     "_H3_DENOISER_GGUF_PREFIXES",
@@ -6848,11 +6847,9 @@ MOVED_OUT_OF_ROUTES_MODELS = (
 def test_a_name_that_moved_out_of_routes_models_still_resolves_there(name):
     """Extracting a helper must not retire the name it was reachable by.
 
-    Not a style rule. ``core.inference.llama_cpp._video_arch_is_pickable`` imports
-    ``_video_family_buildable`` from here inside a ``try`` whose ``except Exception``
-    returns True, so when the name went missing nothing raised: the probe just started
-    saying yes, and every unassemblable video GGUF was told to open a Video page that
-    would not offer it. A missing name is not always an ImportError somebody sees.
+    Not style. ``llama_cpp._video_arch_is_pickable`` imports ``_video_family_buildable`` from
+    here inside a ``try`` returning True on any exception, so losing the name raised nothing:
+    the probe just started saying yes, promising the Video page GGUFs it will not offer.
     """
     assert hasattr(models_route, name)
 

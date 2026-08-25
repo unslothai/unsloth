@@ -57,11 +57,10 @@ _task_classify_sort_key = _catalog_classification._task_classify_sort_key
 # probe's `except Exception: return True` reads the raise as "the page can build it",
 # promising an MoE or familyless GGUF a load that dies in llama-server.
 _video_family_buildable = _catalog_classification._video_family_buildable
-# The rest of what moved. No in-repo caller reads these any more, which is exactly why they
-# went unnoticed: the one name that did have a caller only announced itself as a wrong
-# message, never as an ImportError. Each of these was importable from routes.models in
-# every release so far and two of them are public, so an older script or a downstream fork
-# can be holding one, and there is no way to find that out from inside this repo.
+# The rest of what moved. Nothing in-repo reads these, which is why they went unnoticed --
+# the one name that did have a caller surfaced as a wrong message, never an ImportError.
+# All were importable from routes.models before and two are public, so a downstream fork or
+# an older script may hold one, which this repo cannot see.
 _H3_DENOISER_GGUF_PREFIXES = _catalog_classification._H3_DENOISER_GGUF_PREFIXES
 _LOADABLE_MEDIA_GGUF_TASKS = _catalog_classification._LOADABLE_MEDIA_GGUF_TASKS
 _MAX_TASK_CLASSIFY_GGUFS = _catalog_classification._MAX_TASK_CLASSIFY_GGUFS
@@ -3857,10 +3856,8 @@ def _repo_id_will_not_resolve(repo_cache_dir: Path) -> bool:
 def _default_ref_offers_no_whole_quant(repo_cache_dir: Path) -> bool:
     """See hub.utils.inventory_scan; True when refs/main resolves onto a torn quant.
 
-    _gguf_copy_is_usable no longer asks this -- it now requires the active root and a
-    ref snapshot with complete variants, which is strictly the stronger test -- so this
-    has no caller here. It stays because it was importable from this module before, and
-    a name that is only ever read from outside cannot be seen to be in use from inside.
+    _gguf_copy_is_usable asks the stronger question now, so this has no caller here. It stays
+    because it was importable before, and a name read only from outside looks unused inside.
     """
     from hub.utils.inventory_scan import default_ref_offers_no_whole_quant as impl
     return impl(repo_cache_dir)
