@@ -22633,7 +22633,23 @@ class LlamaCppBackend:
                 # the GPU only at batch >= 32, and decode is batch 1), so the
                 # penalty tracks core count. Reading the real count keeps a small
                 # host from being quoted a large host's numbers.
-                host = HostProfile(threads = os.cpu_count() or 1),
+                host = HostProfile(
+                    threads = os.cpu_count() or 1,
+                    # Wired, not defaulted. On a unified-memory APU the "VRAM"
+                    # the caller credits IS system RAM, so an -ot spill moves
+                    # bytes between two names for one pool: it frees no device
+                    # memory and buys nothing but the CPU backend's slower read
+                    # path. The planner abstains outright on those, but only if
+                    # it is told, and left at the default False it would plan a
+                    # spill on every Strix Halo (gfx1151), Strix Point (gfx1150),
+                    # Krackan (gfx1152) and Phoenix iGPU. Studio already
+                    # classifies exactly these, from the driver's own integrated
+                    # flag first, then gcnArchName, then the device-name
+                    # substrings the AMD wheels leave when both are absent.
+                    unified_memory = self._amd_apu_wants_unified_memory(
+                        inputs.get("gpu_indices")
+                    ),
+                ),
             ),
             # The cache Studio already priced for THIS launch, byte-accurately:
             # cache dtype, SWA windows, MLA latents, unified vs per-slot streams,

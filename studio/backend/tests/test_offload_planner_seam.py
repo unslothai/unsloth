@@ -35,6 +35,12 @@ class _Stub:
 
     _PIPELINE_PER_DEVICE_OVERHEAD_MIB = 1024
     _HOST_RAM_HEADROOM_MIB = 2048
+    # Discrete by default, so every existing case here is a discrete host. The
+    # unified answer is the APU's, and it is exercised deliberately below.
+    _unified = False
+
+    def _amd_apu_wants_unified_memory(self, gpu_indices = None):
+        return self._unified
 
     def __init__(
         self,
@@ -449,3 +455,43 @@ def test_the_revocation_runs_only_on_retries():
     head = src[idx : idx + 1600]
     assert "if label:" in head
     assert "_drop_tensor_spill" in head
+
+
+# ------------------------------------------------- unified memory APUs (ROCm)
+
+
+def test_a_unified_memory_apu_is_declared_to_the_planner():
+    """The seam has to TELL the planner the host is unified; it cannot guess.
+
+    On a unified-memory APU the credited "VRAM" is system RAM, so an -ot spill
+    moves bytes between two names for one pool: it frees no device memory and
+    only buys the CPU backend's slower read path. plan_placement abstains on
+    those, but solely on HostProfile.unified_memory, which defaults False.
+
+    The neighbouring `shared_gpu_ids` guard does not cover this. It is populated
+    only when `is_vulkan_backend` is true (Vulkan reports total VRAM 0 for an
+    iGPU), so a Strix Halo on ROCm -- what scripts/install_rocm_wsl_strixhalo.sh
+    installs -- arrives with an EMPTY shared set, its APU "VRAM" credited AND
+    host RAM credited, which counts one pool twice.
+    """
+    discrete = _Stub()
+    apu = _Stub()
+    apu._unified = True
+
+    # Same numbers either way, so the difference is attributable to the flag.
+    got_discrete = _plan(discrete, free_mib = 12 * 1024)
+    got_apu = _plan(apu, free_mib = 12 * 1024)
+
+    assert got_apu is not None
+    assert not got_apu.spills_anything
+    assert "unified memory" in got_apu.reason
+    assert LlamaCppBackend._spill_plan_flags_for(got_apu) == []
+
+    assert got_discrete is not None
+    assert got_discrete.spills_anything, "the discrete host is free to plan"
+
+    # And the seam passes the real predicate rather than leaving the default.
+    import inspect
+
+    compact = "".join(inspect.getsource(LlamaCppBackend._planned_tensor_spill).split())
+    assert "unified_memory=self._amd_apu_wants_unified_memory(" in compact
