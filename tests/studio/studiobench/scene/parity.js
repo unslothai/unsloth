@@ -303,10 +303,13 @@
 
   // ── VISIBLE-REGION PARITY ────────────────────────────────────────────────────────────────────
   //
-  // THE POLICY THIS SERVES. All changes must preserve UI and UX idempotency, with two exemptions:
-  // a difference may be accepted deliberately when performance improves dramatically, and a
-  // difference that exists only OFF SCREEN is fine by definition, because rendering only what is
-  // visible is an accepted technique rather than a parity violation.
+  // THE POLICY THIS SERVES. All changes must preserve UI and UX idempotency, with three
+  // exemptions: a difference may be accepted deliberately when performance improves dramatically;
+  // a difference that exists only OFF SCREEN is fine by definition, because rendering only what is
+  // visible is an accepted technique rather than a parity violation; and a select-all need not
+  // select all, PROVIDED the copy stays complete. Nothing in this file can see the third -- the
+  // clipboard is scored behaviourally, in analysis/behaviour.py -- so a selection that shrank is
+  // not a finding here.
   //
   // The whole-document digest above cannot express the second exemption. It compares everything
   // that is in the DOM, so ANY deferred off-screen work fails it by construction -- virtualization,
@@ -627,6 +630,20 @@
         const live = new Set((dom.streamingMessages && dom.streamingMessages()) || []);
         const byOrdinal = {};
         let mounted_ever_visible = 0;
+        // TWO MOUNTED ROWS CANNOT BE ONE MESSAGE, and until this counter existed nothing said so.
+        // The assignment below is keyed by ordinal, so a second row reusing one SILENTLY REPLACED
+        // the first row's digest, and `VIS.ever` is a Set of numbers so it collapsed them too.
+        // Whether the ghost row was caught was pure DOM order: reproduced in a browser, the same
+        // ghost inserted BEFORE the real row returns MATCH and AFTER it returns DIFFER.
+        //
+        // COUNTED DIRECTLY, NOT DERIVED. `unmounted_at_capture` looks like it should notice, but
+        // the extra row and the vacancy cancel in exactly the renumber case, so it reads a clean 0
+        // over a live collision.
+        //
+        // The residual: a collision that had resolved to one row by the time `capture()` ran is
+        // not detectable here. Seeing it needs the clash recorded where the ordinal is stamped.
+        let ordinal_collisions = 0;
+        const collided = [];
         for (let i = 0; i < nodes.length; i++) {
           const el = nodes[i];
           const ord = typeof el.__sbOrdinal === "number" ? el.__sbOrdinal : ordinalOf(el, i + 1);
@@ -658,6 +675,10 @@
           // holes -- and those are the checks that can say what a right ordinal would be, which a
           // digest comparison against an arm that publishes none never could.
           const sig = signature(el, VIRTUALIZATION_ATTRS);
+          if (Object.prototype.hasOwnProperty.call(byOrdinal, String(ord))) {
+            ordinal_collisions += 1;
+            if (collided.indexOf(ord) === -1) collided.push(ord);
+          }
           byOrdinal[String(ord)] = {
             role: el.getAttribute("data-role") || "?",
             digest: hash(sig),
@@ -727,6 +748,11 @@
           // ordinal and so appear nowhere above, which is a hole in the compared set rather than
           // agreement, and it is counted here so a reader can see it is zero.
           unplaced_rows: VIS.unplaced,
+          // Mounted, ever-visible rows whose ordinal a row already written had. See the note in
+          // the loop: the digest map and `ever_visible` both lose one of the two, so a nonzero
+          // count here means neither of them can be compared.
+          ordinal_collisions,
+          collided_ordinals: collided.sort((a, b) => a - b),
           messages: byOrdinal,
         };
       } catch (e) {

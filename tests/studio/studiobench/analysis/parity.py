@@ -880,6 +880,116 @@ def compare(base: Optional[dict], treat: Optional[dict]) -> dict:
     }
 
 
+def execution_verdict(base_row: Optional[dict], treat_row: Optional[dict]) -> Optional[dict]:
+    """The verdict that the DIGEST never gets to answer, or `None` when both arms ran.
+
+    EXTRACTED SO THERE IS ONE COPY, not for tidiness. Only `compare_rows` ever consulted this; the
+    visible-region and behavioural paths reduced execution to a boolean conjunction of `ran`, which
+    cannot express WHICH arm went idle. An action that RUNS on one build and cannot be performed on
+    the other leaves no digest to differ, and on a windowed arm those two reports are the whole UI
+    verdict, so that class had nowhere left to be seen. A predicate copied into them would drift the
+    way the gate-admission lists did before `INVALIDATING_CELL_GATES` was centralised.
+
+    The returned dict is the caller's to merge or return whole: `compare_rows` returns it, the other
+    two keep their own capture comparison and take `one_sided` and `idle_reason` off it.
+    """
+    ran: dict[str, bool] = {}
+    for label, row in (("base", base_row), ("treatment", treat_row)):
+        if not isinstance(row, dict):
+            return {
+                "verdict": NOT_COMPARABLE,
+                "reason": f"the {label} arm has no row for this action",
+                "moved": [],
+                "one_sided": "",
+                "idle_reason": "",
+                "style_verdict": NOT_COMPARABLE,
+                "style_reason": "",
+            }
+        ran[label] = bool(row.get("ran"))
+    if all(ran.values()):
+        return None
+    # Named after the arm that DID run, so an empty string is the symmetric case.
+    live = [label for label in ("base", "treatment") if ran[label]]
+    label = "base" if not ran["base"] else "treatment"
+    row = base_row if label == "base" else treat_row
+    assert isinstance(row, dict)
+    reason = row.get("reason") or "no reason recorded"
+    # A MISSED SLOT IS NOT A BUILD DIFFERENCE, even when only one arm missed it, and this
+    # distinction is the whole load-bearing part of `one_sided`. `ran=false` has two causes
+    # that look identical in the count and mean opposite things. The runner arriving after
+    # the slot closed says nothing about the build: the schedule is fixed, the budgets are
+    # small, and a machine slow enough to miss a slot at 45700ms is slow enough to miss it
+    # on the next repetition too, so corroboration does not separate them -- the misses are
+    # correlated through the runner, not independent draws. Treating that as asymmetric
+    # execution reds the job on machine speed and breaks the invariant the mutation study
+    # established, that a missed slot cannot move this verdict. A precondition failure is
+    # the opposite: `image_upload` records `slot_missed=false` with "no visible attachments
+    # button", and a control that stops opening records exactly that. So the signal is
+    # `slot_missed`, which the driver already writes, and not merely which arm went idle.
+    missed_slot = bool(row.get("slot_missed"))
+    detail = (
+        f"the action did not run on the {label} arm ({reason}), so any "
+        "agreement here is about a surface nothing touched"
+    )
+    if live and not missed_slot:
+        detail = (
+            f"the action RAN on the {live[0]} arm and could not be performed on the "
+            f"{label} arm ({reason}), so the two builds did not behave the same way"
+        )
+    if missed_slot:
+        live = []
+    return {
+        "verdict": NOT_EXERCISED,
+        "moved": [],
+        "one_sided": live[0] if live else "",
+        # The idle arm's OWN not_run string, unwrapped. `reason` above is prose built for a
+        # reader; the exemption has to match on what the action actually recorded.
+        "idle_reason": reason,
+        "reason": detail,
+        "style_verdict": NOT_EXERCISED,
+        "style_reason": "",
+    }
+
+
+def expect_regression(base_row: Optional[dict], treat_row: Optional[dict]) -> tuple[str, str]:
+    """(the arm whose own assertion failed while the other's passed, why) or `("", "")`.
+
+    AN ACTION THAT RAN AND FAILED ITS OWN ASSERTION IS NOT A COMPARISON OF WHAT IT NAMES, and
+    `ran` alone cannot see it. `stop_generation` returns `ran = True, expect_ok = stopped_ms is not
+    None`, so a head on which Stop no longer ends the stream records a row this layer read as a
+    perfectly good observation. `scoring.from_payload`, `report.payload` and `--assert-liveness`
+    already know better; the parity layer was the one left reading only `ran`.
+
+    CARRIED SEPARATELY FROM THE DIGEST, not folded into the verdict. `stop_generation` is on the
+    declared unstable list, so its DOM difference is excused -- but that exemption measures one
+    quantity (does this digest race) and the assertion is another (did the button do its job). They
+    share an action name and nothing else, so the caller gets its own signal and decides.
+
+    ONLY AN ASYMMETRY. `expect_ok is None` means the action asserts nothing, and both arms failing
+    means the fixture cannot reach the state on either build -- coverage lost, not a build
+    difference. One arm asserting successfully while the other does not is the question asked here.
+
+    SHARED WITH THE VISIBLE AND BEHAVIOURAL PATHS for the reason on `execution_verdict`: those two
+    ARE the UI verdict on a windowed arm, and `stop_generation` has no behavioural invariant, so an
+    assertion failing on one arm alone left no trace in either.
+    """
+    rows_ = (("base", base_row), ("treatment", treat_row))
+    if not all(isinstance(row, dict) for _label, row in rows_):
+        return "", ""
+    failed = [label for label, row in rows_ if row.get("expect_ok") is False]  # type: ignore[union-attr]
+    passed = [label for label, row in rows_ if row.get("expect_ok") is True]  # type: ignore[union-attr]
+    if not (len(failed) == 1 and passed):
+        return "", ""
+    who = failed[0]
+    row = base_row if who == "base" else treat_row
+    assert isinstance(row, dict)
+    return who, (
+        f"the action ran on both arms and its own assertion failed on the {who} arm "
+        f"({row.get('reason') or 'no reason recorded'}), so the two builds did not behave "
+        "the same way"
+    )
+
+
 def compare_rows(base_row: Optional[dict], treat_row: Optional[dict]) -> dict:
     """`compare()`, gated on whether the action actually RAN on both arms.
 
@@ -902,101 +1012,16 @@ def compare_rows(base_row: Optional[dict], treat_row: Optional[dict]) -> dict:
     one regression class that produces no digest to differ. An arm that merely arrived after its
     slot closed is a slow machine and cannot move a verdict, whether one arm missed it or both.
     Only the first sets `one_sided`; the caller decides what to do with it.
+
+    Both halves live in `execution_verdict` and `expect_regression` so the visible-region and
+    behavioural paths can ask the same two questions of the same code; see those docstrings.
     """
-    ran: dict[str, bool] = {}
-    for label, row in (("base", base_row), ("treatment", treat_row)):
-        if not isinstance(row, dict):
-            return {
-                "verdict": NOT_COMPARABLE,
-                "reason": f"the {label} arm has no row for this action",
-                "moved": [],
-                "one_sided": "",
-                "style_verdict": NOT_COMPARABLE,
-                "style_reason": "",
-            }
-        ran[label] = bool(row.get("ran"))
-    if not all(ran.values()):
-        # Named after the arm that DID run, so an empty string is the symmetric case.
-        live = [label for label in ("base", "treatment") if ran[label]]
-        label = "base" if not ran["base"] else "treatment"
-        row = base_row if label == "base" else treat_row
-        assert isinstance(row, dict)
-        reason = row.get("reason") or "no reason recorded"
-        # A MISSED SLOT IS NOT A BUILD DIFFERENCE, even when only one arm missed it, and this
-        # distinction is the whole load-bearing part of `one_sided`. `ran=false` has two causes
-        # that look identical in the count and mean opposite things. The runner arriving after
-        # the slot closed says nothing about the build: the schedule is fixed, the budgets are
-        # small, and a machine slow enough to miss a slot at 45700ms is slow enough to miss it
-        # on the next repetition too, so corroboration does not separate them -- the misses are
-        # correlated through the runner, not independent draws. Treating that as asymmetric
-        # execution reds the job on machine speed and breaks the invariant the mutation study
-        # established, that a missed slot cannot move this verdict. A precondition failure is
-        # the opposite: `image_upload` records `slot_missed=false` with "no visible attachments
-        # button", and a control that stops opening records exactly that. So the signal is
-        # `slot_missed`, which the driver already writes, and not merely which arm went idle.
-        missed_slot = bool(row.get("slot_missed"))
-        detail = (
-            f"the action did not run on the {label} arm ({reason}), so any "
-            "agreement here is about a surface nothing touched"
-        )
-        if live and not missed_slot:
-            detail = (
-                f"the action RAN on the {live[0]} arm and could not be performed on the "
-                f"{label} arm ({reason}), so the two builds did not behave the same way"
-            )
-        if missed_slot:
-            live = []
-        return {
-            "verdict": NOT_EXERCISED,
-            "moved": [],
-            "one_sided": live[0] if live else "",
-            # The idle arm's OWN not_run string, unwrapped. `reason` below is prose built for a
-            # reader; the exemption has to match on what the action actually recorded.
-            "idle_reason": reason,
-            "reason": detail,
-            "style_verdict": NOT_EXERCISED,
-            "style_reason": "",
-        }
+    idle = execution_verdict(base_row, treat_row)
+    if idle is not None:
+        return idle
     assert base_row is not None and treat_row is not None
     out = compare(base_row.get("parity"), treat_row.get("parity"))
-    # AN ACTION THAT RAN AND FAILED ITS OWN ASSERTION IS NOT A COMPARISON OF WHAT IT NAMES, and
-    # `ran` alone cannot see it. `stop_generation` returns `ran = True, expect_ok = stopped_ms is
-    # not None`, so a head on which Stop no longer ends the stream records a row this layer reads
-    # as a perfectly good observation. Every other reader already knows better --
-    # `scoring.from_payload` drops such a row's timing and `report.payload` and `--assert-
-    # liveness` both single it out -- and the parity layer was the one left reading only `ran`.
-    #
-    # CARRIED SEPARATELY FROM THE DIGEST, not folded into the verdict, and that is the whole point
-    # of it. `stop_generation` is on the declared unstable list, so its DOM difference is excused;
-    # applying that exemption to the assertion as well is applying a measurement of one quantity
-    # (does this digest race) to a different one (did the button do its job). The two happen to
-    # share an action name and nothing else. So the caller gets its own signal and decides.
-    #
-    # ONLY AN ASYMMETRY. `expect_ok is None` means the action asserts nothing, and both arms
-    # failing means the fixture cannot reach the state on either build -- coverage lost, not a
-    # difference between the builds. One arm asserting successfully while the other does not is
-    # the two builds behaving differently, which is the question this instrument asks.
-    failed = [
-        label
-        for label, row in (("base", base_row), ("treatment", treat_row))
-        if row.get("expect_ok") is False
-    ]
-    passed = [
-        label
-        for label, row in (("base", base_row), ("treatment", treat_row))
-        if row.get("expect_ok") is True
-    ]
-    out["expect_regressed"] = failed[0] if len(failed) == 1 and passed else ""
-    if out["expect_regressed"]:
-        _who = out["expect_regressed"]
-        _row = base_row if _who == "base" else treat_row
-        out["expect_reason"] = (
-            f"the action ran on both arms and its own assertion failed on the {_who} arm "
-            f"({_row.get('reason') or 'no reason recorded'}), so the two builds did not behave "
-            "the same way"
-        )
-    else:
-        out["expect_reason"] = ""
+    out["expect_regressed"], out["expect_reason"] = expect_regression(base_row, treat_row)
     return out
 
 
@@ -1086,10 +1111,16 @@ def summarise(results: Iterable[dict[str, Any]]) -> dict[str, int]:
 
 # ── visible-region parity ───────────────────────────────────────────
 #
-# THE POLICY. All changes must preserve UI and UX idempotency, with two exemptions: a difference
-# may be accepted deliberately when performance improves dramatically, and a difference that exists
+# THE POLICY. All changes must preserve UI and UX idempotency, with three exemptions: a difference
+# may be accepted deliberately when performance improves dramatically; a difference that exists
 # only OFF SCREEN is fine by definition, because rendering only what is visible is an accepted
-# technique rather than a parity violation.
+# technique rather than a parity violation; and a select-all need not select all, PROVIDED the copy
+# it produces stays complete.
+#
+# The third is what makes deferral and virtualization cheap: the copy path stops depending on what
+# is mounted, so it may serialise the thread from the message store as markdown or plain text
+# instead of reproducing a DOM selection. Completeness of the copied content is REQUIRED -- silent
+# truncation is data loss -- and visual selection fidelity is NOT.
 #
 # `compare()` above cannot express the second exemption. It digests the thread whether or not any
 # of it is on screen, so deferred off-screen work fails it by construction: virtualization,
@@ -1121,7 +1152,9 @@ CLAIM_VISIBLE = (
 )
 CLAIM_BEHAVIOURAL = (
     "behavioural parity: the scroll extent matches and the invariants a windowed mount breaks "
-    "first still hold. Says NOTHING about how anything looks"
+    "first still hold, including that each arm's clipboard covers the thread's own visible text "
+    "BY LENGTH. Says NOTHING about how anything looks, and nothing about WHICH characters were "
+    "copied"
 )
 
 #: THE POLICY EVERY VERDICT IS JUDGED AGAINST, printed beside the claim.
@@ -1132,12 +1165,29 @@ CLAIM_BEHAVIOURAL = (
 #:
 #: The exemptions are not loopholes. The first is a decision someone makes on the record with a
 #: number attached; the second is a definition, because rendering only what is visible is an
-#: accepted technique rather than a parity violation. Neither removes the need for a floor: a
-#: difference that is exempt still has to be shown to be the difference you think it is, which is
-#: what the null control is for.
+#: accepted technique rather than a parity violation; the third is CONDITIONAL, and the condition
+#: is the part that is required -- the copy must be complete, and only the visual fidelity of the
+#: selection is given up. None of the three removes the need for a floor: a difference that is
+#: exempt still has to be shown to be the difference you think it is, which is what the null
+#: control is for.
+#:
+#: NO MODE GRANTS THE THIRD ON A DIGEST. `--mode behaviour` is the only one that speaks to it at
+#: all, through `clipboard_carries_the_whole_thread`, which scores the copy against the THREAD
+#: rather than against the other arm. Where a payload carries no readable `select_all_copy` the
+#: gate records that the exemption exists and does not grant it.
+#:
+#: And it scores it BY LENGTH. That is a proxy for completeness, not completeness itself, so the
+#: printed line says so rather than leaving "complete" to be read as a content comparison. A
+#: content comparison is not available here: the base arm's clipboard is the DOM's rendered text
+#: while a store-based copy is markdown SOURCE, so the two are different serialisations of one
+#: conversation and comparing their characters fails on a CORRECT build. The coverage band is what
+#: carries the weight, and it is the band that refused both defects this was written for --
+#: truncation at 0.61 of the thread and substitution at 2.16 -- so it is interpolated from the
+#: live constants by `behaviour_policy()` rather than written out here, where it could drift.
 POLICY = (
-    "UI and UX idempotency is required, with two exemptions: a deliberate difference accepted "
-    "for a dramatic performance improvement, and a difference that exists only OFF SCREEN"
+    "UI and UX idempotency is required, with three exemptions: a deliberate difference accepted "
+    "for a dramatic performance improvement, a difference that exists only OFF SCREEN, and a "
+    "select-all that does not select all PROVIDED the copy it produces stays complete"
 )
 
 #: What each mode can and cannot decide under that policy. The point of the second half of each
@@ -1159,9 +1209,27 @@ POLICY_BY_MODE = {
         f"{POLICY}. This mode judges neither requirement directly. It checks invariants a "
         "windowed mount breaks first -- scroll extent, what the clipboard carries, whether the "
         "thread survives being reopened -- so a pass here is evidence about BEHAVIOUR and says "
-        "nothing about appearance. It cannot grant either exemption"
+        "nothing about appearance. It cannot grant the performance or off-screen exemptions, and "
+        "it is the only mode that speaks to the select-all one, on the half of that exemption "
+        "that is REQUIRED: whether the copy stays complete. It measures that BY LENGTH, scoring "
+        "each arm's clipboard against the thread's own visible text and requiring coverage in "
+        "{min}-{max}. It does not compare the copied characters and cannot: the base arm's "
+        "clipboard is the DOM's rendered text and a store-based copy is markdown source, so a "
+        "character comparison of two correct serialisations fails. Without a readable "
+        "select_all_copy it records the exemption rather than granting it"
     ),
 }
+
+
+def behaviour_policy(min_coverage: float, max_coverage: float) -> str:
+    """The behaviour-mode policy line with the coverage band it actually enforces filled in.
+
+    The band lives in `analysis.behaviour`, which imports THIS module, so the caller passes it in
+    rather than this module importing back and closing a cycle. Interpolating it is the point: a
+    band written out by hand here drifts away from the one enforced, and the sentence a reader
+    trusts is then describing a gate that no longer exists.
+    """
+    return POLICY_BY_MODE["behaviour"].format(min = min_coverage, max = max_coverage)
 
 
 def compare_visible(base: Optional[dict], treat: Optional[dict]) -> dict:
@@ -1195,6 +1263,52 @@ def compare_visible(base: Optional[dict], treat: Optional[dict]) -> dict:
             ),
             "moved": [],
             "claim": CLAIM_VISIBLE,
+        }
+
+    # BEFORE THE TWO SETS ARE COMPARED, because a collision is what makes them untrustworthy.
+    # `scene/parity.js` keys its per-message digests by ordinal, so two mounted rows sharing an
+    # `aria-posinset` -- a virtualizer renumbering a recycled row wrongly -- leave one digest where
+    # two rows were on screen, and `ever_visible` collapses them too. Both quantities below are then
+    # short by a row, and whether the verdict came out MATCH or DIFFER would turn only on which of
+    # the two survived, which is DOM order and nothing else.
+    #
+    # Read defensively so a payload recorded before the counter existed compares exactly as it did.
+    collisions = {
+        label: int(side.get("ordinal_collisions") or 0)
+        for label, side in (("base", base), ("treatment", treat))
+    }
+    # A SEVERE FINDING OUTRANKS THIS REFUSAL, and exactly one finding qualifies. "One arm's
+    # viewport ended EMPTY and the other's did not" is marked NOT SUPPRESSIBLE where it is raised,
+    # because losing the thread is a different kind of statement from a capture that could not be
+    # read -- and a collision provably cannot manufacture it. A collision needs TWO mounted rows
+    # at one position, so the map it corrupts still has at least one entry in it; it can merge two
+    # entries and never empty a map. So the one thing a collision cannot have caused is still
+    # reported rather than swallowed by a blanket refusal.
+    #
+    # Only that one. Every other comparison below IS corrupted by a collision: `ever_visible` loses
+    # an ordinal on one arm alone, so "the two arms put different messages on screen" can be
+    # entirely an artefact of the collision, and the per-ordinal digests are short by a row.
+    lost_the_thread = (len(base.get("messages") or {}) == 0) != (
+        len(treat.get("messages") or {}) == 0
+    )
+    if any(collisions.values()) and not lost_the_thread:
+        which = ", ".join(
+            f"{label} {n} at ordinal(s) "
+            f"{sorted((base if label == 'base' else treat).get('collided_ordinals') or [])[:8]}"
+            for label, n in collisions.items()
+            if n
+        )
+        return {
+            "verdict": NOT_COMPARABLE,
+            "reason": (
+                "two or more mounted rows published the SAME thread position during this action, "
+                f"so one of them is missing from everything compared below ({which}). The digest "
+                "map is keyed by that position and the visible set is a set of them, so neither "
+                "carries the extra row"
+            ),
+            "moved": [],
+            "claim": CLAIM_VISIBLE,
+            "not_digested": [],
         }
 
     bev, tev = set(base.get("ever_visible") or []), set(treat.get("ever_visible") or [])
