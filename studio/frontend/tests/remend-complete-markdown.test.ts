@@ -27,7 +27,7 @@ test("a complete document with LaTeX subscripts comes back untouched", () => {
   // literally at the end of the message.
   for (const complete of [
     String.raw`where \( \delta_{r} = 1 \) holds.`,
-    String.raw`\[ \delta_{r} = 1 \]` + "\n",
+    "\\[ \\delta_{r} = 1 \\]\n",
     String.raw`where $ \delta_{r} = 1 $ holds.`,
     String.raw`where \( \delta_{r} = \beta_{k} \) holds.`,
   ]) {
@@ -51,7 +51,11 @@ test("ordinary complete markdown is returned unchanged", () => {
     "a snake_case identifier in prose",
     "```js\nconst r = /[^a-z]/;\n```\n",
   ]) {
-    assert.equal(remend(complete, {}), complete, `remend rewrote ${JSON.stringify(complete)}`);
+    assert.equal(
+      remend(complete, {}),
+      complete,
+      `remend rewrote ${JSON.stringify(complete)}`,
+    );
   }
 });
 
