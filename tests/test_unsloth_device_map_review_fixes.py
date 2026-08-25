@@ -23,7 +23,12 @@ _SRC = open(LOADER_UTILS, encoding = "utf-8").read()
 
 
 class _FakeCuda:
-    def __init__(self, count, free, refuses = ()):
+    def __init__(
+        self,
+        count,
+        free,
+        refuses = (),
+    ):
         self._count = count
         self._free = free
         self._refuses = set(refuses)
