@@ -2046,8 +2046,14 @@ def _gguf_record(**over):
         "requested_quantization": "q8_0",
         "ok": True,
         "seconds": 40.6,
-        "ggufs": [{"path": "/tmp/q8p_gguf/qwen3-0.6b.Q8_0.gguf", "mb": 609.8,
-                   "found_in": "/tmp/q8p_gguf", "suffix": "_gguf"}],
+        "ggufs": [
+            {
+                "path": "/tmp/q8p_gguf/qwen3-0.6b.Q8_0.gguf",
+                "mb": 609.8,
+                "found_in": "/tmp/q8p_gguf",
+                "suffix": "_gguf",
+            }
+        ],
     }
     record.update(over)
     return record
@@ -2090,10 +2096,17 @@ def test_a_gguf_search_finds_the_file_in_the_sibling_directory(tmp_path):
 
 def test_a_gguf_that_is_only_a_header_is_not_an_export():
     from gguf_export import export_failures
-
     failures = export_failures(
-        _gguf_record(ggufs = [{"path": "/tmp/q8p_gguf/x.Q8_0.gguf", "mb": 0.1,
-                               "found_in": "/tmp/q8p_gguf", "suffix": "_gguf"}]),
+        _gguf_record(
+            ggufs = [
+                {
+                    "path": "/tmp/q8p_gguf/x.Q8_0.gguf",
+                    "mb": 0.1,
+                    "found_in": "/tmp/q8p_gguf",
+                    "suffix": "_gguf",
+                }
+            ]
+        ),
         accept_quantizations = ("q8_0",),
     )
     assert failures and "header and no weights" in failures[0]
@@ -2105,9 +2118,16 @@ def test_a_model_allowed_to_override_the_quantization_still_passes():
     behaviour, so a leg that accepts MXFP4 must not fail on it."""
     from gguf_export import export_failures
 
-    record = _gguf_record(ggufs = [{"path": "/tmp/g_gguf/gpt-oss-20b.MXFP4.gguf",
-                                    "mb": 11800.0, "found_in": "/tmp/g_gguf",
-                                    "suffix": "_gguf"}])
+    record = _gguf_record(
+        ggufs = [
+            {
+                "path": "/tmp/g_gguf/gpt-oss-20b.MXFP4.gguf",
+                "mb": 11800.0,
+                "found_in": "/tmp/g_gguf",
+                "suffix": "_gguf",
+            }
+        ]
+    )
     assert export_failures(record, accept_quantizations = ("mxfp4",)) == []
     # ... and a leg that does NOT accept it still says so.
     failures = export_failures(record, accept_quantizations = ("q8_0",))
@@ -2116,22 +2136,27 @@ def test_a_model_allowed_to_override_the_quantization_still_passes():
 
 def test_a_gguf_that_no_runner_could_execute_is_a_failure():
     from gguf_export import run_failures
-
-    failures = run_failures({
-        "gguf": "/tmp/q8p_gguf/x.gguf",
-        "bench": {"seconds": 240.0, "error": "TimeoutExpired: ..."},
-        "completion": {"seconds": 240.0, "returncode": 1, "stderr": "bad magic"},
-    })
+    failures = run_failures(
+        {
+            "gguf": "/tmp/q8p_gguf/x.gguf",
+            "bench": {"seconds": 240.0, "error": "TimeoutExpired: ..."},
+            "completion": {"seconds": 240.0, "returncode": 1, "stderr": "bad magic"},
+        }
+    )
     assert failures and "produced no output from any runner" in failures[0]
 
 
 def test_one_successful_runner_is_enough():
     from gguf_export import run_failures
-
-    assert run_failures({
-        "gguf": "/tmp/q8p_gguf/x.gguf",
-        "bench": {"seconds": 12.0, "returncode": 0, "stdout": "tg128 ... 41.2"},
-    }) == []
+    assert (
+        run_failures(
+            {
+                "gguf": "/tmp/q8p_gguf/x.gguf",
+                "bench": {"seconds": 12.0, "returncode": 0, "stdout": "tg128 ... 41.2"},
+            }
+        )
+        == []
+    )
 
 
 def test_a_bundle_with_no_runners_at_all_is_reported_as_that():
@@ -2140,11 +2165,13 @@ def test_a_bundle_with_no_runners_at_all_is_reported_as_that():
     wrong place."""
     from gguf_export import run_failures
 
-    failures = run_failures({
-        "gguf": "/tmp/x.gguf",
-        "bench": {"skipped": "no llama-bench in the bundle"},
-        "completion": {"skipped": "no llama-completion in the bundle"},
-    })
+    failures = run_failures(
+        {
+            "gguf": "/tmp/x.gguf",
+            "bench": {"skipped": "no llama-bench in the bundle"},
+            "completion": {"skipped": "no llama-completion in the bundle"},
+        }
+    )
     assert failures and "missing from the llama.cpp bundle" in failures[0]
 
 

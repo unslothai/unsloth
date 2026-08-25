@@ -70,23 +70,30 @@ def find_ggufs(save_dir: str) -> list:
                 if not name.endswith(".gguf"):
                     continue
                 path = os.path.join(root, name)
-                found.append({
-                    "path": path,
-                    "mb": round(os.path.getsize(path) / 1024**2, 1),
-                    "found_in": candidate,
-                    "suffix": suffix,
-                })
+                found.append(
+                    {
+                        "path": path,
+                        "mb": round(os.path.getsize(path) / 1024**2, 1),
+                        "found_in": candidate,
+                        "suffix": suffix,
+                    }
+                )
     return sorted(found, key = lambda f: -f["mb"])
 
 
-def export_gguf(model, tokenizer, save_dir: str, *, quantization: str = "q8_0") -> dict:
+def export_gguf(
+    model,
+    tokenizer,
+    save_dir: str,
+    *,
+    quantization: str = "q8_0",
+) -> dict:
     """Export and report. Never raises."""
     record = {"save_dir": save_dir, "requested_quantization": quantization}
 
     started = time.time()
     try:
-        model.save_pretrained_gguf(save_dir, tokenizer,
-                                   quantization_method = quantization)
+        model.save_pretrained_gguf(save_dir, tokenizer, quantization_method = quantization)
         record["ok"] = True
     except BaseException as exc:  # noqa: BLE001
         # unsloth/save.py:4777 wraps the real cause in
@@ -102,8 +109,13 @@ def export_gguf(model, tokenizer, save_dir: str, *, quantization: str = "q8_0") 
     return record
 
 
-def run_gguf(gguf_path: str, llama_cpp_dir: str, *, max_tokens: int = 16,
-             timeout: int = 240) -> dict:
+def run_gguf(
+    gguf_path: str,
+    llama_cpp_dir: str,
+    *,
+    max_tokens: int = 16,
+    timeout: int = 240,
+) -> dict:
     """Run the exported file, because an existing GGUF is not a working one.
 
     NOT via `llama-cli`. It hung for its entire budget twice on Kaggle -- 600s
@@ -115,11 +127,21 @@ def run_gguf(gguf_path: str, llama_cpp_dir: str, *, max_tokens: int = 16,
     """
     record = {"gguf": gguf_path}
     for name, argv in (
-        ("bench", ["llama-bench", "-m", gguf_path, "-p", "8",
-                   "-n", str(max_tokens), "-r", "1"]),
-        ("completion", ["llama-completion", "-m", gguf_path,
-                        "-p", "The capital of France is",
-                        "-n", str(max_tokens), "--temp", "0"]),
+        ("bench", ["llama-bench", "-m", gguf_path, "-p", "8", "-n", str(max_tokens), "-r", "1"]),
+        (
+            "completion",
+            [
+                "llama-completion",
+                "-m",
+                gguf_path,
+                "-p",
+                "The capital of France is",
+                "-n",
+                str(max_tokens),
+                "--temp",
+                "0",
+            ],
+        ),
     ):
         exe = os.path.join(llama_cpp_dir, argv[0])
         if not os.path.exists(exe):
@@ -127,9 +149,13 @@ def run_gguf(gguf_path: str, llama_cpp_dir: str, *, max_tokens: int = 16,
             continue
         started = time.time()
         try:
-            proc = subprocess.run([exe] + argv[1:], capture_output = True,
-                                  text = True, timeout = timeout,
-                                  stdin = subprocess.DEVNULL)
+            proc = subprocess.run(
+                [exe] + argv[1:],
+                capture_output = True,
+                text = True,
+                timeout = timeout,
+                stdin = subprocess.DEVNULL,
+            )
             record[name] = {
                 "seconds": round(time.time() - started, 1),
                 "returncode": proc.returncode,
@@ -161,9 +187,7 @@ def export_failures(record: dict, *, accept_quantizations = None) -> list:
 
     failures = []
     if not record.get("ok"):
-        failures.append(
-            "GGUF export raised: " + str(record.get("error", "no error recorded"))
-        )
+        failures.append("GGUF export raised: " + str(record.get("error", "no error recorded")))
 
     ggufs = record.get("ggufs") or []
     if not ggufs:
@@ -210,7 +234,8 @@ def run_failures(record: dict) -> list:
         return []
 
     detail = "; ".join(
-        f"{name}: " + (
+        f"{name}: "
+        + (
             a.get("error")
             or a.get("skipped")
             or f"rc={a.get('returncode')} {(a.get('stderr') or '')[-200:]}"
@@ -235,7 +260,5 @@ def llama_cpp_facts(install_output: str, returned) -> dict:
         "all_exist": all(os.path.exists(p) for p in paths) if paths else False,
         "dir": os.path.dirname(paths[0]) if paths else None,
         "prebuilt": PREBUILT_MARKER in (install_output or ""),
-        "source_build_markers": [
-            m for m in SOURCE_BUILD_MARKERS if m in (install_output or "")
-        ],
+        "source_build_markers": [m for m in SOURCE_BUILD_MARKERS if m in (install_output or "")],
     }
