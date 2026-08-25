@@ -225,11 +225,25 @@ def stop_leftover_backend():
             pass
 
 
-def wait_for_free_ports(timeout = 120):
+def wait_for_free_ports(timeout = 30):
+    """Wait, but say so, and give up early.
+
+    This used to wait 120s per candidate in silence. When the port is held by a program
+    this script cannot stop (another user's process, or anything that is not Unsloth), it
+    never clears, so a run looked like an eight minute hang with no output and no reason.
+    """
+    if not port_busy():
+        return True
+    print(f"    waiting up to {timeout}s for the Studio port to be released", flush = True)
     for _ in range(timeout):
         if not port_busy():
             return True
         time.sleep(1)
+    print(
+        "    the port is still in use by a program this script cannot stop. Close whatever "
+        "is using it, or this candidate will have nothing to measure.",
+        flush = True,
+    )
     return False
 
 
@@ -305,7 +319,7 @@ def run_candidate(label, extra, why, cmd) -> dict:
         start_new_session = True,
     )
     started = time.time()
-    applied, samples, exited = {}, [], None
+    applied, samples, exited, ran_for = {}, [], None, 0
 
     print(f"    launching, then watching for {_span(WARMUP + WINDOW)}.", flush = True)
     print("    Use the window normally while this runs.", flush = True)
@@ -314,6 +328,7 @@ def run_candidate(label, extra, why, cmd) -> dict:
             time.sleep(15)
             if proc.poll() is not None:
                 exited = proc.returncode
+                ran_for = round(time.time() - started)
                 print(
                     f"    the app EXITED (code {exited}) after " f"{time.time() - started:.0f}s",
                     flush = True,
@@ -360,7 +375,8 @@ def run_candidate(label, extra, why, cmd) -> dict:
     pre_lines = [l for l in (text + shell_out).splitlines() if "desktop_preflight completed" in l]
     preflight = pre_lines[-1].strip() if pre_lines else ""
 
-    ran_for = samples[-1][0] if samples else 0
+    if not ran_for:
+        ran_for = samples[-1][0] if samples else 0
 
     if exited == 0 and ran_for <= 20:
         # A clean, immediate exit is almost always the single-instance guard: another copy
