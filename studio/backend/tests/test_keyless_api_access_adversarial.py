@@ -48,7 +48,7 @@ def isolated_auth_db(tmp_path, monkeypatch):
     monkeypatch.setattr(storage, "_api_key_pbkdf2_salt_cache", None)
     storage._reset_api_key_hash_cache()
     _reset_scope_cache()
-    # The PR suite leaves this latched on, which masks the transport checks below.
+    # The merged suite leaves this latched on, masking the transport checks below.
     monkeypatch.setattr(host_policy, "_remote_connector_active", False, raising = False)
     monkeypatch.setattr(host_policy, "_lan_connector_active", False, raising = False)
     yield
@@ -138,8 +138,8 @@ def test_scope_off_is_refused_by_the_security_dependency_not_only_the_predicate(
 def test_a_keyless_caller_cannot_widen_its_own_scope():
     """`_require_ui_session_for_keyless` is the only thing stopping self-promotion.
 
-    It has no test in the PR at all, and it depends entirely on
-    `authenticated_via_api_key` reporting True for a keyless caller.
+    Untested elsewhere, and it rests entirely on `authenticated_via_api_key`
+    reporting True for a keyless caller.
     """
     from routes.settings import _require_ui_session_for_keyless
 

@@ -330,16 +330,12 @@ def _browser_initiated_elsewhere(request: Any) -> bool:
 def _host_authority_is_direct(request: Any) -> bool:
     """Whether the caller addressed this server directly rather than through a name.
 
-    Guards DNS rebinding, which the socket checks cannot see. A page on
-    ``evil.example`` whose record is re-pointed at ``127.0.0.1`` keeps its own
-    origin, so its fetch is same-origin: no ``Origin``, ``Sec-Fetch-Site:
-    same-origin``, and a loopback peer on a loopback socket. Every signal above
-    reads as a local client, and the response is readable by the page.
-
-    ``Host`` is what still differs, since the browser sends the name the page was
-    served from. A direct client sends the literal address or ``localhost``; only a
-    rebound page sends a domain. Absent stays admitted, because the merged suite
-    and HTTP/1.0 callers send none and no browser omits it.
+    Guards DNS rebinding, which the socket checks cannot see: a page on
+    ``evil.example`` re-pointed at ``127.0.0.1`` keeps its own origin, so every
+    signal above reads as a local client and the response is readable by the page.
+    ``Host`` still differs, being the name the page was served from. A direct client
+    sends the literal address or ``localhost``; only a rebound page sends a domain.
+    Absent stays admitted: HTTP/1.0 callers send none and no browser omits it.
     """
     from utils.lan_access_settings import _normalized_ip
 
