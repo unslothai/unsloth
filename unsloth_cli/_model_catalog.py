@@ -159,9 +159,8 @@ def exported_entries() -> List[ModelEntry]:
 def _pinned_snapshot(repo_path: Path, load_id: Optional[str]) -> Optional[Path]:
     """The snapshot a pinned row will open, when ``load_id`` names one inside this repo.
 
-    A pin beats ``refs/main``: the inventory pins precisely when the ref would resolve
-    somewhere worse (a torn revision, or an inactive-cache copy the bare id cannot reach),
-    so the ref names a revision this row will never load.
+    A pin beats ``refs/main``, because the inventory pins exactly when the ref would resolve
+    somewhere worse, so the ref names a revision this row never loads.
     """
     if not load_id:
         return None
@@ -193,9 +192,8 @@ def _reachable_snapshots(repo_path: Path, load_id: Optional[str] = None) -> List
     if pinned is not None and pinned in available:
         return [pinned]
     try:
-        # ValueError too: read_text raises UnicodeDecodeError, a ValueError and not an
-        # OSError, on a ref left undecodable by a torn write. Uncaught it escapes into
-        # cached_entries, where _safe hides EVERY Downloaded row over one bad repo.
+        # ValueError too: an undecodable ref raises UnicodeDecodeError, which is not an
+        # OSError, and uncaught it leaves _safe hiding every Downloaded row over one repo.
         ref = (repo_path / "refs" / "main").read_text(encoding = "utf-8").strip()
     except (OSError, ValueError):
         ref = ""
@@ -207,19 +205,18 @@ def _reachable_snapshots(repo_path: Path, load_id: Optional[str] = None) -> List
 
 
 def _complete_quants(snapshot: Path) -> Optional[set]:
-    """The quant keys under *snapshot* a load can actually resolve, or None if unknown.
+    """The quant keys under *snapshot* a load can resolve, or None if unknown.
 
-    ``_preferred_complete_gguf`` narrows to this same set before choosing the load target, so
-    a label outside it names a quant selecting the row can never reach.
+    ``_preferred_complete_gguf`` narrows to this same set, so a label outside it names a
+    quant selecting the row can never reach.
     """
     try:
         from hub.utils.inventory_scan import complete_snapshot_variants
         complete = complete_snapshot_variants(str(snapshot))
     except Exception:
         return None
-    # Empty means "nothing complete here", which for a row that got this far means the check
-    # could not tell: a genuinely incomplete repo arrives with partial set and never reaches
-    # the picker. Treat it as unknown and describe what is on disk.
+    # Empty here means the check could not tell, not that nothing loads: a genuinely
+    # incomplete repo arrives partial and never reaches the picker. Describe what is on disk.
     return set(complete) or None
 
 
