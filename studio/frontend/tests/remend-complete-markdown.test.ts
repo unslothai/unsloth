@@ -176,6 +176,30 @@ test("the settled render path runs the repair, not just the package", () => {
   }
 });
 
+// The text a reader would see, given markup produced by renderToStaticMarkup. Deliberately a scan
+// rather than a `<[^>]*>` replace: that pattern is bypassable in general, and CodeQL fails the
+// build over it at high severity, correctly, because nothing in the type system says the input is
+// trusted. The scan is sound for this input for a reason worth stating: React escapes `<` in text
+// to `&lt;`, so every raw `<` in the output really does open a tag.
+//
+// Measured, so nobody has to guess: today this changes no count, because Streamdown's attributes
+// happen to contain no underscores, and the assertion below is red with or without it. It is here
+// so that stays true if an attribute ever gains one, not because it is currently load-bearing.
+const renderedText = (markup: string): string => {
+  let text = "";
+  let inTag = false;
+  for (const ch of markup) {
+    if (inTag) {
+      inTag = ch !== ">";
+    } else if (ch === "<") {
+      inTag = true;
+    } else {
+      text += ch;
+    }
+  }
+  return text;
+};
+
 test("a complete document survives the settled render path unchanged", () => {
   // The rendering half of the bump, asserted where the reader sees it. Under remend 1.3.0 the
   // subscript `_` is "completed" with a second one, so the paragraph gains a character that is
@@ -183,7 +207,7 @@ test("a complete document survives the settled render path unchanged", () => {
   // the `\(` escapes.
   const underscores = (text: string): number => (text.match(/_/g) ?? []).length;
   for (const complete of COMPLETE_LATEX_DOCUMENTS) {
-    const text = renderSettled(complete).replace(/<[^>]*>/g, "");
+    const text = renderedText(renderSettled(complete));
     assert.equal(
       underscores(text),
       underscores(complete),
