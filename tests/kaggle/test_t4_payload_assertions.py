@@ -1802,8 +1802,6 @@ def test_gptoss_still_reads_a_bf16_card_and_a_t4_the_way_it_did():
     )
 
 
-
-
 def test_batched_generation_runs_end_to_end_against_a_stub_model():
     """Every other test in this section feeds `batched_generation_failures` a
     dict someone typed. That checks the RULE and never once executes the code
@@ -1835,7 +1833,12 @@ def test_batched_generation_runs_end_to_end_against_a_stub_model():
         eos_token = "<eos>"
         pad_token_id = 0
 
-        def __call__(self, text, return_tensors = None, padding = False):
+        def __call__(
+            self,
+            text,
+            return_tensors = None,
+            padding = False,
+        ):
             texts = [text] if isinstance(text, str) else list(text)
             # One token per character, so a length spread in the prompts is a
             # length spread in the ids and the padding is real.
@@ -1846,18 +1849,28 @@ def test_batched_generation_runs_end_to_end_against_a_stub_model():
             # LEFT padding, which is what the function asks for and what the
             # padded-width slice below depends on.
             padded = [[0] * (width - len(i)) + i for i in ids]
-            return _Enc(input_ids = torch.tensor(padded),
-                        attention_mask = torch.tensor(
-                            [[0] * (width - len(i)) + [1] * len(i) for i in ids]))
+            return _Enc(
+                input_ids = torch.tensor(padded),
+                attention_mask = torch.tensor([[0] * (width - len(i)) + [1] * len(i) for i in ids]),
+            )
 
-        def decode(self, row, skip_special_tokens = False):
+        def decode(
+            self,
+            row,
+            skip_special_tokens = False,
+        ):
             return "".join(chr(int(v)) for v in row if int(v) != 0)
 
     class _Model:
         device = "cpu"
 
-        def generate(self, input_ids = None, attention_mask = None,
-                     max_new_tokens = 8, **_kw):
+        def generate(
+            self,
+            input_ids = None,
+            attention_mask = None,
+            max_new_tokens = 8,
+            **_kw,
+        ):
             # Append the same continuation to every row, derived from that
             # row's own unpadded content, so batching cannot change it.
             outs = []

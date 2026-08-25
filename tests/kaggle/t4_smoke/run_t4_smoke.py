@@ -605,9 +605,11 @@ def batched_generation(model, tokenizer, prompts, *, max_new_tokens) -> dict:
                 # id (Qwen and Llama both use low ids) and is falsy, so `or`
                 # silently substitutes the EOS id for it and pads the batch with
                 # end-of-sequence tokens. Test for None.
-                pad_token_id = (tokenizer.pad_token_id
-                                if tokenizer.pad_token_id is not None
-                                else tokenizer.eos_token_id),
+                pad_token_id = (
+                    tokenizer.pad_token_id
+                    if tokenizer.pad_token_id is not None
+                    else tokenizer.eos_token_id
+                ),
             )
         # Slice by the PADDED width, not by each prompt's own length: with left
         # padding every row starts at the same column, and using the unpadded

@@ -1740,8 +1740,7 @@ def test_every_leg_carries_the_version_recorder(tmp_path):
 
     assert "versions.py" in COMMON_FILES
     for name in LEGS:
-        payload = _payload_notebooks(
-            _build(tmp_path / name, name))[f"t4_{LEGS[name].name}.ipynb"]
+        payload = _payload_notebooks(_build(tmp_path / name, name))[f"t4_{LEGS[name].name}.ipynb"]
         assert "versions.py" in _cell(payload, 0)
         assert "versions.flatten_versions" in _cell(payload, 2)
 

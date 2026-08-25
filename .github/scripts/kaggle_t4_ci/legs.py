@@ -306,7 +306,8 @@ LEGS: dict[str, Leg] = {
         # and trl <=0.24.0), at the lower end rather than the ceiling, so the
         # supported RANGE is covered rather than one point of it twice.
         args = (
-            "--model", "unsloth/Qwen3-0.6B",
+            "--model",
+            "unsloth/Qwen3-0.6B",
         ),
         # No reference yet. The committed band
         # (references/t4_qwen2.5-0.5b.json) is a Qwen2.5-0.5B trajectory and
@@ -492,7 +493,7 @@ UNWIRED: dict[str, str] = {
         "batch-size agreement and the left-padding assertion have never once "
         "executed on hardware. Wiring it now would carry a leg whose headline "
         "check is unproven, which is the vacuous-pass failure this file has "
-        "already been caught by five times. It also has reference = \"\", so it "
+        'already been caught by five times. It also has reference = "", so it '
         "has no band to check against and cannot detect drift yet. "
         "STILL UNKNOWN: whether batched generation agrees across batch sizes "
         "1/2/4/8 under left padding on a T4, and what reference band this model "
