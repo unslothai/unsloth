@@ -2348,9 +2348,14 @@ class TestAnEmbeddedMtpHeadIsPriced:
         """The guard against charging every model: no NextN key, nothing priced."""
         plain = _write_gguf(tmp_path, "qwen3", {**_GQA_FIELDS, "context_length": 262144})
         config = SimpleNamespace(
-            identifier = "local/plain", gguf_file = plain, is_gguf = True, gguf_variant = None,
-            gguf_mmproj_file = None, gguf_mtp_file = None,
-            gguf_dspark_file = None, gguf_dflash_file = None,
+            identifier = "local/plain",
+            gguf_file = plain,
+            is_gguf = True,
+            gguf_variant = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
         )
         priced = ri._gguf_memory_breakdown(config, plain, n_ctx = 131072)
         assert priced is not None
