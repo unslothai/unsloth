@@ -1529,6 +1529,7 @@ if _IS_MLX:
 else:
     # GPU path: load everything from _gpu_init
     from ._subprocess_encoding import replace_subprocess_decode_errors as _safe_subprocess_text
+
     with _safe_subprocess_text():
         from ._gpu_init import *
         from ._gpu_init import __version__

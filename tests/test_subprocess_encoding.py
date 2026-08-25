@@ -7,11 +7,7 @@ import pytest
 
 
 def _load_subprocess_encoding_module():
-    module_path = (
-        Path(__file__).resolve().parents[1]
-        / "unsloth"
-        / "_subprocess_encoding.py"
-    )
+    module_path = Path(__file__).resolve().parents[1] / "unsloth" / "_subprocess_encoding.py"
     spec = importlib.util.spec_from_file_location(
         "unsloth_subprocess_encoding_test",
         module_path,
@@ -61,7 +57,7 @@ def test_preserves_binary_subprocess_output():
             check = True,
         )
 
-    assert result.stdout == bytes([0xf8])
+    assert result.stdout == bytes([0xF8])
 
 
 def test_restores_popen_after_success_and_error():
