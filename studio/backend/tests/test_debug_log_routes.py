@@ -7,6 +7,7 @@ an error the UI flashes on every tick."""
 
 from __future__ import annotations
 
+import asyncio
 import io
 import os
 import sys
@@ -171,6 +172,27 @@ def test_export_with_no_logs_is_still_a_valid_zip(client):
         assert archive.namelist() == []
 
 
+def test_export_starts_the_response_before_building_the_archive(monkeypatch):
+    from utils import debug_log_export, debug_log_sources
+
+    built = []
+    monkeypatch.setattr(debug_log_sources, "list_sources", lambda **_: [])
+
+    def _build(sources):
+        built.append(list(sources))
+        return io.BytesIO(b"zip bytes")
+
+    monkeypatch.setattr(debug_log_export, "build_debug_log_archive", _build)
+    response = settings_route.export_debug_logs("admin", None)
+    assert built == []
+
+    async def _first_chunk():
+        return await response.body_iterator.__anext__()
+
+    assert asyncio.run(_first_chunk()) == b"zip bytes"
+    assert built == [[]]
+
+
 def test_export_is_not_limited_to_the_viewers_per_family_window(client):
     directory = Path(os.environ["UNSLOTH_STUDIO_HOME"]) / "logs" / "llama-server"
     directory.mkdir(parents = True)
@@ -213,6 +235,23 @@ def test_export_masks_a_credential_value_on_the_next_line(client):
     assert secret not in exported
     assert "  <redacted>" in exported
     assert exported.splitlines()[-1] == "kept"
+
+
+@pytest.mark.parametrize("indicator", ["|-", ">", "|2-"])
+def test_export_masks_every_line_of_a_yaml_block_scalar(client, indicator):
+    first = "correct-horse-battery-staple"
+    second = "another-secret-value"
+    path = _seed_server_log(
+        f"credentials:\n  password: {indicator}\n    {first}\n    {second}\n  ordinary: kept\n"
+    )
+
+    response = client.get("/api/settings/debug/logs/export")
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        exported = archive.read(f"server/{path.name}").decode("utf-8")
+    assert first not in exported
+    assert second not in exported
+    assert exported.count("    <redacted>") == 2
+    assert "  ordinary: kept" in exported
 
 
 def test_export_warning_does_not_expose_a_source_realpath(tmp_path):

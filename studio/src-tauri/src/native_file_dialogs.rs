@@ -393,9 +393,12 @@ pub async fn save_native_file(
 pub async fn save_native_file_from_url(
     window: WebviewWindow,
     app: AppHandle,
+    backend_state: State<'_, crate::process::BackendState>,
+    diagnostics: State<'_, crate::diagnostics::DiagnosticsState>,
     url: String,
     file_name: String,
     bearer_token: Option<String>,
+    refresh_desktop_auth: Option<bool>,
 ) -> Result<Option<String>, String> {
     crate::native_intents::ensure_main_window(&window)?;
     require_loopback_url(&url)?;
@@ -418,6 +421,15 @@ pub async fn save_native_file_from_url(
         .transpose()?;
     let Some(path) = selected_path else {
         return Ok(None);
+    };
+    let bearer_token = if refresh_desktop_auth.unwrap_or(false) {
+        Some(
+            crate::desktop_auth::desktop_auth(backend_state, diagnostics)
+                .await?
+                .access_token,
+        )
+    } else {
+        bearer_token
     };
     stream_url_to_path(&url, &path, DOWNLOAD_READ_TIMEOUT, bearer_token.as_deref()).await?;
     Ok(Some(saved_file_name(&path)))

@@ -118,10 +118,16 @@ _FLAG_RE = re.compile(
 # YAML and similar structured logs may put a credential value on the next
 # physical line. ``redact_log_text`` can mask that shape when it receives both
 # lines together, but bounded streaming readers deliberately process one record
-# at a time. Keep only the fact that the next non-empty record is sensitive;
-# never retain the credential itself.
+# at a time. Keep only structural state: either the next non-empty record is
+# sensitive, or indented records belong to a YAML block scalar. Never retain a
+# credential value itself.
 _CONTINUED_SECRET_RE = re.compile(
-    r"(?i)" + _KEY_START + r"(?:" + _SECRET_KEYS + r")\b[\"']?\s*[:=]\s*$"
+    r"(?i)^(?P<indent>[ \t]*)"
+    + _KEY_START
+    + r"(?:"
+    + _SECRET_KEYS
+    + r")\b[\"']?\s*[:=]\s*"
+    r"(?P<block>[|>](?:[1-9][+-]?|[+-][1-9]?)?)?\s*(?:#.*)?$"
 )
 
 # An Authorization value, whatever the scheme. The key/value rule cannot reach
@@ -248,19 +254,39 @@ class StreamingLogRedactor:
 
     def __init__(self) -> None:
         self._redact_next_value = False
+        self._block_key_indent: int | None = None
+        self._block_value_indent: int | None = None
+
+    @staticmethod
+    def _masked_record(text: str) -> str:
+        newline = "\r\n" if text.endswith("\r\n") else "\n" if text.endswith("\n") else ""
+        indent = re.match(r"[ \t]*", text).group(0)
+        return f"{indent}{REDACTED}{newline}"
 
     def redact_record(self, text: str) -> str:
         redacted = redact_log_text(text)
+        if self._block_key_indent is not None:
+            if not redacted.strip():
+                return redacted
+            indent = len(re.match(r"[ \t]*", redacted).group(0))
+            if self._block_value_indent is None and indent > self._block_key_indent:
+                self._block_value_indent = indent
+            if self._block_value_indent is not None and indent >= self._block_value_indent:
+                return self._masked_record(redacted)
+            self._block_key_indent = None
+            self._block_value_indent = None
+
         if self._redact_next_value:
             if not redacted.strip():
                 return redacted
-            newline = (
-                "\r\n" if redacted.endswith("\r\n") else "\n" if redacted.endswith("\n") else ""
-            )
-            indent = re.match(r"[ \t]*", redacted).group(0)
             self._redact_next_value = False
-            return f"{indent}{REDACTED}{newline}"
+            return self._masked_record(redacted)
 
-        if _CONTINUED_SECRET_RE.search(redacted):
-            self._redact_next_value = True
+        continued = _CONTINUED_SECRET_RE.search(redacted.rstrip("\r\n"))
+        if continued:
+            if continued.group("block"):
+                self._block_key_indent = len(continued.group("indent"))
+                self._block_value_indent = None
+            else:
+                self._redact_next_value = True
         return redacted

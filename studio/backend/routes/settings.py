@@ -2574,10 +2574,13 @@ def export_debug_logs(
     # while the tab is open. Export is an explicit one-shot action and means
     # all matching logs, including older runner attempts outside that window.
     sources = debug_log_sources.list_sources(max_sources_per_family = None)
-    archive = debug_log_export.build_debug_log_archive(sources)
     filename = f"unsloth-logs-{datetime.now(timezone.utc):%Y%m%d-%H%M%S}.zip"
 
     def _stream_archive():
+        # StreamingResponse sends its headers before consuming this iterator.
+        # Build lazily so a large retained history cannot trip the desktop
+        # downloader's pre-header read timeout.
+        archive = debug_log_export.build_debug_log_archive(sources)
         try:
             while chunk := archive.read(64 * 1024):
                 yield chunk

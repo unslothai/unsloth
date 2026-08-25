@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { authFetch, getAuthToken } from "@/features/auth";
+import { authFetch } from "@/features/auth";
 import { apiUrl, isTauri } from "@/lib/api-base";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { downloadFile, downloadUrlStreaming } from "@/lib/native-files";
@@ -127,8 +127,6 @@ export async function exportDebugLogs(): Promise<void> {
         await readFastApiError(authCheck, "Could not export the log files."),
       );
     }
-    const bearerToken = getAuthToken();
-    if (!bearerToken) throw new Error("Could not authenticate the log export.");
     const compactTimestamp = new Date()
       .toISOString()
       .replace(/\D/g, "")
@@ -138,7 +136,7 @@ export async function exportDebugLogs(): Promise<void> {
     await downloadUrlStreaming(
       apiUrl(exportPath),
       `unsloth-logs-${timestamp}.zip`,
-      bearerToken,
+      { refreshDesktopAuth: true },
     );
     return;
   }

@@ -133,7 +133,10 @@ export async function urlToBlob(url: string): Promise<Blob> {
 export async function downloadUrlStreaming(
   url: string,
   filename: string,
-  bearerToken?: string,
+  options: {
+    bearerToken?: string;
+    refreshDesktopAuth?: boolean;
+  } = {},
 ): Promise<void> {
   if (!isTauri) {
     browserUrlDownload(url, filename);
@@ -143,7 +146,8 @@ export async function downloadUrlStreaming(
   const savedPath = await invoke<string | null>("save_native_file_from_url", {
     url,
     fileName: filename,
-    bearerToken,
+    bearerToken: options.bearerToken,
+    refreshDesktopAuth: options.refreshDesktopAuth ?? false,
   });
   if (savedPath === null) {
     throw new DownloadCancelledError();
