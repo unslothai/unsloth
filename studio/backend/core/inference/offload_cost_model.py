@@ -66,6 +66,40 @@ REFERENCE_HOST_THREADS = 192
 _THREAD_PARALLEL_MS_PER_GIB = 138.4
 _THREAD_SERIAL_MS_PER_GIB = 5.57
 
+# The fit above varies THREADS ON ONE MACHINE. Measuring across DIFFERENT
+# machines gives a steeper slope, because 12 cloud vCPUs are roughly 6 physical
+# cores sharing one memory controller rather than 12 threads of a 192-core
+# server. Least squares over dense Q4 on 12 and 48 vCPU hosts (24.21 and 6.82 ms
+# per GiB) gives a = 278.2 and b = 1.03.
+#
+# Neither fit dominates: at 192 threads the cross-machine line predicts 2.48 ms
+# per GiB against 5.498 measured, and at 12 the one-machine line predicts 17.1
+# against 24.21 measured. So take whichever is MORE expensive. Being pessimistic
+# costs a user some throughput they could have had; being optimistic quotes a
+# spill that then runs several times slower than promised, and that is the same
+# direction as every real defect this planner has had.
+_CROSS_HOST_PARALLEL_MS_PER_GIB = 278.2
+_CROSS_HOST_SERIAL_MS_PER_GIB = 1.03
+
+# Residual error after the floor, as model/measured over 70 runs on T4, L4,
+# A100 and RTX PRO 6000 (2, 8, 12 and 48 vCPU), Qwen3.8-27B and
+# Qwen3.6-35B-A3B at Q2_K_XL, Q4_K_XL and Q8_K_XL:
+#
+#   48 cpu   1.09 median      12 cpu   0.59 median
+#    8 cpu   0.24 median       2 cpu   0.24 median
+#
+# The floor closes the 12-core case almost exactly and improves the small hosts,
+# but ONE case stays materially under-priced and is worth stating rather than
+# hiding: DENSE Q2_K on a very small host. Cost per spilled GiB is ordered by
+# dequant complexity, not by byte count -- at 12 vCPU the measured rates are
+# Q2_K 84.17, Q4_K 24.21 and Q8 19.96 ms per GiB, so Q8 is the CHEAPEST per GiB
+# despite being the largest format, and the ordering compresses to 8.70 / 6.82 /
+# 6.29 at 48 vCPU. A quant multiplier is the obvious next step, but the
+# multiplier itself moves with core count (3.5x at 12 vCPU, 1.3x at 48), and
+# fitting that from two core counts would be overfitting. Left unmodelled
+# deliberately, and named here so nobody reads a Q2_K estimate on a small host
+# as trustworthy.
+
 
 class Access(str, Enum):
     """How a tensor group is read, which sets its cost per byte."""
@@ -144,11 +178,21 @@ class HostProfile:
         """How much slower than the reference host this one is per host byte."""
         if self.threads <= 0:
             return 1.0
-        here = _THREAD_PARALLEL_MS_PER_GIB / float(self.threads) + _THREAD_SERIAL_MS_PER_GIB
-        there = (
-            _THREAD_PARALLEL_MS_PER_GIB / float(REFERENCE_HOST_THREADS) + _THREAD_SERIAL_MS_PER_GIB
-        )
-        return here / there
+
+        def rate(threads: float) -> float:
+            """ms per GiB, taking whichever fit is more expensive at this size.
+
+            The two fits cross: the one-machine sweep wins at large thread
+            counts, the cross-machine one at small. Taking the max keeps the
+            reference host's own validated numbers while refusing to quote a
+            small host the throughput of a server.
+            """
+            return max(
+                _THREAD_PARALLEL_MS_PER_GIB / threads + _THREAD_SERIAL_MS_PER_GIB,
+                _CROSS_HOST_PARALLEL_MS_PER_GIB / threads + _CROSS_HOST_SERIAL_MS_PER_GIB,
+            )
+
+        return rate(float(self.threads)) / rate(float(REFERENCE_HOST_THREADS))
 
 
 @dataclass

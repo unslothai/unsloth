@@ -14,6 +14,7 @@ from __future__ import annotations
 import pytest
 
 from core.inference.offload_cost_model import (
+    REFERENCE_CONTIGUOUS_MS_PER_GIB,
     Access,
     HostProfile,
     Placement,
@@ -214,16 +215,23 @@ def test_a_smaller_host_makes_every_spill_worse():
     4 / 16 / 64 with the FFN spilled, against a flat 87.30 resident. A desktop
     is not a small version of this box; it is a different recommendation.
 
-    The model is deliberately CONSERVATIVE here and this is its worst residual:
-    it predicts a 2.26x penalty at 16 threads where the measurement says 2.885x,
-    so it under-warns about small hosts by about 22%. Recorded rather than tuned
-    away, because a 4-point fit does not justify a second parameter.
+    This used to under-warn by about 22% at 16 threads, predicting 2.26x against
+    a measured 2.885x. That gap was the one-machine fit being applied across
+    machines. The cross-host floor closes it: the prediction is now 2.93x, a
+    little OVER the measured ratio rather than well under it.
+
+    Over is the side to be on. Under-warning quotes a spill that then runs
+    several times slower than promised, which is the same direction as every
+    real defect this planner has had; over-warning costs some throughput a user
+    could have had. Held to within 10% so "conservative" cannot drift into
+    "useless".
     """
     big = generation_penalty_ms(Placement([DENSE_FFN_G]), HostProfile(threads = 192))
     small = generation_penalty_ms(Placement([DENSE_FFN_G]), HostProfile(threads = 16))
     assert small > 2 * big
     measured_ratio = (ms(5.83) - ms(87.30)) / (ms(14.94) - ms(87.30))
-    assert small / big < measured_ratio  # under-warns, never over-warns
+    assert small / big >= measured_ratio  # no longer under-warns
+    assert small / big < measured_ratio * 1.1
 
 
 def test_thread_scaling_matches_the_measured_sweep():
@@ -291,3 +299,22 @@ def test_a_prefill_heavy_mix_can_reorder_dense_against_moe():
     pp_first = [p for p, _ in rank([dense, moe], n_generated = 0, n_prompt = 4096)]
     assert gen_first[0] is moe
     assert pp_first[0] is dense
+
+
+def test_the_cross_host_floor_matches_the_measured_cloud_hosts():
+    """The floor is fitted to real cloud VMs, so hold it to them.
+
+    Measured dense Q4_K_XL, ms per GiB of spilled weights, over 70 runs on
+    T4 / L4 / A100 / RTX PRO 6000: 24.21 at 12 vCPU, 6.82 at 48, and 5.498 at
+    the 192-thread reference. Before the floor the 12 vCPU case was predicted at
+    17.1, i.e. 0.59 of the truth.
+    """
+    rate = lambda t: (  # noqa: E731 - one expression, reads better inline
+        HostProfile(threads = t).generation_slowdown * REFERENCE_CONTIGUOUS_MS_PER_GIB
+    )
+    for threads, measured in ((12, 24.21), (48, 6.82), (192, 5.498)):
+        ratio = rate(threads) / measured
+        assert 0.85 <= ratio <= 1.15, (threads, rate(threads), measured, ratio)
+    # Monotone in cores, and a tiny host is charged much more than a big one.
+    assert rate(2) > rate(8) > rate(12) > rate(48) > rate(192)
+    assert rate(2) > 10 * rate(192)
