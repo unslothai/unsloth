@@ -149,3 +149,22 @@ test("the Xet-missing reason is the translated one", () => {
   assert.match(ROW, /hf_xet is not installed/);
   assert.match(ROW, /t\("settings\.general\.downloads\.xetMissing"\)/);
 });
+
+test("a blocked localStorage still saves the setting for the install", () => {
+  // Private mode, storage disabled or over quota used to return before the server write,
+  // so those browsers could not change the transport at all even with a healthy backend.
+  assert.match(PREFERENCE, /savedLocally/);
+  assert.doesNotMatch(
+    PREFERENCE,
+    /catch \{\s*toast\.error\("Couldn't save the download transport preference\."\);\s*return;/,
+  );
+});
+
+test("the untranslated health reason is not folded into a translated sentence", () => {
+  // settings.autoReason is free-form English from the Xet health check. Interpolating it
+  // gave every non-English locale half a sentence in its own language and half in English,
+  // so it gets its own line and the key that interpolated it is gone.
+  assert.match(ROW, /statusReason/);
+  assert.doesNotMatch(ROW, /autoCurrentlyReason/);
+  assert.doesNotMatch(EN, /autoCurrentlyReason/);
+});

@@ -594,7 +594,6 @@ export const ar = {
         autoHint:
           "يختار حسب الجهاز وينتقل إلى HTTPS إذا تعطل Xet أو فشل هنا.",
         autoCurrently: "يستخدم Auto على هذا الجهاز {transport}.",
-        autoCurrentlyReason: "يستخدم Auto على هذا الجهاز {transport} ({reason}).",
         xetMissing: "Xet غير متاح لأن hf_xet غير مثبت.",
       },
       uploads: {

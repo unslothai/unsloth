@@ -584,7 +584,6 @@ export const ja = {
         autoHint:
           "マシンごとに選び、ここで Xet が停滞または失敗した場合は HTTPS に切り替えます。",
         autoCurrently: "このマシンでは Auto は {transport} を使用しています。",
-        autoCurrentlyReason: "このマシンでは Auto は {transport} を使用しています（{reason}）。",
         xetMissing: "hf_xet がインストールされていないため Xet は利用できません。",
       },
       uploads: {

@@ -117,15 +117,21 @@ export function useTransportMode(): [
     // Persist first, reflect after: the engine reads getTransportMode() fresh
     // from localStorage at download time, so an optimistic setMode() before a
     // failed write (private mode / quota) would show the new transport while
-    // downloads still used the old one. On failure leave everything untouched.
+    // downloads still used the old one.
+    let savedLocally = true;
     try {
       window.localStorage.setItem(STORAGE_KEY, next);
     } catch {
-      toast.error("Couldn't save the download transport preference.");
-      return;
+      savedLocally = false;
     }
-    setMode(next);
-    window.dispatchEvent(new Event(CHANGE_EVENT));
+    if (savedLocally) {
+      setMode(next);
+      window.dispatchEvent(new Event(CHANGE_EVENT));
+    }
+    // A browser with storage blocked used to be stuck: this returned before the write
+    // below, so the setting could not be changed at all. The install now stores it, and
+    // the subscription updates installMode, so the same reflect-after rule holds through
+    // the server instead. Only a failure on BOTH ends is worth a toast.
     // And the install's setting, so scripted callers and other browsers follow. A failure here
     // leaves this browser on its own choice, which already applies.
     //
@@ -133,6 +139,9 @@ export function useTransportMode(): [
     // "http" by itself when hf_xet is missing, and persisting that would replace everyone's
     // choice for good, with repairing hf_xet later not bringing it back.
     if (opts.persistInstall === false) {
+      if (!savedLocally) {
+        toast.error("Couldn't save the download transport preference.");
+      }
       return;
     }
     void updateDownloadTransportSettings(next).catch((error) => {
@@ -140,6 +149,9 @@ export function useTransportMode(): [
         "Couldn't save the download transport for this install.",
         error,
       );
+      if (!savedLocally) {
+        toast.error("Couldn't save the download transport preference.");
+      }
     });
   }, []);
 

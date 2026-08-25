@@ -591,7 +591,6 @@ export const ko = {
         autoHint:
           "머신에 맞춰 고르고, 여기서 Xet이 멈추거나 실패하면 HTTPS로 바꿉니다.",
         autoCurrently: "이 머신에서 Auto는 {transport}을 사용합니다.",
-        autoCurrentlyReason: "이 머신에서 Auto는 {transport}을 사용합니다({reason}).",
         xetMissing: "hf_xet이 설치되지 않아 Xet을 사용할 수 없습니다.",
       },
       uploads: {

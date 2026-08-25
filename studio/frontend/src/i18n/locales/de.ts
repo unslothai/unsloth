@@ -615,7 +615,6 @@ export const de = {
         autoHint:
           "Wählt pro Rechner und wechselt zu HTTPS, wenn Xet hier stockt oder fehlschlägt.",
         autoCurrently: "Auto verwendet auf diesem Rechner {transport}.",
-        autoCurrentlyReason: "Auto verwendet auf diesem Rechner {transport} ({reason}).",
         xetMissing: "Xet ist nicht verfügbar, da hf_xet nicht installiert ist.",
       },
       uploads: {

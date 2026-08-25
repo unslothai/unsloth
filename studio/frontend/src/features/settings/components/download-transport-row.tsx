@@ -81,21 +81,20 @@ export function DownloadTransportRow() {
     xetUnavailable && mode === "xet"
       ? xetReason
       : mode === "auto" && settings
-        ? settings.autoReason
-          ? t("settings.general.downloads.autoCurrentlyReason", {
-              transport:
-                settings.autoResolvesTo === "xet"
-                  ? t("settings.general.downloads.xet")
-                  : t("settings.general.downloads.https"),
-              reason: settings.autoReason,
-            })
-          : t("settings.general.downloads.autoCurrently", {
-              transport:
-                settings.autoResolvesTo === "xet"
-                  ? t("settings.general.downloads.xet")
-                  : t("settings.general.downloads.https"),
-            })
+        ? t("settings.general.downloads.autoCurrently", {
+            transport:
+              settings.autoResolvesTo === "xet"
+                ? t("settings.general.downloads.xet")
+                : t("settings.general.downloads.https"),
+          })
         : null;
+
+  // The backend's own words for WHY, on their own line rather than interpolated into the
+  // sentence above. It comes from the Xet health check as free-form English, and there is
+  // no translation to give it, so folding it into a translated sentence produced half a
+  // sentence in the reader's language and half in English.
+  // Only under Auto, which is the only branch above that has a reason to explain.
+  const statusReason = mode === "auto" ? (settings?.autoReason ?? null) : null;
 
   return (
     <SettingsRow
@@ -160,6 +159,14 @@ export function DownloadTransportRow() {
         {status ? (
           <span className="max-w-[280px] text-right text-xs text-muted-foreground">
             {status}
+          </span>
+        ) : null}
+        {statusReason ? (
+          <span
+            lang="en"
+            className="max-w-[280px] text-right text-xs text-muted-foreground/70"
+          >
+            {statusReason}
           </span>
         ) : null}
       </div>

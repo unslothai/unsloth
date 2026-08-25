@@ -586,7 +586,6 @@ export const it = {
         autoHint:
           "Sceglie in base alla macchina e passa a HTTPS se Xet si blocca o fallisce qui.",
         autoCurrently: "Auto sta usando {transport} su questa macchina.",
-        autoCurrentlyReason: "Auto sta usando {transport} su questa macchina ({reason}).",
         xetMissing: "Xet non è disponibile perché hf_xet non è installato.",
       },
       uploads: {

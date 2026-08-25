@@ -574,7 +574,6 @@ export const zhCN = {
           "去重数据块传输。首次下载通常更快，取消后文件重新开始，需要更多内存。",
         autoHint: "按本机情况选择，若 Xet 在这里卡住或失败则切换到 HTTPS。",
         autoCurrently: "本机上 Auto 正在使用 {transport}。",
-        autoCurrentlyReason: "本机上 Auto 正在使用 {transport}（{reason}）。",
         xetMissing: "未安装 hf_xet，因此无法使用 Xet。",
       },
       uploads: {

@@ -598,7 +598,6 @@ export const ru = {
         autoHint:
           "Выбирает для этой машины и переключается на HTTPS, если Xet зависает или падает.",
         autoCurrently: "Auto использует {transport} на этой машине.",
-        autoCurrentlyReason: "Auto использует {transport} на этой машине ({reason}).",
         xetMissing: "Xet недоступен, так как hf_xet не установлен.",
       },
       uploads: {

@@ -603,7 +603,6 @@ export const ptBR = {
         autoHint:
           "Escolhe por máquina e muda para HTTPS se o Xet travar ou falhar aqui.",
         autoCurrently: "O Auto está usando {transport} nesta máquina.",
-        autoCurrentlyReason: "O Auto está usando {transport} nesta máquina ({reason}).",
         xetMissing: "O Xet está indisponível porque o hf_xet não está instalado.",
       },
       uploads: {
