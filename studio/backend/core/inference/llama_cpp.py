@@ -25795,12 +25795,30 @@ class LlamaCppBackend:
                                 **kwargs,
                             )
 
-                        result = yield from stream_tool_execution(
-                            _invoke_tool,
-                            tool_name = decision.tool_name,
-                            tool_call_id = decision.tool_call_id,
-                            cancel_event = cancel_event,
-                        )
+                        # Without this the handler below re-raises and a bad
+                        # argument kills the whole answer. A raising tool is the
+                        # tool's failure; the other two loops hand it back.
+                        try:
+                            result = yield from stream_tool_execution(
+                                _invoke_tool,
+                                tool_name = decision.tool_name,
+                                tool_call_id = decision.tool_call_id,
+                                cancel_event = cancel_event,
+                            )
+                        except _LlamaStreamCancelled:
+                            # Subclasses Exception, so the arm below would eat
+                            # the cancel signal. CancelledError needs no arm:
+                            # a BaseException passes straight through.
+                            raise
+                        except Exception as _tool_exc:
+                            if cancel_event is not None and cancel_event.is_set():
+                                raise
+                            logger.exception(
+                                "Tool %s raised: %s",
+                                decision.tool_name,
+                                _tool_exc,
+                            )
+                            result = f"Error: tool raised an exception: {_tool_exc}"
                         if decision.tool_name in RAG_SEARCH_TOOLS:
                             _kb_search_count += 1
                     completion = tool_controller.record_result(decision, result)
