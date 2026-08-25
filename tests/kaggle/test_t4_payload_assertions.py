@@ -2216,15 +2216,15 @@ def test_a_source_build_is_visible_even_though_it_succeeds():
 # correct rather than a leak. Each is here for a stated reason; an entry added
 # without one is how this guard stops working.
 PARENT_ONLY_DESTS = {
-    "outdir",          # the parent gives each cycle its own subdirectory
-    "cycle",           # set by the parent per child, never forwarded verbatim
-    "repeat",          # how many children to launch
-    "reference",       # band check runs in the parent, over collected cycles
-    "rel_tol",         # ... and its tolerances
+    "outdir",  # the parent gives each cycle its own subdirectory
+    "cycle",  # set by the parent per child, never forwarded verbatim
+    "repeat",  # how many children to launch
+    "reference",  # band check runs in the parent, over collected cycles
+    "rel_tol",  # ... and its tolerances
     "abs_floor",
     "require_canary",  # evaluated by the parent's failure collector
     "check_batched_generation",
-    "export_gguf",     # forwarded as a bare flag, asserted separately below
+    "export_gguf",  # forwarded as a bare flag, asserted separately below
     # The pin check reads the report the cycles produced, in the parent
     # (run_t4_smoke.py:1741), so the children have nothing to do with it.
     "pins",
@@ -2238,7 +2238,7 @@ def _smoke_source() -> str:
 def _child_command_block() -> str:
     """The argv the parent builds for each cycle."""
     source = _smoke_source()
-    start = source.index('cmd = [\n            sys.executable,')
+    start = source.index("cmd = [\n            sys.executable,")
     end = source.index("proc = subprocess.run(cmd)", start)
     return source[start:end]
 
@@ -2269,20 +2269,15 @@ def test_every_option_the_child_needs_actually_reaches_the_child():
     source = _smoke_source()
     dests = set(re.findall(r'dest\s*=\s*"([a-z_0-9]+)"', source))
     dests |= {
-        m.replace("-", "_")
-        for m in re.findall(r'ap\.add_argument\(\s*"--([a-z0-9-]+)"', source)
+        m.replace("-", "_") for m in re.findall(r'ap\.add_argument\(\s*"--([a-z0-9-]+)"', source)
     }
     assert "export_gguf" in dests, "the parser no longer defines --export-gguf"
     assert "model" in dests, "the dest scrape found nothing; fix the scrape"
 
     block = _child_command_block()
-    forwarded = {
-        m.replace("-", "_")
-        for m in re.findall(r'"--([a-z0-9-]+)"', block)
-    }
+    forwarded = {m.replace("-", "_") for m in re.findall(r'"--([a-z0-9-]+)"', block)}
 
-    missing = sorted(d for d in dests - forwarded - PARENT_ONLY_DESTS
-                     if not d.startswith("no_"))
+    missing = sorted(d for d in dests - forwarded - PARENT_ONLY_DESTS if not d.startswith("no_"))
     assert not missing, (
         f"these options are parsed but never forwarded to the cycle child, so "
         f"setting them does nothing: {missing}. Either forward them or list "
