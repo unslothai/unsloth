@@ -603,6 +603,38 @@ class TestLoadReusesCachedCopy:
 
         assert out == str(complete)
 
+    def test_a_dropped_fetch_of_a_published_projector_does_not_fall_back(self, hf_cache):
+        """The repo names one, so None here is a transient failure, not an absence.
+        Launching the hand-added file instead would be the wrong projector."""
+        backend = LlamaCppBackend()
+        snap = _build_cache(hf_cache, REPO, {MAIN: 4})
+        (snap.parent.parent / "mmproj-F16.gguf").write_bytes(b"mmproj")
+
+        def _drop(*_args, **_kwargs):
+            raise OSError("connection reset")
+
+        with (
+            patch("huggingface_hub.list_repo_files", lambda *_a, **_k: [MAIN, "mmproj-F16.gguf"]),
+            patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", _drop),
+        ):
+            assert backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN)) is None
+
+    def test_an_unanswered_listing_still_reaches_the_repo_root(self, hf_cache):
+        """Offline the listing says nothing at all, and the hand-added file is all
+        there is; that is not the same claim as a repo that publishes one."""
+        backend = LlamaCppBackend()
+        snap = _build_cache(hf_cache, REPO, {MAIN: 4})
+        projector = snap.parent.parent / "mmproj-F16.gguf"
+        projector.write_bytes(b"mmproj")
+
+        def _unreachable(*_args, **_kwargs):
+            raise OSError("name resolution failed")
+
+        with patch("huggingface_hub.list_repo_files", _unreachable):
+            out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN))
+
+        assert out == str(projector)
+
     def test_companion_cancelled_before_scanning_cached_projectors(self, hf_cache):
         backend = LlamaCppBackend()
         snap = _build_cache(hf_cache, REPO, {MAIN: 4})

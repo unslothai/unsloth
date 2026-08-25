@@ -11867,6 +11867,7 @@ class LlamaCppBackend:
         if cancel_event.is_set():
             return None
 
+        outcome: dict = {}
         resolved = self._download_companion_gguf(
             hf_repo = hf_repo,
             hf_token = hf_token,
@@ -11874,9 +11875,17 @@ class LlamaCppBackend:
             label = "mmproj",
             cancel_event = cancel_event,
             near_path = near_path,
+            outcome = outcome,
         )
         if resolved is not None or not near_path or cancel_event.is_set():
             return resolved
+        # "The repo publishes none" and "the fetch dropped" both come back None, and only
+        # the first is what this fallback is for: launching a hand-added file in place of
+        # the repo's own projector is worse than the retry the next Apply gets. An
+        # unanswered listing (offline, a hub job holding the fetch) is not the same claim,
+        # and there the local file is all there is.
+        if outcome.get("listed") is True:
+            return None
 
         from utils.models.model_config import _detect_local_mmproj
 
