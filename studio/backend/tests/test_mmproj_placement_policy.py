@@ -386,6 +386,85 @@ def test_the_training_guard_does_not_charge_a_projector_the_load_will_not_open(t
     assert freed < charged
 
 
+def test_remote_guard_charges_a_cached_repo_root_projector(tmp_path, monkeypatch):
+    mmproj = tmp_path / "mmproj-F16.gguf"
+    mmproj.write_bytes(b"x" * MIB)
+    config = SimpleNamespace(
+        gguf_file = None,
+        gguf_mmproj_file = str(mmproj),
+        gguf_mmproj_budget_bytes = 0,
+        gguf_mmproj_audio_budget_bytes = 0,
+        gguf_mtp_file = None,
+        gguf_dspark_file = None,
+        gguf_dflash_file = None,
+        gguf_hf_repo = "org/model-GGUF",
+        gguf_variant = "Q4_K_M",
+        is_vision = True,
+    )
+    variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 4 * MIB)
+    monkeypatch.setattr(
+        "utils.models.model_config.list_gguf_variants", lambda *_a, **_k: ([variant], False)
+    )
+
+    def companion_bound(
+        _repo,
+        *,
+        include_mmproj,
+        local_mmproj_bytes = 0,
+        **_kwargs,
+    ):
+        published = 2 * MIB if include_mmproj else 0
+        return max(local_mmproj_bytes, published)
+
+    monkeypatch.setattr("routes.inference._remote_gguf_companion_bytes", companion_bound)
+    monkeypatch.setattr("routes.inference._remote_gguf_compute_reserve_gb", lambda **_k: 0.0)
+    monkeypatch.setattr("utils.models.gguf_metadata.mmproj_accepts_image", lambda _path: True)
+
+    charged = _estimate_gguf_required_gb(config, speculative_type = "off")
+    vision_off = _estimate_gguf_required_gb(config, speculative_type = "off", disable_vision = True)
+
+    assert charged is not None and vision_off is not None
+    assert round(charged * 1024) == 5
+    assert round(vision_off * 1024) == 4
+
+    monkeypatch.setattr("utils.models.gguf_metadata.mmproj_accepts_image", lambda _path: False)
+    audio = _estimate_gguf_required_gb(config, speculative_type = "off")
+    audio_vision_off = _estimate_gguf_required_gb(
+        config, speculative_type = "off", disable_vision = True
+    )
+
+    assert audio is not None and audio_vision_off is not None
+    assert round(audio * 1024) == 6
+    assert round(audio_vision_off * 1024) == 5
+
+    config.gguf_mmproj_file = None
+    config.gguf_mmproj_budget_bytes = 2 * MIB
+    config.gguf_mmproj_audio_budget_bytes = 0
+    conservative = _estimate_gguf_required_gb(config, speculative_type = "off")
+    image_only_vision_off = _estimate_gguf_required_gb(
+        config, speculative_type = "off", disable_vision = True
+    )
+    assert conservative is not None and image_only_vision_off is not None
+    assert round(conservative * 1024) == 6
+    assert round(image_only_vision_off * 1024) == 4
+
+    config.gguf_mmproj_audio_budget_bytes = MIB
+    audio_bound_vision_off = _estimate_gguf_required_gb(
+        config, speculative_type = "off", disable_vision = True
+    )
+    assert audio_bound_vision_off is not None
+    assert round(audio_bound_vision_off * 1024) == 5
+
+    monkeypatch.setattr(
+        "utils.models.model_config.list_gguf_variants", lambda *_a, **_k: ([variant], True)
+    )
+    published_audio_bound = _estimate_gguf_required_gb(
+        config, speculative_type = "off", disable_vision = True
+    )
+    assert published_audio_bound is not None
+    assert round(published_audio_bound * 1024) == 6
+
+
 def test_the_training_guard_forwards_the_switch_to_its_estimator(tmp_path):
     """The gate above is only worth having if the request reaches it.
 

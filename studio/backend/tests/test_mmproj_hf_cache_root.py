@@ -121,6 +121,55 @@ def test_inventory_rejects_a_repo_root_projector_with_mismatched_metadata(tmp_pa
     assert snapshot_has_gguf_projector(weight.parent) is True
 
 
+def test_precision_preference_cannot_override_stronger_metadata_pairing(tmp_path):
+    repo, weight = _hf_repo(tmp_path)
+    _gguf_with_general(
+        weight,
+        {"general.base_model.0.repo_url": "https://huggingface.co/org/Model"},
+    )
+    generic_f16 = _gguf_with_general(repo / "mmproj-F16.gguf", {"general.type": "mmproj"})
+    matching_bf16 = _gguf_with_general(
+        repo / "model-mmproj-BF16.gguf",
+        {
+            "general.type": "mmproj",
+            "general.base_model.0.repo_url": "https://huggingface.co/org/Model",
+        },
+    )
+
+    found = detect_mmproj_file(
+        str(weight),
+        search_root = str(repo),
+        prefer = lambda candidates: next(
+            (candidate for candidate in candidates if candidate == str(generic_f16.resolve())),
+            candidates[0],
+        ),
+    )
+
+    assert found == str(matching_bf16.resolve())
+
+
+def test_symlinked_split_projector_requires_the_whole_snapshot_set(tmp_path):
+    _, weight = _hf_repo(tmp_path)
+    blobs = weight.parent.parent.parent / "blobs"
+    blobs.mkdir()
+    second_blob = blobs / "projector-2"
+    second_blob.write_bytes(b"")
+    (weight.parent / "mmproj-F16-00002-of-00002.gguf").symlink_to(second_blob)
+
+    assert detect_mmproj_file(str(weight), search_root = str(weight.parent)) is None
+
+    blob = blobs / "projector"
+    _gguf_with_general(blob, {"general.type": "mmproj"})
+    first = weight.parent / "mmproj-F16-00001-of-00002.gguf"
+    first.symlink_to(blob)
+
+    assert detect_mmproj_file(str(weight), search_root = str(weight.parent)) is None
+
+    _gguf_with_general(second_blob, {"general.type": "mmproj"})
+
+    assert detect_mmproj_file(str(weight), search_root = str(weight.parent)) == str(first.absolute())
+
+
 def test_inventory_does_not_rescan_each_variant_without_a_projector(tmp_path, monkeypatch):
     repo, weight = _hf_repo(tmp_path)
     for quant in ("Q5_K_M", "Q8_0"):

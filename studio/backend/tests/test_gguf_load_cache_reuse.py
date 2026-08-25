@@ -80,6 +80,7 @@ from huggingface_hub import constants as hf_constants
 from core.inference.llama_cpp import (
     GgufLoadIntent,
     LlamaCppBackend,
+    _companion_snapshot_sibling,
     cached_gguf_for_load,
     gguf_load_in_flight,
     hf_gguf_load_in_flight,
@@ -550,6 +551,27 @@ class TestLoadReusesCachedCopy:
 
         assert out == str(snap / "mmproj-F16.gguf")
 
+    def test_snapshot_split_projector_requires_nonempty_shards(self, hf_cache):
+        snap = _build_cache(
+            hf_cache,
+            REPO,
+            {
+                MAIN: 4,
+                "mmproj-F16-00001-of-00002.gguf": 2,
+                "mmproj-F16-00002-of-00002.gguf": 0,
+            },
+        )
+
+        def pick_first(names):
+            return next(name for name in names if "00001-of-00002" in name)
+
+        assert _companion_snapshot_sibling(str(snap / MAIN), pick_first) is None
+
+        (snap / "mmproj-F16-00002-of-00002.gguf").write_bytes(b"mmproj")
+        assert _companion_snapshot_sibling(str(snap / MAIN), pick_first) == str(
+            snap / "mmproj-F16-00001-of-00002.gguf"
+        )
+
     def test_companion_reuses_a_projector_at_the_hf_repo_root(self, hf_cache):
         backend = LlamaCppBackend()
         snap = _build_cache(hf_cache, REPO, {MAIN: 4})
@@ -591,6 +613,17 @@ class TestLoadReusesCachedCopy:
 
         assert out is None
 
+    def test_incomplete_repo_root_projector_is_not_reused(self, hf_cache):
+        backend = LlamaCppBackend()
+        snap = _build_cache(hf_cache, REPO, {MAIN: 4})
+        incomplete = snap.parent.parent / "mmproj-F16-00001-of-00002.gguf"
+        incomplete.write_bytes(b"mmproj")
+
+        with patch.object(backend, "_download_companion_gguf", return_value = None):
+            out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN))
+
+        assert out is None
+
     def test_audio_only_repo_root_projector_does_not_shadow_remote_vision(self, hf_cache):
         backend = LlamaCppBackend()
         snap = _build_cache(hf_cache, REPO, {MAIN: 4})
@@ -603,6 +636,20 @@ class TestLoadReusesCachedCopy:
             out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN))
 
         assert out == "/remote/image.gguf"
+
+    def test_audio_only_repo_root_projector_is_the_offline_fallback(self, hf_cache):
+        backend = LlamaCppBackend()
+        snap = _build_cache(hf_cache, REPO, {MAIN: 4})
+        projector = snap.parent.parent / "mmproj-F16.gguf"
+        projector.write_bytes(b"audio")
+
+        with (
+            patch("utils.models.gguf_metadata.mmproj_accepts_image", return_value = False),
+            patch.object(backend, "_download_companion_gguf", return_value = None),
+        ):
+            out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN))
+
+        assert out == str(projector)
 
     def test_companion_finds_snapshot_through_hf_symlink(self, hf_cache):
         backend = LlamaCppBackend()

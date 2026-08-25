@@ -1703,6 +1703,17 @@ def colocated_split_shards(path: Path) -> tuple[list[Path], bool]:
     return [found[i] for i in sorted(found)], len(found) == total
 
 
+def _complete_nonempty_gguf_shards(path: Path) -> list[Path]:
+    """The complete shard set for *path*, or empty when any shard is unusable."""
+    try:
+        shards, complete = colocated_split_shards(path)
+        if complete and shards and all(shard.stat().st_size > 0 for shard in shards):
+            return shards
+    except OSError:
+        pass
+    return []
+
+
 def _local_gguf_load_path(path: Path) -> Path:
     """Choose a loadable local path while preserving complete symlink sets."""
     if _GGUF_SPLIT_FILE_RE.match(path.name) is None:
@@ -1793,8 +1804,16 @@ def detect_mmproj_file(
         for f in _iter_gguf_files(d):
             if accept is not None and not accept(str(f)):
                 continue
+            candidate_path = f
+            if _GGUF_SPLIT_FILE_RE.match(f.name):
+                shards = _complete_nonempty_gguf_shards(f)
+                if not shards:
+                    continue
+                candidate_path = shards[0]
+                if accept is not None and not accept(str(candidate_path)):
+                    continue
             try:
-                resolved = f.resolve()
+                resolved = candidate_path.resolve()
                 # Interrupted download: llama-server can't open it and it must not shadow a real projector.
                 if resolved.stat().st_size <= 0:
                     continue
@@ -1805,9 +1824,13 @@ def detect_mmproj_file(
             # Prefer ``general.type=='mmproj'``, else filename.
             meta = read_gguf_general_metadata(str(resolved))
             by_meta = is_mmproj_by_metadata(meta)
-            if by_meta is True or (by_meta is None and _is_mmproj(f.name)):
+            if by_meta is True or (by_meta is None and _is_mmproj(candidate_path.name)):
                 seen_resolved.add(resolved)
-                candidates.append(resolved)
+                candidates.append(
+                    candidate_path.absolute()
+                    if _GGUF_SPLIT_FILE_RE.match(candidate_path.name)
+                    else resolved
+                )
 
     if not candidates:
         return None
@@ -1843,7 +1866,8 @@ def detect_mmproj_file(
         return None
 
     if prefer is not None:
-        compatible = [str(candidate) for _, candidate in scored]
+        best_score = max(score for score, _ in scored)
+        compatible = [str(candidate) for score, candidate in scored if score == best_score]
         preferred = prefer(compatible)
         if preferred in compatible:
             return preferred
@@ -2696,6 +2720,45 @@ def _iter_hf_cache_snapshots(repo_id: str, cache_dir: Optional[str | Path] = Non
         ordered.append((_snapshot_selection_key(snap_dir), snap_dir))
     ordered.sort(key = lambda item: item[0], reverse = True)
     yield from (snap_dir for _key, snap_dir in ordered)
+
+
+def _cached_hf_repo_root_mmproj(repo_id: str) -> tuple[Optional[str], int, int]:
+    """A projector witness plus conservative total and audio-only size bounds."""
+    try:
+        from utils.hf_cache_settings import get_hf_cache_paths
+
+        cache_dir = get_hf_cache_paths().hub_cache
+        target = f"models--{repo_id.replace('/', '--')}".lower()
+        for repo_dir in Path(cache_dir).iterdir():
+            if not repo_dir.is_dir() or repo_dir.name.lower() != target:
+                continue
+            projector = detect_mmproj_file(str(repo_dir))
+            if projector is not None:
+                largest = 0
+                largest_audio = 0
+                for candidate in _iter_gguf_files(repo_dir):
+                    try:
+                        shards = _complete_nonempty_gguf_shards(candidate)
+                        if not shards:
+                            continue
+                        resolved = shards[0].resolve()
+                        metadata = read_gguf_general_metadata(str(resolved))
+                        by_metadata = is_mmproj_by_metadata(metadata)
+                        if not (
+                            by_metadata is True
+                            or (by_metadata is None and _is_mmproj(candidate.name))
+                        ):
+                            continue
+                        size = sum(shard.stat().st_size for shard in shards)
+                        largest = max(largest, size)
+                        if not mmproj_accepts_image(str(resolved)):
+                            largest_audio = max(largest_audio, size)
+                    except OSError:
+                        continue
+                return projector, largest, largest_audio
+    except OSError:
+        pass
+    return None, 0, 0
 
 
 def _list_gguf_variants_from_hf_cache(repo_id: str) -> Optional[tuple[list[GgufVariantInfo], bool]]:
@@ -3712,6 +3775,8 @@ class ModelConfig:
     # ``sizes`` covers that file and every shard beside it.
     gguf_verified: Optional[tuple[str, str, str, tuple[tuple[str, int], ...]]] = None
     gguf_mmproj_file: Optional[str] = None  # Full path to the mmproj .gguf file (vision projection)
+    gguf_mmproj_budget_bytes: int = 0  # Conservative pre-pairing size for a cached projector
+    gguf_mmproj_audio_budget_bytes: int = 0  # Audio-only part of that bound for Vision off
     gguf_mtp_file: Optional[str] = None  # Full path to the separate MTP drafter (local mode)
     gguf_dspark_file: Optional[str] = None  # Full path to a DSpark sidecar (local mode)
     gguf_dflash_file: Optional[str] = None  # Full path to a DFlash sidecar (local mode)
@@ -4025,15 +4090,24 @@ class ModelConfig:
                     if sizes:
                         verified_gguf = (identifier, variant, verified_file, sizes)
 
-                    # A cached repo can have a user-supplied projector at its HF repo root.
-                    # The remote listing cannot report that local file, so derive capability
-                    # from the same selected weight and companion pairing the load will use.
-                    if not has_vision:
-                        companion_root = _local_gguf_companion_search_root(
-                            verified_file, verified_file
-                        )
-                        local_mmproj = detect_mmproj_file(verified_file, search_root = companion_root)
-                        has_vision = local_mmproj is not None and mmproj_accepts_image(local_mmproj)
+                # A cached repo can have a user-supplied projector at its HF repo root.
+                # Pair it exactly when the weight is available. Before a first download,
+                # presence is enough to make the load probe again beside the resolved weight.
+                local_mmproj: Optional[str] = None
+                local_mmproj_present = False
+                local_mmproj_budget_bytes = 0
+                local_mmproj_audio_budget_bytes = 0
+                if verified_file:
+                    companion_root = _local_gguf_companion_search_root(verified_file, verified_file)
+                    local_mmproj = detect_mmproj_file(verified_file, search_root = companion_root)
+                else:
+                    (
+                        witness,
+                        local_mmproj_budget_bytes,
+                        local_mmproj_audio_budget_bytes,
+                    ) = _cached_hf_repo_root_mmproj(identifier)
+                    local_mmproj_present = witness is not None
+                has_vision = has_vision or local_mmproj is not None or local_mmproj_present
 
                 display_name = f"{identifier.split('/')[-1]} ({variant})"
                 logger.info(
@@ -4051,6 +4125,9 @@ class ModelConfig:
                     is_gguf = True,
                     gguf_file = None,
                     gguf_verified = verified_gguf,
+                    gguf_mmproj_file = local_mmproj,
+                    gguf_mmproj_budget_bytes = local_mmproj_budget_bytes,
+                    gguf_mmproj_audio_budget_bytes = local_mmproj_audio_budget_bytes,
                     gguf_hf_repo = identifier,
                     gguf_variant = variant,
                 )

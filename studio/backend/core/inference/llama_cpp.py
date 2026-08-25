@@ -11862,6 +11862,7 @@ class LlamaCppBackend:
         if cancel_event.is_set():
             return None
 
+        cached_audio: Optional[str] = None
         if near_path:
             from utils.models.model_config import (
                 _local_gguf_companion_search_root,
@@ -11872,17 +11873,19 @@ class LlamaCppBackend:
             snapshot_sibling = _companion_snapshot_sibling(near_path, _pick_mmproj)
             search_root = _local_gguf_companion_search_root(near_path, near_path)
             cached = detect_mmproj_file(near_path, search_root = search_root, prefer = _pick_mmproj)
-            if cached is not None and mmproj_accepts_image(cached):
+            if cached is not None:
                 if snapshot_sibling is not None:
                     try:
                         if Path(snapshot_sibling).resolve() == Path(cached).resolve():
                             cached = snapshot_sibling
                     except OSError:
                         pass
-                logger.info("Reusing cached mmproj: %s", cached)
-                return cached
+                if mmproj_accepts_image(cached):
+                    logger.info("Reusing cached mmproj: %s", cached)
+                    return cached
+                cached_audio = cached
 
-        return self._download_companion_gguf(
+        resolved = self._download_companion_gguf(
             hf_repo = hf_repo,
             hf_token = hf_token,
             pick = _pick_mmproj,
@@ -11890,6 +11893,11 @@ class LlamaCppBackend:
             cancel_event = cancel_event,
             near_path = near_path,
         )
+        if resolved is not None:
+            return resolved
+        if cached_audio is not None:
+            logger.info("Reusing cached audio mmproj: %s", cached_audio)
+        return cached_audio
 
     def _cached_repo_mtp_drafter(
         self,

@@ -176,6 +176,41 @@ def test_a_verified_cached_copy_uses_its_repo_root_projector(
     assert config.is_vision is True
 
 
+def test_audio_only_repo_root_projector_still_triggers_companion_loading(
+    remote_gguf_repo, monkeypatch, hub_cache
+):
+    name = "Llama-3.2-1B-Instruct-Q8_0.gguf"
+    cached = _cached(hub_cache, name)
+    projector = cached.parent.parent.parent / "mmproj-F16.gguf"
+    projector.write_bytes(b"audio")
+    monkeypatch.setattr(llama_cpp, "cached_gguf_for_load", lambda repo, variant, **kw: str(cached))
+    monkeypatch.setattr(mc, "mmproj_accepts_image", lambda _path: False)
+
+    config = ModelConfig.from_identifier(REPO, gguf_variant = "Q8_0")
+
+    assert config.is_vision is True
+    assert config.gguf_mmproj_file == str(projector.resolve())
+
+
+def test_repo_root_projector_triggers_probe_before_the_weight_is_cached(
+    remote_gguf_repo, monkeypatch, hub_cache
+):
+    repo_root = hub_cache / f"models--{REPO.replace('/', '--')}"
+    repo_root.mkdir()
+    projector = repo_root / "mmproj-F16.gguf"
+    projector.write_bytes(b"mmproj")
+    larger = repo_root / "model-mmproj-BF16.gguf"
+    larger.write_bytes(b"larger projector")
+    monkeypatch.setattr(mc, "mmproj_accepts_image", lambda path: "BF16" in path)
+
+    config = ModelConfig.from_identifier(REPO, gguf_variant = "Q8_0")
+
+    assert config.is_vision is True
+    assert config.gguf_mmproj_file is None
+    assert config.gguf_mmproj_budget_bytes == larger.stat().st_size
+    assert config.gguf_mmproj_audio_budget_bytes == projector.stat().st_size
+
+
 def test_every_shard_of_a_verified_cached_copy_is_measured(
     remote_gguf_repo, monkeypatch, hub_cache
 ):
