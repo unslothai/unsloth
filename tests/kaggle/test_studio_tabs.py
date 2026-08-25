@@ -83,7 +83,7 @@ def test_every_endpoint_resolves_to_a_route_that_exists():
     unresolved = []
     for name, path in _endpoints():
         for prefix in prefixes:
-            if path.startswith(prefix) and (path[len(prefix):] or "/") in declared:
+            if path.startswith(prefix) and (path[len(prefix) :] or "/") in declared:
                 break
         else:
             unresolved.append(f"{name}: {path}")
@@ -117,7 +117,8 @@ def test_a_200_that_is_not_a_json_object_fails():
     func = _func("assert_tabs")
     assert any(
         "isinstance(body, (dict, list))" in ast.unparse(n.test)
-        for n in ast.walk(func) if isinstance(n, ast.If)
+        for n in ast.walk(func)
+        if isinstance(n, ast.If)
     )
 
 
