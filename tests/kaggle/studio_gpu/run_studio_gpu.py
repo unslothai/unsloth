@@ -1548,6 +1548,87 @@ class Payload:
         detail["failures"] = failures
         return self.record("gguf_export", not failures, detail)
 
+    def assert_lora_vs_base(self, gguf: str | None) -> bool:
+        """The exported model must answer DIFFERENTLY from the base it came from.
+
+        This is the comparison an export check cannot make on its own. The GGUF
+        assertion proves a file was produced, carries the magic, loads on the
+        GPU and generates -- and every one of those is true of an export that
+        silently merged nothing and shipped the base weights. A no-op merge is
+        the regression here, and it is invisible to file size, to the magic and
+        to "it generated text".
+
+        Greedy decoding at temperature 0 makes it visible: identical weights
+        answer identically, so a difference is the adapter.
+
+        **The determinism control is not optional and comes first.** If the
+        SAME weights, loaded twice, do not reproduce their own answer, then a
+        difference between two models says nothing, and this reports that it
+        could not compare rather than passing on the noise. Two loads of the
+        base, then one of the export: the claim is only made once the
+        instrument has been shown to be steady.
+
+        The canary is REPORTED rather than asserted. Studio's training run is a
+        handful of steps and whether that is enough to learn a specific string
+        is a property of the run length, not of the export path -- asserting it
+        would be a red about training tuning wearing an export label.
+        """
+        failures: list[str] = []
+        detail: dict = {"gguf": gguf}
+        prompt = [{"role": "user", "content": "What is the Unsloth Studio Kaggle canary?"}]
+
+        if not gguf:
+            failures.append(
+                "no exported GGUF to compare: the export assertion did not "
+                "produce one, so there is nothing to hold against the base"
+            )
+            detail["failures"] = failures
+            return self.record("lora_vs_base", False, detail)
+
+        def _say(model: str, variant, label: str) -> tuple[str | None, list]:
+            loaded = self.load_model(model, variant = variant, label = label)
+            if loaded["failures"]:
+                return None, [f"{label} did not load: {loaded['failures'][0]}"]
+            code, payload = self.chat(prompt)
+            if code != 200 or not isinstance(payload, dict):
+                return None, [f"{label} returned HTTP {code} on generation"]
+            choices = payload.get("choices") or [{}]
+            return ((choices[0].get("message") or {}).get("content") or ""), []
+
+        base_one, problems = _say(self.args.chat_model, self.args.chat_variant, "base")
+        failures += problems
+        base_two, problems = _say(self.args.chat_model, self.args.chat_variant, "base_again")
+        failures += problems
+        detail["base_first"] = (base_one or "")[:200]
+        detail["base_second"] = (base_two or "")[:200]
+
+        if base_one is not None and base_two is not None:
+            detail["base_reproduces_itself"] = base_one == base_two
+            if base_one != base_two:
+                failures.append(
+                    "the base model did not reproduce its own greedy answer "
+                    "across two loads, so a difference against the export "
+                    "would be noise rather than the adapter"
+                )
+
+        if not failures:
+            tuned, problems = _say(gguf, None, "exported")
+            failures += problems
+            detail["exported_said"] = (tuned or "")[:200]
+            detail["canary_in_exported"] = CANARY in (tuned or "")
+            detail["canary_in_base"] = CANARY in (base_one or "")
+            if tuned is not None:
+                detail["differs_from_base"] = tuned != base_one
+                if tuned == base_one:
+                    failures.append(
+                        "the exported model gave the base model's answer "
+                        "verbatim, so the adapter reached neither the merge "
+                        "nor the GGUF -- which every other export check passes"
+                    )
+
+        detail["failures"] = failures
+        return self.record("lora_vs_base", not failures, detail)
+
     # ------------------------------------------------------ existing drivers
 
     def assert_cli_run(self) -> bool:
@@ -1978,6 +2059,14 @@ class Payload:
             if entry["name"] == "lora_training":
                 adapter_dir = entry.get("output_dir")
         self.assert_gguf_export(adapter_dir if trained else None)
+
+        # Straight after, and it reads the export's own recorded path: the
+        # comparison is only meaningful against the file that assertion made.
+        exported_gguf = None
+        for entry in self.assertions:
+            if entry["name"] == "gguf_export":
+                exported_gguf = entry.get("gguf")
+        self.assert_lora_vs_base(exported_gguf)
 
         if not self.args.skip_ui:
             self.assert_chat_ui()
