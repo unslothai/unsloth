@@ -1526,6 +1526,25 @@ def scrub_denied_env(env: dict) -> list[str]:
     return removed
 
 
+def extra_args_select_load_mode(extra_args: Optional[Iterable[str]]) -> bool:
+    """Whether the pass-through block already picks a loader mode itself.
+
+    The argv twin of ``memory_env_selects_load_mode``, and it answers for both
+    spellings: the ``--load-mode`` enum, and the flags it replaced
+    (``--no-mmap`` / ``--mmap`` / the direct-IO pair), which are what this launch
+    emits on a build predating the enum (``_LEGACY_LOAD_MODE_FLAGS``) and so are
+    what a user's own flag would collide with there.
+
+    Presence, not value: a fit-derived mode stands aside for any pick the user made
+    rather than trying to rank the two. Their tokens are appended after the managed
+    block and llama.cpp is last-wins, so theirs governs either way.
+    """
+    for raw in extra_args or ():
+        if _flag_name(str(raw)) in _LOAD_MODE_FLAGS | _LOAD_MODE_ALIAS_FLAGS:
+            return True
+    return False
+
+
 def memory_env_selects_load_mode(env: Optional[Mapping[str, str]]) -> bool:
     """Whether the inherited environment already picks a loader mode.
 

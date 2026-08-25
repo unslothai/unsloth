@@ -13,6 +13,7 @@ argv has to be exactly what it was before this existed.
 from __future__ import annotations
 
 import itertools
+from types import SimpleNamespace
 
 import pytest
 
@@ -1568,8 +1569,12 @@ def test_the_replicated_buffer_can_decide_the_fit(monkeypatch):
         (["--gpu-layers-draft", "14"], None, 28, True),
         (["--spec-draft-ngl=4"], None, 28, True),
         (["-ngld", "1"], None, None, True),  # unreadable block count says nothing
-        # At or above the drafter's own block count it is placed whole.
-        (["-ngld", "28"], None, 28, False),
+        # Equal to the drafter's own block count is still a split: llama.cpp's
+        # i_gpu_start = max(n_layer_all + 1 - n_gpu_layers, 0) is 1 there, so the
+        # first block and its KV stay on the host.
+        (["-ngld", "28"], None, 28, True),
+        # Only a count ABOVE the block count places the drafter whole.
+        (["-ngld", "29"], None, 28, False),
         (["-ngld", "999"], None, 28, False),
         # The env twin the child reads before argv...
         ([], {"LLAMA_ARG_N_GPU_LAYERS_DRAFT": "1"}, 28, True),
@@ -1586,6 +1591,41 @@ def test_the_replicated_buffer_can_decide_the_fit(monkeypatch):
 def test_a_partial_draft_offload_is_recognised(extras, env, n_draft_layers, expected):
     from core.inference.llama_cpp import _draft_is_split_across_host
     assert _draft_is_split_across_host(extras, env or {}, n_draft_layers = n_draft_layers) is expected
+
+
+def test_the_draft_whole_offload_threshold_matches_the_main_model():
+    """``-ngld <block count>`` is a split, on llama.cpp's own off-by-one.
+
+    ``i_gpu_start = max(n_layer_all + 1 - n_gpu_layers, 0)`` (llama-model.cpp), and
+    ``n_layer_all`` is the GGUF block count read straight off the key, so a count
+    EQUAL to the block count leaves ``i_gpu_start == 1`` and hands block 0 the CPU
+    buffer list. The main model already draws the line there
+    (``_partially_offloads_layers``); the drafter has to agree, or the fit credits
+    VRAM for a block that never reaches the card.
+    """
+    from core.inference.llama_cpp import LlamaCppBackend as B
+    from core.inference.llama_cpp import _draft_is_split_across_host
+
+    # The boundary itself, from both spellings and the env twin.
+    assert _draft_is_split_across_host(["-ngld", "28"], {}, n_draft_layers = 28) is True
+    assert (
+        _draft_is_split_across_host(["--spec-draft-ngl=12"], {}, n_draft_layers = 12) is True
+    )
+    assert (
+        _draft_is_split_across_host(
+            [], {"LLAMA_ARG_N_GPU_LAYERS_DRAFT": "28"}, n_draft_layers = 28
+        )
+        is True
+    )
+    # One above it clears the whole drafter onto the card, so a real fit survives.
+    assert _draft_is_split_across_host(["-ngld", "29"], {}, n_draft_layers = 28) is False
+    # The same threshold the main model uses, asked of the main-model predicate
+    # unbound over a stub that only has to answer ``n_layers``: a count equal to
+    # the block count is partial there too. (Premise test: this arm holds before
+    # the drafter fix as well, and is here to pin the two thresholds together.)
+    stub = SimpleNamespace(n_layers = 28)
+    assert B._partially_offloads_layers(stub, ["-ngl", "28"], {}) is True
+    assert B._partially_offloads_layers(stub, ["-ngl", "29"], {}) is False
 
 
 def test_a_partial_draft_offload_leaves_the_drafter_unsized():
@@ -1790,3 +1830,181 @@ def test_the_fit_prices_a_projector_inherited_through_the_environment():
     assert (
         "_fit_env_mmproj_scrubbed=bool(_pv_mmproj_unpinnableor_paravirtual_cpu_forced)" in compact
     )
+
+
+# ------------------------- round 8: adapter sidecars the extras pass through
+
+
+def test_pass_through_adapter_paths_follow_llama_cpp_parsing():
+    from core.inference.llama_cpp import _sidecar_adapter_paths
+
+    # parse_csv_row: one operand, many adapters.
+    assert _sidecar_adapter_paths(["--lora", "/a.gguf,/b.gguf"]) == ["/a.gguf", "/b.gguf"]
+    # The inline spelling, and the FNAME:SCALE tail the -scaled flags carry.
+    assert _sidecar_adapter_paths(["--lora-scaled=/a.gguf:0.5"]) == ["/a.gguf"]
+    assert _sidecar_adapter_paths(["--control-vector", "/cv.gguf"]) == ["/cv.gguf"]
+    assert _sidecar_adapter_paths(["--control-vector-scaled", "/cv.gguf:2"]) == ["/cv.gguf"]
+    # ACCUMULATED, not last-wins: every handler push_back()s, so a second --lora
+    # adds to the first. Pricing only the last would understate the load.
+    assert _sidecar_adapter_paths(["--lora", "/a.gguf", "--lora", "/b.gguf"]) == [
+        "/a.gguf",
+        "/b.gguf",
+    ]
+    # string_split(item, ':') demands exactly two parts, so these are upstream's own
+    # throw: the child never starts and there is no placement to misprice.
+    assert _sidecar_adapter_paths(["--lora-scaled", "/a.gguf"]) == []
+    assert _sidecar_adapter_paths(["--lora-scaled", "C:/a.gguf:0.5"]) == []
+    assert _sidecar_adapter_paths(["--lora-scaled", "/a.gguf:half"]) == []
+    # Nothing else on the command line is an adapter.
+    assert _sidecar_adapter_paths(["--lora-init-without-apply", "-ngl", "-1"]) == []
+    assert _sidecar_adapter_paths([]) == []
+    assert _sidecar_adapter_paths(None) == []
+
+
+def test_the_fit_prices_pass_through_adapter_weights(tmp_path, monkeypatch):
+    """A 3 GiB LoRA is the difference between an 18 GiB load fitting a 20 GiB card
+    and not. llama.cpp allocates the adapter on the base tensor's own buffer type
+    (llama-adapter.cpp) and never mmaps it, so those bytes are resident on top of a
+    placement neither this fit nor common/fit.cpp ever charged for.
+    """
+    monkeypatch.setattr(hardware, "is_apple_silicon", lambda: False)
+    adapter = tmp_path / "adapter.gguf"
+    adapter.write_bytes(b"")
+    import os as _os
+
+    with open(adapter, "wb") as fh:  # sparse, so the test costs no disk
+        fh.truncate(3 * GIB)
+    assert _os.stat(adapter).st_size == 3 * GIB
+
+    stub = _Stub(1024)
+    rows = [(0, 20 * 1024)]
+
+    def _verdict(extras):
+        return LlamaCppBackend._fit_derived_load_mode(
+            stub,
+            model_size = 18 * GIB,
+            gpus = rows,
+            avail_mib = 1024,
+            extra_args = extras,
+            env = {},
+        )
+
+    # The same load, with and without the adapter the extras pass through.
+    assert _verdict([]) == FIT_MODE
+    assert _verdict(["--lora", str(adapter)]) is None
+    assert _verdict([f"--lora-scaled={adapter}:0.5"]) is None
+    # Charged once per occurrence: two references to the same file is two loads.
+    assert _verdict(["--lora", f"{adapter},{adapter}"]) is None
+    # A small adapter still fits, so the fit is not simply refused on the flag.
+    small = tmp_path / "small.gguf"
+    small.write_bytes(b"x" * 4096)
+    assert _verdict(["--lora", str(small)]) == FIT_MODE
+
+
+def test_an_unreadable_adapter_abstains(tmp_path, monkeypatch):
+    """Engaged but unsized, the same answer every other unreadable term gives."""
+    monkeypatch.setattr(hardware, "is_apple_silicon", lambda: False)
+    stub = _Stub(1024)
+    got = LlamaCppBackend._fit_derived_load_mode(
+        stub,
+        model_size = 8 * GIB,
+        gpus = [(0, 24 * 1024)],
+        avail_mib = 1024,
+        extra_args = ["--lora", str(tmp_path / "missing.gguf")],
+        env = {},
+    )
+    assert got is None
+
+
+def test_adapter_flags_really_reach_the_child():
+    """Premise test (holds either way): the fit only has to price these because the
+    pass-through layer lets them through. It is a denylist, and none of the four
+    adapter flags is on it."""
+    from core.inference.llama_server_args import validate_extra_args
+
+    for flag in ("--lora", "--lora-scaled", "--control-vector", "--control-vector-scaled"):
+        assert validate_extra_args([flag, "/a.gguf:0.5"]) == [flag, "/a.gguf:0.5"]
+
+
+# ----------------- round 8: a user's own load mode across a retry CHAIN
+
+
+def test_the_extras_own_load_mode_stands_the_fit_down():
+    from core.inference.llama_server_args import extra_args_select_load_mode
+
+    # The enum, both spellings, value and inline forms.
+    assert extra_args_select_load_mode(["--load-mode", "none"]) is True
+    assert extra_args_select_load_mode(["-lm", "mmap"]) is True
+    assert extra_args_select_load_mode(["--load-mode=mlock"]) is True
+    # The legacy flags the enum replaced, which is what this launch emits on a
+    # pre-enum binary, so a user's own copy collides there the same way.
+    assert extra_args_select_load_mode(["--no-mmap"]) is True
+    assert extra_args_select_load_mode(["--mmap"]) is True
+    # Nothing else on the command line picks a loader mode.
+    assert extra_args_select_load_mode(["-ngl", "-1", "--temp", "0.7"]) is False
+    assert extra_args_select_load_mode([]) is False
+    assert extra_args_select_load_mode(None) is False
+
+
+def test_a_chained_retry_cannot_eat_the_users_own_load_mode():
+    """_without_subsequence removes the FIRST value match, so two identical pairs
+    in one argv are two removals across two retry rungs -- the second taking the
+    user's. The fit standing aside when the extras pick a mode is what keeps the
+    strips the no-ops their docstrings claim to be.
+    """
+    import inspect
+
+    from core.inference.llama_cpp import LlamaCppBackend as B
+    from core.inference.llama_cpp import _without_subsequence
+    from core.inference.llama_server_args import (
+        apply_load_mode_policy,
+        extra_args_select_load_mode,
+    )
+
+    user = ["--load-mode", "none"]
+    assert extra_args_select_load_mode(user)
+
+    def two_rungs(requested):
+        """The real policy call and the real strip, twice, as the retry does."""
+        managed, extras = apply_load_mode_policy(
+            list(user),
+            supports_load_mode = True,
+            weights_in_host_memory = True,
+            requested_load_mode = requested,
+        )
+        # What load_model records as the fit's own flags: only when the fit chose.
+        fit_flags = list(managed) if requested else []
+        argv = [*managed, "--temp", "0.7", *extras]
+        return _without_subsequence(_without_subsequence(argv, fit_flags), fit_flags)
+
+    # Emitting the fit's pair alongside an identical user pair is what loses it:
+    # two rungs, two first-match removals, and the typed flag is the second.
+    assert two_rungs("none") == ["--temp", "0.7"]
+    # Standing aside leaves one pair, so both rungs are the no-op the docstrings
+    # claim, and the flag the user typed is still there on the second respawn.
+    assert two_rungs(None) == ["--temp", "0.7", "--load-mode", "none"]
+
+    # Reachability of the guard in load_model. A single call expression, so a
+    # reformat that wraps the `if` cannot break it once whitespace is stripped.
+    compact = "".join(inspect.getsource(B.load_model).split())
+    # Assert each clause on its own -- the formatter is free to wrap the `if`.
+    assert "extra_args_select_load_mode(_mem_extras)" in compact
+    assert "_fit_load_mode" in compact and "notload_mode" in compact
+    assert "_fit_load_mode=None" in compact
+    # The view it is asked of is pinned by the call above (_mem_extras, as Model
+    # Memory left them) and deliberately NOT by a second pin spelling out the
+    # apply_load_mode_policy call: that is a multi-token run a reformat can wrap,
+    # which is exactly the brittle shape that broke CI last round.
+
+
+def test_the_fit_still_emits_when_the_extras_pick_nothing():
+    """The guard is scoped to a real pick, not to the presence of any extras."""
+    from core.inference.llama_server_args import apply_load_mode_policy, extra_args_select_load_mode
+
+    extras = ["-ngl", "-1", "--temp", "0.7"]
+    assert extra_args_select_load_mode(extras) is False
+    managed, passed = apply_load_mode_policy(
+        extras, supports_load_mode = True, requested_load_mode = FIT_MODE
+    )
+    assert managed == ["--load-mode", FIT_MODE]
+    assert passed == extras

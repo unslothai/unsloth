@@ -71,6 +71,7 @@ from core.inference.llama_server_args import (
     apply_model_memory_policy,
     resolve_ctx_checkpoints,
     extra_args_disable_mmproj,
+    extra_args_select_load_mode,
     fit_is_enabled_in,
     memory_env_selects_load_mode,
     memory_state_satisfies_settings,
@@ -4077,9 +4078,15 @@ def _draft_is_split_across_host(
     ``i_gpu_start`` from the count and hands every layer below it the CPU buffer
     list (llama-model.cpp), and each layer's KV follows its device
     (llama-kv-cache.cpp). llama.cpp's default is -1, "all", so only a non-negative
-    count is a placement at all, and a count at or above ``n_draft_layers`` places
-    the drafter whole. An unreadable block count (None) says nothing either way, so
-    a positive count stands as a split rather than being waved through.
+    count is a placement at all, and only a count ABOVE ``n_draft_layers`` places
+    the drafter whole: ``i_gpu_start = max(n_layer_all + 1 - n_gpu_layers, 0)``
+    (llama-model.cpp), so the count has to clear the block count by one to reach
+    zero, and ``-ngld`` equal to the block count still leaves one block -- and its
+    KV -- on the host. That is the same threshold the main model already uses
+    (``requested <= n_layers`` in ``_partially_offloads_layers``, and
+    ``0 <= gpu_layers <= n_layers`` in the pipelining check). An unreadable block
+    count (None) says nothing either way, so a positive count stands as a split
+    rather than being waved through.
     """
     raw = _extra_args_draft_gpu_layers(extra_args, env)
     if raw is None:
@@ -4092,7 +4099,78 @@ def _draft_is_split_across_host(
         return False
     if count <= 0:
         return False
-    return not (n_draft_layers and count >= n_draft_layers)
+    return not (n_draft_layers and count > n_draft_layers)
+
+
+_SIDECAR_ADAPTER_FLAGS = (
+    "--lora",
+    "--lora-scaled",
+    "--control-vector",
+    "--control-vector-scaled",
+)
+
+
+def _sidecar_adapter_paths(extra_args: Optional[Iterable[str]]) -> list[str]:
+    """Every adapter file the child loads and holds RESIDENT, in argv order.
+
+    None of these have an env twin -- common/arg.cpp declares all four without
+    ``set_env`` -- so the tokens are the whole surface. Each operand is a
+    comma-separated row (``parse_csv_row``), and the ``-scaled`` spellings split
+    every entry on ':' into exactly FNAME and SCALE and throw otherwise, so a
+    malformed entry is a child that never starts and has no placement to misprice;
+    it is skipped rather than priced. ACCUMULATED, not last-wins: every handler
+    ``push_back``s onto ``lora_adapters`` / ``control_vectors``, so a second
+    ``--lora`` adds to the first rather than replacing it.
+    """
+    args = [str(a) for a in extra_args] if extra_args else []
+    paths: list[str] = []
+    for i, raw in enumerate(args):
+        flag = _flag_name(raw)
+        if flag not in _SIDECAR_ADAPTER_FLAGS:
+            continue
+        _, eq, inline = raw.partition("=")
+        operand = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
+        for entry in (piece for piece in operand.split(",") if piece):
+            if not flag.endswith("-scaled"):
+                paths.append(entry)
+                continue
+            # string_split(item, ':') demanding exactly 2 parts, so a bare path or a
+            # drive-lettered one is upstream's own throw, not a load to price.
+            head, colon, tail = entry.partition(":")
+            if not (colon and head) or ":" in tail:
+                continue
+            try:
+                float(tail)
+            except ValueError:
+                continue
+            paths.append(head)
+    return paths
+
+
+def _sidecar_adapter_bytes(extra_args: Optional[Iterable[str]]) -> Optional[int]:
+    """Resident bytes the pass-through adapters add, or None when one cannot be sized.
+
+    LoRA tensors are allocated on the BASE tensor's buffer type
+    (``ggml_backend_buffer_get_type(model_tensor->buffer)``, llama-adapter.cpp) and
+    a control vector on ``model.select_buft(il)``, so they follow the layer
+    placement this fit just priced rather than living anywhere it can ignore.
+    Neither path mmaps -- the file is read into a staging buffer and pushed with
+    ``ggml_backend_tensor_set`` -- so these bytes are resident whatever
+    ``--load-mode`` says, and they sit ON TOP of a placement llama.cpp's own fitter
+    never accounted for (common/fit.cpp knows nothing about adapters).
+
+    File size is the ceiling on the allocation (the loader skips ``_norm.weight``
+    pairs and keeps every other tensor at its stored type), and overstating a term
+    only ever costs a fit, so the stat is charged whole. An unreadable file is the
+    "engaged but unsized" case the fit abstains on.
+    """
+    total = 0
+    for path in _sidecar_adapter_paths(extra_args):
+        try:
+            total += max(0, os.stat(path).st_size)
+        except OSError:
+            return None
+    return total
 
 
 def _extra_args_draft_offloaded_to_cpu(
@@ -8893,6 +8971,13 @@ class LlamaCppBackend:
 
         if not model_size or not kv_sized or mtp_unsized or is_apple_silicon():
             return None
+        # Pass-through adapters are resident weights this footprint never started
+        # from: model_size is the base GGUF alone. They are not a placement override,
+        # so the VRAM-credit guard below is the wrong instrument -- they are a TERM,
+        # and an unreadable one abstains like every other.
+        sidecar_bytes = _sidecar_adapter_bytes(extra_args)
+        if sidecar_bytes is None:
+            return None
         rows = list(gpus or ())
         source_env = os.environ if env is None else env
         # A --device naming FEWER devices than this fit is about to charge leaves
@@ -8962,6 +9047,9 @@ class LlamaCppBackend:
             rows, gpu_indices = [], None
         footprint = (
             model_size
+            # LoRA adapters and control vectors the extras passed through, allocated
+            # alongside the base tensors they patch rather than merged into them.
+            + max(0, sidecar_bytes)
             # Left model_size when the projector was pinned to the CPU, but it is
             # still resident, and this is a footprint rather than a VRAM budget.
             + max(0, mmproj_pinned_bytes)
@@ -19742,6 +19830,25 @@ class LlamaCppBackend:
                 ):
                     logger.info(
                         "Load mode: the environment already selects a loader mode; "
+                        "leaving the fit's --load-mode %s off this launch.",
+                        _fit_load_mode,
+                    )
+                    _fit_load_mode = None
+                # And a mode the EXTRAS pick, for a reason the comment above only
+                # half covers. The hand-typed flag does win by last-arg, so emitting
+                # the fit's pair ahead of it changes nothing about the launch -- but
+                # the retry rungs below strip that pair by VALUE, taking the FIRST
+                # match (_without_subsequence), and a user who typed the same
+                # "--load-mode none" the fit derived leaves two identical pairs in the
+                # argv. One rung then removes the fit's, records the stripped argv in
+                # _last_spawn_cmd, and the next rung respawning from it removes the
+                # user's -- the flag they typed, gone, on a launch that keeps running.
+                # Standing aside here costs nothing (their pair already governs) and
+                # leaves every strip below a no-op, which is what its docstring
+                # already claims to be.
+                if _fit_load_mode and not load_mode and extra_args_select_load_mode(_mem_extras):
+                    logger.info(
+                        "Load mode: the extra arguments already select a loader mode; "
                         "leaving the fit's --load-mode %s off this launch.",
                         _fit_load_mode,
                     )
