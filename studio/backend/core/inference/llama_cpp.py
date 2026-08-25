@@ -20613,6 +20613,17 @@ class LlamaCppBackend:
                         return fa_cmd
                     stripped = _without_subsequence(fa_cmd, self._fit_load_mode_flags)
                     if stripped != fa_cmd:
+                        # The record has to follow the argv, as it does on the --fit
+                        # on/off and arch-crash rungs. Without "none" the child is back
+                        # on llama.cpp's auto, which maps (llama-model-loader.cpp sets
+                        # use_mmap for auto), so a record still saying "reserving" makes
+                        # memory_state_satisfies_settings answer a later "Don't reserve
+                        # system RAM" with a full reload the running server does not
+                        # need, and the settings route hint agrees with it. From the
+                        # argv, not _mem_managed + _mem_extras: this one descends from
+                        # _last_spawn_cmd, which carries any page-lock the --fit on
+                        # retry appended to its own argv, and rebuilding would drop it.
+                        self._memory_state = resolve_effective_memory_state(stripped, env)
                         logger.info(
                             "Load mode: dropping the fit's --load-mode none for the "
                             "--flash-attn off retry; the no-flash launch has a "
@@ -21262,12 +21273,15 @@ class LlamaCppBackend:
                         # ...except for the load-mode pair just removed: the snapshot
                         # was taken while `cmd` still carried it, and restoring it
                         # would record a reservation this respawn no longer makes.
-                        # What is left is the Model Memory block and the extras, in
-                        # argv order, which is what the original record was.
+                        # From the stripped argv, like every other rung. NOT rebuilt
+                        # from _mem_managed + _mem_extras: by here `cmd` may be the
+                        # CPU, device-gated, no-tensor-split or arch-retry argv rather
+                        # than the launch one, so those parts no longer add up to it
+                        # and anything memory-relevant those paths added would be
+                        # dropped -- recording an unlocked child that is in fact
+                        # locked, which is the optimistic direction.
                         if _fit_mode_left_cmd:
-                            self._memory_state = resolve_effective_memory_state(
-                                list(_mem_managed) + list(_mem_extras), env
-                            )
+                            self._memory_state = resolve_effective_memory_state(cmd, env)
                         # Residency is a property of the DEVICES, which the retry just
                         # changed: crash on the discrete card, land on the
                         # unified-memory APU, and the weights are host-backed after
@@ -21615,6 +21629,14 @@ class LlamaCppBackend:
                                     _cpu_projector_cmd, self._fit_load_mode_flags
                                 )
                                 if _stripped_cpu_projector_cmd != _cpu_projector_cmd:
+                                    # Same as the no-flash rung: the record follows the
+                                    # argv. Back on llama.cpp's auto the child maps, and
+                                    # a record still saying "reserving" spends a full
+                                    # reload on the next "Don't reserve system RAM" that
+                                    # the running server already satisfies.
+                                    self._memory_state = resolve_effective_memory_state(
+                                        _stripped_cpu_projector_cmd, env
+                                    )
                                     logger.info(
                                         "Load mode: dropping the fit's --load-mode none "
                                         "for the CPU-projector retry; it moves the "

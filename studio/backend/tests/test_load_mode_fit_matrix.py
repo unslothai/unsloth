@@ -2107,3 +2107,117 @@ def test_the_fit_still_emits_when_the_extras_pick_nothing():
     )
     assert managed == ["--load-mode", FIT_MODE]
     assert passed == extras
+
+
+# ------------------ round 11: the record has to follow the argv on every rung
+
+
+def test_a_stripped_load_mode_changes_what_the_reload_predicate_answers(monkeypatch):
+    """The premise behind the two recomputes below, on the real predicates.
+
+    Both rungs take the fit's ``--load-mode none`` back out, which returns the
+    child to llama.cpp's auto, and auto maps (llama-model-loader.cpp derives
+    use_mmap from mmap/mmap+mlock/auto). A record still describing the pre-retry
+    argv therefore says "reserves RAM" about a child that maps, and under "Don't
+    reserve system RAM" that is a full model reload the running server already
+    satisfies.
+    """
+    import utils.model_memory_settings as mm
+    from core.inference.llama_cpp import _without_subsequence
+    from core.inference.llama_server_args import (
+        memory_state_satisfies_settings,
+        resolve_effective_memory_state,
+    )
+
+    launched = ["llama-server", "-m", "m.gguf", "--load-mode", FIT_MODE, "--flash-attn", "off"]
+    stripped = _without_subsequence(launched, ["--load-mode", FIT_MODE])
+
+    stale = resolve_effective_memory_state(launched, {})
+    fresh = resolve_effective_memory_state(stripped, {})
+    assert stale == (False, True)
+    assert fresh == (False, False)
+
+    monkeypatch.setattr(mm, "get_keep_resident", lambda: False)
+    monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: True)
+    # The stale record is the pessimistic direction: a reload that buys nothing,
+    # never a reservation left standing.
+    assert memory_state_satisfies_settings(stale, True) is False
+    assert memory_state_satisfies_settings(fresh, True) is True
+
+
+def test_the_recompute_reads_the_argv_not_the_managed_block():
+    """Why both rungs recompute from the argv they are about to spawn.
+
+    They descend from _last_spawn_cmd, which carries any page-lock
+    _spawn_and_wait's --fit on retry appended to its own argv. Rebuilding from
+    the Model Memory block instead would drop that lock and record an unlocked
+    child that is in fact locked, which is the optimistic direction: no-reserve
+    would read as satisfied while the reservation stands.
+    """
+    from core.inference.llama_cpp import _without_subsequence
+    from core.inference.llama_server_args import resolve_effective_memory_state
+
+    retried = ["llama-server", "-m", "m.gguf", "--load-mode", FIT_MODE, "--load-mode", "mmap+mlock"]
+    stripped = _without_subsequence(retried, ["--load-mode", FIT_MODE])
+    assert resolve_effective_memory_state(stripped, {}) == (True, False)
+    # The managed block alone knows nothing about that appended lock.
+    assert resolve_effective_memory_state([], {}) == (False, False)
+
+
+def test_the_no_flash_rung_recomputes_the_memory_record():
+    """Reachability at the source, like the strip it sits next to: the arm only
+    runs behind a real signal crash. Whitespace stripped, so a reformat that
+    wraps the call cannot break the pin."""
+    import inspect
+
+    from core.inference.llama_cpp import LlamaCppBackend as B
+
+    src = inspect.getsource(B.load_model)
+    helper = src[src.index("_drop_fit_load_mode_for_no_flash") :]
+    # Bounded at the next definition, so this proves the recompute is in the
+    # helper and not merely somewhere later in load_model.
+    helper = helper[: helper.index("_spawn_and_wait")]
+    assert "self._memory_state" in helper
+    compact = "".join(helper.split())
+    assert "resolve_effective_memory_state(stripped" in compact
+
+
+def test_the_cpu_projector_rung_recomputes_the_memory_record():
+    """Same, for the projector respawn."""
+    import inspect
+
+    from core.inference.llama_cpp import LlamaCppBackend as B
+
+    src = inspect.getsource(B.load_model)
+    arm = src[: src.index('"-mmproj-cpu"')]
+    arm = arm[arm.rindex("_with_mmproj_offload_disabled") :]
+    assert "self._memory_state" in arm
+    compact = "".join(arm.split())
+    assert "resolve_effective_memory_state(_stripped_cpu_projector_cmd" in compact
+
+
+def test_the_arch_crash_rung_records_from_the_argv_not_the_parts():
+    """The record has to be recomputed from the stripped argv on this rung too.
+
+    By the time the arch-crash retry strips the fit's pair, `cmd` may have been
+    rebuilt as the CPU, device-gated, no-tensor-split or arch-retry argv, so
+    _mem_managed + _mem_extras no longer add up to it. Rebuilding from the parts
+    drops whatever those paths added, and dropping a page-lock records an
+    unlocked child that is in fact locked -- the optimistic direction.
+    """
+    import inspect
+
+    from core.inference.llama_cpp import LlamaCppBackend as B
+    from core.inference.llama_server_args import resolve_effective_memory_state
+
+    # The two inputs genuinely disagree, so which one is used is observable.
+    parts = ["--mlock", "--temp", "0.7"]
+    argv_after_retry = ["--mlock", "--temp", "0.7", "--no-mmap"]
+    assert resolve_effective_memory_state(parts, {}) != resolve_effective_memory_state(
+        argv_after_retry, {}
+    )
+
+    # Reachability: single call expression, whitespace stripped, so a reformat
+    # that wraps the call cannot break it.
+    compact = "".join(inspect.getsource(B.load_model).split())
+    assert "resolve_effective_memory_state(cmd,env)" in compact
