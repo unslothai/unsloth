@@ -10,26 +10,74 @@ import {
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
+import type { ReactNode } from "react";
 import { useLayoutEffect, useRef, useState } from "react";
+import type { HubFailure } from "@/features/hub/lib/network";
+
+// Only a browser reporting itself offline earns "You're offline". Calling a DNS
+// filter or extension block "offline" is what made these bugs undiagnosable.
+function describeFailure(
+  failure: HubFailure | null | undefined,
+  online: boolean,
+  resourceLabel: "models" | "datasets",
+): { title: string; body: string; offlineLike: boolean } {
+  switch (failure?.kind) {
+    case "browser-offline":
+      return {
+        title: "You're offline",
+        body: `Reconnect to the internet to browse ${resourceLabel} from Hugging Face.`,
+        offlineLike: true,
+      };
+    case "timeout":
+      return {
+        title: "Hugging Face timed out",
+        body: failure.message,
+        offlineLike: false,
+      };
+    case "network-opaque":
+    case "unknown":
+      return {
+        title: "Can't reach Hugging Face",
+        body: failure.message,
+        offlineLike: false,
+      };
+    default:
+      break;
+  }
+  return online
+    ? {
+        title: "Couldn't reach Hugging Face",
+        body: "The discovery feed couldn't load. Check your connection or try again.",
+        offlineLike: false,
+      }
+    : {
+        title: "Can't reach Hugging Face",
+        body: `Studio couldn't load ${resourceLabel} from Hugging Face.`,
+        offlineLike: false,
+      };
+}
 
 export function NetworkErrorState({
   online,
   message,
+  failure,
   onRetry,
   onSwitchDevice,
   resourceLabel = "models",
 }: {
   online: boolean;
   message: string;
+  failure?: HubFailure | null;
   onRetry: () => void;
   onSwitchDevice?: () => void;
   resourceLabel?: "models" | "datasets";
 }) {
-  const title = online ? "Couldn't reach Hugging Face" : "You're offline";
-  const body = online
-    ? "The discovery feed couldn't load. Check your connection or try again."
-    : `Reconnect to the internet to browse ${resourceLabel} from Hugging Face.`;
-  const icon = online ? CloudOffIcon : WifiDisconnected02Icon;
+  const { title, body, offlineLike } = describeFailure(
+    failure,
+    online,
+    resourceLabel,
+  );
+  const icon = offlineLike ? WifiDisconnected02Icon : CloudOffIcon;
 
   return (
     <div className="flex min-h-[260px] flex-col items-center justify-center gap-3 px-6 text-center">
@@ -37,20 +85,20 @@ export function NetworkErrorState({
         <HugeiconsIcon icon={icon} strokeWidth={1.6} className="size-5" />
       </div>
       <div className="space-y-1">
-        <p className="text-[14px] font-semibold tracking-tight text-foreground">
+        <p className="text-ui-14 font-semibold tracking-tight text-foreground">
           {title}
         </p>
-        <p className="max-w-md text-[12.5px] leading-5 text-muted-foreground">
+        <p className="max-w-md text-ui-12p5 leading-5 text-muted-foreground">
           {body}
         </p>
-        <p className="text-[11px] text-muted-foreground/70">{message}</p>
+        <p className="text-ui-11 text-muted-foreground/70">{message}</p>
       </div>
       <div className="flex flex-wrap items-center justify-center gap-2">
         {onSwitchDevice ? (
           <button
             type="button"
             onClick={onSwitchDevice}
-            className="inline-flex h-8 items-center gap-1.5 rounded-full bg-foreground/[0.06] px-3 text-[12px] font-medium text-foreground transition-colors hover:bg-foreground/[0.1] dark:bg-white/[0.06] dark:hover:bg-white/[0.1]"
+            className="inline-flex h-8 items-center gap-1.5 rounded-full bg-foreground/[0.06] px-3 text-ui-12 font-medium text-foreground transition-colors hover:bg-foreground/[0.1] dark:bg-white/[0.06] dark:hover:bg-white/[0.1]"
           >
             On Device
           </button>
@@ -58,7 +106,7 @@ export function NetworkErrorState({
         <button
           type="button"
           onClick={onRetry}
-          className="inline-flex h-8 items-center gap-1.5 rounded-full bg-transparent px-3 text-[12px] font-medium text-foreground transition-colors hover:bg-foreground/[0.04] dark:hover:bg-white/[0.05]"
+          className="inline-flex h-8 items-center gap-1.5 rounded-full bg-transparent px-3 text-ui-12 font-medium text-foreground transition-colors hover:bg-foreground/[0.04] dark:hover:bg-white/[0.05]"
         >
           <HugeiconsIcon
             icon={Refresh01Icon}
@@ -91,10 +139,10 @@ export function DiscoverFetchMoreState({
         <HugeiconsIcon icon={FilterIcon} strokeWidth={1.5} className="size-5" />
       </div>
       <div className="space-y-1">
-        <p className="text-[14px] font-semibold tracking-tight text-foreground">
+        <p className="text-ui-14 font-semibold tracking-tight text-foreground">
           No matches yet
         </p>
-        <p className="max-w-md text-[12.5px] leading-5 text-muted-foreground">
+        <p className="max-w-md text-ui-12p5 leading-5 text-muted-foreground">
           Scanned {scannedCount.toLocaleString()} results. Load another page to
           keep searching Hugging Face.
         </p>
@@ -104,7 +152,7 @@ export function DiscoverFetchMoreState({
           <button
             type="button"
             onClick={onClearFilters}
-            className="inline-flex h-8 items-center gap-1.5 rounded-full bg-foreground/[0.06] px-3 text-[12px] font-medium text-foreground transition-colors hover:bg-foreground/[0.1] dark:bg-white/[0.06] dark:hover:bg-white/[0.1]"
+            className="inline-flex h-8 items-center gap-1.5 rounded-full bg-foreground/[0.06] px-3 text-ui-12 font-medium text-foreground transition-colors hover:bg-foreground/[0.1] dark:bg-white/[0.06] dark:hover:bg-white/[0.1]"
           >
             Clear filters
           </button>
@@ -113,7 +161,7 @@ export function DiscoverFetchMoreState({
           type="button"
           onClick={onFetchMore}
           disabled={isLoadingMore}
-          className="inline-flex h-8 items-center gap-1.5 rounded-full bg-transparent px-3 text-[12px] font-medium text-foreground transition-colors hover:bg-foreground/[0.04] disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-white/[0.05]"
+          className="inline-flex h-8 items-center gap-1.5 rounded-full bg-transparent px-3 text-ui-12 font-medium text-foreground transition-colors hover:bg-foreground/[0.04] disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-white/[0.05]"
         >
           <HugeiconsIcon
             icon={Refresh01Icon}
@@ -131,31 +179,49 @@ export function DiscoverFetchMoreFooter({
   hasActiveFilters,
   isLoadingMore,
   onFetchMore,
+  failed = false,
+  failureText,
+  onRetry,
 }: {
   hasActiveFilters: boolean;
   isLoadingMore: boolean;
   onFetchMore: () => void;
+  /** The last attempt failed, so this is the only recovery left on screen. */
+  failed?: boolean;
+  /** The classified, already sanitized cause. Shown here because this footer
+   *  outlives the toast that would otherwise be the only place it appeared. */
+  failureText?: string;
+  onRetry?: () => void;
 }) {
   return (
     <div className="relative z-10 flex flex-col items-center gap-2 rounded-[16px] bg-card px-4 py-4 text-center">
       {/* Only warn about hidden results when a filter is actually narrowing them. */}
       {hasActiveFilters && (
-        <p className="text-[11.5px] leading-4 text-muted-foreground">
+        <p className="text-ui-11p5 leading-4 text-muted-foreground">
           Some results may be hidden by your filters.
+        </p>
+      )}
+      {/* Rows stay on screen when the feed fails, so without this the outage is
+          invisible and there is nothing left to click once the toast goes. The
+          cause goes here too: naming it is the whole point, and the toast is
+          transient, so reducing this to "out of date" threw it away again. */}
+      {failed && (
+        <p className="max-w-md text-ui-11p5 leading-4 text-muted-foreground">
+          {failureText || "These results may be out of date."}
         </p>
       )}
       <button
         type="button"
-        onClick={onFetchMore}
+        onClick={failed && onRetry ? onRetry : onFetchMore}
         disabled={isLoadingMore}
-        className="inline-flex h-8 items-center gap-1.5 rounded-full bg-foreground/[0.06] px-3 text-[12px] font-medium text-foreground transition-colors hover:bg-foreground/[0.1] disabled:cursor-not-allowed disabled:opacity-50 dark:bg-white/[0.06] dark:hover:bg-white/[0.1]"
+        className="inline-flex h-8 items-center gap-1.5 rounded-full bg-foreground/[0.06] px-3 text-ui-12 font-medium text-foreground transition-colors hover:bg-foreground/[0.1] disabled:cursor-not-allowed disabled:opacity-50 dark:bg-white/[0.06] dark:hover:bg-white/[0.1]"
       >
         <HugeiconsIcon
           icon={Refresh01Icon}
           strokeWidth={1.75}
           className="size-3.5"
         />
-        {isLoadingMore ? "Loading..." : "Load more"}
+        {isLoadingMore ? "Loading..." : failed ? "Try again" : "Load more"}
       </button>
     </div>
   );
@@ -174,10 +240,10 @@ export function InventoryErrorState({
         <HugeiconsIcon icon={CloudOffIcon} strokeWidth={1.6} className="size-5" />
       </div>
       <div className="space-y-1">
-        <p className="text-[14px] font-semibold tracking-tight text-foreground">
+        <p className="text-ui-14 font-semibold tracking-tight text-foreground">
           Couldn't load your library
         </p>
-        <p className="max-w-md text-[12.5px] leading-5 text-muted-foreground">
+        <p className="max-w-md text-ui-12p5 leading-5 text-muted-foreground">
           Something went wrong reading your downloaded{" "}
           {isDataset ? "datasets" : "models"}. Check that the backend is running
           and try again.
@@ -186,7 +252,7 @@ export function InventoryErrorState({
       <button
         type="button"
         onClick={onRetry}
-        className="inline-flex h-8 items-center gap-1.5 rounded-full bg-transparent px-3 text-[12px] font-medium text-foreground transition-colors hover:bg-foreground/[0.04] dark:hover:bg-white/[0.05]"
+        className="inline-flex h-8 items-center gap-1.5 rounded-full bg-transparent px-3 text-ui-12 font-medium text-foreground transition-colors hover:bg-foreground/[0.04] dark:hover:bg-white/[0.05]"
       >
         <HugeiconsIcon icon={Refresh01Icon} strokeWidth={1.75} className="size-3.5" />
         Try again
@@ -199,10 +265,12 @@ export function EmptyState({
   title,
   body,
   icon = CubeIcon,
+  action,
 }: {
   title: string;
   body: string;
   icon?: IconSvgElement;
+  action?: ReactNode;
 }) {
   return (
     <div className="flex min-h-[220px] flex-col items-center justify-center gap-3 px-6 text-center">
@@ -210,13 +278,14 @@ export function EmptyState({
         <HugeiconsIcon icon={icon} strokeWidth={1.5} className="size-5" />
       </div>
       <div className="space-y-1">
-        <p className="text-[14px] font-semibold tracking-tight text-foreground">
+        <p className="text-ui-14 font-semibold tracking-tight text-foreground">
           {title}
         </p>
-        <p className="max-w-md text-[12.5px] leading-5 text-muted-foreground">
+        <p className="max-w-md text-ui-12p5 leading-5 text-muted-foreground">
           {body}
         </p>
       </div>
+      {action}
     </div>
   );
 }

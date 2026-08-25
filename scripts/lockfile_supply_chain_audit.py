@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Lockfile supply-chain audit for the Studio frontend and Tauri shell.
+"""Lockfile supply-chain audit for the Unsloth frontend and Tauri shell.
 
 Runs BEFORE `npm ci` / `cargo fetch` in CI. Refuses to proceed when a
 lockfile contains patterns indicating supply-chain injection (npm
@@ -294,7 +294,7 @@ CARGO_REGISTRY_SOURCE = "registry+https://github.com/rust-lang/crates.io-index"
 
 # Cargo non-registry source allowlist: `(crate_name, exact_source_string)`.
 # Both must match verbatim; bumping the pinned SHA forces a re-review.
-# Studio's Tauri shell pulls `fix-path-env` from git because it is not
+# Unsloth's Tauri shell pulls `fix-path-env` from git because it is not
 # published to crates.io; commit c4c45d5 was reviewed when it landed.
 CARGO_SOURCE_ALLOWLIST: tuple[tuple[str, str], ...] = (
     (
@@ -617,12 +617,19 @@ def audit_cargo_lockfile(path: Path) -> list[Finding]:
 
 # Finding kinds split into BLOCKING vs ADVISORY for the default run mode.
 # Blocking = public attack indicators (known-malicious version, IOC
-# string). Advisory = structural anomalies that warn but don't block.
-# --strict makes every finding blocking.
+# string) plus the provenance/integrity checks this gate must enforce
+# before `npm ci` / `cargo fetch` runs lifecycle scripts. Advisory =
+# incomplete-but-not-fetchable anomalies. --strict blocks everything.
 BLOCKING_KINDS: frozenset[str] = frozenset(
     {
         "blocked-known-malicious",
         "known-ioc-string",
+        # A non-registry URL or an unverifiable tarball is the exact
+        # pre-install fetch this gate exists to stop.
+        "non-registry-resolved-url",
+        "missing-integrity-hash",
+        "non-registry-cargo-source",
+        "missing-cargo-checksum",
         # A structurally broken lockfile might hide a real attack.
         "malformed-lockfile",
         "missing-lockfile",
@@ -670,11 +677,13 @@ def main(argv: list[str] | None = None) -> int:
         action = "store_true",
         help = (
             "Treat every finding as blocking (exit 1). "
-            "Default mode only blocks on known-malicious versions, "
-            "indicator-of-compromise strings, or structurally broken "
-            "lockfiles; everything else is printed as an advisory "
-            "warning with exit 0. CI should use the default; local "
-            "audits aiming for zero noise can opt in via --strict."
+            "Default mode already blocks on known-malicious versions, "
+            "indicator-of-compromise strings, structurally broken "
+            "lockfiles, and dependency provenance/integrity failures "
+            "(non-registry npm URL or cargo source, missing integrity "
+            "hash or cargo checksum). Remaining anomalies, such as an "
+            "entry with no resolved URL, are printed as an advisory "
+            "warning with exit 0; --strict escalates those too."
         ),
     )
     args = parser.parse_args(argv)
@@ -769,7 +778,8 @@ def main(argv: list[str] | None = None) -> int:
     print(
         "[lockfile-audit] Refusing to proceed. Each blocking finding "
         "above is either a public indicator-of-compromise, a known-"
-        "malicious pinned version, or a structurally broken lockfile. "
+        "malicious pinned version, an unverifiable / non-registry "
+        "dependency source, or a structurally broken lockfile. "
         "Investigate before running `npm ci` or `cargo fetch`.",
         file = sys.stderr,
     )

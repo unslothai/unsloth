@@ -5,7 +5,7 @@
 engine-stats log line (generation/prompt throughput, requests in flight).
 
 llama-server already computes these (it needs `--metrics`); this lifts them
-into Studio's structured log so the terminal shows serving health, not just
+into Unsloth's structured log so the terminal shows serving health, not just
 per-request access lines. Emitted only while there is activity.
 """
 

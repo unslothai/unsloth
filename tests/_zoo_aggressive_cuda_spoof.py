@@ -22,6 +22,20 @@ def apply() -> None:
     if getattr(torch.cuda, "_unsloth_consolidated_spoof", False):
         return
 
+    # Settle bitsandbytes against the real torch first. Its __init__ does
+    # `if torch.cuda.is_available(): from .backends.cuda import ops`, and that
+    # module reads torch._C._cuda_getCurrentRawStream at import. On a CPU-only
+    # wheel that attribute is absent, so a bitsandbytes imported AFTER this
+    # spoof raises AttributeError (or OSError hunting libhipblas for the ROCm
+    # spoof) rather than ImportError, which slips past the `except ImportError`
+    # guards its importers use. Importing it here, while is_available() is
+    # still False, caches the CPU path in sys.modules for everything that
+    # follows.
+    try:
+        import bitsandbytes  # noqa: F401
+    except Exception:
+        pass
+
     # Device probes (cheap, value-returning)
     torch.cuda.is_available = lambda: True
     torch.cuda.device_count = lambda: 1
@@ -50,7 +64,9 @@ def apply() -> None:
     class _CudaRt:
         @staticmethod
         def cudaMemGetInfo(device: int = 0):
-            return (0, 80 * 1024**3)
+            # (free, total), where `torch.cuda.mem_get_info` delegates. Zero free
+            # is an exhausted card, and the fused loss raises instead of chunking.
+            return (60 * 1024**3, 80 * 1024**3)
 
         @staticmethod
         def cudaGetDeviceCount(*_a, **_k):
@@ -66,7 +82,7 @@ def apply() -> None:
     try:
         import torch.cuda.memory as _cuda_memory  # type: ignore
 
-        _cuda_memory.mem_get_info = lambda *a, **k: (0, 80 * 1024**3)
+        _cuda_memory.mem_get_info = lambda *a, **k: (60 * 1024**3, 80 * 1024**3)
         _cuda_memory.memory_stats = lambda *a, **k: {}
         _cuda_memory.memory_allocated = lambda *a, **k: 0
         _cuda_memory.max_memory_allocated = lambda *a, **k: 0

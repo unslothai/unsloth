@@ -6,11 +6,19 @@
 Same pattern as studio_db.py (module-level functions, raw sqlite3, WAL,
 per-function connections). API keys are NOT stored here: they live only in
 the browser (localStorage) and are sent encrypted per-request.
+
+Enabled model selections and discovered catalog IDs are stored server-side so
+remote Studio clients see the same connection state (#7281).
 """
 
+from __future__ import annotations
+
+import json
 import logging
 import sqlite3
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -20,6 +28,34 @@ from utils.paths import studio_db_path, ensure_dir
 
 _schema_lock = threading.Lock()
 _schema_ready = False
+_UNSET = object()
+
+
+def _encode_models_json(models: Optional[list[str]]) -> str:
+    if not models:
+        return "[]"
+    return json.dumps([str(model).strip() for model in models if str(model).strip()])
+
+
+def _decode_models_json(raw: Optional[str]) -> list[str]:
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [str(model).strip() for model in parsed if str(model).strip()]
+
+
+def _row_models(row: sqlite3.Row) -> tuple[list[str], list[str]]:
+    return (
+        _decode_models_json(row["models_json"] if "models_json" in row.keys() else None),
+        _decode_models_json(
+            row["available_models_json"] if "available_models_json" in row.keys() else None
+        ),
+    )
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
@@ -38,6 +74,15 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(llm_providers)").fetchall()}
+    if "models_json" not in existing_cols:
+        conn.execute("ALTER TABLE llm_providers ADD COLUMN models_json TEXT NOT NULL DEFAULT '[]'")
+    if "available_models_json" not in existing_cols:
+        conn.execute(
+            "ALTER TABLE llm_providers ADD COLUMN available_models_json TEXT NOT NULL DEFAULT '[]'"
+        )
+    if "max_output_tokens" not in existing_cols:
+        conn.execute("ALTER TABLE llm_providers ADD COLUMN max_output_tokens INTEGER")
 
 
 def get_connection() -> sqlite3.Connection:
@@ -59,17 +104,67 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
-def create_provider(id: str, provider_type: str, display_name: str, base_url: str) -> None:
+@contextmanager
+def provider_bundle_transaction() -> Iterator[sqlite3.Connection]:
+    """Atomically mutate a provider row and its saved credentials.
+
+    Provider metadata and encrypted credentials share ``studio.db``.  A single
+    SQLite write transaction therefore prevents other processes from observing
+    a new endpoint with the previous key (or the inverse) while a provider edit
+    is in progress.
+    """
+    # Ensure both tables exist before opening the transaction.  The credential
+    # module commits schema initialization on its own connection.
+    from storage import credential_secrets
+
+    credential_secrets.ensure_schema()
+    conn = get_connection()
+    try:
+        conn.commit()
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("BEGIN IMMEDIATE")
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def create_provider(
+    id: str,
+    provider_type: str,
+    display_name: str,
+    base_url: str,
+    models: Optional[list[str]] = None,
+    available_models: Optional[list[str]] = None,
+    max_output_tokens: Optional[int] = None,
+) -> None:
     """Insert a new provider configuration."""
     now = datetime.now(timezone.utc).isoformat()
     conn = get_connection()
     try:
         conn.execute(
             """
-            INSERT INTO llm_providers (id, provider_type, display_name, base_url, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO llm_providers (
+                id, provider_type, display_name, base_url,
+                models_json, available_models_json, max_output_tokens,
+                created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (id, provider_type, display_name, base_url, now, now),
+            (
+                id,
+                provider_type,
+                display_name,
+                base_url,
+                _encode_models_json(models),
+                _encode_models_json(available_models),
+                max_output_tokens,
+                now,
+                now,
+            ),
         )
         conn.commit()
     finally:
@@ -81,6 +176,11 @@ def update_provider(
     display_name: Optional[str] = None,
     base_url: Optional[str] = None,
     is_enabled: Optional[bool] = None,
+    models: Optional[list[str]] = None,
+    available_models: Optional[list[str]] = None,
+    max_output_tokens: int | None | object = _UNSET,
+    *,
+    connection: sqlite3.Connection | None = None,
 ) -> bool:
     """Update fields on an existing provider. Returns True if a row was updated."""
     updates = []
@@ -94,22 +194,34 @@ def update_provider(
     if is_enabled is not None:
         updates.append("is_enabled = ?")
         params.append(1 if is_enabled else 0)
+    if models is not None:
+        updates.append("models_json = ?")
+        params.append(_encode_models_json(models))
+    if available_models is not None:
+        updates.append("available_models_json = ?")
+        params.append(_encode_models_json(available_models))
+    if max_output_tokens is not _UNSET:
+        updates.append("max_output_tokens = ?")
+        params.append(max_output_tokens)
     if not updates:
         return False
     updates.append("updated_at = ?")
     params.append(datetime.now(timezone.utc).isoformat())
     params.append(id)
 
-    conn = get_connection()
+    owns_connection = connection is None
+    conn = connection or get_connection()
     try:
         cursor = conn.execute(
             f"UPDATE llm_providers SET {', '.join(updates)} WHERE id = ?",
             params,
         )
-        conn.commit()
+        if owns_connection:
+            conn.commit()
         return cursor.rowcount > 0
     finally:
-        conn.close()
+        if owns_connection:
+            conn.close()
 
 
 def delete_provider(id: str) -> bool:
@@ -128,7 +240,13 @@ def get_provider(id: str) -> Optional[dict]:
     conn = get_connection()
     try:
         row = conn.execute("SELECT * FROM llm_providers WHERE id = ?", (id,)).fetchone()
-        return dict(row) if row else None
+        if not row:
+            return None
+        data = dict(row)
+        models, available_models = _row_models(row)
+        data["models"] = models
+        data["available_models"] = available_models
+        return data
     finally:
         conn.close()
 
@@ -138,6 +256,13 @@ def list_providers() -> list[dict]:
     conn = get_connection()
     try:
         rows = conn.execute("SELECT * FROM llm_providers ORDER BY created_at").fetchall()
-        return [dict(row) for row in rows]
+        providers: list[dict] = []
+        for row in rows:
+            data = dict(row)
+            models, available_models = _row_models(row)
+            data["models"] = models
+            data["available_models"] = available_models
+            providers.append(data)
+        return providers
     finally:
         conn.close()

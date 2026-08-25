@@ -53,3 +53,10 @@ def test_custom_model_overrides_default_and_derives_gguf(settings_store, monkeyp
 
     assert ems.reset_rag_embedding_model() == rag_config.EMBEDDING_MODEL
     assert ems.get_stored_embedding_model() is None
+
+
+def test_env_default_derives_its_gguf_companion(monkeypatch):
+    monkeypatch.delenv("RAG_EMBED_GGUF_REPO", raising = False)
+    monkeypatch.setattr(rag_config, "EMBEDDING_MODEL", "org/env-default-embedder")
+
+    assert rag_config.default_gguf_repo() == "org/env-default-embedder-GGUF"

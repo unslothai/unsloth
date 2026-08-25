@@ -2,10 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui";
-import type * as React from "react";
+import * as React from "react";
 
 import { Tick02Icon } from "@/lib/tick-icon";
 import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
 
@@ -38,6 +39,7 @@ function DropdownMenuContent({
   className,
   align = "start",
   sideOffset = 0,
+  children,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Content>) {
   return (
@@ -50,11 +52,21 @@ function DropdownMenuContent({
           // The 3px alignment nudge must be margin, not translate: a transform
           // here makes this scroll container the containing block for nested
           // position:fixed submenu wrappers, clipping every submenu.
-          "data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 bg-popover text-popover-foreground min-w-48 rounded-lg p-1 duration-100 z-50 max-h-(--radix-dropdown-menu-content-available-height) w-[calc(var(--radix-dropdown-menu-trigger-width)_+_6px)] data-[align=start]:-ml-[3px] data-[align=end]:ml-[3px] origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto data-[state=closed]:overflow-hidden",
+          "data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 bg-popover text-popover-foreground min-w-48 rounded-lg p-1 duration-100 z-50 max-h-(--radix-dropdown-menu-content-available-height) w-[calc(var(--radix-dropdown-menu-trigger-width)_+_6px)] data-[align=start]:-ml-[3px] data-[align=end]:ml-[3px] origin-(--radix-dropdown-menu-content-transform-origin) flex flex-col overflow-hidden",
           className,
         )}
         {...props}
-      />
+      >
+        {/* Scroll an inner viewport, not the rounded surface: a scrollbar on
+            the surface squares its corners in WebKit. The surface padding
+            insets the scrollbar clear of the curve. */}
+        <div
+          data-slot="dropdown-menu-viewport"
+          className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto"
+        >
+          {children}
+        </div>
+      </DropdownMenuPrimitive.Content>
     </DropdownMenuPrimitive.Portal>
   );
 }
@@ -206,6 +218,14 @@ function DropdownMenuShortcut({
   );
 }
 
+function assignRef<T>(ref: React.Ref<T> | undefined, value: T | null) {
+  if (typeof ref === "function") {
+    ref(value);
+  } else if (ref) {
+    ref.current = value;
+  }
+}
+
 function DropdownMenuSub({
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Sub>) {
@@ -242,17 +262,63 @@ function DropdownMenuSubTrigger({
 
 function DropdownMenuSubContent({
   className,
+  sideOffset,
+  style,
+  ref,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.SubContent>) {
+  const isMobile = useIsMobile();
+  const [contentWidth, setContentWidth] = React.useState(0);
+  const resizeObserverRef = React.useRef<ResizeObserver | null>(null);
+  const composedRef = React.useCallback(
+    (
+      element: React.ComponentRef<
+        typeof DropdownMenuPrimitive.SubContent
+      > | null,
+    ) => {
+      resizeObserverRef.current?.disconnect();
+      resizeObserverRef.current = null;
+      assignRef(ref, element);
+      if (!element) return;
+
+      const updateContentWidth = () => {
+        setContentWidth(element.offsetWidth);
+      };
+      updateContentWidth();
+
+      if (typeof ResizeObserver !== "undefined") {
+        resizeObserverRef.current = new ResizeObserver(updateContentWidth);
+        resizeObserverRef.current.observe(element);
+      }
+    },
+    [ref],
+  );
+
+  React.useEffect(
+    () => () => {
+      resizeObserverRef.current?.disconnect();
+    },
+    [],
+  );
+
+  const compactSideOffset =
+    isMobile && contentWidth > 0 ? -contentWidth : sideOffset;
   return (
     // Portaled like DropdownMenuContent: rendered inline, the fixed popper
     // wrapper is a descendant of the parent menu's scroll container, so any
     // transform there turns on overflow clipping and hides the submenu.
     <DropdownMenuPrimitive.Portal>
       <DropdownMenuPrimitive.SubContent
+        ref={composedRef}
         data-slot="dropdown-menu-sub-content"
+        sideOffset={compactSideOffset}
+        style={{
+          ...style,
+          visibility:
+            isMobile && contentWidth === 0 ? "hidden" : style?.visibility,
+        }}
         className={cn(
-          "data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 bg-popover text-popover-foreground min-w-36 rounded-lg p-1 duration-100 z-50 origin-(--radix-dropdown-menu-content-transform-origin) overflow-hidden",
+          "data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 bg-popover text-popover-foreground min-w-36 max-w-[calc(100vw-32px)] rounded-lg p-1 duration-100 z-50 origin-(--radix-dropdown-menu-content-transform-origin) overflow-hidden",
           className,
         )}
         {...props}

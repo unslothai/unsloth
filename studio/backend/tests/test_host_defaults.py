@@ -64,7 +64,7 @@ def test_run_server_default_host_is_loopback():
     0.0.0.0 exposes the service on all interfaces; loopback is the
     least-permissive default. Users needing network access pass -H 0.0.0.0.
     """
-    source = _RUN_PY.read_text()
+    source = _RUN_PY.read_text(encoding = "utf-8")
     defaults = _parse_function_param_defaults(source, "run_server")
     assert "host" in defaults, "run_server() must have a 'host' parameter with a default"
     host_default = defaults["host"]
@@ -81,7 +81,7 @@ def test_argparse_default_host_is_loopback():
     When run.py is invoked directly (python run.py), the argparse default
     must match the function default so direct execution is equally safe.
     """
-    source = _RUN_PY.read_text()
+    source = _RUN_PY.read_text(encoding = "utf-8")
     host_default = _parse_argparse_add_argument_default(source, "--host")
     assert host_default is not None, "Could not find add_argument('--host', ...) in run.py"
     assert (

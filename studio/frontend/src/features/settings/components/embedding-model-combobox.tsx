@@ -13,7 +13,7 @@ import { Spinner } from "@/components/ui/spinner";
 import type { PipelineType } from "@huggingface/hub";
 import { useHubModelSearch } from "@/features/hub/hooks/use-hub-model-search";
 import { useDebouncedValue } from "@/hooks";
-import { type ReactElement, useMemo, useRef } from "react";
+import { type ReactElement, useMemo, useRef, useState } from "react";
 
 // HF pipeline filter for embedding models; matches the backend's
 // is_embedding_model signals (sentence-similarity / feature-extraction).
@@ -42,11 +42,14 @@ export function EmbeddingModelCombobox({
   ariaLabel,
   className,
 }: EmbeddingModelComboboxProps): ReactElement {
-  const selectingRef = useRef(false);
   const anchorRef = useRef<HTMLDivElement>(null);
-  // Fully controlled: the parent updates value on every keystroke, so the
-  // prop itself is the search query.
-  const debouncedQuery = useDebouncedValue(value);
+  // Only text the user typed is a query. A saved or selected value searches for
+  // itself, which leaves the list holding that one model instead of the others.
+  const [typed, setTyped] = useState<string | null>(null);
+  // Anything the parent set (selection, reset, reload) clears the query. Saving
+  // writes the same string back, which this cannot see, so closing clears it too.
+  const query = typed !== null && typed === value ? typed : "";
+  const debouncedQuery = useDebouncedValue(query);
 
   const { results, isLoading } = useHubModelSearch(debouncedQuery, {
     task: EMBEDDING_TASKS,
@@ -87,20 +90,28 @@ export function EmbeddingModelCombobox({
         items={items}
         filteredItems={items}
         filter={null}
+        onOpenChange={(open) => {
+          // The search lasts as long as the list is open, as the model picker
+          // in Settings -> Agents does.
+          if (!open) setTyped(null);
+        }}
         value={value.trim() ? value : null}
         onValueChange={(next) => onChange(next ?? "")}
-        onInputValueChange={(next) => {
-          if (selectingRef.current) {
-            selectingRef.current = false;
+        onInputValueChange={(next, details) => {
+          // The settings load and a pick both write the input too, and arrive
+          // with another reason; only typing is a search.
+          if (details.reason !== "input-change") {
+            setTyped(null);
             return;
           }
+          setTyped(next);
           onChange(next);
         }}
         itemToStringValue={(item) => item}
         autoHighlight={true}
       >
         <ComboboxInput
-          className="h-8 w-full font-mono [&_input]:text-[11px]"
+          className="h-8 w-full font-mono [&_input]:text-ui-11"
           placeholder={placeholder}
           aria-label={ariaLabel}
           disabled={disabled}
@@ -116,14 +127,8 @@ export function EmbeddingModelCombobox({
           )}
           <ComboboxList>
             {(id: string) => (
-              <ComboboxItem
-                key={id}
-                value={id}
-                onPointerDown={() => {
-                  selectingRef.current = true;
-                }}
-              >
-                <span className="truncate font-mono text-[11px]">{id}</span>
+              <ComboboxItem key={id} value={id}>
+                <span className="truncate font-mono text-ui-11">{id}</span>
               </ComboboxItem>
             )}
           </ComboboxList>

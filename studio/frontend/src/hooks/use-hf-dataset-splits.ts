@@ -1,17 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useCallback, useEffect, useState } from "react";
+import { authFetch } from "@/features/auth";
+import { useEffect, useState } from "react";
+import {
+  type DatasetSplitFetchers,
+  type HfSplitEntry,
+  type LoadHfDatasetSplitsArgs,
+  loadHfDatasetSplits,
+  normalizeDatasetSplitsError,
+} from "./hf-dataset-split-sources";
+
+export type { HfSplitEntry } from "./hf-dataset-split-sources";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-export interface HfSplitEntry {
-  dataset: string;
-  config: string;
-  split: string;
-}
 
 export interface HfSplitsResponse {
   splits: HfSplitEntry[];
@@ -34,92 +38,124 @@ export interface HfDatasetSplitsResult {
   isLoading: boolean;
   /** Error message if the fetch failed */
   error: string | null;
+  requiresManualEntry: boolean;
 }
 
 const HF_SPLITS_API = "https://datasets-server.huggingface.co/splits";
+const MAX_SPLIT_ENTRIES = 2048;
 
-function normalizeDatasetSplitsError(message: string): string {
-  const normalized = message.toLowerCase();
-
-  // datasets-server returns technical script/runtime details for legacy datasets.
-  if (
-    normalized.includes("dataset scripts are no longer supported") ||
-    normalized.includes("runs arbitrary python code")
-  ) {
-    return "We can’t load subset/split options for this Hub dataset because it relies on a legacy custom script.";
+function validatedEntries(value: unknown): HfSplitEntry[] {
+  if (!Array.isArray(value)) {
+    return [];
   }
-
-  if (
-    normalized.includes("unauthorized") ||
-    normalized.includes("forbidden") ||
-    normalized.includes("access token") ||
-    normalized.includes("private") ||
-    normalized.includes("gated") ||
-    normalized.includes("401") ||
-    normalized.includes("403")
-  ) {
-    return "Unable to load dataset splits. This dataset may be private or gated. Add a Hugging Face token with access and try again.";
+  const entries: HfSplitEntry[] = [];
+  for (const item of value.slice(0, MAX_SPLIT_ENTRIES)) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+    const candidate = item as Partial<HfSplitEntry>;
+    if (
+      typeof candidate.dataset !== "string" ||
+      typeof candidate.config !== "string" ||
+      typeof candidate.split !== "string" ||
+      !candidate.config.trim() ||
+      !candidate.split.trim()
+    ) {
+      continue;
+    }
+    entries.push({
+      dataset: candidate.dataset,
+      config: candidate.config,
+      split: candidate.split,
+    });
   }
-
-  if (normalized.includes("not found") || normalized.includes("404")) {
-    return "Dataset not found. Check the dataset name and try again.";
-  }
-
-  return "Unable to load dataset split options for this dataset.";
+  return entries;
 }
+
+async function fetchLocalSplits({
+  datasetName,
+  localPath,
+  signal,
+}: LoadHfDatasetSplitsArgs): Promise<HfSplitEntry[]> {
+  const response = await authFetch("/api/hub/datasets/local-options", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      dataset_name: datasetName,
+      local_path: localPath ?? null,
+    }),
+    signal,
+  });
+  if (!response.ok) {
+    throw new Error(
+      `Failed to read cached dataset metadata (${response.status})`,
+    );
+  }
+  const payload = (await response.json()) as { splits?: unknown };
+  return validatedEntries(payload.splits);
+}
+
+async function fetchRemoteSplits({
+  accessToken,
+  datasetName,
+  signal,
+}: LoadHfDatasetSplitsArgs): Promise<HfSplitEntry[]> {
+  const url = `${HF_SPLITS_API}?dataset=${encodeURIComponent(datasetName)}`;
+  const headers: Record<string, string> = {};
+  if (accessToken) {
+    headers.Authorization = `Bearer ${accessToken}`;
+  }
+  const response = await fetch(url, { headers, signal });
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(
+      body?.error || `Failed to fetch splits (${response.status})`,
+    );
+  }
+  const payload = (await response.json()) as HfSplitsResponse;
+  return validatedEntries(payload.splits);
+}
+
+const DEFAULT_FETCHERS: DatasetSplitFetchers = {
+  local: fetchLocalSplits,
+  remote: fetchRemoteSplits,
+};
 
 // ---------------------------------------------------------------------------
 // Hook
 // ---------------------------------------------------------------------------
 
-/**
- * Fetches the available configs (subsets) and splits for a HuggingFace dataset
- * using the datasets-server API.
- *
- * @param datasetName - HF dataset id (e.g. "ibm/duorc"), or null to skip.
- * @param selectedSubset - Currently selected subset, used to filter splits.
- * @param options.accessToken - Optional HF access token for gated datasets.
- */
 export function useHfDatasetSplits(
   datasetName: string | null,
   selectedSubset: string | null,
-  options?: { accessToken?: string },
+  options?: {
+    accessToken?: string;
+    localPath?: string | null;
+    online?: boolean;
+    preferLocalCache?: boolean;
+  },
 ): HfDatasetSplitsResult {
   const [entries, setEntries] = useState<HfSplitEntry[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(datasetName !== null);
   const [error, setError] = useState<string | null>(null);
-
-  
-  const [prevDatasetName, setPrevDatasetName] = useState(datasetName);
-  if (datasetName !== prevDatasetName) {
-    setPrevDatasetName(datasetName);
+  const requestKey = JSON.stringify([
+    datasetName,
+    options?.preferLocalCache === true,
+    options?.localPath ?? null,
+    options?.online !== false,
+  ]);
+  const [previousRequestKey, setPreviousRequestKey] = useState(requestKey);
+  if (requestKey !== previousRequestKey) {
+    setPreviousRequestKey(requestKey);
     setEntries([]);
     setError(null);
+    setIsLoading(datasetName !== null);
   }
 
   const accessToken = options?.accessToken;
-
-  const fetchSplits = useCallback(
-    async (dataset: string, signal: AbortSignal) => {
-      const url = `${HF_SPLITS_API}?dataset=${encodeURIComponent(dataset)}`;
-      const headers: Record<string, string> = {};
-      if (accessToken) {
-        headers.Authorization = `Bearer ${accessToken}`;
-      }
-
-      const res = await fetch(url, { headers, signal });
-      if (!res.ok) {
-        const body = await res.json().catch(() => null);
-        throw new Error(
-          body?.error || `Failed to fetch splits (${res.status})`,
-        );
-      }
-
-      const data: HfSplitsResponse = await res.json();
-      return data.splits ?? [];
-    },
-    [accessToken],
-  );
+  const localPath = options?.localPath;
+  const online = options?.online ?? true;
+  const preferLocalCache = options?.preferLocalCache ?? false;
 
   useEffect(() => {
     if (!datasetName) {
@@ -133,11 +169,21 @@ export function useHfDatasetSplits(
     setIsLoading(true);
     setError(null);
 
-    fetchSplits(datasetName, controller.signal)
-      .then((splits) => {
+    loadHfDatasetSplits(
+      {
+        datasetName,
+        accessToken,
+        localPath,
+        online,
+        preferLocalCache,
+        signal: controller.signal,
+      },
+      DEFAULT_FETCHERS,
+    )
+      .then((result) => {
         if (!controller.signal.aborted) {
-          setEntries(splits);
-          setError(null);
+          setEntries(result.entries);
+          setError(result.error);
         }
       })
       .catch((err) => {
@@ -164,7 +210,7 @@ export function useHfDatasetSplits(
       });
 
     return () => controller.abort();
-  }, [datasetName, fetchSplits]);
+  }, [accessToken, datasetName, localPath, online, preferLocalCache]);
 
   // Derive unique subsets
   const subsets = Array.from(new Set(entries.map((e) => e.config)));
@@ -186,5 +232,7 @@ export function useHfDatasetSplits(
     hasMultipleSplits: activeSubset ? splits.length > 1 : false,
     isLoading,
     error,
+    requiresManualEntry:
+      datasetName !== null && !isLoading && entries.length === 0,
   };
 }

@@ -9,6 +9,13 @@ import { defineConfig } from "vite";
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  // Keep an unrelated PostCSS config in an ancestor directory from leaking
+  // into Studio installs. Tailwind is provided by its dedicated Vite plugin.
+  css: {
+    postcss: {
+      plugins: [],
+    },
+  },
   optimizeDeps: {
     include: ["@dagrejs/dagre", "@dagrejs/graphlib"],
   },

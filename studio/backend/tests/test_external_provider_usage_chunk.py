@@ -13,6 +13,7 @@ import asyncio
 import json
 
 import httpx
+import pytest
 
 from core.inference import external_provider as ep_mod
 from core.inference.external_provider import (
@@ -189,12 +190,26 @@ def _usage_chunks(lines: list[str]) -> list[dict]:
 
 
 def test_custom_provider_registry_is_hidden():
+    """Hidden entries stay filtered by default and are opt-in via include_hidden.
+
+    They used to be dropped from /registry unconditionally, which is why the UI
+    could never learn that the self-hosted presets run Studio tools. Exposing
+    them by default would instead make a cached pre-change bundle render them as
+    duplicate dropdown rows, since that bundle filters on a hardcoded name set
+    rather than on ``hidden``. So the default is unchanged and the current UI
+    asks for them, then filters the dropdown on the flag.
+    """
     from core.inference.providers import get_provider_info, list_available_providers
 
     info = get_provider_info("custom")
     assert info is not None
     assert info["hidden"] is True
-    assert "custom" not in {p["provider_type"] for p in list_available_providers()}
+    assert all(p["provider_type"] != "custom" for p in list_available_providers())
+    entry = next(
+        p for p in list_available_providers(include_hidden = True) if p["provider_type"] == "custom"
+    )
+    assert entry["hidden"] is True
+    assert entry["supports_studio_tools"] is True
 
 
 def test_custom_provider_uses_chat_completions_without_auth_key(monkeypatch):
@@ -271,7 +286,8 @@ def test_custom_provider_test_endpoint_probes_chat_completion(monkeypatch):
                 base_url = "http://custom.example/v1",
                 model_id = "Qwen/Qwen3-0.6B",
             ),
-            current_subject = "unsloth",
+            _current_subject = "unsloth",
+            via_api_key = False,
         )
 
     result = _drive(run())
@@ -311,7 +327,8 @@ def test_custom_provider_test_endpoint_requires_model_id(monkeypatch):
                 provider_type = "custom",
                 base_url = "http://custom.example/v1",
             ),
-            current_subject = "unsloth",
+            _current_subject = "unsloth",
+            via_api_key = False,
         )
 
     result = _drive(run())
@@ -476,3 +493,325 @@ def test_openai_responses_stream_emits_usage_chunk_on_incomplete(monkeypatch):
     usages = _usage_chunks(lines)
     assert len(usages) == 1
     assert usages[0]["prompt_tokens_details"]["cached_tokens"] == 768
+
+
+def _continuation_body(monkeypatch, provider_type: str, base_url: str) -> dict:
+    """Send a continuation through one provider and return the upstream body."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(
+            200,
+            content = b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n',
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = provider_type,
+            base_url = base_url,
+            api_key = "k",
+        )
+        await _collect(
+            client.stream_chat_completion(
+                messages = [
+                    {"role": "user", "content": "hi"},
+                    {"role": "assistant", "content": "It is a bar"},
+                ],
+                model = "Qwen/Qwen3-0.6B",
+                continue_final_message = True,
+            )
+        )
+        await client.close()
+
+    _drive(run())
+    return captured
+
+
+def test_self_hosted_providers_get_the_continuation_flags(monkeypatch):
+    """These apply the template themselves, so a trailing assistant turn alone would
+    render closed plus a fresh generation prompt and restart the answer."""
+    for provider_type in ("llama_cpp", "vllm"):
+        body = _continuation_body(monkeypatch, provider_type, "http://local.example/v1")
+        assert body["continue_final_message"] is True, provider_type
+        # A server rejects both being asked for at once.
+        assert body["add_generation_prompt"] is False, provider_type
+
+
+@pytest.mark.parametrize(
+    ("provider_type", "base_url"),
+    [
+        # Prompt assembly is theirs, so the flag would just be an unknown field.
+        ("openai", "https://api.openai.com/v1"),
+        # Any user-supplied base_url, including a strict endpoint that would 400.
+        ("custom", "http://custom.example/v1"),
+        ("ollama", "http://localhost:11434/v1"),
+    ],
+)
+def test_other_providers_do_not_get_the_continuation_flags(monkeypatch, provider_type, base_url):
+    body = _continuation_body(monkeypatch, provider_type, base_url)
+    assert "continue_final_message" not in body
+    assert "add_generation_prompt" not in body
+
+
+@pytest.mark.parametrize(
+    "provider_type, expected",
+    [
+        ("vllm", True),
+        ("openrouter", True),
+        ("kimi", True),
+        # Any user-supplied base_url: a strict endpoint 400s on an unknown field.
+        ("custom", False),
+        ("ollama", False),
+        # "openai" is absent: it routes to /v1/responses, which reports usage itself.
+    ],
+)
+def test_streamed_usage_is_requested_only_where_documented(monkeypatch, provider_type, expected):
+    # An OAI-compatible stream omits usage without stream_options.include_usage, and
+    # these providers report no llama.cpp timings, so the monitor has no token count to
+    # derive a speed from and the row shows a blank Speed for every completed request.
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content = b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n',
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = provider_type,
+            base_url = "http://provider.example/v1",
+            api_key = "sk-test",
+        )
+        await _collect(
+            client.stream_chat_completion(
+                messages = [{"role": "user", "content": "ping"}],
+                model = "m",
+                temperature = 0.7,
+                top_p = 0.95,
+                max_tokens = 64,
+            )
+        )
+        await client.close()
+
+    _drive(run())
+    assert captured["body"]["stream"] is True
+    if expected:
+        assert captured["body"]["stream_options"] == {"include_usage": True}
+    else:
+        assert "stream_options" not in captured["body"]
+
+
+def test_kimi_no_search_fallback_requests_usage(monkeypatch):
+    # The web-search path returns before the common body injection, and Kimi reports no
+    # engine timings, so this fallback would leave tokens and speed blank.
+    bodies: list = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        bodies.append(body)
+        # First call: the model declines to invoke $web_search.
+        return httpx.Response(
+            200,
+            content = b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n',
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "kimi",
+            base_url = "http://kimi.example/v1",
+            api_key = "sk-test",
+        )
+        await _collect(
+            client.stream_chat_completion(
+                messages = [{"role": "user", "content": "ping"}],
+                model = "kimi-k2",
+                max_tokens = 64,
+                enabled_tools = ["web_search"],
+            )
+        )
+        await client.close()
+
+    _drive(run())
+    assert len(bodies) >= 2, "the search call then the plain fallback"
+    search_body, fallback_body = bodies[0], bodies[-1]
+    assert "tools" in search_body
+    assert "tools" not in fallback_body
+    assert fallback_body["stream_options"] == {"include_usage": True}
+
+
+def test_a_type_carried_only_by_the_sse_event_field_is_honoured(monkeypatch):
+    """Only the SSE ``event:`` line carries the type here, and a type-less frame is
+    skipped rather than fatal, so the usage would vanish silently. Built raw, since
+    _openai_sse always repeats the type in data."""
+    body = (
+        b"event: response.completed\n"
+        b'data: {"response":{"usage":{"input_tokens":7,"output_tokens":3}}}\n'
+        b"\n"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content = body, headers = {"content-type": "text/event-stream"})
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_openai_client()
+        return await _collect(
+            client._stream_openai_responses(
+                messages = [{"role": "user", "content": "ping"}],
+                model = "gpt-5.5",
+                temperature = 0.7,
+                top_p = 0.95,
+                max_tokens = 1024,
+                enable_thinking = None,
+                reasoning_effort = None,
+            )
+        )
+
+    usages = _usage_chunks(_drive(run()))
+    assert len(usages) == 1, usages
+
+
+def test_an_sse_event_name_does_not_carry_past_its_blank_line(monkeypatch):
+    """Held past its blank line, a stale ``response.failed`` would claim the next
+    type-less frame, emit a 502 and break the loop before the real usage."""
+    body = (
+        b"event: response.failed\n"
+        b"data:\n"
+        b"\n"
+        b'data: {"choices":[{"delta":{"content":"ok"}}]}\n'
+        b"\n"
+        b"event: response.completed\n"
+        b'data: {"response":{"usage":{"input_tokens":7,"output_tokens":3}}}\n'
+        b"\n"
+        b"data: [DONE]\n"
+        b"\n"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content = body, headers = {"content-type": "text/event-stream"})
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_openai_client()
+        return await _collect(
+            client._stream_openai_responses(
+                messages = [{"role": "user", "content": "ping"}],
+                model = "gpt-5.5",
+                temperature = 0.7,
+                top_p = 0.95,
+                max_tokens = 1024,
+                enable_thinking = None,
+                reasoning_effort = None,
+            )
+        )
+
+    lines = _drive(run())
+    assert not [line for line in lines if '"provider_error"' in line], lines
+    assert len(_usage_chunks(lines)) == 1, lines
+
+
+def test_an_untyped_error_frame_is_surfaced_rather_than_skipped(monkeypatch):
+    """An OpenAI-compatible proxy emits its errors as a bare ``{"error": {...}}`` with no
+    ``type`` and no SSE event name, so skipping it returned zero chunks and no error."""
+    body = b'data: {"error":{"message":"you are rate limited","type":"rate_limit_error"}}\n\n'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content = body, headers = {"content-type": "text/event-stream"})
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "openai",
+            base_url = "https://api.openai.com/v1",
+            api_key = "sk-openai-test",
+        )
+        out = await _collect(
+            client.stream_chat_completion(
+                messages = [{"role": "user", "content": "hi"}], model = "gpt-5"
+            )
+        )
+        await client.close()
+        return out
+
+    chunks = _drive(run())
+    assert chunks, "the error frame was swallowed and the answer came back empty"
+    assert any("rate limited" in str(chunk) for chunk in chunks), chunks
+
+
+def test_a_chat_completions_frame_on_the_responses_path_is_still_skipped(monkeypatch):
+    """The case the skip exists for stays skipped: no type, no event name, no error key."""
+    body = (
+        b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
+        b"event: response.completed\n"
+        b'data: {"type":"response.completed"}\n\n'
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content = body, headers = {"content-type": "text/event-stream"})
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "openai",
+            base_url = "https://api.openai.com/v1",
+            api_key = "sk-openai-test",
+        )
+        out = await _collect(
+            client.stream_chat_completion(
+                messages = [{"role": "user", "content": "hi"}], model = "gpt-5"
+            )
+        )
+        await client.close()
+        return out
+
+    chunks = _drive(run())
+    assert not any("502" in str(chunk) for chunk in chunks), chunks
+
+
+@pytest.mark.parametrize("payload", [b"null", b"[]", b'"text"', b"7"])
+def test_a_valid_but_non_object_frame_is_skipped_not_fatal(monkeypatch, payload):
+    """`data: null` and `data: []` are valid JSON but not dicts, so the error check must
+    not call .get() on them: that raised AttributeError and killed the stream."""
+    body = (
+        b"data: "
+        + payload
+        + b'\n\nevent: response.completed\ndata: {"type":"response.completed"}\n\n'
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content = body, headers = {"content-type": "text/event-stream"})
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "openai",
+            base_url = "https://api.openai.com/v1",
+            api_key = "sk-openai-test",
+        )
+        out = await _collect(
+            client.stream_chat_completion(
+                messages = [{"role": "user", "content": "hi"}], model = "gpt-5"
+            )
+        )
+        await client.close()
+        return out
+
+    chunks = _drive(run())
+    assert not any("502" in str(chunk) for chunk in chunks), chunks

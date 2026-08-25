@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -168,8 +169,8 @@ def test_malicious_cargo_lockfile_refused(tmp_path):
     assert "git+https://example.com" in combined
 
 
-def test_malicious_cargo_lockfile_default_mode_advisory(tmp_path):
-    """Default mode emits non-registry-cargo-source as advisory ::warning:: but exits 0."""
+def test_malicious_cargo_lockfile_default_mode_blocks(tmp_path):
+    """Default mode refuses a non-registry cargo source; provenance blocks without --strict."""
     lockfile = tmp_path / "Cargo.lock"
     lockfile.write_text(_MALICIOUS_CARGO_LOCK)
     proc = _run_auditor(
@@ -177,13 +178,53 @@ def test_malicious_cargo_lockfile_default_mode_advisory(tmp_path):
         npm_lockfiles = [FIXTURES / "clean_lockfile.json"],
         cargo_lockfiles = [lockfile],
     )
-    assert proc.returncode == 0, (
-        f"expected exit 0 (advisory), got {proc.returncode}\n"
+    assert proc.returncode == 1, (
+        f"expected exit 1 (blocking), got {proc.returncode}\n"
         f"--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}"
     )
     combined = proc.stdout + proc.stderr
     assert "non-registry-cargo-source" in combined
-    assert "advisory finding" in combined
+    assert "blocking finding" in combined
+
+
+def test_provenance_kinds_block_by_default():
+    """The four provenance/integrity kinds must stay in BLOCKING_KINDS."""
+    for kind in (
+        "non-registry-resolved-url",
+        "missing-integrity-hash",
+        "non-registry-cargo-source",
+        "missing-cargo-checksum",
+    ):
+        assert kind in lsa.BLOCKING_KINDS, f"{kind} must block in default mode"
+
+
+def test_non_registry_npm_tarball_blocks_by_default(tmp_path):
+    """A file: tarball with a valid-looking integrity must not pass the default audit,
+    or `npm ci` runs its lifecycle scripts on the runner."""
+    lockfile = tmp_path / "package-lock.json"
+    lockfile.write_text(
+        json.dumps(
+            {
+                "name": "victim",
+                "version": "1.0.0",
+                "lockfileVersion": 3,
+                "packages": {
+                    "": {"name": "victim", "version": "1.0.0"},
+                    "node_modules/evil-pkg": {
+                        "version": "1.0.0",
+                        "resolved": "file:evil-pkg-1.0.0.tgz",
+                        "integrity": "sha512-" + "A" * 86 + "==",
+                    },
+                },
+            }
+        )
+    )
+    proc = _run_auditor(root = tmp_path, npm_lockfiles = [lockfile])
+    assert proc.returncode == 1, (
+        f"expected exit 1 (blocking), got {proc.returncode}\n"
+        f"--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}"
+    )
+    assert "non-registry-resolved-url" in proc.stdout + proc.stderr
 
 
 def test_audit_cargo_lockfile_direct_call(tmp_path):
@@ -223,8 +264,8 @@ def test_gha_escape_collapses_finding_to_one_line():
     assert "bad stuff" in escaped
 
 
-def test_advisory_finding_emitted_as_single_line_annotation(tmp_path):
-    """Advisory ::warning:: must be one physical line (%0A-escaped). Regression for PR #5604."""
+def test_blocking_finding_emitted_as_single_line_annotation(tmp_path):
+    """The ::error:: annotation must be one physical line (%0A-escaped)."""
     lockfile = tmp_path / "Cargo.lock"
     lockfile.write_text(_MALICIOUS_CARGO_LOCK)
     proc = _run_auditor(
@@ -232,19 +273,46 @@ def test_advisory_finding_emitted_as_single_line_annotation(tmp_path):
         npm_lockfiles = [FIXTURES / "clean_lockfile.json"],
         cargo_lockfiles = [lockfile],
     )
-    warning_lines = [line for line in proc.stderr.splitlines() if line.startswith("::warning::")]
-    assert warning_lines, (
-        "expected at least one ::warning:: annotation; " f"stderr was:\n{proc.stderr}"
-    )
-    for line in warning_lines:
+    error_lines = [line for line in proc.stderr.splitlines() if line.startswith("::error::")]
+    assert error_lines, f"expected at least one ::error:: annotation; stderr was:\n{proc.stderr}"
+    for line in error_lines:
         # One physical line: kind/package/detail joined via %0A, not split.
         assert "%0A" in line, (
-            f"::warning:: line has no %0A escape; multi-line text "
+            f"::error:: line has no %0A escape; multi-line text "
             f"would be truncated by GH Actions:\n{line}"
         )
         assert "non-registry-cargo-source" in line
         assert "package:" in line
         assert "detail:" in line
+
+
+def test_advisory_finding_emitted_as_single_line_annotation(tmp_path):
+    """The advisory ::warning:: path stays %0A-escaped too. `missing-resolved-url` is
+    incompleteness, not a fetchable source, so it stays advisory."""
+    lockfile = tmp_path / "package-lock.json"
+    lockfile.write_text(
+        json.dumps(
+            {
+                "name": "victim",
+                "version": "1.0.0",
+                "lockfileVersion": 3,
+                "packages": {
+                    "": {"name": "victim", "version": "1.0.0"},
+                    "node_modules/incomplete-pkg": {"version": "1.0.0"},
+                },
+            }
+        )
+    )
+    proc = _run_auditor(root = tmp_path, npm_lockfiles = [lockfile])
+    assert proc.returncode == 0, (
+        f"expected exit 0 (advisory), got {proc.returncode}\n"
+        f"--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}"
+    )
+    warning_lines = [line for line in proc.stderr.splitlines() if line.startswith("::warning::")]
+    assert warning_lines, f"expected a ::warning:: annotation; stderr was:\n{proc.stderr}"
+    for line in warning_lines:
+        assert "%0A" in line
+        assert "missing-resolved-url" in line
 
 
 # ---------------------------------------------------------------------------

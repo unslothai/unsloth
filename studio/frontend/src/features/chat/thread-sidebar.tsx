@@ -42,9 +42,11 @@ import {
   PencilEdit02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "sonner";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import type { ChatView } from "./types";
+import { CONVERSATION_MARKDOWN_LABEL } from "./utils/conversation-markdown";
 import {
   deleteChatItem,
   renameChatItem,
@@ -55,6 +57,7 @@ import {
   exportConversationRawJsonl,
   exportConversationCsv,
   exportConversationShareGPT,
+  exportConversationMarkdown,
   exportBulkConversationsMerged,
   exportBulkConversationsSeparate,
   EXPORT_FORMATS_LIST,
@@ -68,6 +71,7 @@ const EXPORT_FORMATS = [
   { label: "Raw JSONL", fn: exportConversationRawJsonl },
   { label: "CSV", fn: exportConversationCsv },
   { label: "ShareGPT JSONL", fn: exportConversationShareGPT },
+  { label: CONVERSATION_MARKDOWN_LABEL, fn: exportConversationMarkdown },
 ] as const;
 
 async function getThreadIdsForItem(item: SidebarItem): Promise<string[]> {
@@ -133,9 +137,13 @@ export function ThreadSidebar({
   ) {
     try {
       const ids = await getThreadIdsForItem(item);
-      await Promise.all(ids.map((id) => fn(id)));
-    } catch {
-      toast.error("Export failed.");
+      for (const id of ids) {
+        await fn(id);
+      }
+    } catch (error) {
+      if (!isDownloadCancelled(error)) {
+        toast.error("Export failed.");
+      }
     }
   }
 
@@ -162,8 +170,10 @@ export function ThreadSidebar({
       } else {
         await exportBulkConversationsSeparate(ids, fmt, basename);
       }
-    } catch {
-      toast.error("Export failed.");
+    } catch (error) {
+      if (!isDownloadCancelled(error)) {
+        toast.error("Export failed.");
+      }
     }
   }
 
@@ -259,7 +269,7 @@ export function ThreadSidebar({
                   >
                     {item.isFork ? (
                       <span
-                        className="mr-1 rounded-sm bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary"
+                        className="mr-1 rounded-sm bg-primary/10 px-1.5 py-0.5 text-ui-10 font-semibold uppercase tracking-wide text-primary"
                         title="Forked from another chat"
                       >
                         fork

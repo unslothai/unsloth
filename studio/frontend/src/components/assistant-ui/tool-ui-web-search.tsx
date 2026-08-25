@@ -3,9 +3,16 @@
 
 "use client";
 
-import { type ToolCallMessagePartComponent, useAuiState } from "@assistant-ui/react";
+import {
+  type ToolCallMessagePartComponent,
+  useAuiState,
+} from "@assistant-ui/react";
 import { GlobeIcon } from "lucide-react";
+
+import { isSearchImagesToolResult } from "@/features/chat";
+import { stringifyToolResult } from "@/lib/strip-ansi";
 import { memo, useEffect, useState } from "react";
+import { SearchImageThumb } from "./search-image";
 import { Source, SourceIcon, SourceTitle } from "./sources";
 import {
   ToolFallbackContent,
@@ -23,6 +30,19 @@ const RE_BLOCK_SEP = /\n---\n/;
 const RE_TITLE = /Title:\s*(.+)/;
 const RE_URL = /URL:\s*(.+)/;
 const RE_SNIPPET = /Snippet:\s*(.+)/s;
+// Mirrors _normalize_url_scheme: a dotted host, optionally followed by a port
+// that may be empty ("example.com:" fetches on the default port) but otherwise
+// has to be in range, so the card names a host only when the backend fetches it.
+const RE_BARE_HOST =
+  /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?::(\d{0,5}))?(?:[/?#]|$)/;
+
+function isBareHostFetchedAsHttps(value: string): boolean {
+  const match = RE_BARE_HOST.exec(value);
+  if (!match) return false;
+  const port = match[1];
+  if (!port) return true;
+  return Number(port) >= 1 && Number(port) <= 65535;
+}
 
 /**
  * Reject non-http(s) URLs. Web-search/fetch output is provider-controlled,
@@ -67,29 +87,56 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
   result,
   status,
 }) => {
-  const query = (args as { query?: string })?.query ?? "";
-  const url = ((args as { url?: string })?.url ?? "").trim();
+  // Coerced, like image_queries below: a local model routinely emits a number or an
+  // object here, and .trim() on one crashes the card that was meant to show the call.
+  const query = String((args as { query?: unknown })?.query ?? "");
+  const url = String((args as { url?: unknown })?.url ?? "").trim();
   const isUrlFetch = !!url;
+  const rawImageQueries = (args as { image_queries?: unknown })?.image_queries;
+  const imageQueries = Array.isArray(rawImageQueries)
+    ? rawImageQueries
+        .map((q) => String(q).trim())
+        .filter(Boolean)
+        .slice(0, 5)
+    : [];
+  const imageLabel = imageQueries.join(", ");
+  const isImageOnly = !isUrlFetch && !query.trim() && imageQueries.length > 0;
+  // The header speaks for the result: a call that found nothing must not claim it did.
+  const foundImages = isSearchImagesToolResult(result);
   const displayDomain = (() => {
     if (!url) return "";
+    // new URL() throws on the bare hosts the backend fetches, so mirror that
+    // grammar or the card names no host for exactly the URLs it does fetch.
+    const bare = url.startsWith("//") ? url.slice(2) : url;
+    const candidate = isBareHostFetchedAsHttps(bare) ? `https://${bare}` : url;
     try {
-      const parsed = new URL(url);
-      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "";
+      const parsed = new URL(candidate);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:")
+        return "";
       return parsed.hostname.replace(/^www\./, "");
     } catch {
       return "";
     }
   })();
   const isRunning = status?.type === "running";
-  const sources = result
-    ? parseSearchResults(
-        typeof result === "string" ? result : JSON.stringify(result),
-      )
-    : [];
+  const withImages = isSearchImagesToolResult(result);
+  const resultText =
+    result == null
+      ? ""
+      : withImages
+        ? stringifyToolResult(result.text)
+        : stringifyToolResult(result);
+  const images = withImages ? result.webImages : [];
+  const sources = resultText ? parseSearchResults(resultText) : [];
 
   // Collapse when LLM starts generating text after the tool call
   const hasText = useAuiState(({ message }) =>
-    message.content.some((p) => p.type === "text" && "text" in p && (p as { text: string }).text.length > 0),
+    message.content.some(
+      (p) =>
+        p.type === "text" &&
+        "text" in p &&
+        (p as { text: string }).text.length > 0,
+    ),
   );
   const [open, setOpen] = useState(isRunning);
   useEffect(() => {
@@ -105,10 +152,20 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
       <ToolFallbackTrigger
         toolName={
           isUrlFetch
-            ? displayDomain ? `Read ${displayDomain}` : "Read page"
-            : query
-              ? `Searched "${query}"`
-              : "Web Search"
+            ? displayDomain
+              ? `Read ${displayDomain}`
+              : "Read page"
+            : isImageOnly
+              ? isRunning
+                ? `Finding images for “${imageLabel}”`
+                : foundImages
+                  ? `Found images for “${imageLabel}”`
+                  : `No images for “${imageLabel}”`
+              : query
+                ? imageLabel && foundImages
+                  ? `Searched "${query}" · images for ${imageLabel}`
+                  : `Searched "${query}"`
+                : "Web Search"
         }
         status={status}
         icon={GlobeIcon}
@@ -117,33 +174,62 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
         {isRunning ? (
           <div className="flex items-center text-sm text-muted-foreground">
             <span>
-              {isUrlFetch
-                ? <>Reading {displayDomain || "page"}&hellip;</>
-                : <>Searching for &ldquo;{query}&rdquo;&hellip;</>
-              }
+              {isUrlFetch ? (
+                <>Reading {displayDomain || "page"}&hellip;</>
+              ) : isImageOnly ? (
+                <>Finding images for &ldquo;{imageLabel}&rdquo;&hellip;</>
+              ) : (
+                <>Searching for &ldquo;{query}&rdquo;&hellip;</>
+              )}
             </span>
           </div>
-        ) : sources.length > 0 ? (
-          <div className="flex flex-wrap gap-1.5">
-            {sources.map((source, i) => (
-              <Source
-                key={`${source.url}-${i}`}
-                href={source.url}
-                variant="outline"
-                size="sm"
-                className="inline-flex items-center gap-1.5"
-              >
-                <SourceIcon url={source.url} size={3} />
-                <SourceTitle>{source.title}</SourceTitle>
-              </Source>
-            ))}
+        ) : sources.length === 0 && images.length > 0 ? (
+          <div className="flex flex-col gap-2">
+            <div
+              className="flex flex-wrap gap-1.5"
+              data-testid="web-search-images"
+            >
+              {images.map((entry) => (
+                <SearchImageThumb key={entry.id} entry={entry} size="strip" />
+              ))}
+            </div>
+            {resultText && (
+              <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
+                {resultText}
+              </pre>
+            )}
           </div>
-        ) : result ? (
+        ) : sources.length > 0 ? (
+          <div className="flex flex-col gap-2">
+            <div className="flex flex-wrap gap-1.5">
+              {sources.map((source, i) => (
+                <Source
+                  key={`${source.url}-${i}`}
+                  href={source.url}
+                  variant="outline"
+                  size="sm"
+                  className="inline-flex items-center gap-1.5"
+                >
+                  <SourceIcon url={source.url} size={3} />
+                  <SourceTitle>{source.title}</SourceTitle>
+                </Source>
+              ))}
+            </div>
+            {images.length > 0 && (
+              <div
+                className="flex flex-wrap gap-1.5"
+                data-testid="web-search-images"
+              >
+                {images.map((entry) => (
+                  <SearchImageThumb key={entry.id} entry={entry} size="strip" />
+                ))}
+              </div>
+            )}
+          </div>
+        ) : resultText ? (
           <div>
             <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
-              {typeof result === "string"
-                ? result
-                : JSON.stringify(result, null, 2)}
+              {resultText}
             </pre>
           </div>
         ) : null}

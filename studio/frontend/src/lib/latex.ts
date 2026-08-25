@@ -20,39 +20,68 @@ const CURRENCY_REGEX =
   /(?<![\\$])\$(?!\$)(?=\d+(?:,\d{3})*(?:\.\d+)?[KMBkmb]?(?:\s|$|[^a-zA-Z\d]))/g;
 
 /**
- * Find code-block regions (``` ... ```, ~~~ ... ~~~, and ` ... `) to skip.
- * Returns a sorted array of [start, end] index pairs.
+ * Union of two span lists, each ascending by start (overlap within a list is
+ * fine, non-ascending input silently drops spans). The sorted, non-overlapping
+ * result is the shape `isInRegion`'s binary search needs.
  */
-function findCodeBlockRegions(content: string): Array<[number, number]> {
-  const regions: Array<[number, number]> = [];
+function mergeRegions(
+  left: ReadonlyArray<readonly [number, number]>,
+  right: ReadonlyArray<readonly [number, number]>,
+): Array<[number, number]> {
+  const merged: Array<[number, number]> = [];
+  let leftIndex = 0;
+  let rightIndex = 0;
+  while (leftIndex < left.length || rightIndex < right.length) {
+    const takeLeft =
+      rightIndex >= right.length ||
+      (leftIndex < left.length && left[leftIndex][0] <= right[rightIndex][0]);
+    const next = takeLeft ? left[leftIndex++] : right[rightIndex++];
+    const last = merged[merged.length - 1];
+    if (last && next[0] < last[1]) {
+      if (next[1] > last[1]) {
+        last[1] = next[1];
+      }
+      continue;
+    }
+    merged.push([next[0], next[1]]);
+  }
+  return merged;
+}
 
+/**
+ * Find code-block regions (``` ... ```, ~~~ ... ~~~, and ` ... `) to skip.
+ * Returns a sorted, non-overlapping array of [start, end] index pairs.
+ */
+export function findCodeBlockRegions(content: string): Array<[number, number]> {
   // Fenced code blocks: ```...``` and ~~~...~~~ (both are code in GFM)
+  const fenced: Array<[number, number]> = [];
   const fencedRe = /```[\s\S]*?```|~~~[\s\S]*?~~~/g;
   let match: RegExpExecArray | null;
   while ((match = fencedRe.exec(content)) !== null) {
-    regions.push([match.index, match.index + match[0].length]);
+    fenced.push([match.index, match.index + match[0].length]);
   }
 
-  // Inline code: `...` (skip spans inside fenced blocks, filtered below)
+  // Inline code: `...`, skipped when inside a fenced block. Both loops yield
+  // ascending matches, so walk the fenced list with a cursor rather than
+  // rescanning it per match (was quadratic on code-heavy text).
+  const inline: Array<[number, number]> = [];
   const inlineRe = /`[^`\n]+`/g;
+  let fencedIndex = 0;
   while ((match = inlineRe.exec(content)) !== null) {
     const start = match.index;
     const end = start + match[0].length;
-    let inside = false;
-    for (const [rs, re] of regions) {
-      if (start >= rs && end <= re) {
-        inside = true;
-        break;
-      }
+    while (fencedIndex < fenced.length && fenced[fencedIndex][1] <= start) {
+      fencedIndex += 1;
     }
-    if (!inside) {
-      regions.push([start, end]);
+    const block = fencedIndex < fenced.length ? fenced[fencedIndex] : null;
+    if (!(block && start >= block[0] && end <= block[1])) {
+      inline.push([start, end]);
     }
   }
 
-  // Sort by start position for binary search.
-  regions.sort((a, b) => a[0] - b[0]);
-  return regions;
+  // An inline span can CONTAIN a fence (`` `~~~a~~~ $5` ``); that overlap made
+  // the binary search land on the inner span and miss the outer one.
+  return mergeRegions(fenced, inline);
 }
 
 /**
@@ -87,7 +116,7 @@ function findLinkDestinationRegions(content: string): Array<[number, number]> {
  * Binary search to check if a position falls inside any region. Regions must be
  * sorted by start and non-overlapping.
  */
-function isInRegion(
+export function isInRegion(
   position: number,
   regions: Array<[number, number]>,
 ): boolean {
@@ -178,8 +207,8 @@ function hasInlineMathCloser(
   offset: number,
   mathRegions: Array<[number, number]>,
 ): boolean {
-  const MAX_SPAN = 200;
-  const limit = Math.min(content.length, offset + 1 + MAX_SPAN);
+  const maxSpan = 200;
+  const limit = Math.min(content.length, offset + 1 + maxSpan);
   for (let i = offset + 1; i < limit; i++) {
     const c = content[i];
     if (c === "\n") return false;

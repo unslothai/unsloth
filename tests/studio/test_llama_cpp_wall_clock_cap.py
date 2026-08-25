@@ -1,4 +1,4 @@
-"""Timeout policy checks for Studio's local llama-server path."""
+"""Timeout policy checks for Unsloth's local llama-server path."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ SOURCE_PATH = (
     / "inference"
     / "llama_cpp.py"
 )
-SRC = SOURCE_PATH.read_text()
+SRC = SOURCE_PATH.read_text(encoding = "utf-8")
 TREE = ast.parse(SRC)
 
 

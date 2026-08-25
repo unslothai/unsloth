@@ -13,7 +13,8 @@ def _load_change_system_message():
     funcs = [
         node
         for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name == "_change_system_message"
+        if isinstance(node, ast.FunctionDef)
+        and node.name in ("_change_system_message", "_escape_jinja_literal")
     ]
     namespace = {
         "re": re,
@@ -62,10 +63,20 @@ def test_custom_template_without_placeholder_unchanged():
 
 
 def test_predefined_template_uses_default_then_override():
-    # Predefined templates with a default are unaffected.
     fn = _load_change_system_message()
     t1, u1 = fn("System: {system_message}", "unsloth", None)
     assert t1 == "System: You are a helpful assistant to the user"
     t2, u2 = fn("System: {system_message}", "unsloth", "Custom override")
     assert t2 == "System: Custom override"
     assert u2 == "Custom override"
+
+
+def test_predefined_template_escapes_but_custom_does_not():
+    # Predefined templates hold {system_message} inside a Jinja literal, so it is escaped;
+    # a custom template's placeholder may be raw text, so it stays verbatim.
+    fn = _load_change_system_message()
+    msg = """it's a \\test "x"."""
+    predefined, used = fn("System: {system_message}", "unsloth", msg)
+    assert predefined == """System: it\\'s a \\\\test \\"x\\"."""
+    assert used == msg  # returned message is the raw one, not the escaped source
+    assert fn("System: {system_message}", CUSTOM, msg)[0] == f"System: {msg}"

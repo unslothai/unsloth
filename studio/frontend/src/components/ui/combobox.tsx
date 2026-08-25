@@ -7,6 +7,7 @@
 
 import { Combobox as ComboboxPrimitive } from "@base-ui/react";
 import * as React from "react";
+import { useWheelScrollRef } from "@/hooks";
 import { createContext, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -100,13 +101,19 @@ function ComboboxInput({
   disabled = false,
   showTrigger = true,
   showClear = false,
+  startAddon,
   ...props
 }: ComboboxPrimitive.Input.Props & {
   showTrigger?: boolean;
   showClear?: boolean;
+  /** Optional leading content (e.g. a search icon) rendered before the input. */
+  startAddon?: React.ReactNode;
 }): React.ReactElement {
   return (
     <InputGroup className={cn("w-auto", className)}>
+      {startAddon && (
+        <InputGroupAddon align="inline-start">{startAddon}</InputGroupAddon>
+      )}
       <ComboboxPrimitive.Input
         render={<InputGroupInput disabled={disabled} />}
         {...props}
@@ -139,6 +146,7 @@ function ComboboxContent({
   alignOffset = 0,
   anchor,
   container,
+  onWheel,
   ...props
 }: ComboboxPrimitive.Popup.Props &
   Pick<
@@ -161,6 +169,24 @@ function ComboboxContent({
         <ComboboxPrimitive.Popup
           data-slot="combobox-content"
           data-chips={!!anchor}
+          onWheel={(event) => {
+            onWheel?.(event);
+            // Dialog scroll locks cancel native wheel scrolling on this
+            // body-portaled popup, so scroll the list by hand while one is
+            // active.
+            if (!document.body.hasAttribute("data-scroll-locked")) return;
+            const list = event.currentTarget.querySelector<HTMLElement>(
+              '[data-slot="combobox-list"]',
+            );
+            if (!list) return;
+            const step =
+              event.deltaMode === 1
+                ? event.deltaY * 24
+                : event.deltaMode === 2
+                  ? event.deltaY * list.clientHeight
+                  : event.deltaY;
+            list.scrollTop += step;
+          }}
           className={cn(
             "bg-popover text-popover-foreground data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 *:data-[slot=input-group]:bg-input/30 max-h-72 min-w-36 overflow-hidden rounded-xl corner-squircle duration-100 *:data-[slot=input-group]:m-1 *:data-[slot=input-group]:mb-0 *:data-[slot=input-group]:h-9 *:data-[slot=input-group]:border-none *:data-[slot=input-group]:shadow-none group/combobox-content relative pointer-events-auto max-h-(--available-height) w-(--anchor-width) max-w-(--available-width) min-w-[calc(var(--anchor-width)+--spacing(7))] origin-(--transform-origin) data-[chips=true]:min-w-(--anchor-width)",
             className,
@@ -176,8 +202,11 @@ function ComboboxList({
   className,
   ...props
 }: ComboboxPrimitive.List.Props): React.ReactElement {
+  const listRef = useWheelScrollRef<HTMLDivElement>();
+
   return (
     <ComboboxPrimitive.List
+      ref={listRef}
       data-slot="combobox-list"
       className={cn(
         "no-scrollbar max-h-[min(calc(--spacing(72)---spacing(9)),calc(var(--available-height)---spacing(9)))] scroll-py-1 overflow-y-auto p-1 data-empty:p-0 overflow-y-auto overscroll-contain",
@@ -290,7 +319,7 @@ function ComboboxChips({
     <ComboboxPrimitive.Chips
       data-slot="combobox-chips"
       className={cn(
-        "bg-input/30 border-input focus-within:border-ring focus-within:ring-ring/50 has-aria-invalid:ring-destructive/20 dark:has-aria-invalid:ring-destructive/40 has-aria-invalid:border-destructive dark:has-aria-invalid:border-destructive/50 flex min-h-9 flex-wrap items-center gap-1.5 rounded-4xl border bg-clip-padding px-2.5 py-1.5 text-sm transition-colors focus-within:ring-[3px] has-aria-invalid:ring-[3px] has-data-[slot=combobox-chip]:px-1.5",
+        "bg-input/30 border-input dark:border-transparent focus-within:border-ring dark:focus-within:border-transparent dark:focus-within:bg-white/[0.09] has-aria-invalid:ring-destructive/20 dark:has-aria-invalid:ring-destructive/40 has-aria-invalid:border-destructive dark:has-aria-invalid:border-destructive/50 flex min-h-9 flex-wrap items-center gap-1.5 rounded-4xl border bg-clip-padding px-2.5 py-1.5 text-sm transition-colors has-aria-invalid:ring-[3px] has-data-[slot=combobox-chip]:px-1.5",
         className,
       )}
       {...props}
