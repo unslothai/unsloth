@@ -10353,17 +10353,12 @@ async def _load_model_impl(
             # The marker still goes up (the download-manager handshake reads it, and it keeps this load cancellable). A stale CHAT claim is dropped AFTER the load.
             gguf_load_stack.enter_context(chat_load_in_flight())
 
-        # About to touch the backend: reclaim the slot for Studio. Deferred past the rejections
-        # above (nothing is torn down yet), and the prior marker is captured first so a
-        # still-later pre-load check that rejects (the native vision-companion validation below)
-        # can restore preview ownership, or a still-resident preview checkpoint is left marked
-        # Studio-owned and later previews 503 against it.
+        # capture the prior marker before either load path reaches its point of no return.
         _prior_preview_marker = _get_preview_resident()
-        _set_preview_resident(None)
 
         def _restore_marker_if_prior_preview_still_resident() -> None:
             # A failed load can leave the prior preview checkpoint resident though the marker
-            # was cleared above (a non-GGUF load unloads only the new entry; a GGUF load can
+            # was cleared before teardown (a non-GGUF load unloads only the new entry; a GGUF load can
             # raise before tearing down the old llama-server). Restore its ownership so a later
             # preview isn't 503'd against a model Studio never adopted. Guarded on the prior
             # model still being resident, so it never mis-marks a torn-down/replaced model.
@@ -10402,6 +10397,9 @@ async def _load_model_impl(
                     current_request_counted = current_request_counted,
                     timeout_s = _POST_CANCEL_DRAIN_TIMEOUT_S,
                 )
+
+            # every rejection and drain has completed. the load now owns the slot for studio.
+            _set_preview_resident(None)
 
             # Unload any active Unsloth model only after every hub conflict check.
             if unsloth_backend.active_model_name:
@@ -10556,6 +10554,8 @@ async def _load_model_impl(
                 current_request_counted = current_request_counted,
                 timeout_s = _POST_CANCEL_DRAIN_TIMEOUT_S,
             )
+        # every rejection and drain has completed. the load now owns the slot for studio.
+        _set_preview_resident(None)
         # Unload any active GGUF model first, off-loop: a 600 GB teardown measures
         # 160s and on-loop would block _tunnel_safe_json's own padding.
         if llama_backend.is_loaded:
@@ -10747,8 +10747,11 @@ async def _load_model_impl(
         logger.warning("GGUF runtime missing while loading '%s': %s", model_log_label, e)
         raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
+        from core.inference.gpu_arbiter import GpuOwnerBusyError
         from utils.transformers_version import SidecarSwapInProgress
 
+        if isinstance(e, GpuOwnerBusyError):
+            raise
         if isinstance(e, SidecarSwapInProgress):
             # Lost the spawn-time race to a sidecar install/repair: retryable 409.
             raise HTTPException(status_code = 409, detail = str(e))

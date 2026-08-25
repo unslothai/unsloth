@@ -729,6 +729,22 @@ def test_preview_maps_atomic_gpu_refusal_to_503(fake_slot, monkeypatch):
     assert inference._get_preview_resident() is None
 
 
+def test_load_impl_preserves_atomic_gpu_refusal(monkeypatch):
+    from core.inference import gpu_arbiter
+
+    def _busy(*args, **kwargs):
+        raise gpu_arbiter.GpuOwnerBusyError(gpu_arbiter.DIFFUSION)
+
+    monkeypatch.setattr(inference, "_resolve_model_identifier_for_request", _busy)
+
+    with pytest.raises(gpu_arbiter.GpuOwnerBusyError):
+        asyncio.run(
+            inference._load_model_impl(
+                LoadRequest(model_path = "mymodel"), SimpleNamespace(app = None), "admin"
+            )
+        )
+
+
 def test_preview_swap_refused_while_studio_traffic_in_flight(fake_slot):
     asyncio.run(
         inference.load_model_for_preview(
@@ -1232,6 +1248,15 @@ def test_load_restores_preview_marker_on_late_companion_reject():
     src = inspect.getsource(inference._load_model_impl)
     assert "_prior_preview_marker = _get_preview_resident()" in src
     assert "_set_preview_resident(_prior_preview_marker)" in src
+    marker = src.index("_prior_preview_marker = _get_preview_resident()")
+    gguf_branch = src.index("if config.is_gguf:", marker)
+    standard_branch = src.index("# ── Standard path", gguf_branch)
+    gguf_clear = src.index("_set_preview_resident(None)", gguf_branch, standard_branch)
+    standard_clear = src.index("_set_preview_resident(None)", standard_branch)
+    assert src.rindex("_raise_if_sidecar_swap_in_progress()", gguf_branch, gguf_clear) < gguf_clear
+    assert src.rindex("_raise_if_sidecar_swap_in_progress()", standard_branch, standard_clear) < standard_clear
+    assert src.rindex("_raise_if_scoped_load_cancelled()", gguf_branch, gguf_clear) < gguf_clear
+    assert src.rindex("_raise_if_scoped_load_cancelled()", standard_branch, standard_clear) < standard_clear
 
 
 def _run_middleware(app, path):
