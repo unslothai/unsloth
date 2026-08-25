@@ -493,6 +493,79 @@ def test_behavioural_scoring_that_validated_nothing_is_not_a_pass(tmp_path, caps
     assert "NOTHING WAS COMPARED" in out
 
 
+def _scroll_extent_broken_pair(cell_suffix = "rep0"):
+    """A `select_text` pair whose declared invariant is BROKEN: the windowed arm's scrollbar says
+    the thread is a third of its real length. `compare_behaviour` returns BROKEN, so this pair
+    lands in `broken` and NOT in `matched`."""
+    rows = []
+    for side, mounted, scroll in (("base", 18, 10_000), ("treatment", 6, 3_300)):
+        row = _row(
+            "select_text",
+            _capture(mounted, 18),
+            selected_chars = 100,
+            visible_chars = 100,
+        )
+        row["census"]["viewport_scroll_height"] = scroll
+        row["cell_id"] = f"r100K.{side}.{cell_suffix}"
+        rows.append(row)
+    return rows
+
+
+def test_a_run_whose_every_invariant_BROKE_does_not_also_claim_it_compared_nothing(
+    tmp_path, capsys
+):
+    """THE SELF-CONTRADICTING ARTIFACT. `matched` and `broken` are independent counters, so a
+    payload whose only pair BROKE its invariant satisfies `matched == 0` as well.
+
+    The no-verdict banner was gated on `matched == 0` alone, so this run printed its broken
+    invariant, then printed that not one behavioural invariant was evaluated and that it carried
+    "neither a pass nor a failure" -- and then returned 1. Every clause of that banner is false
+    here, and its instruction ("find out why the actions did not run") points away from the
+    regression listed three lines above it.
+
+    The exit code was right and stays right; asserted below, because a banner fix that quietened
+    the failure would be far worse than the banner.
+    """
+    from studiobench.sweep import ui_parity as U
+
+    shard = _write(tmp_path, "all_broken", _scroll_extent_broken_pair())
+    code = U.behaviour_report([shard], "UI PARITY: all broken")
+    out = capsys.readouterr().out
+
+    assert code == 1, out
+    assert "invariants held:            0" in out, out
+    assert "INVARIANTS BROKEN:          1" in out, out
+    assert "scroll_extent" in out, out
+    assert "NOTHING WAS COMPARED" not in out, out
+    assert "neither a pass nor a failure" not in out, out
+
+
+def test_the_no_verdict_banner_still_fires_when_a_build_DIFFERENCE_is_the_only_failure(
+    tmp_path, capsys
+):
+    """THE OTHER HALF OF THE GATE, pinned so the fix above cannot be widened into a regression.
+
+    `build_differences` collects two shapes -- one-arm execution and a directional assertion
+    failure -- from pairs whose INVARIANTS were unreadable. When one of those is the only reason a
+    run fails, "not one behavioural invariant was evaluated" is literally true, and the banner
+    belongs there alongside exit 1. Gating it on `build_failed` as well as on `broken` would
+    silence a true statement.
+    """
+    from studiobench.sweep import ui_parity as U
+
+    rows = []
+    for side, row in (("base", _reopen_row(18)), ("treatment", _reopen_row(3, ready = False))):
+        row["cell_id"] = f"r100K.{side}.rep0"
+        rows.append(row)
+    shard = _write(tmp_path, "build_diff_only", rows)
+
+    code = U.behaviour_report([shard], "UI PARITY: build difference only")
+    out = capsys.readouterr().out
+    assert code == 1, out
+    assert "INVARIANTS BROKEN:          0" in out, out
+    assert "NOTHING WAS COMPARED" in out, out
+
+
 def test_the_observation_cost_is_not_charged_to_the_action_budget():
     """`over_ms` used to be sampled AFTER the census and the multi-megabyte digest that this
     change had just moved outside the measured window, so an action that finished inside its

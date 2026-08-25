@@ -858,7 +858,21 @@ def behaviour_report(
         names = sorted({a for a, _s, _c, _v in idle})
         print(f"\n  NOT EXERCISED: {', '.join(names)}")
 
-    if matched == 0:
+    # `not broken` IS THE PRECONDITION THE PARAGRAPH BELOW ARGUES FROM, and it used to be assumed
+    # rather than checked. An all-BROKEN payload reaches `matched == 0` too -- the two counters are
+    # independent -- so a run that had just listed its broken invariants went on to say that not
+    # one invariant was evaluated and that it carried no failure, immediately before returning 1.
+    # The artifact contradicted its own results and sent the reader off to find out why actions
+    # that had run did not run. `report` (`elif decided == 0`) and `visible_report` (`and not
+    # differing`) both already gate this banner on their own failure bucket; this is that gate.
+    #
+    # NOT GATED ON `build_failed`, which is the other half of the return condition and is NOT the
+    # same case: those two shapes are collected from pairs whose invariants were unreadable, so
+    # "not one behavioural invariant was evaluated" stays literally true when one fires, and the
+    # run is a failure for a directional reason rather than an invariant one. See
+    # `test_a_timed_out_rebuild_leaves_the_behavioural_run_with_no_verdict`, which asserts exactly
+    # that pairing -- NOTHING WAS COMPARED together with exit 1 -- on purpose.
+    if matched == 0 and not broken:
         # NOTHING WAS VALIDATED, which is not the same as nothing being wrong. With every pair
         # unchecked, not comparable or never exercised, `broken` is empty and the block above has
         # just printed "Every declared behavioural invariant held on both arms" -- a sentence that
