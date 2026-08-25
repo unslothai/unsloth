@@ -37,15 +37,50 @@ test("the narrow layout swaps the split pill back to a single trigger", () => {
   );
 });
 
+const COMPOSERS = [
+  { path: "../src/components/assistant-ui/thread.tsx", flag: "splitPill" },
+  { path: "../src/features/chat/shared-composer.tsx", flag: "splitThinkingPill" },
+];
+
+function read(path: string): string {
+  return readFileSync(new URL(path, import.meta.url), "utf8");
+}
+
 test("both composers render the icon that narrow layout reveals", () => {
-  for (const path of [
-    "../src/components/assistant-ui/thread.tsx",
-    "../src/features/chat/shared-composer.tsx",
-  ]) {
-    const source = readFileSync(new URL(path, import.meta.url), "utf8");
+  for (const { path } of COMPOSERS) {
     assert.ok(
-      source.includes("unsloth-thinking-split-icon"),
+      read(path).includes("unsloth-thinking-split-icon"),
       `${path} drops the narrow-layout icon`,
+    );
+  }
+});
+
+test("only a split pill gets the wrapper that paints the background", () => {
+  for (const { path, flag } of COMPOSERS) {
+    const source = read(path);
+    const at = source.indexOf('className="unsloth-thinking-split"');
+    assert.notEqual(at, -1, `${path} drops the split wrapper`);
+    // The wrapper holds the hover background, and it is not the button, so
+    // disabled:opacity-40 cannot dim it. Wrapping a lone trigger would light
+    // an unloaded model's pill at full strength.
+    assert.match(
+      source.slice(Math.max(0, at - 160), at),
+      new RegExp(`${flag} \\?`),
+      `${path} wraps the trigger when the pill is not split`,
+    );
+  }
+});
+
+test("the toggle half is wired to the thinking toggle", () => {
+  for (const { path } of COMPOSERS) {
+    const source = read(path);
+    const at = source.indexOf("unsloth-thinking-split-toggle");
+    assert.notEqual(at, -1, `${path} drops the toggle half`);
+    const button = source.slice(at, source.indexOf("</button>", at));
+    assert.match(
+      button,
+      /onClick=\{toggleThinking\}/,
+      `${path} left half no longer toggles thinking`,
     );
   }
 });

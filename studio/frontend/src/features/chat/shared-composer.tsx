@@ -758,6 +758,48 @@ export function SharedComposer({
       setToolsEnabled(false, { persist: false });
     }
   };
+  // Only the split pill needs the wrapper. Wrapping the lone trigger too would
+  // move its background to an element the button's disabled:opacity-40 cannot
+  // dim, so an unloaded model's pill would light up on hover.
+  const thinkingSettingsTrigger = (
+    <DropdownMenuTrigger asChild={true}>
+      <button
+        type="button"
+        disabled={reasoningDisabled}
+        className="unsloth-thinking-pill"
+        data-pill-label="Thinking settings"
+        data-active={thinkingActiveLook ? "true" : "false"}
+        aria-label={
+          splitThinkingPill
+            ? "Thinking settings"
+            : thinkEffortAriaLabel({
+                modelLoaded,
+                reasoningDisabled,
+                reasoningEffort,
+              })
+        }
+      >
+        {splitThinkingPill ? (
+          <BulbIcon className="unsloth-thinking-split-icon size-[15.5px]" />
+        ) : (
+          <>
+            <BulbIcon className="size-[15.5px]" />
+            {thinkingActiveLook ? (
+              <span className="unsloth-thinking-label">
+                {isEffort
+                  ? `Thinking · ${formatReasoningEffortLabel(
+                      reasoningEffort,
+                      externalSelection?.modelId,
+                    )}`
+                  : "Thinking"}
+              </span>
+            ) : null}
+          </>
+        )}
+        <ArrowDownStandardIcon className="unsloth-thinking-caret size-[15px]" />
+      </button>
+    </DropdownMenuTrigger>
+  );
   // Two-pill gating: Search lights up on a local tool runtime (supportsTools:
   // Code/python + local web_search) OR a provider-run server-side web_search
   // (supportsBuiltinWebSearch: OpenAI/Anthropic/OpenRouter/Kimi). Code lights
@@ -2450,8 +2492,8 @@ export function SharedComposer({
           {showReasoningControl ? (
             isEffort || supportsPreserveThinking ? (
               <DropdownMenu>
-                <div className="unsloth-thinking-split">
-                  {splitThinkingPill ? (
+                {splitThinkingPill ? (
+                  <div className="unsloth-thinking-split">
                     <button
                       type="button"
                       className="unsloth-thinking-pill unsloth-thinking-split-toggle"
@@ -2472,45 +2514,11 @@ export function SharedComposer({
                         <span className="unsloth-thinking-label">Thinking</span>
                       ) : null}
                     </button>
-                  ) : null}
-                  <DropdownMenuTrigger asChild={true}>
-                    <button
-                      type="button"
-                      disabled={reasoningDisabled}
-                      className="unsloth-thinking-pill"
-                      data-pill-label="Thinking settings"
-                      data-active={thinkingActiveLook ? "true" : "false"}
-                      aria-label={
-                        splitThinkingPill
-                          ? "Thinking settings"
-                          : thinkEffortAriaLabel({
-                              modelLoaded,
-                              reasoningDisabled,
-                              reasoningEffort,
-                            })
-                      }
-                    >
-                      {splitThinkingPill ? (
-                        <BulbIcon className="unsloth-thinking-split-icon size-[15.5px]" />
-                      ) : (
-                        <>
-                          <BulbIcon className="size-[15.5px]" />
-                          {thinkingActiveLook ? (
-                            <span className="unsloth-thinking-label">
-                              {isEffort
-                                ? `Thinking · ${formatReasoningEffortLabel(
-                                    reasoningEffort,
-                                    externalSelection?.modelId,
-                                  )}`
-                                : "Thinking"}
-                            </span>
-                          ) : null}
-                        </>
-                      )}
-                      <ArrowDownStandardIcon className="unsloth-thinking-caret size-[15px]" />
-                    </button>
-                  </DropdownMenuTrigger>
-                </div>
+                    {thinkingSettingsTrigger}
+                  </div>
+                ) : (
+                  thinkingSettingsTrigger
+                )}
                 <DropdownMenuContent
                   side="top"
                   align="end"
