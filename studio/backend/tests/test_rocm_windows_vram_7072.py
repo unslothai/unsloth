@@ -897,14 +897,26 @@ def test_the_measured_strix_halo_at_64_gib_held(win_rocm, monkeypatch):
     monkeypatch.setattr(hw, "_rocm_props_total_is_carve_out", lambda props: True)
     monkeypatch.setattr(hw, "_rocm_props_are_positively_unified", lambda props: True)
     monkeypatch.setattr(
-        hw, "_rocm_windows_unified_used_bytes",
+        hw,
+        "_rocm_windows_unified_used_bytes",
         lambda dedicated = None: (31.637 + 33.887) * GB,
     )
-    monkeypatch.setattr(hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output([
-        ("luid_0x00000000_0x0001532a_phys_0", 31.637 * GB),  # saturated at the carve-out
-        ("luid_0x00000000_0x00017034_phys_0", 0.0),
-        ("luid_0x00000000_0x00017099_phys_0", 0.0),
-    ])))
+    monkeypatch.setattr(
+        hw.subprocess,
+        "run",
+        _subprocess_run(
+            adapter_output = _adapter_output(
+                [
+                    (
+                        "luid_0x00000000_0x0001532a_phys_0",
+                        31.637 * GB,
+                    ),  # saturated at the carve-out
+                    ("luid_0x00000000_0x00017034_phys_0", 0.0),
+                    ("luid_0x00000000_0x00017099_phys_0", 0.0),
+                ]
+            )
+        ),
+    )
 
     devices, _ = hw._rocm_windows_per_device_vram([0])
     assert devices[0]["total_gb"] == 89.46
