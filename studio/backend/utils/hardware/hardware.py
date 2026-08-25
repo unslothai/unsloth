@@ -2667,11 +2667,36 @@ def _rocm_windows_per_device_vram(
                 unified = _rocm_props_are_positively_unified(props)
                 if unified and hasattr(mod, "mem_get_info"):
                     pool_bytes = int(mod.mem_get_info(ordinal)[1])
+                    # >= not >, and the equal case is the ONLY one that occurs.
+                    # hipMemGetInfo's total and hipDeviceProp_t::totalGlobalMem
+                    # are both device->info().globalMemSize_ in clr (hip_memory.cpp,
+                    # hip_device.cpp); only `free` is sourced separately. So these
+                    # two numbers are the same variable read twice and can never
+                    # differ on an AMD backend.
+                    #
+                    # That makes this look like a tautology, and taken alone it is.
+                    # What carries it is the conjunction at pool_scoped below:
+                    # on Windows the backend is PAL, and paldevice.cpp adds 50-75%
+                    # of the WDDM shared heap to globalMemSize_ whenever
+                    # settings().apuSystem_, which is Pal::GpuType::Integrated --
+                    # the same flag that fills hipDeviceProp_t::integrated and so
+                    # the same one _rocm_classify_unified_memory gates on. A part
+                    # this classifier calls unified therefore HAS a pool-scoped
+                    # total by construction, which is the proof the equality alone
+                    # does not supply. Measured twice: 89.465 GB under a 32 GB
+                    # carve-out here, and 107.87 GB under a 96 GB VGM in
+                    # ROCm/TheRock#3032, matching the PAL formula exactly.
+                    #
+                    # Linux is the opposite regime -- globalMemSize_ is the KFD
+                    # framebuffer heap and CAN be carve-out sized -- but this
+                    # function returns ([], None) off Windows, so it never applies.
                     pool_confirmed = pool_bytes >= total_bytes
-                    # Only a WIDER total is worth adopting. The classifier says
-                    # carve-out for a discrete card on an unsettled runtime too,
-                    # and unlike the inventory this path carries a used: a shrunk
-                    # total reports past 100% utilization and zero free.
+                    # Kept for the shrink guard, not because widening is reachable:
+                    # per the above, pool_bytes > total_bytes cannot hold on AMD.
+                    # The classifier says carve-out for a discrete card on an
+                    # unsettled runtime too, and unlike the inventory this path
+                    # carries a used: a shrunk total reports past 100% utilization
+                    # and zero free.
                     if pool_bytes > total_bytes:
                         logger.debug(
                             "ROCm unified memory: ordinal %d total %.2f -> %.2f GB (driver pool)",
