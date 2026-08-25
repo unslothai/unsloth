@@ -1532,6 +1532,7 @@ else:
     # the package itself unimportable. Keep the relaxed decoding scoped to the
     # backend import and preserve explicit subprocess error policies.
     from ._subprocess_encoding import replace_invalid_subprocess_text as _safe_probe_text
+
     with _safe_probe_text():
         # GPU path: load everything from _gpu_init
         from ._gpu_init import *
