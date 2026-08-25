@@ -5726,10 +5726,9 @@ class VideoBackend:
                 decode_audio = not bool(override),
             )
             if override:
-                # A replacement soundtrack is a separate upload with its own timeline, so it
-                # starts at its own zero and runs the length of the clip. Cutting it at the
-                # video's source coordinates instead dropped its first trim_start seconds,
-                # and refused it outright when it was shorter than that. Only the embedded
+                # A replacement soundtrack is a separate upload on its own timeline: it starts
+                # at its own zero and runs the clip's length. The video's coordinates dropped
+                # its first trim_start seconds and refused anything shorter. Only the embedded
                 # track shares the video's timeline.
                 clip = validate_h3_reference_trim(trim_start, trim_end)
                 waveform, sample_rate = decode_h3_reference_audio(

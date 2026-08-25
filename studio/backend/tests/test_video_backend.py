@@ -6549,10 +6549,9 @@ def test_h3_replacement_audio_bypasses_a_short_embedded_soundtrack():
 def test_h3_replacement_audio_starts_at_its_own_zero():
     """A replacement soundtrack is an independent file, not a second cut of the video.
 
-    Its own timeline has no relation to the video's source coordinates, and the picker offers
-    no way to offset it, so it plays the clip from its own start. Cutting it at the video's
-    coordinates dropped its first trim_start seconds, and refused it when it was shorter than
-    that. Only the embedded track shares the video's timeline.
+    Its timeline has no relation to the video's, and the picker offers no way to offset it, so
+    it plays the clip from its own start. The video's coordinates dropped its first trim_start
+    seconds, and refused it when it was shorter than that.
     """
     pytest.importorskip("av")
     import numpy as np
