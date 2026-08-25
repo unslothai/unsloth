@@ -25795,12 +25795,33 @@ class LlamaCppBackend:
                                 **kwargs,
                             )
 
-                        result = yield from stream_tool_execution(
-                            _invoke_tool,
-                            tool_name = decision.tool_name,
-                            tool_call_id = decision.tool_call_id,
-                            cancel_event = cancel_event,
-                        )
+                        # A tool that raises is the tool's failure, not the
+                        # generation's. The other two loops already hand the
+                        # message back to the model and let it recover
+                        # (studio_tool_loop, safetensors_agentic); without this
+                        # the enclosing handler below re-raises and the whole
+                        # answer dies on a bad argument.
+                        try:
+                            result = yield from stream_tool_execution(
+                                _invoke_tool,
+                                tool_name = decision.tool_name,
+                                tool_call_id = decision.tool_call_id,
+                                cancel_event = cancel_event,
+                            )
+                        except _LlamaStreamCancelled:
+                            # Subclasses Exception, so the generic arm below
+                            # would eat the cancel signal. Cancellation is not
+                            # a tool error. CancelledError needs no arm here:
+                            # it is a BaseException, so it passes straight
+                            # through, same as in safetensors_agentic.
+                            raise
+                        except Exception as _tool_exc:
+                            if cancel_event is not None and cancel_event.is_set():
+                                raise
+                            logger.exception(
+                                "Tool %s raised: %s", decision.tool_name, _tool_exc,
+                            )
+                            result = f"Error: tool raised an exception: {_tool_exc}"
                         if decision.tool_name in RAG_SEARCH_TOOLS:
                             _kb_search_count += 1
                     completion = tool_controller.record_result(decision, result)
