@@ -2133,15 +2133,30 @@ def test_the_files_the_payload_carries_are_byte_identical_to_the_repo(tmp_path):
     payload = _payload_notebooks(_build(tmp_path))["t4_control.ipynb"]
     blob = re.search(r"^FILES = (\{.*?\})$", _cell(payload, 0), re.M | re.S).group(1)
     files = json.loads(blob)
-    assert set(files) == {
+    expected = {
         "versions.py",
         "canary_dataset.jsonl",
         "training_evidence.py",
+        "phase_timers.py",
         "run_t4_smoke.py",
         "determinism.py",
         "pins/control.txt",
         "references/t4_qwen2.5-0.5b.json",
-    }, sorted(files)
+    }
+    assert set(files) == expected, sorted(files)
+    # The literal above is the point of this guard, so it is kept rather than
+    # derived. But a literal drifts, so it is also checked against the registry:
+    # adding a file to COMMON_FILES and forgetting this list is then a failure
+    # here rather than a silent divergence between what is declared and what
+    # actually reaches the card.
+    sys.path.insert(0, str(REPO_ROOT / ".github" / "scripts"))
+    from kaggle_t4_ci.legs import LEGS
+
+    leg = LEGS["control"]
+    # `reference` is carried but not listed in `files`: the builder adds it from
+    # that field, so the declared set has to be reassembled the same way.
+    declared = set(leg.files) | ({f"references/{leg.reference}"} if leg.reference else set())
+    assert expected == declared, sorted(declared)
     for name, data in files.items():
         assert gzip.decompress(base64.b64decode(data)) == (SMOKE_DIR / name).read_bytes(), name
 

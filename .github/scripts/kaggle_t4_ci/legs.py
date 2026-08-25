@@ -112,7 +112,15 @@ class Leg:
 # attributable to a version; the canary dataset; and the "did the optimizer
 # apply anything" evidence, without which every payload here can pass on a run
 # that trained nothing.
-COMMON_FILES = ("versions.py", "canary_dataset.jsonl", "training_evidence.py")
+COMMON_FILES = (
+    "versions.py",
+    "canary_dataset.jsonl",
+    "training_evidence.py",
+    # Splits the one `load` figure into fetch and weight load. Shipped to every
+    # leg rather than to the ones that use it today, because the number it
+    # produces is only comparable across legs if every leg can produce it.
+    "phase_timers.py",
+)
 
 # The install prefix shared by every leg. unsloth_zoo first and WITH deps, then
 # unsloth on top, then bitsandbytes, which neither pulls and the image does not
