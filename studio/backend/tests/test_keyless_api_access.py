@@ -36,6 +36,7 @@ from utils.keyless_api_access import (
     set_keyless_api_access,
 )
 
+
 @pytest.fixture(autouse = True)
 def isolated_auth_db(tmp_path, monkeypatch):
     monkeypatch.setattr(storage, "DB_PATH", tmp_path / "auth.db")
@@ -48,12 +49,14 @@ def isolated_auth_db(tmp_path, monkeypatch):
     storage._reset_api_key_hash_cache()
     _reset_scope_cache()
 
+
 def seed_user():
     storage.create_initial_user(
         username = storage.DEFAULT_ADMIN_USERNAME,
         password = "human-password-123",
         jwt_secret = secrets.token_urlsafe(64),
     )
+
 
 def app_state(**overrides):
     state = SimpleNamespace(
@@ -67,6 +70,7 @@ def app_state(**overrides):
     for name, value in overrides.items():
         setattr(state, name, value)
     return state
+
 
 def asgi_scope(
     *,
@@ -93,14 +97,18 @@ def asgi_scope(
         "app": SimpleNamespace(state = state or app_state()),
     }
 
+
 def request_for(**kwargs):
     return Request(asgi_scope(**kwargs))
+
 
 def resolve(request):
     return asyncio.run(security(request))
 
+
 def subject_of(request):
     return asyncio.run(get_current_subject(resolve(request)))
+
 
 def test_exact_route_matrix_matches_registered_topology():
     from routes.inference import router
@@ -108,16 +116,26 @@ def test_exact_route_matrix_matches_registered_topology():
     allowed = {
         ("POST", path)
         for path in (
-            "/v1/chat/completions", "/v1/chat/count_tokens", "/v1/completions",
-            "/v1/embeddings", "/v1/messages", "/v1/messages/count_tokens", "/v1/responses",
+            "/v1/chat/completions",
+            "/v1/chat/count_tokens",
+            "/v1/completions",
+            "/v1/embeddings",
+            "/v1/messages",
+            "/v1/messages/count_tokens",
+            "/v1/responses",
         )
     } | {("GET", "/v1/models"), ("GET", "/v1/models/unsloth/model")}
     denied = {
         ("POST", path)
         for path in (
-            "/v1/load", "/v1/unload", "/v1/validate", "/v1/generate/stream",
-            "/v1/audio/speech", "/v1/images/generations",
-            "/v1/external/openai/containers/create", "/v1x/chat",
+            "/v1/load",
+            "/v1/unload",
+            "/v1/validate",
+            "/v1/generate/stream",
+            "/v1/audio/speech",
+            "/v1/images/generations",
+            "/v1/external/openai/containers/create",
+            "/v1x/chat",
         )
     } | {("POST", "/v1/models"), ("GET", "/v1/chat/completions"), ("GET", "/v1/sandbox/abc")}
     assert all(scope_covers("inference", method, path) for method, path in allowed)
@@ -145,6 +163,7 @@ def test_exact_route_matrix_matches_registered_topology():
     }
     assert intended <= registered
 
+
 def test_settings_are_immediate_and_fail_closed(monkeypatch):
     import storage.studio_db as studio_db
 
@@ -163,6 +182,7 @@ def test_settings_are_immediate_and_fail_closed(monkeypatch):
     )
     _reset_scope_cache()
     assert (get_keyless_api_access_scope(), get_keyless_api_tools_enabled()) == ("off", False)
+
 
 def test_stale_refresh_cannot_reopen_a_closed_scope():
     import utils.keyless_api_access as keyless
@@ -191,6 +211,7 @@ def test_stale_refresh_cannot_reopen_a_closed_scope():
         keyless._read_settings = real_read
     assert observed == [("off", False)]
 
+
 def test_full_scope_is_loopback_only():
     set_keyless_api_access("full")
     for server, client, bind_host in (
@@ -202,6 +223,7 @@ def test_full_scope_is_loopback_only():
         assert keyless_request_allowed(
             request_for(server = server, client = client, state = app_state(bind_host = bind_host))
         )
+
 
 def test_public_browser_and_private_lan_boundaries(monkeypatch):
     import lan_access
@@ -237,19 +259,19 @@ def test_public_browser_and_private_lan_boundaries(monkeypatch):
     assert not keyless_request_allowed(lan_request)
     assert not keyless_request_allowed(request_for(state = app_state(bind_host = "0.0.0.0")))
 
+
 def test_credentials_never_downgrade_to_keyless():
     seed_user()
     set_keyless_api_access("full")
     assert resolve(request_for()).scheme == KEYLESS_SCHEME
     for token in ("not-needed", "lm-studio", "ollama"):
-        assert resolve(
-            request_for(headers = {"Authorization": f"Bearer {token}"})
-        ).scheme == KEYLESS_FALLBACK_SCHEME
+        assert (
+            resolve(request_for(headers = {"Authorization": f"Bearer {token}"})).scheme
+            == KEYLESS_FALLBACK_SCHEME
+        )
     set_keyless_api_access("inference")
     with pytest.raises(HTTPException):
-        subject_of(request_for(
-            path = "/v1/load", headers = {"Authorization": "Bearer not-needed"}
-        ))
+        subject_of(request_for(path = "/v1/load", headers = {"Authorization": "Bearer not-needed"}))
     set_keyless_api_access("full")
 
     for header in ("Bearer arbitrary", "garbage", "Basic abc", "Bearer"):
@@ -276,9 +298,14 @@ def test_credentials_never_downgrade_to_keyless():
     valid, _ = storage.create_api_key(
         username = storage.DEFAULT_ADMIN_USERNAME, name = "valid", expires_at = None
     )
-    assert asyncio.run(get_current_credential(resolve(request_for(
-        headers = {"Authorization": f"Bearer {valid}"}
-    ))))[0] == storage.DEFAULT_ADMIN_USERNAME
+    assert (
+        asyncio.run(
+            get_current_credential(
+                resolve(request_for(headers = {"Authorization": f"Bearer {valid}"}))
+            )
+        )[0]
+        == storage.DEFAULT_ADMIN_USERNAME
+    )
     for name, expires in (
         ("expired", (datetime.now(timezone.utc) - timedelta(days = 1)).isoformat()),
         ("revoked", None),
@@ -291,6 +318,7 @@ def test_credentials_never_downgrade_to_keyless():
         with pytest.raises(HTTPException):
             subject_of(request_for(headers = {"Authorization": f"Bearer {raw}"}))
 
+
 def _middleware_policy(scope):
     from state.tool_policy import get_tool_policy, reset_tool_policy, set_tool_policy
 
@@ -301,12 +329,13 @@ def _middleware_policy(scope):
 
     set_tool_policy(True)
     try:
-        asyncio.run(KeylessToolPolicyMiddleware(downstream)(
-            scope, lambda: None, lambda _message: None
-        ))
+        asyncio.run(
+            KeylessToolPolicyMiddleware(downstream)(scope, lambda: None, lambda _message: None)
+        )
     finally:
         reset_tool_policy()
     return observed
+
 
 def test_tool_policy_and_api_identity(monkeypatch):
     from routes import inference
@@ -329,9 +358,8 @@ def test_tool_policy_and_api_identity(monkeypatch):
         username = storage.DEFAULT_ADMIN_USERNAME, name = "tools", expires_at = None
     )
     set_keyless_api_access("inference", tools = False)
-    assert _middleware_policy(asgi_scope(
-        headers = {"Authorization": f"Bearer {key}"}
-    )) == [True]
+    assert _middleware_policy(asgi_scope(headers = {"Authorization": f"Bearer {key}"})) == [True]
+
 
     set_keyless_api_access("off")
     async def enabled_between_layers(scope, *_args):

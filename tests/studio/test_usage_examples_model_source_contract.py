@@ -221,9 +221,11 @@ def test_keyless_examples_match_transport_tool_and_full_scope_policy():
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     builder = src[src.find("function buildSnippets") : src.find("const KEY_PLACEHOLDER")]
     variants = ("curlTools", "pythonTools", "javascriptTools", "curlAdvanced")
-    assert all("toolsKey" in next(
-        row for row in builder.splitlines() if row.strip().startswith(f"{variant}:")
-    ) for variant in variants)
+    assert all(
+        "toolsKey"
+        in next(row for row in builder.splitlines() if row.strip().startswith(f"{variant}:"))
+        for variant in variants
+    )
     assert "keylessBase && keylessTools" in src
     assert 'keylessScope === "full" && keylessTools' in src
     assert 'const KEYLESS_KEY_PLACEHOLDER = "not-needed"' in src
