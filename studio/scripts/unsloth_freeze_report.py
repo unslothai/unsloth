@@ -608,15 +608,37 @@ def classify(
     # stopped, so require that it never polls again rather than reporting the first gap.
     # STALE_AFTER already applies this reasoning to the both-counters-flat case below
     # ("a single missed sample is not it"); this arm was the one place it did not.
+    # "It never polls again" is not enough on its own, because a run that ends one sample
+    # after the interface goes quiet has no later samples in which it COULD poll again. The
+    # stall has to have been watched for long enough to mean something, which is what
+    # STALE_AFTER names, and the watch only counts while the watchdog is still answering:
+    # once both counters stop there is no longer a second signal to contradict the first.
     post = [s for s in samples if s[0] >= warmup]
     resumed_at = _last_rise(post, 1)
+    watchdog_last = _last_rise(post, 2)
     for i in range(1, len(post)):
         if post[i][1] == post[i - 1][1] and post[i][2] > post[i - 1][2]:
             if resumed_at is not None and resumed_at >= post[i][0]:
                 continue
+            stalled_at = post[i][0]
+            sustained = (watchdog_last if watchdog_last is not None else stalled_at) - stalled_at
+            if sustained >= STALE_AFTER:
+                return (
+                    f"FROZE: the interface stopped polling at about {stalled_at}s "
+                    f"while the watchdog kept going"
+                )
+            # Short of that, this candidate is unsettled, and it must not be allowed to
+            # fall through to the OK at the bottom: a stall that started just before the
+            # window closed would then be reported as a healthy run, which is the same
+            # confident wrong answer in the other direction. Say what was seen, say why it
+            # is not conclusive, and say what to change to settle it.
             return (
-                f"FROZE: the interface stopped polling at about {post[i][0]}s "
-                f"while the watchdog kept going"
+                f"SUSPECT: the interface stopped polling at about {stalled_at}s, but the "
+                f"watchdog only kept going for another {sustained}s after that, short of "
+                f"the {STALE_AFTER}s needed to tell a freeze from a delayed poll. This "
+                f"candidate is unsettled rather than healthy: re-run it with "
+                f"UNSLOTH_FREEZE_WINDOW above {WINDOW} to give the stall room to prove "
+                f"itself"
             )
 
     # Both loops stopped together while the shell stayed up: the backend went away, or its
@@ -664,13 +686,44 @@ def run_candidate(label, extra, why, cmd) -> dict:
     # stdout: this script would hang the app it is measuring, and the user would see a
     # freeze that the script itself caused.
     app_log = Path(tempfile.mkstemp(suffix = ".log", prefix = "unsloth-freeze-")[1])
-    proc = subprocess.Popen(
-        cmd,
-        env = env,
-        stdout = app_log.open("w", encoding = "utf-8", errors = "replace"),
-        stderr = subprocess.STDOUT,
-        start_new_session = True,
-    )
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            env = env,
+            stdout = app_log.open("w", encoding = "utf-8", errors = "replace"),
+            stderr = subprocess.STDOUT,
+            start_new_session = True,
+        )
+    except OSError as exc:
+        # The execute bit checked in main() says the kernel is allowed to try, not that the
+        # try succeeds: a build for another CPU architecture, a truncated AppImage, a
+        # missing `#!` interpreter and a noexec mount all get as far as execve and fail
+        # there. Popen raises OSError, and the candidate loop in main() catches only
+        # KeyboardInterrupt, so the first such candidate ended the whole diagnostic in a
+        # traceback with nothing measured and no report written. Record it as this
+        # candidate's result instead, so the rest still run and the report still lands.
+        why_failed = scrub(str(exc.strerror or exc))
+        print(f"    CANNOT RUN: {why_failed}", flush = True)
+        return {
+            "candidate": label,
+            "why": why,
+            "env": extra,
+            "cleared_env": cleared,
+            "verdict": (
+                f"CANNOT RUN: the app could not be launched ({why_failed}). It has its "
+                f"execute bit, so this is the launch itself failing: a build for another "
+                f"CPU architecture, a corrupt or partly downloaded AppImage, a missing "
+                f"interpreter, or a filesystem mounted noexec"
+            ),
+            "preflight": "(not seen)",
+            "applied_by_app": {},
+            "env_at_exec": {},
+            "interface_polls": 0,
+            "watchdog_polls": 0,
+            "exit_code": None,
+            "samples": [],
+            "backend_log_excerpt": "",
+        }
     started = time.monotonic()
     at_exec, samples, exited, ran_for = {}, [], None, 0
     interrupted = False

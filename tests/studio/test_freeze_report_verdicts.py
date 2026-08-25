@@ -509,3 +509,98 @@ def test_an_interface_that_stops_and_stays_stopped_is_still_a_freeze():
     ]
     got = verdict(samples, warmup = 0)
     assert got.startswith("FROZE"), got
+
+
+def test_a_stall_that_only_starts_as_the_window_closes_is_not_called_a_freeze():
+    """"It never polled again" is free when there is no "again" left.
+
+    The interface goes flat on the final sample only. The rule that a freeze does not
+    recover is satisfied vacuously, because the run ended before the interface had any
+    chance to come back, so this reported FROZE on exactly the one delayed interval the
+    comment above it calls insufficient. The run ending is not evidence the stall lasted.
+    """
+    samples = [
+        (0, 0, 0),
+        (15, 3, 3),
+        (30, 6, 6),
+        (45, 9, 9),
+        (60, 12, 12),
+        (75, 15, 15),
+        (90, 15, 18),  # flat for the first time, and the window ends here
+    ]
+    got = verdict(samples, warmup = 0)
+    assert not got.startswith("FROZE"), got
+    # And it must not be waved through as healthy either: something was seen, it just was
+    # not watched for long enough to name.
+    assert not got.startswith("OK"), got
+    assert got.startswith("SUSPECT"), got
+    assert "90s" in got
+    assert "UNSLOTH_FREEZE_WINDOW" in got
+
+
+def test_a_stall_watched_for_exactly_stale_after_is_a_freeze():
+    """The other side of the same boundary, so the fix above cannot be met by refusing.
+
+    The interface stops at 90s and the watchdog keeps answering to 135s, which is the three
+    poll intervals STALE_AFTER exists to name. That is a watched stall, not a tail artefact.
+    """
+    samples = [
+        (0, 0, 0),
+        (15, 3, 3),
+        (30, 6, 6),
+        (45, 9, 9),
+        (60, 12, 12),
+        (75, 15, 15),
+        (90, 15, 18),  # stops here
+        (105, 15, 21),
+        (120, 15, 24),
+        (135, 15, 27),
+    ]
+    assert samples[-1][0] - 90 == freeze.STALE_AFTER
+    got = verdict(samples, warmup = 0)
+    assert got.startswith("FROZE"), got
+    assert "90s" in got
+
+
+def test_a_launch_that_fails_at_execve_does_not_end_the_whole_run(monkeypatch, tmp_path):
+    """The execute bit says the kernel may try, not that the try works.
+
+    A build for the wrong CPU, a truncated AppImage, a missing interpreter or a noexec
+    mount all reach execve and fail there. Popen raises OSError, and the candidate loop
+    catches only KeyboardInterrupt, so the first bad candidate ended the diagnostic in a
+    traceback: nothing measured, no report written, and no line saying what went wrong.
+    """
+    app = tmp_path / "Unsloth-Desktop.AppImage"
+    app.write_text("garbage, not an executable format\n")
+    app.chmod(0o755)
+
+    def refuse(*args, **kwargs):
+        raise OSError(8, "Exec format error", str(app))
+
+    monkeypatch.setattr(freeze.subprocess, "Popen", refuse)
+    monkeypatch.setattr(freeze, "studio_backend_pids", lambda: [])
+    monkeypatch.setattr(freeze, "port_busy", lambda: False)
+    monkeypatch.setattr(freeze, "stop_leftover_backend", lambda: None)
+    monkeypatch.setattr(freeze, "wait_for_leftover_backend_to_stop", lambda *a, **k: True)
+    monkeypatch.setattr(
+        freeze,
+        "host_facts",
+        lambda: {"session_type": "wayland", "desktop": "GNOME", "gpus": [], "nvidia_driver": ""},
+    )
+    monkeypatch.setattr(freeze.sys, "argv", ["unsloth_freeze_report.py", str(app)])
+    monkeypatch.chdir(tmp_path)
+
+    assert freeze.main() == 0
+    written = list(tmp_path.glob("unsloth-freeze-report-*.json"))
+    assert len(written) == 1, "the report is the only output of the run; it must be written"
+    import json as _json
+
+    results = _json.loads(written[0].read_text(encoding = "utf-8"))["results"]
+    # Every candidate is still attempted and still accounted for.
+    assert len(results) == len(freeze.CANDIDATES)
+    for r in results:
+        assert r["verdict"].startswith("CANNOT RUN"), r["verdict"]
+        assert "Exec format error" in r["verdict"]
+        # The report's own schema is unchanged, so a reader (and the summary) can treat
+        # this result like any other.
+        assert r["samples"] == [] and r["interface_polls"] == 0
