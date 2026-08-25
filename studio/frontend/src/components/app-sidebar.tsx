@@ -2477,6 +2477,11 @@ export function AppSidebar() {
       toast.success("Chat copied as Markdown");
     } else if (empty.value) {
       toast.info("No exportable content.");
+    } else {
+      // Denied permission, an unfocused document, a failed history read: the
+      // payload was fine and the write was not, and a chord has no cursor to
+      // show that with.
+      toast.error("Could not copy this chat.");
     }
   }
 
@@ -2503,8 +2508,9 @@ export function AppSidebar() {
    * Chats stored before results carried a session recorded nothing, so one that
    * ran loose and has since joined a project would be answered with the project
    * workspace. Its thread sandbox is the only other candidate, and files there
-   * are this chat's. Only in this direction: a chat moved OUT wrote under
-   * project-<id>, and nothing retains which one.
+   * are this chat's. Probed whichever project the chat sits in now, including
+   * none: a chat can join a project, record that session, and move back out,
+   * and current membership says nothing about where its older files went.
    *
    * A union rather than a fallback. One recorded id is not evidence that the
    * others are recorded too: a chat can have run a tool before recording
@@ -2515,12 +2521,8 @@ export function AppSidebar() {
    * once: the copy path skipped the probe and reported success on a folder the
    * chat had never written to.
    */
-  async function sandboxSessionIdsHolding(
-    item: SidebarItem,
-    ids: string[],
-  ): Promise<string[]> {
+  async function sandboxSessionIdsHolding(ids: string[]): Promise<string[]> {
     const recorded = await recordedSandboxSessionIds(ids);
-    if (!item.projectId) return recorded;
     const held: string[] = [];
     for (const threadId of ids) {
       // Already named, so there is nothing a probe could add.
@@ -2545,7 +2547,7 @@ export function AppSidebar() {
     const copied = await copyToClipboardFrom(async () => {
       let sessionId: string | undefined;
       try {
-        const distinct = await sandboxSessionIdsHolding(item, ids);
+        const distinct = await sandboxSessionIdsHolding(ids);
         if (distinct.length > 1) {
           refusal.value = {
             title: "This chat wrote to more than one folder.",
@@ -2581,7 +2583,10 @@ export function AppSidebar() {
       toast.error(refusal.value.title, {
         description: refusal.value.description,
       });
+      return;
     }
+    // No refusal means the id was found and the clipboard write itself failed.
+    toast.error("Could not copy the session id.");
   }
 
   /** Open a chat row. Shared by the row and the navigation chords. */
@@ -3145,10 +3150,7 @@ export function AppSidebar() {
                             // membership, the answer the recorded id overrides.
                             const ids =
                               threadIds.length > 0 ? threadIds : [item.id];
-                            const distinct = await sandboxSessionIdsHolding(
-                              item,
-                              ids,
-                            );
+                            const distinct = await sandboxSessionIdsHolding(ids);
                             if (distinct.length > 1) {
                               toast.error("This chat wrote to more than one folder.", {
                                 description:

@@ -148,7 +148,11 @@ import {
 } from "@/features/chat/utils/continuation";
 import { holdAutoContinueRun } from "@/features/chat/utils/auto-continue-run-keeper";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
-import { COMPOSER_INPUT_SELECTOR, useShortcut } from "@/features/settings";
+import {
+  COMPOSER_INPUT_SELECTOR,
+  isSurfaceInForeground,
+  useShortcut,
+} from "@/features/settings";
 import { create } from "zustand";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
 import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
@@ -4274,6 +4278,9 @@ const Composer: FC<{
   useShortcut(
     "startDictation",
     () => {
+      // A dialog over Chat leaves this registered, and a microphone opened
+      // behind one is neither visible nor stoppable from where the user is.
+      if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
       if (isDictating) aui.composer().stopDictation();
       else startDictation();
     },

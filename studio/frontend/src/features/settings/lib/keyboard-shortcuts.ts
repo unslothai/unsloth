@@ -642,6 +642,11 @@ export function isAcceptableBinding(
   allowBareKey = false,
 ): boolean {
   if (binding.mod || binding.ctrl || binding.alt) return true;
+  // Tab moves focus, and a chord consumes the key it answers to. Bound bare,
+  // even on a prompt-gated action, it makes that prompt's own buttons
+  // unreachable by keyboard. Held with a modifier it is a chord like any
+  // other, which is where the recently-viewed walk sits.
+  if (binding.code === "Tab") return false;
   if (allowBareKey) return true;
   if (/^F\d{1,2}$/.test(binding.code)) return true;
   // Escape is self-contained too, but bare it belongs to declining a tool call

@@ -173,15 +173,17 @@ test("a probe that could not be answered is reported, not read as an empty folde
   });
 });
 
-test("the legacy probe runs only for a chat now inside a project", () => {
-  // A chat moved OUT of a project wrote under project-<id>, and nothing retains
-  // which one, so there is no candidate to probe in that direction.
-  const start = SIDEBAR.indexOf(
-    "async function sandboxSessionIdsHolding",
-  );
+test("the legacy probe runs whichever project the chat sits in now", () => {
+  // This used to skip a chat outside a project, on the grounds that one moved
+  // OUT wrote under project-<id> and nothing retains which one. True of the
+  // project folder, but the probe never looks for that: it asks whether the
+  // THREAD folder holds files, which is knowable either way. A chat can join a
+  // project, record that session, and move back out, and skipping it there
+  // reported one folder while its older files stayed hidden.
+  const start = SIDEBAR.indexOf("async function sandboxSessionIdsHolding");
   assert.notEqual(start, -1, "the legacy probe moved");
   const block = SIDEBAR.slice(start, SIDEBAR.indexOf("\n  }", start));
-  assert.ok(block.includes("if (!item.projectId) return recorded;"));
+  assert.ok(!block.includes("if (!item.projectId) return recorded;"));
   assert.ok(block.includes("sandboxHasFiles(threadId)"));
 });
 

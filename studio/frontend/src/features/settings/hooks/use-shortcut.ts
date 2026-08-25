@@ -32,6 +32,32 @@ export function isTextEntryFocused(exceptFor?: string): boolean {
   return !(exceptFor && el?.matches(exceptFor) === true);
 }
 
+/**
+ * A keydown the IME is still composing with. Escape cancels a candidate and
+ * Enter commits one, and neither is a chord: without this, declining a tool
+ * call takes the Escape a CJK user pressed at the candidate window. Both
+ * signals, the way the composer and the picker already read them: isComposing
+ * on WebKit, the legacy 229 on Chromium.
+ */
+export function isImeComposing(event: KeyboardEvent): boolean {
+  return event.isComposing || event.keyCode === 229;
+}
+
+/**
+ * Whether `selector`'s element is the foreground, rather than sitting under a
+ * modal. A dialog leaves the route mounted, so a chord gated only on the route
+ * still fires behind it; anything that starts hardware has to ask at press
+ * time, since `enabled` is read at render and a dialog opening need not
+ * re-render the component that registered the chord.
+ */
+export function isSurfaceInForeground(selector: string): boolean {
+  if (typeof document === "undefined") return false;
+  const el = document.querySelector(selector);
+  // Radix marks the rest of the page aria-hidden (older React: inert) for the
+  // life of a modal, which is the general signal, not a per-dialog store.
+  return Boolean(el) && !el?.closest('[aria-hidden="true"], [inert]');
+}
+
 export interface UseShortcutOptions {
   /** Skip registration entirely (route gating, dialogs). Defaults to true. */
   enabled?: boolean;
@@ -112,6 +138,7 @@ export function useShortcut(
     if (bindings.length === 0 || !enabled) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return;
+      if (isImeComposing(event)) return;
       const hit = bindings.find((binding) => matchesBinding(binding, event));
       if (!hit) return;
       if (skipInTextFields && isTextEntryFocused(textFieldException)) return;
