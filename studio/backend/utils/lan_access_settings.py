@@ -10,6 +10,8 @@ answer across restarts.
 
 from __future__ import annotations
 
+import ipaddress
+import socket
 from typing import Any, Optional
 
 from loggers import get_logger
@@ -18,6 +20,153 @@ logger = get_logger(__name__)
 
 LAN_ACCESS_AUTO_START_KEY = "lan_access_auto_start"
 DEFAULT_LAN_ACCESS_AUTO_START = False
+
+_PRIVATE_LAN_NETWORKS = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("fc00::/7"),
+    ipaddress.ip_network("fe80::/10"),
+)
+
+
+def _normalized_ip(address: str):
+    """Parse one literal address, normalizing IPv4-mapped IPv6."""
+    if not isinstance(address, str):
+        return None
+    value = address.strip().strip("[]")
+    if "%" in value:
+        value = value.split("%", 1)[0]
+    try:
+        parsed = ipaddress.ip_address(value)
+    except ValueError:
+        return None
+    if isinstance(parsed, ipaddress.IPv6Address) and parsed.ipv4_mapped is not None:
+        return parsed.ipv4_mapped
+    return parsed
+
+
+def _resolve_host_addresses(host: str, port: int) -> tuple:
+    """Resolve a literal or hostname to normalized transport addresses."""
+    literal = _normalized_ip(host)
+    if literal is not None:
+        return (literal,)
+    if not isinstance(host, str) or not isinstance(port, int) or port <= 0:
+        return ()
+    try:
+        infos = socket.getaddrinfo(host, port, type = socket.SOCK_STREAM)
+    except OSError:
+        return ()
+    addresses = []
+    for _family, _kind, _protocol, _name, sockaddr in infos:
+        if not sockaddr:
+            continue
+        parsed = _normalized_ip(sockaddr[0])
+        if parsed is not None and parsed not in addresses:
+            addresses.append(parsed)
+    return tuple(addresses)
+
+
+def _private_non_loopback(address) -> bool:
+    return not address.is_loopback and any(address in network for network in _PRIVATE_LAN_NETWORKS)
+
+
+def _all_addresses_are(host: str, port: int, predicate) -> bool:
+    addresses = _resolve_host_addresses(host, port)
+    return bool(addresses) and all(predicate(address) for address in addresses)
+
+
+def request_is_loopback(request) -> bool:
+    """Whether both authoritative transport endpoints are loopback."""
+    scope = getattr(request, "scope", {})
+    server = scope.get("server")
+    client = scope.get("client")
+    if not isinstance(server, (tuple, list)) or len(server) < 2:
+        return False
+    if not isinstance(client, (tuple, list)) or len(client) < 1:
+        return False
+    server_host, server_port = server[0], server[1]
+    client_host = client[0]
+    if not isinstance(server_host, str) or not isinstance(server_port, int):
+        return False
+    if not isinstance(client_host, str):
+        return False
+    return _all_addresses_are(server_host, server_port, lambda address: address.is_loopback) and (
+        _all_addresses_are(client_host, server_port, lambda address: address.is_loopback)
+    )
+
+
+def _addresses_match(host: str, port: int, candidates) -> bool:
+    request_addresses = set(_resolve_host_addresses(host, port))
+    if not request_addresses:
+        return False
+    configured = set()
+    for candidate in candidates or ():
+        if isinstance(candidate, str):
+            configured.update(_resolve_host_addresses(candidate, port))
+    return bool(request_addresses & configured)
+
+
+def request_on_lan_access(request) -> bool:
+    """Classify a request from ASGI socket state, never client-controlled headers.
+
+    Both the accepting endpoint and peer must be private and non-loopback. The
+    accepting endpoint must also match either the exact live settings listener or
+    the launch-managed bind and port published at startup.
+    """
+    from lan_access import lan_listener_status
+
+    scope = getattr(request, "scope", {})
+    server = scope.get("server")
+    client = scope.get("client")
+    if not isinstance(server, (tuple, list)) or len(server) < 2:
+        return False
+    if not isinstance(client, (tuple, list)) or len(client) < 1:
+        return False
+    server_host, server_port = server[0], server[1]
+    client_host = client[0]
+    if not isinstance(server_host, str) or not isinstance(server_port, int):
+        return False
+    if not isinstance(client_host, str):
+        return False
+    if not _all_addresses_are(server_host, server_port, _private_non_loopback):
+        return False
+    if not _all_addresses_are(client_host, server_port, _private_non_loopback):
+        return False
+
+    try:
+        listener = lan_listener_status()
+    except Exception:
+        return False
+    if not isinstance(listener, dict):
+        return False
+    if (
+        listener.get("running") is True
+        and listener.get("port") == server_port
+        and _addresses_match(server_host, server_port, listener.get("addresses"))
+    ):
+        return True
+
+    try:
+        app_state = request.app.state
+    except Exception:
+        return False
+    if bool(getattr(app_state, "lan_access_is_colab", False)):
+        return False
+    if bool(getattr(app_state, "lan_access_secure_launch", False)):
+        return False
+    if not bool(getattr(app_state, "lan_access_launch_managed", False)):
+        return False
+    if getattr(app_state, "lan_access_port", None) != server_port:
+        return False
+    if bool(getattr(app_state, "lan_access_wildcard_bind", False)):
+        return True
+    return _addresses_match(
+        server_host,
+        server_port,
+        getattr(app_state, "lan_access_launch_addresses", ()),
+    )
 
 
 def _coerce_bool(value: Any) -> Optional[bool]:
@@ -56,12 +205,19 @@ def configure_lan_access(
     app_state, *, port: int, bind_host: str, secure: bool, is_colab: bool, frontend_served: bool
 ) -> None:
     """Publish immutable launch policy used by every settings request."""
-    from utils.host_policy import is_external_host
-
     app_state.lan_access_port = port
     app_state.lan_access_wildcard_bind = bind_host in ("0.0.0.0", "::")
-    app_state.lan_access_launch_managed = app_state.lan_access_wildcard_bind or is_external_host(
-        bind_host
+    app_state.lan_access_bind_host = bind_host
+    app_state.lan_access_launch_addresses = tuple(
+        str(address) for address in _resolve_host_addresses(bind_host, port)
+    )
+    resolved_loopback = bool(app_state.lan_access_launch_addresses) and all(
+        _normalized_ip(address).is_loopback for address in app_state.lan_access_launch_addresses
+    )
+    # An unresolved hostname is launch-managed but never trusted for keyless LAN
+    # admission: request_on_lan_access requires its resolved address set.
+    app_state.lan_access_launch_managed = (
+        app_state.lan_access_wildcard_bind or not resolved_loopback
     )
     # --secure forces the loopback bind precisely so the raw port is never exposed
     app_state.lan_access_secure_launch = bool(secure)
@@ -96,13 +252,36 @@ def _listener_urls(addresses, port: Optional[int]) -> list[str]:
     return [f"http://{address}:{port}" for address in addresses]
 
 
-def _public_urls(urls: list[str]) -> list[str]:
+def _public_urls(urls: list[str], resolved_addresses: tuple[str, ...] = ()) -> list[str]:
     """The subset reachable from the internet rather than only this network."""
     from urllib.parse import urlparse
 
-    from lan_access import is_public_address
+    resolved = []
+    for address in resolved_addresses:
+        parsed = _normalized_ip(address)
+        if parsed is not None:
+            resolved.append(parsed)
+    if any(address.is_global for address in resolved):
+        return list(urls)
+    public = []
+    for url in urls:
+        parsed = urlparse(url)
+        port = parsed.port or 80
+        addresses = _resolve_host_addresses(parsed.hostname or "", port)
+        if addresses and any(address.is_global for address in addresses):
+            public.append(url)
+    return public
 
-    return [url for url in urls if is_public_address(urlparse(url).hostname or "")]
+
+def _has_keyless_lan_url(urls: list[str]) -> bool:
+    from urllib.parse import urlparse
+    for url in urls:
+        parsed = urlparse(url)
+        if parsed.hostname and _all_addresses_are(
+            parsed.hostname, parsed.port or 80, _private_non_loopback
+        ):
+            return True
+    return False
 
 
 def lan_access_status(app) -> dict:
@@ -142,10 +321,18 @@ def lan_access_status(app) -> dict:
         urls, managed_by = [], None
 
     controllable = block_reason is None
+    try:
+        from utils.keyless_api_access import get_keyless_api_access_settings
+        keyless_scope, keyless_tools = get_keyless_api_access_settings()
+    except Exception:
+        keyless_scope, keyless_tools = "off", False
     return {
         "state": state,
         "urls": urls,
-        "public_urls": _public_urls(urls),
+        "public_urls": _public_urls(
+            urls,
+            getattr(app_state, "lan_access_launch_addresses", ()) if launch_managed else (),
+        ),
         "error": listener["error"],
         "auto_start": get_lan_access_auto_start(),
         "managed_by": managed_by,
@@ -153,6 +340,9 @@ def lan_access_status(app) -> dict:
         "can_stop": controllable and running,
         "block_reason": block_reason,
         "serves_web_ui": frontend_served,
+        "keyless_lan_eligible": _has_keyless_lan_url(urls),
+        "keyless_scope": keyless_scope,
+        "keyless_tools": keyless_tools,
     }
 
 

@@ -412,6 +412,15 @@ export const ko = {
         engineStudioDescription: "로드된 오디오 모델을 사용합니다(예: Orpheus)",
         engineSystem: "시스템 음성",
         engineStudio: "TTS 모델 로드",
+        engineCustom: "사용자 지정 엔드포인트",
+        engineCustomDescription:
+          "연결에 저장된 OpenAI 호환 TTS 서버 (예: Kokoro)",
+        connectionLabel: "연결",
+        connectionDescription:
+          "OpenAI 호환 서버는 연결 탭에서 추가할 수 있습니다",
+        connectionPlaceholder: "연결 선택",
+        customModelLabel: "모델",
+        customVoiceDescription: "엔드포인트가 기대하는 음성 이름 (기본값: alloy)",
         modelLabel: "TTS 모델",
         modelDescription:
           "모델 선택기에서 오디오 모델을 로드하세요(예: Orpheus TTS)",
@@ -560,6 +569,29 @@ export const ko = {
         closeToTraySaveError: "시스템 트레이로 닫기 설정을 업데이트하지 못했습니다.",
         loadError: "로그인 시 실행 설정을 불러오지 못했습니다.",
         saveError: "로그인 시 실행 설정을 업데이트하지 못했습니다.",
+      },
+      downloads: {
+        sectionTitle: "다운로드",
+        transport: "다운로드 전송 방식",
+        transportDescription:
+          "Hugging Face에서 모델과 데이터셋 파일을 받아오는 방식입니다. HTTPS는 멈춘 지점부터 이어받고, Xet은 첫 다운로드에서 더 빠른 편이지만 취소하면 해당 파일을 처음부터 다시 받습니다.",
+        transportHint:
+          "HTTPS는 일반 TLS입니다. 모든 네트워크와 프록시, VPN이 허용하며 취소되거나 끊긴 전송도 디스크에 남은 바이트부터 이어받고 메모리 사용량이 일정합니다. Xet은 중복 제거된 청크를 받아오므로 이미 가진 저장소와 데이터를 공유하면 훨씬 빠르게 도착하지만 hf_xet이 필요하고 RAM을 더 쓰며, 취소하면 진행 중인 파일이 버려집니다. Auto는 이 머신에 맞춰 판단해 RAM과 Xet이 여기서 멈춘 적이 있는지를 따지고 필요하면 HTTPS로 물러납니다.",
+        https: "HTTPS",
+        xet: "Xet",
+        auto: "Auto",
+        httpsHint:
+          "표준 TLS. 취소 후에도 이어받고 어떤 네트워크에서도 동작하며 메모리 사용이 안정적입니다.",
+        transportDescriptionNoResume:
+          "모델과 데이터셋 파일을 Hugging Face에서 내려받는 방식입니다. 이 설치에서는 두 전송 방식 모두 이어받기를 할 수 없어 취소한 다운로드는 처음부터 다시 시작합니다. Xet은 첫 다운로드에서 더 빠른 경우가 많습니다.",
+        httpsHintNoResume:
+          "표준 TLS. 모든 네트워크에서 동작하며 메모리 사용량이 일정합니다. 이 설치에서는 취소한 다운로드를 이어받을 수 없습니다.",
+        xetHint:
+          "중복 제거 청크 전송. 새 다운로드에서 더 빠른 편이지만 취소하면 파일을 다시 받고 메모리를 더 씁니다.",
+        autoHint:
+          "머신에 맞춰 고르고, 여기서 Xet이 멈추거나 실패하면 HTTPS로 바꿉니다.",
+        autoCurrently: "이 머신에서 Auto는 {transport}을 사용합니다.",
+        xetMissing: "hf_xet이 설치되지 않아 Xet을 사용할 수 없습니다.",
       },
       uploads: {
         sectionTitle: "업로드",

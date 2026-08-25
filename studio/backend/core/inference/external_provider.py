@@ -14,7 +14,7 @@ import mimetypes
 import re
 import time
 from typing import Any, AsyncGenerator, Literal, NamedTuple, Optional, Union
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit, urlunsplit
 
 import httpx
 import structlog
@@ -52,6 +52,13 @@ _USAGE_STREAM_OPTION_PROVIDERS = frozenset({"vllm", "openrouter", "kimi"})
 # stdlib root logger defaults to WARNING with no handlers). It accepts the
 # existing printf-style positional args.
 logger = structlog.get_logger(__name__)
+
+
+def _append_provider_path(base_url: str, endpoint: str) -> str:
+    """Append an API path without moving it behind a base URL's query string."""
+    parts = urlsplit(base_url)
+    path = f"{parts.path.rstrip('/')}/{endpoint.lstrip('/')}"
+    return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
 
 
 def _is_openai_family_cloud(base_url: Optional[str]) -> bool:
@@ -6277,6 +6284,34 @@ class ExternalProviderClient:
         )
         response.raise_for_status()
         return response.json()
+
+    async def create_speech(
+        self,
+        text: str,
+        model: str,
+        voice: Optional[str] = None,
+        response_format: str = "wav",
+        speed: Optional[float] = None,
+    ) -> tuple[bytes, str]:
+        """POST /audio/speech (OpenAI CreateSpeech). Returns (audio_bytes, media_type)."""
+        body: dict[str, Any] = {
+            "model": model,
+            "input": text,
+            "response_format": response_format,
+        }
+        if voice:
+            body["voice"] = voice
+        if speed is not None:
+            body["speed"] = speed
+        response = await _http_client.post(
+            _append_provider_path(self.base_url, "/audio/speech"),
+            headers = self._auth_headers(),
+            json = body,
+            timeout = self._timeout,
+        )
+        response.raise_for_status()
+        media_type = (response.headers.get("content-type") or "").split(";")[0].strip()
+        return response.content, media_type or f"audio/{response_format}"
 
     async def create_transcription(
         self,

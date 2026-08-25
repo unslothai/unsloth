@@ -423,6 +423,16 @@ export const de = {
           "Verwendet das geladene Audiomodell (z. B. Orpheus)",
         engineSystem: "Systemstimmen",
         engineStudio: "TTS-Modell laden",
+        engineCustom: "Eigener Endpunkt",
+        engineCustomDescription:
+          "Ein OpenAI-kompatibler TTS-Server aus deinen Verbindungen (z. B. Kokoro)",
+        connectionLabel: "Verbindung",
+        connectionDescription:
+          "Einen OpenAI-kompatiblen Server im Tab „Verbindungen“ hinzufügen",
+        connectionPlaceholder: "Verbindung auswählen",
+        customModelLabel: "Modell",
+        customVoiceDescription:
+          "Vom Endpunkt erwarteter Stimmenname; Standard ist alloy",
         modelLabel: "TTS-Modell",
         modelDescription:
           "Laden Sie ein Audiomodell über die Modellauswahl (z. B. Orpheus TTS)",
@@ -583,6 +593,29 @@ export const de = {
         loadError: "Die Autostart-Einstellung konnte nicht geladen werden.",
         saveError:
           "Die Autostart-Einstellung konnte nicht aktualisiert werden.",
+      },
+      downloads: {
+        sectionTitle: "Downloads",
+        transport: "Download-Transport",
+        transportDescription:
+          "Wie Modell- und Datensatzdateien von Hugging Face geladen werden. HTTPS setzt an der Abbruchstelle fort; Xet ist beim ersten Download oft schneller, beginnt die Datei nach einem Abbruch aber neu.",
+        transportHint:
+          "HTTPS ist einfaches TLS: jedes Netzwerk, jeder Proxy und jedes VPN erlaubt es, ein abgebrochener Transfer setzt bei den bereits gespeicherten Bytes fort und der Speicherbedarf bleibt konstant. Xet lädt deduplizierte Blöcke, wodurch ein Repo mit bereits vorhandenen Daten viel schneller ankommt, benötigt aber hf_xet, mehr RAM, und ein Abbruch verwirft die laufende Datei. Auto entscheidet pro Rechner: es bewertet RAM und ob Xet hier ins Stocken gerät, und fällt auf HTTPS zurück.",
+        https: "HTTPS",
+        xet: "Xet",
+        auto: "Auto",
+        httpsHint:
+          "Standard-TLS. Setzt nach einem Abbruch fort, funktioniert in jedem Netzwerk, gleichmäßiger Speicherbedarf.",
+        transportDescriptionNoResume:
+          "Wie Modell- und Datensatzdateien von Hugging Face geladen werden. Auf dieser Installation kann kein Transport fortsetzen, ein abgebrochener Download beginnt also neu; Xet ist beim ersten Download oft schneller.",
+        httpsHintNoResume:
+          "Standard-TLS. Funktioniert in jedem Netzwerk, gleichmäßiger Speicherbedarf. Diese Installation kann einen abgebrochenen Download nicht fortsetzen.",
+        xetHint:
+          "Deduplizierte Blockübertragung. Beim ersten Download oft schneller, beginnt die Datei nach einem Abbruch neu, braucht mehr Speicher.",
+        autoHint:
+          "Wählt pro Rechner und wechselt zu HTTPS, wenn Xet hier stockt oder fehlschlägt.",
+        autoCurrently: "Auto verwendet auf diesem Rechner {transport}.",
+        xetMissing: "Xet ist nicht verfügbar, da hf_xet nicht installiert ist.",
       },
       uploads: {
         sectionTitle: "Uploads",

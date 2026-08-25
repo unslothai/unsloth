@@ -405,6 +405,14 @@ export const zhCN = {
         engineStudioDescription: "使用已加载的音频模型（例如 Orpheus）",
         engineSystem: "系统语音",
         engineStudio: "加载 TTS 模型",
+        engineCustom: "自定义端点",
+        engineCustomDescription:
+          "来自连接的 OpenAI 兼容 TTS 服务器（例如 Kokoro）",
+        connectionLabel: "连接",
+        connectionDescription: "在“连接”标签页中添加 OpenAI 兼容服务器",
+        connectionPlaceholder: "选择连接",
+        customModelLabel: "模型",
+        customVoiceDescription: "端点所需的语音名称（默认为 alloy）",
         modelLabel: "TTS 模型",
         modelDescription: "从模型选择器加载音频模型（例如 Orpheus TTS）",
         openAudioAction: "打开音频",
@@ -546,6 +554,27 @@ export const zhCN = {
         closeToTraySaveError: "无法更新关闭到系统托盘设置。",
         loadError: "无法加载登录时启动设置。",
         saveError: "无法更新登录时启动设置。",
+      },
+      downloads: {
+        sectionTitle: "下载",
+        transport: "下载传输方式",
+        transportDescription:
+          "模型和数据集文件从 Hugging Face 下载的方式。HTTPS 会从中断处续传；Xet 首次下载通常更快，但取消后该文件会重新开始。",
+        transportHint:
+          "HTTPS 就是普通 TLS：任何网络、代理和 VPN 都允许，取消或断开的传输会从磁盘上已有的字节续传，内存占用也很平稳。Xet 获取去重后的数据块，因此与已有仓库共享数据时可以快得多，但它需要 hf_xet、占用更多内存，取消时会丢弃正在传输的文件。Auto 会针对本机判断：它会权衡内存以及 Xet 在这里是否曾经卡住，并在必要时退回 HTTPS。",
+        https: "HTTPS",
+        xet: "Xet",
+        auto: "Auto",
+        httpsHint: "标准 TLS。取消后可续传，适用于任何网络，内存占用稳定。",
+        transportDescriptionNoResume:
+          "模型和数据集文件从 Hugging Face 下载的方式。此安装的两种传输方式都无法续传，取消后的下载会重新开始；Xet 在首次下载时通常更快。",
+        httpsHintNoResume:
+          "标准 TLS。可在任何网络下使用，内存占用平稳。此安装无法续传已取消的下载。",
+        xetHint:
+          "去重数据块传输。首次下载通常更快，取消后文件重新开始，需要更多内存。",
+        autoHint: "按本机情况选择，若 Xet 在这里卡住或失败则切换到 HTTPS。",
+        autoCurrently: "本机上 Auto 正在使用 {transport}。",
+        xetMissing: "未安装 hf_xet，因此无法使用 Xet。",
       },
       uploads: {
         sectionTitle: "上传",

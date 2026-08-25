@@ -92,6 +92,7 @@ on:
       # change would burn a slot from the 5-job account-wide macOS cap to run
       # nothing related. studio-backend-ci.yml covers both on ubuntu-latest and
       # already triggers on them.
+      - 'studio/backend/tests/test_mlx_inference_backend.py'
       - 'tests/studio/test_mlx_training_worker_behaviors.py'
       - 'tests/studio/run_real_mlx_smoke.py'
       - 'tests/studio/mac_capability_verdict_smoke.py'
@@ -111,6 +112,7 @@ on:
       - 'studio/backend/core/inference/mlx_inference.py'
       - 'studio/backend/main.py'
       - 'studio/backend/utils/mlx_repair.py'
+      - 'studio/backend/tests/test_mlx_inference_backend.py'
       - 'tests/studio/test_mlx_training_worker_behaviors.py'
       - 'tests/studio/run_real_mlx_smoke.py'
       - 'tests/studio/mac_capability_verdict_smoke.py'
@@ -321,6 +323,16 @@ jobs:
         run: |
           python -m pytest -v --tb=short \
             tests/studio/test_mlx_training_worker_behaviors.py
+
+      # The inference backend's numerical tests importorskip mlx, so they skip on
+      # studio-backend-ci.yml's ubuntu runner and only ever execute here. Run from
+      # studio/backend: its conftest puts that directory on sys.path.
+      - name: MLX inference backend tests
+        working-directory: studio/backend
+        env:
+          UNSLOTH_COMPILE_DISABLE: '1'
+        run: |
+          python -m pytest -v --tb=short tests/test_mlx_inference_backend.py
 
       # Real MLX training + inference smoke test. Trains
       # unsloth/gemma-3-270m-it for 7 deterministic LoRA steps
