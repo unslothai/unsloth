@@ -197,7 +197,6 @@ def access_exposure(app_state: Any) -> Optional[str]:
         return "private_lan"
     if bool(getattr(app_state, "lan_access_launch_managed", False)):
         from utils.lan_access_settings import _normalized_ip, _private_non_loopback
-
         addresses = tuple(
             _normalized_ip(value)
             for value in (getattr(app_state, "lan_access_launch_addresses", ()) or ())

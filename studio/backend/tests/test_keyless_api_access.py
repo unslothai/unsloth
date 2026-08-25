@@ -35,8 +35,9 @@ from utils.keyless_api_access import (
     set_keyless_api_access,
 )
 
+
 # fmt: off -- keep this security matrix compact enough for the PR test-line budget
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse = True)
 def isolated_auth_db(tmp_path, monkeypatch):
     monkeypatch.setattr(storage, "DB_PATH", tmp_path / "auth.db")
     monkeypatch.setattr(storage, "_BOOTSTRAP_PW_PATH", tmp_path / ".bootstrap_password")
@@ -51,20 +52,20 @@ def isolated_auth_db(tmp_path, monkeypatch):
 
 def seed_user():
     storage.create_initial_user(
-        username=storage.DEFAULT_ADMIN_USERNAME,
-        password="human-password-123",
-        jwt_secret=secrets.token_urlsafe(64),
+        username = storage.DEFAULT_ADMIN_USERNAME,
+        password = "human-password-123",
+        jwt_secret = secrets.token_urlsafe(64),
     )
 
 
 def app_state(**overrides):
     state = SimpleNamespace(
-        bind_host="127.0.0.1",
-        secure=False,
-        remote_access_is_colab=False,
-        lan_access_is_colab=False,
-        lan_access_secure_launch=False,
-        cloudflare_url=None,
+        bind_host = "127.0.0.1",
+        secure = False,
+        remote_access_is_colab = False,
+        lan_access_is_colab = False,
+        lan_access_secure_launch = False,
+        cloudflare_url = None,
     )
     for name, value in overrides.items():
         setattr(state, name, value)
@@ -73,13 +74,13 @@ def app_state(**overrides):
 
 def asgi_scope(
     *,
-    path="/v1/chat/completions",
-    method=None,
-    root_path="",
-    headers=None,
-    state=None,
-    server=("127.0.0.1", 8000),
-    client=("127.0.0.1", 50000),
+    path = "/v1/chat/completions",
+    method = None,
+    root_path = "",
+    headers = None,
+    state = None,
+    server = ("127.0.0.1", 8000),
+    client = ("127.0.0.1", 50000),
 ):
     return {
         "type": "http",
@@ -93,7 +94,7 @@ def asgi_scope(
         "headers": [
             (name.lower().encode(), value.encode()) for name, value in (headers or {}).items()
         ],
-        "app": SimpleNamespace(state=state or app_state()),
+        "app": SimpleNamespace(state = state or app_state()),
     }
 
 
@@ -102,7 +103,7 @@ def request_for(**kwargs):
 
 
 def bearer_request(token, **kwargs):
-    return request_for(headers={"Authorization": f"Bearer {token}"}, **kwargs)
+    return request_for(headers = {"Authorization": f"Bearer {token}"}, **kwargs)
 
 
 def resolve(request):
@@ -119,9 +120,14 @@ def test_exact_route_matrix_matches_registered_topology():
     allowed_posts = "/v1/chat/completions /v1/chat/count_tokens /v1/completions /v1/embeddings /v1/messages /v1/messages/count_tokens /v1/responses".split()
     denied_posts = "/v1/load /v1/unload /v1/validate /v1/generate/stream /v1/audio/speech /v1/images/generations /v1/external/openai/containers/create /v1x/chat".split()
     allowed = {("POST", path) for path in allowed_posts} | {
-        ("GET", "/v1/models"), ("GET", "/v1/models/unsloth/model")}
+        ("GET", "/v1/models"),
+        ("GET", "/v1/models/unsloth/model"),
+    }
     denied = {("POST", path) for path in denied_posts} | {
-        ("POST", "/v1/models"), ("GET", "/v1/chat/completions"), ("GET", "/v1/sandbox/abc")}
+        ("POST", "/v1/models"),
+        ("GET", "/v1/chat/completions"),
+        ("GET", "/v1/sandbox/abc"),
+    }
     assert all(scope_covers("inference", method, path) for method, path in allowed)
     assert not any(scope_covers("inference", method, path) for method, path in denied)
     assert scope_covers("inference", "GET", "/studio/v1/models/", "/studio/")
@@ -129,26 +135,34 @@ def test_exact_route_matrix_matches_registered_topology():
     assert not scope_covers("off", "POST", "/v1/chat/completions")
     assert scope_covers("full", "POST", "/api/train/start")
 
-    registered = {(method, route.path) for route in router.routes
-                  for method in getattr(route, "methods", set())}
+    registered = {
+        (method, route.path)
+        for route in router.routes
+        for method in getattr(route, "methods", set())
+    }
     intended = {("POST", path.removeprefix("/v1")) for path in allowed_posts} | {
-        ("GET", "/models"), ("GET", "/models/{model_id:path}")}
+        ("GET", "/models"),
+        ("GET", "/models/{model_id:path}"),
+    }
     assert intended <= registered
 
 
 def test_settings_are_immediate_and_fail_closed(monkeypatch):
     import storage.studio_db as studio_db
 
-    set_keyless_api_access("full", tools=True)
+    set_keyless_api_access("full", tools = True)
     assert keyless_request_allowed(request_for()) is True
     assert get_keyless_api_tools_enabled() is True
     set_keyless_api_access("off")
     assert keyless_request_allowed(request_for()) is False
     assert get_keyless_api_tools_enabled() is False
 
-    set_keyless_api_access("full", tools=True)
-    monkeypatch.setattr(studio_db, "get_app_setting",
-                        lambda *_a, **_k: (_ for _ in ()).throw(OSError("db unavailable")))
+    set_keyless_api_access("full", tools = True)
+    monkeypatch.setattr(
+        studio_db,
+        "get_app_setting",
+        lambda *_a, **_k: (_ for _ in ()).throw(OSError("db unavailable")),
+    )
     _reset_scope_cache()
     assert (get_keyless_api_access_scope(), get_keyless_api_tools_enabled()) == ("off", False)
 
@@ -156,7 +170,7 @@ def test_settings_are_immediate_and_fail_closed(monkeypatch):
 def test_stale_refresh_cannot_reopen_a_closed_scope(monkeypatch):
     import utils.keyless_api_access as keyless
 
-    set_keyless_api_access("full", tools=True)
+    set_keyless_api_access("full", tools = True)
     _reset_scope_cache()
     read_done, write_done = threading.Event(), threading.Event()
     real_read = keyless._read_settings
@@ -165,18 +179,18 @@ def test_stale_refresh_cannot_reopen_a_closed_scope(monkeypatch):
     def delayed_read():
         value = real_read()
         read_done.set()
-        assert write_done.wait(timeout=10)
+        assert write_done.wait(timeout = 10)
         return value
 
     monkeypatch.setattr(keyless, "_read_settings", delayed_read)
-    reader = threading.Thread(target=lambda: observed.append(keyless._settings()))
+    reader = threading.Thread(target = lambda: observed.append(keyless._settings()))
     reader.start()
     try:
-        assert read_done.wait(timeout=10)
-        set_keyless_api_access("off", tools=False)
+        assert read_done.wait(timeout = 10)
+        set_keyless_api_access("off", tools = False)
     finally:
         write_done.set()
-        reader.join(timeout=10)
+        reader.join(timeout = 10)
     assert observed == [("off", False)]
 
 
@@ -188,8 +202,9 @@ def test_full_scope_is_loopback_only():
         (("::ffff:127.0.0.1", 8000), ("::ffff:127.0.0.1", 50000), "::1"),
         (("localhost", 8000), ("localhost", 50000), "localhost"),
     ):
-        assert keyless_request_allowed(request_for(
-            server=server, client=client, state=app_state(bind_host=bind_host)))
+        assert keyless_request_allowed(
+            request_for(server = server, client = client, state = app_state(bind_host = bind_host))
+        )
 
 
 def test_public_browser_and_private_lan_boundaries(monkeypatch):
@@ -197,25 +212,40 @@ def test_public_browser_and_private_lan_boundaries(monkeypatch):
     from utils import host_policy
 
     set_keyless_api_access("inference")
-    for overrides in ({"remote_access_is_colab": True}, {"secure": True},
-                      {"cloudflare_url": "https://x.trycloudflare.com"}):
-        assert not keyless_request_allowed(request_for(state=app_state(**overrides)))
-    assert not keyless_request_allowed(request_for(headers={"Origin": "https://evil.example"}))
-    assert access_exposure(app_state(
-        bind_host="studio.lan", lan_access_launch_managed=True,
-        lan_access_launch_addresses=("192.168.1.24",),
-    )) == "private_lan"
+    for overrides in (
+        {"remote_access_is_colab": True},
+        {"secure": True},
+        {"cloudflare_url": "https://x.trycloudflare.com"},
+    ):
+        assert not keyless_request_allowed(request_for(state = app_state(**overrides)))
+    assert not keyless_request_allowed(request_for(headers = {"Origin": "https://evil.example"}))
+    assert (
+        access_exposure(
+            app_state(
+                bind_host = "studio.lan",
+                lan_access_launch_managed = True,
+                lan_access_launch_addresses = ("192.168.1.24",),
+            )
+        )
+        == "private_lan"
+    )
 
     monkeypatch.setattr(host_policy, "_remote_connector_active", True)
-    monkeypatch.setattr(lan_access, "lan_listener_status",
-                        lambda: {"running": True, "port": 8888,
-                                 "addresses": ["192.168.1.24"]})
-    lan_request = request_for(method="GET", path="/v1/models",
-                              server=("192.168.1.24", 8888), client=("192.168.1.90", 54321))
+    monkeypatch.setattr(
+        lan_access,
+        "lan_listener_status",
+        lambda: {"running": True, "port": 8888, "addresses": ["192.168.1.24"]},
+    )
+    lan_request = request_for(
+        method = "GET",
+        path = "/v1/models",
+        server = ("192.168.1.24", 8888),
+        client = ("192.168.1.90", 54321),
+    )
     assert keyless_request_allowed(lan_request)
     set_keyless_api_access("full")
     assert not keyless_request_allowed(lan_request)
-    assert not keyless_request_allowed(request_for(state=app_state(bind_host="0.0.0.0")))
+    assert not keyless_request_allowed(request_for(state = app_state(bind_host = "0.0.0.0")))
 
 
 def test_credentials_never_downgrade_to_keyless():
@@ -226,12 +256,12 @@ def test_credentials_never_downgrade_to_keyless():
         assert resolve(bearer_request(token)).scheme == KEYLESS_FALLBACK_SCHEME
     set_keyless_api_access("inference")
     with pytest.raises(HTTPException):
-        subject_of(bearer_request("not-needed", path="/v1/load"))
+        subject_of(bearer_request("not-needed", path = "/v1/load"))
     set_keyless_api_access("full")
 
     for header in ("Bearer arbitrary", "garbage", "Basic abc", "Bearer"):
         with pytest.raises(HTTPException):
-            subject_of(request_for(headers={"Authorization": header}))
+            subject_of(request_for(headers = {"Authorization": header}))
     duplicate = asgi_scope()
     duplicate["headers"] = [
         (b"authorization", b"Bearer not-needed"),
@@ -243,19 +273,21 @@ def test_credentials_never_downgrade_to_keyless():
     session = create_access_token(storage.DEFAULT_ADMIN_USERNAME)
     assert subject_of(bearer_request(session)) == storage.DEFAULT_ADMIN_USERNAME
     expired_session = create_access_token(
-        storage.DEFAULT_ADMIN_USERNAME, expires_delta=timedelta(seconds=-60))
+        storage.DEFAULT_ADMIN_USERNAME, expires_delta = timedelta(seconds = -60)
+    )
     with pytest.raises(HTTPException):
         subject_of(bearer_request(expired_session))
 
     valid, _ = storage.create_api_key(
-        username=storage.DEFAULT_ADMIN_USERNAME, name="valid", expires_at=None)
+        username = storage.DEFAULT_ADMIN_USERNAME, name = "valid", expires_at = None
+    )
     assert subject_of(bearer_request(valid)) == storage.DEFAULT_ADMIN_USERNAME
     for name, expires in (
-        ("expired", (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()),
+        ("expired", (datetime.now(timezone.utc) - timedelta(days = 1)).isoformat()),
         ("revoked", None),
     ):
         raw, row = storage.create_api_key(
-            username=storage.DEFAULT_ADMIN_USERNAME, name=name, expires_at=expires
+            username = storage.DEFAULT_ADMIN_USERNAME, name = name, expires_at = expires
         )
         if name == "revoked":
             storage.revoke_api_key(storage.DEFAULT_ADMIN_USERNAME, row["id"])
@@ -273,8 +305,9 @@ def _middleware_policy(scope):
 
     set_tool_policy(True)
     try:
-        asyncio.run(KeylessToolPolicyMiddleware(downstream)(
-            scope, lambda: None, lambda _message: None))
+        asyncio.run(
+            KeylessToolPolicyMiddleware(downstream)(scope, lambda: None, lambda _message: None)
+        )
     finally:
         reset_tool_policy()
     return observed
@@ -284,7 +317,7 @@ def test_tool_policy_and_api_identity(monkeypatch):
     from routes import inference
 
     seed_user()
-    set_keyless_api_access("inference", tools=False)
+    set_keyless_api_access("inference", tools = False)
     request = request_for()
     assert subject_of(request) == storage.DEFAULT_ADMIN_USERNAME
     assert request.state.keyless_api_admitted is True
@@ -295,12 +328,13 @@ def test_tool_policy_and_api_identity(monkeypatch):
     assert inference._request_is_saved_credential_workflow(request) is False
     assert _middleware_policy(asgi_scope()) == [False]
 
-    set_keyless_api_access("inference", tools=True)
+    set_keyless_api_access("inference", tools = True)
     assert _middleware_policy(asgi_scope()) == [True]
     key, _ = storage.create_api_key(
-        username=storage.DEFAULT_ADMIN_USERNAME, name="tools", expires_at=None)
-    set_keyless_api_access("inference", tools=False)
-    assert _middleware_policy(asgi_scope(headers={"Authorization": f"Bearer {key}"})) == [True]
+        username = storage.DEFAULT_ADMIN_USERNAME, name = "tools", expires_at = None
+    )
+    set_keyless_api_access("inference", tools = False)
+    assert _middleware_policy(asgi_scope(headers = {"Authorization": f"Bearer {key}"})) == [True]
 
     set_keyless_api_access("off")
 
@@ -309,8 +343,11 @@ def test_tool_policy_and_api_identity(monkeypatch):
         with pytest.raises(HTTPException):
             await security(Request(scope))
 
-    asyncio.run(KeylessToolPolicyMiddleware(enabled_between_layers)(
-        asgi_scope(), lambda: None, lambda _message: None))
+    asyncio.run(
+        KeylessToolPolicyMiddleware(enabled_between_layers)(
+            asgi_scope(), lambda: None, lambda _message: None
+        )
+    )
 
 
 def test_protected_side_effect_guards_remain_wired():
@@ -324,5 +361,6 @@ def test_protected_side_effect_guards_remain_wired():
         for handler in (inference._maybe_auto_switch_model, inference.openai_chat_completions)
     )
     assert security.scheme_name == "HTTPBearer"
+
 
 # fmt: on
