@@ -2752,7 +2752,6 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
 
         class _FakeBackend:
             _context_length = 2048
-            _TENSOR_PARALLEL_KV_TYPES = frozenset({"f16", "bf16", "f32"})
             supports_kv_unified = True
 
             def _read_gguf_metadata(self, path):
@@ -2854,13 +2853,15 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             ):
                 r._estimate_gguf_kv_gb("m", 4096)
             self.assertEqual(seen["cache_type"], "q4_0")
+            # Tensor mode passes the requested type through, so the budget matches it.
             r._estimate_gguf_kv_gb(
                 "m",
                 4096,
                 ["--cache-type-k", "q4_0", "--cache-type-v", "q4_0"],
                 tensor_parallel = True,
             )
-            self.assertEqual(seen["cache_type"], "f16")
+            self.assertEqual(seen["cache_type"], "q4_0")
+            # The heavier axis still wins, tensor or not.
             r._estimate_gguf_kv_gb(
                 "m",
                 4096,

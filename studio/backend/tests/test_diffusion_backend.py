@@ -6895,14 +6895,15 @@ def test_download_plan_flags_a_mirrored_pipeline_as_the_checkpoint(monkeypatch):
     # The page used to derive the label by comparing those two ids, which made every file of the
     # selected model read as "Required assets". Only the planner knows about the swap.
     gated = "black-forest-labs/FLUX.1-dev"
-    _fake_hf_api(monkeypatch, {gated: _FLUX_BASE_SIBLINGS})
+    mirror = "unsloth/FLUX.1-dev"
+    _fake_hf_api(monkeypatch, {gated: _FLUX_BASE_SIBLINGS, mirror: _FLUX_BASE_SIBLINGS})
     _no_cache(monkeypatch)
 
     plan = DiffusionBackend().download_plan(gated, model_kind = "pipeline")
 
     assert len(plan["entries"]) == 1
     entry = plan["entries"][0]
-    assert entry["repo_id"] == "unsloth/FLUX.1-dev" != gated
+    assert entry["repo_id"] == mirror != gated
     assert entry["checkpoint"] is True
 
 
@@ -6945,7 +6946,7 @@ def test_download_plan_stages_the_precast_encoder_instead_of_the_dense_one(monke
     # The pick resolves one hosted pre-cast encoder for text_encoder_2 (flux.1 hosts its T5-XXL).
     monkeypatch.setattr(
         "core.inference.diffusion_te_prequant.te_prequant_sources",
-        lambda fam, *, te_quant_mode, target: (
+        lambda fam, *, te_quant_mode, target, **_kwargs: (
             {
                 "text_encoder_2": types.SimpleNamespace(
                     kind = "repo",
@@ -10203,7 +10204,7 @@ def test_the_resident_size_table_prices_a_pre_cast_encoder_at_its_real_size(
     monkeypatch.setattr(dmod, "family_bf16_components_gb", dmod.family_bf16_components_gb)
     monkeypatch.setattr(
         "core.inference.diffusion_te_prequant.te_prequant_sources",
-        lambda fam, te_quant_mode = None, target = None: {"text_encoder": object()},
+        lambda fam, te_quant_mode = None, target = None, **_kwargs: {"text_encoder": object()},
     )
     precast = backend._resident_sized_plan(
         plan, fam, base, target, "pipeline", text_encoder_quant = "fp8"
@@ -10302,7 +10303,6 @@ def test_the_prequant_fit_check_prices_a_pre_cast_text_encoder(fake_runtime, mon
     already applies te_prequant_budget_scale; this is the same scale on the same estimate."""
     from core.inference.diffusion import DiffusionBackend
     from core.inference.diffusion_families import detect_family
-    from core.inference.diffusion_te_prequant import TE_PREQUANT_BUDGET_SCALE
 
     fam = detect_family("black-forest-labs/FLUX.2-dev")
     assert fam is not None and fam.te_prequant_repos, "the fixture family lost its pre-cast repo"
@@ -10310,43 +10310,35 @@ def test_the_prequant_fit_check_prices_a_pre_cast_text_encoder(fake_runtime, mon
     encoders = 48_000
     candidate = types.SimpleNamespace(companions_mib = encoders + 400, text_encoders_mib = encoders)
 
-    scaled = DiffusionBackend._precast_scaled_companions_mib(candidate, fam, object(), "fp8")
-    # No pre-cast encoder resolves in this environment unless te_prequant_sources says so, so pin
-    # the two outcomes on the resolver rather than assuming one.
-    from core.inference.diffusion_te_prequant import te_prequant_sources
+    base = "black-forest-labs/FLUX.2-dev"
+    seen: dict = {}
 
-    if te_prequant_sources(fam, te_quant_mode = "fp8", target = object()):
-        assert scaled == 400 + int(encoders * TE_PREQUANT_BUDGET_SCALE)
-        assert scaled < candidate.companions_mib
-    else:
-        assert scaled == candidate.companions_mib
+    def _scale(_fam, *, te_quant_mode, target, base):
+        seen.update(mode = te_quant_mode, target = target, base = base)
+        return 0.5 if te_quant_mode == "fp8" else 1.0
+
+    monkeypatch.setattr("core.inference.diffusion_te_prequant.te_prequant_budget_scale", _scale)
+    scaled = DiffusionBackend._precast_scaled_companions_mib(candidate, fam, base, object(), "fp8")
+    assert scaled == 24_400
+    assert seen["mode"] == "fp8"
+    assert seen["base"] == base
 
     # No encoder quant requested: the estimate is passed through untouched, byte for byte.
     assert (
-        DiffusionBackend._precast_scaled_companions_mib(candidate, fam, object(), None)
+        DiffusionBackend._precast_scaled_companions_mib(candidate, fam, base, object(), None)
         == candidate.companions_mib
     )
     # The VAE share is never scaled, and a candidate with no split degrades to the dense total.
     no_split = types.SimpleNamespace(companions_mib = 1234, text_encoders_mib = 0)
-    assert DiffusionBackend._precast_scaled_companions_mib(no_split, fam, object(), "fp8") == 1234
+    assert (
+        DiffusionBackend._precast_scaled_companions_mib(no_split, fam, base, object(), "fp8")
+        == 1234
+    )
     # An estimate with no companions at all stays None, which _plan_memory reads as "no override".
     empty = types.SimpleNamespace(companions_mib = None)
-    assert DiffusionBackend._precast_scaled_companions_mib(empty, fam, object(), "fp8") is None
-
-
-def test_the_pre_cast_companion_scale_matches_the_load_level_plan(fake_runtime, monkeypatch):
-    """Both sides must read the same scale from the same resolver, or the fit check and the plan
-    it gates disagree about what the load builds."""
-    from core.inference.diffusion import DiffusionBackend
-    from core.inference.diffusion_families import detect_family
-
-    fam = detect_family("black-forest-labs/FLUX.2-dev")
-    monkeypatch.setattr(
-        "core.inference.diffusion_te_prequant.te_prequant_budget_scale",
-        lambda fam, *, te_quant_mode, target: 0.5 if te_quant_mode == "fp8" else 1.0,
+    assert (
+        DiffusionBackend._precast_scaled_companions_mib(empty, fam, base, object(), "fp8") is None
     )
-    candidate = types.SimpleNamespace(companions_mib = 10_400, text_encoders_mib = 10_000)
-    assert DiffusionBackend._precast_scaled_companions_mib(candidate, fam, object(), "fp8") == 5_400
 
 
 def test_an_offload_memory_request_is_not_reported_as_unstaged_shards(

@@ -13,6 +13,7 @@ import type { CSSProperties, MouseEvent } from "react";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { useGeneratedImageOverlay } from "./generated-image-overlay-context";
 import { downloadImagePart } from "./image";
+import { toolArgText } from "./tool-arg-text";
 import {
   ToolFallbackContent,
   ToolFallbackRoot,
@@ -31,20 +32,27 @@ import {
  * JSON with an empty Result block (the "no image" symptom).
  */
 interface ImageGenerationArgs {
-  prompt?: string;
+  // Straight off the wire; the provider decides the JSON type, not this file.
+  prompt?: unknown;
   kind?: string;
   openai_image_generation_call_id?: unknown;
   openai_response_id?: unknown;
   openai_reasoning_item?: unknown;
 }
 
+/**
+ * Straight off the wire, like the args above. Only `image_b64` is type-guarded
+ * before use; `size`, `quality` and `background` are copied verbatim from the
+ * provider (external_provider.py:5883) and on the Gemini path so is `image_mime`
+ * (:4481). Studio takes a user-set `base_url`, so none of them is ours.
+ */
 interface ImageGenerationResult {
   image_b64?: string;
-  image_mime?: string;
-  size?: string;
-  quality?: string;
-  background?: string;
-  prompt?: string;
+  image_mime?: unknown;
+  size?: unknown;
+  quality?: unknown;
+  background?: unknown;
+  prompt?: unknown;
 }
 
 type GeneratedImagePart = {
@@ -92,10 +100,12 @@ const formatGeneratedImageLabel = (prompt: string): string => {
     : `Generated image: ${prompt}`;
 };
 
+// Takes text: `size?.match` guards nullish only, so `"size": 1024` reached
+// `.match` on a number.
 const parseImageSize = (
-  size?: string,
+  size: string,
 ): { width: number; height: number } | null => {
-  const match = size?.match(/^(\d+)x(\d+)$/i);
+  const match = size.match(/^(\d+)x(\d+)$/i);
   if (!match) return null;
   const width = Number(match[1]);
   const height = Number(match[2]);
@@ -159,7 +169,7 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
 }) => {
   const { openOverlay } = useGeneratedImageOverlay();
   const parsedArgs = (args as ImageGenerationArgs) ?? {};
-  const prompt = parsedArgs.prompt ?? "";
+  const prompt = toolArgText(parsedArgs.prompt);
   const isRunning = status?.type === "running";
 
   const isImageResult =
@@ -167,7 +177,11 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
     typeof result === "object" &&
     typeof (result as ImageGenerationResult).image_b64 === "string";
   const imageResult = isImageResult ? (result as ImageGenerationResult) : null;
-  const imageDimensions = parseImageSize(imageResult?.size);
+  // Coerced for the same reason `prompt` is: these reach `.match`,
+  // `.toLowerCase` and `Array.join`, all of which throw on a non-string.
+  const size = toolArgText(imageResult?.size);
+  const quality = toolArgText(imageResult?.quality);
+  const imageDimensions = parseImageSize(size);
   const imageFrameStyle: CSSProperties = {
     width: imageDimensions
       ? getInlineImageFrameWidth(imageDimensions)
@@ -177,17 +191,15 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
   const imageBoxStyle: CSSProperties | undefined = imageDimensions
     ? { aspectRatio: `${imageDimensions.width} / ${imageDimensions.height}` }
     : undefined;
-  const mime = imageResult?.image_mime || "image/png";
+  const mime = toolArgText(imageResult?.image_mime) || "image/png";
   const imageSrc = imageResult?.image_b64
     ? `data:${mime};base64,${imageResult.image_b64}`
     : null;
-  const imageTitle =
-    imageResult?.prompt?.trim() || prompt.trim() || "Generated image";
-  const captionPrompt = imageResult?.prompt?.trim() || prompt.trim();
+  const resultPrompt = toolArgText(imageResult?.prompt).trim();
+  const imageTitle = resultPrompt || prompt.trim() || "Generated image";
+  const captionPrompt = resultPrompt || prompt.trim();
   const promptLikelyNeedsExpansion = captionPrompt.length > 220;
-  const imageMetadata = [imageResult?.size, imageResult?.quality, mime]
-    .filter(Boolean)
-    .join(" · ");
+  const imageMetadata = [size, quality, mime].filter(Boolean).join(" · ");
   const openaiImageGenerationCallId =
     typeof parsedArgs.openai_image_generation_call_id === "string"
       ? parsedArgs.openai_image_generation_call_id
