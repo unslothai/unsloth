@@ -122,9 +122,9 @@ def test_it_is_skipped_rather_than_passed_when_the_model_is_not_on_the_gpu():
     skips = [n for n in records if len(n.args) > 1 and "skipped" in ast.unparse(n)]
     assert skips, "no skip path records server_flags"
     for node in skips:
-        assert node.args[1].value is False, (
-            "the skip path records a PASS, so an untested flag reads as a working one"
-        )
+        assert (
+            node.args[1].value is False
+        ), "the skip path records a PASS, so an untested flag reads as a working one"
 
 
 def test_it_runs_between_gpu_inference_and_training():

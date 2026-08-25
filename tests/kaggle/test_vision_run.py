@@ -269,9 +269,18 @@ def test_adapter_sum_finds_the_capital_b_peft_names():
     class _Stub:
         def named_parameters(self):
             # The names PEFT actually emits, capitals and all.
-            yield "base_model.model.visual.blocks.0.attn.qkv.lora_A.default.weight", torch.ones(2, 2)
-            yield "base_model.model.visual.blocks.0.attn.qkv.lora_B.default.weight", torch.full((2, 2), 3.0)
-            yield "base_model.model.layers.0.self_attn.q_proj.lora_B.default.weight", torch.full((2, 2), 1.0)
+            yield (
+                "base_model.model.visual.blocks.0.attn.qkv.lora_A.default.weight",
+                torch.ones(2, 2),
+            )
+            yield (
+                "base_model.model.visual.blocks.0.attn.qkv.lora_B.default.weight",
+                torch.full((2, 2), 3.0),
+            )
+            yield (
+                "base_model.model.layers.0.self_attn.q_proj.lora_B.default.weight",
+                torch.full((2, 2), 1.0),
+            )
 
     got = adapter_sum(_Stub())
     assert got["tensors"] == 2, got

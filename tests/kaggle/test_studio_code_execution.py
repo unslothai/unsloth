@@ -58,9 +58,7 @@ def test_the_assertion_exists_and_is_driven_from_the_run():
     body = _body()
     assert body
     run = _body("execute")
-    assert "self.assert_code_execution()" in run, (
-        "an assertion nothing calls is not coverage"
-    )
+    assert "self.assert_code_execution()" in run, "an assertion nothing calls is not coverage"
 
 
 def test_the_python_tool_is_the_one_requested():
@@ -88,7 +86,8 @@ def test_the_token_is_minted_per_run_and_not_hardcoded():
     body = _body()
     assert "secrets_module.token_hex" in body
     call = next(
-        node for node in ast.walk(_func("assert_code_execution"))
+        node
+        for node in ast.walk(_func("assert_code_execution"))
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
         and node.func.attr == "token_hex"
@@ -113,7 +112,8 @@ def test_the_verdict_is_read_off_the_filesystem_and_not_off_the_reply():
             continue
         test = ast.unparse(node.test)
         appends = [
-            n for n in ast.walk(node)
+            n
+            for n in ast.walk(node)
             if isinstance(n, ast.Call)
             and isinstance(n.func, ast.Attribute)
             and n.func.attr == "append"
@@ -122,9 +122,9 @@ def test_the_verdict_is_read_off_the_filesystem_and_not_off_the_reply():
             continue
         if "written" in test:
             guarded_by_written = True
-            assert isinstance(node.test, ast.UnaryOp) and isinstance(node.test.op, ast.Not), (
-                "the failure must fire when NO file carries the token"
-            )
+            assert isinstance(node.test, ast.UnaryOp) and isinstance(
+                node.test.op, ast.Not
+            ), "the failure must fire when NO file carries the token"
     assert guarded_by_written, (
         "nothing in this assertion depends on a file being written, so it "
         "would pass on a reply that merely claimed the code ran"
@@ -162,6 +162,4 @@ def test_the_cpu_fallback_records_the_assertion_rather_than_omitting_it():
     that never existed, and the summary would be short by one line rather than
     red."""
     run = _body("execute")
-    assert '"code_execution",' in run, (
-        "the non-GPU branch must record code_execution explicitly"
-    )
+    assert '"code_execution",' in run, "the non-GPU branch must record code_execution explicitly"

@@ -1008,14 +1008,16 @@ class Payload:
         before = set(sandbox.rglob("*")) if sandbox.exists() else set()
 
         code, payload = self.chat(
-            [{
-                "role": "user",
-                "content": (
-                    "Use the python tool to run exactly this code, then reply "
-                    "with the single word done:\n\n"
-                    f"open({token + '.txt'!r}, 'w').write({token!r})"
-                ),
-            }],
+            [
+                {
+                    "role": "user",
+                    "content": (
+                        "Use the python tool to run exactly this code, then reply "
+                        "with the single word done:\n\n"
+                        f"open({token + '.txt'!r}, 'w').write({token!r})"
+                    ),
+                }
+            ],
             enable_tools = True,
             enabled_tools = ["python"],
             permission_mode = "off",
