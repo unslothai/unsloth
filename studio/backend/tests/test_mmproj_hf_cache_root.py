@@ -121,6 +121,26 @@ def test_inventory_rejects_a_repo_root_projector_with_mismatched_metadata(tmp_pa
     assert snapshot_has_gguf_projector(weight.parent) is True
 
 
+def test_inventory_does_not_rescan_each_variant_without_a_projector(tmp_path, monkeypatch):
+    repo, weight = _hf_repo(tmp_path)
+    for quant in ("Q5_K_M", "Q8_0"):
+        _gguf_with_general(
+            weight.with_name(f"model-{quant}.gguf"),
+            {"general.name": "Model", "general.architecture": "qwen3vl"},
+        )
+
+    calls = []
+
+    def traced_detect(path, *args, **kwargs):
+        calls.append(path)
+        return detect_mmproj_file(path, *args, **kwargs)
+
+    monkeypatch.setattr("utils.models.model_config.detect_mmproj_file", traced_detect)
+
+    assert snapshot_has_gguf_projector(weight.parent) is False
+    assert calls == [str(repo)]
+
+
 def test_a_sibling_repo_s_projector_stays_invisible(tmp_path):
     repo, weight = _hf_repo(tmp_path)
     other = tmp_path / "models--other--Vision-GGUF"

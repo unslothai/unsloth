@@ -1405,7 +1405,18 @@ def snapshot_has_gguf_projector(snapshot: Optional[Path]) -> bool:
 
     try:
         snapshot_path = Path(snapshot)
-        variants, _ = list_local_gguf_variants(str(snapshot_path))
+        variants, has_snapshot_projector = list_local_gguf_variants(str(snapshot_path))
+        if not variants:
+            return False
+
+        first_weight = snapshot_path / variants[0].filename
+        first_search_root = _local_gguf_companion_search_root(str(first_weight), str(first_weight))
+        if not has_snapshot_projector:
+            if Path(first_search_root).resolve() == snapshot_path.resolve():
+                return False
+            if detect_mmproj_file(first_search_root) is None:
+                return False
+
         for variant in variants:
             weight = snapshot_path / variant.filename
             search_root = _local_gguf_companion_search_root(str(weight), str(weight))
