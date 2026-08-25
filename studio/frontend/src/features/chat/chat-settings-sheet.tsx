@@ -67,6 +67,7 @@ import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { type CSSProperties, Fragment, type ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { OpenAICodeExecSection } from "./components/openai-code-exec-section";
+import { SavedSystemPromptPicker } from "./components/saved-system-prompt-picker";
 import { PermissionModeDropdown } from "./permission-mode-select";
 import { resyncInferenceStatusAfterServerModelChange } from "./hooks/use-chat-model-runtime";
 import {
@@ -106,6 +107,7 @@ import {
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import type { InferenceParams } from "./types/runtime";
+import { saveTextAsPromptEntry } from "./utils/saved-system-prompt-actions";
 
 export { defaultInferenceParams, type Preset } from "./presets/preset-policy";
 export type { InferenceParams } from "./types/runtime";
@@ -934,6 +936,18 @@ export function ChatSettingsPanel({
     setSystemPromptEditorOpen(false);
   }
 
+  async function saveSystemPromptAsEntry() {
+    try {
+      const entry = await saveTextAsPromptEntry(systemPromptDraft);
+      if (!entry) return;
+      toast.success("Saved as prompt", { description: entry.name });
+    } catch (error) {
+      toast.error("Could not save prompt", {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    }
+  }
+
   useEffect(() => {
     if (activePresetSource !== "modified") {
       setActivePresetBaseline(params);
@@ -1336,7 +1350,12 @@ export function ChatSettingsPanel({
           defaultOpen={true}
           onLabelClick={openSystemPromptEditor}
           headerAction={
-            <Tooltip>
+            <span className="flex items-center gap-0.5">
+              <SavedSystemPromptPicker
+                currentSystemPrompt={currentSystemPrompt}
+                onSelect={(text) => set("systemPrompt")(text)}
+              />
+              <Tooltip>
                   <TooltipPrimitive.Trigger asChild={true}>
                 <button
                   type="button"
@@ -1359,6 +1378,7 @@ export function ChatSettingsPanel({
                 Edit prompt
               </TooltipContent>
             </Tooltip>
+            </span>
           }
         >
           {/* Rounded wrapper clips overflowing text and the scrollbar. */}
@@ -1623,15 +1643,26 @@ export function ChatSettingsPanel({
             />
           </div>
           <DialogFooter className="flex-wrap gap-2 sm:justify-between">
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={() => setSystemPromptDraft("")}
-              disabled={systemPromptDraft.length === 0}
-              className="text-muted-foreground"
-            >
-              Reset
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => setSystemPromptDraft("")}
+                disabled={systemPromptDraft.length === 0}
+                className="text-muted-foreground"
+              >
+                Reset
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => void saveSystemPromptAsEntry()}
+                disabled={systemPromptDraft.trim().length === 0}
+                className="text-muted-foreground"
+              >
+                Save as prompt
+              </Button>
+            </div>
             <div className="flex flex-wrap gap-2">
               <Button
                 type="button"

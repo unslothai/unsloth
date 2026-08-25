@@ -1326,11 +1326,13 @@ function ExportModal({
 function PromptCard({
   entry,
   onUse,
+  onApplyAsSystemPrompt,
   onExport,
   onRefresh,
 }: {
   entry: PromptEntry;
   onUse: (text: string) => void;
+  onApplyAsSystemPrompt?: (text: string) => void;
   onExport: (entry: PromptEntry) => void;
   onRefresh: () => void;
 }): ReactElement {
@@ -1399,6 +1401,16 @@ function PromptCard({
           >
             <PlayIcon className="size-3" />Use
           </button>
+          {onApplyAsSystemPrompt ? (
+            <button
+              type="button"
+              onClick={() => onApplyAsSystemPrompt(entry.text)}
+              className="flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-semibold text-primary hover:bg-primary/10 transition-colors"
+              title="Apply as system prompt"
+            >
+              System
+            </button>
+          ) : null}
           <div className="mx-1 h-4 w-px bg-border/60" />
           <button
             type="button"
@@ -1750,11 +1762,13 @@ export function PromptStorageDialog({
   open,
   onOpenChange,
   onUse,
+  onApplyAsSystemPrompt,
   onRunList,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onUse: (text: string) => void;
+  onApplyAsSystemPrompt?: (text: string) => void;
   onRunList?: (items: string[]) => void;
 }): ReactElement {
   const [activeTab, setActiveTab] = useState<Tab>("prompts");
@@ -1822,6 +1836,14 @@ export function PromptStorageDialog({
       onOpenChange(false);
     },
     [onUse, onOpenChange],
+  );
+
+  const handleApplyAsSystemPrompt = useCallback(
+    (text: string) => {
+      onApplyAsSystemPrompt?.(text);
+      onOpenChange(false);
+    },
+    [onApplyAsSystemPrompt, onOpenChange],
   );
 
   const handleImportFile = useCallback(
@@ -2030,6 +2052,11 @@ export function PromptStorageDialog({
                       key={entry.id}
                       entry={entry}
                       onUse={handleUsePrompt}
+                      onApplyAsSystemPrompt={
+                        onApplyAsSystemPrompt
+                          ? handleApplyAsSystemPrompt
+                          : undefined
+                      }
                       onExport={(e) => setExportCtx({ kind: "prompt", entry: e })}
                       onRefresh={refreshEntries}
                     />
