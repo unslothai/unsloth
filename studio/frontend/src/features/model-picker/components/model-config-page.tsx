@@ -54,6 +54,7 @@ import {
   type Ref,
   useEffect,
   useId,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -1007,6 +1008,7 @@ function MemoryEstimateRow({
   gpuCapacityGb,
   totalCapacityGb,
   systemRamCapacityGb,
+  freeGpuCapacityGb,
   isUnifiedMemory,
   singleMemoryPool,
   expanded,
@@ -1022,6 +1024,9 @@ function MemoryEstimateRow({
   /** Host RAM alone. The bytes a load pins OUTSIDE the GPU have to fit in this, and
    *  unused VRAM cannot help them, so it is a separate question from the total. */
   systemRamCapacityGb: number;
+  /** VRAM free on the usable cards right now. Warns only: see the note at the call
+   *  site for why this may not refuse a load. 0 when nothing was probed. */
+  freeGpuCapacityGb: number;
   isUnifiedMemory: boolean;
   /** GPU and host draw on the same memory, so an offloaded byte is not a freed one. */
   singleMemoryPool: boolean;
@@ -1033,7 +1038,13 @@ function MemoryEstimateRow({
     // Nothing honest to show. Silent while loading too, so the row does not flicker.
     return null;
   }
-  const gpuFit = classifyMemoryFit(estimate.gpuBytes, gpuCapacityGb);
+  const rawGpuFit = classifyMemoryFit(estimate.gpuBytes, gpuCapacityGb);
+  // Capped at "tight": what is free now is a warning, not a verdict, because the
+  // resident model's VRAM comes back when this load replaces it.
+  const freeGpuFit = classifyMemoryFit(estimate.gpuBytes, freeGpuCapacityGb);
+  const gpuPressured = freeGpuFit === "exceeds" || freeGpuFit === "tight";
+  const gpuFit =
+    rawGpuFit === "fits" && gpuPressured ? "tight" : rawGpuFit;
   // The host share has to fit in host RAM on its own. Unused VRAM cannot hold bytes
   // that placement has pinned outside the GPU, so weighing only the combined ceiling
   // called a 70 GB CPU placement a fit on a 24 GB card plus 64 GB of RAM. Skipped
@@ -1122,7 +1133,12 @@ function MemoryEstimateRow({
                     tone: "warn",
                     text: "More than this GPU holds. Layers will spill to system RAM, or the context will be fitted down to what fits.",
                   }
-                : null;
+                : rawGpuFit === "fits" && gpuPressured
+                  ? {
+                      tone: "muted",
+                      text: "This fits the card, but something is using it right now. If that memory is not the model being replaced, layers will spill or the context will be fitted down.",
+                    }
+                  : null;
   return (
     <div className="space-y-2">
       <div className={ROW_CLASS}>
@@ -2816,8 +2832,16 @@ export function ModelConfigPage({
   // Priced against the config that would actually load, at the context on screen, so
   // the figures answer for what the Load button will do. Diffusion stands down: its
   // runner allocates on a different plan than llama-server's.
+  //
+  // The tri-state is read as a tri-state here, not through resolvedIsDiffusion, which
+  // folds "not yet classified" in with "not diffusion". A GGUF whose classification is
+  // still in flight may be DiffusionGemma, and starting the llama-server estimate on
+  // that guess paints a footprint from the wrong allocation plan -- one that stays on
+  // screen indefinitely if the classifying probe never answers, since the tri-state
+  // then never leaves undefined. Waiting costs a moment of no row; guessing costs a
+  // confident wrong number, which is the trade this whole panel is written around.
   const memoryEstimateRequest =
-    target.isGguf && !resolvedIsDiffusion
+    target.isGguf && classifiedIsDiffusion === false
       ? {
           modelPath: target.id,
           ggufVariant: target.ggufVariant ?? null,
@@ -2873,6 +2897,23 @@ export function ModelConfigPage({
   // claim per GPU, so the verdict has to be measured against the capped figure or the
   // row contradicts the control directly above it. Subscribed as well as read once:
   // dragging that slider must re-classify without a remount.
+  // What is free RIGHT NOW on the cards this load may use. _select_gpus admits on
+  // free-minus-reserve, not on the cards' totals, so a training run or another process
+  // holding VRAM changes what will actually happen to this load.
+  //
+  // Used to WARN, never to refuse. The bytes a pending load reclaims -- the resident
+  // chat model's own, which Studio unloads first -- cannot be attributed per device
+  // from here, so raw free memory would call a reload of the loaded model impossible.
+  // Capping the free-based verdict at "tight" is honest under both readings: either
+  // something else really is holding the card, or it is about to be given back.
+  const memoryFreeGpuCapacityGb = useMemo(() => {
+    const pinned =
+      pinnedGpuIds && pinnedGpuIds.length > 0
+        ? gpuDevices.filter((device) => pinnedGpuIds.includes(device.index))
+        : gpuDevices;
+    const free = pinned.reduce((sum, device) => sum + (device.memoryFreeGb || 0), 0);
+    return free > 0 ? free : 0;
+  }, [gpuDevices, pinnedGpuIds]);
   const [memoryVramBudgetFraction, setMemoryVramBudgetFraction] = useState(1);
   useEffect(() => {
     let cancelled = false;
@@ -3131,6 +3172,7 @@ export function ModelConfigPage({
               gpuCapacityGb={memoryGpuCapacityGb}
               totalCapacityGb={memoryTotalCapacityGb}
               systemRamCapacityGb={inferenceGpu.systemRamTotalGb}
+              freeGpuCapacityGb={memoryFreeGpuCapacityGb * memoryVramBudgetFraction}
               isUnifiedMemory={isUnifiedMemory}
               singleMemoryPool={singleMemoryPool}
               expanded={memoryBreakdownOpen}

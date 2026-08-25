@@ -77,10 +77,25 @@ export function useMemoryEstimate(
   request: MemoryEstimateRequest | null,
 ): MemoryEstimateState {
   const key = estimateKey(request);
-  const [state, setState] = useState<MemoryEstimateState>({
+  // Which source the CURRENT render is for, computed during render rather than read
+  // from a ref the effect updates after paint. The effect below still clears on a
+  // switch, but it runs after React has already painted this render, so a direct
+  // switch between two GGUFs showed the previous model's footprint and fit colour
+  // under the new name for a frame. Both helpers are pure, so this is safe here.
+  const currentIdentity =
+    request == null
+      ? null
+      : resolveEstimateSourceIdentity(
+          request.modelPath,
+          request.ggufVariant,
+          tokenIdentity(request.hfToken),
+          request.nativePathToken,
+        );
+  const [state, setState] = useState<MemoryEstimateState & { identity: string | null }>({
     estimate: null,
     loading: false,
     stale: false,
+    identity: null,
   });
   // Read inside the effect so it depends on the key alone: `request` is a fresh
   // object every render and would restart the debounce on any keystroke.
@@ -96,7 +111,7 @@ export function useMemoryEstimate(
     const pending = latestRequest.current;
     if (key == null || pending == null) {
       shownModel.current = null;
-      setState({ estimate: null, loading: false, stale: false });
+      setState({ estimate: null, loading: false, stale: false, identity: null });
       return;
     }
     const identity = resolveEstimateSourceIdentity(
@@ -108,8 +123,8 @@ export function useMemoryEstimate(
     const modelChanged = shownModel.current !== identity;
     setState((current) =>
       modelChanged
-        ? { estimate: null, loading: true, stale: false }
-        : { ...current, loading: current.estimate == null, stale: true },
+        ? { estimate: null, loading: true, stale: false, identity }
+        : { ...current, loading: current.estimate == null, stale: true, identity },
     );
     const controller = new AbortController();
     const timer = setTimeout(() => {
@@ -117,13 +132,13 @@ export function useMemoryEstimate(
         .then((estimate) => {
           if (controller.signal.aborted) return;
           shownModel.current = identity;
-          setState({ estimate, loading: false, stale: false });
+          setState({ estimate, loading: false, stale: false, identity });
         })
         .catch(() => {
           if (controller.signal.aborted) return;
           // A failed estimate is not a failed panel; drop the row.
           shownModel.current = identity;
-          setState({ estimate: null, loading: false, stale: false });
+          setState({ estimate: null, loading: false, stale: false, identity });
         });
     }, ESTIMATE_DEBOUNCE_MS);
     return () => {
@@ -132,5 +147,10 @@ export function useMemoryEstimate(
     };
   }, [key]);
 
-  return state;
+  // State that belongs to a different source is not shown at all, not even for the
+  // frame before the effect clears it.
+  if (state.identity !== currentIdentity) {
+    return { estimate: null, loading: currentIdentity != null, stale: false };
+  }
+  return { estimate: state.estimate, loading: state.loading, stale: state.stale };
 }
