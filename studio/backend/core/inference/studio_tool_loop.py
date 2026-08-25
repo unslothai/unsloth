@@ -64,6 +64,7 @@ from core.inference.tool_call_parser import (
     reprompt_to_act_message,
     strip_tool_markup,
 )
+from core.tool_healing import _think_spans_outside_tool_markup
 from core.inference.tool_loop_controller import (
     ToolLoopController,
     awaiting_approval_status,
@@ -1055,6 +1056,17 @@ async def stream_with_studio_tools(
                 final = True,
                 enabled_tool_names = allowed_tool_names,
             )
+            if not replayable_answer.strip():
+                # A reasoning-only stall announces the plan inside the think block
+                # and nowhere else. _reprompt_intent_text falls back to that block
+                # rather than dropping the turn, so match it, and replay what was
+                # classified. Ordering matters: the fallback runs on the stripped
+                # text, so a turn that is only an unpromotable call block has no
+                # think span, stays empty, and still does not get nudged.
+                replayable_answer = "\n".join(
+                    visible_answer[start:end]
+                    for start, end in _think_spans_outside_tool_markup(visible_answer)
+                ).strip()
             if (
                 tools_available
                 and nudge_enabled(policy.nudge_tool_calls)

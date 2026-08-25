@@ -780,6 +780,62 @@ def test_a_stalled_model_is_nudged_to_act(executed):
     assert second[-2]["content"] == "I'll search for that now."
 
 
+def test_a_reasoning_only_stall_is_nudged_and_replayed(executed):
+    """Magistral-style stalls put the whole promise inside the think block.
+
+    Stripping tool markup empties such a turn, so classifying the stripped text
+    alone would drop the nudge the local loops still give. The replayed turn must
+    be the text that was classified, or the retry is user -> user again.
+    """
+    stall = "[THINK]I will search now.[/THINK]"
+    transport = FakeTransport(
+        [
+            [_sse({"content": stall}), _sse(finish = "stop"), _DONE],
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "c1",
+                                "function": {"name": "web_search", "arguments": "{}"},
+                            }
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "answer"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    _run(transport, nudge_tool_calls = True)
+
+    assert [c["name"] for c in executed] == ["web_search"]
+    second = transport.requests[1]["messages"]
+    assert [message["role"] for message in second] == ["user", "assistant", "user"]
+    assert second[-2]["content"] == stall
+
+
+def test_a_markup_only_stall_is_still_not_nudged(executed):
+    """The reasoning fallback runs on the stripped text, so it must not revive Case G."""
+    transport = FakeTransport(
+        [
+            [
+                _sse({"content": '<tool_call>{"name": "not_enabled"}</tool_call>'}),
+                _sse(finish = "stop"),
+                _DONE,
+            ],
+            [_sse({"content": "SHOULD NOT APPEAR"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    _run(transport, auto_heal = False, nudge_tool_calls = True)
+
+    assert executed == []
+    assert len(transport.requests) == 1
+
+
 def test_a_stalled_model_is_not_nudged_by_default(executed, monkeypatch):
     """An API caller that omits the opt-in must not get a hidden retry."""
     from core.inference import passthrough_healing
