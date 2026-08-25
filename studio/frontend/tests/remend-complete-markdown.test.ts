@@ -2,7 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { type Dirent, readFileSync, readdirSync } from "node:fs";
+import path from "node:path";
 import test from "node:test";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import remend from "remend";
 
@@ -20,17 +23,20 @@ import remend from "remend";
  * The first test fails on remend 1.3.0, which is the point of the bump.
  */
 
+// remend 1.3.0 does not recognise `\( ... \)` or `\[ ... \]` as math, so it counts the `_` of a
+// subscript as an unmatched emphasis marker and "completes" it by appending another one. The
+// document is COMPLETE, so there is nothing to complete, and Studio renders the extra character
+// literally at the end of the message. Shared with the copy sweep below, which runs the same four
+// documents through every remend on disk rather than through the one this file imports.
+const COMPLETE_LATEX_DOCUMENTS = [
+  String.raw`where \( \delta_{r} = 1 \) holds.`,
+  "\\[ \\delta_{r} = 1 \\]\n",
+  String.raw`where $ \delta_{r} = 1 $ holds.`,
+  String.raw`where \( \delta_{r} = \beta_{k} \) holds.`,
+];
+
 test("a complete document with LaTeX subscripts comes back untouched", () => {
-  // remend 1.3.0 does not recognise `\( ... \)` or `\[ ... \]` as math, so it counts the `_` of a
-  // subscript as an unmatched emphasis marker and "completes" it by appending another one. The
-  // document is COMPLETE, so there is nothing to complete, and Studio renders the extra character
-  // literally at the end of the message.
-  for (const complete of [
-    String.raw`where \( \delta_{r} = 1 \) holds.`,
-    "\\[ \\delta_{r} = 1 \\]\n",
-    String.raw`where $ \delta_{r} = 1 $ holds.`,
-    String.raw`where \( \delta_{r} = \beta_{k} \) holds.`,
-  ]) {
+  for (const complete of COMPLETE_LATEX_DOCUMENTS) {
     assert.equal(
       remend(complete, {}),
       complete,
@@ -79,6 +85,88 @@ test("a truncated stream is still repaired", () => {
       repaired.length >= truncated.length - marker.length,
       `the repair of ${JSON.stringify(truncated)} lost the document`,
     );
+  }
+});
+
+const FRONTEND_ROOT = fileURLToPath(new URL("..", import.meta.url));
+
+// Every `node_modules/**/remend` in the tree, in npm's own layout: a package's private copy lives
+// at `<package>/node_modules/remend`, and a scoped directory holds packages rather than packages
+// of its own.
+function collectRemendCopies(nodeModules: string, found: string[]): string[] {
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(nodeModules, { withFileTypes: true });
+  } catch {
+    return found;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+    const full = path.join(nodeModules, entry.name);
+    if (entry.name === "remend") {
+      found.push(full);
+    } else if (entry.name.startsWith("@")) {
+      collectRemendCopies(full, found);
+    } else {
+      collectRemendCopies(path.join(full, "node_modules"), found);
+    }
+  }
+  return found;
+}
+
+test("every remend in the tree is the pinned one, including Streamdown's", async () => {
+  // THE COPY THIS FILE IMPORTS IS NOT NECESSARILY THE ONE THE UI RUNS. Studio renders settled
+  // bodies through `<Streamdown parseIncompleteMarkdown>`, and streamdown@2.5.0 depends on
+  // `"remend": "1.3.0"` EXACTLY, so its own `import remend from "remend"` resolves against
+  // `node_modules/streamdown/node_modules` first. Bumping the top-level pin to 1.3.1 therefore
+  // makes npm nest a second, older copy under streamdown unless `overrides.remend` forces one
+  // version on the whole tree; verified with `npm install --package-lock-only` after deleting the
+  // override, which writes `node_modules/streamdown/node_modules/remend -> 1.3.0` into the lock.
+  //
+  // In that state the tests above still pass, because they import the hoisted 1.3.1, while the
+  // rendered message goes back to `where \( \delta_{r} = 1 \) holds._`. So the version is asserted
+  // where Streamdown would find it, not only where this file finds it.
+  const copies = collectRemendCopies(
+    path.join(FRONTEND_ROOT, "node_modules"),
+    [],
+  );
+  assert.ok(
+    copies.length > 0,
+    "no remend under node_modules: run `npm ci` first",
+  );
+
+  const manifest = JSON.parse(
+    readFileSync(path.join(FRONTEND_ROOT, "package.json"), "utf8"),
+  ) as { dependencies: Record<string, string> };
+  const pinned = manifest.dependencies.remend;
+
+  for (const copy of copies) {
+    const copyManifest = JSON.parse(
+      readFileSync(path.join(copy, "package.json"), "utf8"),
+    ) as { version: string; module?: string; main?: string };
+    assert.equal(
+      copyManifest.version,
+      pinned,
+      `${path.relative(FRONTEND_ROOT, copy)} is remend ${copyManifest.version}, not the pinned ${pinned}`,
+    );
+    const entry = copyManifest.module ?? copyManifest.main;
+    assert.ok(entry, `remend at ${copy} has no module entry point`);
+    const loaded = (await import(
+      pathToFileURL(path.join(copy, entry)).href
+    )) as {
+      default: (text: string, options?: object) => string;
+    };
+    for (const complete of COMPLETE_LATEX_DOCUMENTS) {
+      // `undefined`, not `{}`: Streamdown forwards its optional `remend` prop straight through, and
+      // Studio does not pass one.
+      assert.equal(
+        loaded.default(complete, undefined),
+        complete,
+        `${path.relative(FRONTEND_ROOT, copy)} rewrote a complete document: ${JSON.stringify(complete)}`,
+      );
+    }
   }
 });
 
