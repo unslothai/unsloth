@@ -958,7 +958,6 @@ class TestEstimateMemoryRoute:
         # KeyError, a concurrent insert RuntimeError, and neither is caught between
         # there and the worker, so it surfaces as a 500 on a slider drag.
         import inspect
-
         for source in (
             inspect.getsource(ri._gguf_resident_file_gb),
             inspect.getsource(ri._cached_estimate_config),

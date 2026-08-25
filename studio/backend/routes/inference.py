@@ -8130,7 +8130,6 @@ def _estimate_target_is_on_this_disk(model_identifier: str) -> bool:
         candidates.append(f"unsloth/{identifier}")
     try:
         from utils.models.model_config import _iter_hf_cache_snapshots
-
         roots = _estimate_hf_cache_roots()
     except Exception:
         return True
@@ -8162,7 +8161,6 @@ def _estimate_hf_cache_roots() -> list:
     """
     try:
         from hub.utils.hf_cache_state import hf_cache_roots
-
         roots = [Path(r) for r in hf_cache_roots()]
         if roots:
             return roots
@@ -8186,14 +8184,12 @@ def _estimate_hf_cache_roots() -> list:
 
     try:
         from utils.hf_cache_settings import known_hf_hub_caches
-
         for configured in known_hf_hub_caches():
             _add(configured)
     except Exception:
         pass
     try:
         from huggingface_hub import constants as _hf_constants
-
         _add(getattr(_hf_constants, "HF_HUB_CACHE", None))
     except Exception:
         pass
