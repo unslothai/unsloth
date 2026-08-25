@@ -1965,3 +1965,24 @@ test("the chat walk's bracket pair is reserved on macOS only", () => {
   const walk = SHORTCUT_DEFS.find((def) => def.id === "nextChat");
   assert.equal(defaultBindingFor(walk!, "primary", true), "Mod+Shift+BracketRight");
 });
+
+// The desktop signs out through the OS account menu, so the chord's handler
+// returns there and the sidebar hides its own logout item. Offering the row in
+// Settings let a desktop user bind a key that can never fire.
+test("the logout row is not offered on the desktop build", async () => {
+  const logout = SHORTCUT_DEFS.find((def) => def.id === "logOut");
+  assert.equal(logout?.webOnly, true);
+  // Nothing else claims it, or the flag would hide a working action.
+  assert.deepEqual(
+    SHORTCUT_DEFS.filter((def) => def.webOnly).map((def) => def.id),
+    ["logOut"],
+  );
+  const tab = await readFile(
+    new URL(
+      "../src/features/settings/tabs/keyboard-shortcuts-tab.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(tab, /!\(isTauri && def\.webOnly\)/);
+});

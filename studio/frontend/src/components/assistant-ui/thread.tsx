@@ -5813,9 +5813,18 @@ const ComposerToolsMenu: FC<{
   // the chat pane is hidden rather than unmounted, so the chords gate on it
   // being the visible tab; a window listener does not care about `inert`.
   const chatActive = useChatActive();
-  useShortcut("attachFiles", () => pickAttachment(), {
-    enabled: chatActive && composerCanAddAttachments,
-  });
+  useShortcut(
+    "attachFiles",
+    () => {
+      // The OS file chooser is the least dismissable thing a chord can raise,
+      // and `chatActive` is the visible tab rather than the foreground, so a
+      // dialog over Chat left this live. Asked at press time, as send and
+      // dictation above already do.
+      if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
+      pickAttachment();
+    },
+    { enabled: chatActive && composerCanAddAttachments },
+  );
   // Exports are storage-backed; temporary chats intentionally never write there.
   const messageCount = useAuiState(({ thread }) => thread.messages.length);
   const exportDisabled = incognito || !activeThreadId || messageCount === 0;

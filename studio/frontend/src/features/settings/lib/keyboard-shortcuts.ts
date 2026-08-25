@@ -89,6 +89,12 @@ export interface ShortcutDef {
   nonMacDefaultAlternateBinding?: string | null;
   /** Allow a chord with no modifier. Only for prompt-gated actions. */
   allowBareKey?: boolean;
+  /**
+   * Hide the row on the desktop build, for an action the desktop does not
+   * carry. The chord would register against a handler that returns, so
+   * offering it there is offering a key that does nothing.
+   */
+  webOnly?: boolean;
 }
 
 /** `code` is KeyboardEvent.code, so a binding survives a layout change. `mod`
@@ -211,7 +217,9 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   def("clearAllUnreads", "Shift+Escape", {
     nonMacDefaultBinding: "Mod+Alt+Shift+KeyU",
   }),
-  def("logOut", null),
+  // Desktop signs out through the OS account menu, and the sidebar hides its
+  // own logout item there, so this row would bind a chord that cannot fire.
+  def("logOut", null, { webOnly: true }),
   def("openSettings", "Mod+Comma"),
   // Bare ⏎ / Esc: both register only while a tool call is waiting.
   def("approveToolRequest", "Enter", { allowBareKey: true }),

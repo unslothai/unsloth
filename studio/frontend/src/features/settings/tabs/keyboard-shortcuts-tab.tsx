@@ -208,7 +208,9 @@ export function KeyboardShortcutsTab() {
 
   // One list, in registry order, so the daily rows sit above the fold.
   const visible = SHORTCUT_DEFS.filter(
-    (def) => !matches || matches.has(def.id),
+    // A web-only row on the desktop build would bind a chord whose handler
+    // returns, so it is left out rather than shown as a key that does nothing.
+    (def) => (!matches || matches.has(def.id)) && !(isTauri && def.webOnly),
   );
 
   const startRecording = (def: ShortcutDef, slot: ShortcutSlot) => {

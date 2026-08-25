@@ -1932,9 +1932,16 @@ export function SharedComposer({
     },
     { enabled: chatActive && canSend },
   );
-  useShortcut("attachFiles", () => fileInputRef.current?.click(), {
-    enabled: chatActive,
-  });
+  useShortcut(
+    "attachFiles",
+    () => {
+      // As in the single-chat composer: a dialog over Chat would otherwise
+      // raise the OS file chooser from behind it.
+      if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
+      fileInputRef.current?.click();
+    },
+    { enabled: chatActive },
+  );
 
   // Adjustable "+" menu items, keyed by id. Pinned ones render at the top
   // level; the rest fall into the "More" overflow submenu. Core items (photos,

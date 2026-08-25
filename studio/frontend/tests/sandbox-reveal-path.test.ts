@@ -177,15 +177,17 @@ test("the legacy probe runs whichever project the chat sits in now", () => {
   // This used to skip a chat outside a project, on the grounds that one moved
   // OUT wrote under project-<id> and nothing retains which one. A chat can join
   // a project, record that session, and move back out, and skipping the probe
-  // there reported one folder while its older files stayed hidden. Both the
-  // thread folder and the project the chat sits in now are probed, since a chat
-  // that ran tools on both sides of a move has files in each.
+  // there reported one folder while its older files stayed hidden. The thread
+  // folder is probed whichever project the chat sits in now; the project
+  // workspace is not, since every chat in the project writes to it.
   const start = SIDEBAR.indexOf("async function sandboxSessionIdsHolding");
   assert.notEqual(start, -1, "the legacy probe moved");
   const block = SIDEBAR.slice(start, SIDEBAR.indexOf("\n  }", start));
   assert.ok(!block.includes("if (!item.projectId) return recorded;"));
   assert.ok(block.includes("sandboxHasFiles(candidate)"));
-  assert.ok(block.includes("sandboxSessionIdFor(ids[0], projectId)"));
+  // Not the project workspace: it is shared by every chat in the project, so
+  // files there say nothing about this one.
+  assert.ok(!block.includes("sandboxSessionIdFor("));
 });
 
 test("a recorded session does not hide a legacy folder beside it", () => {

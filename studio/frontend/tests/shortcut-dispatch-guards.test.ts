@@ -344,7 +344,7 @@ test("the sidebar's mutating chords refuse to fire under a dialog", async () => 
 // A chat that ran tools before and after joining a project has files in the
 // thread folder and in the project one. Probing only the thread folder
 // answered for one and hid the other.
-test("the sandbox probe covers the current project folder too", async () => {
+test("the sandbox probe leaves the shared project folder alone", async () => {
   const sidebar = await readFile(
     new URL("../src/components/app-sidebar.tsx", import.meta.url),
     "utf8",
@@ -352,15 +352,12 @@ test("the sandbox probe covers the current project folder too", async () => {
   const at = sidebar.indexOf("async function sandboxSessionIdsHolding(");
   assert.notEqual(at, -1);
   const body = sidebar.slice(at, sidebar.indexOf("\n  }", at));
-  assert.match(body, /projectId: string \| null \| undefined/);
-  assert.match(body, /sandboxSessionIdFor\(ids\[0\], projectId\)/);
-  // Derived and then actually probed: naming it is not adding it.
-  assert.match(body, /if \(projectSandbox\) candidates\.add\(projectSandbox\);/);
-  // Both callers have to pass it, or the union is the old one.
-  assert.equal(
-    sidebar.split("sandboxSessionIdsHolding(ids, item.projectId)").length - 1,
-    2,
-  );
+  // The shared project workspace is not probed: every chat in the project
+  // writes there, so its files are no evidence about this one, and counting
+  // them reported a second folder for any chat that joined a used project.
+  assert.doesNotMatch(body, /sandboxSessionIdFor\(/);
+  assert.doesNotMatch(body, /candidates\.add\(/);
+  assert.equal(sidebar.split("sandboxSessionIdsHolding(ids)").length - 1, 2);
 });
 
 // Loading a model that drops the level in force leaves the effort set to one
@@ -454,4 +451,22 @@ test("the header pickers do not open behind a dialog", async () => {
     page,
     /isSurfaceBackgrounded\(COMPOSER_INPUT_SELECTOR\)/,
   );
+});
+
+// The OS file chooser is the least dismissable thing a chord can raise.
+test("both composers refuse to attach from behind a modal", async () => {
+  for (const path of [
+    "../src/components/assistant-ui/thread.tsx",
+    "../src/features/chat/shared-composer.tsx",
+  ]) {
+    const source = await readFile(new URL(path, import.meta.url), "utf8");
+    const at = source.indexOf('useShortcut(\n    "attachFiles"');
+    assert.notEqual(at, -1, `${path} lost its attach chord`);
+    const body = source.slice(at, source.indexOf("\n  );", at));
+    assert.match(
+      body,
+      /if \(!isSurfaceInForeground\(COMPOSER_INPUT_SELECTOR\)\) return;/,
+      `${path} opens the file chooser behind a dialog`,
+    );
+  }
 });

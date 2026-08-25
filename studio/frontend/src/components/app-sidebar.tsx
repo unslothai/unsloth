@@ -2519,9 +2519,10 @@ export function AppSidebar() {
    * Chats stored before results carried a session recorded nothing, so one that
    * ran loose and has since joined a project would be answered with the project
    * workspace. Its thread sandbox is the only other candidate, and files there
-   * are this chat's. Probed whichever project the chat sits in now, including
-   * none: a chat can join a project, record that session, and move back out,
-   * and current membership says nothing about where its older files went.
+   * are this chat's, which is what makes them worth probing: a chat can join a
+   * project, record that session, and move back out, and current membership
+   * says nothing about where its older files went. The project workspace is
+   * not probed, because it belongs to every chat in the project alike.
    *
    * A union rather than a fallback. One recorded id is not evidence that the
    * others are recorded too: a chat can have run a tool before recording
@@ -2532,20 +2533,16 @@ export function AppSidebar() {
    * once: the copy path skipped the probe and reported success on a folder the
    * chat had never written to.
    */
-  async function sandboxSessionIdsHolding(
-    ids: string[],
-    projectId: string | null | undefined,
-  ): Promise<string[]> {
+  async function sandboxSessionIdsHolding(ids: string[]): Promise<string[]> {
     const recorded = await recordedSandboxSessionIds(ids);
-    // The thread folder and the chat's current project folder are both
-    // candidates, and a chat that ran tools on both sides of a move has files
-    // in each. Probing only the thread folder answered for one and hid the
-    // other, which is the case the union above exists for.
-    const candidates = new Set<string>(ids);
-    const projectSandbox = sandboxSessionIdFor(ids[0], projectId);
-    if (projectSandbox) candidates.add(projectSandbox);
+    // Thread folders only. A project sandbox is shared by every chat in the
+    // project, so files there are no evidence that THIS chat wrote them, and
+    // counting one would report a second folder for any chat that joined a
+    // project someone else had already used. Both callers already fall back to
+    // the folder membership gives them when nothing here names one, which is
+    // the honest answer where there is no evidence either way.
     const held: string[] = [];
-    for (const candidate of candidates) {
+    for (const candidate of ids) {
       // Already named, so there is nothing a probe could add.
       if (recorded.includes(candidate)) continue;
       if (await sandboxHasFiles(candidate)) held.push(candidate);
@@ -2568,7 +2565,7 @@ export function AppSidebar() {
     const copied = await copyToClipboardFrom(async () => {
       let sessionId: string | undefined;
       try {
-        const distinct = await sandboxSessionIdsHolding(ids, item.projectId);
+        const distinct = await sandboxSessionIdsHolding(ids);
         if (distinct.length > 1) {
           refusal.value = {
             title: "This chat wrote to more than one folder.",
@@ -3210,7 +3207,7 @@ export function AppSidebar() {
                             // membership, the answer the recorded id overrides.
                             const ids =
                               threadIds.length > 0 ? threadIds : [item.id];
-                            const distinct = await sandboxSessionIdsHolding(ids, item.projectId);
+                            const distinct = await sandboxSessionIdsHolding(ids);
                             if (distinct.length > 1) {
                               toast.error("This chat wrote to more than one folder.", {
                                 description:
