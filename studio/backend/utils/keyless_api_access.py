@@ -309,17 +309,13 @@ def _full_scope_transport_allowed(request: Any, app_state: Any) -> bool:
 def _browser_initiated_elsewhere(request: Any) -> bool:
     """Whether a page on another site made this request, as the browser reports it.
 
-    ``Origin`` alone does not answer that. No browser attaches it to a same-origin
-    GET, nor to a cross-site GET issued in ``no-cors`` mode -- and a ``no-cors``
-    fetch at ``http://127.0.0.1:<port>`` really does arrive, since only Chromium
-    holds those back with Private Network Access. So the Origin rule below sees
-    nothing, and the page gets a keyless request it did not have to authenticate.
-
-    ``Sec-Fetch-Site`` closes that: the browser sets it on every request whatever
-    the mode, and a page cannot forge it, because the ``Sec-`` prefix makes it a
-    forbidden header name. Absence has to stay admitted -- curl, the OpenAI SDKs
-    and Safari before 16.4 all send nothing, and the whole point of the setting is
-    to serve them -- so this only ever narrows what a browser can reach.
+    ``Origin`` cannot say: no browser attaches it to a same-origin GET or to a
+    cross-site GET in ``no-cors`` mode, and such a fetch at
+    ``http://127.0.0.1:<port>`` does arrive, since only Chromium holds it back with
+    Private Network Access. ``Sec-Fetch-Site`` is set on every request whatever the
+    mode, and the ``Sec-`` prefix makes it a forbidden header name, so a page cannot
+    forge it. Absence stays admitted: curl, the OpenAI SDKs and Safari before 16.4
+    send nothing, and serving them is the point of the setting.
     """
     try:
         site = request.headers.get("sec-fetch-site")

@@ -1,11 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Adversarial probes for keyless API access, written while reviewing PR #9102.
+"""Adversarial probes for keyless API access, from the review of PR #9102.
 
-Everything here targets a property the PR's own suite asserts only at the
-predicate layer, only in one direction, or not at all. Kept in a separate file so
-the PR's test-line budget is untouched.
+Each targets a property the merged suite asserts only at the predicate layer,
+only in one direction, or not at all. Separate file so that suite is untouched.
 """
 
 from __future__ import annotations
@@ -117,7 +116,7 @@ def resolve(request):
 
 
 def test_scope_off_is_refused_by_the_security_dependency_not_only_the_predicate():
-    """The PR asserts scope=off at `scope_covers` level. Assert it where it matters."""
+    """The merged suite asserts scope=off at `scope_covers` level. Assert it where it counts."""
     seed_user()
     set_keyless_api_access("off")
     with pytest.raises(HTTPException) as caught:
@@ -173,7 +172,7 @@ def test_a_keyless_caller_cannot_widen_its_own_scope():
 
 
 def test_inference_is_refused_from_a_public_bind_and_a_public_peer():
-    """No PR test exercises the inference limb with a genuinely public transport."""
+    """Nothing exercises the inference limb with a genuinely public transport."""
     seed_user()
     set_keyless_api_access("inference")
     public = app_state(bind_host = "64.227.100.5")
@@ -204,7 +203,7 @@ def test_inference_is_refused_from_a_public_bind_and_a_public_peer():
 
 
 def test_full_scope_denials_survive_without_the_tunnel_flag():
-    """The PR's wildcard/LAN denials pass even with `_full_scope_transport_allowed` gone.
+    """The merged wildcard/LAN denials pass even with `_full_scope_transport_allowed` gone.
 
     `_remote_connector_active` is left True there, so `_public_tunnel_active`
     short-circuits first. With it cleared, the loopback rule has to carry them.
@@ -231,7 +230,7 @@ def test_full_scope_denials_survive_without_the_tunnel_flag():
 
 
 def test_every_hosted_mode_flag_closes_full_and_inference():
-    """`lan_access_is_colab` and `lan_access_secure_launch` are never exercised by the PR."""
+    """`lan_access_is_colab` and `lan_access_secure_launch` are otherwise unexercised."""
     seed_user()
     for scope in ("inference", "full"):
         set_keyless_api_access(scope)
@@ -256,7 +255,7 @@ def test_every_hosted_mode_flag_closes_full_and_inference():
 
 
 def test_management_routes_are_never_covered_by_inference_scope():
-    """The PR only asserts the positive `full` form for /api/*."""
+    """Only the positive `full` form is asserted for /api/* elsewhere."""
     for method, path in (
         ("POST", "/api/train/start"),
         ("PUT", "/api/settings/keyless-api-access"),
@@ -362,10 +361,10 @@ def test_a_session_jwt_naming_an_unknown_subject_is_refused():
 
 
 def test_the_asgi_twin_agrees_with_the_dependency_on_header_shapes():
-    """`asgi_request_is_keyless` is imported by the PR suite and never called.
+    """`asgi_request_is_keyless` is imported by the merged suite and never called.
 
-    It is a second implementation of the duplicate-header and dummy-bearer rules;
-    only the `_BearerOrKeyless` copy is tested.
+    A second implementation of the duplicate-header and dummy-bearer rules; only
+    the `_BearerOrKeyless` copy is otherwise tested.
     """
     seed_user()
     set_keyless_api_access("inference")
