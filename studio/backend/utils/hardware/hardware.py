@@ -2328,7 +2328,8 @@ def _match_adapter_used_by_luid(
         if luid is not None and luid in records:
             useds_by_luid.setdefault(luid, []).append(used)
 
-    vacuous: Optional[tuple[list[Optional[float]], float]] = None
+    best: Optional[tuple[list[Optional[float]], float]] = None
+    best_resolved = -1
 
     for field, record_key, device_key in (
         (
@@ -2362,17 +2363,19 @@ def _match_adapter_used_by_luid(
             continue
         matched = _attribute_adapter_useds_by_key(useds_by_key, positions_by_key, dev_meta)
         if matched is not None:
-            # Same-keyed cards leave per-device unknown and feed only the
-            # aggregate (#7452). That is a result, not a reason to stop: falling
-            # through to gfx has to cover a vacuous success too, or two
-            # same-named cards of different arch stay unknown where gfx would
-            # separate them. Keep the first for its aggregate, prefer any later
-            # pass that attributes.
-            if any(used is not None for used in matched[0]):
+            # Same-keyed cards leave those devices unknown and feed only the
+            # aggregate (#7452). That is a result, not a reason to stop, and it
+            # is not all-or-nothing: a host with one uniquely named card beside
+            # two same-named ones of different arch resolves ONE device by name
+            # and all three by gfx. So rank passes by how many devices they
+            # actually place, keep the first on a tie, and stop early only on a
+            # pass that leaves nothing for a later one to improve.
+            resolved = sum(used is not None for used in matched[0])
+            if resolved == len(dev_meta):
                 return matched
-            if vacuous is None:
-                vacuous = matched
-    return vacuous
+            if resolved > best_resolved:
+                best, best_resolved = matched, resolved
+    return best
 
 
 def _match_adapter_used_to_devices(

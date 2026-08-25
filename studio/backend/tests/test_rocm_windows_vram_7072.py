@@ -634,6 +634,46 @@ def test_the_arch_answers_when_the_names_do_not(win_rocm, monkeypatch):
     assert aggregate == pytest.approx(1.7, abs = 0.01)
 
 
+def test_a_partial_name_pass_still_lets_the_arch_finish_the_job(win_rocm, monkeypatch):
+    """Three cards, one uniquely named and two sharing a name but not an arch.
+
+    The name pass places the unique card and leaves the pair unknown, which is a
+    real result and used to end the search. It should not: the arch separates
+    all three, and the pass that places more devices is the one to keep.
+    """
+    devices_spec = [
+        ("AMD Radeon PRO W7900", 48 * GB, "gfx1100"),
+        ("AMD Radeon RX 9070", 16 * GB, "gfx1201"),
+        ("AMD Radeon RX 9070", 16 * GB, "gfx1200"),  # same name, different arch
+    ]
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(devices_spec, free_equals_total = True))
+    adapters = [
+        ("luid_0x00000000_0x0000a001_phys_0", 30.0 * GB),
+        ("luid_0x00000000_0x0000b002_phys_0", 10.0 * GB),
+        ("luid_0x00000000_0x0000c003_phys_0", 5.0 * GB),
+    ]
+    monkeypatch.setattr(
+        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(adapters))
+    )
+    monkeypatch.setattr(
+        hw,
+        "_windows_amd_adapter_records_by_luid",
+        lambda: {
+            0xA001: {"name": "AMD Radeon PRO W7900", "gfx": "gfx1100"},
+            0xB002: {"name": "AMD Radeon RX 9070", "gfx": "gfx1201"},
+            0xC003: {"name": "AMD Radeon RX 9070", "gfx": "gfx1200"},
+        },
+    )
+
+    devices, aggregate = hw._rocm_windows_per_device_vram([0, 1, 2])
+    assert [d["used_gb"] for d in devices] == [
+        pytest.approx(30.0, abs = 0.01),
+        pytest.approx(10.0, abs = 0.01),
+        pytest.approx(5.0, abs = 0.01),
+    ]
+    assert aggregate == pytest.approx(45.0, abs = 0.01)
+
+
 def test_the_arch_pass_needs_every_record_to_have_one(win_rocm, monkeypatch):
     """A driver too old to write AdapterFamily leaves a record the arch cannot
     key. Running the pass on the rest would let the adapters that do carry one
