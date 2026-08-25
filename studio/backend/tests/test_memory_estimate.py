@@ -1664,9 +1664,7 @@ class TestLaunchShapedPricing:
         assert downgraded.compute_bytes < as_tensor.compute_bytes
         assert downgraded.total_bytes < as_tensor.total_bytes
 
-    def test_manual_auto_layers_is_priced_as_the_layer_load_it_launches(
-        self, spec_config, swa
-    ):
+    def test_manual_auto_layers_is_priced_as_the_layer_load_it_launches(self, spec_config, swa):
         # Manual with Auto layers hands the budget to llama.cpp --fit, which load_model
         # says outright is incompatible with tensor parallelism and drops the split for.
         # Two cards are visible and pinned, so nothing else downgrades it: only the
@@ -1680,9 +1678,7 @@ class TestLaunchShapedPricing:
             gpu_memory_mode = "manual",
             tensor_split_possible = True,
         )
-        auto_layers = ri._gguf_memory_breakdown(
-            spec_config, swa, gpu_layers = None, **priced
-        )
+        auto_layers = ri._gguf_memory_breakdown(spec_config, swa, gpu_layers = None, **priced)
         explicit = ri._gguf_memory_breakdown(spec_config, swa, gpu_layers = 40, **priced)
         assert auto_layers.compute_bytes != explicit.compute_bytes
         # The layer-split arm, which is what /load runs here.
@@ -1691,9 +1687,7 @@ class TestLaunchShapedPricing:
         )
         assert auto_layers.compute_bytes == as_layers.compute_bytes
 
-    def test_manual_zero_layers_is_priced_as_the_cpu_load_it_launches(
-        self, spec_config, swa
-    ):
+    def test_manual_zero_layers_is_priced_as_the_cpu_load_it_launches(self, spec_config, swa):
         # gpu_layers=0 leaves nothing on the GPU to split. load_model drops the split
         # rather than let --split-mode tensor abort the server under the CPU-only mask,
         # so a tensor price here is per-device buffers for a load that takes no VRAM.
