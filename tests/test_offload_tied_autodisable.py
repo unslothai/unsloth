@@ -28,11 +28,21 @@ VISION = os.path.join(HERE, "unsloth", "models", "vision.py")
 _SRC = open(VISION, encoding = "utf-8").read()
 
 
+_DISTRIBUTED = [False]
+
+
 def _load(*names):
     mod = ast.parse(_SRC)
     # The sentinel lives in loader_utils; importing that module would drag in torch's CUDA
     # stack, so mirror the one value these functions read.
-    ns = {"torch": torch, "os": os, "OFFLOAD_EMBEDDING_AUTO": "auto"}
+    # `is_distributed` is driven explicitly so the assertions never depend on whether the
+    # host happens to have torchrun's env vars set.
+    ns = {
+        "torch": torch,
+        "os": os,
+        "OFFLOAD_EMBEDDING_AUTO": "auto",
+        "is_distributed": lambda: _DISTRIBUTED[0],
+    }
     wanted = set(names)
     for node in mod.body:
         if isinstance(node, ast.FunctionDef) and node.name in wanted:
@@ -346,3 +356,35 @@ def test_explicit_true_and_false_are_untouched_by_the_auto_default():
         # 80 GB card, so `"auto"` would decline; an explicit True must not.
         assert resolve(model, True) is True
         assert resolve(model, False) is False
+
+
+@contextmanager
+def _under_ddp():
+    _DISTRIBUTED[0] = True
+    try:
+        yield
+    finally:
+        _DISTRIBUTED[0] = False
+
+
+def test_a_distributed_launch_declines_the_offload(capsys):
+    """The offload leaves embed_tokens on the CPU while the rest of the rank stays on CUDA.
+    Under full finetuning that parameter is trainable, and DDP wrapping with device_ids
+    refuses a module whose trainable parameters span both, so the run dies before step 1.
+    The old False default kept distributed callers away from this; the new one does not."""
+    with _as_platform("posix"), _card(16 * 2**30), _under_ddp():
+        assert resolve(_sized_model(int(2.5 * 2**30)), "auto") is False
+    assert capsys.readouterr().out == ""
+
+
+def test_a_distributed_launch_also_declines_an_explicit_request(capsys):
+    """Same veto for someone who asked outright, with the reason, as the other declines do.
+    It is a VRAM optimisation, not a correctness switch, so turning it off beats failing."""
+    with _as_platform("posix"), _card(16 * 2**30), _under_ddp():
+        assert resolve(_sized_model(int(2.5 * 2**30)), True) is False
+    assert "distributed launch" in capsys.readouterr().out
+
+
+def test_a_single_process_run_is_unaffected():
+    with _as_platform("posix"), _card(16 * 2**30):
+        assert resolve(_sized_model(int(2.5 * 2**30)), "auto") is True

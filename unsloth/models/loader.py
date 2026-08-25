@@ -2032,7 +2032,18 @@ class FastModel(FastBaseModel):
             whisper_language = whisper_language,
             whisper_task = whisper_task,
             auto_config = model_config,
-            offload_embedding = offload_embedding,
+            auto_config_from_caller = user_config is not None,
+            # `resize_token_embeddings` below replaces the embedding module, and forward
+            # hooks do not travel to the replacement, so an offload installed during the
+            # load would leave a CPU embedding feeding a GPU decoder. Decline the automatic
+            # one rather than offload something about to be thrown away; an explicit
+            # request is left alone, since it was already this caller's to get wrong.
+            offload_embedding = (
+                False
+                if resize_model_vocab is not None
+                and offload_embedding is OFFLOAD_EMBEDDING_AUTO
+                else offload_embedding
+            ),
             float32_mixed_precision = float32_mixed_precision,
             # Pass vLLM/inference parameters
             fast_inference = fast_inference,

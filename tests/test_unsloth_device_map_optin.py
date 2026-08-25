@@ -737,6 +737,35 @@ def test_every_leaf_planner_call_forwards_the_budget_and_the_hub(name):
     raise AssertionError(f"no resolve_unsloth_device_map call in {name}")
 
 
+def test_the_wrapper_tells_the_leaf_the_config_was_the_callers():
+    """FastModel pops `config` out of kwargs at loader.py:1248 and forwards it as
+    `auto_config`, so by the time FastBaseModel looks, its own `kwargs.pop("config")` is
+    None and a veto keyed on that alone never fires on the path almost everyone uses.
+    The flag travels explicitly, the way `text_only_decoder` already does for the same
+    reason: `auto_config` no longer describing the repo cannot be inferred downstream."""
+    loader = open(os.path.join(MODELS, "loader.py"), encoding = "utf-8").read()
+    assert "auto_config_from_caller = user_config is not None" in loader
+
+    vision = open(os.path.join(MODELS, "vision.py"), encoding = "utf-8").read()
+    args = [
+        a.arg
+        for node in ast.walk(ast.parse(vision))
+        if isinstance(node, ast.FunctionDef) and node.name == "from_pretrained"
+        for a in list(node.args.args) + list(node.args.kwonlyargs)
+    ]
+    assert "auto_config_from_caller" in args, "the leaf cannot see that the config was theirs"
+    assert "or auto_config_from_caller" in vision
+
+
+def test_a_resize_declines_the_automatic_offload():
+    """`resize_token_embeddings` replaces the embedding module, and forward hooks do not
+    travel to the replacement, so an offload installed during the load would leave a CPU
+    embedding feeding a GPU decoder. An explicit request is left alone."""
+    loader = open(os.path.join(MODELS, "loader.py"), encoding = "utf-8").read()
+    assert "resize_model_vocab is not None" in loader
+    assert "and offload_embedding is OFFLOAD_EMBEDDING_AUTO" in loader
+
+
 def test_a_caller_supplied_config_declines_planning():
     """The weights load against their config; the planner rebuilds the repo's. Same class,
     different `num_hidden_layers` or `vocab_size`, and the map omits blocks or under-budgets

@@ -399,6 +399,12 @@ def _resolve_offload_embedding(model, offload_embedding):
         return _decline("this model ties embed_tokens to lm_head, so offloading saves no VRAM.")
     if _embedding_dispatch_device(in_embed) is not None:
         return _decline("this model is dispatched across devices, which overrides the offload.")
+    if is_distributed():
+        # The offload leaves embed_tokens on the CPU while the rest of the rank stays on its
+        # CUDA device. Under full finetuning that parameter is trainable, and DDP wrapping
+        # with device_ids refuses a module whose trainable parameters span both, so the run
+        # dies before the first step.
+        return _decline("a distributed launch cannot wrap a model split across CPU and GPU.")
     return _embedding_is_worth_offloading(in_embed) if automatic else True
 
 
@@ -956,6 +962,10 @@ class FastBaseModel:
         # so `auto_config` no longer describes the repo. Set by loader.py, and by the block
         # below on the direct-call path.
         text_only_decoder = False,
+        # True when `auto_config` came from the caller rather than the repo. Same reason it
+        # cannot be inferred here: FastModel pops `config` out of kwargs before this sees
+        # them, so by now it is indistinguishable from one we resolved ourselves.
+        auto_config_from_caller = False,
         **kwargs,
     ):
         user_config = kwargs.pop("config", None)
@@ -1236,7 +1246,7 @@ class FastBaseModel:
         # `num_hidden_layers` or `vocab_size` and the map omits blocks or under-budgets
         # weights, which the class comparison above cannot see. Only the caller knows
         # whether their config still describes the repo, so do not guess.
-        if _planner_skip_reason is None and user_config is not None:
+        if _planner_skip_reason is None and (user_config is not None or auto_config_from_caller):
             _planner_skip_reason = (
                 "a caller-supplied config may not describe the repo the planner rebuilds"
             )
