@@ -1233,6 +1233,10 @@ def _inject_recall(conversation: list[dict], recall: dict, style: str) -> Option
 # A transport error can arrive before the child is reapable; a request path cannot
 # afford the 5s the background MTP reload spends on the same race.
 _RESPAWN_REAP_GRACE_S = 1.0
+# Stop replaying a pressure-sensitive load forever across independent requests.
+# A completed generation resets the chain; an explicit load naturally presents a
+# different process and starts a fresh one.
+_MAX_CONSECUTIVE_RESPAWN_ATTEMPTS = 3
 
 
 def _finalize_reasoning_only_cumulative(
@@ -4886,6 +4890,11 @@ class LlamaCppBackend:
         # Serialises mid-session respawns so many generations hitting a killed
         # server trigger at most one reload (see _respawn_if_dead).
         self._respawn_lock = threading.Lock()
+        # Process identity ties the counter to one automatic-recovery chain. A
+        # caller-driven load replaces the process without recording it here, so it
+        # receives a fresh budget even when it repeats the same model settings.
+        self._respawn_attempts = 0
+        self._respawned_process = None
         # Bumped by every unload. load_model clears _cancel_event, so a respawn that
         # raced an unload needs a signal that survives the clear (see _respawn_if_dead).
         self._unload_epoch = 0
@@ -23507,6 +23516,20 @@ class LlamaCppBackend:
                     intent = self._last_load_intent
                     if intent is None:
                         return False
+                    if proc is not self._respawned_process:
+                        self._respawn_attempts = 0
+                    if self._respawn_attempts >= _MAX_CONSECUTIVE_RESPAWN_ATTEMPTS:
+                        logger.error(
+                            "Automatic llama-server recovery stopped after "
+                            f"{_MAX_CONSECUTIVE_RESPAWN_ATTEMPTS} consecutive respawns "
+                            "without a completed generation. Reload the model after "
+                            "reducing GPU/RAM pressure or changing its load settings."
+                        )
+                        return False
+                    self._respawn_attempts += 1
+                    # Record before load_model: if it raises while leaving this corpse
+                    # installed, the next request must retain the consumed attempt.
+                    self._respawned_process = proc
                     epoch = self._unload_epoch
                     self._healthy = False
                 logger.warning(
@@ -23516,8 +23539,10 @@ class LlamaCppBackend:
                 try:
                     started = bool(self.load_model(intent))
                 except Exception as exc:
+                    self._respawned_process = self._process or proc
                     logger.error(f"Failed to respawn llama-server: {exc}")
                     return False
+                self._respawned_process = self._process or proc
                 if started and self._unload_epoch != epoch:
                     # An unload landed mid-reload. load_model cleared _cancel_event on
                     # the way in, so the epoch is the only surviving evidence; undo the
@@ -23526,6 +23551,13 @@ class LlamaCppBackend:
                     self.unload_model()
                     return False
                 return started
+
+    def _mark_respawn_recovered(self, proc) -> None:
+        """Reset the circuit after the respawned child completes a generation."""
+        with self._respawn_lock:
+            if self._process is proc and self._respawned_process is proc:
+                self._respawn_attempts = 0
+                self._respawned_process = None
 
     @contextlib.contextmanager
     def _open_chat_stream_with_respawn_retry(
@@ -23552,11 +23584,14 @@ class LlamaCppBackend:
         """
         for attempt in range(2):
             response_opened = False
+            opened_process = self._process
             try:
                 url = f"{self.base_url}/v1/chat/completions"
                 with self._open_stream(url, payload, cancel_event) as opened:
                     response_opened = True
+                    opened_process = self._process
                     yield opened
+                    self._mark_respawn_recovered(opened_process)
                     return
             except (httpx.NetworkError, httpx.RemoteProtocolError) as exc:
                 if response_opened:

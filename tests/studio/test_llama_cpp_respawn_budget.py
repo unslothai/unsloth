@@ -96,3 +96,27 @@ def test_completed_generation_restores_the_respawn_budget() -> None:
     backend.load_model = dead_load
     assert [backend._respawn_if_dead() for _ in range(4)] == [True, True, True, False]
 
+
+def test_later_completed_generation_also_restores_the_budget() -> None:
+    backend = _backend_with_dead_process()
+    backend._process = _Process(returncode = None)
+    backend._respawned_process = backend._process
+    backend._respawn_attempts = 3
+
+    @contextmanager
+    def open_stream(url, payload, cancel_event):
+        yield object()
+
+    backend._open_stream = open_stream
+    with backend._open_chat_stream_with_respawn_retry({}, None):
+        pass
+
+    backend._process.returncode = -9
+
+    def dead_load(intent: GgufLoadIntent) -> bool:
+        backend._process = _Process()
+        backend._healthy = True
+        return True
+
+    backend.load_model = dead_load
+    assert [backend._respawn_if_dead() for _ in range(4)] == [True, True, True, False]
