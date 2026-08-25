@@ -878,6 +878,40 @@ def test_a_failed_driver_probe_keeps_the_apu_on_the_dedicated_counter(win_rocm, 
     assert devices[0]["used_gb"] <= devices[0]["total_gb"]
 
 
+def test_the_measured_strix_halo_at_64_gib_held(win_rocm, monkeypatch):
+    """Real numbers off a Windows gfx1151, driver 32.0.21041.1000, 32 GiB carve-out.
+
+    Holding 64 GiB, Dedicated Usage reads 31.637 GB and Shared 33.887: Dedicated
+    tracks the allocation one for one until it pins at the carve-out, then stays
+    flat while Shared absorbs every further GiB. props.total_memory is already
+    89.465 GB, so nothing widens and total_is_pool never fires.
+
+    Pre-PR this reported 31.64 used against an 89.46 total, i.e. 57.82 GB free
+    with 64 GiB resident. Overstating free by 33.88 GB is the direction that
+    OOMs, and it is the case this pairing exists to fix.
+    """
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
+    torch = _fake_torch([("AMD Radeon(TM) 8060S Graphics", int(89.465 * GB))])
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda i: (0, int(89.465 * GB)))
+    monkeypatch.setattr(hw, "_rocm_props_total_is_carve_out", lambda props: True)
+    monkeypatch.setattr(hw, "_rocm_props_are_positively_unified", lambda props: True)
+    monkeypatch.setattr(
+        hw, "_rocm_windows_unified_used_bytes",
+        lambda dedicated = None: (31.637 + 33.887) * GB,
+    )
+    monkeypatch.setattr(hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output([
+        ("luid_0x00000000_0x0001532a_phys_0", 31.637 * GB),  # saturated at the carve-out
+        ("luid_0x00000000_0x00017034_phys_0", 0.0),
+        ("luid_0x00000000_0x00017099_phys_0", 0.0),
+    ])))
+
+    devices, _ = hw._rocm_windows_per_device_vram([0])
+    assert devices[0]["total_gb"] == 89.46
+    assert devices[0]["used_gb"] == 65.52  # not the 31.64 Dedicated alone reports
+    assert devices[0]["total_gb"] - devices[0]["used_gb"] < 24.0
+
+
 def test_a_confirmed_apu_takes_the_unified_sum_even_unwidened(win_rocm, monkeypatch):
     """The measured gfx1151 has props.total_memory already spanning the pool, so
     nothing widens and total_is_pool stays false. The total is pool-scoped all
