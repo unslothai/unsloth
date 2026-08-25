@@ -466,16 +466,42 @@ def _timeline(duration_s, stalls = ()):
     return samples
 
 
+def _recovery_probes(start_t, timeouts, settles = "ok"):
+    """Probes in the shape await_recovery records them: N timeouts, then one answer."""
+    out, now = [], float(start_t)
+    for _ in range(timeouts):
+        now += BUDGET_S
+        out.append({
+            "t": round(now, 3), "path": "/api/liveness", "kind": "timeout", "status": 0,
+            "ms": BUDGET_S * 1000, "inference_active": None,
+            "hardware_detecting": None, "torch_warm_in_progress": None,
+        })
+    if settles is not None:
+        now += 0.005
+        out.append({
+            "t": round(now, 3), "path": "/api/liveness", "kind": settles,
+            "status": 200 if settles == "ok" else 0, "ms": 5.0, "inference_active": None,
+            "hardware_detecting": None, "torch_warm_in_progress": None,
+        })
+    return out
+
+
 def _verdict(
     mod,
     samples,
     final_kind = "ok",
     final_status = 200,
     final_wait_s = 0.0,
+    recovery_samples = (),
 ):
     poller = mod.BackendSurvivalPoller()
     poller.samples = samples
-    poller.report(final_kind = final_kind, final_status = final_status, final_wait_s = final_wait_s)
+    poller.report(
+        final_kind = final_kind,
+        final_status = final_status,
+        final_wait_s = final_wait_s,
+        recovery_samples = recovery_samples,
+    )
     return list(mod._failed)
 
 
@@ -633,9 +659,11 @@ def test_the_watch_keeps_probing_until_the_backend_answers(tmp_path, monkeypatch
     mod = _load(tmp_path, monkeypatch)
     calls = _scripted_probes(mod, ["timeout", "timeout", "ok"])
     # spacing off: this case is about the loop continuing, not about how it paces.
-    kind, status, _ = mod.await_recovery(window_s = 30.0, spacing_s = 0.0)
+    kind, status, _, probes = mod.await_recovery(window_s = 30.0, spacing_s = 0.0)
     assert (kind, status) == ("ok", 200)
     assert len(calls) == 3, calls
+    assert len(probes) == len(calls), "the watch dropped probes from its history"
+    assert [pr["kind"] for pr in probes] == ["timeout", "timeout", "ok"], probes
 
 
 def test_the_watch_gives_up_and_reports_a_timeout(tmp_path, monkeypatch):
@@ -643,7 +671,7 @@ def test_the_watch_gives_up_and_reports_a_timeout(tmp_path, monkeypatch):
     probes either, which is why extending the observation cannot rescue a real death."""
     mod = _load(tmp_path, monkeypatch)
     calls = _scripted_probes(mod, ["timeout"])
-    kind, _, _ = mod.await_recovery(window_s = 0.05, spacing_s = 0.0)
+    kind, _, _, probes = mod.await_recovery(window_s = 0.05, spacing_s = 0.0)
     assert kind == "timeout"
     assert len(calls) >= 1, calls
 
@@ -656,7 +684,7 @@ def test_a_refused_port_does_not_get_the_recovery_window(tmp_path, monkeypatch):
     # Small but non-zero on purpose. A build that stopped returning early would spend it
     # and rack up probes, so this fails on the call count in a moment rather than hanging
     # the suite for as long as the real window lasts.
-    kind, _, _ = mod.await_recovery(window_s = 2.0, spacing_s = 0.0)
+    kind, _, _, probes = mod.await_recovery(window_s = 2.0, spacing_s = 0.0)
     assert kind == "refused"
     assert len(calls) == 1, f"spent the window instead of returning at once: {len(calls)} probes"
 
@@ -665,7 +693,7 @@ def test_an_answered_non_200_does_not_get_the_recovery_window(tmp_path, monkeypa
     """Also already decided: the backend answered, so waiting adds nothing."""
     mod = _load(tmp_path, monkeypatch)
     calls = _scripted_probes(mod, ["http"])
-    kind, status, _ = mod.await_recovery(window_s = 2.0, spacing_s = 0.0)
+    kind, status, _, probes = mod.await_recovery(window_s = 2.0, spacing_s = 0.0)
     assert (kind, status) == ("http", 503)
     assert len(calls) == 1, f"spent the window instead of returning at once: {len(calls)} probes"
 
@@ -796,7 +824,7 @@ def test_immediate_failures_are_paced_during_recovery(tmp_path, monkeypatch):
     mod = _load(tmp_path, monkeypatch)
     calls = _scripted_probes(mod, ["timeout"])
     began = time.monotonic()
-    kind, _, _ = mod.await_recovery(window_s = 1.0, spacing_s = 0.2)
+    kind, _, _, probes = mod.await_recovery(window_s = 1.0, spacing_s = 0.2)
     elapsed = time.monotonic() - began
     assert kind == "timeout"
     assert len(calls) <= 8, f"unpaced: {len(calls)} probes in {elapsed:.2f}s"
@@ -862,7 +890,11 @@ def test_the_warning_counts_the_post_run_wait(tmp_path, monkeypatch, capsys):
     assert samples[-1]["kind"] == "timeout", "fixture no longer ends mid-stall"
     raw = max(end - start for start, end, _ in mod._stall_windows(samples))
     assert raw < 40.0, f"fixture stall is already long enough to pass on its own: {raw}s"
-    assert _verdict(mod, samples, final_kind = "ok", final_wait_s = 40.0) == []
+    # The watch keeps probing for another 40s before it clears.
+    recovery = _recovery_probes(samples[-1]["t"], timeouts = 4)
+    assert _verdict(
+        mod, samples, final_kind = "ok", final_wait_s = 40.0, recovery_samples = recovery
+    ) == []
     warning = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("::warning::")]
     assert warning, "no warning emitted for a stall that cleared after the run"
     longest = float(re.search(r"longest ([\d.]+)s", warning[0]).group(1))
@@ -1006,3 +1038,43 @@ def test_the_deadline_covers_the_whole_request_not_one_layer():
     source = SCRIPT.read_text(encoding = "utf-8")
     assert "WHOLE-REQUEST deadline" in source
     assert "worker.join(timeout)" in source
+
+
+def test_a_stall_that_begins_after_sampling_is_still_reported(tmp_path, monkeypatch, capsys):
+    """The gap the recovery watch opened. Sampling can end on a good probe and the backend
+    stall immediately afterwards; the watch then sees several timeouts, gets an answer, and
+    returns ok. Measuring spans from the poller's samples alone leaves that stall in no
+    span at all, so the run passes in silence. A recovered stall reported nowhere is the
+    one outcome this window was added to avoid, since the argument for warning instead of
+    failing is that somebody reads the warning."""
+    mod = _load(tmp_path, monkeypatch)
+    samples = _timeline(120)
+    assert all(s["kind"] == "ok" for s in samples), "fixture must end with sampling healthy"
+    assert not mod._stall_windows(samples), "fixture already has a stall during sampling"
+    # 60s of silence after sampling stops, then the backend answers.
+    recovery = _recovery_probes(samples[-1]["t"], timeouts = 6)
+    assert _verdict(
+        mod, samples, final_kind = "ok", final_wait_s = 60.0, recovery_samples = recovery
+    ) == []
+    warning = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("::warning::")]
+    assert warning, "a 60s post-run stall was not reported at all"
+    longest = float(re.search(r"longest ([\d.]+)s", warning[0]).group(1))
+    assert longest >= 50.0, f"post-run stall understated as {longest}s: {warning[0]}"
+    assert "began after sampling ended" in warning[0], warning[0]
+    assert "before the run ended" not in warning[0], warning[0]
+
+
+def test_the_watch_history_is_handed_to_the_report(tmp_path, monkeypatch):
+    """main() must pass await_recovery's probes to report(), or the span maths above sees
+    the poller's samples only and the case that test covers cannot arise in a real run."""
+    import ast
+
+    tree = ast.parse(SCRIPT.read_text(encoding = "utf-8"))
+    main = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "main")
+    reports = [
+        n for n in ast.walk(main)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "report"
+    ]
+    assert reports, "main() no longer reports"
+    passed = {kw.arg for call in reports for kw in call.keywords}
+    assert "recovery_samples" in passed, passed

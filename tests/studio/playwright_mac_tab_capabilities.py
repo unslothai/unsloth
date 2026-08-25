@@ -312,11 +312,13 @@ def _get_json(path: str, timeout: float = PROBE_TIMEOUT_S) -> tuple[int, dict | 
 
 
 def await_recovery(
-    window_s: float = RECOVERY_WINDOW_S, spacing_s: float = RECOVERY_PROBE_SPACING_S
+    window_s: float = RECOVERY_WINDOW_S,
+    spacing_s: float = RECOVERY_PROBE_SPACING_S,
 ) -> tuple[str, int, float]:
     """Watch the backend after sampling stops, until it answers or *window_s* elapses.
 
-    Returns the last probe's (kind, status, seconds spent watching).
+    Returns (kind, status, seconds spent watching, probes), where *probes* are
+    sample-shaped records of every attempt, on the poller's clock.
 
     Only a stall is worth waiting on, so this returns the moment a probe brings back
     anything decisive: an answer of any status settles whether the process is alive, and
@@ -329,14 +331,30 @@ def await_recovery(
     remove, moved to the edge rather than fixed.
     """
     began = time.monotonic()
+    probes: list[dict] = []
     while True:
         probe_began = time.monotonic()
         status, _, kind = _get_json(LIVENESS_PATH)
+        # Recorded in the same shape and on the same clock as the poller's samples, so
+        # the caller can lay them end to end. Without this a stall that starts after
+        # sampling stops is invisible: the verdict knows it waited, but nothing knows
+        # for how long or that anything went wrong, and a recovered stall that goes
+        # unreported is the one thing this window was added to avoid.
+        probes.append({
+            "t": round(time.monotonic(), 1),
+            "path": LIVENESS_PATH,
+            "status": status,
+            "kind": kind,
+            "ms": round((time.monotonic() - probe_began) * 1000, 1),
+            "inference_active": None,
+            "hardware_detecting": None,
+            "torch_warm_in_progress": None,
+        })
         if kind != "timeout":
-            return kind, status, round(time.monotonic() - began, 1)
+            return kind, status, round(time.monotonic() - began, 1), probes
         elapsed = time.monotonic() - began
         if elapsed >= window_s:
-            return kind, status, round(elapsed, 1)
+            return kind, status, round(elapsed, 1), probes
         # A probe that failed instantly did not spend its budget, so it was a reset
         # rather than silence. Pace the next one, and never past the end of the window.
         idle = spacing_s - (time.monotonic() - probe_began)
@@ -423,6 +441,7 @@ class BackendSurvivalPoller:
         final_kind: str = "ok",
         final_status: int = 200,
         final_wait_s: float = 0.0,
+        recovery_samples: "list[dict] | tuple" = (),
     ) -> None:
         """Write the samples out and decide whether the backend survived.
 
@@ -430,6 +449,12 @@ class BackendSurvivalPoller:
         is how long it watched for. Together they separate a stall that happened to be in
         progress when the run ended from a backend that is genuinely gone, which is not a
         distinction the samples alone can make: they stop at an arbitrary moment.
+
+        *recovery_samples* are that watch's own probes, on the same clock, and they are
+        laid end to end with the poller's. A stall can begin after sampling stops, and
+        one that then clears is exactly the case this file argues is worth reporting
+        rather than failing; measuring spans from the poller's samples alone would let it
+        pass in silence.
         """
         (ART / "survival_samples.json").write_text(
             json.dumps(self.samples, indent = 1),
@@ -492,19 +517,15 @@ class BackendSurvivalPoller:
         # that answers again did, on any reading of any budget, so it warns and passes.
         # If you are tempted to put a threshold back, it has to be strictly longer than
         # the launcher's most generous path, and nothing that long fits in this window.
-        spans = _stall_windows(self.samples)
+        # One timeline: the poller's samples then the watch's probes, same clock. A span
+        # is therefore measured across the join rather than truncated at it, and a stall
+        # that starts after sampling stops gets a span of its own instead of none.
+        observed = list(self.samples) + list(recovery_samples)
+        sampling_ended = max((s["t"] for s in self.samples), default = 0.0)
+        spans = _stall_windows(observed)
         terminal = next((sp for sp in spans if sp[2]), None)
-        # A span still open when sampling stopped did not end there. It ended somewhere
-        # in the post-run watch, so its real length includes that time. Measuring it to
-        # the last sample understates the one stall a reader most needs the size of, and
-        # the whole point of warning rather than failing is that a human reads the number.
-        longest = max(
-            (
-                (end - start) + (final_wait_s if still_open else 0.0)
-                for start, end, still_open in spans
-            ),
-            default = 0.0,
-        )
+        longest = max(((end - start) for start, end, _ in spans), default = 0.0)
+        widest = max(spans, key = lambda sp: sp[1] - sp[0], default = None)
 
         if final_kind == "refused":
             fail(
@@ -535,16 +556,22 @@ class BackendSurvivalPoller:
             # It came back, so the launcher would have kept it on any budget and this run
             # is green. Say so anyway: a stall this long is a real backend defect even
             # when it is not a fatal one, and it must not vanish into a pass.
-            worst_ms = max(s["ms"] for s in self.samples)
-            if terminal is not None:
-                # Sampling stopped mid-stall and the watch is what saw it clear, so say
-                # that rather than claiming it answered before the run ended.
+            worst_ms = max(s["ms"] for s in observed)
+            # Where the longest stall sits relative to the end of sampling decides what
+            # can honestly be said about it. All three cases are recovered stalls; only
+            # the first one cleared while the run was still watching in the normal way.
+            if widest is None or widest[1] <= sampling_ended:
+                cleared = "It answered again before the run ended."
+            elif widest[0] >= sampling_ended:
                 cleared = (
-                    f"Sampling ended during that stall; the backend answered "
-                    f"{final_wait_s}s into the post-run watch, which is included above."
+                    "That stall began after sampling ended and was seen only by the "
+                    f"post-run watch, which ran for {final_wait_s}s before it cleared."
                 )
             else:
-                cleared = "It answered again before the run ended."
+                cleared = (
+                    "Sampling ended during that stall; it cleared during the post-run "
+                    f"watch, which ran for {final_wait_s}s. The length above spans both."
+                )
             print(
                 f"::warning::backend stalled: {len(spans)} window(s) with nothing answering, "
                 f"longest {round(longest, 1)}s, worst single probe {worst_ms}ms against a "
@@ -968,9 +995,14 @@ def main() -> int:
     # Watched after sampling stopped and handed to report(), which needs it to tell a
     # stall still in progress at the end of the run from a backend that never came back.
     step(f"watching up to {RECOVERY_WINDOW_S:.0f}s more for the backend to answer")
-    kind, status, waited = await_recovery()
-    info(f"post-run {LIVENESS_PATH}: {kind} after {waited}s of watching")
-    poller.report(final_kind = kind, final_status = status, final_wait_s = waited)
+    kind, status, waited, recovery = await_recovery()
+    info(f"post-run {LIVENESS_PATH}: {kind} after {waited}s of watching, {len(recovery)} probe(s)")
+    poller.report(
+        final_kind = kind,
+        final_status = status,
+        final_wait_s = waited,
+        recovery_samples = recovery,
+    )
 
     # Cancelled only now. The recovery watch adds up to RECOVERY_WINDOW_S after the UI
     # drive, so disarming before it ran left the longest-running part of the script with
