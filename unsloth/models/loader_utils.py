@@ -127,6 +127,40 @@ class _DefaultDeviceMap(str):
 DEFAULT_DEVICE_MAP = _DefaultDeviceMap("sequential")
 
 
+def planner_hub_kwargs(loader_kwargs):
+    """The Hub options the planner's own `AutoConfig` lookup needs.
+
+    It resolves the config a second time, from `model_name`, so an offline load or a custom
+    cache has to reach it too. Without them the lookup can go to the network behind a
+    `local_files_only` request, or miss a model that only exists in the caller's cache and
+    turn a plan the load needed into a "sequential" fallback.
+    """
+    loader_kwargs = loader_kwargs or {}
+    hub = {}
+    if loader_kwargs.get("cache_dir") is not None:
+        hub["cache_dir"] = loader_kwargs["cache_dir"]
+    if _get_effective_local_files_only(loader_kwargs):
+        hub["local_files_only"] = True
+    return hub
+
+
+def planner_kwargs_with_max_memory(planner_kwargs, loader_kwargs):
+    """The caller's transformers `max_memory` has to reach the planner as well.
+
+    Once a plan is returned the load gets an explicit dict, and transformers only consults
+    `max_memory` when `device_map` is a string (`_get_device_map` gates the whole
+    `infer_auto_device_map` branch on `isinstance(device_map, str)`). So a budget that used
+    to bound placement would be silently dropped, and the plan could exceed their caps or
+    use a card they withheld. An explicit `device_map_planner_kwargs["max_memory"]` wins.
+    """
+    budget = (loader_kwargs or {}).get("max_memory")
+    if budget is None:
+        return planner_kwargs
+    merged = dict(planner_kwargs or {})
+    merged.setdefault("max_memory", budget)
+    return merged
+
+
 def unmarked_device_map(device_map):
     """The default with its marker removed; anything else exactly as it came in.
 

@@ -46,6 +46,8 @@ from ._utils import *
 from .loader_utils import (
     DEFAULT_DEVICE_MAP,
     OFFLOAD_EMBEDDING_AUTO,
+    planner_hub_kwargs,
+    planner_kwargs_with_max_memory,
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
     _restore_dropped_fp8_scales,
@@ -1229,6 +1231,15 @@ class FastBaseModel:
                 model_class,
                 planner_model_class(auto_config, trust_remote_code = trust_remote_code),
             )
+        # A config the caller built is the one the weights load against, but the planner
+        # takes a name and rebuilds the repo's own. Same class, different model: another
+        # `num_hidden_layers` or `vocab_size` and the map omits blocks or under-budgets
+        # weights, which the class comparison above cannot see. Only the caller knows
+        # whether their config still describes the repo, so do not guess.
+        if _planner_skip_reason is None and user_config is not None:
+            _planner_skip_reason = (
+                "a caller-supplied config may not describe the repo the planner rebuilds"
+            )
 
         # A no-op unless the caller asked for "unsloth" (or set UNSLOTH_AUTO_DEVICE_MAP);
         # an already-planned map comes back unchanged, so a direct FastBaseModel call
@@ -1238,10 +1249,13 @@ class FastBaseModel:
             model_name,
             fast_inference = fast_inference,
             full_finetuning = full_finetuning,
-            planner_kwargs = device_map_planner_kwargs,
+            planner_kwargs = planner_kwargs_with_max_memory(
+                device_map_planner_kwargs, kwargs
+            ),
             skip_reason = _planner_skip_reason,
             token = token,
             trust_remote_code = trust_remote_code,
+            **planner_hub_kwargs(kwargs),
             # The pin the config and weights below use; the default branch would size a
             # different checkpoint than the one being loaded.
             revision = _revision,

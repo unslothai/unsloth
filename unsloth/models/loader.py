@@ -1000,6 +1000,17 @@ class FastLanguageModel(FastLlamaModel):
         except Exception as e:
             print(f"Unsloth: Could not patch bitsandbytes for torch.compile - {e}")
 
+        # The optimized architectures take their own path, which has never carried an
+        # `offload_embedding` parameter, so a request for one is dropped here rather than
+        # honoured. Say so instead of leaving the caller to infer it from memory use. The
+        # `"auto"` default stays quiet: it promises a decision, and off is a decision.
+        if offload_embedding is not OFFLOAD_EMBEDDING_AUTO and offload_embedding:
+            print(
+                "Unsloth: Not offloading embeddings; the optimized path for this "
+                "architecture does not support it. Pass `device_map` or use FastModel "
+                "if you need the offload."
+            )
+
         model, tokenizer = dispatch_model.from_pretrained(
             model_name = model_name,
             max_seq_length = max_seq_length,

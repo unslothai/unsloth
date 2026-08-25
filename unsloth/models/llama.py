@@ -36,6 +36,8 @@ from .loader_utils import (
     _restore_dropped_fp8_scales,
     planner_class_mismatch_reason,
     planner_model_class,
+    planner_hub_kwargs,
+    planner_kwargs_with_max_memory,
     planner_quantization_kwargs,
     requested_device_map,
     resolve_unsloth_device_map,
@@ -2676,10 +2678,13 @@ class FastLlamaModel:
             requested_device_map(device_map),
             model_name,
             fast_inference = fast_inference,
-            planner_kwargs = device_map_planner_kwargs,
+            planner_kwargs = planner_kwargs_with_max_memory(
+                device_map_planner_kwargs, kwargs
+            ),
             skip_reason = _planner_skip_reason,
             token = token,
             trust_remote_code = trust_remote_code,
+            **planner_hub_kwargs(kwargs),
             revision = revision,
             # The dtype the load gets, not the checkpoint's: `from_pretrained` overrides
             # config.json, and planning the wrong one mis-sizes weights 2x either way.
