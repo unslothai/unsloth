@@ -52,7 +52,8 @@ _DEFAULT_ON_PLATFORMS = ("darwin", "win32", "linux")
 # install.sh sets the uv cert vars on macOS only; keep the runtime mirror off
 # Linux too. On a host with an empty OS CA store they would move uv off its
 # bundled roots and break installs, a cost the Python side does not pay: httpx
-# and requests keep certifi loaded and only gain the OS anchors.
+# and requests keep certifi loaded and only gain the OS anchors. This governs the
+# platform default only; an explicit opt-in still exports them, see activate_native_tls.
 _UV_SYSTEM_CERTS_PLATFORMS = ("darwin", "win32")
 _TRUTHY = ("1", "true", "yes")
 _FALSEY = ("0", "false", "no")
@@ -65,9 +66,14 @@ _logger = logging.getLogger(__name__)
 _activated = False
 
 
+def _env_flag() -> str:
+    """``UNSLOTH_STUDIO_NATIVE_TLS`` normalised for the tri-state comparisons."""
+    return os.environ.get(_NATIVE_TLS_ENV, "").strip().lower()
+
+
 def native_tls_enabled() -> bool:
     """Resolve ``UNSLOTH_STUDIO_NATIVE_TLS`` against the platform default."""
-    flag = os.environ.get(_NATIVE_TLS_ENV, "").strip().lower()
+    flag = _env_flag()
     if flag in _TRUTHY:
         return True
     if flag in _FALSEY:
@@ -126,7 +132,11 @@ def activate_native_tls() -> bool:
     # uv's rustls ignores in-process injection (uv >= 0.11 reads UV_SYSTEM_CERTS,
     # older reads UV_NATIVE_TLS). Mirror one value across both: uv takes either as
     # an opt-in, so an opt-out in one spelling must carry to the other.
-    if sys.platform in _UV_SYSTEM_CERTS_PLATFORMS:
+    # The platform gate above is for the default only. An explicit
+    # UNSLOTH_STUDIO_NATIVE_TLS=1 exported these everywhere before Linux became
+    # default-on, and it is a different statement: that host asked for the OS store, so
+    # uv follows it rather than silently reverting to bundled roots behind the gateway.
+    if sys.platform in _UV_SYSTEM_CERTS_PLATFORMS or _env_flag() in _TRUTHY:
         os.environ.setdefault("UV_SYSTEM_CERTS", os.environ.get("UV_NATIVE_TLS", "1"))
         os.environ.setdefault("UV_NATIVE_TLS", os.environ["UV_SYSTEM_CERTS"])
     # vendored truststore 0.10.4 evaluates PEP 604 unions at import time, so on
