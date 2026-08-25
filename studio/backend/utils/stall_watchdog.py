@@ -285,9 +285,7 @@ _watchdog_lock = threading.Lock()
 
 
 def start_stall_watchdog(
-    loop: asyncio.AbstractEventLoop,
-    *,
-    suppress: Optional[Callable[[], bool]] = None,
+    loop: asyncio.AbstractEventLoop, *, suppress: Optional[Callable[[], bool]] = None
 ) -> Optional[StallWatchdog]:
     """Start the process-wide watchdog. Returns None when disabled by env."""
     if os.environ.get(DISABLE_ENV_VAR) == "1":

@@ -93,8 +93,7 @@ def test_a_blocked_loop_dumps_after_consecutive_slow_probes(loop_in_thread, tmp_
     text = dump_path.read_text(errors = "replace")
     assert "consecutive slow probes" in text
     assert "blocked_in_a_syscall" in text, (
-        "the dump does not show the frame the loop is stuck in; it cannot answer "
-        "what #9712 asks"
+        "the dump does not show the frame the loop is stuck in; it cannot answer what #9712 asks"
     )
 
 
@@ -229,9 +228,7 @@ def test_a_python_dump_disarms_the_switch_for_the_cooldown(loop_in_thread, tmp_p
         watchdog.start()
         try:
             loop_in_thread.call_soon_threadsafe(blocks_the_loop)
-            assert _wait_for(
-                lambda: "stall watchdog:" in dump_path.read_text(errors = "replace")
-            )
+            assert _wait_for(lambda: "stall watchdog:" in dump_path.read_text(errors = "replace"))
             loop_in_thread.call_soon_threadsafe(holds_the_gil)
             time.sleep(1.4)
         finally:
@@ -254,7 +251,8 @@ def test_stands_down_until_the_warm_is_over(monkeypatch):
 
     def status(started: bool, finished: bool, alive: bool):
         monkeypatch.setattr(
-            tw, "warm_status",
+            tw,
+            "warm_status",
             lambda: {"started": started, "finished": finished, "alive": alive, "stages": {}},
         )
 
@@ -339,8 +337,7 @@ def test_the_lifespan_wires_it_in():
     startup and retires it at shutdown entry, and either side can be edited alone."""
     source = (_BACKEND_DIR / "main.py").read_text(encoding = "utf-8")
     assert "start_stall_watchdog(asyncio.get_running_loop()" in source, (
-        "main.py no longer starts the stall watchdog; the next #9712 stall leaves "
-        "no dump behind"
+        "main.py no longer starts the stall watchdog; the next #9712 stall leaves no dump behind"
     )
     assert "suppress = stand_down_for_the_warm" in source, (
         "the watchdog no longer stands down for the warm; every cold start would "
