@@ -194,15 +194,15 @@ def test_renderer_workaround_comes_from_the_app_not_from_proc():
 
 
 def test_shell_started_marker_separates_a_dead_shell_from_a_dead_backend():
-    """"The desktop shell never started" is the one verdict that tells the reporter they
+    """ "The desktop shell never started" is the one verdict that tells the reporter they
     ran the wrong program, so it must not be reached by a shell that did start."""
     started = "12:00:00 [INFO] Unsloth desktop app starting"
     assert freeze.SHELL_STARTED.search(started)
-    silent = verdict([(15, 0, 0), (30, 0, 0)], n_mon = 0, n_live = 0,
-                     preflight = "", shell_started = False)
+    silent = verdict([(15, 0, 0), (30, 0, 0)], n_mon = 0, n_live = 0, preflight = "", shell_started = False)
     assert "the desktop shell never started" in silent
-    live_shell = verdict([(15, 0, 0), (30, 0, 0)], n_mon = 0, n_live = 0,
-                         preflight = "", shell_started = True)
+    live_shell = verdict(
+        [(15, 0, 0), (30, 0, 0)], n_mon = 0, n_live = 0, preflight = "", shell_started = True
+    )
     assert "the desktop shell never started" not in live_shell
 
 
