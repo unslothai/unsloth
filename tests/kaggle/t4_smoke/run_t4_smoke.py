@@ -476,12 +476,15 @@ def train_once(args, run_index: int) -> dict:
         _log(f"llama.cpp: {json.dumps(facts)}")
 
         gguf_export_record = export_gguf(
-            model, tokenizer,
+            model,
+            tokenizer,
             os.path.join(args.outdir, f"gguf_run{run_index}"),
             quantization = args.gguf_quantization,
         )
         gguf_export_record["llama_cpp"] = facts
-        _log(f"gguf export: {json.dumps({k: v for k, v in gguf_export_record.items() if k != 'llama_cpp'})}")
+        _log(
+            f"gguf export: {json.dumps({k: v for k, v in gguf_export_record.items() if k != 'llama_cpp'})}"
+        )
 
         ggufs = gguf_export_record.get("ggufs") or []
         if ggufs and llama_dir:
@@ -1505,7 +1508,9 @@ def main() -> int:
     # "Overriding to MXFP4 format" by design, and failing on documented
     # behaviour would be a failure invented rather than found.
     ap.add_argument("--gguf-quantization", default = "q8_0")
-    ap.add_argument("--gguf-accept", default = "", help = "comma separated; defaults to the requested one")
+    ap.add_argument(
+        "--gguf-accept", default = "", help = "comma separated; defaults to the requested one"
+    )
     ap.add_argument("--dataset", default = str(_HERE / "canary_dataset.jsonl"))
     ap.add_argument("--outdir", required = True)
     # 3 steps, and the whole reason --init-loss-scale exists.
@@ -1803,24 +1808,20 @@ def main() -> int:
     # install_llama_cpp returns) into three files.
     if args.export_gguf:
         from gguf_export import export_failures, run_failures
-
         accept = tuple(
-            q.strip() for q in (args.gguf_accept or args.gguf_quantization).split(",")
-            if q.strip()
+            q.strip() for q in (args.gguf_accept or args.gguf_quantization).split(",") if q.strip()
         )
         for run in runs:
             failures += [
                 f"run {run['run_index']}: {f}"
-                for f in export_failures(run.get("gguf_export"),
-                                         accept_quantizations = accept)
+                for f in export_failures(run.get("gguf_export"), accept_quantizations = accept)
             ]
             # Only ask whether it RUNS once the export produced something; a
             # missing file already failed above and would otherwise be reported
             # twice under two different descriptions.
             if (run.get("gguf_export") or {}).get("ggufs"):
                 failures += [
-                    f"run {run['run_index']}: {f}"
-                    for f in run_failures(run.get("gguf_run"))
+                    f"run {run['run_index']}: {f}" for f in run_failures(run.get("gguf_run"))
                 ]
 
     # 5. band check against the committed reference
