@@ -2827,7 +2827,7 @@ async def _authenticate_header_or_query(request: Request, token: Optional[str]) 
         jwt_token = token or None
     from auth.authentication import credentials_for_token
 
-    creds = credentials_for_token(request, jwt_token)
+    creds = await credentials_for_token(request, jwt_token)
     if creds is None:
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
@@ -6668,14 +6668,17 @@ async def _maybe_auto_switch_model(
 
     from auth.authentication import request_admitted_without_credential
 
+    keyless_caller = request_admitted_without_credential(fastapi_request)
     # the keyless dialog offers the loaded model, so a stranger swaps or fetches nothing
-    if auto_switch_on and request_admitted_without_credential(fastapi_request):
+    if auto_switch_on and keyless_caller:
         auto_switch_on = False
         if not idle_unload_is_configured():
             await _reject_unservable_model(requested_model, fastapi_request)
             return
 
     async def _resolve_and_switch() -> None:
+        from core.inference.openai_auto_download import looks_like_quant, split_model_ref
+
         # Off the loop: a cold-cache rebuild walks several model dirs + HF caches.
         # With auto-switch off (or an omitted-model reload-only request), skip the
         # resolve so only the reload-stash path runs and no name is ever matched.
@@ -6720,6 +6723,19 @@ async def _maybe_auto_switch_model(
             else:  # pre-3-tuple stash: fall back to the path as the override key
                 target_id, variant = last
                 override_id = target_id
+            # A credential-less caller may restore only the model it explicitly
+            # named (or the reload-only sentinel used when the model is omitted).
+            # Check before loading so an unrelated name cannot trigger an expensive
+            # stash restore and only then receive the normal mismatch response.
+            if keyless_caller and not reload_only:
+                requested_base, requested_variant = split_model_ref(requested_model)
+                if not _matches_any(
+                    requested_base, (target_id, override_id, public_model_id(target_id))
+                ) or (
+                    looks_like_quant(requested_variant)
+                    and (not variant or requested_variant.lower() != variant.lower())
+                ):
+                    return
         else:
             # load_path is a concrete local path (never the bare repo id), so /load
             # takes the local branch and cannot trigger a download. override_id is the
@@ -6728,8 +6744,6 @@ async def _maybe_auto_switch_model(
         backend = get_llama_cpp_backend()
         # A bare model id (no :VARIANT) is satisfied by any loaded quant of that
         # repo, so it never reloads a different local quant that already serves it.
-        from core.inference.openai_auto_download import looks_like_quant, split_model_ref
-
         # A tag that names no quant (":latest", ":8b") means the repo, as
         # _loaded_satisfies and the resolver read it. Treating it as a quant tears down
         # a serving Q8 to load the preferred Q4 for a request either satisfies.

@@ -353,7 +353,7 @@ async def authenticated_via_api_key(
     return bool(credentials and credentials.credentials.startswith(API_KEY_PREFIX))
 
 
-def credentials_for_token(
+async def credentials_for_token(
     request: Any, token: Optional[str]
 ) -> Optional[HTTPAuthorizationCredentials]:
     """What ``security`` would resolve for a bearer the route read for itself.
@@ -365,7 +365,12 @@ def credentials_for_token(
     """
     from utils.keyless_api_access import APPROVED_DUMMY_BEARERS, keyless_request_allowed
 
-    eligible = keyless_request_allowed(request)
+    # A real token is authoritative and never needs keyless classification. The
+    # remaining settings/listener reads use SQLite and DNS, so keep them off the
+    # event loop just like the normal credential lookup path.
+    if token and token not in APPROVED_DUMMY_BEARERS:
+        return HTTPAuthorizationCredentials(scheme = "Bearer", credentials = token)
+    eligible = await run_in_threadpool(keyless_request_allowed, request)
     keyless = eligible and (token is None or token in APPROVED_DUMMY_BEARERS)
     if token:
         return HTTPAuthorizationCredentials(

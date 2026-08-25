@@ -317,4 +317,18 @@ def test_protected_side_effect_guards_remain_wired():
     )
     assert security.scheme_name == "HTTPBearer"
 
+
+def test_keyless_idle_restore_requires_the_requested_model(monkeypatch):
+    from core.inference import llama_keepwarm as kw
+    import auth.authentication as authentication
+    from studio.backend.tests import test_openai_auto_switch as auto
+
+    backend = auto._FakeBackend(None); rec = auto._LoadRecorder(backend)
+    auto._wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
+    monkeypatch.setattr(auto.settings, "idle_unload_is_configured", lambda: True)
+    monkeypatch.setattr(kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF"))
+    monkeypatch.setattr(authentication, "request_admitted_without_credential", lambda _r: True)
+    auto._run_hook("org/B-GGUF"); assert rec.calls == []
+    auto._run_hook("org/A-GGUF:Q4_K_M"); assert len(rec.calls) == 1
+
 # fmt: on

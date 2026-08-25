@@ -1706,7 +1706,7 @@ async def health_check(request: Request):
         from auth.authentication import get_current_subject as _gcs
 
         # resolved rather than built, so a scope covering this route answers it in full
-        creds = credentials_for_token(request, bearer)
+        creds = await credentials_for_token(request, bearer)
         if creds is None:
             return base
         # Must await: a bare coroutine is truthy and would skip the auth check

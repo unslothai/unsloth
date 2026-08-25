@@ -65,6 +65,8 @@ async def _keyless_case(monkeypatch, threads):
     await authentication.get_current_subject(authentication._KEYLESS_CREDENTIALS)
     from utils import keyless_api_access as keyless
 
+    monkeypatch.setattr(keyless, "keyless_request_allowed", _record_thread(threads, True))
+    await authentication.credentials_for_token(object(), None)
     monkeypatch.setattr(keyless, "get_keyless_api_tools_enabled", _record_thread(threads, True))
     await keyless.KeylessToolPolicyMiddleware(lambda *_args: asyncio.sleep(0))(
         {"type": "http"}, None, None
