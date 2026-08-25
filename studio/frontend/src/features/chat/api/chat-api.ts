@@ -5,7 +5,10 @@ import { authFetch } from "@/features/auth";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 // These helpers are deliberately API-layer-only, not part of their features' public barrels.
 // eslint-disable-next-line no-restricted-imports
-import { disposableTimeoutSignal } from "@/features/hub/lib/abort-signals";
+import {
+  combineAbortSignals,
+  disposableTimeoutSignal,
+} from "@/features/hub/lib/abort-signals";
 // eslint-disable-next-line no-restricted-imports
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 // eslint-disable-next-line no-restricted-imports
@@ -35,6 +38,7 @@ import type {
   UnloadModelRequest,
   ValidateModelResponse,
 } from "../types/api";
+import { publishChatHistoryRevision } from "../utils/chat-history-revision";
 import {
   type GgufVariantsRequestOptions,
   ggufVariantsQuery,
@@ -43,6 +47,9 @@ import {
 import { assertCompletedPaddedBody } from "./padded-response";
 
 export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
+// Bumped alongside that event so other tabs, which never receive it, can drop caches
+// they built from a history this one has just changed.
+export { CHAT_HISTORY_REVISION_KEY } from "../utils/chat-history-revision";
 export const CHAT_PROJECTS_UPDATED_EVENT = "unsloth-chat-projects-updated";
 
 // bounds the request itself so a wedged socket cannot stall every reader waiting on the write
@@ -52,11 +59,27 @@ const THREAD_WRITE_TIMEOUT_MS = 30_000;
 async function threadWriteFetch(
   input: string,
   init: RequestInit,
+  caller?: AbortSignal,
 ): Promise<Response> {
   const timeout = disposableTimeoutSignal(THREAD_WRITE_TIMEOUT_MS);
+  if (caller === undefined) {
+    try {
+      return await authFetch(input, { ...init, signal: timeout.signal });
+    } finally {
+      timeout.dispose();
+    }
+  }
+  // Either reason ends the request. Linked by hand rather than with AbortSignal.any,
+  // which Safari only got in 17.4.
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (caller.aborted) abort();
+  caller.addEventListener("abort", abort);
+  timeout.signal.addEventListener("abort", abort);
   try {
-    return await authFetch(input, { ...init, signal: timeout.signal });
+    return await authFetch(input, { ...init, signal: controller.signal });
   } finally {
+    caller.removeEventListener("abort", abort);
     timeout.dispose();
   }
 }
@@ -89,9 +112,23 @@ export class GenerationLengthError extends Error {
   }
 }
 
-export function notifyChatHistoryUpdated(): void {
+/**
+ * Announces a history change to this document and, through localStorage, to the others.
+ *
+ * `coalesce` is for the per-chunk streaming path alone: it holds the cross-tab write until
+ * the writes stop. Structural changes must not use it.
+ */
+export function notifyChatHistoryUpdated(options?: {
+  coalesce?: boolean;
+}): void {
   if (typeof window !== "undefined") {
-    window.dispatchEvent(new Event(CHAT_HISTORY_UPDATED_EVENT));
+    const coalesce = options?.coalesce === true;
+    // detail lets a listener tell a chunk save from a structural change (isCoalescedHistoryEvent)
+    window.dispatchEvent(
+      new CustomEvent(CHAT_HISTORY_UPDATED_EVENT, { detail: { coalesce } }),
+    );
+    // The event above is same-document; a storage write is what crosses.
+    publishChatHistoryRevision(coalesce);
   }
 }
 
@@ -258,6 +295,8 @@ export async function countChatInputTokens(payload: {
   mcp_enabled?: boolean;
   rag_scope?: Record<string, unknown>;
   auto_heal_tool_calls?: boolean;
+  /** Run the selected tools here rather than as the provider's hosted builtins. */
+  run_tools_locally?: boolean;
   // `model` is informational: the endpoint counts with whatever is resident and reports which.
 }): Promise<{ input_tokens: number; model?: string }> {
   const response = await authFetch("/api/inference/chat/count_tokens", {
@@ -289,6 +328,7 @@ export async function validateModel(
       load_in_4bit: payload.load_in_4bit,
       cache_type_kv: payload.cache_type_kv ?? null,
       tensor_parallel: payload.tensor_parallel ?? false,
+      disable_vision: payload.disable_vision ?? false,
       gpu_ids: payload.gpu_ids,
       // Manual placement is an explicit override: Auto layers use llama.cpp --fit, a pinned
       // layer count is owned by the user. Tell validate so it applies the same policy as /load.
@@ -297,6 +337,12 @@ export async function validateModel(
       gpu_layers: payload.gpu_layers,
       // Slots scale the KV estimate; keep validate sized like the load.
       n_parallel: payload.n_parallel,
+      // A --ctx-size or cache override in here changes the estimate, so a preflight
+      // that dropped them would approve a different command from the one that runs.
+      ...(payload.llama_extra_args !== undefined
+        ? // biome-ignore lint/style/useNamingConvention: API schema
+          { llama_extra_args: payload.llama_extra_args }
+        : {}),
       // batch sizes scale the same estimate; omitted when blank so they never read as set
       ...(payload.n_batch != null ? { n_batch: payload.n_batch } : {}),
       ...(payload.n_ubatch != null ? { n_ubatch: payload.n_ubatch } : {}),
@@ -507,7 +553,7 @@ export interface LocalModelInfo {
   id: string;
   display_name: string;
   path: string;
-  source: "models_dir" | "hf_cache" | "lmstudio" | "custom";
+  source: "models_dir" | "hf_cache" | "lmstudio" | "ollama" | "custom";
   model_id?: string | null;
   // Backend-detected weights format ("gguf" when known), for folders whose name lacks -GGUF.
   model_format?: string | null;
@@ -634,6 +680,8 @@ export interface ScanFolderInfo {
   id: number;
   path: string;
   created_at: string;
+  /** Result of the last scan. Absent on older backends, which means "ok". */
+  status?: "ok" | "permission_denied" | "missing" | "unreadable" | "partial";
 }
 
 export async function listScanFolders(): Promise<ScanFolderInfo[]> {
@@ -749,21 +797,32 @@ export async function deleteChatAttachment(
 
 export async function getChatThread(
   threadId: string,
-  options: { bounded?: boolean } = {},
+  options: { bounded?: boolean; timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<ThreadRecord | null> {
   // Bounded for the delete reconciliation: an unbounded read there would hang the delete that
   // the write timeout exists to keep moving. Callers on a render path stay unbounded.
-  const timeout = options.bounded
-    ? disposableTimeoutSignal(THREAD_WRITE_TIMEOUT_MS)
-    : null;
+  // `timeoutMs` is for a caller with a deadline of its own: the settings pairing gives up
+  // on a read long before the write timeout, and without a bound of its own each retry
+  // left the previous attempt running against the server it is already struggling to
+  // reach. `signal` ends it earlier still, which is what a chat switch wants.
+  const timeout =
+    options.bounded || options.timeoutMs !== undefined
+      ? disposableTimeoutSignal(options.timeoutMs ?? THREAD_WRITE_TIMEOUT_MS)
+      : null;
+  const combined =
+    timeout && options.signal
+      ? combineAbortSignals([timeout.signal, options.signal])
+      : null;
+  const signal = combined?.signal ?? timeout?.signal ?? options.signal;
   try {
     const response = await authFetch(
       `/api/chat/threads/${encodeURIComponent(threadId)}`,
-      timeout ? { signal: timeout.signal } : undefined,
+      signal ? { signal } : undefined,
     );
     if (response.status === 404) return null;
     return parseJsonOrThrow<ThreadRecord>(response);
   } finally {
+    combined?.dispose();
     timeout?.dispose();
   }
 }
@@ -797,11 +856,30 @@ export interface UpdateChatThreadOptions {
   expectedTitle?: string;
   /** And only while this is still the thread's opening user message. */
   expectedOpeningMessageId?: string;
+  /**
+   * Off for one update inside a bulk action, which announces itself once at the end. Every
+   * notification is a synchronous localStorage write that wakes the other tabs, so Archive
+   * All would otherwise send one per thread.
+   */
+  notify?: boolean;
+  /** Give up on the write; used to stand a superseded settings PATCH down. */
+  signal?: AbortSignal;
 }
+
+/**
+ * `settings` replaces the chat's whole snapshot; `settingsPatch` applies only the fields
+ * it names, for a writer that knows what changed but not what else the row holds.
+ */
+export type ChatThreadWritePatch = Partial<ThreadRecord> & {
+  settingsPatch?: ThreadRecord["settings"];
+  /** Orders a writer's snapshot writes against its own earlier ones, never across tabs. */
+  settingsSeq?: number;
+  settingsWriter?: string;
+};
 
 export async function updateChatThread(
   threadId: string,
-  patch: Partial<ThreadRecord>,
+  patch: ChatThreadWritePatch,
   options: UpdateChatThreadOptions = {},
 ): Promise<ThreadRecord> {
   const body: Record<string, unknown> = { ...patch };
@@ -818,9 +896,10 @@ export async function updateChatThread(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     },
+    options.signal,
   );
   const thread = await parseJsonOrThrow<ThreadRecord>(response);
-  notifyChatHistoryUpdated();
+  if (options.notify !== false) notifyChatHistoryUpdated();
   return thread;
 }
 
@@ -851,16 +930,18 @@ export async function forkChatThread(
   return data;
 }
 
-export async function getForkCount(
+/** Fork counts for a whole thread, keyed by message id. One request per thread, not per message. */
+export async function getThreadForkCounts(
   threadId: string,
-  messageId: string,
-): Promise<number> {
+): Promise<ReadonlyMap<string, number>> {
   const response = await authFetch(
-    `/api/chat/threads/${encodeURIComponent(threadId)}/messages/${encodeURIComponent(messageId)}/forks`,
+    `/api/chat/threads/${encodeURIComponent(threadId)}/forks`,
   );
-  if (response.status === 404) return 0;
-  const data = await parseJsonOrThrow<{ count: number }>(response);
-  return data.count;
+  if (response.status === 404) return new Map();
+  const data = await parseJsonOrThrow<{ counts?: Record<string, number> }>(
+    response,
+  );
+  return new Map(Object.entries(data.counts ?? {}));
 }
 
 /** Thread ids whose sandbox still holds files, for a caller that never asked. */
@@ -1006,6 +1087,7 @@ export async function getChatMessage(
 
 export async function saveChatMessage(
   message: MessageRecord,
+  options: { coalesce?: boolean } = {},
 ): Promise<MessageRecord> {
   const response = await authFetch(
     `/api/chat/threads/${encodeURIComponent(message.threadId)}/messages/${encodeURIComponent(message.id)}`,
@@ -1016,7 +1098,9 @@ export async function saveChatMessage(
     },
   );
   const savedMessage = await parseJsonOrThrow<MessageRecord>(response);
-  notifyChatHistoryUpdated();
+  // Coalescing is the streaming autosave's alone, since it lands here per chunk. A manual
+  // edit is one deliberate change and publishes at once.
+  notifyChatHistoryUpdated({ coalesce: options.coalesce === true });
   return savedMessage;
 }
 
@@ -1037,7 +1121,9 @@ export async function syncChatMessages(
     },
   );
   const data = await parseJsonOrThrow<{ messages: MessageRecord[] }>(response);
-  notifyChatHistoryUpdated();
+  // Pruning is how a message is deleted, which no other tab should keep matching for a
+  // whole unrelated generation. Without it this is the batched streaming autosave.
+  notifyChatHistoryUpdated({ coalesce: options.pruneMissing !== true });
   return data.messages;
 }
 

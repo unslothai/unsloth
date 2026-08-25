@@ -59,13 +59,21 @@ import { notifyChatHistoryUpdated } from "../api/chat-api";
 import { toolResultModelText } from "../api/chat-adapter";
 import { usePlusMenuPrefsStore } from "../stores/plus-menu-prefs-store";
 import type { ThreadRecord, MessageRecord } from "../types";
-import { createConversationMarkdownExporter } from "../utils/conversation-markdown-export";
+import {
+  buildNamedConversationsMarkdown,
+  createConversationMarkdownBuilder,
+  createConversationMarkdownExporter,
+} from "../utils/conversation-markdown-export";
 import { parseCsv } from "../utils/csv-parse";
 import { unwrapPastedTextContent } from "../utils/pasted-text.ts";
 import {
+  buildConversationMarkdown,
   contentBlocksToMarkdownBlocks,
   renderConversationBlocks,
 } from "../utils/conversation-markdown";
+import { planChatItemSources } from "../utils/project-source-plan";
+import { stripSearchImageTokens } from "../search-images/search-images.ts";
+import { saveMarkdownAsProjectSource } from "@/features/rag";
 
 function newId(): string {
   return crypto.randomUUID().replace(/-/g, "").slice(0, 12);
@@ -230,10 +238,15 @@ function orderByParentChain<T extends _Msg>(
   return result;
 }
 
-async function loadConversationMessages(threadId: string) {
+async function loadConversationMessages(
+  threadId: string,
+  // Every other caller here is an export; the project-sources save is not, and
+  // reporting an export to someone who never asked for one is confusing.
+  emptyMessage = "No messages in this conversation to export.",
+) {
   const raw = await listStoredChatMessages(threadId);
   if (raw.length === 0) {
-    toast.info("No messages in this conversation to export.");
+    toast.info(emptyMessage);
     return null;
   }
   // No parentId = legacy flat thread (already DB createdAt-sorted); walking the
@@ -441,6 +454,13 @@ export async function exportConversationCsv(threadId: string): Promise<void> {
   );
 }
 
+/** Same markdown the download produces, for the "Copy as Markdown" shortcut. */
+export const buildConversationMarkdownForThread =
+  createConversationMarkdownBuilder({
+    loadMessages: loadConversationMessages,
+    renderMessage: messageToMarkdown,
+  });
+
 export const exportConversationMarkdown = createConversationMarkdownExporter({
   loadMessages: loadConversationMessages,
   renderMessage: messageToMarkdown,
@@ -448,6 +468,85 @@ export const exportConversationMarkdown = createConversationMarkdownExporter({
   exportTimestamp: exportTs,
   notifyNoContent: () => toast.info("No exportable content."),
 });
+
+// "skipped" is an empty conversation, which has already said so and must not
+// stop the rest of a pair; "failed" has toasted a reason, so stop there rather
+// than stack a second one.
+type SaveSourceOutcome = "saved" | "skipped" | "failed";
+
+async function saveConversationAsProjectSource(
+  threadId: string,
+  projectId: string,
+  title: string,
+): Promise<SaveSourceOutcome> {
+  const messages = await loadConversationMessages(
+    threadId,
+    "No messages in this conversation to save.",
+  );
+  if (!messages) return "skipped";
+  const markdown = buildConversationMarkdown(
+    messages.map((msg) => ({
+      role: String(msg.role ?? ""),
+      // As the markdown exporter does: a project source is retrieved back into
+      // context, so the renderer's tokens must not be saved as prose.
+      content: stripSearchImageTokens(messageToMarkdown(msg)),
+    })),
+  );
+  if (!markdown) {
+    toast.info("No content to save.");
+    return "skipped";
+  }
+  const saved = await saveMarkdownAsProjectSource(projectId, markdown, title, {
+    quiet: true,
+  });
+  return saved ? "saved" : "failed";
+}
+
+export async function saveChatItemAsProjectSource(
+  item: { id: string; title: string; type: string },
+  projectId: string,
+): Promise<void> {
+  const plans = planChatItemSources(
+    item,
+    item.type === "single" ? [] : await listStoredChatThreads({ pairId: item.id }),
+  );
+  let saved = 0;
+  for (const plan of plans) {
+    const outcome = await saveConversationAsProjectSource(
+      plan.id,
+      projectId,
+      plan.title,
+    );
+    if (outcome === "failed") break;
+    if (outcome === "saved") saved += 1;
+  }
+  // One toast per click, not one per thread in the pair.
+  if (saved === 1) toast.success("Saved to project sources.");
+  else if (saved > 1) {
+    toast.success(`Saved ${saved} chats to project sources.`);
+  }
+}
+
+/**
+ * A sidebar row as one markdown document, for the "Copy as Markdown" shortcut.
+ * The halves of a compare pair are named the way saving them to project sources
+ * names them, after their models: the two arrive in whichever order they last
+ * answered in, so position alone would label them wrong.
+ */
+export async function buildChatItemMarkdown(item: {
+  id: string;
+  title: string;
+  type: string;
+}): Promise<string> {
+  const plans = planChatItemSources(
+    item,
+    item.type === "single" ? [] : await listStoredChatThreads({ pairId: item.id }),
+  );
+  return buildNamedConversationsMarkdown(
+    plans,
+    buildConversationMarkdownForThread,
+  );
+}
 
 export type ConvExportFormat = "jsonl-raw" | "csv" | "sharegpt";
 

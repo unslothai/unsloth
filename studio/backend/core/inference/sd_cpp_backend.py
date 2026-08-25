@@ -43,7 +43,10 @@ from core.inference.diffusion_families import (
     DIFFUSION_CANCELLED_MSG,
     DIFFUSION_NOT_LOADED_MSG,
     DiffusionFamily,
+    DiffusionModelReplacedError,
+    LoadIdentity,
     detect_family_for_pick,
+    load_identity,
     family_sd_cpp_supported,
     mirror_repo,
     legacy_source_repo,
@@ -323,6 +326,26 @@ def sd_cpp_binary_vets_for_h3(binary: str) -> bool:
     if text is None:
         return True
     return help_text_identifies_sd_cpp(text) and help_text_supports_minimax_h3(text)
+
+
+# The ``--help`` tokens marking a build with the graph-cut executor; both are required, since --stream-layers does nothing without --max-vram.
+_GRAPH_CUT_HELP_MARKERS: tuple[str, ...] = ("--max-vram", "--stream-layers")
+
+
+def sd_cpp_supports_graph_cut(binary: Optional[str]) -> bool:
+    """True only when ``binary``'s ``--help`` advertises the graph-cut executor.
+
+    The opposite default to ``sd_cpp_supports_minimax_h3``, and for the same reason each is safe:
+    that gate refuses a build, so "cannot tell" has to keep it, while this one ADDS flags, and
+    sd-cli exits non-zero on an option it does not know. Guessing yes from an unreadable ``--help``
+    would therefore break every generation on an older build instead of merely leaving it as slow
+    as it is today."""
+    if not binary:
+        return False
+    text = _sd_cpp_probe_output(binary, "--help")
+    if text is None:
+        return False
+    return all(marker in text for marker in _GRAPH_CUT_HELP_MARKERS)
 
 
 def sd_cpp_lists_accelerator_device(binary: Optional[str]) -> bool:
@@ -957,6 +980,24 @@ def _fetch_repo_map(assets: list[tuple[str, str, str]], hf_token: Optional[str])
     }
 
 
+class _NeverRaised(Exception):
+    """Placeholder ``except`` target for a hub layout with no LocalEntryNotFoundError."""
+
+
+def _local_entry_not_found_error() -> type[BaseException]:
+    """huggingface_hub's "not cached and downloads are disabled" error, or an unraisable stand-in.
+
+    Resolved lazily and defensively for the same reason the rest of this module imports
+    ``huggingface_hub`` inside functions: an unexpected hub layout must degrade to today's error,
+    never break the import or swallow an unrelated exception. The stand-in matches nothing, so a
+    missing class simply leaves the raw hub error on load-progress."""
+    try:
+        from huggingface_hub.errors import LocalEntryNotFoundError
+        return LocalEntryNotFoundError
+    except Exception:  # noqa: BLE001 -- an unexpected hub layout keeps the raw error
+        return _NeverRaised
+
+
 def _with_mirrors(repo_ids) -> tuple[str, ...]:
     """``repo_ids`` plus the ungated mirror and the community repack of each, de-duplicated, order
     preserved.
@@ -975,6 +1016,17 @@ def _with_mirrors(repo_ids) -> tuple[str, ...]:
         if legacy:
             out.append(legacy)
     return tuple(dict.fromkeys(out))
+
+
+def _assert_pick_is_not_speech(
+    repo_id: str,
+    gguf_filename: Optional[str],
+    hf_token: Optional[str] = None,
+    allow_network: bool = True,
+) -> None:
+    """The shared speech refusal, imported lazily so this module keeps its import cost."""
+    from .diffusion_compat import assert_pick_is_not_speech
+    assert_pick_is_not_speech(repo_id, gguf_filename, hf_token, allow_network)
 
 
 class SdCppDiffusionBackend:
@@ -1128,6 +1180,17 @@ class SdCppDiffusionBackend:
         self,
         repo_id: str,
         *,
+        # Same name, position and default as DiffusionBackend.begin_load: the route calls whichever
+        # engine was activated through ONE call site and passes this unconditionally, so an engine
+        # that does not declare it TypeErrors every load on the hosts that select it (CPU-only,
+        # opted-in MPS, UNSLOTH_DIFFUSION_ENGINE=sd_cpp) -- including the ordinary user-initiated
+        # ones, which pass False.
+        #
+        # Covers the MODEL ASSETS only: the GGUF, the VAE and the text encoders this pick fetches
+        # from the Hub. It deliberately says nothing about the sd-cli/sd-server BINARY, which is a
+        # separate managed tree with its own install policy (_install_allowed / ensure_sd_*_binary);
+        # a background load may still install one, exactly as it does today.
+        local_files_only: bool = False,
         gguf_filename: Optional[str] = None,
         base_repo: Optional[str] = None,
         family_override: Optional[str] = None,
@@ -1236,6 +1299,7 @@ class SdCppDiffusionBackend:
             target = self._run_load,
             kwargs = dict(
                 repo_id = repo_id,
+                local_files_only = local_files_only,
                 gguf_filename = gguf_filename,
                 base = base,
                 fam = fam,
@@ -1259,6 +1323,9 @@ class SdCppDiffusionBackend:
         base: str,
         fam: DiffusionFamily,
         hf_token: Optional[str],
+        # Cache-only when set: every Hub call below is either skipped or told to resolve from disk,
+        # so a load nobody asked for cannot pull bytes. See begin_load for what it does not cover.
+        local_files_only: bool = False,
         cpu_offload: bool = False,
         memory_mode: Optional[str] = None,
         speed_mode: Optional[str] = None,
@@ -1317,7 +1384,18 @@ class SdCppDiffusionBackend:
             # Swap ONCE so the size probe and the download agree: sizes come from paths-info, which
             # -- unlike model_info -- 401s anonymously on a gated repo, so probing the upstream
             # drops the VAE from the progress total the mirror then pulls.
-            inner_dim = self._flux2_inner_dim(repo_id, gguf_filename, fam, hf_token)
+            # The probe is a RANGE READ off the Hub when the checkpoint is not on disk, so an
+            # offline load asks it the way begin_load does: memo or local header or nothing. A
+            # None here only falls back to the filename heuristic for the encoder pick, and a
+            # cache-only load can fetch nothing the heuristic did not already have.
+            # The speech verdict lands here rather than in begin_load, which is offline-only by
+            # contract; before _asset_specs, so the refusal precedes any fetch.
+            _assert_pick_is_not_speech(
+                repo_id, gguf_filename, hf_token, allow_network = not local_files_only
+            )
+            inner_dim = self._flux2_inner_dim(
+                repo_id, gguf_filename, fam, hf_token, allow_network = not local_files_only
+            )
             specs = self._asset_specs(repo_id, gguf_filename, fam, inner_dim)
             fetch_repo = _fetch_repo_map(specs, hf_token)
             assets = [(fetch_repo[repo], fn, kind) for repo, fn, kind in specs]
@@ -1350,10 +1428,24 @@ class SdCppDiffusionBackend:
             # 15 GiB into the prefetch, without refusing one an ungated mirror stands in for. The
             # plan alone is not enough: the images page falls back to this load when it fails.
             self._preflight_companion_repos(
-                self._assets_by_repo(assets), fetch_repo.get(repo_id, repo_id), hf_token
+                self._assets_by_repo(assets),
+                fetch_repo.get(repo_id, repo_id),
+                hf_token,
+                local_files_only = local_files_only,
             )
-            self._set_expected_bytes(assets, hf_token)
-            paths = self._fetch_assets(assets, hf_token, cancel_event = cancel_event)
+            # Skipped outright offline: the size probe is get_paths_info, a Hub round trip, and its
+            # only product is the progress bar's denominator. A cache-only load resolves every
+            # asset from disk in milliseconds, so 0 (the value this method already reports for any
+            # size the Hub will not answer) costs nothing and asking would be the one network call
+            # left on the path.
+            if not local_files_only:
+                self._set_expected_bytes(assets, hf_token)
+            paths = self._fetch_assets(
+                assets,
+                hf_token,
+                cancel_event = cancel_event,
+                local_files_only = local_files_only,
+            )
 
             files = SdCppModelFiles(
                 diffusion_model = paths["diffusion_model"],
@@ -1676,6 +1768,8 @@ class SdCppDiffusionBackend:
         if fam is None or not family_sd_cpp_supported(fam):
             # Unreachable through the route, but a direct caller gets the same message begin_load would raise.
             raise ValueError(f"'{repo_id}' has no native sd.cpp asset mapping.")
+        # Same reason as the diffusers plan: this is what stages the download.
+        _assert_pick_is_not_speech(repo_id, gguf_filename, hf_token)
 
         specs = self._asset_specs(
             repo_id,
@@ -1768,7 +1862,11 @@ class SdCppDiffusionBackend:
 
     @staticmethod
     def _preflight_companion_repos(
-        by_repo: dict[str, list[str]], repo_id: str, hf_token: Optional[str]
+        by_repo: dict[str, list[str]],
+        repo_id: str,
+        hf_token: Optional[str],
+        *,
+        local_files_only: bool = False,
     ) -> None:
         """Refuse a companion repo this pick cannot read, before any byte is fetched.
 
@@ -1776,8 +1874,19 @@ class SdCppDiffusionBackend:
         black-forest-labs/FLUX.1-schnell), and neither ``_plan_file_sizes`` nor the size probe
         surfaces the 401: the entry is planned at 0 bytes and the fetch dies on the bare Hub token
         error this replaces. Run from BOTH the plan and ``_run_load``, as the diffusers backend
-        does, because the UI falls back to /images/load when the plan call fails."""
+        does, because the UI falls back to /images/load when the plan call fails.
+
+        ``local_files_only`` skips it entirely. The probe is a ``model_info`` call plus, for a
+        gated repo, a metadata HEAD -- pure network, whose whole purpose is to turn a 401 that
+        would otherwise arrive mid-download into a licence URL up front. A cache-only load never
+        starts that download: it either resolves the companion from disk (in which case the probe
+        would only have excused it anyway, via ``_already_downloaded``) or fails on the local
+        miss, which is the clearer error of the two. Skipping is therefore strictly what the
+        offline contract asks for and never hides a refusal a network load would have made."""
+        if local_files_only:
+            return
         from core.inference.diffusion import _assert_base_repo_accessible
+
         for repo, names in by_repo.items():
             # Companions only: the picker only lists repos it could already read.
             if repo != repo_id and names:
@@ -1794,6 +1903,7 @@ class SdCppDiffusionBackend:
         model_kind: Optional[str] = None,
         base_repo: Optional[str] = None,
         hf_token: Optional[str] = None,
+        allow_network: bool = True,  # noqa: ARG002 -- signature parity; no speech probe here
     ) -> None:
         """The companion refusal ``_run_load`` makes, run by the route BEFORE it takes the GPU.
 
@@ -1905,9 +2015,15 @@ class SdCppDiffusionBackend:
         assets: list[tuple[str, str, str]],
         hf_token: Optional[str],
         cancel_event: Optional[threading.Event] = None,
+        local_files_only: bool = False,
     ) -> dict[str, str]:
         """Download every asset (cancellable via this load's own ``cancel_event``, so
-        a replacement load cannot un-cancel this pull), returning kind -> local path."""
+        a replacement load cannot un-cancel this pull), returning kind -> local path.
+
+        ``local_files_only`` resolves each asset from the HF cache and never from the network; an
+        asset that is not there fails HERE, with the repo and filename named, rather than being
+        quietly pulled. This is the last and only network call left on an offline load's path, so
+        it is the one that has to honour the flag rather than merely accept it."""
         from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
         # Callers without a per-load event (tests, direct use) fall back to the current one.
@@ -1928,9 +2044,28 @@ class SdCppDiffusionBackend:
                 # Resolve an asset cached only under huggingface_hub's import-time root through
                 # that root, as the preflight does. Pinned to the live root, a cache-folder change
                 # re-downloads every moved asset and 401s on an already-downloaded gated base.
-                path = hf_hub_download_with_xet_fallback(
-                    repo, fn, hf_token, cancel_event = cancel, reuse_other_cache_root = True
-                )
+                try:
+                    path = hf_hub_download_with_xet_fallback(
+                        repo,
+                        fn,
+                        hf_token,
+                        cancel_event = cancel,
+                        reuse_other_cache_root = True,
+                        local_files_only = local_files_only,
+                    )
+                except _local_entry_not_found_error() as exc:
+                    # Raised by huggingface_hub for exactly "not cached and outgoing traffic is
+                    # disabled", so it can only fire under local_files_only. Its own text names
+                    # neither the repo nor the file, and this string is what /images/load-progress
+                    # toasts, so restate it with both. Re-raised untouched in the (unreachable)
+                    # online case rather than relabelled, so nothing changes when the flag is off.
+                    if not local_files_only:
+                        raise
+                    raise RuntimeError(
+                        f"'{fn}' is not in the local cache for '{repo}', and this load may not "
+                        f"download (it was not user-initiated). Open the model from the Images "
+                        f"page to fetch it."
+                    ) from exc
             paths[kind] = path
             with self._lock:
                 if self._loading is not None:
@@ -2024,6 +2159,8 @@ class SdCppDiffusionBackend:
         loras: Optional[list[tuple[str, float]]] = None,
         # ControlNet is diffusers-only; rejected by the guard below (accepted for parity).
         controlnet: Optional[tuple[str, str, str, float, float, float]] = None,
+        # load_identity() of the caller's status() read; refuse rather than run a different load (#9448).
+        expected_load: Optional[LoadIdentity] = None,
     ) -> dict[str, Any]:
         import tempfile
 
@@ -2070,6 +2207,10 @@ class SdCppDiffusionBackend:
                 ):
                     self._state = None
                     raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
+                # Same window as the diffusers engine: a replacement can commit while this waits (#9448).
+                loaded_id = load_identity(state.repo_id, state.base_repo, state.family.name)
+                if expected_load is not None and expected_load != loaded_id:
+                    raise DiffusionModelReplacedError(expected_load, loaded_id)
                 self._active_generate_cancel = cancel
                 # Publish an active (step 0) state before the slow pre-generate setup so a reload probe does not read idle while this holds _generate_lock.
                 self._gen = _SdGen(total_steps = int(steps))
@@ -2650,3 +2791,9 @@ def get_sd_cpp_backend() -> SdCppDiffusionBackend:
     if _sd_cpp_backend is None:
         _sd_cpp_backend = SdCppDiffusionBackend()
     return _sd_cpp_backend
+
+
+def generation_in_flight() -> bool:
+    """Read the active-generation marker without constructing or locking the backend."""
+    backend = _sd_cpp_backend
+    return backend is not None and backend._gen is not None

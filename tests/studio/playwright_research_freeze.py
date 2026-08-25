@@ -7,8 +7,10 @@ The report: on Ubuntu 26.04 under Wayland the desktop app froze on "Writing the 
 again while closing the research detail pane -- spinner stopped, nothing clickable, force quit.
 
 What this measures, and what it cannot: Chromium is not the WebKitGTK webview the desktop app
-embeds on Linux, and `studio/src-tauri/src/linux_webkit.rs` forces that webview onto the SHM
-software renderer on Wayland, where the frame budget is far tighter than anything measured here.
+embeds on Linux, and `studio/src-tauri/src/linux_webkit.rs` takes that webview off the hardware
+DMA-BUF transport on Wayland and on NVIDIA under either display server -- onto shared memory, or
+off accelerated compositing entirely -- where the frame budget is far tighter than anything
+measured here.
 So an absolute pass here does not prove the reporter's machine is fixed. What transfers is the
 *work*: long tasks, forced layouts and style recalcs during the stream, and whether the window
 still takes clicks afterwards. Those are the quantities the fixes move.
@@ -18,8 +20,10 @@ MarkdownPreview against the real store, so nothing here is a mock of the code un
 against a vite dev server; no backend, no auth, no GPU.
 
 Run:
-    cd studio/frontend && npx vite --port 5183 &
-    SMOKE_BASE_URL=http://127.0.0.1:5183 python tests/studio/playwright_research_freeze.py
+    python tests/studio/playwright_research_freeze.py
+
+It starts and stops its own vite dev server. Point it at one you already have with
+SMOKE_BASE_URL, or move the port it picks with SMOKE_PORT.
 """
 
 from __future__ import annotations
@@ -33,9 +37,20 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _playwright_robust import chromium_launch_args  # noqa: E402
+from _playwright_robust import (  # noqa: E402
+    chromium_launch_args,
+    echo_browser_errors,
+    start_vite,
+    stop_process,
+    wait_for_smoke_page,
+)
 
-BASE = os.environ.get("SMOKE_BASE_URL", "http://127.0.0.1:5183")
+PORT = int(os.environ.get("SMOKE_PORT", "5183"))
+# Unset: start and stop our own server. Set: drive that one and leave it running.
+# Exported-but-empty counts as unset, else we skip the server and drive "" as the URL.
+_EXTERNAL = os.environ.get("SMOKE_BASE_URL", "").strip()
+BASE = _EXTERNAL or f"http://127.0.0.1:{PORT}"
+OWNS_SERVER = not _EXTERNAL
 LABEL = os.environ.get("SMOKE_LABEL", "tree")
 OUT = Path(os.environ.get("PW_ART_DIR", "logs/playwright-research-freeze"))
 OUT.mkdir(parents = True, exist_ok = True)
@@ -55,6 +70,11 @@ MAX_STREAM_RAF_PER_SECOND = float(os.environ.get("SMOKE_MAX_RAF_PER_S", "45"))
 # of slack covers a settle check landing just inside the window; more means a loop that never let
 # go, which is what left the reporter's window unresponsive.
 MAX_IDLE_RAF_PER_2S = int(os.environ.get("SMOKE_MAX_IDLE_RAF", "4"))
+# Longest the report work keeps the main thread from servicing a timer. A stall detector,
+# not Event Timing input delay: nothing here reads an input timestamp. Measured 131.9ms on
+# one box and 342-416ms on a loaded one, so 500 left just 1.2x; 1000 keeps ~2.4x and still
+# fails ten times the report size (1518ms at SMOKE_REPORT_SECTIONS=400).
+MAIN_THREAD_STALL_BUDGET_MS = int(os.environ.get("SMOKE_REPORT_STALL_BUDGET_MS", "1000"))
 
 # A real deep research run's size, with the three costliest things to render: fenced code (shiki),
 # a table, and display math (KaTeX).
@@ -149,10 +169,8 @@ def delta(before: dict[str, float], after: dict[str, float], name: str) -> float
 def run() -> dict:
     results: dict = {"label": LABEL, "base": BASE}
     with sync_playwright() as p:
-        # Headed under Xvfb by default (SMOKE_HEADLESS=1 to override): with no compositor,
-        # headless Chromium throttles rAF to a few callbacks a second, flattening the per-frame
-        # loop this file exists to measure.
-        headless = os.environ.get("SMOKE_HEADLESS", "0") == "1"
+        # The timer-driven frame pump above makes headless runs deterministic without Xvfb.
+        headless = os.environ.get("SMOKE_HEADLESS", "1") == "1"
         browser = p.chromium.launch(headless = headless, args = chromium_launch_args())
         context = browser.new_context(viewport = {"width": 1440, "height": 900})
         # Deliberately NOT installing the view-transition killer: it forces
@@ -169,6 +187,7 @@ def run() -> dict:
             lambda route: route.fulfill(status = 200, content_type = "application/json", body = "{}"),
         )
         page = context.new_page()
+        echo_browser_errors(page, info)
         page.goto(f"{BASE}/smoke-research.html", wait_until = "domcontentloaded")
         page.wait_for_function("() => Boolean(window.__research)", timeout = 30_000)
         cdp = context.new_cdp_session(page)
@@ -176,6 +195,7 @@ def run() -> dict:
 
         page.evaluate("window.__research.seed()")
         page.wait_for_timeout(500)
+        activities_before_stream = page.evaluate("window.__research.state().activities")
 
         # 1. The streaming phase.
         before = metrics(cdp)
@@ -214,6 +234,7 @@ def run() -> dict:
             "recalc_style_ms": round(delta(before, after, "RecalcStyleDuration") * 1000, 1),
             "task_ms": round(delta(before, after, "TaskDuration") * 1000, 1),
             "activities": page.evaluate("window.__research.state().activities"),
+            "activities_before": activities_before_stream,
         }
 
         # 2. Idle after the stream: the follow loop must stop when the list goes quiet.
@@ -225,10 +246,43 @@ def run() -> dict:
         report = build_report(int(os.environ.get("SMOKE_REPORT_SECTIONS", "40")))
         before = metrics(cdp)
         page.evaluate("window.__longTasks.length = 0")
-        page.evaluate("md => window.__research.publishReport(md)", report)
-        # A click during the parse: if the main thread is blocked this lands late but must land.
-        page.click('[data-smoke="click-probe"]')
+        clicks_before_report = page.evaluate("window.__research.clicks()")
+        # The probe does not click: a synthetic element.click() skips hit testing, so it lands
+        # even with `body { pointer-events: none }` stranded, the freeze under test.
+        page.evaluate(
+            """md => {
+                window.__reportStallMs = 0;
+                let previous = performance.now();
+                const probe = () => {
+                    const now = performance.now();
+                    window.__reportStallMs = Math.max(
+                        window.__reportStallMs,
+                        now - previous,
+                    );
+                    previous = now;
+                    window.__reportStallProbe = setTimeout(probe, 16);
+                };
+                window.__reportStallProbe = setTimeout(probe, 16);
+                window.__research.publishReport(md);
+            }""",
+            report,
+        )
+        # A real, hit-tested input event: lands late under a blocked thread, but it must land.
+        # Record a blocked click as a verdict; raising would lose every other measurement.
+        try:
+            page.click('[data-smoke="click-probe"]', timeout = 10_000)
+            report_click_landed = True
+        except Exception as exc:
+            report_click_landed = False
+            info(f"the click during the report parse never became actionable: {exc!r}")
         page.wait_for_timeout(3000)
+        # Disarm only after the window closes, so a stall at its very end is still sampled.
+        page.evaluate(
+            """() => {
+                clearTimeout(window.__reportStallProbe);
+                window.__reportStallMs = Math.max(window.__reportStallMs, 0);
+            }"""
+        )
         after = metrics(cdp)
         long_tasks = page.evaluate("window.__longTasks")
         results["report"] = {
@@ -236,7 +290,9 @@ def run() -> dict:
             "long_tasks": len(long_tasks),
             "worst_long_task_ms": round(max((t["duration"] for t in long_tasks), default = 0.0), 1),
             "task_ms": round(delta(before, after, "TaskDuration") * 1000, 1),
-            "clicks_registered": page.evaluate("window.__research.clicks()"),
+            "main_thread_stall_ms": round(page.evaluate("window.__reportStallMs"), 1),
+            "clicks_registered": page.evaluate("window.__research.clicks()") - clicks_before_report,
+            "click_landed": report_click_landed,
             "rendered": page.evaluate(
                 "() => Boolean(document.querySelector('[data-smoke=\\\"report\\\"] h1'))"
             ),
@@ -317,7 +373,19 @@ def run() -> dict:
 
 
 def main() -> int:
-    results = run()
+    vite = None
+    if OWNS_SERVER:
+        info(f"starting vite dev server on port {PORT}")
+        vite = start_vite(PORT)
+    try:
+        wait_for_smoke_page(
+            f"{BASE}/smoke-research.html", "smoke-research-main.tsx", proc = vite, info = info
+        )
+        results = run()
+    finally:
+        if vite is not None:
+            stop_process(vite)
+            info("vite stopped")
     out = OUT / f"{LABEL}.json"
     out.write_text(json.dumps(results, indent = 2), encoding = "utf-8")
     info(json.dumps(results, indent = 2))
@@ -327,9 +395,9 @@ def main() -> int:
     stream = results["stream"]
     # A list that ingested nothing has nothing to follow, so it measures zero frames and clears
     # both budgets below. Recorded and unread was false-green; assert it.
-    if stream["activities"] < 1:
+    if stream["activities"] <= stream["activities_before"]:
         failures.append(
-            "the run ingested no activities; the frame budgets below measured an empty list"
+            "the stream added no activities; the frame budgets below measured no workload"
         )
     # Without these two the file records the per-frame cost and passes regardless, which is how
     # the original loop shipped: the numbers were there, nothing read them.
@@ -365,8 +433,24 @@ def main() -> int:
         failures.append("the report never rendered")
     # The modal checks below compare click counts against a baseline, so they still pass if this
     # one was swallowed. Responsiveness during the report parse is the reported symptom; assert it.
+    # Hit-tested, so a stranded `body { pointer-events: none }` fails here; a synthetic
+    # element.click() would land straight on the handler and pass on that same tree.
+    if not results["report"]["click_landed"]:
+        failures.append(
+            "a real click during the report parse never became actionable; the window was "
+            "not taking input"
+        )
     if results["report"]["clicks_registered"] < 1:
         failures.append("the click during the report parse never reached its handler")
+    if results["report"]["main_thread_stall_ms"] > MAIN_THREAD_STALL_BUDGET_MS:
+        failures.append(
+            f"report rendering stalled the main thread for "
+            f"{results['report']['main_thread_stall_ms']}ms, over the "
+            f"{MAIN_THREAD_STALL_BUDGET_MS}ms budget"
+        )
+    # Zero means the probe never took a second sample: the budget above measured nothing.
+    if results["report"]["main_thread_stall_ms"] <= 0:
+        failures.append("the stall probe recorded no samples; the budget above measured nothing")
     detach = results["detach"]
     if not detach["overflowing"]:
         failures.append("the activity list never overflowed; the detach checks proved nothing")

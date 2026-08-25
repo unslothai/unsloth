@@ -21,8 +21,11 @@ export type OpenAIAutoSwitchSettings = {
   // the chat TTL above is about the OpenAI API and never implied these.
   mediaAutoUnloadIdleSeconds: number;
   // True when the media idle unload will actually run, so the UI can say a veto
-  // (residency, or API-loaded only) is holding a saved TTL off.
+  // (residency) is holding a saved TTL off.
   mediaIdleUnloadActive: boolean;
+  // Load the image or video model a media request names. Its own setting: the chat
+  // toggle above says nothing about pipelines loaded on the Images or Video page.
+  mediaAutoSwitchModel: boolean;
 };
 
 type ApiOpenAIAutoSwitchSettings = {
@@ -43,6 +46,8 @@ type ApiOpenAIAutoSwitchSettings = {
   media_auto_unload_idle_seconds?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
   media_idle_unload_active?: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  media_auto_switch_model?: boolean;
 };
 
 let cachedSettings: OpenAIAutoSwitchSettings | null = null;
@@ -65,6 +70,7 @@ function fromApi(
     autoUnloadApiOnly: settings.auto_unload_api_only ?? false,
     mediaAutoUnloadIdleSeconds: settings.media_auto_unload_idle_seconds ?? 0,
     mediaIdleUnloadActive: settings.media_idle_unload_active ?? false,
+    mediaAutoSwitchModel: settings.media_auto_switch_model ?? false,
   };
 }
 
@@ -137,14 +143,37 @@ export async function loadOpenAIAutoSwitchSettings() {
   return settings as OpenAIAutoSwitchSettings;
 }
 
+/** A partial write: `enabled` is always sent, and an omitted field keeps its stored value. */
+export type OpenAIAutoSwitchUpdate = {
+  enabled: boolean;
+  autoUnloadIdleSeconds?: number;
+  autoUnloadKeepKv?: boolean;
+  autoDownloadModel?: boolean;
+  autoUnloadApiOnly?: boolean;
+  mediaAutoUnloadIdleSeconds?: number;
+  mediaAutoSwitchModel?: boolean;
+};
+
+// Camel-cased update field -> the API schema key it is sent as.
+const UPDATE_KEYS = {
+  autoUnloadIdleSeconds: "auto_unload_idle_seconds",
+  autoUnloadKeepKv: "auto_unload_keep_kv",
+  autoDownloadModel: "auto_download_model",
+  autoUnloadApiOnly: "auto_unload_api_only",
+  mediaAutoUnloadIdleSeconds: "media_auto_unload_idle_seconds",
+  mediaAutoSwitchModel: "media_auto_switch_model",
+} as const;
+
 export async function updateOpenAIAutoSwitchSettings(
-  enabled: boolean,
-  autoUnloadIdleSeconds?: number,
-  autoUnloadKeepKv?: boolean,
-  autoDownloadModel?: boolean,
-  autoUnloadApiOnly?: boolean,
-  mediaAutoUnloadIdleSeconds?: number,
+  update: OpenAIAutoSwitchUpdate,
 ): Promise<OpenAIAutoSwitchSettings> {
+  const body: Record<string, unknown> = { enabled: update.enabled };
+  for (const [field, key] of Object.entries(UPDATE_KEYS)) {
+    const value = update[field as keyof typeof UPDATE_KEYS];
+    if (value !== undefined) {
+      body[key] = value;
+    }
+  }
   // Read BEFORE the request: idleUnloadActive depends on the Model Memory
   // setting, so a residency write landing mid-flight makes this response stale
   // even though it is our own write's reply.
@@ -152,30 +181,7 @@ export async function updateOpenAIAutoSwitchSettings(
   const res = await authFetch("/api/settings/openai-auto-switch", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      enabled,
-      // Omitted fields keep their stored value.
-      ...(autoUnloadIdleSeconds === undefined
-        ? {}
-        : // biome-ignore lint/style/useNamingConvention: API schema
-          { auto_unload_idle_seconds: autoUnloadIdleSeconds }),
-      ...(autoUnloadKeepKv === undefined
-        ? {}
-        : // biome-ignore lint/style/useNamingConvention: API schema
-          { auto_unload_keep_kv: autoUnloadKeepKv }),
-      ...(autoDownloadModel === undefined
-        ? {}
-        : // biome-ignore lint/style/useNamingConvention: API schema
-          { auto_download_model: autoDownloadModel }),
-      ...(autoUnloadApiOnly === undefined
-        ? {}
-        : // biome-ignore lint/style/useNamingConvention: API schema
-          { auto_unload_api_only: autoUnloadApiOnly }),
-      ...(mediaAutoUnloadIdleSeconds === undefined
-        ? {}
-        : // biome-ignore lint/style/useNamingConvention: API schema
-          { media_auto_unload_idle_seconds: mediaAutoUnloadIdleSeconds }),
-    }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) {
     throw new Error(

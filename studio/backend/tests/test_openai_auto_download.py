@@ -15,6 +15,7 @@ import pytest
 from fastapi import HTTPException
 
 import routes.inference as inference_route
+from core.inference import llama_keepwarm
 from core.inference import openai_auto_download as auto_dl
 from core.inference.local_model_resolver import warm_index_soon as _real_warm_index_soon
 from utils import openai_auto_switch_settings as settings
@@ -66,10 +67,14 @@ def _clean_slot():
     from core.inference import local_model_resolver
 
     auto_dl.reset_for_tests()
+    with llama_keepwarm._lock:
+        llama_keepwarm._admitted_inference = 0
     # The hook warms the index in the background; drop it so a scan never leaks between tests.
     local_model_resolver.invalidate_index()
     yield
     auto_dl.reset_for_tests()
+    with llama_keepwarm._lock:
+        llama_keepwarm._admitted_inference = 0
     local_model_resolver.invalidate_index()
 
 
@@ -1172,7 +1177,7 @@ def test_setter_round_trips_auto_download_in_one_transaction(monkeypatch):
     monkeypatch.setattr(settings, "_cached_setting", lambda k, d = None: store.get(k, d))
 
     result = settings.set_openai_auto_switch(True, 120, None, True)
-    assert result == (True, 120, True, True, False, 0)
+    assert result == (True, 120, True, True, False, 0, False)
     assert len(calls) == 1
     assert calls[0][settings.OPENAI_AUTO_DOWNLOAD_SETTING_KEY] is True
 
@@ -1479,7 +1484,14 @@ def test_a_cold_scan_that_never_finishes_says_so_instead_of_guessing(monkeypatch
     monkeypatch.setattr(resolver, "_scan", (0.0, {}))
     monkeypatch.setattr(inference_route, "_COLD_INDEX_WAIT_S", 0.05)
     released = threading.Event()
-    monkeypatch.setattr(resolver, "_build_index", lambda: (released.wait(5), {})[1])
+    # 0.5, not 5. The scan runs on the event loop's default executor, so the
+    # `asyncio.run` below does not return until it finishes -- and the
+    # `released.set()` that would end it early sits in this test's `finally`, which
+    # cannot run until `asyncio.run` has returned. The stall is therefore always
+    # waited out in full, and 5s of it was spent after every assertion in the test
+    # had already been checked. 0.5s is still 10x the 0.05s budget the route is
+    # given, so the scan is exactly as unfinished when the 503 is asserted.
+    monkeypatch.setattr(resolver, "_build_index", lambda: (released.wait(0.5), {})[1])
     warmed = []
     monkeypatch.setattr(resolver, "warm_index_soon", lambda: warmed.append(1))
     loaded = _Loaded("unsloth/A-GGUF", "UD-Q4_K_XL")

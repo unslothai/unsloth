@@ -24,6 +24,7 @@ interface BackendTrainingDefaults {
   batch_size?: number;
   gradient_accumulation_steps?: number;
   warmup_steps?: number;
+  warmup_ratio?: number;
   max_steps?: number;
   save_steps?: number;
   eval_steps?: number;

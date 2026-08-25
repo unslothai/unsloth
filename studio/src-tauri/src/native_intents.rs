@@ -585,7 +585,7 @@ pub fn reveal_path_token(
         }
     }
     let target = reveal_target(&entry.canonical_path);
-    open::that_detached(target).map_err(|e| format!("Failed to reveal path: {e}"))
+    crate::process::open_detached(target).map_err(|e| format!("Failed to reveal path: {e}"))
 }
 
 #[tauri::command]
@@ -596,14 +596,26 @@ pub fn open_path_token(
 ) -> Result<(), String> {
     ensure_main_window(&window)?;
     let entry = state.path_for_operation(&token, NativePathOperation::Open)?;
-    open::that_detached(entry.canonical_path).map_err(|e| format!("Failed to open path: {e}"))
+    crate::process::open_detached(entry.canonical_path)
+        .map_err(|e| format!("Failed to open path: {e}"))
 }
 
-// Covers the largest client-side limit (audio, 25 MB).
+// Covers the generic client-side limit (audio, 25 MB).
 const MAX_NATIVE_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
+
+// Matches the clipboard reader, so a dropped source file and a pasted one
+// accept the same sizes.
+const MAX_NATIVE_TEXT_BYTES: u64 = 20 * 1024 * 1024;
+// OpenDocument archives use the composer's larger archive limit.
+const MAX_NATIVE_OPEN_DOCUMENT_BYTES: u64 = 50 * 1024 * 1024;
 // Images stop lower: the composer throws over 20 MB without a toast and the
 // drain swallows it, so a larger read loses them silently.
 const MAX_NATIVE_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
+// The largest client-side video limit: a reference clip, whose 96 MiB cap
+// bounds the data URL, not the file. Mirrors rawLimitFor in reference-budget.ts
+// so we don't read and encode 96 MiB the caller is about to reject. Each caller
+// still enforces its own tighter limit.
+const MAX_NATIVE_VIDEO_BYTES: u64 = 75_497_280;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -625,6 +637,21 @@ fn attachment_mime_type(path: &Path) -> Option<&'static str> {
         "m4a" => Some("audio/mp4"),
         "ogg" | "oga" => Some("audio/ogg"),
         "flac" => Some("audio/flac"),
+        "mp4" => Some("video/mp4"),
+        "mov" => Some("video/quicktime"),
+        "webm" => Some("video/webm"),
+        "mkv" => Some("video/x-matroska"),
+        "avi" => Some("video/x-msvideo"),
+        "ods" => Some("application/vnd.oasis.opendocument.spreadsheet"),
+        "odt" => Some("application/vnd.oasis.opendocument.text"),
+        // Stamped like native_clipboard.rs.
+        "json" | "jsonl" | "ndjson" => Some("application/json"),
+        "mdx" => Some("text/markdown"),
+        "csv" => Some("text/csv"),
+        "xml" => Some("application/xml"),
+        other if crate::native_path_policy::TEXT_ATTACHMENT_EXTS.contains(&other) => {
+            Some("text/plain")
+        }
         _ => None,
     }
 }
@@ -672,11 +699,21 @@ fn open_attachment_file(path: &Path) -> Result<fs::File, String> {
 
 fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFile, String> {
     let path = &entry.canonical_path;
-    let mime_type = attachment_mime_type(path).ok_or_else(|| {
-        "Only chat image and audio attachments can be read inline.".to_string()
-    })?;
-    let max_bytes = if mime_type.starts_with("image/") {
+    let mime_type = attachment_mime_type(path)
+        .ok_or_else(|| "Only chat attachments can be read inline.".to_string())?;
+    let is_text_attachment = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+        .is_some_and(|ext| crate::native_path_policy::TEXT_ATTACHMENT_EXTS.contains(&ext.as_str()));
+    let max_bytes = if is_text_attachment {
+        MAX_NATIVE_TEXT_BYTES
+    } else if mime_type.starts_with("image/") {
         MAX_NATIVE_IMAGE_BYTES
+    } else if mime_type.starts_with("video/") {
+        MAX_NATIVE_VIDEO_BYTES
+    } else if mime_type.starts_with("application/vnd.oasis.opendocument.") {
+        MAX_NATIVE_OPEN_DOCUMENT_BYTES
     } else {
         MAX_NATIVE_ATTACHMENT_BYTES
     };
@@ -746,9 +783,11 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        crate::native_path_policy::scratch_root().join(format!("unsloth-native-intents-{name}-{}-{nanos}", std::process::id()))
+        crate::native_path_policy::scratch_root().join(format!(
+            "unsloth-native-intents-{name}-{}-{nanos}",
+            std::process::id()
+        ))
     }
-
 
     fn attachment_entry(path: &Path) -> (NativeIntakeState, NativePathEntry) {
         let state = new_native_intake_state();
@@ -798,6 +837,23 @@ mod tests {
     }
 
     #[test]
+    fn open_document_read_round_trips_with_its_mime_type() {
+        for (ext, mime) in [
+            ("ods", "application/vnd.oasis.opendocument.spreadsheet"),
+            ("odt", "application/vnd.oasis.opendocument.text"),
+        ] {
+            let path = temp_path("open-document").with_extension(ext);
+            fs::write(&path, b"open-document").unwrap();
+            let (_state, entry) = attachment_entry(&path);
+            let payload = read_attachment_payload(&entry)
+                .unwrap_or_else(|error| panic!(".{ext} was unreadable: {error}"));
+            assert_eq!(payload.mime_type, mime);
+            assert_eq!(BASE64.decode(payload.base64).unwrap(), b"open-document");
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    #[test]
     fn document_token_is_refused_by_the_image_reader() {
         let path = temp_path("note").with_extension("pdf");
         fs::write(&path, b"%PDF-1.4").unwrap();
@@ -805,8 +861,40 @@ mod tests {
         let Err(err) = read_attachment_payload(&entry) else {
             panic!("expected the read to be refused");
         };
-        assert!(err.contains("Only chat image and audio attachments"));
+        assert!(err.contains("Only chat attachments can be read inline"));
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn text_attachments_read_inline_with_their_own_cap() {
+        for (ext, mime) in [
+            ("cs", "text/plain"),
+            ("php", "text/plain"),
+            ("js", "text/plain"),
+            ("json", "application/json"),
+            ("csv", "text/csv"),
+        ] {
+            let path = temp_path("source").with_extension(ext);
+            fs::write(&path, b"sample").unwrap();
+            let (_state, entry) = attachment_entry(&path);
+            let payload = read_attachment_payload(&entry).unwrap();
+            assert_eq!(payload.mime_type, mime, "{ext}");
+            let _ = fs::remove_file(path);
+        }
+
+        let path = temp_path("huge").with_extension("cs");
+        fs::write(&path, vec![b'x'; MAX_NATIVE_TEXT_BYTES as usize + 1]).unwrap();
+        let (_state, entry) = attachment_entry(&path);
+        assert!(read_attachment_payload(&entry).is_err());
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn every_text_extension_the_drop_accepts_has_a_mime_type() {
+        for ext in crate::native_path_policy::TEXT_ATTACHMENT_EXTS {
+            let path = PathBuf::from(format!("sample.{ext}"));
+            assert!(attachment_mime_type(&path).is_some(), "{ext}");
+        }
     }
 
     #[test]
@@ -856,6 +944,20 @@ mod tests {
             panic!("expected the read to be refused");
         };
         assert!(err.contains("too large"), "unexpected error: {err}");
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn open_document_read_allows_more_than_the_generic_cap() {
+        let path = temp_path("spreadsheet").with_extension("ods");
+        fs::write(&path, vec![0u8; MAX_NATIVE_ATTACHMENT_BYTES as usize + 1]).unwrap();
+        let (_state, entry) = attachment_entry(&path);
+        let payload =
+            read_attachment_payload(&entry).expect("OpenDocument archive under 50 MiB reads");
+        assert_eq!(
+            payload.mime_type,
+            "application/vnd.oasis.opendocument.spreadsheet"
+        );
         let _ = fs::remove_file(path);
     }
 

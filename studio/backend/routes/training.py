@@ -120,6 +120,7 @@ from pydantic import (
     Field as PydanticField,
     ValidationError,
 )
+from utils.paths.path_utils import drop_appledouble_metadata, is_appledouble_metadata
 
 
 class TrainingStopRequest(PydanticBaseModel):
@@ -270,6 +271,14 @@ def _validate_local_dataset_paths(paths: list[str], label: str = "Local dataset"
         if not dataset_file.exists():
             missing.append(f"{dataset_path} (resolved: {dataset_file})")
             continue
+        if is_appledouble_metadata(dataset_file):
+            raise HTTPException(
+                status_code = 400,
+                detail = (
+                    f"{label} '{dataset_path}' is macOS Finder metadata, not data. "
+                    "Pick the file it sits beside."
+                ),
+            )
         logger.info(f"Found {label.lower()} file: {dataset_file}")
         validated.append(str(dataset_file))
 
@@ -1161,19 +1170,19 @@ async def start_training(
         backend = get_training_backend()
         job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:8]}"
         if request.start_request_id:
-            reservation, record = backend.reserve_start_request(
-                request.start_request_id,
-                job_id,
-            )
-            if reservation == "existing":
-                return _start_request_response(record)
-            if reservation == "conflict":
-                return _start_request_response(record)
-            reserved_start_request_id = request.start_request_id
+            # A retry of an id that already resolved replays its stored outcome even when the
+            # guard below would refuse a NEW start: the caller asked what happened to THIS
+            # start. Peeking also refreshes a cancellation tombstone, so a retry cannot outlive
+            # it and go on to spawn the run the user cancelled.
+            existing_record = backend.peek_start_request(request.start_request_id)
+            if existing_record is not None:
+                return _start_request_response(existing_record)
 
         # When Unsloth is driven as an inference API (API-key auth), refuse to start training while
         # a request is in flight: training frees VRAM by unloading the chat model, killing the
         # stream. The UI (session auth) still starts and coexists. Mixed UI+API is not special-cased.
+        # Checked BEFORE reserving start_request_id: this refusal is transient, so resolving the
+        # idempotency key to "rejected" would make every retry replay a stale rejection forever.
         if via_api_key is True:
             from core.inference.llama_keepwarm import other_inference_request_count
             if (
@@ -1187,6 +1196,17 @@ async def start_training(
                         "progress. Wait for it to finish, or start training from the Unsloth UI."
                     ),
                 )
+
+        if request.start_request_id:
+            reservation, record = backend.reserve_start_request(
+                request.start_request_id,
+                job_id,
+            )
+            if reservation == "existing":
+                return _start_request_response(record)
+            if reservation == "conflict":
+                return _start_request_response(record)
+            reserved_start_request_id = request.start_request_id
 
         # No in-process ensure_transformers_version(): worker.py activates it before ML imports.
 
@@ -2058,7 +2078,9 @@ async def get_training_metrics(
         )
 
 
-@router.get("/progress")
+# POST too: quick tunnels hold a streamed GET until it closes. The hidden GET keeps old clients.
+@router.post("/progress")
+@router.get("/progress", include_in_schema = False)
 async def stream_training_progress(
     request: Request,
     expected_job_id: Optional[str] = None,
@@ -3114,7 +3136,7 @@ def _diffusion_dataset_summary(folder: Path) -> DiffusionDatasetSummary:
     # kind can read each), but captions are one folder total: the resolution rule is the same.
     meta_captions = _load_metadata_captions(folder)
     images = clips = captions = 0
-    for f in folder.iterdir():
+    for f in drop_appledouble_metadata(list(folder.iterdir())):
         if not f.is_file():
             continue
         ext = f.suffix.lower()
@@ -3680,6 +3702,8 @@ def _safe_dataset_image_path(folder: Path, filename: str) -> Path:
         path.resolve().relative_to(folder.resolve())
     except ValueError:
         raise HTTPException(status_code = 400, detail = "Invalid image filename.")
+    if is_appledouble_metadata(path):
+        raise HTTPException(status_code = 400, detail = "Not an image file.")
     return path
 
 
@@ -3792,7 +3816,7 @@ async def list_diffusion_dataset_images(
     def scan() -> DiffusionDatasetImagesResponse:
         meta = _load_metadata_captions(folder)
         records: list[DiffusionDatasetImageRecord] = []
-        for p in sorted(folder.iterdir()):
+        for p in drop_appledouble_metadata(sorted(folder.iterdir())):
             if p.is_file() and p.suffix.lower() in _DIFFUSION_DATASET_MEDIA_EXTS:
                 records.append(_image_record(folder, p, meta))
         return DiffusionDatasetImagesResponse(name = folder.name, path = str(folder), images = records)
@@ -4160,7 +4184,9 @@ def _materialize_imagefolder_jsonl(entry: dict, dest: Path, cap: int) -> int:
     )
     # Map basename -> caption from every jsonl carrying file_name + caption column.
     captions: dict[str, str] = {}
-    for jf in sorted(snap.rglob("*.jsonl")):
+    # read_text on a companion raises, and the caller turns any exception into a 502 that
+    # fails the whole import.
+    for jf in drop_appledouble_metadata(sorted(snap.rglob("*.jsonl"))):
         for line in jf.read_text(encoding = "utf-8").splitlines():
             line = line.strip()
             if not line:
@@ -4176,10 +4202,12 @@ def _materialize_imagefolder_jsonl(entry: dict, dest: Path, cap: int) -> int:
                 # First writer wins over sorted manifests, for deterministic results.
                 captions.setdefault(Path(str(fn)).name, str(value))
     # Copy images (those with a caption first, so a cap keeps captioned pairs).
-    images = sorted(
-        p
-        for p in snap.rglob("*")
-        if p.is_file() and p.suffix.lower() in _DIFFUSION_DATASET_IMAGE_EXTS
+    images = drop_appledouble_metadata(
+        sorted(
+            p
+            for p in snap.rglob("*")
+            if p.is_file() and p.suffix.lower() in _DIFFUSION_DATASET_IMAGE_EXTS
+        )
     )
     images.sort(key = lambda p: (p.name not in captions, p.name))
     written = 0

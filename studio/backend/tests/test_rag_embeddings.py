@@ -16,6 +16,22 @@ import pytest
 from core.rag import config, embeddings
 
 
+# A child that dies of SIGSEGV is still handed to the host's core_pattern handler
+# (apport on Ubuntu), which reads the whole core before the child is reaped. Marking
+# the child non-dumpable first keeps the SIGSEGV this test needs and writes no core.
+# RLIMIT_CORE = 0 does NOT work here, because a piped core_pattern ignores it.
+# prctl is Linux-only, so the call is guarded and does nothing elsewhere.
+_CRASHING_UNLESS_CPU_SCRIPT = (
+    "import ctypes, sys\n"
+    "if sys.argv[1] != 'cpu':\n"
+    "    try:\n"
+    "        ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)  # PR_SET_DUMPABLE = 0\n"
+    "    except Exception:\n"
+    "        pass\n"
+    "    ctypes.string_at(0)\n"
+)
+
+
 @pytest.fixture(autouse = True)
 def _pin_st_backend(monkeypatch):
     # Tests patch ST internals (_get), so force the ST backend.
@@ -180,6 +196,145 @@ def test_sentence_transformer_load_uses_live_cache(monkeypatch, tmp_path):
 
     assert observed["name"] == "Org/Embedder"
     assert observed["cache_folder"] == str(tmp_path / "selected-hub")
+    # fp32, because the load lands on CPU. The dtype follows the device we actually
+    # load on rather than how we got there, so the default CPU placement and a
+    # degraded-onto-CPU load agree.
+    assert list(observed["model_kwargs"].values()) == ["float32"]
+
+
+def test_device_defaults_to_cpu_on_an_accelerator_host(monkeypatch):
+    """A GPU must not be used just because it is there.
+
+    This embedder loads in the backend process, where the first CUDA allocation pins a
+    primary context nothing can hand back, so an idle Studio that indexed one document
+    would carry it for the rest of the session.
+    """
+    monkeypatch.setattr(embeddings.config, "EMBED_DEVICE", "auto")
+    monkeypatch.setattr(
+        embeddings,
+        "get_device",
+        lambda: embeddings.DeviceType.CUDA,
+    )
+    assert embeddings._device() == "cpu"
+
+
+def test_device_opts_in_to_the_accelerator(monkeypatch):
+    """Every spelling of "use the accelerator" opts in, including the device's own name.
+
+    An Intel user reaches for ``xpu`` and a ROCm user for ``rocm`` before either reaches
+    for the generic ``gpu``; matching only ``gpu`` handed both of them CPU from a setting
+    that named their hardware.
+    """
+    monkeypatch.setattr(
+        embeddings,
+        "get_device",
+        lambda: embeddings.DeviceType.CUDA,
+    )
+    for requested in ("gpu", "GPU", " cuda ", "rocm", "hip", "xpu", "mps", "metal"):
+        monkeypatch.setattr(embeddings.config, "EMBED_DEVICE", requested)
+        assert embeddings._device() == "cuda", requested
+
+
+def test_device_opt_in_still_yields_cpu_without_an_accelerator(monkeypatch):
+    monkeypatch.setattr(embeddings.config, "EMBED_DEVICE", "gpu")
+    monkeypatch.setattr(embeddings, "get_device", lambda: embeddings.DeviceType.CPU)
+    assert embeddings._device() == "cpu"
+
+
+def test_device_opt_in_on_apple_stays_on_cpu(monkeypatch):
+    """MLX is not a torch device. Asking for a GPU must not produce a device string
+    torch cannot open, which is why this stays a lookup in _TORCH_DEVICE."""
+    monkeypatch.setattr(embeddings.config, "EMBED_DEVICE", "gpu")
+    monkeypatch.setattr(embeddings, "get_device", lambda: embeddings.DeviceType.MLX)
+    assert embeddings._device() == "cpu"
+
+
+def test_unrecognized_device_setting_falls_back_without_raising(monkeypatch):
+    monkeypatch.setattr(
+        embeddings,
+        "get_device",
+        lambda: embeddings.DeviceType.CUDA,
+    )
+    for requested in ("", "   ", "banana", "auto", None):
+        monkeypatch.setattr(embeddings.config, "EMBED_DEVICE", requested)
+        assert embeddings._device() == "cpu", requested
+
+
+def test_cpu_never_loads_float16(monkeypatch, tmp_path):
+    """fp16 on CPU is not merely slow on older torch, it raises.
+
+    torch 2.2 has no CPU Half kernel for LayerNorm, which every BERT runs, so an
+    fp16 CPU load dies with ``"LayerNormKernelImpl" not implemented for 'Half'``.
+    _SentenceTransformersBackend.encode() answers that by swapping the process to
+    llama-server, so the failure would surface as a silent change of embedding space
+    against an index nobody reindexed rather than as an error.
+    """
+    observed = {}
+
+    class FakeSentenceTransformer:
+        def __init__(self, name, **kwargs):
+            observed.update(kwargs)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sentence_transformers",
+        SimpleNamespace(SentenceTransformer = FakeSentenceTransformer),
+    )
+    monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
+    monkeypatch.setattr(embeddings, "_guard_model_security", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.active_hf_hub_cache",
+        lambda: str(tmp_path / "hub"),
+    )
+    # Every way of arriving on CPU: the default, an explicit request, a host with no
+    # accelerator, and a degrade from a probe that condemned the accelerator.
+    for embed_device, hardware, load_device in (
+        ("auto", embeddings.DeviceType.CUDA, None),
+        ("cpu", embeddings.DeviceType.CUDA, None),
+        ("gpu", embeddings.DeviceType.CPU, None),
+        ("gpu", embeddings.DeviceType.CUDA, "cpu"),
+    ):
+        monkeypatch.setattr(embeddings.config, "EMBED_DEVICE", embed_device)
+        monkeypatch.setattr(embeddings, "get_device", lambda hw = hardware: hw)
+        if load_device is not None:
+            monkeypatch.setattr(embeddings, "_load_device", lambda d = load_device: d)
+        embeddings._model = None
+        embeddings._name = None
+        observed.clear()
+
+        embeddings._get("Org/Embedder")
+
+        assert observed["device"] == "cpu", (embed_device, hardware)
+        assert list(observed["model_kwargs"].values()) == ["float32"], (embed_device, hardware)
+    embeddings._model = None
+    embeddings._name = None
+
+
+def test_opted_in_accelerator_loads_float16(monkeypatch, tmp_path):
+    observed = {}
+
+    class FakeSentenceTransformer:
+        def __init__(self, name, **kwargs):
+            observed.update(kwargs)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sentence_transformers",
+        SimpleNamespace(SentenceTransformer = FakeSentenceTransformer),
+    )
+    monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
+    monkeypatch.setattr(embeddings, "_guard_model_security", lambda *_a, **_k: None)
+    monkeypatch.setattr(embeddings, "_load_device", lambda: "cuda")
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.active_hf_hub_cache",
+        lambda: str(tmp_path / "selected-hub"),
+    )
+    embeddings._model = None
+    embeddings._name = None
+
+    embeddings._get("Org/Embedder")
+
+    assert observed["device"] == "cuda"
     assert list(observed["model_kwargs"].values()) == ["float16"]
 
 
@@ -362,7 +517,7 @@ def test_a_real_crashing_child_moves_the_load_to_cpu(monkeypatch):
     monkeypatch.setattr(
         torch_device_probe,
         "_PROBE_SCRIPT",
-        "import ctypes, sys\nif sys.argv[1] != 'cpu': ctypes.string_at(0)",
+        _CRASHING_UNLESS_CPU_SCRIPT,
     )
     torch_device_probe.device_can_allocate.cache_clear()
     monkeypatch.setattr(embeddings, "_device", lambda: "cuda")

@@ -95,6 +95,15 @@ class TestDiffusionArchitectures:
         assert "cannot run" in msg.lower()
         assert "enough memory" not in msg.lower()
 
+    @pytest.mark.parametrize("arch", sorted(LlamaCppBackend._SPEECH_ARCHES))
+    def test_every_speech_arch_routes_to_the_audio_page(self, arch):
+        out = f"error loading model: unknown model architecture: '{arch}'"
+        msg = _classify(out, f"/models/{arch}.gguf", f"local/{arch}")
+        assert "text-to-speech" in msg.lower()
+        assert "Audio page" in msg
+        assert "Images page" not in msg
+        assert arch in msg
+
     def test_media_arch_sets_are_disjoint_and_cover_the_union(self):
         sets = (
             LlamaCppBackend._IMAGE_ARCHES,
@@ -148,9 +157,7 @@ class TestUnsupportedNonDiffusionArchitecture:
 
 
 class TestOllamaAndFallback:
-    _OLLAMA_GGUF = (
-        f"/home/u/.ollama{__import__('os').sep}ollama_links" f"{__import__('os').sep}m.gguf"
-    )
+    _OLLAMA_GGUF = f"/home/u/.ollama{__import__('os').sep}ollama_links{__import__('os').sep}m.gguf"
 
     def test_ollama_compat_message_still_works(self):
         out = "llama_model_load: error loading model: key not found"
@@ -284,8 +291,7 @@ class TestMissingSharedLibrary:
         # write_exec_wrapper's entrypoint: /bin/sh reports a missing exec
         # target as "not found" and exits 127.
         out = (
-            "/home/t/.unsloth/llama.cpp/llama-server: 2: exec: "
-            "./build/bin/llama-server: not found"
+            "/home/t/.unsloth/llama.cpp/llama-server: 2: exec: ./build/bin/llama-server: not found"
         )
         msg = _classify(out, "/models/x.gguf", "local/x", 127)
         assert "package manager" not in msg
@@ -296,6 +302,9 @@ class TestMissingSharedLibrary:
         out = "llama-server: symbol lookup error: llama-server: undefined symbol: ggml_backend_init"
         msg = _classify(out, "/models/x.gguf", "local/x", 127)
         assert "package manager" not in msg
+        # Must not steal the ROCm branch: the object here is llama-server.
+        assert "HIP/ROCR" not in msg
+        assert "hsa_amd_queue_create" not in msg
 
     def test_bundled_runtime_library_points_at_the_installer(self):
         # libggml/libllama/libmtmd ship in build/bin (runtime_payload_health_groups)
@@ -502,6 +511,132 @@ class TestMissingSharedLibrary:
         assert "system library" not in msg
 
 
+class TestBundledHipRocrMismatch:
+    """Studio prepends system ROCm, the prebuilt still binds its bundled HIP,
+    and glibc exits 127 on the symbol lookup (#8998). That used to read as a
+    missing llama-server and get retried as a VRAM miss. Neither is true.
+    """
+
+    _FIELD_OUT = (
+        "0.00.018.048 I srv    load_model: loading model '/models/x.gguf'\n"
+        "/home/t/.unsloth/llama.cpp/llama-server: symbol lookup error: "
+        "/home/t/.unsloth/llama.cpp/build/bin/libamdhip64.so.7: "
+        "undefined symbol: hsa_amd_queue_create, version ROCR_1"
+    )
+
+    def test_field_log_is_the_hip_rocr_mix(self):
+        assert LlamaCppBackend._is_bundled_hip_rocr_mismatch(self._FIELD_OUT)
+
+    def test_ggml_symbol_lookup_is_not_the_hip_rocr_mix(self):
+        out = (
+            "llama-server: symbol lookup error: llama-server: "
+            "undefined symbol: ggml_backend_init"
+        )
+        assert not LlamaCppBackend._is_bundled_hip_rocr_mismatch(out)
+
+    def test_missing_libamdhip64_is_not_the_hip_rocr_mix(self):
+        # Absent file is the glibc loader line, not a symbol lookup.
+        out = (
+            "llama-server: error while loading shared libraries: "
+            "libamdhip64.so.7: cannot open shared object file: "
+            "No such file or directory"
+        )
+        assert not LlamaCppBackend._is_bundled_hip_rocr_mismatch(out)
+
+    def test_empty_and_none_are_not_the_mix(self):
+        assert not LlamaCppBackend._is_bundled_hip_rocr_mismatch("")
+        assert not LlamaCppBackend._is_bundled_hip_rocr_mismatch(None)
+
+    def test_another_lib_from_the_prepended_dir_is_the_same_mix(self):
+        # The prepend covers the whole system ROCm dir, so rocBLAS against a
+        # different-version HIP fails the same way and wants the same retry.
+        out = (
+            "llama-server: symbol lookup error: "
+            "/home/t/.unsloth/llama.cpp/build/bin/librocblas.so.4: "
+            "undefined symbol: hipGraphicsResourceGetMappedPointer"
+        )
+        assert LlamaCppBackend._is_bundled_hip_rocr_mismatch(out)
+        msg = _classify(out, "/models/x.gguf", "local/x", 127)
+        assert "librocblas.so.4" in msg
+        assert "hipGraphicsResourceGetMappedPointer" in msg
+        # The field log's symbol is not this crash; do not name it.
+        assert "hsa_amd_queue_create" not in msg
+
+    def test_an_oversized_loader_token_is_bounded_in_the_message(self):
+        # Straight from the child, and _drain_stdout keeps an unterminated line
+        # whole, so the message has to bound both captures.
+        out = (
+            "llama-server: symbol lookup error: "
+            f"/b/libamdhip64.so.{'9' * 3000}: undefined symbol: {'s' * 8192}"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 127)
+        assert "HIP/ROCR" in msg
+        assert len(msg) < 1000
+
+    def test_an_object_longer_than_a_path_is_not_the_mix(self):
+        # The object capture stops at PATH_MAX: no such path can exist, and an
+        # unbounded one lets a single hostile line drive the scan quadratically.
+        out = (
+            "llama-server: symbol lookup error: "
+            f"/b/libamdhip64.so.{'9' * 8192}: undefined symbol: hsa_amd_queue_create"
+        )
+        assert not LlamaCppBackend._is_bundled_hip_rocr_mismatch(out)
+
+    def test_a_bundle_under_a_path_with_spaces_is_still_the_mix(self):
+        # glibc echoes the object verbatim, and a custom LLAMA_SERVER_PATH can
+        # sit under a directory with spaces. Splitting on whitespace dropped
+        # those into the generic 127 text instead of the retry.
+        out = (
+            "llama-server: symbol lookup error: "
+            "/opt/My Runtime/build/bin/libamdhip64.so.7: "
+            "undefined symbol: hsa_amd_queue_create, version ROCR_1"
+        )
+        assert LlamaCppBackend._is_bundled_hip_rocr_mismatch(out)
+        assert LlamaCppBackend._bundled_hip_symbol_miss(out)[0].endswith(
+            "/opt/My Runtime/build/bin/libamdhip64.so.7"
+        )
+        assert "libamdhip64.so.7" in _classify(out, "/models/x.gguf", "local/x", 127)
+
+    def test_a_path_component_does_not_stand_in_for_the_object(self):
+        out = (
+            "llama-server: symbol lookup error: "
+            "/opt/librocm-vendor/lib/libfoo.so.1: undefined symbol: foo_init"
+        )
+        assert not LlamaCppBackend._is_bundled_hip_rocr_mismatch(out)
+
+    def test_classify_names_the_mix_not_a_missing_binary(self):
+        msg = _classify(self._FIELD_OUT, "/models/x.gguf", "local/x", 127)
+        assert "HIP/ROCR" in msg
+        assert "hsa_amd_queue_create" in msg
+        assert "Vulkan" in msg
+        assert "could not be found or run" not in msg
+        assert "not out of VRAM" in msg
+        assert "GGUF file is valid" not in msg
+        assert "enough memory" not in msg.lower()
+
+    def test_classify_on_a_pinned_binary_does_not_send_it_to_the_updater(self, monkeypatch):
+        monkeypatch.setenv("LLAMA_SERVER_PATH", "/opt/custom/llama-server")
+        msg = _classify(
+            self._FIELD_OUT, "/models/x.gguf", "local/x", 127, "/opt/custom/llama-server"
+        )
+        assert "unsloth studio update" not in msg
+        assert "custom llama.cpp" in msg
+
+    def test_hip_rocr_retry_is_checked_before_the_fit_on_retry(self):
+        # --fit cannot load a missing symbol, so the library check has to come
+        # first. The launch sequence itself is asserted behaviourally in
+        # test_gpu_init_crash_message.py::TestHipRocrRetryKeepsFitBudget.
+        src = Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
+        text = src.read_text(encoding = "utf-8")
+        spawn_start = text.index("def _spawn_and_wait(")
+        spawn_end = text.index("def _raise_terminal_load_failure", spawn_start)
+        body = text[spawn_start:spawn_end]
+        assert body.index("_is_bundled_hip_rocr_mismatch") < body.index(
+            "retrying once with --fit on so it can offload"
+        )
+        assert "use_system_rocm = False" in body
+
+
 # Real dyld output. macOS says none of the things glibc says, so before #8566
 # every one of these fell through to "invalid GGUF or not enough memory" on a
 # Mac that had neither problem. Classification is pure text matching, so these
@@ -625,6 +760,51 @@ class TestMacOSLoaderFailures:
         out = "llama_model_load: error loading model: Reason: something went wrong"
         msg = _classify(out, "/models/x.gguf", "local/x", 1)
         assert "llama-server failed to start." in msg
+
+
+class TestANonGgufFile:
+    # What llama.cpp prints when the bytes are not a GGUF. It formats the four it found with %c,
+    # so an AppleDouble sidecar's 0x00051607 arrives as unprintable characters (#8566).
+    _OUT = (
+        "build: 9415 (06d26dfd) with Apple clang version 17.0.0 for arm64-apple-darwin24.6.0\n"
+        "gguf_init_from_reader: invalid magic characters: '\ufffd\ufffd\ufffd\ufffd', "
+        "expected 'GGUF'\n"
+        "llama_server: exiting due to model loading error"
+    )
+
+    def test_it_is_reported_as_not_a_gguf(self, tmp_path):
+        log = tmp_path / "llama-1-port-8080.log"
+        msg = _classify(self._OUT, "/models/._muse-UD-Q2_K_XL.gguf", "local/muse", 1, None, log)
+
+        assert "not a GGUF" in msg
+        # The two things the generic fallback used to blame, neither of which is the cause.
+        assert "enough memory" not in msg.lower()
+        assert not msg.startswith("llama-server failed to start.")
+        # The echoed bytes are unreadable, so the path is the only usable identifier.
+        assert "._muse-UD-Q2_K_XL.gguf" in msg
+        assert "companion" in msg
+        # The remedy for the volume, not the generic re-download (#8566).
+        assert "dot_clean -m" in msg
+        assert "llama-server output:" in msg
+        assert f"Full log: {log}" in msg
+
+    def test_it_does_not_call_an_ordinary_main_model_the_bad_file(self):
+        # The message must not settle which file was invalid, nor promise the output does.
+        assert "is not a GGUF" in _classify(self._OUT, None, "local/muse", 1)
+        msg = _classify(self._OUT, "/models/model-Q4_K_M.gguf", "local/m", 1)
+        assert "model-Q4_K_M.gguf" in msg and "companion" in msg
+        assert "names it" not in msg
+        # An ordinary path is no evidence about the volume, so it keeps the generic remedy.
+        assert "dot_clean" not in msg and "Re-download the model" in msg
+
+    def test_a_dyld_failure_still_outranks_it(self):
+        # Ordering only matters when both appear; the loader diagnosis is the more specific one.
+        out = (
+            "dyld[1]: Library not loaded: @rpath/libggml.dylib\n"
+            "gguf_init_from_reader: invalid magic characters: '????', expected 'GGUF'"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 1)
+        assert "not a GGUF" not in msg
 
 
 class TestStartupDiagnostics:
@@ -821,13 +1001,34 @@ class TestDiagnosticsDoNotLeak:
     def test_a_huge_unterminated_line_is_cheap(self):
         # _drain_stdout keeps an unterminated line whole; the tail must be
         # sliced before it is filtered character by character.
+        #
+        # Proven by BEHAVIOUR rather than by a stopwatch. The bound is observable: an
+        # argument error further back than the tail cannot be reported unless
+        # something read it. A wall-clock budget tests the same property by proxy and
+        # measures the runner instead, which is why this exact assertion goes red on
+        # the Windows runner for main as well as for a branch. The stopwatch stays
+        # only as a catastrophic guard, loose enough that no runner can trip it.
         import time
 
-        out = "x" * 10_000_000 + "\nggml_metal_init: error"
+        buried = "error: invalid argument: --nope\n" + "x" * 10_000_000 + "\nggml_metal_init: error"
         start = time.perf_counter()
-        msg = _classify(out, "/models/x.gguf", "local/x", 1)
-        assert time.perf_counter() - start < 0.2
+        msg = _classify(buried, "/models/x.gguf", "local/x", 1)
+        elapsed = time.perf_counter() - start
+
+        # 10 MB back, so out of the scanned tail: reporting it would mean the whole
+        # capture was walked.
+        assert "--nope" not in msg
+        # And what IS in the tail still surfaces.
         assert "ggml_metal_init: error" in msg
+        assert elapsed < 5, f"{elapsed:.1f}s to classify one 10 MB line"
+
+    def test_an_argument_error_inside_the_tail_is_still_reported(self):
+        # The other half of the bound: near the end is where llama-server actually
+        # prints it, immediately before exiting.
+        out = "x" * 10_000_000 + "\nerror: invalid argument: --nope"
+        msg = _classify(out, "/models/x.gguf", "local/x", 1)
+
+        assert "--nope" in msg
 
 
 class TestDyldInstallNames:
@@ -1255,6 +1456,10 @@ class TestAnEncodedSecretIsStillRedacted:
             "A=1," * 25000,
             'TOKEN="' + "y" * 100000,
         ],
+        # Named, because pytest puts the whole parameter in the node id and then in
+        # PYTEST_CURRENT_TEST. Windows caps an environment variable at 32767
+        # characters, so a 100 KB id errors the test in setup on that OS alone.
+        ids = ["escaped-quotes", "long-value", "many-pairs", "unterminated-quote"],
     )
     def test_the_name_pass_stays_linear(self, blob):
         """No nested quantifier: a crafted line must not be able to stall it."""
@@ -1477,6 +1682,9 @@ class TestTheRedactionHolesCodexFound:
     @pytest.mark.parametrize(
         "blob",
         ['TOKEN="' + "y" * 100000, "a.b.c.d=" * 12000, "A=1," * 25000],
+        # Same reason as above: the parameter is the node id, and the node id
+        # becomes an environment variable.
+        ids = ["unterminated-quote", "dotted-names", "many-pairs"],
     )
     def test_the_widened_pattern_stays_linear(self, blob):
         import time
@@ -1484,3 +1692,217 @@ class TestTheRedactionHolesCodexFound:
         start = time.monotonic()
         LlamaCppBackend._scrub_secret_values(blob, ())
         assert time.monotonic() - start < 2.0
+
+
+class TestRejectedArguments:
+    """Argument parsing runs before the model is touched, so these are never a
+    bad GGUF or an OOM. The strings are what the bundled llama-server actually
+    prints, captured from it directly rather than written from memory."""
+
+    def test_an_unknown_flag_is_named(self):
+        msg = _classify("error: invalid argument: --tempp", "/models/x.gguf", "local/x", 1)
+        assert "--tempp" in msg
+        assert "extra arguments" in msg
+        # The generic diagnosis must not survive: the file and the memory are fine.
+        assert "memory" not in msg.lower()
+
+    def test_a_flag_unsloth_set_itself_is_covered_by_the_same_message(self):
+        # Nothing reaching the classifier says whose flag it was, and Unsloth emits
+        # its own conditionally on the capability probe, so a binary swapped under a
+        # cached probe lands here too. The message has to serve that reader as well
+        # as the one who mistyped something in the box.
+        msg = _classify("error: invalid argument: --flash-attn", "/models/x.gguf", "local/x", 1)
+        assert "--flash-attn" in msg
+        assert "reinstall llama.cpp" in msg
+
+    def test_a_rejected_value_is_told_apart_from_an_unknown_flag(self):
+        # Different fix for the reader: the flag is right, the value is not.
+        msg = _classify(
+            'error while handling argument "--numa": invalid value',
+            "/models/x.gguf",
+            "local/x",
+            1,
+        )
+        assert "--numa" in msg
+        assert "invalid value" in msg
+        assert "does not recognise" not in msg
+
+    def test_a_missing_value_keeps_llama_cpps_own_reason(self):
+        msg = _classify(
+            'error while handling argument "--top-k": expected value for argument',
+            "/models/x.gguf",
+            "local/x",
+            1,
+        )
+        assert "--top-k" in msg
+        assert "expected value" in msg
+
+    def test_a_std_stoi_failure_is_translated(self):
+        # llama.cpp surfaces the C++ standard library's exception name verbatim.
+        # "stoi" is not an error message anyone outside libstdc++ can act on.
+        msg = _classify(
+            'error while handling argument "--top-k": stoi', "/models/x.gguf", "local/x", 1
+        )
+        assert "not a number" in msg
+        assert "stoi" not in msg
+
+    def test_a_value_error_on_a_flag_the_user_did_not_set_stays_neutral(self):
+        # Studio emits its own options conditionally on the capability probe, so a
+        # build that reads "--flash-attn on" differently rejects a value the box
+        # never held. Sending that reader to edit their extra arguments points them
+        # at a setting they cannot use to fix it.
+        msg = _classify(
+            'error while handling argument "--flash-attn": invalid value',
+            "/models/x.gguf",
+            "local/x",
+            1,
+        )
+        assert "--flash-attn" in msg
+        assert "reinstall llama.cpp" in msg
+
+    def test_a_value_error_on_a_flag_the_user_did_set_names_the_box(self):
+        # Ownership established: the extras really do carry the flag, so the box is
+        # where the fix is.
+        msg = LlamaCppBackend._classify_llama_start_failure(
+            'error while handling argument "--numa": invalid value',
+            "/models/x.gguf",
+            "local/x",
+            1,
+            None,
+            None,
+            (),
+            ["--numa", "wherever"],
+        )
+        assert "--numa" in msg
+        assert "Fix it in the extra arguments" in msg
+        assert "reinstall" not in msg
+
+    def test_an_alias_spelling_falls_back_to_the_neutral_wording(self):
+        # -fa and --flash-attn are the same option to llama.cpp but not to this
+        # comparison, and a wrong "you set this" is worse than a neutral one.
+        msg = LlamaCppBackend._classify_llama_start_failure(
+            'error while handling argument "--flash-attn": invalid value',
+            "/models/x.gguf",
+            "local/x",
+            1,
+            None,
+            None,
+            (),
+            ["-fa", "on"],
+        )
+        assert "reinstall llama.cpp" in msg
+
+    def test_an_ordinary_failure_is_untouched(self):
+        # The two new branches sit ahead of the generic diagnosis, so this pins
+        # that they do not swallow it.
+        msg = _classify(_OOM_OUT, "/models/big.gguf", "local/big", 1)
+        assert "enough memory" in msg.lower()
+        assert "argument" not in msg.lower()
+
+    def test_the_argument_scan_reads_only_the_tail(self):
+        # The bound exists because _drain_stdout keeps an unterminated line whole,
+        # and scanning a 10 MB one twice puts the classifier past any sane budget.
+        # Asserted by BEHAVIOUR rather than by the clock: a wall-clock budget on a
+        # shared CI runner measures the runner, and a Windows one failed this at
+        # 204ms against 200 while the bound it was meant to prove was in place.
+        from core.inference.llama_cpp import _FAILURE_SCAN_TAIL_CHARS
+
+        # Inside the tail: found, and the whole capture is enormous either way.
+        within = "x" * 10_000_000 + "\nerror: invalid argument: --tempp"
+        assert "--tempp" in _classify(within, "/models/x.gguf", "local/x", 1)
+        # Before it: not found, which is only possible if the scan stopped short of
+        # the head. Reported as an ordinary failure instead.
+        buried = "error: invalid argument: --tempp\n" + "x" * (_FAILURE_SCAN_TAIL_CHARS * 2)
+        assert "--tempp" not in _classify(buried, "/models/x.gguf", "local/x", 1)
+
+    def test_a_model_load_error_mentioning_arguments_is_not_misread(self):
+        # "invalid argument" as an errno string (EINVAL) is not llama.cpp's
+        # argument parser, and the anchored "error: invalid argument:" prefix is
+        # what keeps them apart.
+        out = "llama_model_load: error loading model: invalid argument (22)"
+        msg = _classify(out, "/models/x.gguf", "local/x", 1)
+        assert "does not recognise" not in msg
+
+
+class TestArgumentErrorsAreQuotedShort:
+    """What a failed start copies out of the child's own output."""
+
+    def test_a_pathological_argument_is_truncated(self):
+        # A wrapper on LLAMA_SERVER_PATH can print anything, and the capture is a run
+        # of non-whitespace, so without a bound the API error becomes 64 KiB of it.
+        out = "error: invalid argument: " + "x" * 50_000
+        msg = _classify(out, "/models/x.gguf", "local/x", 1)
+
+        assert len(msg) < 1_000, len(msg)
+        assert "..." in msg
+        # Still says what happened, and still names the beginning of the argument.
+        assert "does not recognise the argument" in msg
+        assert "xxxx" in msg
+
+    def test_a_pathological_reason_is_truncated(self):
+        out = 'error while handling argument "--top-k": ' + "y" * 50_000
+        msg = _classify(out, "/models/x.gguf", "local/x", 1)
+
+        assert len(msg) < 1_000, len(msg)
+        assert "--top-k" in msg
+
+    def test_an_ordinary_argument_error_is_untouched(self):
+        out = "error: invalid argument: --tempp"
+        msg = _classify(out, "/models/x.gguf", "local/x", 1)
+
+        assert "--tempp" in msg
+        assert "..." not in msg
+
+
+class TestTensorSplitQuantizedKvUnsupported:
+    """llama.cpp before ggml-org/llama.cpp#23792 (b9455) refused a quantized KV
+    cache under --split-mode tensor. Studio no longer pre-empts that refusal, so
+    the message has to name the remedy: the generic invalid-GGUF/OOM fallback sends
+    the user to check their file or buy VRAM, neither of which is the problem."""
+
+    # Verbatim from the guard #23792 deleted in src/llama-context.cpp.
+    _OUT = (
+        "llama_init_from_model: simultaneous use of SPLIT_MODE_TENSOR and "
+        "KV cache quantization not implemented\n"
+    )
+
+    def test_the_legacy_refusal_names_the_build_and_the_remedies(self):
+        msg = _classify(self._OUT, "/models/x.gguf", "local/x", 2)
+
+        assert "b9455" in msg
+        assert "quantized KV cache" in msg
+        # All three ways out, because which one is available depends on whether the
+        # user controls the binary.
+        assert "Update" in msg
+        assert "f16" in msg
+        assert "Tensor Parallelism" in msg
+        # Not the fallback it used to get.
+        assert "GGUF file is valid" not in msg
+
+    def test_it_does_not_shadow_the_architecture_gate(self):
+        """A different, permanent, per-model limit with its own remedy."""
+        out = "llama_init_from_model: split_mode_tensor not implemented for this arch\n"
+        msg = _classify(out, "/models/x.gguf", "local/x", 2)
+
+        assert "architecture" in msg
+        assert "b9455" not in msg
+
+    def test_the_marker_is_matched_case_insensitively(self):
+        """llama.cpp prints SPLIT_MODE_TENSOR upper-case; the classifier lowers."""
+        assert LlamaCppBackend._is_tensor_quant_kv_unsupported(self._OUT)
+        assert LlamaCppBackend._is_tensor_quant_kv_unsupported(self._OUT.lower())
+        assert not LlamaCppBackend._is_tensor_quant_kv_unsupported("")
+        assert not LlamaCppBackend._is_tensor_quant_kv_unsupported(
+            "split_mode_tensor not implemented"
+        )
+
+    def test_a_hard_crash_carrying_it_is_not_retried_as_a_projector_fault(self):
+        """_output_has_nonprojector_diagnostic gates the text-only vision retry.
+        Without the marker a doomed tensor load would also pay that retry."""
+        assert LlamaCppBackend._output_has_nonprojector_diagnostic(self._OUT)
+
+    def test_it_is_not_the_signal_crash_the_split_axis_latch_requires(self):
+        """It is LLAMA_LOG_ERROR + return nullptr, so exit 1 with no signal --
+        which is why it needs its own recording path rather than the #6415 one."""
+        assert not LlamaCppBackend._should_record_tensor_split_abort(1, self._OUT)
+        assert not LlamaCppBackend._is_tensor_split_assert(self._OUT)
