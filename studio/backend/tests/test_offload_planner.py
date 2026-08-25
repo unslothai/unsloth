@@ -832,6 +832,6 @@ def test_extra_resident_bytes_are_charged_against_the_pooled_budget():
     assert without.spills_anything and with_extra.spills_anything
     assert len(with_extra.spilled_blocks) > len(without.spilled_blocks)
     # And it reaches the context ladder too, not just the deficit.
-    assert max_context_for(
-        layout, [16 * GIB], spill_all_ffn = True, opts = charged
-    ) < max_context_for(layout, [16 * GIB], spill_all_ffn = True, opts = base)
+    assert max_context_for(layout, [16 * GIB], spill_all_ffn = True, opts = charged) < max_context_for(
+        layout, [16 * GIB], spill_all_ffn = True, opts = base
+    )

@@ -18162,9 +18162,7 @@ class LlamaCppBackend:
                         # buffer is NOT here: soft_overhead plus the per-device
                         # pipeline reserve already stands in for it, and charging
                         # it twice would only spill more.
-                        "extra_gpu_bytes": (
-                            mmproj_size + _shared_pool_mmproj + _mtp_reserve_bytes
-                        ),
+                        "extra_gpu_bytes": (mmproj_size + _shared_pool_mmproj + _mtp_reserve_bytes),
                         # The planner reads the real tensor table rather than a
                         # bucket total, so it can spill the MINIMUM set of blocks
                         # instead of the whole FFN.
