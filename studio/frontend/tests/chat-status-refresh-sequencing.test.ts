@@ -19,7 +19,16 @@ import { fileURLToPath } from "node:url";
 
 const SOURCE = readFileSync(
   fileURLToPath(
-    new URL("../src/features/chat/hooks/use-chat-model-runtime.ts", import.meta.url),
+    new URL(
+      "../src/features/chat/hooks/use-chat-model-runtime.ts",
+      import.meta.url,
+    ),
+  ),
+  "utf8",
+);
+const ADAPTER = readFileSync(
+  fileURLToPath(
+    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
   ),
   "utf8",
 );
@@ -32,21 +41,24 @@ const SYNC = SOURCE.slice(
 test("every refresh takes a generation, and the newest one wins", () => {
   assert.match(SOURCE, /let syncGeneration = 0;/);
   assert.match(SYNC, /const generation = \+\+syncGeneration;/);
-  assert.match(SYNC, /const superseded = \(\) => generation !== syncGeneration;/);
+  assert.match(
+    SYNC,
+    /const superseded = \(\) => generation !== syncGeneration;/,
+  );
 });
 
 test("a superseded refresh writes nothing back to the store", () => {
   const guard = SYNC.slice(0, SYNC.indexOf("setModels("));
   assert.match(
     guard,
-    /if \(signal\?\.aborted \|\| superseded\(\)\) return;/,
+    /if \(aborted\(\) \|\| superseded\(\)\) return;/,
     "the check must sit between the await and the first write",
   );
 });
 
 test("a superseded refresh does not report its failure either", () => {
   const catchBlock = SYNC.slice(SYNC.indexOf("} catch (error) {"));
-  assert.match(catchBlock, /if \(signal\?\.aborted \|\| superseded\(\)\) return;/);
+  assert.match(catchBlock, /if \(aborted\(\) \|\| superseded\(\)\) return;/);
   // Otherwise a read nobody would have applied still raises a toast.
   assert.ok(
     catchBlock.indexOf("superseded()") < catchBlock.indexOf("toast.error"),
@@ -60,4 +72,33 @@ test("the eviction branch is behind the same guard", () => {
   const evictionAt = SYNC.indexOf("residentCheckpoint: null,");
   const guardAt = SYNC.indexOf("superseded()");
   assert.ok(guardAt !== -1 && guardAt < evictionAt);
+});
+
+test("a superseding refresh inherits the mount poll", () => {
+  assert.match(SOURCE, /let activeCliLoadPoll:/);
+  assert.match(SYNC, /const inheritedPoll =/);
+  assert.match(
+    SYNC,
+    /activeCliLoadPoll = \{ signal: pollSignal, generation \};/,
+  );
+  assert.match(SYNC, /const shouldPollForCliLoad =\s*pollUntilActiveModel &&/);
+  assert.match(
+    SYNC,
+    /if \(activeCliLoadPoll\?\.generation === generation\) \{\s*activeCliLoadPoll = null;/,
+  );
+});
+
+test("known server load evidence survives an unavailable status probe", () => {
+  const evidence = ADAPTER.slice(
+    ADAPTER.indexOf("async function serverLoadEvidence("),
+    ADAPTER.indexOf("// Slow downloads and llama-server warm-up"),
+  );
+  const adoption = ADAPTER.slice(
+    ADAPTER.indexOf("async function adoptInFlightServerLoad("),
+    ADAPTER.indexOf("/**\n * Auto-load the smallest downloaded model"),
+  );
+  assert.match(evidence, /Promise<boolean \| null>/);
+  assert.match(evidence, /catch \{\s*return null;/);
+  assert.match(adoption, /if \(evidence !== true\)/);
+  assert.match(adoption, /if \(evidence === false\)/);
 });

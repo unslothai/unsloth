@@ -379,6 +379,10 @@ function getTransformersUpgradeRequiredMessage(modelName: string): string {
 // Bumped by every refresh. Two status reads can be in flight at once, so a
 // superseded call must not write its older answer after the newer call lands.
 let syncGeneration = 0;
+let activeCliLoadPoll: {
+  signal?: AbortSignal;
+  generation: number;
+} | null = null;
 
 async function syncInferenceStatusToStore(options?: {
   pollUntilActiveModel?: boolean;
@@ -386,9 +390,23 @@ async function syncInferenceStatusToStore(options?: {
   includeLoras?: boolean;
 }): Promise<void> {
   const signal = options?.signal;
+  const inheritedPoll =
+    !options?.pollUntilActiveModel && !activeCliLoadPoll?.signal?.aborted
+      ? activeCliLoadPoll
+      : null;
+  const pollUntilActiveModel = Boolean(
+    options?.pollUntilActiveModel || inheritedPoll,
+  );
+  const pollSignal = options?.pollUntilActiveModel
+    ? signal
+    : inheritedPoll?.signal;
+  const aborted = () => Boolean(signal?.aborted || pollSignal?.aborted);
   const includeLoras = options?.includeLoras ?? true;
   const generation = ++syncGeneration;
   const superseded = () => generation !== syncGeneration;
+  if (pollUntilActiveModel) {
+    activeCliLoadPoll = { signal: pollSignal, generation };
+  }
   const { setModels, setLoras, setCheckpoint, setModelsError } =
     useChatRuntimeStore.getState();
   setModelsError(null);
@@ -396,7 +414,7 @@ async function syncInferenceStatusToStore(options?: {
     const selectedAtStart =
       useChatRuntimeStore.getState().params.checkpoint;
     const shouldPollForCliLoad =
-      Boolean(options?.pollUntilActiveModel) &&
+      pollUntilActiveModel &&
       !selectedAtStart &&
       !isExternalModelId(selectedAtStart);
 
@@ -407,7 +425,7 @@ async function syncInferenceStatusToStore(options?: {
       includeLoras ? listLoras() : Promise.resolve(null),
     ]);
 
-    if (signal?.aborted || superseded()) return;
+    if (aborted() || superseded()) return;
 
     setModels(listRes.models.map(toChatModelSummary));
     if (lorasRes) {
@@ -424,7 +442,7 @@ async function syncInferenceStatusToStore(options?: {
     if (shouldPollForCliLoad) {
       const started = Date.now();
       while (
-        !signal?.aborted &&
+        !aborted() &&
         !superseded() &&
         !statusRes?.active_model &&
         !useChatRuntimeStore.getState().params.checkpoint &&
@@ -470,7 +488,7 @@ async function syncInferenceStatusToStore(options?: {
 
     // Cancellation can land while a request is in flight. A newer status read
     // also wins, regardless of which enclosing refresh began first.
-    if (signal?.aborted || superseded()) return;
+    if (aborted() || superseded()) return;
 
     const selectedCheckpoint =
       useChatRuntimeStore.getState().params.checkpoint;
@@ -558,13 +576,17 @@ async function syncInferenceStatusToStore(options?: {
   } catch (error) {
     // A superseded refresh reports nothing, or a stale failure would raise a
     // toast about a read whose answer would have been discarded anyway.
-    if (signal?.aborted || superseded()) return;
+    if (aborted() || superseded()) return;
     const message =
       error instanceof Error ? error.message : "Failed to load models";
     setModelsError(message);
     toast.error("Failed to refresh models", {
       description: message,
     });
+  } finally {
+    if (activeCliLoadPoll?.generation === generation) {
+      activeCliLoadPoll = null;
+    }
   }
 }
 

@@ -2081,7 +2081,7 @@ function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
   });
 }
 
-async function serverLoadEvidence(): Promise<boolean> {
+async function serverLoadEvidence(): Promise<boolean | null> {
   try {
     const progress = await getLoadProgress();
     if (progress.phase != null) return true;
@@ -2092,7 +2092,7 @@ async function serverLoadEvidence(): Promise<boolean> {
     const status = await getInferenceStatus();
     return status.loading.length > 0;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -2118,9 +2118,9 @@ async function adoptInFlightServerLoad(
   abortSignal?.throwIfAborted();
   if (checkpointSelected() || (await tryAdopt())) return true;
 
-  let sawEvidence = await serverLoadEvidence();
+  let evidence = await serverLoadEvidence();
   abortSignal?.throwIfAborted();
-  if (!sawEvidence) {
+  if (evidence !== true) {
     return checkpointSelected() || (await tryAdopt());
   }
 
@@ -2132,8 +2132,8 @@ async function adoptInFlightServerLoad(
     await new Promise((resolve) => setTimeout(resolve, 500));
     abortSignal?.throwIfAborted();
     if (checkpointSelected() || (await tryAdopt())) return true;
-    sawEvidence = await serverLoadEvidence();
-    if (!sawEvidence) {
+    evidence = await serverLoadEvidence();
+    if (evidence === false) {
       return checkpointSelected() || (await tryAdopt());
     }
   }
