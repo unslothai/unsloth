@@ -581,7 +581,11 @@ class _FakeApp:
 
     pid = 4242
 
-    def __init__(self, dies_after, code = 9):
+    def __init__(
+        self,
+        dies_after,
+        code = 9,
+    ):
         self.polls, self.dies_after, self.code = 0, dies_after, code
         self.returncode = None
 
@@ -596,7 +600,12 @@ class _FakeApp:
         return self.returncode
 
 
-def _drive_candidate(monkeypatch, tmp_path, log_at_sample, dies_after = 10_000):
+def _drive_candidate(
+    monkeypatch,
+    tmp_path,
+    log_at_sample,
+    dies_after = 10_000,
+):
     """One real run_candidate() over a scripted access log, one entry per 15s sample.
 
     Everything outside the script is faked and nothing is launched, so what is exercised is
@@ -632,7 +641,11 @@ def _drive_candidate(monkeypatch, tmp_path, log_at_sample, dies_after = 10_000):
     return freeze.run_candidate("control (no override)", {}, "baseline", ["/bin/true"])
 
 
-def _log(heartbeats, watchdogs, session = 0):
+def _log(
+    heartbeats,
+    watchdogs,
+    session = 0,
+):
     """A cumulative access log with that many of each request in it."""
     return (
         '127.0.0.1 "GET /api/export/status" 200\n' * heartbeats
