@@ -5726,6 +5726,20 @@ def test_an_mtp_drafter_is_matched_on_every_binding_it_declares(monkeypatch, dra
     assert _matches(spec, "mtp", draft) is expected
 
 
+def _dflash_normalized(config):
+    """Mirrors the drafter's config class, which lifts the fields it owns out of dflash_config."""
+    nested = config.get("dflash_config")
+    nested = nested if isinstance(nested, dict) else {}
+    return SimpleNamespace(
+        hidden_size = config.get("hidden_size", nested.get("hidden_size")),
+        vocab_size = config.get("vocab_size", nested.get("vocab_size")),
+        num_target_layers = config.get("num_target_layers")
+        if config.get("num_target_layers") is not None
+        else nested.get("num_target_layers"),
+        target_layer_ids = nested.get("target_layer_ids"),
+    )
+
+
 @pytest.mark.parametrize(
     "override,expected",
     [
@@ -5741,14 +5755,48 @@ def test_an_mtp_drafter_is_matched_on_every_binding_it_declares(monkeypatch, dra
         ({"dflash_config": {"target_layer_ids": []}}, False),
         ({"dflash_config": {"target_layer_ids": "0,3,7"}}, False),
         ({"dflash_config": {}}, False),
+        # A DSpark checkpoint: depth only where its config class reads it, and no end token.
+        (
+            {
+                "num_target_layers": None,
+                "eos_token_id": None,
+                "dflash_config": {"target_layer_ids": [0, 3, 7], "num_target_layers": 8},
+            },
+            True,
+        ),
+        # Depth still binds when it is read from there.
+        (
+            {
+                "num_target_layers": None,
+                "dflash_config": {"target_layer_ids": [0, 3, 7], "num_target_layers": 7},
+            },
+            False,
+        ),
     ],
 )
 def test_a_dflash_drafter_is_matched_on_every_dimension_it_binds(monkeypatch, override, expected):
     pytest.importorskip("mlx_vlm.utils")
     from core.inference import mlx_speculative as spec
 
-    monkeypatch.setattr(spec, "_normalized_drafter_config", lambda _c: object())
+    monkeypatch.setattr(spec, "_normalized_drafter_config", _dflash_normalized)
     assert _matches(spec, "dflash", {**_DFLASH_DRAFT, **override}, _DFLASH_TARGET) is expected
+
+
+def test_a_drafter_binds_to_any_end_token_its_target_declares(monkeypatch):
+    """Comparing against the text config's end token alone refuses a drafter built for a
+    family that declares several.
+    """
+    pytest.importorskip("mlx_vlm.utils")
+    from core.inference import mlx_speculative as spec
+
+    monkeypatch.setattr(spec, "_normalized_drafter_config", _dflash_normalized)
+    target = {"model_type": "gemma4", "eos_token_id": [5, 1],
+              "text_config": {"model_type": "gemma4", "hidden_size": 64, "num_hidden_layers": 8,
+                              "vocab_size": 100, "eos_token_id": 1}}
+    assert _matches(spec, "dflash", {**_DFLASH_DRAFT, "eos_token_id": 5}, target) is True
+    assert _matches(spec, "dflash", {**_DFLASH_DRAFT, "eos_token_id": 1}, target) is True
+    # One the target never uses is still refused.
+    assert _matches(spec, "dflash", {**_DFLASH_DRAFT, "eos_token_id": 9}, target) is False
 
 
 def _eagle_normalized(**override):

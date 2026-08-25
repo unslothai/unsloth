@@ -920,6 +920,17 @@ def _same_eos(left: Any, right: Any) -> bool:
     return bool(values(left).intersection(values(right)))
 
 
+def _drafter_eos_serves(draft_eos: Any, target_config: dict[str, Any], text: Any) -> bool:
+    """A drafter naming none does not discriminate on it, and a family can declare several
+    while its text config names one, so both places count.
+    """
+    if draft_eos is None:
+        return True
+    return _same_eos(draft_eos, target_config.get("eos_token_id")) or _same_eos(
+        draft_eos, _config_value(text, "eos_token_id")
+    )
+
+
 _RECOMMENDATION_COMMUNITY_OWNERS = frozenset({"mlx-community", "unsloth"})
 
 
@@ -1116,19 +1127,15 @@ def _dynamic_candidate_config_matches(
         return False
 
     if method == "dflash":
-        if _draft_model_type(draft_config) == "laguna":
-            captures = _config_value(normalized, "target_layer_ids")
-            hidden = _config_value(normalized, "hidden_size")
-            vocab = _config_value(normalized, "vocab_size")
-            target_count = _config_value(normalized, "num_target_layers")
-            eos_matches = True
-        else:
-            dflash = draft_config.get("dflash_config")
-            captures = dflash.get("target_layer_ids") if isinstance(dflash, dict) else None
-            hidden = draft_config.get("hidden_size")
-            vocab = draft_config.get("vocab_size")
-            target_count = draft_config.get("num_target_layers")
-            eos_matches = _same_eos(draft_config.get("eos_token_id"), target.get("eos_token_id"))
+        # Where a field lives is the config class's decision, not the raw file's: newer
+        # checkpoints state num_target_layers under dflash_config.
+        captures = _config_value(normalized, "target_layer_ids")
+        hidden = _config_value(normalized, "hidden_size")
+        vocab = _config_value(normalized, "vocab_size")
+        target_count = _config_value(normalized, "num_target_layers")
+        eos_matches = _draft_model_type(draft_config) == "laguna" or _drafter_eos_serves(
+            draft_config.get("eos_token_id"), target_config, target
+        )
         return bool(
             hidden == target_hidden
             and vocab == target_vocab
