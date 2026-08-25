@@ -119,14 +119,6 @@ export async function loadDebugLog(
 export async function exportDebugLogs(): Promise<void> {
   const exportPath = "/api/settings/debug/logs/export";
   if (isTauri) {
-    // Refresh an expired desktop session with a small response before Rust opens
-    // the chooser and streams the archive directly to disk.
-    const authCheck = await authFetch("/api/settings/debug/logs/sources");
-    if (!authCheck.ok) {
-      throw new Error(
-        await readFastApiError(authCheck, "Could not export the log files."),
-      );
-    }
     const compactTimestamp = new Date()
       .toISOString()
       .replace(/\D/g, "")

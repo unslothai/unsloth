@@ -120,6 +120,11 @@ _PLAIN_SCALAR_KV_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
     r"(?P<sep>[\"']?\s*:\s*)(?P<val>[^\"'\s|>,}\]][^\"'\r\n,}\]]*)"
 )
+_ESCAPED_QUOTED_KV_RE = re.compile(
+    r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
+    r"(?P<sep>\\(?P<key_quote>[\"'])\s*[:=]\s*\\(?P<quote>[\"']))"
+    r"(?P<val>(?:(?!\\(?P=quote))[^\r\n])*)(?P<close>\\(?P=quote))"
+)
 _KV_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
     r"(?P<sep>[\"']?\s*[:=]\s*)(?P<val>[^\"'\s,}\]]+)"
@@ -263,6 +268,10 @@ def _redact_unterminated_quoted_kv(match: re.Match[str]) -> str:
     return f"{match.group('key')}{match.group('sep')}{quote}{REDACTED}"
 
 
+def _redact_escaped_quoted_kv(match: re.Match[str]) -> str:
+    return f"{match.group('key')}{match.group('sep')}{REDACTED}{match.group('close')}"
+
+
 def _redact_shaped(match: re.Match[str]) -> str:
     if not _looks_like_credential(match.group(3)):
         return match.group(0)
@@ -316,6 +325,7 @@ def redact_log_text(text: str) -> str:
     text = _UNQUOTED_AUTH_RE.sub(_redact_auth_assignment, text)
     text = _SCHEME_RE.sub(_redact_shaped, text)
     text = _COOKIE_RE.sub(_redact_cookie, text)
+    text = _ESCAPED_QUOTED_KV_RE.sub(_redact_escaped_quoted_kv, text)
     text = _QUOTED_KV_RE.sub(_redact_quoted_kv, text)
     text = _UNTERMINATED_QUOTED_KV_RE.sub(_redact_unterminated_quoted_kv, text)
     text = _PLAIN_SCALAR_KV_RE.sub(_redact_kv, text)
@@ -436,7 +446,13 @@ class StreamingLogRedactor:
             return text
         start = matches[-1].start()
         prefix = text[:start]
-        indent = prefix if not prefix.strip() else ""
+        if not prefix.strip():
+            return prefix + text[start:]
+        sequence = re.fullmatch(r"(?P<indent>[ \t]*)-\s+", prefix)
+        indent = ""
+        if sequence:
+            whitespace = sequence.group("indent")
+            indent = whitespace + " " * (len(prefix) - len(whitespace))
         return indent + text[start:]
 
     def redact_record(self, text: str) -> str:

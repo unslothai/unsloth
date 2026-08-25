@@ -417,7 +417,7 @@ export function DebuggingTab() {
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={sources.length === 0 || openingFolder}
+                  disabled={sources.length === 0 || !realpath || openingFolder}
                   onClick={() => void onOpenFolder()}
                 >
                   <HugeiconsIcon icon={FolderOpenIcon} className="size-3.5" />

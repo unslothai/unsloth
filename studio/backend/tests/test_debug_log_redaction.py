@@ -36,6 +36,10 @@ SECRETS = [
     ),
     ("HF_TOKEN=hf_zzzzzzzzzzzzzzzzzzzzzzzzzzz", "hf_zzzzzzzzzzzzzzzzzzzzzzzzzzz"),
     ('{"event":"auth","api_key":"abcdef123456","model":"gpt-4o"}', "abcdef123456"),
+    (
+        'payload="{\\"password\\":\\"correct-horse-battery-staple\\"}"',
+        "correct-horse-battery-staple",
+    ),
     ("AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE", "AKIAIOSFODNN7EXAMPLE"),
     (
         "https://cdn.example.com/m.gguf?X-Amz-Signature=deadbeef0123456789&X-Amz-Expires=900",

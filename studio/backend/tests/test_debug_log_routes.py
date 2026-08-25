@@ -447,6 +447,20 @@ def test_export_tracks_a_quoted_secret_when_its_value_contains_a_key_word(client
     assert "ordinary: kept" in exported
 
 
+def test_export_preserves_yaml_sequence_boundaries_around_a_secret(client):
+    secret = "correct-horse-battery-staple"
+    path = _seed_server_log(
+        f"items:\n  - password: {secret}\n    username: alice\n  - endpoint: kept\n"
+    )
+
+    response = client.get("/api/settings/debug/logs/export")
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        exported = archive.read(f"server/{path.name}").decode("utf-8")
+    assert secret not in exported
+    assert "username: alice" in exported
+    assert "endpoint: kept" in exported
+
+
 def test_export_tracks_an_unindented_shell_secret_continuation(client):
     first = "correct-horse"
     second = "battery-staple"
