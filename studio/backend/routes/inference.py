@@ -8055,6 +8055,18 @@ def _gguf_runtime_bytes(
         # the heavier scalar hides a paired q4_0 behind an f16.
         cache_type_for_budget = max(planned_cache_types, key = _kv_bytes_per_elem)
         cache_type_for_scratch = _planned_scratch_cache_type(cache_type_kv, llama_extra_args)
+        # A quantized V cache is the one layout where flash attention is not a
+        # choice: llama.cpp turns it on itself (llama-context.cpp, "enabling
+        # flash_attn since it is required for quantized V cache") and refuses the
+        # load without it -- the same abort _tensor_quant_kv_unsupported_binary
+        # already documents as "V cache quantization requires flash_attn". Charging
+        # flash_attn = False there is not conservative, it prices a launch that
+        # cannot happen: the False arm pads V to f16, so the whole quantized saving
+        # on the V axis is charged back. Measured against llama-server b10632,
+        # Qwen3-0.6B at 32k with -ctk/-ctv q4_0: 2296 MiB reserved against 1008 MiB
+        # allocated, identical on the CPU and Vulkan builds.
+        planned_v_type = planned_cache_types[1]
+        v_forces_flash_attn = planned_v_type not in {"f16", "bf16", "f32"}
         # the loader raises --batch-size to max(slots, 2) before launch, and llama.cpp
         # caps the micro-batch against it, so budget from the emitted value. Diffusion
         # takes neither flag, and SWA metadata prices the KV against the micro-batch,
@@ -8135,7 +8147,7 @@ def _gguf_runtime_bytes(
             # a load asking for them needs materially more memory than one that
             # does not.
             ctx_checkpoints = _resolved_checkpoints,
-            flash_attn = False,
+            flash_attn = v_forces_flash_attn,
         )
         # The checkpoint share of that cache, by difference rather than by re-deriving
         # the SWA layer walk: the snapshots are the only term that separates the two
@@ -8151,7 +8163,7 @@ def _gguf_runtime_bytes(
                 kv_unified = kv_unified,
                 n_ubatch = effective_ubatch,
                 ctx_checkpoints = 0,
-                flash_attn = False,
+                flash_attn = v_forces_flash_attn,
             )
             kv_checkpoint_bytes = max(0, int(kv) - int(_kv_without))
         _resolved = dict(
@@ -8838,6 +8850,14 @@ def _gguf_offloaded_layer_fraction(
         return 1.0
     if gpu_layers is None or gpu_layers < 0:
         return 1.0
+    if gpu_layers == 0:
+        # Zero needs no denominator, so this answers before the layer count is
+        # consulted. A header that yields no dims leaves layer_count None, and
+        # falling through to the shrug below reported a manual --gpu-layers 0 as a
+        # fully GPU-resident load: the exact opposite of what was asked for, and in
+        # the direction that says fits. The count is a scale factor for a partial
+        # offload; an explicit none is not a partial offload.
+        return 0.0
     if not layer_count or layer_count <= 0:
         # No dims to scale against; 1.0 keeps it consistent with Auto.
         return 1.0
@@ -8857,11 +8877,28 @@ def _probe_backend():
     new keyword would break every one of them at construction rather than at the
     behaviour it controls. A stand-in that predates the flag has no reaper to suppress
     anyway, so falling back to the bare constructor is both compatible and correct.
+
+    Only an UNSUPPORTED KEYWORD may take that fallback, which is why the signature is
+    asked rather than the exception trusted. A TypeError raised from inside a
+    constructor BODY lands in the same except, and the bare constructor it would fall
+    back to is the process-reaping one: a fault would be answered by walking /proc and
+    signalling the llama-servers it recognises, silently, on a route the settings panel
+    fires on every change. That cannot be told apart from the compatible case by the
+    exception type, so it is told apart by whether the class can bind the keyword.
     """
+    import inspect
+
     try:
         return LlamaCppBackend(manages_processes = False)
     except TypeError:
-        return LlamaCppBackend()
+        try:
+            inspect.signature(LlamaCppBackend).bind(manages_processes = False)
+        except (TypeError, ValueError):
+            # Genuinely does not accept the keyword -- or has no introspectable
+            # signature, where today's behaviour is the safe answer.
+            return LlamaCppBackend()
+        # It bound fine, so the fault came from the body. Let it surface.
+        raise
 
 
 def _manual_keeps_tensor_split(
@@ -8902,6 +8939,56 @@ def _manual_keeps_tensor_split(
     return gpu_layers is not None and gpu_layers >= 1
 
 
+# The gate's three answers. ``_estimate_target_is_on_this_disk`` collapses the last
+# two into True and keeps its old bool contract; the caller that decides whether a
+# resolution may go ONLINE needs them apart, because "yes, it is here" and "I could not
+# tell" are the same fall-through but very different permissions.
+_ESTIMATE_DISK_PRESENT = "present"
+_ESTIMATE_DISK_ABSENT = "absent"
+_ESTIMATE_DISK_UNKNOWN = "unknown"
+
+
+def _estimate_disk_residency(model_identifier: str) -> str:
+    """``present`` / ``absent`` / ``unknown`` for the identifier's local weights.
+
+    Same walk as ``_estimate_target_is_on_this_disk``, which is a thin wrapper over
+    this. Split out only so the unanswerable case stays distinguishable: it is the one
+    the route must not answer with a Hub round trip.
+    """
+    try:
+        from utils.paths import is_local_path
+    except Exception:
+        return _ESTIMATE_DISK_UNKNOWN
+    if not model_identifier or not model_identifier.strip():
+        return _ESTIMATE_DISK_UNKNOWN
+    identifier = model_identifier.strip()
+    try:
+        if is_local_path(identifier):
+            return _ESTIMATE_DISK_PRESENT
+    except Exception:
+        return _ESTIMATE_DISK_UNKNOWN
+
+    # from_identifier prefixes a bare name, so ask about the id it will actually use.
+    candidates = [identifier]
+    if "/" not in identifier:
+        candidates.append(f"unsloth/{identifier}")
+    try:
+        from utils.models.model_config import _iter_hf_cache_snapshots
+        roots = _estimate_hf_cache_roots()
+    except Exception:
+        return _ESTIMATE_DISK_UNKNOWN
+    if not roots:
+        return _ESTIMATE_DISK_UNKNOWN
+    try:
+        for root in roots:
+            for candidate in candidates:
+                for _snapshot in _iter_hf_cache_snapshots(candidate, cache_dir = root):
+                    return _ESTIMATE_DISK_PRESENT
+    except Exception:
+        return _ESTIMATE_DISK_UNKNOWN
+    return _ESTIMATE_DISK_ABSENT
+
+
 def _estimate_target_is_on_this_disk(model_identifier: str) -> bool:
     """Whether this identifier could possibly be priced without leaving the machine.
 
@@ -8916,42 +9003,18 @@ def _estimate_target_is_on_this_disk(model_identifier: str) -> bool:
     row would vanish for a model that is sitting right there, which is a worse failure
     than the round trip this avoids.
 
-    Fail-open on any error: an unreadable cache root must not turn into a blanket
-    ``not_downloaded``, so an unanswerable question falls through to the resolution
-    that was happening before.
-    """
-    try:
-        from utils.paths import is_local_path
-    except Exception:
-        return True
-    if not model_identifier or not model_identifier.strip():
-        return True
-    identifier = model_identifier.strip()
-    try:
-        if is_local_path(identifier):
-            return True
-    except Exception:
-        return True
+    Fail-open on any error: a cache root that cannot be established must not turn into
+    a blanket ``not_downloaded``, so an unanswerable question falls through to the
+    resolution that was happening before. What it must NOT fall through to is the
+    network -- see ``_estimate_disk_residency``, which keeps "yes" and "cannot tell"
+    apart for the caller that decides that.
 
-    # from_identifier prefixes a bare name, so ask about the id it will actually use.
-    candidates = [identifier]
-    if "/" not in identifier:
-        candidates.append(f"unsloth/{identifier}")
-    try:
-        from utils.models.model_config import _iter_hf_cache_snapshots
-        roots = _estimate_hf_cache_roots()
-    except Exception:
-        return True
-    if not roots:
-        return True
-    try:
-        for root in roots:
-            for candidate in candidates:
-                for _snapshot in _iter_hf_cache_snapshots(candidate, cache_dir = root):
-                    return True
-    except Exception:
-        return True
-    return False
+    A root that exists but cannot be READ is not one of those errors:
+    ``_iter_hf_cache_snapshots`` swallows the ``PermissionError`` and reports the repo
+    absent, so that case answers False and is refused. Safe, and the opposite of what
+    the paragraph above would lead a reader to expect.
+    """
+    return _estimate_disk_residency(model_identifier) != _ESTIMATE_DISK_ABSENT
 
 
 def _estimate_hf_cache_roots() -> list:
@@ -9158,7 +9221,9 @@ def _gguf_resident_file_gb(
         if len(_estimate_files_cache) >= _ESTIMATE_FILES_CACHE_MAX:
             oldest = min(_estimate_files_cache, key = lambda k: _estimate_files_cache[k][0])
             _estimate_files_cache.pop(oldest, None)
-        _estimate_files_cache[key] = (now, files_gb)
+        # Stamped now, not at `now`: same reason as the config cache. A multi-shard
+        # repo whose header walk outlasts the TTL must not be inserted pre-expired.
+        _estimate_files_cache[key] = (time.monotonic(), files_gb)
     return files_gb
 
 
@@ -9871,13 +9936,16 @@ def _gguf_memory_breakdown(
         # drafter with sliding-window attention under --swa-full allocates the full
         # window, and the same slot layout and micro-batch decide its cell count. The
         # loader passes all four; defaulting them here priced a smaller cache than the
-        # launch allocates. flash_attn matches the target's own conservative False,
-        # which pads variable-width V to the model maximum.
+        # launch allocates. flash_attn follows the draft V axis for the same reason
+        # the target's does: llama.cpp turns flash attention on itself for a
+        # quantized V cache and will not start without it, so the padded-to-f16 arm
+        # prices a launch that cannot happen.
+        _draft_v_type = draft_v or _field_draft_cache or env_draft_v
         layout = dict(
             swa_full = runtime.swa_full,
             kv_unified = runtime.kv_unified,
             n_ubatch = runtime.n_ubatch,
-            flash_attn = False,
+            flash_attn = bool(_draft_v_type) and _draft_v_type not in {"f16", "bf16", "f32"},
         )
         drafter_runtime_bytes = (
             probe._estimate_mtp_overhead_bytes(
@@ -13590,7 +13658,22 @@ def _cached_estimate_config(
         logger.debug(
             "Offline resolve of %s did not answer, retrying online: %s", model_identifier, exc
         )
-    if config is None:
+    #
+    # Not taken when the gate could not be ANSWERED, as opposed to answering yes. The
+    # gate is fail-open by design, and one of the things it opens onto is a host where
+    # no HF cache root could be established at all -- a missing cache home, or an
+    # interpreter that cannot complete the tier-1 import. On that host the gate refuses
+    # nothing, so before this condition every uncached remote id reached this retry,
+    # and this retry is the network: model_info attempts plus an hf_hub_download of
+    # config.json, which writes blob, ref, snapshot and lock. "Nothing is downloaded"
+    # is this route's promise, so an unanswerable gate stops at the OFFLINE resolution
+    # above. The cost is a blank row instead of a slow one, on a host that could not
+    # say where its own cache lives.
+    #
+    # `unknown`, not `present`: a gate that positively said "absent" has already
+    # returned, so in production these are the same test. They differ only for a caller
+    # that overrode the gate, and there the override is the answer.
+    if config is None and _estimate_disk_residency(model_identifier) != _ESTIMATE_DISK_UNKNOWN:
         try:
             with _hf_offline_if_unreachable_for(model_identifier):
                 config = _resolve()
@@ -13605,7 +13688,11 @@ def _cached_estimate_config(
             # Oldest first; the panel works one model at a time, so this is housekeeping.
             oldest = min(_estimate_config_cache, key = lambda k: _estimate_config_cache[k][0])
             _estimate_config_cache.pop(oldest, None)
-        _estimate_config_cache[key] = (now, config)
+        # Stamped now, not at `now`. `now` was read before the resolution, and the
+        # resolution is the slow part: a repo that took longer than the TTL to identify
+        # was inserted already expired, so the next tick re-resolved it and the cache
+        # stopped existing on exactly the models it was added for.
+        _estimate_config_cache[key] = (time.monotonic(), config)
     return config
 
 
@@ -13648,12 +13735,23 @@ async def estimate_memory(
     # Blank Parallel Slots means the server default (4 in a standard launch), not
     # one. /load resolves it the same way, so pricing 1 here underestimated the KV
     # cache and the slot-scaled compute buffers for the default configuration.
-    resolved_slots = _effective_parallel_slots(
-        _resolve_parallel_slots(request, fastapi_request),
-        diffusion_kind = False,
-    )
+    #
+    # The settings read stays on the loop: it is an attribute on the FastAPI app
+    # state, and it is the one half of this that needs the request object. The CLAMP
+    # goes below, into the worker -- _effective_parallel_slots asks the binary whether
+    # it supports --kv-unified, which walks nine install layouts on every call and, on
+    # a cold capability cache, runs `llama-server --help` with a ten second timeout.
+    # _effective_default_slots already puts this exact call in a thread, for the exact
+    # reason recorded in its docstring: called inline it "stalled every other request
+    # on the first open of the panel after an update". The loop here is the one
+    # streaming chat tokens.
+    requested_slots = _resolve_parallel_slots(request, fastapi_request)
 
     def _estimate() -> EstimateMemoryResponse:
+        resolved_slots = _effective_parallel_slots(
+            requested_slots,
+            diffusion_kind = False,
+        )
         config = _cached_estimate_config(
             model_identifier,
             request.gguf_variant,
