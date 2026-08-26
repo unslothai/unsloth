@@ -92,9 +92,7 @@ def _check_grad(X, out, Wq, scale, block):
     grad_ref = torch.ones(out.shape, device = out.device, dtype = torch.float32) @ _dequant(
         Wq, scale, block
     )
-    torch.testing.assert_close(
-        X.grad.float(), grad_ref, atol = _bf16_atol(grad_ref), rtol = 5e-2
-    )
+    torch.testing.assert_close(X.grad.float(), grad_ref, atol = _bf16_atol(grad_ref), rtol = 5e-2)
 
 
 def _rel_err(out, ref):
