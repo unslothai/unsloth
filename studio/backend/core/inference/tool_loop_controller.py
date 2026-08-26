@@ -14,7 +14,7 @@ from __future__ import annotations
 import copy
 import json
 from dataclasses import dataclass, field
-from typing import Any, Literal, Mapping, Sequence
+from typing import Any, Collection, Literal, Mapping, Sequence
 from urllib.parse import urlparse
 
 from core.inference.tool_call_parser import TOOL_ERROR_NUDGE, TOOL_ERROR_PREFIXES
@@ -486,6 +486,7 @@ class ToolLoopController:
         *,
         forced: bool = False,
         provisional: bool = False,
+        allowed_tool_names: Collection[str] | None = None,
     ) -> ToolCallDecision:
         """Classify a parsed tool call before any visible event is yielded."""
         function = tool_call.get("function")
@@ -509,7 +510,9 @@ class ToolLoopController:
         if tool_name in self._completed_one_shot_tools:
             action = "render_html_repeat"
             noop = _noop_result("render_html_repeat", tool_name)
-        elif self._restrict_to_allowed and tool_name not in self._allowed_tool_names:
+        elif (
+            allowed_tool_names is not None and tool_name not in allowed_tool_names
+        ) or (self._restrict_to_allowed and tool_name not in self._allowed_tool_names):
             action = "disabled"
             noop = _noop_result("disabled", tool_name)
         elif key in self._successful_keys:

@@ -25765,7 +25765,10 @@ class LlamaCppBackend:
             if not active_tools:
                 _append_budget_exhausted_nudge = False
                 break
-            from core.inference.chat_template_helpers import neutralize_tool_descriptions
+            from core.inference.chat_template_helpers import (
+                neutralize_tool_descriptions,
+                reconciled_tool_choice,
+            )
 
             # An MCP server's description and inputSchema are remote text the template renders
             # into the system turn (#7066). Computed above the gate: a tool dropped for unsafe
@@ -25774,6 +25777,22 @@ class LlamaCppBackend:
             safe_tools = neutralize_tool_descriptions(
                 active_tools, _markup_cache, self.markup_profile
             )
+            requested_choice = "auto" if tool_choice is None else tool_choice
+            if _forced_choice_resolved and requested_choice not in ("auto", "none"):
+                requested_choice = "auto"
+            requested_choice = (
+                reconciled_tool_choice(requested_choice, tools, safe_tools) or "auto"
+            )
+            forced_name = forced_tool_name(requested_choice)
+            if forced_name:
+                matching_tools = [
+                    tool
+                    for tool in safe_tools
+                    if (tool.get("function") or {}).get("name") == forced_name
+                ]
+                if matching_tools:
+                    safe_tools = matching_tools
+                    requested_choice = "required"
             # Gate the markerless bare-JSON form on enabled names so an ordinary JSON answer isn't misread as a call.
             _enabled_tool_names = {
                 (tool.get("function") or {}).get("name")
@@ -25789,7 +25808,6 @@ class LlamaCppBackend:
                 append_assistant_turn,
                 neutralize_control_markup,
                 neutralize_control_markup_in_messages,
-                reconciled_tool_choice,
             )
 
             _reasoning_kw = self._request_reasoning_kwargs(
@@ -25933,25 +25951,6 @@ class LlamaCppBackend:
             # As in the passthrough builder: if every name carried markup the catalog is
             # now empty, and "tools": [] would still advertise tool use.
             if safe_tools:
-                # Local GGUF owns Studio's web_search; honour a forced function
-                # so enabled_tools: ["web_search"] plus tool_choice pinning that
-                # name actually calls it (#9730). Default stays auto.
-                requested_choice = "auto" if tool_choice is None else tool_choice
-                if _forced_choice_resolved and requested_choice not in ("auto", "none"):
-                    requested_choice = "auto"
-                requested_choice = (
-                    reconciled_tool_choice(requested_choice, tools, safe_tools) or "auto"
-                )
-                forced_name = forced_tool_name(requested_choice)
-                if forced_name:
-                    matching_tools = [
-                        tool
-                        for tool in safe_tools
-                        if (tool.get("function") or {}).get("name") == forced_name
-                    ]
-                    if matching_tools:
-                        safe_tools = matching_tools
-                        requested_choice = "required"
                 payload["tools"] = safe_tools
                 payload["tool_choice"] = requested_choice
             if _reasoning_kw is not None:
@@ -26982,6 +26981,7 @@ class LlamaCppBackend:
                         tc,
                         forced = _forced_tool_call_pending,
                         provisional = provisional_match,
+                        allowed_tool_names = {forced_name} if forced_name else None,
                     )
 
                     if not decision.should_execute:

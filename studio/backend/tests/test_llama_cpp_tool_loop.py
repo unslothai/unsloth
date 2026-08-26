@@ -321,6 +321,36 @@ def test_forced_web_search_tool_choice_is_sent_until_a_tool_runs(monkeypatch):
     )
 
 
+def test_forced_tool_choice_rejects_other_structured_calls(monkeypatch):
+    streams = [
+        _structured_tool_call("python", {"code": "print(1)"}, "call_python"),
+        [_sse({"content": "No tool ran."}), _done()],
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+
+    def fail_execute_tool(name, arguments, **_kwargs):
+        raise AssertionError(f"unexpected tool execution: {name} {arguments}")
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fail_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "search the web"}],
+            tools = [
+                {"type": "function", "function": {"name": "web_search"}},
+                {"type": "function", "function": {"name": "python"}},
+            ],
+            tool_choice = {"type": "function", "function": {"name": "web_search"}},
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert payloads[0]["tool_choice"] == "required"
+    assert [tool["function"]["name"] for tool in payloads[0]["tools"]] == ["web_search"]
+    assert not [event for event in events if event.get("type") in {"tool_start", "tool_end"}]
+
+
 def test_none_tool_choice_never_executes_model_tool_calls(monkeypatch):
     stream = [
         *_structured_tool_call("python", {"code": "print(1)"}, "call_python")[:-1],
