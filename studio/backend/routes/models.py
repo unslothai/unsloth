@@ -3645,7 +3645,6 @@ def _resolve_mtp_drafter(
             # No ``accept`` filter: the load path's one enforces a native-lease
             # boundary, which a read-only estimate does not cross.
             from utils.models.model_config import detect_mtp_file
-
             drafter = detect_mtp_file(main_gguf_path, search_root = search_root)
         if not drafter:
             return None, 0
@@ -3692,6 +3691,7 @@ async def get_kv_cache_estimate(
     null for ngram, which drafts from the generated text and costs no VRAM, and
     for models with no drafter -- the caller draws no segment either way.
     """
+
     # The header read, the HF cache walk in _resolve_quant_gguf, the drafter
     # lookup and the capability probe are all blocking disk work, and this
     # route is called once per visible row. Run it in a worker so a long model
@@ -3699,9 +3699,7 @@ async def get_kv_cache_estimate(
     # n_ctx and n_parallel are bound as arguments rather than closed over: the
     # body assigns to both (defaulting them), which would otherwise make them
     # locals of this function and raise before either default could be applied.
-    def _estimate(
-        n_ctx: Optional[int] = n_ctx, n_parallel: Optional[int] = n_parallel
-    ) -> dict:
+    def _estimate(n_ctx: Optional[int] = n_ctx, n_parallel: Optional[int] = n_parallel) -> dict:
         null = {
             "kv_bytes": None,
             "weights_bytes": None,

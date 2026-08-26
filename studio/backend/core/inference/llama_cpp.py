@@ -2499,9 +2499,7 @@ def _pick_mtp(candidates: list[str]) -> Optional[str]:
     mtp_files = sorted(
         f
         for f in candidates
-        if f.lower().endswith(".gguf")
-        and "/" not in f
-        and Path(f).name.lower().startswith("mtp-")
+        if f.lower().endswith(".gguf") and "/" not in f and Path(f).name.lower().startswith("mtp-")
     )
     return mtp_files[0] if mtp_files else None
 

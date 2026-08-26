@@ -64,7 +64,11 @@ _MLA_NO_HEAD = {
 }
 
 
-def _write_gguf(path: Path, fields: dict, arch: str = "testarch") -> Path:
+def _write_gguf(
+    path: Path,
+    fields: dict,
+    arch: str = "testarch",
+) -> Path:
     kv = {"general.architecture": arch}
     for k, v in fields.items():
         kv[f"{arch}.{k}"] = v
@@ -73,21 +77,28 @@ def _write_gguf(path: Path, fields: dict, arch: str = "testarch") -> Path:
     return path
 
 
-def _call_route(monkeypatch, *, path: Path, weights_bytes: int, repo_id: str,
-                speculative_type: str | None, mtp_token: bool = True,
-                is_local: bool = False):
+def _call_route(
+    monkeypatch,
+    *,
+    path: Path,
+    weights_bytes: int,
+    repo_id: str,
+    speculative_type: str | None,
+    mtp_token: bool = True,
+    is_local: bool = False,
+):
     """Drive the real handler with the quant already resolved to *path*."""
     monkeypatch.setattr(
-        models_routes, "_resolve_quant_gguf",
+        models_routes,
+        "_resolve_quant_gguf",
         lambda _repo, _quant, _local: (str(path), weights_bytes),
     )
-    monkeypatch.setattr(
-        models_routes, "is_local_path", lambda _p: is_local, raising = False
-    )
+    monkeypatch.setattr(models_routes, "is_local_path", lambda _p: is_local, raising = False)
     from core.inference.llama_cpp import LlamaCppBackend
 
     monkeypatch.setattr(
-        LlamaCppBackend, "probe_server_capabilities",
+        LlamaCppBackend,
+        "probe_server_capabilities",
         classmethod(lambda cls, *a, **k: {"mtp_token": mtp_token}),
     )
     return asyncio.run(
@@ -108,13 +119,14 @@ class TestMtpReserveFollowsTheLoader:
     """The reserve is charged only when the loader could run MTP."""
 
     @pytest.mark.parametrize("mode", ["mtp", "auto", "mtp+ngram"])
-    def test_headless_mla_is_not_charged_a_duplicate_kv(
-        self, monkeypatch, tmp_path, mode
-    ):
+    def test_headless_mla_is_not_charged_a_duplicate_kv(self, monkeypatch, tmp_path, mode):
         gguf = _write_gguf(tmp_path / "plain-model-Q4_K_M.gguf", _MLA_NO_HEAD)
         out = _call_route(
-            monkeypatch, path = gguf, weights_bytes = 4096,
-            repo_id = "org/plain-model", speculative_type = mode,
+            monkeypatch,
+            path = gguf,
+            weights_bytes = 4096,
+            repo_id = "org/plain-model",
+            speculative_type = mode,
         )
         # The KV itself must still be reported; only the reserve goes away.
         assert out["kv_bytes"] and out["kv_bytes"] > 0
@@ -129,8 +141,11 @@ class TestMtpReserveFollowsTheLoader:
         fields["nextn_predict_layers"] = 1
         gguf = _write_gguf(tmp_path / "headed-Q4_K_M.gguf", fields)
         out = _call_route(
-            monkeypatch, path = gguf, weights_bytes = 4096,
-            repo_id = "org/headed", speculative_type = "mtp",
+            monkeypatch,
+            path = gguf,
+            weights_bytes = 4096,
+            repo_id = "org/headed",
+            speculative_type = "mtp",
         )
         assert out["spec_bytes"] and out["spec_bytes"] > 0
 
@@ -138,8 +153,11 @@ class TestMtpReserveFollowsTheLoader:
         """ngram drafts from generated text, so it holds no VRAM."""
         gguf = _write_gguf(tmp_path / "plain-Q4_K_M.gguf", _MLA_NO_HEAD)
         out = _call_route(
-            monkeypatch, path = gguf, weights_bytes = 4096,
-            repo_id = "org/plain", speculative_type = "ngram",
+            monkeypatch,
+            path = gguf,
+            weights_bytes = 4096,
+            repo_id = "org/plain",
+            speculative_type = "ngram",
         )
         assert out["spec_bytes"] is None
 
@@ -148,8 +166,12 @@ class TestMtpReserveFollowsTheLoader:
         fields["nextn_predict_layers"] = 1
         gguf = _write_gguf(tmp_path / "headed-Q4_K_M.gguf", fields)
         out = _call_route(
-            monkeypatch, path = gguf, weights_bytes = 4096,
-            repo_id = "org/headed", speculative_type = "mtp", mtp_token = False,
+            monkeypatch,
+            path = gguf,
+            weights_bytes = 4096,
+            repo_id = "org/headed",
+            speculative_type = "mtp",
+            mtp_token = False,
         )
         assert out["spec_bytes"] is None
 

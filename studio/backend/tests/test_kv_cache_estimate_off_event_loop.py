@@ -86,6 +86,4 @@ def test_the_estimate_does_not_stall_other_requests(monkeypatch, tmp_path):
 
     # A loaded runner lands well below the ~30 an idle one records; blocking
     # records exactly 0, so the floor is loose and still separates the two.
-    assert during[0] >= 3, (
-        f"heartbeat ran {during[0]} times during a {resolve_seconds}s estimate"
-    )
+    assert during[0] >= 3, f"heartbeat ran {during[0]} times during a {resolve_seconds}s estimate"

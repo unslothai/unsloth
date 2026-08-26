@@ -62,12 +62,18 @@ def _call(monkeypatch, path: Path | None, **overrides):
     # cases that are about the route's answer when nothing resolves.
     if path is not None:
         monkeypatch.setattr(
-            models_routes, "_resolve_quant_gguf",
+            models_routes,
+            "_resolve_quant_gguf",
             lambda *_a, **_k: (str(path), 4_000_000_000),
         )
     kwargs = dict(
-        repo_id = "org/repo", quant = "Q4_K_M", n_ctx = 4096, cache_type_kv = None,
-        n_parallel = None, speculative_type = None, request = None,
+        repo_id = "org/repo",
+        quant = "Q4_K_M",
+        n_ctx = 4096,
+        cache_type_kv = None,
+        n_parallel = None,
+        speculative_type = None,
+        request = None,
         current_subject = "test",
     )
     kwargs.update(overrides)
@@ -99,9 +105,7 @@ def test_the_answer_for_a_pinned_context_did_not_move(monkeypatch, tmp_path):
     gguf = _gguf(tmp_path)
     before = _call(monkeypatch, gguf, n_ctx = 4096)
     # Exactly what an old client sends: no n_parallel, no speculative_type.
-    after = _call(
-        monkeypatch, gguf, n_ctx = 4096, n_parallel = None, speculative_type = None
-    )
+    after = _call(monkeypatch, gguf, n_ctx = 4096, n_parallel = None, speculative_type = None)
     assert before["kv_bytes"] == after["kv_bytes"]
 
 
