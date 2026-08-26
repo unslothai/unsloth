@@ -1046,21 +1046,19 @@ _IMAGE_SUBTYPES = {
 }
 
 
-# What may be interpolated into data:<type>;base64,... by tool-fallback.tsx: an
-# RFC 9110 8.3.1 token subtype, minus "*", which names a range and never a payload.
+# What tool-fallback.tsx may interpolate into data:<type>;base64,... : an RFC 9110
+# 8.3.1 token subtype, minus "*", which names a range and never a payload.
 _MEDIA_TYPE = re.compile(r"^image/[a-z0-9][a-z0-9!#$%&'^_`|~.+-]*$")
 
 
 def _uri_mime(uri: Any) -> Optional[str]:
-    """Guess a media type from a resource URI, using only the part that names it.
+    """Guess a media type from the part of a URI that names the resource.
 
-    A query or fragment is not part of the name, and mimetypes only stopped reading
-    them in 3.11.9 / 3.12.3 / 3.13 (CPython gh-117217). Studio supports older
-    interpreters, where 'gen.png?download=1' guessed nothing while
-    'download?name=gen.png' guessed image/png -- a dropped image and a bogus one from
-    the same defect. Both are stripped here so every interpreter agrees. The scheme
-    stays so a data: URI still resolves, and a bare host is dropped because a host
-    name is not a file name."""
+    mimetypes only stopped reading the query and fragment in 3.11.9 / 3.12.3 / 3.13
+    (CPython gh-117217), and on older supported interpreters 'gen.png?download=1'
+    guessed nothing while 'download?name=gen.png' guessed image/png. Dropping both
+    keeps every interpreter in agreement. The scheme stays so a data: URI still
+    resolves; a bare host goes, since a host name is not a file name."""
     split = urlsplit(str(uri))
     cleaned = urlunsplit((split.scheme, split.netloc if split.path else "", split.path, "", ""))
     return mimetypes.guess_type(cleaned, strict = False)[0]
@@ -1076,16 +1074,14 @@ def _image_mime(mime: Any) -> Optional[str]:
     else:
         subtype = essence[len("application/") :] if essence.startswith("application/") else ""
         resolved = _IMAGE_SUBTYPES.get(subtype) or _uri_mime(f"file:///image.{subtype}")
-    # one gate for every branch: an image type the frontend can actually put in a URL.
-    # Lowercased again because a registry-derived answer carries the host's spelling:
-    # Windows returns image/JXL for .jxl, where Linux and macOS return image/jxl.
+    # one gate for every branch. Lowercased again because a registry answer carries the
+    # host's spelling: Windows returns image/JXL for .jxl, Linux and macOS image/jxl.
     resolved = resolved.lower() if resolved else ""
     return resolved if _MEDIA_TYPE.match(resolved) else None
 
 
 def _resource_mime(obj: Any) -> Any:
-    # mcp 1.x names the attribute mimeType; mcp 2.x renames it to mime_type and keeps
-    # the camelCase spelling only as a serialization alias.
+    # mcp 2.x renames mimeType to mime_type, keeping camelCase only as an alias
     mime = getattr(obj, "mimeType", None)
     return mime if mime is not None else getattr(obj, "mime_type", None)
 
