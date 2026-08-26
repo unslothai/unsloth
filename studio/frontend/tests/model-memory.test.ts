@@ -112,9 +112,9 @@ test("a missing context estimate still charts the weights", () => {
 });
 
 test("memory labels stay compact", () => {
-  assert.equal(formatMemoryGb(0), "0 GB");
-  assert.equal(formatMemoryGb(7.24), "7.2 GB");
-  assert.equal(formatMemoryGb(23.6), "24 GB");
+  assert.equal(formatMemoryGb(0), "0 GiB");
+  assert.equal(formatMemoryGb(7.24), "7.2 GiB");
+  assert.equal(formatMemoryGb(23.6), "24 GiB");
 });
 
 test("KV and speculative reserve are separate segments", () => {

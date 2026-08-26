@@ -46,6 +46,12 @@ export interface GpuInfo {
   cpuThread: number;
   systemRamAvailableGb: number;
   systemRamTotalGb: number;
+  /** True when the reported budget is shared system memory rather than a
+   * dedicated VRAM pool: a Vulkan iGPU, whose figure is free shared RAM at
+   * probe time and moves with desktop usage. The backend already distinguishes
+   * these one layer down; this carries it up so callers that judge "will it
+   * fit" can decline to answer instead of answering against the wrong pool. */
+  sharedMemory: boolean;
 }
 
 const DEFAULT_GPU: GpuInfo = {
@@ -58,6 +64,7 @@ const DEFAULT_GPU: GpuInfo = {
   loadDeviceMemoryGb: 0,
   cpuCore: 0,
   cpuThread: 0,
+  sharedMemory: false,
   systemRamAvailableGb: 0,
   systemRamTotalGb: 0,
 };
@@ -88,6 +95,7 @@ function toGpuInfo(
     systemRamAvailableGb: devices.some((device) => device.shared_memory)
       ? 0
       : base.systemRamAvailableGb,
+    sharedMemory: devices.some((device) => device.shared_memory),
     available: true,
     budgetKnown: true,
     name: devices[0]?.name ?? "Unknown",

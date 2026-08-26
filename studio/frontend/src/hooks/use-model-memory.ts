@@ -26,11 +26,16 @@ import {
   listPerModelConfigs,
 } from "@/features/model-picker";
 import {
+  loadVramBudgetSettings,
+  subscribeVramBudgetSettings,
+} from "@/features/settings/api/vram-budget";
+import {
   type ModelMemorySegments,
   computeModelMemory,
   estimateCacheKey,
   estimateIsUnsized,
 } from "@/lib/model-memory";
+import { useInferenceGpuInfo } from "./use-gpu-info";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 
 /** The on-disk model a row would load. */
@@ -206,6 +211,11 @@ function pinnedContext(config: PerModelConfig | undefined): number | undefined {
 function budgetIsMeaningful(config: PerModelConfig | undefined): boolean {
   const mode = config?.gpuMemoryMode ?? readPersistedGpuMemoryMode();
   if (mode === "manual") return false;
+  // A session pin lives in the runtime store rather than in a saved config, so
+  // a user who pinned cards without ever saving a per-model override reached
+  // none of the tests below and was charted against the whole multi-GPU sum.
+  const sessionPin = useChatRuntimeStore.getState().selectedGpuIds;
+  if (sessionPin != null && sessionPin.length > 0) return false;
   if (!config) return true;
   return (
     config.selectedGpuIds == null &&
@@ -289,6 +299,42 @@ export function useModelMemory(
   // disabled bar also costs no request.
   const enabled = useChatRuntimeStore((state) => state.showMemoryBar);
 
+  // Whether the number the caller handed us is a dedicated VRAM pool at all.
+  // On a Vulkan iGPU the backend reports free shared system RAM minus a host
+  // reserve, so the same model flips between "fits" and "OOM likely" as the
+  // desktop's RAM moves; on Apple the figure is the entire machine's RAM, which
+  // says "fits" for almost anything Metal would refuse. Neither is a VRAM
+  // ceiling, so the bar declines to draw rather than warn against the wrong
+  // pool. Known gap: a ROCm APU reports its whole GTT pool and is not flagged
+  // as shared, which needs a unified-memory signal in hardware.py to fix.
+  const inferenceGpu = useInferenceGpuInfo();
+  const budgetIsDedicatedVram =
+    !inferenceGpu.sharedMemory && inferenceGpu.backend !== "mlx";
+
+  // The loader's own admission fraction, which the user can change. Cached and
+  // shared, so a long list of rows costs one request.
+  const [budgetFraction, setBudgetFraction] = useState<number | null>(null);
+  useEffect(() => {
+    if (!enabled) return;
+    let alive = true;
+    const unsubscribe = subscribeVramBudgetSettings((s) => {
+      if (alive) setBudgetFraction(s.fraction);
+    });
+    void loadVramBudgetSettings()
+      .then((s) => {
+        // Null on a backend too old to serve the route; the fallback covers it.
+        if (alive && s) setBudgetFraction(s.fraction);
+      })
+      .catch(() => {
+        // Falls back to the shared headroom ratio, which is what the fit badge
+        // beside the bar already uses.
+      });
+    return () => {
+      alive = false;
+      unsubscribe();
+    };
+  }, [enabled]);
+
   const repoId = source?.repoId;
   const quant = source?.quant;
   const sizeBytes = source?.sizeBytes;
@@ -312,14 +358,14 @@ export function useModelMemory(
       config,
       nCtx,
       cacheKey,
-      trustBudget: budgetIsMeaningful(config),
+      trustBudget: budgetIsMeaningful(config) && budgetIsDedicatedVram,
     };
     // `epoch` is a real dependency the linter cannot see: `configFor` reads
     // localStorage, and epoch is what changes when that storage does. Folding it
     // into the cache key instead would evict every row's answer on any save.
     // biome-ignore lint/correctness/useExhaustiveDependencies: see above
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, repoId, quant, sizeBytes, epoch]);
+  }, [enabled, repoId, quant, sizeBytes, epoch, budgetIsDedicatedVram]);
 
   useEffect(() => {
     if (!plan) return;
@@ -343,6 +389,7 @@ export function useModelMemory(
       specBytes: estimate?.specBytes,
       nCtx: estimate?.nCtx,
       gpuGb,
+      budgetFraction,
     });
-  }, [plan, entry, source?.sizeBytes, gpuGb]);
+  }, [plan, entry, source?.sizeBytes, gpuGb, budgetFraction]);
 }
