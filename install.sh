@@ -1044,6 +1044,8 @@ _css_install_id_is_valid() {
 }
 
 # Echoes the id stored at $1 if it satisfies the contract, nothing otherwise.
+# Returns 1 when the path could not be READ at all, which is not the same
+# answer: a read that fails may still be sitting on a valid id.
 _css_read_valid_install_id() {
     # Regular files only: a FIFO here (or a symlink to one, or to a device)
     # would park the installer on the open, waiting for a writer forever.
@@ -1056,7 +1058,9 @@ _css_read_valid_install_id() {
         return 0
     fi
     # Group the redirect, or the shell's own "cannot open" escapes 2>/dev/null.
-    _cvi_id=$({ cat "$1"; } 2>/dev/null || true)
+    # A failed read is reported, never flattened into "no id": permissions, or
+    # a transient error on an NFS/FUSE-backed root, must not license a rewrite.
+    _cvi_id=$({ cat "$1"; } 2>/dev/null) || return 1
     # Trim what the backend's .strip() trims, the SURROUNDING whitespace only.
     # Deleting interior whitespace would mint a 64-hex token out of bytes the
     # backend reads as something else, leaving the launcher holding an id its
@@ -1112,12 +1116,10 @@ create_studio_shortcuts() {
     # Reuse an existing id only when it matches the contract above: a re-run
     # over a normal install is then a no-op, and a pre-populated custom root
     # cannot reach the launcher.
-    _css_studio_root_id=$(_css_read_valid_install_id "$_css_id_file")
     # Unreadable is not malformed: in a shared root the id can be a good one
     # owned by someone else and already reported by a running backend, so
     # regenerating would break that install. Refuse, as this did pre-validation.
-    if [ -z "$_css_studio_root_id" ] && [ -f "$_css_id_file" ] \
-        && [ ! -r "$_css_id_file" ]; then
+    if ! _css_studio_root_id=$(_css_read_valid_install_id "$_css_id_file"); then
         echo "[WARN] Cannot create launcher: cannot read $_css_id_file" >&2
         return 1
     fi
@@ -1146,8 +1148,8 @@ create_studio_shortcuts() {
                 # vanishes). Also covers filesystems without hard links
                 # (exFAT/FAT32). -d because renaming onto a directory moves
                 # the temp inside it instead of replacing it.
-                if [ -z "$(_css_read_valid_install_id "$_css_id_file")" ] \
-                    && [ ! -d "$_css_id_file" ]; then
+                if _css_incumbent=$(_css_read_valid_install_id "$_css_id_file") \
+                    && [ -z "$_css_incumbent" ] && [ ! -d "$_css_id_file" ]; then
                     mv "$_css_id_tmp" "$_css_id_file" 2>/dev/null || true
                 fi
             fi
@@ -1159,8 +1161,8 @@ create_studio_shortcuts() {
         # Bake what is on disk, not what we meant to write: that is what the
         # backend reports from /api/health, whoever won the race. An unwritable
         # or non-regular path leaves this empty and no launcher is generated.
-        _css_studio_root_id=$(_css_read_valid_install_id "$_css_id_file")
-        unset _css_new_id _css_id_tmp
+        _css_studio_root_id=$(_css_read_valid_install_id "$_css_id_file") || true
+        unset _css_new_id _css_id_tmp _css_incumbent
     fi
     if [ -z "$_css_studio_root_id" ]; then
         echo "[WARN] Cannot create launcher: failed to read $_css_id_file" >&2

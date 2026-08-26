@@ -690,9 +690,9 @@ def test_install_sh_publishes_the_id_without_clobbering():
         _guarded_mv, ""
     ), "the only remaining mv must be the no-hard-link fallback, guarded on the destination"
     assert (
-        'if [ -z "$(_css_read_valid_install_id "$_css_id_file")" ] \\\n'
-        '                    && [ ! -d "$_css_id_file" ]; then' in block
-    ), "the mv branch must refuse to replace a usable (valid) incumbent, or a directory"
+        'if _css_incumbent=$(_css_read_valid_install_id "$_css_id_file") \\\n'
+        '                    && [ -z "$_css_incumbent" ] && [ ! -d "$_css_id_file" ]; then' in block
+    ), "the mv branch must refuse a valid incumbent, an unreadable one, or a directory"
     assert _guarded_mv in block, "the fallback mv must not abort the installer under set -e"
     assert (
         'rm -f "$_css_id_file"' not in block
@@ -860,6 +860,46 @@ def test_install_sh_rejects_an_id_holding_a_nul_byte(tmp_path):
     assert "OUT=[" + "d" * 64 + "]" in res.stdout, "a clean id must still be reused"
 
 
+@pytest.mark.skipif(os.name != "posix", reason = "PATH-shadowed cat is a POSIX shape")
+def test_install_sh_reports_a_failed_read_instead_of_regenerating(tmp_path):
+    """A read that FAILS is not the same answer as a malformed id.
+
+    `-r` can pass while the read itself errors (a transient fault on an
+    NFS/FUSE-backed root). Flattening that into "no id" let the publish path
+    replace a valid incumbent that a running backend still reports.
+    """
+    src = INSTALL_SH.read_text(encoding = "utf-8")
+    assert (
+        '_cvi_id=$({ cat "$1"; } 2>/dev/null) || return 1' in src
+    ), "the read helper must report a failed read, not swallow it"
+    assert (
+        'if ! _css_studio_root_id=$(_css_read_valid_install_id "$_css_id_file"); then' in src
+    ), "the caller must refuse on a failed read"
+
+    id_file = tmp_path / "studio_install_id"
+    good = "b" * 64
+    id_file.write_text(good, encoding = "utf-8")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_cat = fake_bin / "cat"
+    fake_cat.write_text("#!/bin/sh\nexit 1\n", encoding = "utf-8")
+    fake_cat.chmod(0o755)
+
+    probe = (
+        _install_id_helpers()
+        + f'if out=$(_css_read_valid_install_id "{id_file}"); then\n'
+        '    printf "READ_OK=[%s]\\n" "$out"\n'
+        "else\n"
+        '    printf "READ_FAILED\\n"\n'
+        "fi\n"
+    )
+    env = dict(os.environ, PATH = f"{fake_bin}:{os.environ['PATH']}")
+    res = subprocess.run(["sh", "-c", probe], text = True, capture_output = True, env = env)
+    assert res.returncode == 0, res.stderr
+    assert "READ_FAILED" in res.stdout, f"a failed read must be reported, got {res.stdout!r}"
+    assert id_file.read_text() == good, "the id must be left alone"
+
+
 @pytest.mark.skipif(
     os.name != "posix" or os.geteuid() == 0,
     reason = "needs POSIX mode bits, and root reads regardless of them",
@@ -875,7 +915,8 @@ def test_install_sh_refuses_an_unreadable_existing_id(tmp_path):
     fn_start = src.index('_css_id_dir="$STUDIO_HOME/share"')
     block = src[fn_start : fn_start + 4200]
     assert (
-        '[ -f "$_css_id_file" ] \\\n        && [ ! -r "$_css_id_file" ]' in block
+        'if ! _css_studio_root_id=$(_css_read_valid_install_id "$_css_id_file"); then'
+        in block
     ), "install.sh must separate an unreadable id from a malformed one"
     assert (
         "[WARN] Cannot create launcher: cannot read" in block
@@ -890,9 +931,9 @@ def test_install_sh_refuses_an_unreadable_existing_id(tmp_path):
         probe = (
             _install_id_helpers()
             + f'_css_id_file="{id_file}"\n'
-            '_css_studio_root_id=$(_css_read_valid_install_id "$_css_id_file")\n'
-            'if [ -z "$_css_studio_root_id" ] && [ -f "$_css_id_file" ] \\\n'
-            '    && [ ! -r "$_css_id_file" ]; then echo REFUSED; exit 0; fi\n'
+            'if ! _css_studio_root_id=$(_css_read_valid_install_id "$_css_id_file"); then\n'
+            '    echo REFUSED; exit 0\n'
+            'fi\n'
             'echo "REUSED=$_css_studio_root_id"\n'
         )
         res = subprocess.run(["sh", "-c", probe], text = True, capture_output = True)
