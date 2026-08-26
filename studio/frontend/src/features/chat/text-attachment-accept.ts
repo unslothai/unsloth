@@ -370,9 +370,46 @@ export async function isBinaryVobSubSubtitle(file: File): Promise<boolean> {
   );
 }
 
-/** Decode editor text, including the BOM emitted by Windows Registry Editor. */
-export async function readTextAttachment(file: File): Promise<string> {
-  const bytes = new Uint8Array(await file.arrayBuffer());
+const TRACKER_MOD_MAGICS = new Set([
+  "M.K.",
+  "M!K!",
+  "PATT",
+  "NSMS",
+  "LARD",
+  "M&K!",
+  "FEST",
+  "N.T.",
+  "OKTA",
+  "OCTA",
+  "CD81",
+  "CD61",
+  "FLT4",
+  "FLT8",
+  "EXO4",
+  "EXO8",
+  ".M.K",
+  "WARD",
+  "M\0\0\0",
+  "8\0\0\0",
+]);
+
+/** Tracker MODs put a four-byte format marker at byte offset 1080. */
+export async function isBinaryTrackerModule(file: File): Promise<boolean> {
+  if (!file.name.toLowerCase().endsWith(".mod") || file.size < 1084) {
+    return false;
+  }
+  const marker = new Uint8Array(await file.slice(1080, 1084).arrayBuffer());
+  const magic = String.fromCharCode(...marker);
+  return (
+    TRACKER_MOD_MAGICS.has(magic) ||
+    /^[1-9]CHN$/.test(magic) ||
+    /^[1-9][0-9](?:CH|CN)$/.test(magic) ||
+    /^TDZ[1-9]$/.test(magic) ||
+    /^FA0[4-8]$/.test(magic)
+  );
+}
+
+export function decodeTextAttachmentBytes(bytes: Uint8Array): string {
   if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) {
     return new TextDecoder("utf-16le").decode(bytes.subarray(2));
   }
@@ -380,6 +417,12 @@ export async function readTextAttachment(file: File): Promise<string> {
     return new TextDecoder("utf-16be").decode(bytes.subarray(2));
   }
   return new TextDecoder().decode(bytes);
+}
+
+/** Decode editor text, including the BOM emitted by Windows Registry Editor. */
+export async function readTextAttachment(file: File): Promise<string> {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  return decodeTextAttachmentBytes(bytes);
 }
 
 // MIME is unreliable for source files, so match by extension too.

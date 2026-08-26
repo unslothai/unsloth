@@ -17499,6 +17499,38 @@ def _fit_transcoded_audio_to_wav_cap(
     return fitted, target_rate
 
 
+def _decode_audio_mono_with_soundfile(raw: bytes) -> "tuple[np.ndarray, int]":
+    """Decode libsndfile-supported audio in bounded blocks."""
+    import io
+
+    import numpy as np
+    import soundfile as sf
+
+    chunks = []
+    sample_count = 0
+    with sf.SoundFile(io.BytesIO(raw)) as source:
+        sample_rate = int(source.samplerate)
+        if sample_rate <= 0:
+            raise ValueError("decoded audio has an invalid sample rate")
+        block_frames = max(1, min(sample_rate, 65_536))
+        for block in source.blocks(
+            blocksize = block_frames,
+            dtype = "float32",
+            always_2d = False,
+        ):
+            sample_count += len(block)
+            if sample_count > sample_rate * _MAX_AUDIO_SECONDS:
+                raise _DecodedAudioTooLongError(
+                    f"decoded audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit"
+                )
+            if block.ndim > 1:
+                block = block.mean(axis = 1)
+            chunks.append(block)
+    if not chunks:
+        raise ValueError("audio container decoded to no samples")
+    return np.concatenate(chunks, axis = 0).astype(np.float32, copy = False), sample_rate
+
+
 def _decode_audio_mono_with_av(raw: bytes) -> "tuple[np.ndarray, int]":
     """Decode an audio container with PyAV's bundled FFmpeg libraries."""
     import io
@@ -17546,16 +17578,15 @@ def _decode_audio_mono_with_av(raw: bytes) -> "tuple[np.ndarray, int]":
 def _decode_audio_mono(raw: bytes) -> "tuple[np.ndarray, int]":
     """Decode audio bytes to (mono float32 array, native sample_rate).
 
-    soundfile (libsndfile) reads wav/mp3/ogg/flac straight from memory. PyAV is
+    soundfile (libsndfile) reads wav/mp3/ogg/flac in bounded blocks. PyAV is
     installed in every Studio environment and uses its bundled FFmpeg libraries
     for containers including m4a/webm/WMA/AMR. librosa remains the final fallback
     in full ML environments, but is absent from no-torch GGUF-only installs.
     """
-    import io
-
     try:
-        import soundfile as sf
-        arr, sr = sf.read(io.BytesIO(raw), dtype = "float32")
+        arr, sr = _decode_audio_mono_with_soundfile(raw)
+    except _DecodedAudioTooLongError:
+        raise
     except Exception:
         try:
             arr, sr = _decode_audio_mono_with_av(raw)

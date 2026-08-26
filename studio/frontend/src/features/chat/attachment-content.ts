@@ -2,7 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { type Unzipped, strFromU8, unzipSync, zipSync } from "fflate";
-import { TEXT_ATTACHMENT_ACCEPT } from "./text-attachment-accept";
+import {
+  TEXT_ATTACHMENT_ACCEPT,
+  decodeTextAttachmentBytes,
+} from "./text-attachment-accept";
 
 import {
   MAX_OPEN_DOCUMENT_ARCHIVE_BYTES,
@@ -860,7 +863,8 @@ async function readBoundedText(
 ): Promise<{ text: string; truncated: boolean }> {
   const truncated = file.size > MAX_PREVIEW_TEXT_BYTES;
   const slice = truncated ? file.slice(0, MAX_PREVIEW_TEXT_BYTES) : file;
-  return { text: await slice.text(), truncated };
+  const bytes = new Uint8Array(await slice.arrayBuffer());
+  return { text: decodeTextAttachmentBytes(bytes), truncated };
 }
 
 // A sent attachment keeps only the text its adapter produced, so the preview

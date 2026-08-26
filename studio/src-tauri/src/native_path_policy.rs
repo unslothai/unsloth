@@ -375,6 +375,29 @@ pub fn is_binary_vobsub(path: &Path, bytes: &[u8]) -> bool {
     has_extension(path, "sub") && bytes.starts_with(b"\x00\x00\x01\xba")
 }
 
+const TRACKER_MOD_MAGICS: &[&[u8; 4]] = &[
+    b"M.K.", b"M!K!", b"PATT", b"NSMS", b"LARD", b"M&K!", b"FEST", b"N.T.", b"OKTA", b"OCTA",
+    b"CD81", b"CD61", b"FLT4", b"FLT8", b"EXO4", b"EXO8", b".M.K", b"WARD", b"M\0\0\0", b"8\0\0\0",
+];
+
+/// Tracker MODs put a four-byte format marker at byte offset 1080.
+pub fn is_binary_tracker_mod(path: &Path, bytes: &[u8]) -> bool {
+    if !has_extension(path, "mod") || bytes.len() < 1084 {
+        return false;
+    }
+    let marker = &bytes[1080..1084];
+    TRACKER_MOD_MAGICS
+        .iter()
+        .any(|candidate| marker == candidate.as_slice())
+        || (marker[0].is_ascii_digit() && marker[0] != b'0' && &marker[1..] == b"CHN")
+        || (marker[0].is_ascii_digit()
+            && marker[0] != b'0'
+            && marker[1].is_ascii_digit()
+            && (&marker[2..] == b"CH" || &marker[2..] == b"CN"))
+        || (&marker[..3] == b"TDZ" && marker[3].is_ascii_digit() && marker[3] != b'0')
+        || (&marker[..3] == b"FA0" && (b'4'..=b'8').contains(&marker[3]))
+}
+
 fn bmff_box_payloads<'a>(data: &'a [u8], wanted: &[u8; 4]) -> Vec<&'a [u8]> {
     let mut payloads = Vec::new();
     let mut offset = 0usize;
@@ -1130,6 +1153,18 @@ mod tests {
             Path::new("movie.txt"),
             b"\x00\x00\x01\xbapayload"
         ));
+    }
+
+    #[test]
+    fn tracker_mod_magic_is_detected_without_rejecting_text_modules() {
+        let mut tracker = vec![0u8; 1084];
+        tracker[1080..].copy_from_slice(b"M.K.");
+        assert!(is_binary_tracker_mod(Path::new("track.mod"), &tracker));
+
+        let mut go_mod = b"module example.com/project\n".to_vec();
+        go_mod.resize(1200, b' ');
+        assert!(!is_binary_tracker_mod(Path::new("go.mod"), &go_mod));
+        assert!(!is_binary_tracker_mod(Path::new("track.bin"), &tracker));
     }
 
     // The composer takes audio uploads, so a dropped one has to classify too.

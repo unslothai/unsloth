@@ -6,8 +6,8 @@ use crate::native_backend_lease::{
 use crate::native_path_policy::{
     classify_artifact_path, classify_native_attachment_path, classify_native_dataset_path,
     classify_native_document_folder, classify_native_model_path, is_audio_only_3gp,
-    is_binary_property_list, is_binary_vobsub, is_text_attachment_name, reveal_target,
-    ClassifiedPath, NativeArtifactKind,
+    is_binary_property_list, is_binary_tracker_mod, is_binary_vobsub, is_text_attachment_name,
+    reveal_target, ClassifiedPath, NativeArtifactKind,
 };
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
@@ -789,8 +789,16 @@ fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFi
     if is_binary_vobsub(path, &bytes) {
         return Err("VobSub .sub files are not supported as text attachments.".to_string());
     }
+    if is_binary_tracker_mod(path, &bytes) {
+        return Err("Tracker .mod audio files are not supported as text attachments.".to_string());
+    }
     let mime_type = attachment_payload_mime_type(path, &bytes)
         .ok_or_else(|| "Only chat attachments can be read inline.".to_string())?;
+    // A 3GP path is provisionally video until its track handlers are available.
+    // Reapply the audio cap after an audio-only recording is identified.
+    if mime_type.starts_with("audio/") && bytes.len() as u64 > MAX_NATIVE_ATTACHMENT_BYTES {
+        return Err("Attachment is unavailable or too large.".to_string());
+    }
     let name = path
         .file_name()
         .map(|value| value.to_string_lossy().into_owned())
@@ -906,6 +914,20 @@ mod tests {
     }
 
     #[test]
+    fn audio_only_3gp_read_reapplies_the_audio_cap() {
+        let path = temp_path("oversized-recording").with_extension("3gp");
+        let mut raw = three_gp_with_tracks(&[*b"soun"]);
+        raw.resize(MAX_NATIVE_ATTACHMENT_BYTES as usize + 1, 0);
+        fs::write(&path, raw).unwrap();
+        let (_state, entry) = attachment_entry(&path);
+        let Err(error) = read_attachment_payload(&entry) else {
+            panic!("expected oversized audio-only 3GP read to fail");
+        };
+        assert!(error.contains("too large"), "unexpected error: {error}");
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
     fn any_video_track_keeps_3gp_on_the_video_adapter() {
         for handlers in [&[*b"vide"][..], &[*b"soun", *b"vide"][..]] {
             let raw = three_gp_with_tracks(handlers);
@@ -938,6 +960,20 @@ mod tests {
             panic!("expected binary VobSub read to fail");
         };
         assert!(error.contains("VobSub"));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn tracker_mod_read_is_rejected() {
+        let path = temp_path("track").with_extension("mod");
+        let mut tracker = vec![0u8; 1084];
+        tracker[1080..].copy_from_slice(b"M.K.");
+        fs::write(&path, tracker).unwrap();
+        let (_state, entry) = attachment_entry(&path);
+        let Err(error) = read_attachment_payload(&entry) else {
+            panic!("expected tracker MOD read to fail");
+        };
+        assert!(error.contains("Tracker .mod"));
         let _ = fs::remove_file(path);
     }
 

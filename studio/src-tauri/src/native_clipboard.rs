@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-use crate::native_path_policy::{is_audio_only_3gp, is_binary_property_list, is_binary_vobsub};
+use crate::native_path_policy::{
+    is_audio_only_3gp, is_binary_property_list, is_binary_tracker_mod, is_binary_vobsub,
+};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::Serialize;
 use std::fs::File;
@@ -184,7 +186,10 @@ fn read_clipboard_files(paths: Vec<PathBuf>) -> Result<Vec<NativeClipboardFile>,
         {
             continue;
         }
-        if is_binary_property_list(&path, &bytes) || is_binary_vobsub(&path, &bytes) {
+        if is_binary_property_list(&path, &bytes)
+            || is_binary_vobsub(&path, &bytes)
+            || is_binary_tracker_mod(&path, &bytes)
+        {
             continue;
         }
         let mime_type = if is_3gp && is_audio_only_3gp(&bytes) {
@@ -500,6 +505,22 @@ mod tests {
         let files = read_clipboard_files(vec![binary, text]).unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].name, "text.sub");
+        assert_eq!(files[0].mime_type, "text/plain");
+    }
+
+    #[test]
+    fn clipboard_skips_tracker_mod_but_keeps_text_module_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let binary = directory.path().join("track.mod");
+        let mut tracker = vec![0u8; 1084];
+        tracker[1080..].copy_from_slice(b"M.K.");
+        std::fs::write(&binary, tracker).unwrap();
+        let text = directory.path().join("go.mod");
+        std::fs::write(&text, b"module example.com/project\n").unwrap();
+
+        let files = read_clipboard_files(vec![binary, text]).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].name, "go.mod");
         assert_eq!(files[0].mime_type, "text/plain");
     }
 

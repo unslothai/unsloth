@@ -59,6 +59,7 @@ import {
 import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
 import {
   isBinaryPropertyList,
+  isBinaryTrackerModule,
   isBinaryVobSubSubtitle,
   readTextAttachment,
 } from "./text-attachment-accept";
@@ -376,6 +377,12 @@ class TextAttachmentAdapter implements AttachmentAdapter {
     if (await isBinaryVobSubSubtitle(file)) {
       const reason =
         "VobSub bitmap subtitles aren't supported. Convert the .sub file to SRT or VTT before attaching it.";
+      toast.error(reason);
+      throw new Error(reason);
+    }
+    if (await isBinaryTrackerModule(file)) {
+      const reason =
+        "Tracker .mod audio files aren't supported as text attachments.";
       toast.error(reason);
       throw new Error(reason);
     }

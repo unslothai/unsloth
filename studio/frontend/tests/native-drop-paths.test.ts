@@ -14,6 +14,7 @@ import {
   TEXT_ATTACHMENT_BASENAMES,
   TEXT_ATTACHMENT_EXTENSIONS,
   isBinaryPropertyList,
+  isBinaryTrackerModule,
   isBinaryVobSubSubtitle,
   pickerAcceptForTextBasenames,
   readTextAttachment,
@@ -758,6 +759,25 @@ test("binary VobSub files are distinguished from text subtitles", async () => {
   );
 });
 
+test("tracker MOD binaries are distinguished from text module files", async () => {
+  const tracker = new Uint8Array(1084);
+  tracker.set(new TextEncoder().encode("M.K."), 1080);
+  assert.equal(
+    await isBinaryTrackerModule(new File([tracker], "track.mod")),
+    true,
+  );
+  assert.equal(
+    await isBinaryTrackerModule(
+      new File(["module example.com/project\n".padEnd(1200, " ")], "go.mod"),
+    ),
+    false,
+  );
+  assert.equal(
+    await isBinaryTrackerModule(new File([tracker], "track.bin")),
+    false,
+  );
+});
+
 test("UTF-16 registry exports are decoded before attachment", async () => {
   const text =
     "Windows Registry Editor Version 5.00\r\n\r\n[HKEY_CURRENT_USER\\Software\\Test]";
@@ -831,6 +851,7 @@ test("the composer adapter reads the shared text accept list", () => {
     src,
     /class TextAttachmentAdapter implements AttachmentAdapter \{[\s\S]*?accept = TEXT_ATTACHMENT_ACCEPT;/,
   );
+  assert.match(src, /if \(await isBinaryTrackerModule\(file\)\)/);
   for (const ext of [".cs", ".php", ".js"]) {
     assert.ok(TEXT_ATTACHMENT_ACCEPT.includes(ext), ext);
   }
@@ -841,6 +862,6 @@ test("the composer adapter reads the shared text accept list", () => {
   );
   assert.match(
     attachmentContentSource,
-    /import \{ TEXT_ATTACHMENT_ACCEPT \} from "\.\/text-attachment-accept";/,
+    /import \{[\s\S]*?TEXT_ATTACHMENT_ACCEPT[\s\S]*?decodeTextAttachmentBytes[\s\S]*?\} from "\.\/text-attachment-accept";/,
   );
 });

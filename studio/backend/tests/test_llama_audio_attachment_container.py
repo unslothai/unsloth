@@ -4,6 +4,7 @@
 import base64
 import io
 import sys
+import types
 
 import av
 import numpy as np
@@ -128,3 +129,44 @@ def test_pyav_duration_limit_stops_before_concatenating(monkeypatch):
         pass
     else:
         raise AssertionError("expected PyAV to stop at the decoded-duration limit")
+
+
+def test_soundfile_duration_limit_stops_before_concatenating(monkeypatch):
+    decoded_blocks = []
+
+    class FakeSoundFile:
+        samplerate = 4
+
+        def __init__(self, _source):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def blocks(self, **_kwargs):
+            for block in (np.ones((4, 2), dtype = np.float32), np.ones((1, 2), dtype = np.float32)):
+                decoded_blocks.append(len(block))
+                yield block
+
+    monkeypatch.setitem(
+        sys.modules,
+        "soundfile",
+        types.SimpleNamespace(SoundFile = FakeSoundFile),
+    )
+    monkeypatch.setattr(inference_route, "_MAX_AUDIO_SECONDS", 1)
+
+    def concatenate_after_limit(*_args, **_kwargs):
+        raise AssertionError("duration-limited audio must not be concatenated")
+
+    monkeypatch.setattr(np, "concatenate", concatenate_after_limit)
+    try:
+        inference_route._decode_audio_mono(b"bounded soundfile input")
+    except inference_route._DecodedAudioTooLongError:
+        pass
+    else:
+        raise AssertionError("expected SoundFile to stop at the decoded-duration limit")
+
+    assert decoded_blocks == [4, 1]
