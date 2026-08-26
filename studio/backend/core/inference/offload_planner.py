@@ -276,9 +276,7 @@ def resident_floor_bytes(
     """
     if kv_on_host:
         # Both caches follow the same scalar, so neither is VRAM here.
-        return (
-            layout.block_resident_bytes + layout.lm_head_bytes + layout.other_resident_bytes
-        )
+        return layout.block_resident_bytes + layout.lm_head_bytes + layout.other_resident_bytes
     return (
         layout.block_resident_bytes
         + layout.lm_head_bytes
@@ -409,7 +407,8 @@ def plan_placement(
         opts.context_policy is ContextPolicy.PREFER_RESIDENT
         and all_resident_bytes(
             layout, n_ctx, kv_bytes_floor = kv_bytes_floor, kv_on_host = opts.kv_on_host
-        ) > budget
+        )
+        > budget
     ):
         shrunk = max_context_for(layout, vram_bytes_per_device, opts = opts)
         if shrunk >= opts.min_ctx:
@@ -553,9 +552,7 @@ def _per_device_shortfall(
     # spread evenly for want of anything better. With the vector there is no
     # guess to make. Without it, there still is, so they still abstain.
     uneven_cache = (
-        layout.recurrent_bytes > 0
-        or layout.n_attention_layers != layout.n_layers
-        or layout.has_swa
+        layout.recurrent_bytes > 0 or layout.n_attention_layers != layout.n_layers or layout.has_swa
     )
     weights = [max(0, int(w)) for w in kv_layer_weights]
     if len(weights) != layout.n_layers or not any(weights):
@@ -581,9 +578,7 @@ def _per_device_shortfall(
     cache = (
         0
         if opts.kv_on_host
-        else cache_bytes(
-            layout, n_ctx, kv_quantised = quantised, kv_bytes_floor = kv_bytes_floor
-        )
+        else cache_bytes(layout, n_ctx, kv_quantised = quantised, kv_bytes_floor = kv_bytes_floor)
     )
     # Scale the shape to the total the caller already priced: the vector places
     # the cache, it never re-sizes it. Uniform when nothing was supplied.

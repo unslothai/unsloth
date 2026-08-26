@@ -1160,16 +1160,29 @@ def test_a_per_layer_vector_replaces_the_sliding_window_abstain():
     spilled = {b.index for b in layout.blocks}
 
     without = _per_device_shortfall(
-        layout, _NO_OVERHEAD, 4096, spilled, False, [half, half],
-        quantised = False, kv_bytes_floor = 0,
+        layout,
+        _NO_OVERHEAD,
+        4096,
+        spilled,
+        False,
+        [half, half],
+        quantised = False,
+        kv_bytes_floor = 0,
     )
     assert without is not None and "sliding-window" in without
 
     # 1 full-attention layer in every 5, the rest windowed at a 64th of the cost.
     weights = [64 if (i % 5 == 0) else 1 for i in range(layout.n_layers)]
     with_vector = _per_device_shortfall(
-        layout, _NO_OVERHEAD, 4096, spilled, False, [half, half],
-        quantised = False, kv_bytes_floor = 0, kv_layer_weights = weights,
+        layout,
+        _NO_OVERHEAD,
+        4096,
+        spilled,
+        False,
+        [half, half],
+        quantised = False,
+        kv_bytes_floor = 0,
+        kv_layer_weights = weights,
     )
     assert with_vector is None or "sliding-window" not in with_vector
 
@@ -1187,12 +1200,26 @@ def test_the_vector_places_the_cache_it_does_not_resize_it():
     front = [1] * (n // 2) + [0] * (n - n // 2)
     back = [0] * (n // 2) + [1] * (n - n // 2)
     a = _per_device_shortfall(
-        layout, _NO_OVERHEAD, 32768, spilled, False, budgets,
-        quantised = False, kv_bytes_floor = 8 * GIB, kv_layer_weights = front,
+        layout,
+        _NO_OVERHEAD,
+        32768,
+        spilled,
+        False,
+        budgets,
+        quantised = False,
+        kv_bytes_floor = 8 * GIB,
+        kv_layer_weights = front,
     )
     b = _per_device_shortfall(
-        layout, _NO_OVERHEAD, 32768, spilled, False, budgets,
-        quantised = False, kv_bytes_floor = 8 * GIB, kv_layer_weights = back,
+        layout,
+        _NO_OVERHEAD,
+        32768,
+        spilled,
+        False,
+        budgets,
+        quantised = False,
+        kv_bytes_floor = 8 * GIB,
+        kv_layer_weights = back,
     )
     assert a is not None and b is not None
     assert "device 0" in a, "the front-loaded cache overflows the first card"
@@ -1206,7 +1233,14 @@ def test_a_wrong_length_vector_is_ignored_rather_than_trusted():
     spilled = {b.index for b in layout.blocks}
     half = _ALL_SPILL_VRAM // 2
     got = _per_device_shortfall(
-        layout, _NO_OVERHEAD, 4096, spilled, False, [half, half],
-        quantised = False, kv_bytes_floor = 0, kv_layer_weights = [1, 2, 3],
+        layout,
+        _NO_OVERHEAD,
+        4096,
+        spilled,
+        False,
+        [half, half],
+        quantised = False,
+        kv_bytes_floor = 0,
+        kv_layer_weights = [1, 2, 3],
     )
     assert got is not None and "sliding-window" in got

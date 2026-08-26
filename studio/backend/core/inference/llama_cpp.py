@@ -9995,9 +9995,7 @@ class LlamaCppBackend:
         for layer_idx in range(n_layers):
             layer_n_kv = self._kv_heads_for_layer(layer_idx, n_kv)
             is_swa = layer_idx < len(pattern) and bool(pattern[layer_idx])
-            width = (
-                (key_len_swa + val_len_swa) if is_swa else (key_len + val_len)
-            ) * layer_n_kv
+            width = ((key_len_swa + val_len_swa) if is_swa else (key_len + val_len)) * layer_n_kv
             weights.append(int(width * (swa_cells if is_swa else full_cells)))
         return weights if any(weights) else []
 

@@ -322,11 +322,7 @@ def spill_pattern_for(layout: ModelLayout, indices: Optional[list[int]] = None) 
     """
     # Must stay the same set _MOE_EXPERT_RE selected, or the plan credits itself
     # bytes the emitted pattern never moves -- the optimistic direction.
-    body = (
-        "ffn_(up|gate|down|gate_up)_(exps|chexps)"
-        if layout.is_moe
-        else "ffn_(up|gate|down)"
-    )
+    body = "ffn_(up|gate|down|gate_up)_(exps|chexps)" if layout.is_moe else "ffn_(up|gate|down)"
     if indices is None:
         block = r"\d+"
     else:
