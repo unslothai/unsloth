@@ -1,18 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// ensureThreadRecord's incognito shortcut skips the history list so a storage outage
-// cannot block a temporary chat's first send. It used to take that shortcut for any
-// `__LOCALID_` id, on the assumption that the prefix meant "fresh thread".
+// ensureThreadRecord's incognito shortcut used to key on a `__LOCALID_` id, which is the
+// permanent primary key of every chat the app creates, not a "fresh thread" marker. With the
+// toggle on, a caller passing the OPEN chat's id therefore tagged that SAVED chat incognito
+// for the session, and a tagged chat stops persisting, loses its settings snapshot and loses
+// its fork badge.
 //
-// It does not. The prefix is the permanent primary key of every chat the app creates, so
-// with the temporary toggle on, a caller passing the OPEN chat's id tagged that SAVED
-// chat incognito for the rest of the session. openai-code-exec-section does exactly that,
-// three times, with activeThreadId. A tagged chat stops persisting, and since per-chat
-// settings and fork counts both consult isThreadIncognito, it silently loses those too.
-//
-// Structural, like thread-scoped-pairing-invariants.test.ts: runtime-provider.tsx cannot
-// be loaded under stubs, so what is pinned here is the shape of the decision.
+// Structural, like thread-scoped-pairing-invariants.test.ts: runtime-provider.tsx cannot be
+// loaded under stubs, so what is pinned here is the shape of the decision.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -52,9 +48,7 @@ test("the incognito shortcut is gated on the thread being new, not on its id", (
 });
 
 test("only initialize() claims a thread has never been sent to", () => {
-  // assistant-ui calls initialize() once, for the id it has just minted. Every other
-  // caller hands in whatever chat is open, which may well be saved, so none of them may
-  // pass this flag.
+  // Every other caller hands in whatever chat is open, which may well be saved.
   const claims = provider.match(/neverSent: true/g) ?? [];
   assert.equal(
     claims.length,
@@ -70,8 +64,7 @@ test("only initialize() claims a thread has never been sent to", () => {
 });
 
 test("a saved chat still reaches the existing-row check before it can be tagged", () => {
-  // The ordering that keeps a real chat saving normally even if the toggle flips on
-  // mid-stream. Without it, the tag is unconditional for anything the shortcut misses.
+  // Without this ordering the tag is unconditional for anything the shortcut misses.
   const body = ensureThreadRecordBody();
   const shortcut = body.indexOf("incognitoAtInit && neverSent");
   const lookup = body.indexOf("await getStoredChatThread(threadId)");
