@@ -12,6 +12,7 @@ import test from "node:test";
 import {
   aggregateGpuMemoryTotalGb,
   gpuMemoryTotalsGb,
+  gpuSharedHostMemoryGb,
   systemRamAvailableOutsideSharedPoolGb,
 } from "../src/hooks/gpu-vram.ts";
 
@@ -45,9 +46,25 @@ test("a shared pool counts once even when several devices report it", () => {
 });
 
 test("host RAM outside a shared pool remains available for CPU offload", () => {
-  assert.equal(systemRamAvailableOutsideSharedPoolGb(40, 12.15), 27.85);
-  assert.equal(systemRamAvailableOutsideSharedPoolGb(8, 12.15), 0);
+  const devices = [{ memory_total_gb: 12.15, shared_memory: true }];
+  const hostBackedGb = gpuSharedHostMemoryGb(devices);
+  assert.equal(hostBackedGb, 12.15);
+  assert.equal(systemRamAvailableOutsideSharedPoolGb(40, hostBackedGb), 27.85);
+  assert.equal(systemRamAvailableOutsideSharedPoolGb(8, hostBackedGb), 0);
   assert.equal(systemRamAvailableOutsideSharedPoolGb(40, 0), 40);
+});
+
+test("reserved framebuffer memory is not subtracted from host RAM twice", () => {
+  const devices = [
+    {
+      memory_total_gb: 89.47,
+      shared_memory: true,
+      shared_memory_host_backed_gb: 57.47,
+    },
+  ];
+  const hostBackedGb = gpuSharedHostMemoryGb(devices);
+  assert.equal(hostBackedGb, 57.47);
+  assert.equal(systemRamAvailableOutsideSharedPoolGb(64, hostBackedGb), 6.53);
 });
 
 test("all-dedicated systems report zero shared", () => {

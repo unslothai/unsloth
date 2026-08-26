@@ -13,6 +13,8 @@ export interface MemoryTotalDevice {
   memory_total_gb?: number;
   /** True when the reported GPU budget comes from shared system memory. */
   shared_memory?: boolean;
+  /** host-backed portion of the shared pool; the rest is reserved GPU memory. */
+  shared_memory_host_backed_gb?: number | null;
 }
 
 export interface GpuMemoryTotalsGb {
@@ -63,11 +65,28 @@ export function gpuMemoryTotalsGb(
   };
 }
 
+/** return the host RAM that overlaps the shared GPU pool, counted once. */
+export function gpuSharedHostMemoryGb(devices: MemoryTotalDevice[]): number {
+  return roundToDevicePrecision(
+    Math.max(
+      0,
+      ...devices
+        .filter((device) => device.shared_memory)
+        .map(
+          (device) =>
+            device.shared_memory_host_backed_gb ?? device.memory_total_gb ?? 0,
+        ),
+    ),
+  );
+}
+
 export function systemRamAvailableOutsideSharedPoolGb(
   availableGb: number,
-  sharedPoolGb: number,
+  hostBackedSharedPoolGb: number,
 ): number {
-  return Math.max(0, availableGb - sharedPoolGb);
+  return roundToDevicePrecision(
+    Math.max(0, availableGb - hostBackedSharedPoolGb),
+  );
 }
 
 function roundToDevicePrecision(value: number): number {

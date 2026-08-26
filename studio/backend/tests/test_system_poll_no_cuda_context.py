@@ -969,6 +969,7 @@ def test_rocm_apu_inventory_keeps_the_gtt_total(monkeypatch):
     assert inventory[0]["total_gb"] == occupancy[0]["total_gb"] == 100.0
     assert inventory[0]["total_gb"] != round(_APU_CARVE_OUT / (1024**3), 2)
     assert inventory[0]["shared_memory"] is True
+    assert inventory[0]["shared_memory_host_backed_gb"] == 92.0
 
 
 class _FakeRocmProps(_FakeProps):
@@ -1042,13 +1043,36 @@ def test_rocm_apu_equal_driver_total_scope_is_platform_specific(
     assert inventory["shared_memory"] is expected_shared
 
 
+def test_windows_rocm_apu_reports_only_the_host_backed_pool_overlap(monkeypatch):
+    mod = _apu_mod(gtt_total = _APU_GTT_TOTAL, carve_out = _APU_GTT_TOTAL)
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
+    monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: [0])
+    monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
+    monkeypatch.setattr(
+        hw,
+        "_windows_amd_adapter_records_by_luid",
+        lambda: {
+            0x14CF5: {
+                "name": "AMD Radeon(TM) 8060S Graphics",
+                "dedicated_memory_bytes": 32 * 1024**3,
+            }
+        },
+    )
+
+    result = hw.get_backend_visible_gpu_info()
+
+    assert result["devices"][0]["shared_memory"] is True
+    assert result["devices"][0]["memory_total_gb"] == 100.0
+    assert result["devices"][0]["shared_memory_host_backed_gb"] == 68.0
+
+
 @pytest.mark.parametrize(
     ("torch_total", "sysfs_total", "expected_shared"),
     [(_APU_GTT_TOTAL, _APU_CARVE_OUT, True), (_APU_CARVE_OUT, _APU_CARVE_OUT, False)],
 )
-@pytest.mark.parametrize(
-    ("hip_mask", "cuda_mask"), [(None, None), ("0", None), ("0", "0")]
-)
+@pytest.mark.parametrize(("hip_mask", "cuda_mask"), [(None, None), ("0", None), ("0", "0")])
 def test_linux_rocm_apu_uses_sysfs_to_confirm_equal_total_scope(
     monkeypatch, torch_total, sysfs_total, expected_shared, hip_mask, cuda_mask
 ):
@@ -1080,6 +1104,9 @@ def test_linux_rocm_apu_uses_sysfs_to_confirm_equal_total_scope(
 
     assert result["devices"][0]["memory_total_gb"] == torch_total / (1024**3)
     assert result["devices"][0]["shared_memory"] is expected_shared
+    assert result["devices"][0]["shared_memory_host_backed_gb"] == (
+        round((torch_total - sysfs_total) / (1024**3), 2) if expected_shared else None
+    )
 
 
 @pytest.mark.parametrize("ambiguous_var", ["ROCR_VISIBLE_DEVICES", "GPU_DEVICE_ORDINAL"])
@@ -1093,7 +1120,7 @@ def test_linux_rocm_shared_pool_declines_ambiguous_masks(monkeypatch, ambiguous_
     )
     devices = [{"index": 0, "total_gb": 100.0, "_rocm_known_unified": True}]
 
-    assert hw._rocm_linux_shared_pool_indices(devices) == set()
+    assert hw._rocm_linux_shared_pool_host_gb_by_index(devices) == {}
 
 
 def test_rocm_apu_sysfs_overlay_still_declines_against_the_gtt_total(monkeypatch):

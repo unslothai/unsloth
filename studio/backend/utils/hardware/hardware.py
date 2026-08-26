@@ -1571,9 +1571,11 @@ def _torch_get_device_inventory(device_indices: list[int]) -> list[Dict[str, Any
         try:
             # torch ordinals are 0-based relative to CUDA_VISIBLE_DEVICES.
             props = mod.get_device_properties(ordinal)
-            total_bytes = props.total_memory
+            props_total_bytes = int(props.total_memory)
+            total_bytes = props_total_bytes
             known_unified = _rocm_props_are_positively_unified(props)
             shared_memory = False
+            shared_memory_host_backed_bytes = None
             try:
                 if _rocm_props_total_is_carve_out(props) and hasattr(mod, "mem_get_info"):
                     # Only a WIDER total, same as _rocm_windows_per_device_vram.
@@ -1588,6 +1590,8 @@ def _torch_get_device_inventory(device_indices: list[int]) -> list[Dict[str, Any
                             and driver_total_bytes == int(total_bytes)
                         )
                     )
+                    if shared_memory and driver_total_bytes > props_total_bytes:
+                        shared_memory_host_backed_bytes = driver_total_bytes - props_total_bytes
                     total_bytes = max(driver_total_bytes, int(total_bytes))
             except Exception as e:
                 # Keep the carve-out rather than dropping the device: an
@@ -1601,6 +1605,11 @@ def _torch_get_device_inventory(device_indices: list[int]) -> list[Dict[str, Any
                     "total_gb": round(total_bytes / (1024**3), 2),
                     "used_gb": None,
                     "shared_memory": shared_memory,
+                    "shared_memory_host_backed_gb": (
+                        round(shared_memory_host_backed_bytes / (1024**3), 2)
+                        if shared_memory_host_backed_bytes is not None
+                        else None
+                    ),
                     "_rocm_known_unified": known_unified,
                 }
             )
@@ -2245,10 +2254,11 @@ def _parse_adapter_family_gfx(family: str) -> str:
     return ""
 
 
-def _windows_amd_adapter_records_by_luid() -> dict[int, Dict[str, str]]:
-    """``{luid: {"name": description, "gfx": arch}}`` for the AMD adapters DirectX records.
+def _windows_amd_adapter_records_by_luid() -> dict[int, Dict[str, Any]]:
+    """DirectX registry metadata for AMD adapters, keyed by LUID.
 
     ``gfx`` is absent when the driver wrote no ``AdapterFamily``.
+    ``dedicated_memory_bytes`` is absent when neither dedicated-memory value is available.
 
     All or nothing: a record this cannot read makes the map incomplete, and an
     incomplete map is indistinguishable from a complete one at the join, which
@@ -2263,7 +2273,7 @@ def _windows_amd_adapter_records_by_luid() -> dict[int, Dict[str, str]]:
         import winreg
     except ImportError:
         return {}
-    by_luid: dict[int, Dict[str, str]] = {}
+    by_luid: dict[int, Dict[str, Any]] = {}
     try:
         with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _WINDOWS_DIRECTX_KEY) as dx_key:
             for index in range(winreg.QueryInfoKey(dx_key)[0]):
@@ -2282,6 +2292,18 @@ def _windows_amd_adapter_records_by_luid() -> dict[int, Dict[str, str]]:
                         family, _ = winreg.QueryValueEx(adapter_key, "AdapterFamily")
                     except OSError:
                         family = ""
+                    dedicated_memory_bytes = 0
+                    has_dedicated_memory = False
+                    for value_name in ("DedicatedVideoMemory", "DedicatedSystemMemory"):
+                        try:
+                            value, _ = winreg.QueryValueEx(adapter_key, value_name)
+                            value = int(value)
+                            if value < 0:
+                                raise ValueError(value)
+                            dedicated_memory_bytes += value
+                            has_dedicated_memory = True
+                        except (OSError, TypeError, ValueError):
+                            pass
                 name = str(description).strip()
                 if not name:
                     # An AMD adapter this cannot name: see the all-or-nothing note.
@@ -2290,11 +2312,48 @@ def _windows_amd_adapter_records_by_luid() -> dict[int, Dict[str, str]]:
                 gfx = _parse_adapter_family_gfx(str(family))
                 if gfx:
                     record["gfx"] = gfx
+                if has_dedicated_memory:
+                    record["dedicated_memory_bytes"] = dedicated_memory_bytes
                 by_luid[int(luid)] = record
     except Exception as e:
         logger.debug("DirectX adapter registry read declined: %s", e)
         return {}
     return by_luid
+
+
+def _windows_rocm_shared_pool_host_gb_by_index(devices: list[Dict[str, Any]]) -> Dict[int, float]:
+    """Map shared ROCm devices to the host-backed part of their Windows pool."""
+    if platform.system() != "Windows":
+        return {}
+    records_by_name: dict[str, list[Dict[str, Any]]] = {}
+    for record in _windows_amd_adapter_records_by_luid().values():
+        if "dedicated_memory_bytes" not in record:
+            continue
+        name = _normalize_adapter_name(str(record.get("name", "")))
+        if name:
+            records_by_name.setdefault(name, []).append(record)
+
+    device_positions_by_name: dict[str, list[int]] = {}
+    for position, device in enumerate(devices):
+        if not device.get("shared_memory"):
+            continue
+        name = _normalize_adapter_name(str(device.get("name", "")))
+        if name:
+            device_positions_by_name.setdefault(name, []).append(position)
+
+    host_gb_by_index: Dict[int, float] = {}
+    for name, positions in device_positions_by_name.items():
+        records = records_by_name.get(name, [])
+        if len(positions) != 1 or len(records) != 1:
+            continue
+        device = devices[positions[0]]
+        index = device.get("index")
+        total_gb = float(device.get("total_gb") or 0.0)
+        dedicated_gb = float(records[0]["dedicated_memory_bytes"]) / (1024**3)
+        if not isinstance(index, int) or total_gb <= 0 or not (0 <= dedicated_gb <= total_gb):
+            continue
+        host_gb_by_index[index] = round(total_gb - dedicated_gb, 2)
+    return host_gb_by_index
 
 
 def _adapter_counter_capacity(meta: Dict[str, Any]) -> float:
@@ -3300,10 +3359,10 @@ def _rocm_system_wide_vram_by_index(
     return resolved
 
 
-def _rocm_linux_shared_pool_indices(devices: list[Dict[str, Any]]) -> set[int]:
-    """Return known APUs whose torch total exceeds the reserved sysfs heap."""
+def _rocm_linux_shared_pool_host_gb_by_index(devices: list[Dict[str, Any]]) -> Dict[int, float]:
+    """Map known APUs to the host-backed part above the reserved sysfs heap."""
     raw = _rocm_linux_sysfs_vram_by_index(devices, allow_numeric_mask = True)
-    shared: set[int] = set()
+    shared: Dict[int, float] = {}
     for dev in devices:
         if not dev.get("_rocm_known_unified"):
             continue
@@ -3314,7 +3373,7 @@ def _rocm_linux_shared_pool_indices(devices: list[Dict[str, Any]]) -> set[int]:
         _used, sysfs_total = entry
         torch_total = dev.get("total_gb") or 0.0
         if sysfs_total > 0 and torch_total - sysfs_total > 0.1 * torch_total:
-            shared.add(index)
+            shared[index] = round(torch_total - sysfs_total, 2)
     return shared
 
 
@@ -4522,10 +4581,16 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
         torch_devices = _torch_get_device_inventory(torch_indices)
         if torch_devices:
             if IS_ROCM and platform.system() == "Linux":
-                shared_indices = _rocm_linux_shared_pool_indices(torch_devices)
+                shared_host_gb = _rocm_linux_shared_pool_host_gb_by_index(torch_devices)
                 for td in torch_devices:
-                    if td["index"] in shared_indices:
+                    if td["index"] in shared_host_gb:
                         td["shared_memory"] = True
+                        td["shared_memory_host_backed_gb"] = shared_host_gb[td["index"]]
+            elif IS_ROCM and platform.system() == "Windows":
+                shared_host_gb = _windows_rocm_shared_pool_host_gb_by_index(torch_devices)
+                for td in torch_devices:
+                    if td["index"] in shared_host_gb:
+                        td["shared_memory_host_backed_gb"] = shared_host_gb[td["index"]]
             devices = [
                 {
                     "index": td["index"],
@@ -4534,6 +4599,7 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
                     "name": td["name"],
                     "memory_total_gb": td["total_gb"],
                     "shared_memory": bool(td.get("shared_memory")),
+                    "shared_memory_host_backed_gb": td.get("shared_memory_host_backed_gb"),
                 }
                 for td in torch_devices
             ]

@@ -814,6 +814,29 @@ def test_registry_reads_the_amd_adapters_and_skips_the_rest(on_windows, monkeypa
     }
 
 
+def test_registry_reads_optional_dedicated_memory(on_windows, monkeypatch):
+    monkeypatch.setitem(
+        sys.modules,
+        "winreg",
+        _fake_winreg(
+            {
+                "{bbbbbbbb-0000-0000-0000-000000000000}": {
+                    **AMD_RECORD,
+                    "DedicatedVideoMemory": 32 * GB,
+                    "DedicatedSystemMemory": 2 * GB,
+                }
+            }
+        ),
+    )
+    assert hw._windows_amd_adapter_records_by_luid() == {
+        0x14CF5: {
+            "name": "AMD Radeon RX 9060 XT",
+            "gfx": "gfx1200",
+            "dedicated_memory_bytes": 34 * GB,
+        }
+    }
+
+
 def test_a_record_that_will_not_read_declines_the_whole_map(on_windows, monkeypatch):
     """A partial map is indistinguishable from a complete one at the join, which
     would then hand a visible card its hidden twin's counter."""
@@ -1276,9 +1299,9 @@ def _mixed_host(monkeypatch):
     monkeypatch.setattr(
         torch.cuda,
         "mem_get_info",
-        lambda i: (96 * GB, 128 * GB)
-        if i == 0
-        else pytest.fail("a discrete card must not be asked"),
+        lambda i: (
+            (96 * GB, 128 * GB) if i == 0 else pytest.fail("a discrete card must not be asked")
+        ),
     )
     return torch
 

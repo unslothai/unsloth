@@ -14,6 +14,7 @@ import {
 } from "./gpu-selection";
 import {
   gpuMemoryTotalsGb,
+  gpuSharedHostMemoryGb,
   systemRamAvailableOutsideSharedPoolGb,
 } from "./gpu-vram";
 import {
@@ -93,7 +94,7 @@ function toGpuInfo(
     ...base,
     systemRamAvailableGb: systemRamAvailableOutsideSharedPoolGb(
       base.systemRamAvailableGb,
-      memoryTotals.shared,
+      gpuSharedHostMemoryGb(devices),
     ),
     available: true,
     budgetKnown: true,
