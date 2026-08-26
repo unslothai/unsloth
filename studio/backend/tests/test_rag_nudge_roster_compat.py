@@ -656,3 +656,58 @@ def test_count_tokens_prices_the_same_roster_the_completion_sends(rag_conn, monk
     expected = _roster(_nudge({"project_id": "p1"}))
     assert expected, "the completion path produced no roster, so this proves nothing"
     assert MARK + expected in system, system
+
+
+# --------------------------------------------------------------------------------------
+# The list never claims to be complete when it is not
+# --------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("thread_names", [0, 1, 39, 40, 41])
+@pytest.mark.parametrize("overlap", [0, 1, 39, 40])
+@pytest.mark.parametrize("project_only", [0, 1, 60])
+def test_an_omitted_document_always_earns_and_n_more(
+    rag_conn, thread_names, overlap, project_only
+):
+    """Each scope is limited separately and the dedupe is shared, so the worry is that a
+    scope clipped by its own LIMIT contributes only duplicates, leaves `truncated` false,
+    and returns a list that reads as the whole set while documents sit behind it.
+
+    It cannot happen, and the reason is the `+ 1` on the limit. Only thread names are in
+    `seen` when the project scope starts, because each query is GROUP BY name and LIMIT
+    applies after aggregation, so a scope never returns a duplicate of itself. With T
+    names taken from the thread, duplicates in the project result are at most T, so a
+    project query that returns its full MAX_NAMES + 1 rows yields at least
+    (MAX_NAMES + 1) - T new ones and the running total reaches MAX_NAMES + 1, which trips
+    the cap first. A query returning fewer rows exhausted its scope. Either way, anything
+    dropped sets `truncated` and the count query runs.
+
+    Parametrised across both sides of every boundary rather than asserted once, because
+    the argument is arithmetic on the cap and the limit and would break silently if either
+    moved.
+    """
+    from routes import inference
+
+    if overlap > thread_names:
+        pytest.skip("overlap cannot exceed the thread's own documents")
+
+    shared = [f"s{i:03d}.pdf" for i in range(overlap)]
+    thread_only = [f"t{i:03d}.pdf" for i in range(thread_names - overlap)]
+    for i, name in enumerate(shared + thread_only):
+        _doc(rag_conn, "thread_t1", f"t{i}", name)
+    # newest in the project, so the LIMIT clips the worst case: the duplicates first
+    for i, name in enumerate(shared):
+        _doc(rag_conn, "project_p1", f"ps{i}", name)
+    for i in range(project_only):
+        _doc(rag_conn, "project_p1", f"po{i}", f"p{i:03d}.pdf")
+
+    visible = len(set(shared + thread_only)) + project_only
+    names, total = inference._read_roster({"thread_id": "t1", "project_id": "p1"})
+
+    assert len(names) <= inference._RAG_ROSTER_MAX_NAMES
+    assert len(names) == len(set(names)), "a name was listed twice"
+    if len(names) < visible:
+        assert total > len(names), (
+            f"{visible - len(names)} of {visible} documents omitted, but the sentence "
+            f"claims the list is complete (total={total}, listed={len(names)})"
+        )
+        assert total == visible
