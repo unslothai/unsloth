@@ -1443,9 +1443,9 @@ def test_a_boundary_is_not_replayed_after_the_context_policy_changes(monkeypatch
 
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
     switched_boundary = llama_cpp._sticky_compaction_boundary("t1")
-    assert switched_boundary == 0, (
-        "a rolling boundary must not suppress the first checkpoint reset and recall"
-    )
+    assert (
+        switched_boundary == 0
+    ), "a rolling boundary must not suppress the first checkpoint reset and recall"
 
     monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: False)
     _, truncation = llama_cpp._fit_context(
