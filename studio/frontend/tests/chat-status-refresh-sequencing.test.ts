@@ -109,3 +109,23 @@ test("known server load evidence survives an unavailable status probe", () => {
   assert.match(adoption, /if \(evidence !== true\)/);
   assert.match(adoption, /if \(evidence === false\)/);
 });
+
+// No executable harness slices syncInferenceStatusToStore the way
+// test_chat_autoload_failure_gate.py slices autoLoadSmallestModel, so this pins the
+// wiring structurally: gaveUpMidLoad has to come from the loading evidence, and the
+// branch that adopts an active model has to consult it. Only that branch needs it --
+// the eviction branch's clear is already gated on a checkpoint the poll path cannot
+// have, since one selected mid-poll sets userSelectedDuringPoll and skips both.
+test("a mount poll that hits its cap mid-load does not pin the outgoing model", () => {
+  assert.match(
+    SYNC,
+    /const gaveUpMidLoad =\s*shouldPollForCliLoad && inferenceStatusShowsLoadInFlight\(statusRes\)/,
+  );
+  const start = SYNC.indexOf("if (\n      statusRes.active_model &&");
+  assert.ok(start !== -1, "the resident-pinning branch moved");
+  const pinning = SYNC.slice(
+    start,
+    SYNC.indexOf("const checkpointId = resolveInferenceCheckpointId(statusRes)"),
+  );
+  assert.match(pinning, /!gaveUpMidLoad/);
+});
