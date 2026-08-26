@@ -907,6 +907,41 @@ def test_install_sh_reports_a_failed_read_instead_of_regenerating(tmp_path):
     os.name != "posix" or os.geteuid() == 0,
     reason = "needs POSIX mode bits, and root reads regardless of them",
 )
+def test_install_sh_replaces_an_empty_id_even_when_it_cannot_read_it(tmp_path):
+    """Zero length is an answer stat can give: that file holds no id.
+
+    Refusing here would fail an install that succeeded before the id was
+    validated at all, since a zero-length file was simply replaced. The
+    protection is for ids we cannot read, and an id is 64 bytes, never zero.
+    """
+    src = INSTALL_SH.read_text(encoding = "utf-8")
+    assert '[ -s "$1" ] || return 0' in src, "an empty id file must read as no id"
+
+    id_file = tmp_path / "studio_install_id"
+    id_file.write_bytes(b"")
+    id_file.chmod(0o000)
+    probe = (
+        _install_id_helpers()
+        + f'if out=$(_css_read_valid_install_id "{id_file}"); then\n'
+        '    printf "READ_OK=[%s]\\n" "$out"\n'
+        "else\n"
+        '    printf "READ_FAILED\\n"\n'
+        "fi\n"
+    )
+    try:
+        res = subprocess.run(["sh", "-c", probe], text = True, capture_output = True)
+    finally:
+        id_file.chmod(0o600)
+    assert res.returncode == 0, res.stderr
+    assert "READ_OK=[]" in res.stdout, (
+        f"an empty id must be regenerated, not refused; got {res.stdout!r}"
+    )
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or os.geteuid() == 0,
+    reason = "needs POSIX mode bits, and root reads regardless of them",
+)
 def test_install_sh_refuses_an_unreadable_existing_id(tmp_path):
     """An id we cannot READ must not be treated as malformed and replaced.
 

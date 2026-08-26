@@ -1050,6 +1050,11 @@ _css_read_valid_install_id() {
     # Regular files only: a FIFO here (or a symlink to one, or to a device)
     # would park the installer on the open, waiting for a writer forever.
     [ -f "$1" ] || return 0
+    # A zero-length file cannot be holding an id, and -s answers that from
+    # stat, without a read. So an empty file we also cannot read stays "no id"
+    # and is replaced, as it was before this validation existed, instead of
+    # failing the install. A real id is 64 bytes and never reaches this.
+    [ -s "$1" ] || return 0
     # A NUL cannot live in a shell variable, so command substitution drops it
     # and <32 hex>\0<32 hex> would read back valid while the backend, which
     # keeps the byte, reports "". Catch it by mapping NULs to a real character.
