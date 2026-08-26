@@ -321,6 +321,44 @@ def test_forced_web_search_tool_choice_is_sent_until_a_tool_runs(monkeypatch):
     )
 
 
+def test_none_tool_choice_never_executes_model_tool_calls(monkeypatch):
+    stream = [
+        *_structured_tool_call("python", {"code": "print(1)"}, "call_python")[:-1],
+        _sse({"content": "I will answer without tools."}),
+        _done(),
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [stream], payloads)
+
+    def fail_execute_tool(name, arguments, **_kwargs):
+        raise AssertionError(f"unexpected tool execution: {name} {arguments}")
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fail_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "answer directly"}],
+            tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "python",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+            tool_choice = "none",
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert len(payloads) == 1
+    assert "tools" not in payloads[0]
+    assert "tool_choice" not in payloads[0]
+    assert not [event for event in events if event.get("type") in {"tool_start", "tool_end"}]
+    assert any(event.get("text") == "I will answer without tools." for event in events)
+
+
 def test_structured_tool_call_after_visible_preface_is_executed(monkeypatch):
     """llama-server may emit content first and then native delta.tool_calls.
 

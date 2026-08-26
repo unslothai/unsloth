@@ -25697,8 +25697,13 @@ class LlamaCppBackend:
             neutralize_tool_descriptions as _neutralize_tool_descriptions,
         )
 
+        controller_tools = (
+            []
+            if tool_choice == "none"
+            else _neutralize_tool_descriptions(tools, None, self.markup_profile)
+        )
         tool_controller = ToolLoopController(
-            tools = _neutralize_tool_descriptions(tools, None, self.markup_profile),
+            tools = controller_tools,
             auto_heal_tool_calls = auto_heal_tool_calls,
         )
 
