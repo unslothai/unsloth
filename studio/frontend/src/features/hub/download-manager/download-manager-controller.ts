@@ -65,6 +65,7 @@ export const downloadManager: DownloadManagerController = {
   dismiss: removeJob,
 };
 
+
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {
     __resetDownloadManagerForTests();

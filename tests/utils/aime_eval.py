@@ -41,7 +41,7 @@ def download_and_combine_aime_datasets(data_dir: str = "./data/aime") -> str:
             response = requests.get(url)
             response.raise_for_status()
 
-            # Parse each line and tag with source + global ID
+            # Tag each line with its source dataset + global ID
             for line_num, line in enumerate(response.text.strip().split("\n")):
                 if line.strip():
                     try:
@@ -149,7 +149,7 @@ def extract_aime_answer(response: str) -> str:
     for pattern in patterns:
         matches = re.findall(pattern, response_lower, re.MULTILINE | re.IGNORECASE)
         if matches:
-            answer = matches[-1]  # last match is most likely the final answer
+            answer = matches[-1]  # last match = the final answer
             try:
                 num = int(answer)
                 if 0 <= num <= 999:
@@ -212,7 +212,6 @@ def evaluate_model_aime(
     output_tokens = []
     correct_answers = 0
 
-    # Track performance by source dataset
     source_stats = {}
     for example in eval_dataset:
         source = example["source_dataset"]
@@ -220,7 +219,6 @@ def evaluate_model_aime(
             source_stats[source] = {"total": 0, "correct": 0}
         source_stats[source]["total"] += 1
 
-    # Setup sampling parameters (AIME configuration)
     sampling_params = SamplingParams(
         temperature = temperature,
         top_p = top_p,
@@ -236,7 +234,7 @@ def evaluate_model_aime(
     print(f"   Top-p: {top_p}")
     print(f"   Seed: {seed}")
 
-    # Temporarily suppress verbose logging
+    # Temporarily suppress verbose vllm/ray logging
     original_levels = {}
     loggers_to_suppress = [
         "vllm",
@@ -264,7 +262,6 @@ def evaluate_model_aime(
 
                     input_tokens.append(get_num_tokens(prompt_text, tokenizer))
 
-                    # Generate multiple responses
                     outputs = model.fast_generate(
                         [prompt_text],
                         sampling_params = sampling_params,
@@ -332,14 +329,13 @@ def evaluate_model_aime(
                     continue
 
     finally:
-        # Restore logging levels
         for logger_name, level in original_levels.items():
             logging.getLogger(logger_name).setLevel(level)
 
     total_problems = len(eval_dataset)
     accuracy = correct_answers / total_problems * 100
 
-    # Pass@k: probability at least one of k samples is correct
+    # Pass@k: fraction of problems where at least one of k samples is correct
     pass_at_k_scores = []
     for record in records.values():
         if "n_correct" in record and "n_total" in record:
@@ -352,7 +348,6 @@ def evaluate_model_aime(
 
     pass_at_k = sum(pass_at_k_scores) / len(pass_at_k_scores) if pass_at_k_scores else 0
 
-    # Per-source accuracies
     source_accuracies = {}
     for source, stats in source_stats.items():
         source_accuracies[source] = (
@@ -410,7 +405,6 @@ def evaluate_model_aime(
     print(f"   Max input tokens:     {results['max_input_tokens']:>10}")
     print(f"   Max output tokens:    {results['max_output_tokens']:>10}")
 
-    # Performance assessment for AIME
     if accuracy >= 50:
         tier = "🏆 EXCEPTIONAL"
     elif accuracy >= 30:
@@ -431,14 +425,12 @@ def evaluate_model_aime(
     return results
 
 
-# Comparison functions for multiple model results
 def compare_aime_results(all_results):
     """Generate comprehensive comparison for AIME evaluation results"""
     print(f"\n{'='*80}")
     print("COMPREHENSIVE AIME MODEL COMPARISON")
     print(f"{'='*80}")
 
-    # Main comparison table
     print(f"{'Model':<15} {'Accuracy %':<12} {'Pass@K %':<10} {'Correct':<8} {'Total':<8}")
     print("-" * 80)
 
@@ -451,13 +443,12 @@ def compare_aime_results(all_results):
             f"{result['total_problems']:<8}"
         )
 
-    # Performance improvement analysis
     if len(all_results) > 1:
         print(f"\n{'='*50}")
         print("IMPROVEMENT ANALYSIS")
         print(f"{'='*50}")
 
-        base_result = all_results[0]  # Assume first is base model
+        base_result = all_results[0]  # first is the base model
 
         for i, result in enumerate(all_results[1:], 1):
             print(f"\n{result['model_type']} vs {base_result['model_type']}:")
@@ -468,12 +459,10 @@ def compare_aime_results(all_results):
             print(f"  Accuracy improvement:  {accuracy_improvement:+.1f}%")
             print(f"  Pass@K improvement:    {pass_k_improvement:+.1f}%")
 
-    # Dataset breakdown
     print(f"\n{'='*50}")
     print("PERFORMANCE BY DATASET")
     print(f"{'='*50}")
 
-    # Get all unique datasets from the first result
     if all_results and "source_accuracies" in all_results[0]:
         datasets = list(all_results[0]["source_accuracies"].keys())
 
@@ -490,7 +479,6 @@ def compare_aime_results(all_results):
                 print(f"{accuracy:<15.1f}", end = "")
             print()
 
-    # Save comparison
     comparison_data = {
         "summary": all_results,
         "best_model": max(all_results, key = lambda x: x["accuracy"]),

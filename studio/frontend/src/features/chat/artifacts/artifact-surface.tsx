@@ -12,15 +12,12 @@ import {
 import { MascotImg } from "@/components/mascot-img";
 import { Button } from "@/components/ui/button";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
+import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import {
-  CheckIcon,
-  CopyIcon,
-  EyeIcon,
-  Maximize2Icon,
-  XIcon,
-} from "lucide-react";
+import { CopyIcon, EyeIcon, Maximize2Icon, XIcon } from "lucide-react";
 import { Download01Icon } from "@hugeicons/core-free-icons";
+import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type KeyboardEvent,
@@ -31,8 +28,9 @@ import {
 } from "react";
 import { Streamdown } from "streamdown";
 import { ArtifactHtmlFrame, type ArtifactViewMode } from "./html-frame";
+import { useChatArtifactsStore } from "./store";
 import type { ChatArtifact } from "./types";
-import { getArtifactFilename } from "./types";
+import { buildArtifactSourceKey, getArtifactFilename } from "./types";
 
 const COPY_RESET_MS = 2000;
 const artifactSourceCodePlugin = createCodePlugin({
@@ -95,18 +93,6 @@ function ArtifactGeneratingPanel() {
   );
 }
 
-function downloadTextFile(filename: string, text: string): void {
-  const blob = new Blob([text], { type: "text/html;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = filename;
-  document.body.appendChild(anchor);
-  anchor.click();
-  document.body.removeChild(anchor);
-  window.setTimeout(() => URL.revokeObjectURL(url), 0);
-}
-
 export function ArtifactSurface({
   artifact,
   variant,
@@ -119,6 +105,8 @@ export function ArtifactSurface({
   onOpenFullscreen?: () => void;
 }) {
   const [viewMode, setViewMode] = useState<ArtifactViewMode>("preview");
+  // Follow the view the opener asked for (Preview vs Code button), per artifact.
+  const requestedView = useChatArtifactsStore((state) => state.requestedView);
   const [copied, setCopied] = useState(false);
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const surfaceRef = useRef<HTMLElement>(null);
@@ -137,6 +125,10 @@ export function ArtifactSurface({
       if (copyResetRef.current) clearTimeout(copyResetRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    setViewMode(requestedView);
+  }, [artifact.id, requestedView]);
 
   useEffect(() => {
     if (variant !== "overlay") return;
@@ -203,9 +195,21 @@ export function ArtifactSurface({
       className={cn(
         "relative flex min-h-0 flex-col bg-background",
         variant === "panel"
-          ? "artifact-panel-shell mx-2 mt-[72px] mb-8 h-[calc(100%_-_104px)] overflow-visible rounded-[28px] border-t border-border/70 bg-card/95"
-          : "h-[min(92vh,900px)] w-[min(96vw,1200px)] overflow-hidden rounded-2xl border border-border shadow-xl",
+          ? "artifact-panel-shell mx-2 mb-8 overflow-visible rounded-[28px] border-t border-border/70 bg-card/95"
+          : "h-[min(92dvh,900px)] w-[min(96vw,1200px)] overflow-hidden rounded-2xl border border-border shadow-xl",
       )}
+      // The chat-model notice is an absolute child of the chat content container, so
+      // it spans this column too, not just the thread pane. Its height is 0 whenever
+      // it is not on screen, which leaves the geometry this panel has always had.
+      // Both edges move, or the panel keeps its height and overflows the bottom.
+      style={
+        variant === "panel"
+          ? {
+              marginTop: "calc(90px + var(--studio-chat-notice-height, 0px))",
+              height: "calc(100% - 122px - var(--studio-chat-notice-height, 0px))",
+            }
+          : undefined
+      }
       aria-label={`${artifact.title} canvas`}
     >
       <header
@@ -263,7 +267,19 @@ export function ArtifactSurface({
             size="icon"
             className="size-8"
             disabled={isLoadingArtifact || !hasArtifactCode}
-            onClick={() => downloadTextFile(filename, artifact.code)}
+            onClick={() => {
+              // Route through the native save dialog on desktop; the plain
+              // blob-anchor download is silently dropped by the Tauri WebView2.
+              void downloadFile(
+                artifact.code,
+                filename,
+                "text/html;charset=utf-8",
+              ).catch((err) => {
+                if (!isDownloadCancelled(err)) {
+                  toast.error("Failed to save canvas HTML");
+                }
+              });
+            }}
             aria-label="Download canvas HTML"
           >
             <HugeiconsIcon icon={Download01Icon} className="size-4" />
@@ -278,7 +294,7 @@ export function ArtifactSurface({
             aria-label="Copy canvas HTML"
           >
             {copied ? (
-              <CheckIcon className="size-4" />
+              <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-4" />
             ) : (
               <CopyIcon className="size-4" />
             )}
@@ -332,6 +348,8 @@ export function ArtifactSurface({
         ) : (
           <div className="h-full overflow-auto text-xs leading-relaxed [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!gap-0 [&_[data-streamdown=code-block]]:!rounded-none [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block-body]]:!border-0 [&_[data-streamdown=code-block-body]]:!bg-transparent [&_[data-streamdown=code-block-body]]:!p-0 [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:text-xs [&_pre]:leading-relaxed [&_code]:text-xs">
             <Streamdown
+              // Only computed when the source view is actually on screen.
+              key={buildArtifactSourceKey(artifact)}
               mode="streaming"
               plugins={{ code: artifactSourceCodePlugin }}
               controls={{ code: false }}

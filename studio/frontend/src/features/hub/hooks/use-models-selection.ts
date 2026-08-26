@@ -17,6 +17,8 @@ import {
   resolveDiscoverSelection,
   resolveDownloadedSelection,
 } from "../lib/selection-resolution";
+import { ownerOf, repoOf } from "@/features/hub/lib/format";
+import { buildDiscoverRows, isGgufLike } from "../lib/view-models";
 import type {
   CachedInventoryRow,
   DiscoverRow,
@@ -28,10 +30,23 @@ import { useSelectedModelView } from "./use-selected-model-view";
 
 export interface ModelsSelection {
   selectedId: string | null;
-  setSelected: (id: string) => void;
+  setSelected: (id: string | null) => void;
   selectedModel: SelectedModelView | null;
   metadataUnavailable: boolean;
   selectionHiddenByFilters: boolean;
+}
+
+function stubDiscoverRow(id: string): DiscoverRow {
+  return {
+    id,
+    owner: ownerOf(id),
+    repo: repoOf(id),
+    result: { id, downloads: 0, likes: 0, isGguf: isGgufLike(id) },
+    isAvailableOnDevice: false,
+    isPartialOnDevice: false,
+    summary: "",
+    capabilities: [],
+  };
 }
 
 function preferredLocalRow(
@@ -160,10 +175,12 @@ export function useModelsSelection({
     : downloadedResolution.hiddenByFilters;
   const detailSelectedId = useDeferredValue(selectedId);
   const setSelected = useCallback(
-    (id: string) => {
+    (id: string | null) => {
       if (isDiscoverTab) {
         setDiscoverSelectedId(id);
-        setDiscoverSelectedSnapshot(discoverRowById.get(id) ?? null);
+        setDiscoverSelectedSnapshot(
+          id ? (discoverRowById.get(id) ?? stubDiscoverRow(id)) : null,
+        );
       } else {
         setDownloadedSelectedId(id);
       }
@@ -265,8 +282,31 @@ export function useModelsSelection({
     !!selectedHubRepoId &&
     selectedRepoMetadata.error;
 
-  const selectedModel = useSelectedModelView({
+  const selectedDiscoverRowForView = useMemo(() => {
+    if (!selectedDiscoverRow) return null;
+    if (discoverRowById.has(selectedDiscoverRow.id)) return selectedDiscoverRow;
+    if (
+      !isDatasetMode &&
+      selectedHfResult &&
+      selectedHfResult.id.toLowerCase() === selectedDiscoverRow.id.toLowerCase()
+    ) {
+      return (
+        buildDiscoverRows([selectedHfResult], cachedRows, localRows)[0] ??
+        selectedDiscoverRow
+      );
+    }
+    return selectedDiscoverRow;
+  }, [
     selectedDiscoverRow,
+    discoverRowById,
+    isDatasetMode,
+    selectedHfResult,
+    cachedRows,
+    localRows,
+  ]);
+
+  const selectedModel = useSelectedModelView({
+    selectedDiscoverRow: selectedDiscoverRowForView,
     selectedCachedRow,
     selectedLocalRow,
     selectedHfResult,

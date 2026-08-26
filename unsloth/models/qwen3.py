@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from .loader_utils import DEFAULT_DEVICE_MAP
 from .llama import *
 import os
 from ._utils import __version__
@@ -23,6 +24,7 @@ from ..utils.attention_dispatch import (
     run_attention,
     SDPA,
     select_attention_backend,
+    resolve_prefix_seg_info,
 )
 from .llama import (
     LlamaRotaryEmbedding,
@@ -46,7 +48,7 @@ except:
             f'Try `pip install --upgrade "transformers>=4.50.3"`\n'
             f"to obtain the latest transformers build, then restart this session."
         )
-from transformers.modeling_attn_mask_utils import (
+from unsloth.models._attn_mask_compat import (
     _prepare_4d_causal_attention_mask_for_sdpa,
 )
 
@@ -146,6 +148,9 @@ def Qwen3Attention_fast_forward(
             "softmax_scale": getattr(self, "softmax_scale", None),
         },
     )
+    # PrefixGrouper seg table rides in **kwargs from the GRPO logprob forward; misuse
+    # (KV cache / padding mask) raises. None => byte-identical default.
+    _pg_seg = resolve_prefix_seg_info(kwargs, past_key_value, attention_mask)
     context = AttentionContext(
         bsz = bsz,
         q_len = q_len,
@@ -156,6 +161,7 @@ def Qwen3Attention_fast_forward(
         seq_info = seq_info,
         attention_mask = attention_mask,
         causal_mask = causal_mask,
+        prefix_seg_info = _pg_seg,
     )
 
     A = run_attention(config = attention_config, context = context, Q = Q, K = K, V = V)
@@ -408,7 +414,7 @@ class FastQwen3Model(FastLlamaModel):
         dtype = None,
         load_in_4bit = True,
         token = None,
-        device_map = "sequential",
+        device_map = DEFAULT_DEVICE_MAP,
         rope_scaling = None,
         fix_tokenizer = True,
         model_patcher = None,

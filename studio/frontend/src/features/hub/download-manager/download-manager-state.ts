@@ -1,25 +1,24 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { isTauri } from "@/lib/api-base";
+import { create } from "zustand";
+import { createJSONStorage, persist } from "zustand/middleware";
 import { INVENTORY_HINT_KIND } from "../inventory/constants";
 import { inventoryHintKey } from "../inventory/inventory-hints";
 import type { InventoryHint } from "../inventory/types";
-import { create } from "zustand";
-import {
-  type StateStorage,
-  createJSONStorage,
-  persist,
-} from "zustand/middleware";
+import { createThrottledStorage, noopStorage } from "../stores/persist-storage";
 import type { DownloadJobState } from "./api";
-import {
-  ACTIVE_STATES,
-  MAX_PROGRESS_FRACTION,
-} from "./download-manager-config";
 import {
   DOWNLOAD_KIND,
   type DownloadKind,
   isDownloadKind,
+  isResolvedTransport,
 } from "./constants";
+import {
+  ACTIVE_STATES,
+  MAX_PROGRESS_FRACTION,
+} from "./download-manager-config";
 import {
   type DownloadManagerState,
   type JobListeners,
@@ -33,50 +32,11 @@ import {
 } from "./runtime-registry";
 
 const PERSIST_KEY = "unsloth.studio.downloads";
-const PERSIST_VERSION = 1;
+// 2 is the first version whose records can say whether their byte counters were measured.
+// Below it, an absent marker is not evidence of anything, so the migration decides.
+const PERSIST_VERSION = 2;
+const MEASURED_TRANSFER_VERSION = 2;
 const PERSIST_THROTTLE_MS = 1_000;
-
-const noopStorage: StateStorage = {
-  getItem: () => null,
-  setItem: () => undefined,
-  removeItem: () => undefined,
-};
-
-function createThrottledStorage(
-  base: StateStorage,
-  delayMs: number,
-): StateStorage {
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  let pending: { name: string; value: string } | null = null;
-  const flush = (): void => {
-    if (timer !== null) {
-      clearTimeout(timer);
-      timer = null;
-    }
-    if (pending) {
-      base.setItem(pending.name, pending.value);
-      pending = null;
-    }
-  };
-  if (typeof window !== "undefined") {
-    window.addEventListener("pagehide", flush);
-  }
-  return {
-    getItem: (name) => base.getItem(name),
-    setItem: (name, value) => {
-      pending = { name, value };
-      if (timer === null) timer = setTimeout(flush, delayMs);
-    },
-    removeItem: (name) => {
-      pending = null;
-      if (timer !== null) {
-        clearTimeout(timer);
-        timer = null;
-      }
-      base.removeItem(name);
-    },
-  };
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -90,7 +50,10 @@ function nonNegativeNumber(value: unknown, fallback = 0): number {
   return Math.max(0, finiteNumber(value, fallback));
 }
 
-function sanitizePersistedJob(value: unknown): ManagedDownload | null {
+function sanitizePersistedJob(
+  value: unknown,
+  legacy = false,
+): ManagedDownload | null {
   if (!isRecord(value)) return null;
   const kind = isDownloadKind(value.kind) ? value.kind : null;
   const repoId = typeof value.repoId === "string" ? value.repoId : null;
@@ -111,23 +74,51 @@ function sanitizePersistedJob(value: unknown): ManagedDownload | null {
     expectedBytes: nonNegativeNumber(value.expectedBytes),
     fraction: Math.min(Math.max(finiteNumber(value.fraction, 0), 0), 1),
     bytesPerSec: 0,
+    etaSeconds: 0,
     error: typeof value.error === "string" ? value.error : null,
     startedAt: nonNegativeNumber(value.startedAt, Date.now()),
     ...(Number.isSafeInteger(value.serverGeneration)
       ? { serverGeneration: Number(value.serverGeneration) }
+      : {}),
+    ...(Array.isArray(value.scopedFiles) &&
+    value.scopedFiles.every((f) => typeof f === "string")
+      ? { scopedFiles: value.scopedFiles as string[] }
+      : {}),
+    ...(typeof value.checkpoint === "boolean"
+      ? { checkpoint: value.checkpoint }
+      : {}),
+    // A held reading survives the reload that carried it: dropping the flag restores the stale
+    // downloadedBytes with the guard reading undefined (so, measured), which is the "0 B left"
+    // the guard exists to stop.
+    //
+    // Absent means "never polled" only for a record written since the field existed. Below that
+    // version a job that HAD polled says nothing either way, so a legacy record already carrying
+    // counters is read as held. It costs one poll of an untightened remainder; believing it
+    // costs the "0 B left" this whole marker is for.
+    ...(typeof value.measuredTransfer === "boolean"
+      ? { measuredTransfer: value.measuredTransfer }
+      : legacy && nonNegativeNumber(value.downloadedBytes) > 0
+        ? { measuredTransfer: false }
+        : {}),
+    ...(isResolvedTransport(value.transport)
+      ? { transport: value.transport }
+      : {}),
+    ...(isResolvedTransport(value.cancelTransport)
+      ? { cancelTransport: value.cancelTransport }
       : {}),
   };
 }
 
 function sanitizePersistedState(
   persisted: unknown,
+  legacy = false,
 ): Partial<DownloadManagerState> {
   if (!isRecord(persisted) || !isRecord(persisted.jobs)) {
     return { jobs: {}, conflicts: {} };
   }
   const jobs: Record<string, ManagedDownload> = {};
   for (const value of Object.values(persisted.jobs)) {
-    const job = sanitizePersistedJob(value);
+    const job = sanitizePersistedJob(value, legacy);
     if (job) jobs[job.key] = job;
   }
   return {
@@ -138,7 +129,7 @@ function sanitizePersistedState(
 
 function toPersistedJob(
   job: ManagedDownload,
-): Omit<ManagedDownload, "bytesPerSec" | "completeOnDisk"> {
+): Omit<ManagedDownload, "bytesPerSec" | "etaSeconds" | "completeOnDisk"> {
   return {
     key: job.key,
     kind: job.kind,
@@ -154,11 +145,23 @@ function toPersistedJob(
     ...(job.serverGeneration !== undefined
       ? { serverGeneration: job.serverGeneration }
       : {}),
+    ...(job.scopedFiles !== undefined ? { scopedFiles: job.scopedFiles } : {}),
+    ...(job.checkpoint !== undefined ? { checkpoint: job.checkpoint } : {}),
+    ...(job.measuredTransfer !== undefined
+      ? { measuredTransfer: job.measuredTransfer }
+      : {}),
+    ...(job.transport !== undefined ? { transport: job.transport } : {}),
+    // Alongside the transport, never instead of it: a fallback run reads as
+    // plain HTTP without this and the reloaded card offers Pause for a stop
+    // that leaves a restart-only partial.
+    ...(job.cancelTransport !== undefined
+      ? { cancelTransport: job.cancelTransport }
+      : {}),
   };
 }
 
 // Mirrors the backend's normalize_repo_key (strip().lower()) so two casings of
-// one repo share a key (else duplicate jobs / mismatched listeners). Keys only —
+// one repo share a key (else duplicate jobs / mismatched listeners). Keys only;
 // `repoId` keeps original casing for display and API calls.
 function normalizeRepoIdentity(repoId: string): string {
   return repoId.trim().toLowerCase();
@@ -212,6 +215,10 @@ function collectCompletedInventoryHints(
 ): InventoryHint[] {
   return Object.values(jobs).flatMap((job) => {
     if (job.state !== "complete") return [];
+    // A dictation download is not a chat model arriving. A custom Whisper repo
+    // is only hidden once the backend has scanned its config, so an optimistic
+    // hint would surface it in the chat inventory for the hint's whole TTL.
+    if (job.external) return [];
     const kind = completedInventoryHintKind(job.kind, job.variant);
     if (
       runtimeRegistry.suppressedCompletedInventoryHints.has(
@@ -256,7 +263,8 @@ export const useDownloadManagerStore = create<DownloadManagerState>()(
         ? noopStorage
         : createThrottledStorage(window.localStorage, PERSIST_THROTTLE_MS),
     ),
-    migrate: (persisted) => sanitizePersistedState(persisted),
+    migrate: (persisted, version) =>
+      sanitizePersistedState(persisted, version < MEASURED_TRANSFER_VERSION),
     merge: (persisted, current) => ({
       ...current,
       ...sanitizePersistedState(persisted),
@@ -264,7 +272,8 @@ export const useDownloadManagerStore = create<DownloadManagerState>()(
     partialize: (state) => ({
       jobs: Object.fromEntries(
         Object.entries(state.jobs)
-          .filter(([, job]) => ACTIVE_STATES.has(job.state))
+          // External jobs have no hub job to resume into, so they are not saved.
+          .filter(([, job]) => !job.external && ACTIVE_STATES.has(job.state))
           .map(([key, job]) => [key, toPersistedJob(job)] as const),
       ),
       conflicts: {},
@@ -274,6 +283,41 @@ export const useDownloadManagerStore = create<DownloadManagerState>()(
 
 export const setState = useDownloadManagerStore.setState;
 export const getState = useDownloadManagerStore.getState;
+
+/**
+ * Downloads run in the backend, which the quit path reaps, but only this store knows they
+ * are in flight. A Tauri quit never fires beforeunload, so mirror it to Rust to ask first.
+ */
+export function hasActiveDownloadJob(
+  jobs: Record<string, ManagedDownload>,
+): boolean {
+  // External jobs count too, unlike in `partialize`: their STT sidecars are reached
+  // through the backend, so a quit kills those transfers as well.
+  return Object.values(jobs).some((job) => ACTIVE_STATES.has(job.state));
+}
+
+function publishDownloadsActive(active: boolean): void {
+  if (!isTauri) return;
+  void import("@tauri-apps/api/core")
+    .then(({ invoke }) =>
+      invoke("set_renderer_activity", { kind: "downloads", active }),
+    )
+    .catch(() => {});
+}
+
+// Transitions only: the poll loop patches progress several times a second.
+let lastPublishedDownloadsActive: boolean | null = null;
+
+function syncDownloadsActivity(state: DownloadManagerState): void {
+  const active = hasActiveDownloadJob(state.jobs);
+  if (active === lastPublishedDownloadsActive) return;
+  lastPublishedDownloadsActive = active;
+  publishDownloadsActive(active);
+}
+
+// Once for whatever the persisted state restored, then on every change.
+syncDownloadsActivity(getState());
+useDownloadManagerStore.subscribe(syncDownloadsActivity);
 
 function withCompletedHintSignature(
   state: DownloadManagerState,
@@ -330,8 +374,8 @@ function hasRuntimePeerForRepo(
 }
 
 // Shared rule for what blocks a fresh GGUF variant start. Peer guard passes
-// includeOwnRuntime:false (runs after this start made its own runtime); requestStart
-// passes both true (runs before any runtime or job exists).
+// includeOwnRuntime:false (runs after this start made its own runtime);
+// requestStart passes both true (runs before any runtime or job exists).
 export function hasVariantRepoActivity(
   kind: DownloadKind,
   repoId: string,
@@ -518,6 +562,9 @@ export function setExpectedBytesForJob(
   if (!job || job.state !== "running" || bytes <= job.expectedBytes) return;
   patchJob(job.key, {
     expectedBytes: bytes,
+    // Measured against the old, smaller total, so it is wrong the moment the
+    // total grows. The bar hides it until the next poll measures one.
+    etaSeconds: 0,
     fraction:
       job.fraction > 0
         ? job.fraction

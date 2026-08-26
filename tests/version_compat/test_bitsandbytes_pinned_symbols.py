@@ -1,21 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""Pinned-symbol compat check across bitsandbytes PyPI minor versions
-unsloth + unsloth-zoo target. Catches API drift like:
-
-  - bnb 0.46.0 release was broken (in pyproject.toml as `!=0.46.0`).
-    Don't test against it.
-  - bnb 0.48.0 release was broken (also `!=0.48.0`). Same.
-  - bnb 0.45 series introduced fp4 + nf4 paged optimisers; unsloth-zoo
-    expects bnb.functional.dequantize_4bit + bnb.nn.Linear4bit /
-    Params4bit to remain stable from this point onward.
-  - vLLM bitsandbytes-loader patches in unsloth_zoo/vllm_utils.py:
-    apply_bnb_4bit (line 237), is_layer_skipped_bnb (line 281),
-    BitsAndBytesLinearMethod._apply_4bit_weight (line 282) — these
-    live in vllm.* but they call into bnb's public surface.
-
-Strategy: GitHub raw fetch + symbol grep. CPU-only, no install.
-"""
+"""Pinned-symbol compat check across bitsandbytes minor versions via GitHub raw fetch + symbol grep."""
 
 from __future__ import annotations
 
@@ -36,8 +21,7 @@ BNB_TAGS = [
 ]
 
 
-# bnb.functional: dequantize_4bit / quantize_4bit are the public 4-bit surface
-# unsloth's compiled kernels and unsloth-zoo's vllm_utils bnb-loader call into.
+# bnb.functional dequantize_4bit / quantize_4bit: the public 4-bit surface unsloth kernels call into.
 
 
 @pytest.mark.parametrize("tag", BNB_TAGS)
@@ -56,8 +40,7 @@ def test_bnb_functional_4bit(tag: str):
     )
 
 
-# bnb.nn.Linear4bit / Params4bit: the two classes peft and unsloth
-# isinstance-check against. Renaming either silently breaks 4-bit LoRA.
+# bnb.nn.Linear4bit / Params4bit: peft + unsloth isinstance-check these; renaming breaks 4-bit LoRA.
 
 
 @pytest.mark.parametrize("tag", BNB_TAGS)
@@ -84,12 +67,10 @@ def test_bnb_nn_linear4bit_classes(tag: str):
     )
 
 
-# Coverage extension (added 2026-05): every bnb symbol unsloth + unsloth-zoo
-# touch, derived from a full grep of both repos.
+# Coverage extension (2026-05): every bnb symbol unsloth + unsloth-zoo touch.
 
 
-# Top-level convenience export. unsloth/kernels/utils.py + unsloth-zoo
-# vllm_utils.py call `bnb.matmul_4bit(x, w, bias=, quant_state=)`.
+# Top-level export: unsloth/kernels/utils.py + zoo vllm_utils.py call bnb.matmul_4bit(...).
 
 
 @pytest.mark.parametrize("tag", BNB_TAGS)
@@ -105,17 +86,7 @@ def test_bnb_matmul_4bit_top_level(tag: str):
 
 @pytest.mark.parametrize("tag", BNB_TAGS)
 def test_bnb_functional_4bit_kernel_path(tag: str):
-    """unsloth/kernels/utils.py module-top binds the 4-bit dequantize
-    and gemm primitives via one of two paths:
-      - LEGACY (bnb <= 0.48.x): `bnb.functional.lib.cdequantize_blockwise_*`
-        and `bnb.functional.lib.cgemm_4bit_inference_naive_*` — C
-        symbols listed in functional.py source.
-      - NEW (bnb >= 0.49.0): `torch.ops.bitsandbytes.dequantize_blockwise`
-        and `torch.ops.bitsandbytes.dequantize_4bit` Python wrappers;
-        the C symbols still live in libbitsandbytes_*.so but the
-        Python source no longer references them by name.
-    Either path lets unsloth resolve the kernels at runtime — we only
-    fail if NEITHER signal is present."""
+    """bnb.functional must expose either the legacy `lib.c*` kernels or the new `torch.ops.bitsandbytes.*` path."""
     candidates = [
         "bitsandbytes/functional.py",
         "bitsandbytes/functional/__init__.py",
@@ -156,9 +127,7 @@ def test_bnb_functional_get_ptr(tag: str):
 
 @pytest.mark.parametrize("tag", BNB_TAGS)
 def test_bnb_quantstate_from_dict(tag: str):
-    """unsloth-zoo monkey-patches `QuantState.from_dict = ...`. Both
-    the class AND the classmethod must be present for the rebinding
-    to take effect."""
+    """unsloth-zoo rebinds QuantState.from_dict; both class and classmethod must be present."""
     candidates = [
         "bitsandbytes/functional.py",
         "bitsandbytes/functional/__init__.py",
@@ -175,8 +144,7 @@ def test_bnb_quantstate_from_dict(tag: str):
 
 @pytest.mark.parametrize("tag", BNB_TAGS)
 def test_bnb_nn_modules_fix_4bit_weight_optional(tag: str):
-    """fix_4bit_weight_quant_state_from_module added in newer bnb;
-    unsloth uses getattr() with a fallback so older versions are OK."""
+    """fix_4bit_weight_quant_state_from_module is optional; unsloth getattr-fallbacks on older bnb."""
     src = fetch_text("bitsandbytes-foundation/bitsandbytes", tag, "bitsandbytes/nn/modules.py")
     if src is None:
         pytest.skip(f"{tag}: bitsandbytes/nn/modules.py missing")
@@ -227,8 +195,7 @@ def test_bnb_utils_pack_unpack(tag: str):
 
 @pytest.mark.parametrize("tag", BNB_TAGS)
 def test_bnb_cextension_rocm_warp_size_optional(tag: str):
-    """ROCM_WARP_SIZE_64 added with AMD ROCm support; pre-ROCm bnb
-    builds don't have it. unsloth probes via try/except — informational."""
+    """ROCM_WARP_SIZE_64 is optional (pre-ROCm bnb lacks it); unsloth probes via try/except."""
     src = fetch_text("bitsandbytes-foundation/bitsandbytes", tag, "bitsandbytes/cextension.py")
     if src is None:
         pytest.skip(f"{tag}: cextension.py missing")
@@ -238,9 +205,7 @@ def test_bnb_cextension_rocm_warp_size_optional(tag: str):
 
 @pytest.mark.parametrize("tag", BNB_TAGS)
 def test_bnb_autograd_functions_matmul_4bit(tag: str):
-    """unsloth-zoo has a dynamo-disable patch site for
-    bnb.autograd._functions.matmul_4bit. Symbol must remain so the
-    probe + decision logic works."""
+    """bnb.autograd._functions.matmul_4bit must remain (unsloth-zoo has a dynamo-disable patch site)."""
     src = fetch_text(
         "bitsandbytes-foundation/bitsandbytes",
         tag,
@@ -253,9 +218,7 @@ def test_bnb_autograd_functions_matmul_4bit(tag: str):
 
 @pytest.mark.parametrize("tag", BNB_TAGS)
 def test_bnb_version_parseable(tag: str):
-    """Multiple unsloth code paths read Version(bnb.__version__) for
-    feature gating (floors 0.43.3, 0.46.0, 0.48.2.dev0, 0.49.0,
-    0.49.2). At least one export mechanism must work."""
+    """bnb.__version__ must be exported via at least one mechanism (unsloth feature-gates on it)."""
     src = fetch_text("bitsandbytes-foundation/bitsandbytes", tag, "bitsandbytes/__init__.py")
     if src is None:
         pytest.skip(f"{tag}: bitsandbytes/__init__.py missing")

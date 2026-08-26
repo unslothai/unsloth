@@ -12,16 +12,9 @@ def clear_memory(
     verbose = False,
     clear_all_caches = True,
 ):
-    """
-    Comprehensive memory clearing for persistent memory leaks.
+    """Comprehensive memory clearing for persistent memory leaks."""
 
-    Args:
-        variables_to_clear: List of variable names to clear
-        verbose: Print memory status
-        clear_all_caches: Clear all types of caches (recommended for memory leaks)
-    """
-
-    # Save logging levels to restore later
+    # Save logging levels to restore later.
     saved_log_levels = {}
     for name, logger in logging.Logger.manager.loggerDict.items():
         if isinstance(logger, logging.Logger):
@@ -42,11 +35,11 @@ def clear_memory(
             "bnb_config",
         ]
 
-    # Clear LRU caches first (important for memory leaks)
+    # Clear LRU caches first (important for memory leaks).
     if clear_all_caches:
         clear_all_lru_caches(verbose)
 
-    # Delete specified variables
+    # Delete specified variables.
     g = globals()
     deleted_vars = []
     for var in variables_to_clear:
@@ -57,7 +50,7 @@ def clear_memory(
     if verbose and deleted_vars:
         print(f"Deleted variables: {deleted_vars}")
 
-    # Multiple GC passes (important for circular references)
+    # Multiple GC passes for circular references.
     for i in range(3):
         collected = gc.collect()
         if verbose and collected > 0:
@@ -75,7 +68,7 @@ def clear_memory(
             torch.cuda.reset_peak_memory_stats()
             torch.cuda.reset_accumulated_memory_stats()
 
-            # Clear JIT cache
+            # Clear JIT cache.
             if hasattr(torch.jit, "_state") and hasattr(torch.jit._state, "_clear_class_state"):
                 torch.jit._state._clear_class_state()
 
@@ -91,7 +84,7 @@ def clear_memory(
             if mem_before > 0:
                 print(f"Memory freed: {mem_before - mem_after:.2f} GB")
 
-    # Restore original logging levels
+    # Restore original logging levels.
     logging.getLogger().setLevel(root_level)
     for name, level in saved_log_levels.items():
         if name in logging.Logger.manager.loggerDict:
@@ -103,7 +96,7 @@ def clear_all_lru_caches(verbose = True):
     """Clear all LRU caches in loaded modules."""
     cleared_caches = []
 
-    # Skip these to avoid warnings
+    # Skip these to avoid warnings.
     skip_modules = {
         "torch.distributed",
         "torchaudio",
@@ -112,10 +105,10 @@ def clear_all_lru_caches(verbose = True):
         "torchaudio.backend",
     }
 
-    # Static list to avoid RuntimeError during iteration
+    # Static list to avoid RuntimeError during iteration.
     modules = list(sys.modules.items())
 
-    # Clear caches in all loaded modules
+    # Clear caches in all loaded modules.
     for module_name, module in modules:
         if module is None:
             continue
@@ -126,7 +119,7 @@ def clear_all_lru_caches(verbose = True):
         try:
             for attr_name in dir(module):
                 try:
-                    # Suppress warnings when checking attributes
+                    # Suppress warnings when checking attributes.
                     with warnings.catch_warnings():
                         warnings.simplefilter("ignore", FutureWarning)
                         warnings.simplefilter("ignore", UserWarning)
@@ -141,7 +134,7 @@ def clear_all_lru_caches(verbose = True):
         except Exception:
             continue
 
-    # Clear specific known caches
+    # Clear specific known caches.
     known_caches = [
         "transformers.utils.hub.cached_file",
         "transformers.tokenization_utils_base.get_tokenizer",

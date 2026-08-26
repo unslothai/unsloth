@@ -46,44 +46,47 @@ router = APIRouter()
 logger = get_logger(__name__)
 
 
+async def _ensure_export_supported() -> None:
+    """Reject a mutating export request up front (HTTP 400) when the host can't export.
+
+    Keeps the backend authoritative even if a client bypasses the UI gate. Read-only endpoints
+    (scan/status/logs) are intentionally NOT gated so the Export page can still render the reason.
+    Also refuses (409) while a latest-transformers install is swapping .venv_t5_latest: an
+    export worker spawned mid-swap could activate a half-replaced sidecar.
+    """
+    from utils.transformers_latest import is_install_in_progress
+
+    if is_install_in_progress():
+        raise HTTPException(
+            status_code = 409,
+            detail = "A transformers installation is in progress. Retry when it completes.",
+        )
+
+    from utils.hardware import export_capability
+
+    # Off-loop: detection is deferred past bind, so the first call can wait on a cold import.
+    cap = await asyncio.to_thread(export_capability)
+    if not cap.get("export_supported", True):
+        raise HTTPException(
+            status_code = 400,
+            detail = cap.get("export_unsupported_message")
+            or "Export is not supported on this platform.",
+        )
+
+
 @router.post("/load-checkpoint", response_model = ExportOperationResponse)
 async def load_checkpoint(
     request: LoadCheckpointRequest, current_subject: str = Depends(get_current_subject)
 ):
-    """Load a checkpoint into the export backend (ExportBackend.load_checkpoint)."""
+    """Load a checkpoint into the export backend (ExportBackend.load_checkpoint).
+
+    Export runs in its own subprocess and is allowed to run in parallel with
+    training and inference. We deliberately do NOT stop training or unload the
+    chat model here -- if the GPU runs out of memory the load/export fails with
+    a clear error instead of tearing down the user's other running workloads.
+    """
     try:
-        # Free GPU memory: shut down running inference/training subprocesses
-        # before loading the export checkpoint (they'd compete for VRAM).
-        try:
-            from core.inference import get_inference_backend
-            inf = get_inference_backend()
-            if inf.active_model_name:
-                logger.info(
-                    "Unloading inference model '%s' to free GPU memory for export",
-                    inf.active_model_name,
-                )
-                inf._shutdown_subprocess()
-                inf.active_model_name = None
-                inf.models.clear()
-        except Exception as e:
-            logger.warning("Could not unload inference model: %s", e)
-
-        try:
-            from core.training import get_training_backend
-            trn = get_training_backend()
-            if trn.is_training_active():
-                logger.info("Stopping active training to free GPU memory for export")
-                trn.stop_training()
-                # Wait for the training subprocess to exit, else it may still hold GPU memory.
-                for _ in range(60):  # up to 30s
-                    if not trn.is_training_active():
-                        break
-                    await asyncio.sleep(0.5)
-                else:
-                    logger.warning("Training subprocess did not exit within 30s, proceeding anyway")
-        except Exception as e:
-            logger.warning("Could not stop training: %s", e)
-
+        await _ensure_export_supported()
         backend = get_export_backend()
         # Run in a worker thread (spawns and waits on a subprocess, can take
         # minutes) so the event loop stays free to serve the live log SSE stream.
@@ -93,6 +96,9 @@ async def load_checkpoint(
             max_seq_length = request.max_seq_length,
             load_in_4bit = request.load_in_4bit,
             trust_remote_code = request.trust_remote_code,
+            approved_remote_code_fingerprint = request.approved_remote_code_fingerprint,
+            hf_token = request.hf_token,
+            subject = current_subject,
         )
 
         if not success:
@@ -102,6 +108,11 @@ async def load_checkpoint(
     except HTTPException:
         raise
     except Exception as e:
+        from utils.transformers_version import SidecarSwapInProgress
+
+        if isinstance(e, SidecarSwapInProgress):
+            # Expected loss of the race against a sidecar install: retryable 409.
+            raise HTTPException(status_code = 409, detail = str(e))
         logger.error(f"Error loading checkpoint: {e}", exc_info = True)
         raise HTTPException(
             status_code = 500,
@@ -136,15 +147,51 @@ async def cleanup_export_memory(current_subject: str = Depends(get_current_subje
         )
 
 
+@router.post("/cancel", response_model = ExportOperationResponse)
+async def cancel_export(current_subject: str = Depends(get_current_subject)):
+    """Cancel the in-flight export by terminating its worker subprocess.
+
+    Only the export subprocess is killed; training and inference run in their
+    own subprocesses and keep going.
+    """
+    try:
+        backend = get_export_backend()
+        cancelled = await asyncio.to_thread(backend.cancel_export)
+        return ExportOperationResponse(
+            success = True,
+            message = "Export cancelled" if cancelled else "No active export to cancel",
+        )
+    except Exception as e:
+        logger.error(f"Error cancelling export: {e}", exc_info = True)
+        raise HTTPException(
+            status_code = 500,
+            detail = "Failed to cancel export",
+        )
+
+
 @router.get("/status", response_model = ExportStatusResponse)
 async def get_export_status(current_subject: str = Depends(get_current_subject)):
     """Get export backend status (loaded checkpoint, model type, PEFT flag)."""
     try:
         backend = get_export_backend()
+        last_op = backend.get_last_op()
+        # Relativise the recovered output path the same way the per-op POST response
+        # does, so the success banner shows an identical path on either route.
+        last_op_output_path = None
+        if last_op and last_op.get("output_path"):
+            details = await asyncio.to_thread(_export_details, last_op["output_path"])
+            last_op_output_path = (details or {}).get("output_path")
         return ExportStatusResponse(
             current_checkpoint = backend.current_checkpoint,
             is_vision = bool(getattr(backend, "is_vision", False)),
             is_peft = bool(getattr(backend, "is_peft", False)),
+            is_export_active = bool(backend.is_export_active()),
+            active_op_kind = backend.get_active_op_kind(),
+            last_op_seq = int(last_op["seq"]) if last_op else 0,
+            last_op_kind = last_op.get("kind") if last_op else None,
+            last_op_status = last_op.get("status") if last_op else None,
+            last_op_output_path = last_op_output_path,
+            last_op_error = last_op.get("error") if last_op else None,
         )
     except Exception as e:
         logger.error(f"Error getting export status: {e}", exc_info = True)
@@ -154,18 +201,79 @@ async def get_export_status(current_subject: str = Depends(get_current_subject))
         )
 
 
-def _try_register_external_export(path: Path) -> tuple[bool, Optional[str]]:
+@router.get("/logs")
+async def get_export_logs(
+    since: Optional[int] = Query(
+        None,
+        description = "Return log entries with seq strictly greater than this cursor.",
+    ),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Tunnel-safe JSON fallback for the live export log stream.
+
+    The SSE endpoint (`/logs/stream`) is the low-latency path, but some reverse
+    proxies -- notably Cloudflare quick tunnels (`*.trycloudflare.com`) used by
+    `--secure` mode -- buffer streamed GET responses until the stream closes.
+    This endpoint returns the same ring-buffer lines as a short, complete JSON
+    response that no proxy buffers, so the frontend can poll it and still show
+    logs in near real time even where the stream itself does not arrive.
+
+    Shares the orchestrator's monotonic `seq` cursor with the SSE stream, so the
+    two transports can run together and the client de-dupes by seq.
+    """
+    try:
+        backend = get_export_backend()
+        # No cursor on the first poll of a run: start from the run-start snapshot
+        # so the client gets every line since the run began (matches the SSE
+        # default), not the entire historical ring buffer.
+        if since is None:
+            cursor = backend.get_run_start_seq()
+        else:
+            cursor = max(0, int(since))
+
+        entries, new_cursor = backend.get_logs_since(cursor)
+        return {
+            "entries": [
+                {
+                    "seq": int(entry.get("seq", 0)),
+                    "stream": entry.get("stream", "stdout"),
+                    "line": entry.get("line", ""),
+                    "ts": entry.get("ts"),
+                }
+                for entry in entries
+            ],
+            "cursor": new_cursor,
+            "active": bool(backend.is_export_active()),
+        }
+    except Exception as e:
+        logger.error(f"Error getting export logs: {e}", exc_info = True)
+        raise HTTPException(
+            status_code = 500,
+            detail = "Failed to get export logs",
+        )
+
+
+def _try_register_external_export(
+    path: Path, *, refresh_index: bool = False
+) -> tuple[bool, Optional[str]]:
     """Best-effort registration so absolute exports show up in local scans."""
     try:
-        from storage.studio_db import add_scan_folder
-        folder = add_scan_folder(str(path))
+        from storage.studio_db import add_scan_folder_with_status
+
+        folder, inserted = add_scan_folder_with_status(str(path))
+        if inserted or refresh_index:
+            from core.inference.local_model_resolver import invalidate_index, warm_index_soon
+            invalidate_index()
+            warm_index_soon()
         return True, str(folder.get("path") or path)
     except Exception as exc:
         logger.warning("Could not register export scan folder %s: %s", path, exc)
         return False, None
 
 
-def _export_details(output_path: Optional[str]) -> Optional[Dict[str, Any]]:
+def _export_details(
+    output_path: Optional[str], *, refresh_index: bool = False
+) -> Optional[Dict[str, Any]]:
     """Return relative export paths, keeping external absolute paths visible."""
     if not output_path:
         return None
@@ -179,7 +287,9 @@ def _export_details(output_path: Optional[str]) -> Optional[Dict[str, Any]]:
             try:
                 path.resolve().relative_to(exports_root().resolve())
             except ValueError:
-                registered, registered_path = _try_register_external_export(path)
+                registered, registered_path = _try_register_external_export(
+                    path, refresh_index = refresh_index
+                )
                 return {
                     "output_path": str(path),
                     "scan_folder_registered": registered,
@@ -200,6 +310,7 @@ async def export_merged_model(
     Wraps ExportBackend.export_merged_model.
     """
     try:
+        await _ensure_export_supported()
         backend = get_export_backend()
         success, message, output_path = await asyncio.to_thread(
             backend.export_merged_model,
@@ -209,6 +320,7 @@ async def export_merged_model(
             repo_id = request.repo_id,
             hf_token = request.hf_token,
             private = request.private,
+            compressed_method = request.compressed_method,
         )
 
         if not success:
@@ -217,11 +329,16 @@ async def export_merged_model(
         return ExportOperationResponse(
             success = True,
             message = message,
-            details = _export_details(output_path),
+            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True),
         )
     except HTTPException:
         raise
     except Exception as e:
+        from utils.transformers_version import SidecarSwapInProgress
+
+        if isinstance(e, SidecarSwapInProgress):
+            # Expected loss of the race against a sidecar install: retryable 409.
+            raise HTTPException(status_code = 409, detail = str(e))
         logger.error(f"Error exporting merged model: {e}", exc_info = True)
         raise HTTPException(
             status_code = 500,
@@ -238,6 +355,7 @@ async def export_base_model(
     Wraps ExportBackend.export_base_model.
     """
     try:
+        await _ensure_export_supported()
         backend = get_export_backend()
         success, message, output_path = await asyncio.to_thread(
             backend.export_base_model,
@@ -255,11 +373,16 @@ async def export_base_model(
         return ExportOperationResponse(
             success = True,
             message = message,
-            details = _export_details(output_path),
+            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True),
         )
     except HTTPException:
         raise
     except Exception as e:
+        from utils.transformers_version import SidecarSwapInProgress
+
+        if isinstance(e, SidecarSwapInProgress):
+            # Expected loss of the race against a sidecar install: retryable 409.
+            raise HTTPException(status_code = 409, detail = str(e))
         logger.error(f"Error exporting base model: {e}", exc_info = True)
         raise HTTPException(
             status_code = 500,
@@ -276,7 +399,10 @@ async def export_gguf(
     Wraps ExportBackend.export_gguf.
     """
     try:
+        await _ensure_export_supported()
         backend = get_export_backend()
+        # A custom path wins; otherwise the imatrix toggle requests the upstream auto-download.
+        imatrix_file = request.imatrix_path or (True if request.imatrix else None)
         success, message, output_path = await asyncio.to_thread(
             backend.export_gguf,
             save_directory = request.save_directory,
@@ -284,6 +410,8 @@ async def export_gguf(
             push_to_hub = request.push_to_hub,
             repo_id = request.repo_id,
             hf_token = request.hf_token,
+            imatrix_file = imatrix_file,
+            private = request.private,
         )
 
         if not success:
@@ -292,11 +420,16 @@ async def export_gguf(
         return ExportOperationResponse(
             success = True,
             message = message,
-            details = _export_details(output_path),
+            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True),
         )
     except HTTPException:
         raise
     except Exception as e:
+        from utils.transformers_version import SidecarSwapInProgress
+
+        if isinstance(e, SidecarSwapInProgress):
+            # Expected loss of the race against a sidecar install: retryable 409.
+            raise HTTPException(status_code = 409, detail = str(e))
         logger.error(f"Error exporting GGUF model: {e}", exc_info = True)
         raise HTTPException(
             status_code = 500,
@@ -313,6 +446,7 @@ async def export_lora_adapter(
     Wraps ExportBackend.export_lora_adapter.
     """
     try:
+        await _ensure_export_supported()
         backend = get_export_backend()
         success, message, output_path = await asyncio.to_thread(
             backend.export_lora_adapter,
@@ -321,6 +455,8 @@ async def export_lora_adapter(
             repo_id = request.repo_id,
             hf_token = request.hf_token,
             private = request.private,
+            gguf = request.gguf,
+            gguf_outtype = request.gguf_outtype,
         )
 
         if not success:
@@ -329,11 +465,16 @@ async def export_lora_adapter(
         return ExportOperationResponse(
             success = True,
             message = message,
-            details = _export_details(output_path),
+            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True),
         )
     except HTTPException:
         raise
     except Exception as e:
+        from utils.transformers_version import SidecarSwapInProgress
+
+        if isinstance(e, SidecarSwapInProgress):
+            # Expected loss of the race against a sidecar install: retryable 409.
+            raise HTTPException(status_code = 409, detail = str(e))
         logger.error(f"Error exporting LoRA adapter: {e}", exc_info = True)
         raise HTTPException(
             status_code = 500,
@@ -368,7 +509,9 @@ def _format_sse(
     return "\n".join(lines)
 
 
-@router.get("/logs/stream")
+# POST too: quick tunnels hold a streamed GET until it closes. The hidden GET keeps old clients.
+@router.post("/logs/stream")
+@router.get("/logs/stream", include_in_schema = False)
 async def stream_export_logs(
     request: Request,
     since: Optional[int] = Query(

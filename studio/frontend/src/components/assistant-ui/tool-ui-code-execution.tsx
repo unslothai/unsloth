@@ -4,17 +4,17 @@
 "use client";
 
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+
+import { stringifyToolResult } from "@/lib/strip-ansi";
 import {
   type ToolCallMessagePartComponent,
   useAuiState,
 } from "@assistant-ui/react";
-import {
-  CheckIcon,
-  CopyIcon,
-  FileTextIcon,
-  TerminalIcon,
-} from "lucide-react";
+import { CopyIcon, FileTextIcon, TerminalIcon } from "lucide-react";
+import { Tick02Icon } from "@/lib/tick-icon";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { Spinner } from "@/components/ui/spinner";
+import { toolArgText } from "./tool-arg-text";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ToolFallbackContent,
@@ -39,8 +39,9 @@ import {
  */
 interface CodeExecutionArgs {
   kind?: "bash" | "text_editor";
-  command?: string;
-  path?: string;
+  // Straight off the wire: the model, not the schema, decides the JSON type.
+  command?: unknown;
+  path?: unknown;
 }
 
 const MAX_COMMAND_LABEL = 80;
@@ -93,7 +94,7 @@ function CopyBtn({ text }: { text: string }) {
       aria-label="Copy to clipboard"
     >
       {copied ? (
-        <CheckIcon className="size-3" />
+        <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-3" />
       ) : (
         <CopyIcon className="size-3" />
       )}
@@ -101,6 +102,32 @@ function CopyBtn({ text }: { text: string }) {
     </button>
   );
 }
+export function CodeExecutionResultOutput({ result }: { result: unknown }) {
+  const resultText = useMemo(
+    () => (result == null ? "" : stringifyToolResult(result)),
+    [result],
+  );
+  const displayedResult = useMemo(
+    () => truncateResult(resultText),
+    [resultText],
+  );
+
+  if (!resultText) {
+    return null;
+  }
+  return (
+    <div>
+      <div className="flex justify-end">
+        <CopyBtn text={resultText} />
+      </div>
+      <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
+        {displayedResult}
+      </pre>
+    </div>
+  );
+}
+
+
 
 const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
   args,
@@ -109,8 +136,8 @@ const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
 }) => {
   const parsedArgs = (args as CodeExecutionArgs) ?? {};
   const kind = parsedArgs.kind ?? "bash";
-  const command = parsedArgs.command ?? "";
-  const path = parsedArgs.path ?? "";
+  const command = toolArgText(parsedArgs.command);
+  const path = toolArgText(parsedArgs.path);
   const isRunning = status?.type === "running";
 
   const commandLabel = command ? truncateCommandLabel(command) : "";
@@ -157,20 +184,6 @@ const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
     }
   }, [isRunning, hasText]);
 
-  const resultText = useMemo(
-    () =>
-      typeof result === "string"
-        ? result
-        : result != null
-          ? JSON.stringify(result, null, 2)
-          : "",
-    [result],
-  );
-  const displayedResult = useMemo(
-    () => truncateResult(resultText),
-    [resultText],
-  );
-
   return (
     <ToolFallbackRoot open={open} onOpenChange={setOpen}>
       <ToolFallbackTrigger
@@ -184,16 +197,9 @@ const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
             <Spinner className="size-3.5" />
             <span>{runningLabel}</span>
           </div>
-        ) : resultText ? (
-          <div>
-            <div className="flex justify-end">
-              <CopyBtn text={resultText} />
-            </div>
-            <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
-              {displayedResult}
-            </pre>
-          </div>
-        ) : null}
+        ) : (
+          <CodeExecutionResultOutput result={result} />
+        )}
       </ToolFallbackContent>
     </ToolFallbackRoot>
   );

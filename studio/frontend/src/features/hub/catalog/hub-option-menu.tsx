@@ -6,8 +6,8 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { Tick02Icon } from "@/lib/tick-icon";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -38,6 +38,7 @@ export function HubOptionMenu<T extends string>({
   showChevron = true,
   title,
   triggerContent,
+  footer,
 }: {
   value: T;
   options: readonly HubOption<T>[];
@@ -49,9 +50,12 @@ export function HubOptionMenu<T extends string>({
   showChevron?: boolean;
   title?: string;
   triggerContent?: ReactNode;
+  /** Rendered under the options behind a separator; clicks keep the menu open. */
+  footer?: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
-  const [activeIndex, setActiveIndex] = useState(0);
+  // -1 = nothing highlighted (no hover, no keyboard nav yet).
+  const [activeIndex, setActiveIndex] = useState(-1);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const listboxRef = useRef<HTMLDivElement | null>(null);
   const idBase = useId();
@@ -63,11 +67,13 @@ export function HubOptionMenu<T extends string>({
   }, [options, value]);
   const selected = options[selectedIndex];
   const resolvedActiveIndex =
-    options.length === 0
+    options.length === 0 || activeIndex < 0
       ? -1
-      : Math.min(Math.max(activeIndex, 0), options.length - 1);
+      : Math.min(activeIndex, options.length - 1);
   const activeOptionId =
-    resolvedActiveIndex >= 0 ? `${idBase}-option-${resolvedActiveIndex}` : undefined;
+    resolvedActiveIndex >= 0
+      ? `${idBase}-option-${resolvedActiveIndex}`
+      : undefined;
 
   const activateIndex = useCallback((index: number) => {
     setActiveIndex((current) => (current === index ? current : index));
@@ -92,11 +98,13 @@ export function HubOptionMenu<T extends string>({
     (nextOpen: boolean) => {
       setOpen(nextOpen);
       if (nextOpen) {
-        activateIndex(selectedIndex);
+        // Nothing highlighted until the user hovers or uses the keyboard;
+        // keyboard nav anchors on the selected option (handleContentKeyDown).
+        activateIndex(-1);
         requestAnimationFrame(() => listboxRef.current?.focus());
       }
     },
-    [activateIndex, selectedIndex],
+    [activateIndex],
   );
 
   const handleContentKeyDown = useCallback(
@@ -112,12 +120,21 @@ export function HubOptionMenu<T extends string>({
       }
       if (event.key === "ArrowDown") {
         event.preventDefault();
-        setActiveIndex((currentIndex + 1) % options.length);
+        // First arrow press highlights the selected option, then steps.
+        setActiveIndex(
+          resolvedActiveIndex < 0
+            ? selectedIndex
+            : (currentIndex + 1) % options.length,
+        );
         return;
       }
       if (event.key === "ArrowUp") {
         event.preventDefault();
-        setActiveIndex((currentIndex - 1 + options.length) % options.length);
+        setActiveIndex(
+          resolvedActiveIndex < 0
+            ? selectedIndex
+            : (currentIndex - 1 + options.length) % options.length,
+        );
         return;
       }
       if (event.key === "Home") {
@@ -146,7 +163,7 @@ export function HubOptionMenu<T extends string>({
 
   return (
     <Popover open={open} onOpenChange={handleOpenChange}>
-      <PopoverTrigger asChild>
+      <PopoverTrigger asChild={true}>
         <button
           ref={triggerRef}
           type="button"
@@ -156,7 +173,7 @@ export function HubOptionMenu<T extends string>({
           aria-label={ariaLabel}
           title={title}
           className={cn(
-            "field-trigger hub-menu-trigger field-soft field-filter inline-flex h-9 shrink-0 cursor-pointer items-center justify-between gap-0.5 rounded-full pl-3 pr-2 text-[12.5px] transition-colors",
+            "field-trigger hub-menu-trigger field-soft field-filter inline-flex h-9 shrink-0 cursor-pointer items-center justify-between gap-2.5 rounded-full pl-3 pr-2.5 text-ui-12p5 transition-colors",
             "focus-visible:border-border focus-visible:ring-0 focus-visible:ring-offset-0",
             className,
           )}
@@ -167,18 +184,16 @@ export function HubOptionMenu<T extends string>({
             }
           }}
         >
-          <span className="flex min-w-0 items-center gap-2">
-            {triggerContent ?? (
-              <span className="min-w-0 truncate">
-                {selected?.triggerLabel ?? selected?.label ?? value}
-              </span>
-            )}
+          <span className="min-w-0 flex-1 truncate text-left">
+            {triggerContent ??
+              selected?.triggerLabel ??
+              selected?.label ??
+              value}
           </span>
           {showChevron && (
             <HugeiconsIcon
               icon={ChevronDownStandardIcon}
-              strokeWidth={1.5}
-              className="size-3 shrink-0 text-muted-foreground"
+              className="size-3.5 shrink-0 text-muted-foreground"
             />
           )}
         </button>
@@ -186,11 +201,11 @@ export function HubOptionMenu<T extends string>({
       <PopoverContent
         align={align}
         side="bottom"
-        sideOffset={0}
+        sideOffset={8}
         collisionPadding={12}
         onCloseAutoFocus={(event) => event.preventDefault()}
         className={cn(
-          "hub-menu-instant menu-soft-surface w-max min-w-[var(--radix-popover-trigger-width)] max-w-[min(var(--radix-popover-content-available-width),calc(100vw-1rem))] rounded-[21px] px-[9px] py-2 ring-0",
+          "hub-menu-instant menu-soft-surface w-max min-w-[var(--radix-popover-trigger-width)] max-w-[min(var(--radix-popover-content-available-width),calc(100vw-1rem))] rounded-[14px] p-1 ring-0",
           contentClassName,
         )}
       >
@@ -202,6 +217,7 @@ export function HubOptionMenu<T extends string>({
           aria-activedescendant={activeOptionId}
           tabIndex={0}
           onKeyDown={handleContentKeyDown}
+          onPointerLeave={() => activateIndex(-1)}
           className="outline-none"
         >
           {options.map((option, index) => {
@@ -219,14 +235,16 @@ export function HubOptionMenu<T extends string>({
                 }}
                 onPointerEnter={() => activateIndex(index)}
                 className={cn(
-                  "relative flex w-full min-w-0 cursor-pointer select-none items-center gap-2.5 rounded-[12px] py-2 px-3 text-left text-sm leading-snug outline-none transition-colors",
+                  // 14px menu radius minus the 4px padding, so the hover nests
+                  // cleanly into the dropdown's corners.
+                  "relative flex w-full min-w-0 cursor-pointer select-none items-center rounded-[10px] py-2 pr-8 pl-3 text-left text-sm leading-snug outline-none transition-colors",
                 )}
               >
                 <span className="flex min-w-0 flex-1 items-center gap-2.5 overflow-hidden whitespace-normal break-words">
                   {option.label}
                 </span>
                 {selectedOption && (
-                  <span className="pointer-events-none flex size-4 shrink-0 items-center justify-center">
+                  <span className="pointer-events-none absolute right-2 flex size-4 items-center justify-center">
                     <HugeiconsIcon
                       icon={Tick02Icon}
                       strokeWidth={2}
@@ -238,6 +256,12 @@ export function HubOptionMenu<T extends string>({
             );
           })}
         </div>
+        {footer && (
+          // -mt-3 cancels the surface's 16px flex gap down to 4px. No side
+          // padding: the footer label carries the same padding as the options
+          // so its checkbox lines up with the option text.
+          <div className="-mt-3 border-t border-border/60 pt-1">{footer}</div>
+        )}
       </PopoverContent>
     </Popover>
   );

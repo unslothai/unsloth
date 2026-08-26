@@ -1,12 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Hardware dispatch matrix for Studio.
-
-Spoofs platform / torch.cuda / torch.xpu / sys.modules['mlx'] to exercise the
-CUDA, ROCm, XPU, MLX, and CPU dispatch paths deterministically without real
-hardware. Each profile in ``PROFILES`` (CUDA, ROCm, XPU, Apple+/-mlx, the
-linux-arm64-with-mlx canary, CPU) asserts three contracts: ``unsloth._IS_MLX``,
-``detect_hardware()`` DeviceType + ``IS_ROCM``, and ``is_apple_silicon()``.
-Add a row to ``PROFILES`` to extend coverage; tests parametrize over it."""
+"""Unsloth hardware dispatch matrix: spoofs platform/torch/mlx per PROFILES to exercise CUDA/ROCm/XPU/MLX/CPU paths without real hardware."""
 
 from __future__ import annotations
 
@@ -26,11 +19,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 STUDIO_BACKEND = REPO_ROOT / "studio" / "backend"
 
 
-# ---------------------------------------------------------------------------
-# Profile definition
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class HardwareProfile:
     name: str
@@ -43,9 +31,9 @@ class HardwareProfile:
     mps_available: bool  # torch.backends.mps.is_available() value
 
     expect_is_mlx: bool  # unsloth._IS_MLX
-    expect_device_type: str  # Studio DeviceType (uppercased name: "CUDA"/"XPU"/"MLX"/"CPU")
-    expect_is_rocm: bool  # Studio IS_ROCM
-    expect_apple_silicon: bool  # Studio is_apple_silicon()
+    expect_device_type: str  # Unsloth DeviceType (uppercased name: "CUDA"/"XPU"/"MLX"/"CPU")
+    expect_is_rocm: bool  # Unsloth IS_ROCM
+    expect_apple_silicon: bool  # Unsloth is_apple_silicon()
     extra_notes: str = ""
 
 
@@ -78,7 +66,7 @@ PROFILES = [
         expect_is_rocm = True,
         expect_apple_silicon = False,
         extra_notes = "PyTorch ROCm reuses torch.cuda.* over HIP; "
-        "Studio still uses DeviceType.CUDA but flips IS_ROCM=True.",
+        "Unsloth still uses DeviceType.CUDA but flips IS_ROCM=True.",
     ),
     HardwareProfile(
         name = "intel_xpu",
@@ -158,27 +146,20 @@ PROFILES = [
 PROFILE_IDS = [p.name for p in PROFILES]
 
 
-# ---------------------------------------------------------------------------
-# Spoofing helpers
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture
 def spoof_hardware(monkeypatch):
-    """Return a function that applies a HardwareProfile to the live process.
-    Idempotent; monkeypatch cleans up on test exit."""
+    """Return a function that applies a HardwareProfile to the live process; monkeypatch cleans up on exit."""
 
     def _apply(profile: HardwareProfile) -> None:
         import platform
         import torch
 
-        # platform spoof (used by both the unsloth gate and Studio's helpers)
+        # platform spoof (used by both the unsloth gate and Unsloth's helpers)
         monkeypatch.setattr(platform, "system", lambda: profile.system)
         monkeypatch.setattr(platform, "machine", lambda: profile.machine)
 
         monkeypatch.setattr(torch.cuda, "is_available", lambda: profile.cuda_available)
-        # Stub get_device_properties: detect_hardware reads .name when CUDA is
-        # available, which crashes on a CPU CI runner ("No CUDA GPUs").
+        # Stub get_device_properties: detect_hardware reads .name, which crashes on a CPU CI runner.
         if profile.cuda_available:
             stub_props = types.SimpleNamespace(
                 name = "Stub GPU" if not profile.hip_version else "Stub AMD GPU",
@@ -194,8 +175,7 @@ def spoof_hardware(monkeypatch):
         torch_version = torch.version
         monkeypatch.setattr(torch_version, "hip", profile.hip_version, raising = False)
 
-        # Stub torch.xpu.* (detect_hardware reads both); real get_device_name
-        # needs the XPU torch build, so always stub to stay hardware-agnostic.
+        # Stub torch.xpu.* always; real get_device_name needs the XPU torch build.
         if hasattr(torch, "xpu"):
             monkeypatch.setattr(torch.xpu, "is_available", lambda: profile.xpu_available)
             monkeypatch.setattr(
@@ -224,9 +204,22 @@ def spoof_hardware(monkeypatch):
             fake_mlx.core = fake_mlx_core
             monkeypatch.setitem(sys.modules, "mlx", fake_mlx)
             monkeypatch.setitem(sys.modules, "mlx.core", fake_mlx_core)
+            # detect_hardware gates MLX on the full stack via utils.mlx_repair (it
+            # imports mlx_lm/mlx_vlm and checks dist versions), which faking only
+            # mlx.core cannot satisfy. An mlx profile means a complete, healthy stack,
+            # so model that here; the internals are covered by test_mlx_repair.py.
+            # Both entry points, because the gate asks for the blocker LIST: one
+            # measurement decides the verdict and explains it. Stubbing only
+            # mlx_stack_available() runs the real check against a Linux runner with no
+            # MLX distributions, so the Apple Silicon profile detects CPU.
+            if str(STUDIO_BACKEND) not in sys.path:
+                sys.path.insert(0, str(STUDIO_BACKEND))
+            import utils.mlx_repair as _mlx_repair  # type: ignore
+
+            monkeypatch.setattr(_mlx_repair, "mlx_stack_available", lambda: True)
+            monkeypatch.setattr(_mlx_repair, "mlx_stack_blockers", lambda: [])
         else:
-            # Drop cached mlx and patch find_spec so the unsloth gate sees
-            # mlx as absent.
+            # Drop cached mlx and patch find_spec so the unsloth gate sees mlx as absent.
             monkeypatch.delitem(sys.modules, "mlx", raising = False)
             monkeypatch.delitem(sys.modules, "mlx.core", raising = False)
             real_find_spec = importlib.util.find_spec
@@ -238,9 +231,8 @@ def spoof_hardware(monkeypatch):
 
             monkeypatch.setattr(importlib.util, "find_spec", _no_mlx)
 
-            # Studio's _has_mlx() does `import mlx.core`, not find_spec, so on a
-            # real Apple Silicon host with mlx installed it would still succeed.
-            # Block it via a meta_path finder that raises ImportError for mlx.*.
+            # Unsloth's _has_mlx() does `import mlx.core`, not find_spec; block it
+            # with a meta_path finder that raises ImportError for mlx.*.
             class _BlockMLXFinder:
                 def find_spec(
                     self_inner,
@@ -255,8 +247,7 @@ def spoof_hardware(monkeypatch):
                     return None
 
             blocker = _BlockMLXFinder()
-            # New list so monkeypatch fully restores on teardown (mutating in
-            # place would survive the test).
+            # New list so monkeypatch fully restores on teardown.
             monkeypatch.setattr(
                 sys,
                 "meta_path",
@@ -279,20 +270,15 @@ def _evaluate_unsloth_is_mlx_gate() -> bool:
 
 
 def _import_studio_hardware_module():
-    """Lazy-load Studio's hardware module under the bare-imports layout."""
+    """Lazy-load Unsloth's hardware module under the bare-imports layout."""
     if str(STUDIO_BACKEND) not in sys.path:
         sys.path.insert(0, str(STUDIO_BACKEND))
-    # Force a fresh import so detect_hardware re-runs under the current spoofs.
+    # Fresh import so detect_hardware re-runs under the current spoofs.
     sys.modules.pop("utils.hardware.hardware", None)
     sys.modules.pop("utils.hardware", None)
     from utils.hardware import hardware as hw  # type: ignore
 
     return hw
-
-
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("profile", PROFILES, ids = PROFILE_IDS)
@@ -308,7 +294,7 @@ def test_unsloth_is_mlx_gate_matches_profile(profile, spoof_hardware):
 
 @pytest.mark.parametrize("profile", PROFILES, ids = PROFILE_IDS)
 def test_studio_detect_hardware_matches_profile(profile, spoof_hardware):
-    """Studio's detect_hardware() routes to the right DeviceType per profile."""
+    """Unsloth's detect_hardware() routes to the right DeviceType per profile."""
     spoof_hardware(profile)
     hw = _import_studio_hardware_module()
     detected = hw.detect_hardware()
@@ -324,7 +310,7 @@ def test_studio_detect_hardware_matches_profile(profile, spoof_hardware):
 
 @pytest.mark.parametrize("profile", PROFILES, ids = PROFILE_IDS)
 def test_studio_is_apple_silicon_matches_profile(profile, spoof_hardware):
-    """Studio's is_apple_silicon() helper agrees with platform spoof."""
+    """Unsloth's is_apple_silicon() helper agrees with platform spoof."""
     spoof_hardware(profile)
     hw = _import_studio_hardware_module()
     assert hw.is_apple_silicon() is profile.expect_apple_silicon, (
@@ -333,14 +319,11 @@ def test_studio_is_apple_silicon_matches_profile(profile, spoof_hardware):
     )
 
 
-# ---------------------------------------------------------------------------
 # Negative-space tests: catch regressions where the dispatch order changes.
-# ---------------------------------------------------------------------------
 
 
 def test_cuda_takes_priority_over_mlx_when_both_available(spoof_hardware):
-    """If both CUDA and MLX are available, Studio MUST pick CUDA: the canary
-    guarding GPU users from being silently routed to MLX after refactors."""
+    """CUDA wins over MLX when both available: canary against GPU users being routed to MLX after refactors."""
     profile = HardwareProfile(
         name = "cuda_plus_mlx",
         system = "Darwin",
@@ -379,3 +362,122 @@ def test_xpu_takes_priority_over_mlx_when_both_available(spoof_hardware):
     spoof_hardware(profile)
     hw = _import_studio_hardware_module()
     assert hw.detect_hardware() == hw.DeviceType.XPU
+
+
+# Unsloth's placement, against the loader's opt-in device map.
+#
+# unsloth's loader upgrades a "sequential" device_map to the "unsloth" planning sentinel
+# when UNSLOTH_AUTO_DEVICE_MAP=1. Unsloth does not pass the sentinel and never sets that
+# variable, but an operator can set it process-wide, and Unsloth's "sequential" is not a
+# default it forgot to change: it is get_device_map() saying "one device". These pin the
+# two facts that keep that safe on every profile above -- Unsloth's multi-GPU answer is
+# "balanced", which is never upgraded, and its single-GPU answer is reached only inside a
+# worker that has already narrowed the visible devices to the selection.
+
+
+def _loader_device_map_helpers():
+    """The two loader functions, rebuilt over a fabricated torch.
+
+    ast rather than an import: `unsloth.models.loader_utils` pulls in the whole CUDA
+    import chain, which is exactly what the spoofs in this file are pretending about.
+    """
+    import ast as _ast
+
+    source = (REPO_ROOT / "unsloth" / "models" / "loader_utils.py").read_text(encoding = "utf-8")
+
+    class _Cuda:
+        def __init__(self, count):
+            self._count = count
+
+        def device_count(self):
+            return self._count
+
+        def mem_get_info(self, index):
+            return (8 * 2**30, 16 * 2**30)
+
+    def build(visible_devices):
+        import os as _os
+
+        namespace = {
+            "os": _os,
+            "torch": types.SimpleNamespace(cuda = _Cuda(visible_devices)),
+            "DEVICE_TYPE_TORCH": "cuda",
+            "is_distributed": lambda: False,
+        }
+        for node in _ast.parse(source).body:
+            if isinstance(node, _ast.FunctionDef) and node.name in (
+                "requested_device_map",
+                "resolve_unsloth_device_map",
+                "_as_bytes",
+            ):
+                exec(_ast.get_source_segment(source, node), namespace)
+            elif isinstance(node, _ast.ClassDef) and node.name == "_DefaultDeviceMap":
+                exec(_ast.get_source_segment(source, node), namespace)
+            elif isinstance(node, _ast.Assign) and getattr(node.targets[0], "id", None) in (
+                "UNSLOTH_DEVICE_MAP",
+                "DEFAULT_DEVICE_MAP",
+                "_SIZE_UNITS",
+            ):
+                exec(_ast.get_source_segment(source, node), namespace)
+        # No planner installed: the fallback is what a decline looks like from here.
+        sys.modules.pop("unsloth_zoo.device_map_planner", None)
+        sys.modules["unsloth_zoo.device_map_planner"] = types.ModuleType(
+            "unsloth_zoo.device_map_planner"
+        )
+        return namespace
+
+    return build
+
+
+@pytest.mark.parametrize("profile", PROFILES, ids = PROFILE_IDS)
+@pytest.mark.parametrize("gpu_ids", [None, [], [0], [0, 1], [2, 3, 5]], ids = repr)
+@pytest.mark.parametrize("opt_in", ["unset", "0", "1"])
+def test_studio_placement_survives_the_loader_opt_in(
+    profile, gpu_ids, opt_in, spoof_hardware, monkeypatch
+):
+    """Whatever Unsloth decided, the loader hands the same thing to transformers.
+
+    The one value the opt-in can rewrite is "sequential", and Unsloth only produces that
+    when it selected a single device -- at which point the worker has already narrowed the
+    visible set, the planner sees one GPU and declines back to "sequential".
+    """
+    spoof_hardware(profile)
+    hw = _import_studio_hardware_module()
+
+    if gpu_ids and hw.get_device() not in (hw.DeviceType.CUDA, hw.DeviceType.XPU):
+        pytest.skip(f"{profile.name} does not take an explicit gpu_ids")
+
+    device_map = hw.get_device_map(gpu_ids)
+    assert device_map in ("balanced", "sequential")
+
+    if opt_in == "unset":
+        monkeypatch.delenv("UNSLOTH_AUTO_DEVICE_MAP", raising = False)
+    else:
+        monkeypatch.setenv("UNSLOTH_AUTO_DEVICE_MAP", opt_in)
+
+    # The worker narrows CUDA_VISIBLE_DEVICES to the selection before torch initialises,
+    # so the loader counts the selected devices, not the machine's.
+    visible = len(gpu_ids) if gpu_ids else 1
+    loader = _loader_device_map_helpers()(visible)
+
+    resolved = loader["resolve_unsloth_device_map"](
+        loader["requested_device_map"](device_map), "unsloth/Qwen3-0.6B"
+    )
+    assert resolved == device_map, (
+        f"profile {profile.name}, gpu_ids={gpu_ids}, UNSLOTH_AUTO_DEVICE_MAP={opt_in}: "
+        f"Unsloth asked for {device_map!r} and the loader produced {resolved!r}"
+    )
+
+
+@pytest.mark.parametrize("profile", PROFILES, ids = PROFILE_IDS)
+def test_studio_never_speaks_the_planning_sentinel(profile, spoof_hardware):
+    """get_device_map is the only thing that names a placement for Unsloth's loads, and
+    "unsloth" is not one of its answers on any backend. If it ever becomes one, the
+    Unsloth-side reasoning above stops holding and this fails first."""
+    spoof_hardware(profile)
+    hw = _import_studio_hardware_module()
+    answers = {hw.get_device_map(None), hw.get_device_map([])}
+    if hw.get_device() in (hw.DeviceType.CUDA, hw.DeviceType.XPU):
+        answers |= {hw.get_device_map([0]), hw.get_device_map([0, 1])}
+    assert "unsloth" not in answers
+    assert answers <= {"balanced", "sequential"}

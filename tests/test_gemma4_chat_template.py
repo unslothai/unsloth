@@ -14,7 +14,7 @@ CHAT_TEMPLATES_PATH = os.path.join(
 
 
 def _extract_template(name):
-    src = open(CHAT_TEMPLATES_PATH).read()
+    src = open(CHAT_TEMPLATES_PATH, encoding = "utf-8").read()
     pattern = rf'{re.escape(name)}\s*=\s*\\\n"""(.*?)"""'
     m = re.search(pattern, src, flags = re.DOTALL)
     assert m, f"Could not extract {name} from chat_templates.py"
@@ -157,7 +157,7 @@ def test_multi_turn_strips_all_historical_model_turns():
 
 
 def test_thinking_template_injects_empty_thought_channel_by_default():
-    # Author defaults enable_thinking=False, so the gen-prompt injection fires.
+    # enable_thinking defaults False, so the gen-prompt injection fires.
     msgs = [{"role": "user", "content": "Hi"}]
     out = _render("gemma4_thinking_template", msgs, add_generation_prompt = True)
     assert out.endswith("<|turn>model\n<|channel>thought\n<channel|>")

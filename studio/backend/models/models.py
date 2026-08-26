@@ -53,6 +53,24 @@ class CheckpointListResponse(BaseModel):
     )
 
 
+class ExportSizeResponse(BaseModel):
+    """Model fp16/bf16-equivalent size; size fields are null when unknown."""
+
+    model: str = Field(..., description = "Model id or path the estimate was computed for")
+    fp16_bytes: Optional[int] = Field(
+        None,
+        description = "Estimated FP16/BF16-equivalent on-disk size in bytes, or null if unknown",
+    )
+    total_params: Optional[int] = Field(
+        None,
+        description = "Estimated total parameter count (fp16_bytes // 2), or null if unknown",
+    )
+    source: str = Field(
+        "unavailable",
+        description = "How the estimate was derived (e.g. safetensors, config, local, vllm, unavailable)",
+    )
+
+
 class ModelDetails(BaseModel):
     """Model configuration and metadata; used for both list and detail views"""
 
@@ -73,6 +91,15 @@ class ModelDetails(BaseModel):
     )
     is_audio: bool = Field(False, description = "Whether model is a TTS audio model")
     audio_type: Optional[str] = Field(None, description = "Audio codec type: snac, csm, bicodec, dac")
+    audio_type_known: bool = Field(
+        True,
+        description = (
+            "Whether audio_type is a definitive answer. False means the repo's "
+            "tokenizer_config.json could not be read (gated, offline, upstream error), so a "
+            "null audio_type means unknown rather than 'not an audio model'. Defaults True "
+            "so callers that never set it keep the old meaning."
+        ),
+    )
     has_audio_input: bool = Field(False, description = "Whether model accepts audio input (ASR)")
     model_type: Optional[ModelType] = Field(
         None, description = "Collapsed model modality: text, vision, audio, or embeddings"
@@ -96,6 +123,15 @@ class LoRAInfo(BaseModel):
     export_type: Optional[str] = Field(
         None, description = "'lora', 'merged', or 'gguf' (for exports)"
     )
+    audio_type: Optional[str] = Field(
+        None,
+        description = (
+            "Codec of the adapter's base model ('snac', 'bicodec', 'dac', 'csm', "
+            "'whisper', 'audio_vlm') when it fine-tunes an audio model, else null. "
+            "The Audio page needs this to offer a trained checkpoint: a scan row "
+            "carries no modality otherwise, so an audio adapter reads as a text one."
+        ),
+    )
 
 
 class LoRAScanResponse(BaseModel):
@@ -116,10 +152,31 @@ class GgufVariantDetail(BaseModel):
     """A single GGUF quantization variant in a HuggingFace repo."""
 
     filename: str = Field(..., description = "GGUF filename (e.g., 'gemma-3-4b-it-Q4_K_M.gguf')")
-    quant: str = Field(..., description = "Quantization label (e.g., 'Q4_K_M')")
+    quant: str = Field(..., description = "Quantization label or internal GGUF variant key")
+    # Mirrors hub.schemas.inventory.GgufVariantDetail. The route builds THIS model, so a field
+    # that exists only on the hub twin is dropped by pydantic without a word, and a qualified
+    # row falls back to rendering its whole relative path.
+    display_label: Optional[str] = Field(
+        None, description = "Optional user-facing label when quant is an internal key"
+    )
     size_bytes: int = Field(0, description = "File size in bytes")
+    download_size_bytes: int = Field(0, description = "Total bytes needed to download this variant")
     downloaded: bool = Field(
         False, description = "Whether this variant is already in the local HF cache"
+    )
+    update_available: bool = Field(
+        False, description = "Whether a newer version of this variant is available on HF"
+    )
+    partial: bool = Field(
+        False,
+        description = "Whether this variant is an interrupted download. The hub service "
+        "already computes it; carry it through so callers can hide a quant whose shards "
+        "are incomplete instead of offering one that cannot load.",
+    )
+    cleanable: bool = Field(
+        False,
+        description = "Row exists only to offer deleting an empty leftover <quant>/ folder; "
+        "the listing has no such weights, so it never proves a load would find any.",
     )
 
 
@@ -135,6 +192,25 @@ class GgufVariantsResponse(BaseModel):
     )
     default_variant: Optional[str] = Field(
         None, description = "Recommended default quantization variant"
+    )
+    context_length: Optional[int] = Field(
+        None,
+        description = "Native max context from GGUF metadata; set once a variant is downloaded",
+    )
+    resolved_locally: bool = Field(
+        False,
+        description = "Whether this answer came from resolving repo_id as a local path",
+    )
+    loadable_variants: Optional[List[str]] = Field(
+        None,
+        description = (
+            "Quants the load resolver resolves for this identifier; None when unanswered "
+            "(remote answers, or a server that predates the field)"
+        ),
+    )
+    loadable: Optional[bool] = Field(
+        None,
+        description = "Whether a variantless load resolves GGUF weights; None when unanswered",
     )
 
 
@@ -152,9 +228,28 @@ class LocalModelInfo(BaseModel):
         None,
         description = "HF repo id for cached models, e.g. org/model",
     )
+    active_cache: Optional[bool] = Field(
+        None,
+        description = "Whether an HF model belongs to the current download cache.",
+    )
+    partial: bool = Field(
+        False,
+        description = "Whether the cached model has an incomplete download.",
+    )
+    model_format: Optional[str] = Field(
+        None,
+        description = "Detected weights format ('gguf' when known). Lets the UI "
+        "classify scanned folders whose name lacks a -GGUF suffix.",
+    )
     updated_at: Optional[float] = Field(
         None,
         description = "Unix timestamp of latest observed update",
+    )
+    task: Optional[str] = Field(
+        None,
+        description = "HF pipeline task inferred from a GGUF's architecture "
+        "('text-to-image' for diffusion, 'text-generation' otherwise). Lets the "
+        "Images picker show only diffusion GGUFs.",
     )
 
 
@@ -188,6 +283,10 @@ class ScanFolderInfo(BaseModel):
     id: int = Field(..., description = "Database row ID")
     path: str = Field(..., description = "Normalized absolute path")
     created_at: str = Field(..., description = "ISO 8601 creation timestamp")
+    status: str = Field(
+        default = "ok",
+        description = "Last scan result: ok, permission_denied, missing, or unreadable",
+    )
 
 
 class BrowseEntry(BaseModel):

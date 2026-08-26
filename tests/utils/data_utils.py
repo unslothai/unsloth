@@ -56,12 +56,7 @@ def describe_param(
     include_infinity: bool = False,
     as_str: bool = True,
 ) -> dict:
-    """
-    Statistical summary (shape, mean, std, min/max, percentiles) of a tensor.
-
-    Optionally includes L1/L2/infinity norms. Returns a formatted string when
-    as_str is True, else a dict.
-    """
+    """Statistical summary of a tensor (optional L1/L2/inf norms); string if as_str else dict."""
 
     param = param.float()
     summary = {

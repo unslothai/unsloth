@@ -32,7 +32,7 @@ def helper_model_disabled_by_env() -> bool:
 def get_helper_precache_enabled() -> bool:
     """Read the persisted startup pre-cache preference.
 
-    Missing or unreadable settings default to False so Studio startup never
+    Missing or unreadable settings default to False so Unsloth startup never
     performs optional network work unless the user explicitly opted in.
     """
     try:
@@ -45,7 +45,7 @@ def get_helper_precache_enabled() -> bool:
 
 
 def set_helper_precache_enabled(value: Any) -> bool:
-    """Persist whether Studio should pre-cache the Helper LLM at startup."""
+    """Persist whether Unsloth should pre-cache the Helper LLM at startup."""
     parsed = _coerce_bool(value)
     if parsed is None:
         raise ValueError("Helper LLM startup pre-cache must be true or false.")

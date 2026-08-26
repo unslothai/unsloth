@@ -6,10 +6,37 @@ from __future__ import annotations
 import builtins
 import subprocess
 import sys
+import types
 from typing import Any
 from unittest import mock
 
+import pytest
+
 from core.training import worker
+
+# The runtime install is Linux-only, so elsewhere these return before any status.
+linux_only = pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason = "the runtime flash-attn install is gated to Linux",
+)
+
+# causal-conv1d and flash-linear-attention are NOT Linux-gated: both installers bail out
+# on `sys.platform == "win32"` alone (no prebuilt wheel for Windows) and run everywhere
+# else, macOS included. linux_only here would skip cases that legitimately pass off Linux.
+not_on_windows = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason = (
+        "mirrors the sys.platform == 'win32' bail-out in "
+        "_ensure_flash_linear_attention_unconditional and "
+        "_ensure_causal_conv1d_fast_path"
+    ),
+)
+
+
+@pytest.fixture(autouse = True)
+def _clear_offline_environment(monkeypatch):
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
 
 
 def _missing_flash_attn_import():
@@ -24,6 +51,32 @@ def _missing_flash_attn_import():
     ):
         if name == "flash_attn":
             raise ImportError
+        return real_import(name, globals, locals, fromlist, level)
+
+    return fake_import
+
+
+def _flash_attn_import_until_installed(state: dict[str, bool]):
+    """Import stub for a flash_attn that appears only once ``state['installed']`` is set.
+
+    The installers verify the import, so a mock that keeps failing models a broken wheel,
+    not a working one: "the wheel worked" means flipping the flag when install_wheel runs.
+    """
+    real_import = builtins.__import__
+
+    def fake_import(
+        name,
+        globals = None,
+        locals = None,
+        fromlist = (),
+        level = 0,
+    ):
+        if name == "flash_attn":
+            if not state.get("installed"):
+                raise ImportError
+            # A stub, not a real import: flash_attn is not installed in the test env, and
+            # whether it happens to be is not what these tests are about.
+            return types.ModuleType("flash_attn")
         return real_import(name, globals, locals, fromlist, level)
 
     return fake_import
@@ -46,6 +99,178 @@ def _missing_module_import(missing: str):
     return fake_import
 
 
+class TestIsImportableIsolated:
+    """The probe runs in a child so a bad native extension cannot take the worker with it."""
+
+    def test_clean_exit_is_importable(self, monkeypatch):
+        monkeypatch.setattr(worker._sp, "run", lambda *a, **k: subprocess.CompletedProcess(a[0], 0))
+        assert worker._is_importable_isolated("flash_attn") is True
+
+    def test_import_error_exit_is_not_importable(self, monkeypatch):
+        monkeypatch.setattr(worker._sp, "run", lambda *a, **k: subprocess.CompletedProcess(a[0], 1))
+        assert worker._is_importable_isolated("flash_attn") is False
+
+    def test_fatal_signal_is_not_importable(self, monkeypatch):
+        # SIGSEGV in the extension's initialiser: rc -11, and no Python exception to catch.
+        monkeypatch.setattr(
+            worker._sp, "run", lambda *a, **k: subprocess.CompletedProcess(a[0], -11)
+        )
+        assert worker._is_importable_isolated("flash_attn") is False
+
+    def test_timeout_is_not_importable(self, monkeypatch):
+        def _hang(*_args, **_kwargs):
+            raise subprocess.TimeoutExpired(cmd = "python", timeout = 300)
+
+        monkeypatch.setattr(worker._sp, "run", _hang)
+        assert worker._is_importable_isolated("flash_attn") is False
+
+    def test_the_module_name_is_passed_as_an_argument(self, monkeypatch):
+        captured: list[list[str]] = []
+
+        def _record(cmd, **_kwargs):
+            captured.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0)
+
+        monkeypatch.setattr(worker._sp, "run", _record)
+        worker._is_importable_isolated("flash_attn")
+
+        # argv, not string-formatted into the -c body.
+        assert captured[0][-1] == "flash_attn"
+        assert "import flash_attn" not in " ".join(captured[0])
+
+
+class TestNoExitLeavesAnUnusableInstall:
+    """Every unsuccessful exit discards the distribution, not just the ones with a call.
+
+    The metadata gate in unsloth/models/_utils.py imports the extension in process, so
+    anything left behind is loaded anyway. Four rounds of review found four separate exits
+    that forgot to clean up, which is why this is enforced in one place.
+    """
+
+    def _run(self, monkeypatch, *, run_side_effect):
+        removals: list[list[str]] = []
+
+        def _spy(cmd, **kwargs):
+            if "uninstall" in cmd:
+                removals.append(list(cmd))
+                return subprocess.CompletedProcess(cmd, 0, "")
+            return run_side_effect(cmd, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", _missing_flash_attn_import())
+        monkeypatch.setattr(worker, "_is_importable_isolated", lambda name: False)
+        # Metadata says it is installed, which is exactly the state that must not survive.
+        monkeypatch.setattr(worker, "_distribution_present", lambda name: True)
+        monkeypatch.setattr(worker, "flash_attn_wheel_url", lambda env: None)
+        monkeypatch.setattr(worker, "url_exists", lambda url: False)
+        monkeypatch.setattr(worker.shutil, "which", lambda name: None)
+        monkeypatch.setattr(worker, "_send_status", lambda q, m: None)
+        monkeypatch.setattr(worker._sp, "run", _spy)
+
+        installed = worker._install_package_wheel_first(
+            event_queue = [],
+            import_name = "flash_attn",
+            display_name = "flash-attn",
+            pypi_name = "flash-attn",
+            pypi_spec = "flash-attn",
+        )
+        return installed, removals
+
+    def test_a_failed_fallback_install_still_cleans_up(self, monkeypatch):
+        installed, removals = self._run(
+            monkeypatch,
+            run_side_effect = lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, "boom"),
+        )
+        assert installed is False
+        assert removals, "a non-zero fallback exit must not leave the distribution installed"
+
+    def test_a_timed_out_fallback_still_cleans_up(self, monkeypatch):
+        """Only the ROCm source build sets a timeout, so this is the path that can raise."""
+        removals: list[list[str]] = []
+
+        def _spy(cmd, **kwargs):
+            if "uninstall" in cmd:
+                removals.append(list(cmd))
+                return subprocess.CompletedProcess(cmd, 0, "")
+            raise subprocess.TimeoutExpired(cmd = cmd, timeout = 1800)
+
+        monkeypatch.setattr(builtins, "__import__", _missing_flash_attn_import())
+        monkeypatch.setattr(worker, "_is_importable_isolated", lambda name: False)
+        monkeypatch.setattr(worker, "_distribution_present", lambda name: True)
+        monkeypatch.setattr(
+            worker,
+            "probe_torch_wheel_env",
+            lambda timeout = 30: {
+                "python_tag": "cp313",
+                "torch_mm": "2.10",
+                "cuda_major": "",
+                "hip_version": "6.2",
+                "cxx11abi": "TRUE",
+                "platform_tag": "linux_x86_64",
+            },
+        )
+        monkeypatch.setattr(worker, "flash_attn_wheel_url", lambda env: None)
+        monkeypatch.setattr(worker, "url_exists", lambda url: False)
+        # hipcc present, so the ROCm build is attempted rather than skipped.
+        monkeypatch.setattr(worker.shutil, "which", lambda name: "/opt/rocm/bin/hipcc")
+        monkeypatch.setattr(worker, "_send_status", lambda q, m: None)
+        monkeypatch.setattr(worker._sp, "run", _spy)
+
+        installed = worker._install_package_wheel_first(
+            event_queue = [],
+            import_name = "flash_attn",
+            display_name = "flash-attn",
+            pypi_name = "flash-attn",
+            pypi_spec = "flash-attn",
+        )
+
+        assert installed is False
+        assert removals, "a timed-out build must not leave the distribution installed"
+
+    def test_nothing_installed_means_nothing_to_remove(self, monkeypatch):
+        """The discard is state-based, so a clean failure does not run a pointless uninstall."""
+        removals: list[list[str]] = []
+
+        def _spy(cmd, **_kwargs):
+            if "uninstall" in cmd:
+                removals.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 1, "")
+
+        monkeypatch.setattr(builtins, "__import__", _missing_flash_attn_import())
+        monkeypatch.setattr(worker, "_is_importable_isolated", lambda name: False)
+        monkeypatch.setattr(worker, "_distribution_present", lambda name: False)
+        monkeypatch.setattr(worker, "flash_attn_wheel_url", lambda env: None)
+        monkeypatch.setattr(worker, "url_exists", lambda url: False)
+        monkeypatch.setattr(worker.shutil, "which", lambda name: None)
+        monkeypatch.setattr(worker, "_send_status", lambda q, m: None)
+        monkeypatch.setattr(worker._sp, "run", _spy)
+
+        worker._install_package_wheel_first(
+            event_queue = [],
+            import_name = "flash_attn",
+            display_name = "flash-attn",
+            pypi_name = "flash-attn",
+            pypi_spec = "flash-attn",
+        )
+
+        assert removals == []
+
+    def test_a_working_package_is_never_touched(self, monkeypatch):
+        """The guard runs before the cleanup, so an install that works is left alone."""
+        calls: list[list[str]] = []
+        monkeypatch.setattr(worker, "_is_importable", lambda name: True)
+        monkeypatch.setattr(worker._sp, "run", lambda cmd, **kw: calls.append(list(cmd)))
+
+        installed = worker._install_package_wheel_first(
+            event_queue = [],
+            import_name = "flash_attn",
+            display_name = "flash-attn",
+            pypi_name = "flash-attn",
+        )
+
+        assert installed is True
+        assert calls == [], "a working package must not be probed, installed or removed"
+
+
 def test_should_try_runtime_flash_attn_install_threshold_and_skip(monkeypatch):
     monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
     assert worker._should_try_runtime_flash_attn_install(32767) is False
@@ -55,12 +280,51 @@ def test_should_try_runtime_flash_attn_install_threshold_and_skip(monkeypatch):
     assert worker._should_try_runtime_flash_attn_install(32768) is False
 
 
+@linux_only
 def test_runtime_flash_attn_prefers_prebuilt_wheel(monkeypatch):
     statuses: list[str] = []
+    state: dict[str, bool] = {"installed": False}
+
+    def _install(*_args, **_kwargs):
+        state["installed"] = True
+        return [("pip", subprocess.CompletedProcess(["pip"], 0, ""))]
 
     monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
-    monkeypatch.setattr(worker, "has_blackwell_gpu", lambda: False)
+    monkeypatch.setattr(builtins, "__import__", _flash_attn_import_until_installed(state))
+    # The post-install probe runs in a child; model it off the same flag.
+    monkeypatch.setattr(worker, "_is_importable_isolated", lambda name: state["installed"])
+    monkeypatch.setattr(
+        worker,
+        "flash_attn_wheel_url",
+        lambda env: "https://example.com/fa.whl",
+    )
+    monkeypatch.setattr(worker, "url_exists", lambda url: True)
+    monkeypatch.setattr(
+        worker,
+        "_send_status",
+        lambda queue, message: statuses.append(message),
+    )
+    monkeypatch.setattr(worker, "install_wheel", _install)
+
+    worker._ensure_flash_attn_for_long_context(event_queue = [], max_seq_length = 32768)
+
+    assert statuses == ["Installing flash-attn for faster training..."]
+
+
+@linux_only
+def test_runtime_flash_attn_wheel_that_does_not_import_falls_back(monkeypatch):
+    """A wrong-arch/ABI wheel installs with rc=0 and then will not load.
+
+    The Blackwell shape (#5420, #6961): trusting the exit code left a flash_attn that
+    raised on import mid-training. It must be treated as not installed.
+    """
+    statuses: list[str] = []
+    pypi_calls: list[list[str]] = []
+
+    monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
+    # Never becomes importable, however the install exits.
     monkeypatch.setattr(builtins, "__import__", _missing_flash_attn_import())
+    monkeypatch.setattr(worker, "_is_importable_isolated", lambda name: False)
     monkeypatch.setattr(
         worker,
         "flash_attn_wheel_url",
@@ -77,19 +341,125 @@ def test_runtime_flash_attn_prefers_prebuilt_wheel(monkeypatch):
         "install_wheel",
         lambda *args, **kwargs: [("pip", subprocess.CompletedProcess(["pip"], 0, ""))],
     )
+    monkeypatch.setattr(worker.shutil, "which", lambda name: None)
+    monkeypatch.setattr(
+        worker._sp,
+        "run",
+        lambda cmd, **kwargs: pypi_calls.append(cmd) or subprocess.CompletedProcess(cmd, 1, ""),
+    )
 
     worker._ensure_flash_attn_for_long_context(event_queue = [], max_seq_length = 32768)
 
-    assert statuses == ["Installing flash-attn for faster training..."]
+    # The wheel is not silently trusted: it falls through to the PyPI path.
+    assert "Installing flash-attn from PyPI for long-context training..." in statuses
+    installs = [cmd for cmd in pypi_calls if "install" in cmd]
+    assert installs, "expected a PyPI install attempt after the wheel failed to import"
+    # The rejected wheel is removed first. Installing over it is a no-op (pip reports it as
+    # already satisfied), and --force-reinstall would widen the transaction to torch.
+    assert any("uninstall" in cmd for cmd in pypi_calls), pypi_calls
+    assert not any("--force-reinstall" in cmd for cmd in installs), installs
 
 
-def test_runtime_flash_attn_falls_back_to_pypi(monkeypatch):
-    calls: list[list[str]] = []
+@linux_only
+def test_runtime_flash_attn_rejected_wheel_is_not_reported_installed(monkeypatch):
+    """A no-op fallback must not be read as success.
+
+    pip exits 0 on "Requirement already satisfied" and uv on "Would make no changes", so
+    the exit code alone would report the rejected wheel as a working install.
+    """
     statuses: list[str] = []
 
     monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
-    monkeypatch.setattr(worker, "has_blackwell_gpu", lambda: False)
     monkeypatch.setattr(builtins, "__import__", _missing_flash_attn_import())
+    monkeypatch.setattr(worker, "_is_importable_isolated", lambda name: False)
+    # The discard is state-based, so the installed-but-broken state has to be stated here.
+    # Without this the test only passes on a machine that happens to have flash-attn.
+    monkeypatch.setattr(worker, "_distribution_present", lambda name: True)
+    monkeypatch.setattr(
+        worker,
+        "flash_attn_wheel_url",
+        lambda env: "https://example.com/fa.whl",
+    )
+    monkeypatch.setattr(worker, "url_exists", lambda url: True)
+    monkeypatch.setattr(
+        worker,
+        "_send_status",
+        lambda queue, message: statuses.append(message),
+    )
+    monkeypatch.setattr(
+        worker,
+        "install_wheel",
+        lambda *args, **kwargs: [("pip", subprocess.CompletedProcess(["pip"], 0, ""))],
+    )
+    monkeypatch.setattr(worker.shutil, "which", lambda name: None)
+    # The fallback "succeeds" the way an already-satisfied install does: rc=0, nothing done.
+    monkeypatch.setattr(
+        worker._sp,
+        "run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, "Requirement already satisfied"),
+    )
+
+    installed = worker._install_package_wheel_first(
+        event_queue = [],
+        import_name = "flash_attn",
+        display_name = "flash-attn",
+        pypi_name = "flash-attn",
+        wheel_url_builder = worker.flash_attn_wheel_url,
+        pypi_spec = "flash-attn",
+        pypi_status_message = "Installing flash-attn from PyPI for long-context training...",
+    )
+
+    assert installed is False
+    # and it is removed, not left where _package_available would advertise it.
+    assert "flash-attn is not usable on this GPU; removed it" in statuses
+
+
+@linux_only
+def test_runtime_flash_attn_says_so_when_the_rejected_install_cannot_be_removed(monkeypatch):
+    """A distribution still on disk is not the same state as never having installed one."""
+    statuses: list[str] = []
+
+    monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
+    monkeypatch.setattr(builtins, "__import__", _missing_flash_attn_import())
+    monkeypatch.setattr(worker, "_is_importable_isolated", lambda name: False)
+    # State the installed-but-broken state explicitly; see the note above.
+    monkeypatch.setattr(worker, "_distribution_present", lambda name: True)
+    monkeypatch.setattr(worker, "flash_attn_wheel_url", lambda env: None)
+    monkeypatch.setattr(worker, "url_exists", lambda url: False)
+    monkeypatch.setattr(worker.shutil, "which", lambda name: None)
+    monkeypatch.setattr(
+        worker,
+        "_send_status",
+        lambda queue, message: statuses.append(message),
+    )
+    # Install exits 0; every uninstall attempt fails (read-only or locked site-packages).
+    monkeypatch.setattr(
+        worker._sp,
+        "run",
+        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1 if "uninstall" in cmd else 0, ""),
+    )
+
+    installed = worker._install_package_wheel_first(
+        event_queue = [],
+        import_name = "flash_attn",
+        display_name = "flash-attn",
+        pypi_name = "flash-attn",
+        pypi_spec = "flash-attn",
+    )
+
+    assert installed is False
+    assert any("could not be removed" in s for s in statuses), statuses
+    assert not any("removed it" in s for s in statuses), statuses
+
+
+@linux_only
+def test_runtime_flash_attn_falls_back_to_pypi(monkeypatch):
+    calls: list[list[str]] = []
+    statuses: list[str] = []
+    state: dict[str, bool] = {"installed": False}
+
+    monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
+    monkeypatch.setattr(builtins, "__import__", _flash_attn_import_until_installed(state))
     monkeypatch.setattr(
         worker,
         "probe_torch_wheel_env",
@@ -108,6 +478,7 @@ def test_runtime_flash_attn_falls_back_to_pypi(monkeypatch):
     )
     monkeypatch.setattr(worker, "url_exists", lambda url: False)
     monkeypatch.setattr(worker.shutil, "which", lambda name: None)
+    monkeypatch.setattr(worker, "_is_importable_isolated", lambda name: state["installed"])
     monkeypatch.setattr(
         worker,
         "_send_status",
@@ -115,13 +486,10 @@ def test_runtime_flash_attn_falls_back_to_pypi(monkeypatch):
     )
     monkeypatch.setattr(worker, "install_wheel", mock.Mock())
 
-    def fake_run(
-        cmd,
-        stdout = None,
-        stderr = None,
-        text = None,
-    ):
+    def fake_run(cmd, **kwargs):
         calls.append(list(cmd))
+        # A real install makes the module importable; the post-install check requires it.
+        state["installed"] = True
         return subprocess.CompletedProcess(cmd, 0, "")
 
     monkeypatch.setattr(worker._sp, "run", fake_run)
@@ -129,6 +497,7 @@ def test_runtime_flash_attn_falls_back_to_pypi(monkeypatch):
     worker._ensure_flash_attn_for_long_context(event_queue = [], max_seq_length = 32768)
 
     assert statuses == ["Installing flash-attn from PyPI for long-context training..."]
+    # No wheel was installed here (url_exists is False), so nothing needs replacing.
     assert calls == [[sys.executable, "-m", "pip", "install", "flash-attn"]]
 
 
@@ -141,27 +510,57 @@ def test_runtime_flash_attn_skip_env_avoids_all_install_work(monkeypatch):
     worker._sp.run.assert_not_called()
 
 
-def test_runtime_flash_attn_skips_on_blackwell(monkeypatch):
-    statuses: list[str] = []
-    install_mock = mock.Mock()
+@pytest.mark.parametrize("offline_variable", ["HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"])
+def test_wheel_first_install_skips_all_install_work_offline(monkeypatch, offline_variable):
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    monkeypatch.setenv(offline_variable, "1")
+    monkeypatch.setattr(builtins, "__import__", _missing_module_import("missing_fast_path"))
+    probe = mock.Mock()
+    url_probe = mock.Mock()
+    wheel_install = mock.Mock()
+    process_run = mock.Mock()
+    monkeypatch.setattr(worker, "probe_torch_wheel_env", probe)
+    monkeypatch.setattr(worker, "url_exists", url_probe)
+    monkeypatch.setattr(worker, "install_wheel", wheel_install)
+    monkeypatch.setattr(worker._sp, "run", process_run)
 
-    monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
-    monkeypatch.setattr(worker, "_should_try_runtime_flash_attn_install", lambda max_seq: True)
-    monkeypatch.setattr(worker, "has_blackwell_gpu", lambda: True)
-    monkeypatch.setattr(worker, "_install_package_wheel_first", install_mock)
-    monkeypatch.setattr(
-        worker,
-        "_send_status",
-        lambda queue, message: statuses.append(message),
+    installed = worker._install_package_wheel_first(
+        event_queue = [],
+        import_name = "missing_fast_path",
+        display_name = "missing-fast-path",
+        pypi_name = "missing-fast-path",
+        pypi_version = "1.0.0",
+        filename_prefix = "missing_fast_path",
+        release_tag = "v1.0.0",
+        release_base_url = "https://example.invalid/releases",
     )
 
-    worker._ensure_flash_attn_for_long_context(event_queue = [], max_seq_length = 65536)
+    assert installed is False
+    probe.assert_not_called()
+    url_probe.assert_not_called()
+    wheel_install.assert_not_called()
+    process_run.assert_not_called()
 
-    install_mock.assert_not_called()
-    assert len(statuses) == 1
-    assert "Blackwell" in statuses[0]
+
+def test_wheel_first_install_uses_existing_package_offline(monkeypatch):
+    monkeypatch.setenv("HF_HUB_OFFLINE", "true")
+    probe = mock.Mock()
+    monkeypatch.setattr(worker, "probe_torch_wheel_env", probe)
+
+    installed = worker._install_package_wheel_first(
+        event_queue = [],
+        import_name = "sys",
+        display_name = "sys",
+        pypi_name = "sys",
+        pypi_version = "1.0.0",
+    )
+
+    assert installed is True
+    probe.assert_not_called()
 
 
+@not_on_windows
 def test_causal_conv1d_fast_path_preserves_wheel_first_install_args(monkeypatch):
     install_mock = mock.Mock(return_value = True)
     monkeypatch.setattr(worker, "_install_package_wheel_first", install_mock)
@@ -183,6 +582,7 @@ def test_causal_conv1d_fast_path_preserves_wheel_first_install_args(monkeypatch)
     )
 
 
+@not_on_windows
 def test_causal_conv1d_fast_path_includes_qwen3_6_variants(monkeypatch):
     install_mock = mock.Mock(return_value = True)
     monkeypatch.setattr(worker, "_install_package_wheel_first", install_mock)
@@ -232,7 +632,25 @@ def _force_missing_fla_imports(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", fake_import)
 
 
+def _pin_fla_model_types(monkeypatch):
+    """Pin the auto-discovered FLA allowlist to the Qwen GDN families.
+
+    `_discover_fla_model_types` scans the *installed* transformers, and
+    `models/qwen3_5/` only exists from 5.x. The backend supports
+    `transformers>=4.51`, so on a 4.x install the gate returns False and every
+    Qwen3.5 assertion below silently no-ops. Pinning keeps these tests hermetic
+    across the supported range.
+    """
+    monkeypatch.setattr(
+        worker,
+        "_discover_fla_model_types",
+        lambda: frozenset({"qwen3_5", "qwen3_5_moe", "qwen3_6", "qwen3_next"}),
+    )
+
+
+@not_on_windows
 def test_flash_linear_attention_installs_pinned_pair_for_qwen3_5(monkeypatch):
+    _pin_fla_model_types(monkeypatch)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
     run_mock = mock.Mock(return_value = mock.Mock(returncode = 0, stdout = ""))
     monkeypatch.setattr(worker._sp, "run", run_mock)
@@ -266,6 +684,39 @@ def test_flash_linear_attention_skips_for_unrelated_models(monkeypatch):
     run_mock.assert_not_called()
 
 
+@not_on_windows
+def test_flash_linear_attention_skips_install_offline(monkeypatch):
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setattr(worker, "_installed_torch_version_tuple", lambda: (2, 9))
+    monkeypatch.setattr(worker, "_flash_linear_attention_importable", lambda: False)
+    run_mock = mock.Mock()
+    monkeypatch.setattr(worker._sp, "run", run_mock)
+
+    installed = worker._ensure_flash_linear_attention_unconditional(event_queue = [])
+
+    assert installed is False
+    run_mock.assert_not_called()
+
+
+@not_on_windows
+def test_flash_linear_attention_uses_current_install_offline(monkeypatch):
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setattr(worker, "_installed_torch_version_tuple", lambda: (2, 9))
+    monkeypatch.setattr(worker, "_flash_linear_attention_importable", lambda: True)
+    monkeypatch.setattr(
+        worker,
+        "_flash_linear_attention_current",
+        lambda already_importable = None: True,
+    )
+    run_mock = mock.Mock()
+    monkeypatch.setattr(worker._sp, "run", run_mock)
+
+    installed = worker._ensure_flash_linear_attention_unconditional(event_queue = [])
+
+    assert installed is True
+    run_mock.assert_not_called()
+
+
 def test_flash_linear_attention_skips_for_ssm_only_models(monkeypatch):
     # Nemotron-H / Falcon-H1 / Granite-H / LFM2 take the mamba_ssm path,
     # never FLA's gated_delta_rule kernels.
@@ -283,6 +734,7 @@ def test_flash_linear_attention_skips_for_ssm_only_models(monkeypatch):
     run_mock.assert_not_called()
 
 
+@not_on_windows
 def test_flash_linear_attention_matches_full_qwen3_family(monkeypatch):
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
     run_mock = mock.Mock(return_value = mock.Mock(returncode = 0, stdout = ""))
@@ -337,7 +789,9 @@ def test_flash_linear_attention_skipped_via_env(monkeypatch):
     run_mock.assert_not_called()
 
 
+@not_on_windows
 def test_flash_linear_attention_skipped_below_torch_2_7(monkeypatch):
+    _pin_fla_model_types(monkeypatch)
     monkeypatch.delenv(worker._FLA_SKIP_ENV, raising = False)
     monkeypatch.setattr(worker, "_installed_torch_version_tuple", lambda: (2, 5))
     run_mock = mock.Mock(return_value = mock.Mock(returncode = 0, stdout = ""))
@@ -354,7 +808,9 @@ def test_flash_linear_attention_skipped_below_torch_2_7(monkeypatch):
     assert any("torch>=" in s for s in statuses)
 
 
+@not_on_windows
 def test_flash_linear_attention_install_includes_einops(monkeypatch):
+    _pin_fla_model_types(monkeypatch)
     monkeypatch.delenv(worker._FLA_SKIP_ENV, raising = False)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
     monkeypatch.setattr(worker, "_installed_torch_version_tuple", lambda: (2, 9))
@@ -379,8 +835,10 @@ def test_flash_linear_attention_install_includes_einops(monkeypatch):
     assert f"fla-core=={worker._FLA_CORE_PACKAGE_VERSION}" in args
 
 
+@not_on_windows
 def test_flash_linear_attention_logs_post_install_import_failure(monkeypatch):
     """pip exits 0 but `import fla.modules` still fails (missing transitive)."""
+    _pin_fla_model_types(monkeypatch)
     monkeypatch.delenv(worker._FLA_SKIP_ENV, raising = False)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
     monkeypatch.setattr(worker, "_installed_torch_version_tuple", lambda: (2, 9))
@@ -424,7 +882,9 @@ def test_tilelang_backend_skipped_on_unsupported_linux_arch(monkeypatch):
     run_mock.assert_not_called()
 
 
+@linux_only
 def test_tilelang_backend_pins_only_binary(monkeypatch):
+    _pin_fla_model_types(monkeypatch)
     monkeypatch.delenv(worker._TILELANG_SKIP_ENV, raising = False)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
     monkeypatch.setattr(worker, "_installed_tvm_ffi_version", lambda: None)
@@ -464,7 +924,67 @@ def _force_missing_tilelang_imports(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", fake_import)
 
 
+def test_tilelang_backend_skips_install_offline(monkeypatch):
+    monkeypatch.setenv("TRANSFORMERS_OFFLINE", "yes")
+    monkeypatch.setattr(worker, "_tilelang_platform_supported", lambda: True)
+    monkeypatch.setattr(worker, "_installed_tvm_ffi_version", lambda: None)
+    monkeypatch.setattr(worker, "_tilelang_importable", lambda: False)
+    run_mock = mock.Mock()
+    monkeypatch.setattr(worker, "_run_pip", run_mock)
+
+    installed = worker._ensure_tilelang_backend_unconditional(event_queue = [])
+
+    assert installed is False
+    run_mock.assert_not_called()
+
+
+def test_tilelang_backend_uses_current_install_offline(monkeypatch):
+    monkeypatch.setenv("TRANSFORMERS_OFFLINE", "yes")
+    monkeypatch.setattr(worker, "_tilelang_platform_supported", lambda: True)
+    monkeypatch.setattr(worker, "_installed_tvm_ffi_version", lambda: "0.1.9")
+    monkeypatch.setattr(worker, "_tilelang_importable", lambda: True)
+    run_mock = mock.Mock()
+    monkeypatch.setattr(worker, "_run_pip", run_mock)
+
+    installed = worker._ensure_tilelang_backend_unconditional(event_queue = [])
+
+    assert installed is True
+    run_mock.assert_not_called()
+
+
+def test_tilelang_backend_disables_broken_runtime_offline(monkeypatch):
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.delenv("FLA_TILELANG", raising = False)
+    monkeypatch.setattr(worker, "_tilelang_platform_supported", lambda: True)
+    monkeypatch.setattr(worker, "_installed_tvm_ffi_version", lambda: "0.1.11")
+    run_mock = mock.Mock()
+    monkeypatch.setattr(worker, "_run_pip", run_mock)
+
+    installed = worker._ensure_tilelang_backend_unconditional(event_queue = [])
+
+    assert installed is False
+    assert worker.os.environ["FLA_TILELANG"] == "0"
+    run_mock.assert_not_called()
+
+
+def test_tilelang_backend_preserves_offline_user_override(monkeypatch):
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setenv("FLA_TILELANG", "1")
+    monkeypatch.setattr(worker, "_tilelang_platform_supported", lambda: True)
+    monkeypatch.setattr(worker, "_installed_tvm_ffi_version", lambda: "0.1.10")
+    run_mock = mock.Mock()
+    monkeypatch.setattr(worker, "_run_pip", run_mock)
+
+    installed = worker._ensure_tilelang_backend_unconditional(event_queue = [])
+
+    assert installed is False
+    assert worker.os.environ["FLA_TILELANG"] == "1"
+    run_mock.assert_not_called()
+
+
+@linux_only
 def test_tilelang_backend_installs_pinned_pair_for_qwen3_5(monkeypatch):
+    _pin_fla_model_types(monkeypatch)
     monkeypatch.delenv(worker._TILELANG_SKIP_ENV, raising = False)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
     monkeypatch.setattr(worker, "_installed_tvm_ffi_version", lambda: None)
@@ -487,6 +1007,7 @@ def test_tilelang_backend_installs_pinned_pair_for_qwen3_5(monkeypatch):
     assert any("Installing TileLang" in s for s in statuses)
 
 
+@linux_only
 def test_tilelang_backend_reinstalls_when_tvm_ffi_is_broken(monkeypatch):
     """Repair path issues TWO pip calls:
 
@@ -495,6 +1016,7 @@ def test_tilelang_backend_reinstalls_when_tvm_ffi_is_broken(monkeypatch):
     2 (install): plain apache-tvm-ffi + tilelang -- resolves missing transitive
       deps without --force-reinstall, so it never replaces correct packages.
     """
+    _pin_fla_model_types(monkeypatch)
     monkeypatch.delenv(worker._TILELANG_SKIP_ENV, raising = False)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
     monkeypatch.setattr(worker, "_installed_tvm_ffi_version", lambda: "0.1.11")
@@ -555,7 +1077,9 @@ def test_tilelang_backend_skipped_on_windows(monkeypatch):
     run_mock.assert_not_called()
 
 
+@linux_only
 def test_tilelang_backend_swallows_install_timeout(monkeypatch):
+    _pin_fla_model_types(monkeypatch)
     monkeypatch.delenv(worker._TILELANG_SKIP_ENV, raising = False)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
     monkeypatch.setattr(worker, "_installed_tvm_ffi_version", lambda: None)
@@ -608,7 +1132,9 @@ def test_tilelang_backend_skipped_via_env(monkeypatch):
     run_mock.assert_not_called()
 
 
+@linux_only
 def test_tilelang_backend_swallows_install_failure(monkeypatch):
+    _pin_fla_model_types(monkeypatch)
     monkeypatch.delenv(worker._TILELANG_SKIP_ENV, raising = False)
     monkeypatch.setattr(worker.shutil, "which", lambda name: None)
     monkeypatch.setattr(worker, "_installed_tvm_ffi_version", lambda: None)
@@ -671,7 +1197,31 @@ def _patch_iu_gates(monkeypatch, fla_gate, conv_gate):
     monkeypatch.setattr(_iu, "is_causal_conv1d_available", conv_gate)
 
 
+def test_hook_leaves_causal_gate_unchanged_for_unrelated_model(monkeypatch):
+    fla_gate = _make_fake_gate(initial_return = True)
+    conv_gate = _make_fake_gate(initial_return = False)
+    _patch_iu_gates(monkeypatch, fla_gate, conv_gate)
+    conv_install = mock.Mock(return_value = True)
+    monkeypatch.setattr(worker, "_install_package_wheel_first", conv_install)
+    monkeypatch.setattr(worker, "_tilelang_importable", lambda: True)
+    monkeypatch.setattr(worker, "_installed_tvm_ffi_version", lambda: "0.1.9")
+    monkeypatch.delenv(worker._FAST_PATH_HOOKS_SKIP_ENV, raising = False)
+
+    worker._install_fast_path_hooks(
+        event_queue = _FakeQueue(),
+        model_name = "unsloth/Llama-3.2-1B-Instruct",
+    )
+
+    from transformers.utils import import_utils as _iu
+
+    assert _iu.is_causal_conv1d_available is conv_gate
+    assert _iu.is_causal_conv1d_available() is False
+    conv_install.assert_not_called()
+
+
+@not_on_windows
 def test_hook_installs_when_gate_returns_false(monkeypatch):
+    _pin_fla_model_types(monkeypatch)
     fla_gate = _make_fake_gate(initial_return = False)
     conv_gate = _make_fake_gate(initial_return = False)
     _patch_iu_gates(monkeypatch, fla_gate, conv_gate)
@@ -739,6 +1289,7 @@ def test_hook_skips_install_when_gate_already_true(monkeypatch):
 
 
 def test_hook_idempotent_on_repeat_call(monkeypatch):
+    _pin_fla_model_types(monkeypatch)
     fla_gate = _make_fake_gate(initial_return = False)
     conv_gate = _make_fake_gate(initial_return = False)
     _patch_iu_gates(monkeypatch, fla_gate, conv_gate)
@@ -947,6 +1498,7 @@ def test_hook_does_not_install_tilelang_for_model_outside_allowlist(monkeypatch)
 
 def test_hook_does_install_tilelang_for_qwen35(monkeypatch):
     """Positive control for finding #1: Qwen3.5 still gets tilelang."""
+    _pin_fla_model_types(monkeypatch)
     fla_gate = _make_fake_gate(initial_return = False)
     conv_gate = _make_fake_gate(initial_return = True)
     _patch_iu_gates(monkeypatch, fla_gate, conv_gate)
@@ -971,11 +1523,13 @@ def test_hook_does_install_tilelang_for_qwen35(monkeypatch):
     tile_install.assert_called_once()
 
 
+@linux_only
 def test_tilelang_repair_does_not_touch_torch_cuda_stack(monkeypatch):
     """Finding #2: the broken-tvm-ffi repair must use --no-deps on the
     forced step so --force-reinstall doesn't cascade through
     apache-tvm-ffi's dep graph and pull a different torch wheel.
     """
+    _pin_fla_model_types(monkeypatch)
     monkeypatch.delenv(worker._TILELANG_SKIP_ENV, raising = False)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
     monkeypatch.setattr(worker, "_installed_tvm_ffi_version", lambda: "0.1.10")
@@ -1088,6 +1642,7 @@ def test_hook_runs_tilelang_repair_when_fla_already_true(monkeypatch):
     probe) but tilelang is missing or apache-tvm-ffi is on the broken
     list, the post-available action must still run tilelang.
     """
+    _pin_fla_model_types(monkeypatch)
     fla_gate = _make_fake_gate(initial_return = True)
     conv_gate = _make_fake_gate(initial_return = True)
     _patch_iu_gates(monkeypatch, fla_gate, conv_gate)
@@ -1112,6 +1667,7 @@ def test_hook_runs_tilelang_repair_when_fla_already_true(monkeypatch):
     tile_install.assert_called_once()
 
 
+@not_on_windows
 def test_fla_installer_force_reinstalls_when_older_version_present(monkeypatch):
     """Finding #8: an older `flash-linear-attention` that is importable
     but below the pin must force a reinstall (not no-op).
@@ -1146,12 +1702,13 @@ def test_run_training_process_eagerly_installs_causal_conv1d_in_normal_mode():
     import inspect
 
     src = inspect.getsource(worker.run_training_process)
-    # Orchestration block.
-    assert "_ensure_causal_conv1d_fast_path(event_queue, model_name)" in src
-    assert "_install_fast_path_hooks(event_queue, model_name)" in src
+    # Orchestration block. Match the call, not its formatting, so wrapping the args over
+    # several lines or adding a keyword does not break this.
+    assert "_ensure_causal_conv1d_fast_path(" in src
+    assert "_install_fast_path_hooks(" in src
     # Eager causal_conv1d call must come BEFORE the hook-mode if/else, not
     # nested inside the `if _FAST_PATH_HOOKS_SKIP_ENV` branch.
-    eager_pos = src.find("_ensure_causal_conv1d_fast_path(event_queue, model_name)")
+    eager_pos = src.find("_ensure_causal_conv1d_fast_path(")
     skip_check_pos = src.find('os.getenv(_FAST_PATH_HOOKS_SKIP_ENV) == "1"')
     assert eager_pos < skip_check_pos, (
         "_ensure_causal_conv1d_fast_path must be called BEFORE the hook-mode "
@@ -1576,15 +2133,10 @@ def test_install_respects_user_gcc_install_dir(monkeypatch):
     )
     _make_hip_install_env(monkeypatch, gcc_dir = "/usr/lib/gcc/x86_64-linux-gnu/13")
 
-    captured: dict[str, str] | None = {"_called": "no"}
+    captured: dict[str, str] = {}
 
     def fake_run(cmd, **kwargs):
-        env = kwargs.get("env")
-        if env is not None:
-            captured.clear()
-            captured.update(env)
-        else:
-            captured["_called"] = "yes_no_env"
+        captured.update(kwargs.get("env") or {})
         return subprocess.CompletedProcess(cmd, 0, "")
 
     monkeypatch.setattr(worker._sp, "run", fake_run)
@@ -1600,14 +2152,11 @@ def test_install_respects_user_gcc_install_dir(monkeypatch):
         release_base_url = "https://example.com",
     )
 
-    # subprocess.run invoked without env override (user already set
-    # HIPCC_COMPILE_FLAGS_APPEND with --gcc-install-dir, so we left the
-    # env alone — the existing value is inherited).
-    assert captured == {"_called": "yes_no_env"}
+    assert captured["HIPCC_COMPILE_FLAGS_APPEND"] == "--gcc-install-dir=/opt/custom/gcc-13"
 
 
 def test_install_does_not_inject_env_on_cuda(monkeypatch):
-    """CUDA path (no hip_version in env) → no env override at all."""
+    """CUDA path (no hip_version in env) → no HIP flag injected."""
     monkeypatch.delenv("HIPCC_COMPILE_FLAGS_APPEND", raising = False)
     monkeypatch.setattr(builtins, "__import__", _missing_module_import("causal_conv1d"))
     monkeypatch.setattr(
@@ -1634,7 +2183,7 @@ def test_install_does_not_inject_env_on_cuda(monkeypatch):
     captured: dict[str, Any] = {}
 
     def fake_run(cmd, **kwargs):
-        captured["env_in_kwargs"] = "env" in kwargs
+        captured.update(kwargs.get("env") or {})
         return subprocess.CompletedProcess(cmd, 0, "")
 
     monkeypatch.setattr(worker._sp, "run", fake_run)
@@ -1650,5 +2199,5 @@ def test_install_does_not_inject_env_on_cuda(monkeypatch):
         release_base_url = "https://example.com",
     )
 
-    # CUDA branch never sets the env, never invokes the gcc helper.
-    assert captured.get("env_in_kwargs") is False
+    # env is always passed (to force UTF-8), but never the HIP flag.
+    assert "HIPCC_COMPILE_FLAGS_APPEND" not in captured

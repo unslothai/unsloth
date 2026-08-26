@@ -13,26 +13,11 @@
 
 """Regression tests for unslothai/unsloth#2660.
 
-On Windows the default text encoding is the locale code page (e.g. cp1252),
-not UTF-8. ``subprocess.Popen`` / ``subprocess.run`` opened in text mode
-(``text=True`` / ``universal_newlines=True``) without an explicit
-``encoding`` therefore decode child-process output with cp1252. When
-llama.cpp / Ollama emit a byte that is undefined in cp1252 (e.g. ``0x9d``,
-which appears inside the UTF-8 encoding of common punctuation and box-drawing
-glyphs), the read raises ``UnicodeDecodeError`` and aborts the GGUF export.
-
-Two checks:
-
-* ``test_save_subprocess_text_calls_declare_utf8_encoding`` -- a source-level
-  drift detector. It parses ``unsloth/save.py`` (no import, so it runs under
-  the GPU/torch-free harness) and fails if any text-mode subprocess call is
-  missing ``encoding="utf-8"``. This is the regression guard: it is red
-  before the fix and green after.
-* ``test_utf8_replace_decodes_non_cp1252_subprocess_output`` -- a behavioural
-  check that documents the bug and the fix deterministically on any platform:
-  raw child output that is invalid under cp1252 raises, while the
-  ``encoding="utf-8", errors="replace"`` kwargs used by the fix read it
-  cleanly.
+On Windows, text-mode subprocess calls without explicit encoding decode child
+output as cp1252, raising UnicodeDecodeError on UTF-8 bytes undefined there
+(e.g. 0x9d) and aborting GGUF export. A source-level drift check asserts save.py
+pins encoding="utf-8" on every text-mode call; a behavioural check reproduces
+the cp1252 failure and confirms the utf-8/replace fix reads it cleanly.
 """
 
 from __future__ import annotations
@@ -84,9 +69,8 @@ def _collect_text_mode_subprocess_calls() -> list[ast.Call]:
 
 
 def test_text_mode_subprocess_calls_exist():
-    """Guard the guard: if save.py stops using text-mode subprocess calls the
-    drift test below would vacuously pass, so make sure we are actually
-    inspecting something."""
+    """Guard the guard: ensure save.py still has text-mode subprocess calls so
+    the drift test below isn't vacuously passing."""
     calls = _collect_text_mode_subprocess_calls()
     assert len(calls) >= 6, (
         f"Expected several text-mode subprocess calls in {SAVE_PY.name}, "
@@ -95,11 +79,8 @@ def test_text_mode_subprocess_calls_exist():
 
 
 def test_save_subprocess_text_calls_declare_utf8_encoding():
-    """Every text-mode subprocess call in save.py must pin encoding='utf-8'.
-
-    Without it, reading llama.cpp/Ollama output crashes on Windows (cp1252).
-    Fails before the #2660 fix, passes after.
-    """
+    """Every text-mode subprocess call in save.py must pin encoding='utf-8'
+    (else Windows cp1252 crashes reading child output; #2660 fix)."""
     offenders = []
     for node in _collect_text_mode_subprocess_calls():
         enc = _kw(node, "encoding")
@@ -115,14 +96,10 @@ def test_save_subprocess_text_calls_declare_utf8_encoding():
 
 
 def test_utf8_replace_decodes_non_cp1252_subprocess_output():
-    """Document the failure and the fix with a real subprocess.
-
-    The child emits U+201D (right double quote), whose UTF-8 encoding
-    ``E2 80 9D`` contains byte 0x9D -- undefined in cp1252. Decoding the raw
-    bytes as cp1252 raises (the bug); the fix's kwargs read it cleanly.
-    """
-    # All-ASCII argv; the child builds the non-ASCII char itself so this is
-    # deterministic regardless of the parent's locale.
+    """Reproduce the bug and fix with a real subprocess: the child emits U+201D
+    (UTF-8 E2 80 9D, byte 0x9D undefined in cp1252) so cp1252 decode raises while
+    the fix's utf-8/replace kwargs read it cleanly."""
+    # All-ASCII argv; the child builds the non-ASCII char so it's locale-independent.
     child = (
         "import sys; "
         "sys.stdout.buffer.write(('tensor ' + chr(0x201D) + ' x\\n').encode('utf-8'))"
@@ -131,8 +108,7 @@ def test_utf8_replace_decodes_non_cp1252_subprocess_output():
     raw = subprocess.run([sys.executable, "-c", child], capture_output = True).stdout
     assert b"\x9d" in raw  # precondition: output carries the cp1252-undefined byte
 
-    # Failing behaviour before the fix: cp1252 (the Windows default) cannot
-    # decode this output.
+    # Before the fix: cp1252 (the Windows default) cannot decode this output.
     with pytest.raises(UnicodeDecodeError):
         raw.decode("cp1252")
 

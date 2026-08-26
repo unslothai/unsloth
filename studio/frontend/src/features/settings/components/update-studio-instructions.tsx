@@ -91,7 +91,7 @@ function CopyableCommand({
         type="text"
         readOnly={true}
         value={command}
-        className="min-w-0 flex-1 bg-transparent px-2 py-1.5 font-mono text-[11px] text-foreground outline-none"
+        className="min-w-0 flex-1 bg-transparent px-2 py-1.5 font-mono text-ui-11 text-foreground outline-none"
         title={command}
         aria-label={t("settings.about.update.commandText", {
           label: copyLabel,
@@ -187,10 +187,10 @@ function ShellToggleButton({
       onClick={onClick}
       aria-pressed={active}
       className={cn(
-        "rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors",
+        "inline-flex h-8 items-center justify-center rounded-full px-3.5 text-ui-12 font-medium transition-colors",
         active
-          ? "bg-foreground/[0.08] text-foreground dark:bg-white/[0.12]"
-          : "text-muted-foreground hover:text-foreground",
+          ? "hub-tab-toggle-pill text-foreground"
+          : "cursor-pointer text-muted-foreground hover:text-foreground",
       )}
     >
       {label}
@@ -244,9 +244,8 @@ export function UpdateStudioInstructions({
             {t("settings.about.update.title")}
           </p>
         ) : null}
-        <p className="text-xs text-muted-foreground leading-relaxed">
-          {t("settings.about.update.desktopManaged")}
-        </p>
+        {/* The check/update control and its explanation live in General, next
+            to the version rows, so there is exactly one place to update from. */}
         <UpdateDocsLinks />
       </div>
     );
@@ -265,7 +264,7 @@ export function UpdateStudioInstructions({
             {t("settings.about.update.title")}
           </p>
         ) : null}
-        <div className="flex shrink-0 items-center gap-1.5">
+        <div className="hub-tab-toggle inline-flex h-8 shrink-0 items-center rounded-full">
           <ShellToggleButton
             active={!windows}
             label="MacOS / Linux"

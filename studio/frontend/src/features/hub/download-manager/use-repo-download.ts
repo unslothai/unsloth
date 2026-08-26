@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useLatestRef } from "../hooks/use-latest-ref";
+import type { ResolvedTransport } from "./constants";
 import type { TransportConflictInfo } from "./types";
 import {
   type DownloadKind,
@@ -25,6 +26,12 @@ export interface DownloadJobProgress {
 export interface DownloadJob {
   progress: DownloadJobProgress | null;
   bytesPerSec: number;
+  etaSeconds: number;
+  /** Transport the running job resolved to, when it started on this frontend. */
+  transport: ResolvedTransport | null;
+  /** Its cancel marker, when a Xet run fell back to HTTP: stopping it is still
+   * a restart, so this and not `transport` decides the stop control. */
+  cancelTransport: ResolvedTransport | null;
   cancelling: boolean;
   repoPeerActive: boolean;
   transportConflict: TransportConflictInfo | null;
@@ -52,8 +59,8 @@ export interface RepoDownloadConfig {
 
 /**
  * Binds a single download surface (one repo, optionally per GGUF variant) to the
- * global download manager. Job state and polling live in the store, so a download
- * keeps running and stays visible after the card unmounts.
+ * global download manager. Job state and polling live in the store, so a
+ * download keeps running and stays visible after the card unmounts.
  */
 export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
   const {
@@ -120,8 +127,10 @@ export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
   );
 
   const requestStartDownload = useCallback(
-    (variant: string | null, expectedBytes: number) => {
-      return downloadManager.requestStart({
+    async (variant: string | null, expectedBytes: number) => {
+      // This surface renders the conflict resolver (transportConflict), so the
+      // start outcome is handled by the card UI; the awaited result is ignored.
+      await downloadManager.requestStart({
         kind,
         repoId,
         variant,
@@ -177,6 +186,9 @@ export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
   return {
     progress,
     bytesPerSec: active?.bytesPerSec ?? 0,
+    etaSeconds: active?.etaSeconds ?? 0,
+    transport: active?.transport ?? null,
+    cancelTransport: active?.cancelTransport ?? null,
     cancelling: active?.state === "cancelling",
     repoPeerActive: activeState.repoPeerActive,
     transportConflict,

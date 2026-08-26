@@ -13,7 +13,7 @@ import logging
 from typing import Awaitable, Callable, Optional
 
 from core.inference.llama_server_args import (
-    resolve_tensor_parallel,
+    _effective_tensor_parallel,
     strip_split_mode_only,
 )
 
@@ -34,18 +34,20 @@ async def load_with_tensor_fallback(
     True on success; it *raises* on a hard crash (llama-server aborts on some
     archs / older builds), which is treated the same as a False return.
 
-    Tensor mode can be requested by the toggle or by a ``--split-mode tensor``
-    in ``extra_args`` (an allowed shadow flag), so the retry is keyed on whether
-    tensor mode is actually engaged, and it strips ``--split-mode`` from the
-    extras so the layer retry can't relaunch the same failing tensor load. A
-    non-tensor load keeps its original contract and propagates exceptions.
+    Tensor mode can be requested by the toggle, by a ``--split-mode tensor`` in
+    ``extra_args`` (an allowed shadow flag), or by an inherited
+    ``LLAMA_ARG_SPLIT_MODE=tensor`` env (load_model engages it the same way), so
+    the retry is keyed on whether tensor mode is actually engaged, and it forces
+    ``--split-mode layer`` on the retry so neither leftover extras nor the
+    inherited tensor env can relaunch the same failing tensor load. A non-tensor
+    load keeps its original contract and propagates exceptions.
 
     ``cancelled()`` distinguishes a real tensor-start failure from a user
     cancellation: ``attempt_load`` also returns False when the load was
     cancelled, so without this the helper would restart a load the user just
     cancelled.
     """
-    tensor_requested = resolve_tensor_parallel(extra_args, requested_tensor)
+    tensor_requested = _effective_tensor_parallel(extra_args, requested_tensor)
     try:
         success = await attempt_load(requested_tensor, extra_args)
     except Exception as exc:
@@ -67,4 +69,8 @@ async def load_with_tensor_fallback(
         "(this model may not support tensor parallelism)",
         label,
     )
-    return await attempt_load(False, strip_split_mode_only(extra_args))
+    # Force --split-mode layer (CLI wins over env) so neither leftover extras nor
+    # an inherited LLAMA_ARG_SPLIT_MODE=tensor can re-engage tensor and re-crash
+    # the retry; load_model and the child both honor the explicit layer override.
+    layer_extras = strip_split_mode_only(extra_args) or []
+    return await attempt_load(False, [*layer_extras, "--split-mode", "layer"])

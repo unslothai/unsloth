@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any, Optional, Tuple
 
@@ -28,19 +29,65 @@ from ..models._utils import *
 from ..utils.packing import (
     build_sdpa_packed_attention_mask,
     build_xformers_block_causal_mask,
+    move_xformers_attention_bias,
 )
 
+flash_attn_func = None
+flash_attn_varlen_func = None
 if HAS_FLASH_ATTENTION:
     from flash_attn import flash_attn_func, flash_attn_varlen_func
 HAS_XFORMERS = xformers is not None
 
-# xformers kernels (FA3, FA2, cutlass) only support compute capability <= 9.0.
-# Disable xformers on newer GPUs (e.g. RTX 5070 Ti / sm_120) and fall back to SDPA.
-if HAS_XFORMERS and torch.cuda.is_available():
-    _cc = torch.cuda.get_device_capability()
-    if _cc[0] >= 12:
+
+def _xformers_runs_on_device() -> bool:
+    """One tiny attention forward; True iff the xformers kernel actually runs here."""
+    try:
+        # Pre-Ampere GPUs (sm < 80: Turing/Volta) have no bfloat16 attention kernel
+        # but run xformers fine in float16, so pick the dtype the device supports.
+        dtype = torch.bfloat16 if SUPPORTS_BFLOAT16 else torch.float16
+        q = torch.zeros((1, 8, 1, 64), device = "cuda", dtype = dtype)
+        attn_bias = xformers.attn_bias.BlockDiagonalCausalMask.from_seqlens([8])
+        xformers_attention(q, q, q, attn_bias = attn_bias)
+        # Launches are async; synchronize so a deferred kernel failure fails the probe here.
+        torch.cuda.synchronize()
+        return True
+    except Exception:
+        return False
+
+
+def _xformers_disabled_for_capability(capability, probe = _xformers_runs_on_device) -> bool:
+    # At sm_120 (RTX 50-series) xformers' cutlass op is capability-rejected (caps at
+    # sm_90) and its flash-2 op runs only if the build ships an sm_120 kernel, so run
+    # one real forward to decide. Below sm_120 xformers always works; skip the probe.
+    if capability[0] < 12:
+        return False
+    return not probe()
+
+
+# FlashAttention always wins in select_attention_backend and nothing downgrades
+# flash -> xformers, so when it's installed xformers is never selected: skip the probe.
+if HAS_XFORMERS and not HAS_FLASH_ATTENTION and torch.cuda.is_available():
+    if _xformers_disabled_for_capability(torch.cuda.get_device_capability()):
         HAS_XFORMERS = False
+
+# On sm_100+ (B200, sm_120) xformers' fp32-capable cutlass op is capability-rejected and
+# only its fp16/bf16 flash-2 op runs, so fp32 Q/K/V (DoRA, #1013) must be downcast there;
+# below sm_100 cutlass handles fp32 natively. Read once from device 0, like the probe gate.
+_XFORMERS_FP32_UNSUPPORTED = (
+    torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 10
+)
 SDPA_HAS_GQA = "enable_gqa" in (scaled_dot_product_attention.__doc__ or "")
+
+# PrefixGrouper kernel, resolved once when the env gate is on so PG-off users never load
+# torch flex_attention.
+_flex_shared_prefix_attention = None
+if os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER", "1").lower() not in ("0", "false", "no", "off"):
+    try:
+        from .prefix_grouper_kernel import (
+            flex_shared_prefix_attention as _flex_shared_prefix_attention,
+        )
+    except Exception:
+        _flex_shared_prefix_attention = None
 
 FLASH_VARLEN = "flash_varlen"
 FLASH_DENSE = "flash_dense"
@@ -49,6 +96,98 @@ SDPA = "sdpa"
 
 
 XFORMERS_BLOCK_DIAG_CLS = xformers.attn_bias.BlockDiagonalCausalMask if HAS_XFORMERS else None
+
+
+# ---- flash-attn 2 varlen backward int32 overflow guard -------------------------------------
+# The varlen BACKWARD kernel (used by flash-attn 2 directly and by the flash-2 op xFormers
+# dispatches a BlockDiagonal* bias to) allocates
+#
+#     dq_accum = zeros(total_q + 128 * n_seqs, n_heads, round_up(head_dim, 32), dtype = fp32)
+#
+# and indexes it with int32, so once that element count reaches 2**31 the kernel faults with
+# "CUDA error: an illegal memory access was encountered". That poisons the CUDA context, so the
+# run dies hours in, far from the cause.
+#
+# Measured on a B200 (bf16, one flattened row, forward + backward) by bisecting the document
+# count in a packed row: the last working count and the count at which
+# (total_q + 128 * n_seqs) * n_heads * round_up(head_dim, 32) crosses 2**31 agree to within one
+# document across every shape tried:
+#
+#   heads  head_dim  doc_len   predicted   last OK
+#      16       128        1        8128      8129
+#      16        96        1       10837     10838
+#      16        64        1       16257     16257
+#       8       128        1       16257     >= 16257, fails by 16400
+#      16       128        2        8065     8060 OK, 8200 fails
+#      16       128        4        7944      7944
+#       4       128        1       32518     no failure up to 20000 (below the bound)
+#
+# Forward-only never allocates dq_accum and never faults (20000 documents ran clean), so the
+# guard requires a backward to be possible. Plain SDPA is unaffected.
+_INT32_ELEMENTS = 2**31
+_VARLEN_INT32_GUARD_DISABLED = os.environ.get(
+    "UNSLOTH_DISABLE_VARLEN_INT32_GUARD", "0"
+).lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+_VARLEN_INT32_WARNED = [False]
+
+
+def _varlen_backward_dq_accum_elements(
+    n_seqs: int, total_q: int, n_heads: int, head_dim: int
+) -> int:
+    """Element count of flash-attn 2's varlen-backward ``dq_accum`` for these shapes."""
+    head_dim_rounded = ((head_dim + 31) // 32) * 32
+    return (total_q + 128 * n_seqs) * n_heads * head_dim_rounded
+
+
+def _varlen_backward_overflows_int32(
+    n_seqs: int, total_q: int, n_heads: int, head_dim: int
+) -> bool:
+    if n_seqs <= 0:
+        return False
+    return _varlen_backward_dq_accum_elements(n_seqs, total_q, n_heads, head_dim) >= _INT32_ELEMENTS
+
+
+def _configured_softcap(config) -> Optional[float]:
+    """The attention logit softcap this layer asked the fast kernels for, if any.
+
+    Only flash and the xformers ops take a `softcap`; the SDPA branch below has no way to
+    apply one. Gemma 2 passes it exclusively through these kwargs
+    (`unsloth/models/gemma2.py`), so a backend swap that ignores them would train on
+    uncapped logits.
+    """
+    for kwargs in (
+        config.flash_varlen_kwargs,
+        config.flash_dense_kwargs,
+        config.xformers_kwargs,
+    ):
+        if not kwargs:
+            continue
+        softcap = kwargs.get("softcap")
+        if softcap:
+            return softcap
+    return None
+
+
+def _warn_varlen_int32_overflow_once(backend: str, n_seqs: int, total_q: int, elements: int):
+    if _VARLEN_INT32_WARNED[0]:
+        return
+    _VARLEN_INT32_WARNED[0] = True
+    print(
+        f"Unsloth: A packed row holds {n_seqs} documents over {total_q} tokens. The "
+        f"{backend} backward kernel would index a {elements:,}-element buffer with int32 "
+        f"(limit {_INT32_ELEMENTS:,}), which faults with 'CUDA error: an illegal memory "
+        "access was encountered' and poisons the CUDA context for the rest of the process.\n"
+        "Unsloth has fallen back to SDPA for these batches, which is CORRECT but far slower "
+        "and far heavier: SDPA's packed path materialises a dense mask and can use ~10x the "
+        "memory, so it may OOM instead.\n"
+        "To keep the fast kernel, pack fewer documents per row -- lower the packing length, or "
+        "filter out very short documents so one row cannot collect thousands of them."
+    )
 
 
 @dataclass
@@ -84,6 +223,9 @@ class AttentionContext:
     attention_mask: Optional[Tensor]
     causal_mask: Optional[Any]
     sliding_window: Optional[int] = None
+    # PrefixGrouper: non-None routes Q/K/V through the FlexAttention shared-prefix kernel;
+    # None leaves every existing construction/behavior unchanged.
+    prefix_seg_info: Optional[Any] = None
 
 
 def select_attention_backend(use_varlen: bool = False) -> str:
@@ -99,6 +241,60 @@ def select_attention_backend(use_varlen: bool = False) -> str:
     return SDPA
 
 
+def resolve_prefix_seg_info(kwargs, past_key_value, attention_mask):
+    """PrefixGrouper shared-prefix segment table resolver for the arch attention forwards.
+
+    The GRPO PrefixGrouper packed path rides a ``PrefixSegInfo`` in through ``**kwargs``
+    (same route as ``packed_seq_lengths``). When present, the forward must route Q/K/V
+    through the FlexAttention shared-prefix kernel via ``AttentionContext.prefix_seg_info``.
+
+    Returns the seg table (or ``None`` when PrefixGrouper did not group this batch -- the
+    unchanged path). Hardened: the shared-prefix stream is NOT a plain causal sequence, so running
+    it under a KV cache or an explicit padding mask would silently produce wrong logprobs.
+    That combination can only arise from misuse (PrefixGrouper only rides in via the GRPO
+    logprob forward, which is mask-free prefill), so we RAISE loudly instead of degrading
+    to a wrong result.
+
+    Factored here so every arch (llama/mistral/qwen3/gemma2/cohere/granite/falcon_h1)
+    shares one implementation and cannot drift.
+    """
+    seg = kwargs.get("prefix_seg_info", None)
+    if seg is not None and (past_key_value is not None or attention_mask is not None):
+        raise RuntimeError(
+            "PrefixGrouper: prefix_seg_info requires prefill with no KV cache and no "
+            f"attention_mask (got past_key_value={past_key_value is not None}, "
+            f"attention_mask={attention_mask is not None})."
+        )
+    return seg
+
+
+# One dense window mask per (device, shape, window), reused across layers. Every layer of a
+# Mistral-style model asks for the identical mask, and at 32K that tensor is 1 GiB with two more
+# alive while it is built, so rebuilding it 32 times is how this SDPA fallback OOMs a run that
+# xFormers or flash would have carried. Same single-entry-per-device shape as _SDPA_MASK_CACHE.
+_WINDOW_MASK_CACHE: dict = {}
+
+
+def _windowed_causal_mask(q_len: int, k_len: int, sliding_window: int, device) -> Tensor:
+    """Causal band mask of shape (1, 1, q_len, k_len). Read-only: callers must not mutate it."""
+    params = (q_len, k_len, sliding_window)
+    entry = _WINDOW_MASK_CACHE.get(device)
+    if entry is not None and entry["params"] == params:
+        return entry["mask"]
+    # Drop the outgoing mask first. It is dead either way, and holding it while the replacement
+    # and its temporaries are allocated would make a shape change peak a whole mask higher.
+    _WINDOW_MASK_CACHE.pop(device, None)
+    entry = None
+    q_pos = torch.arange(k_len - q_len, k_len, device = device)
+    k_pos = torch.arange(k_len, device = device)
+    mask = (
+        (k_pos[None, :] <= q_pos[:, None])
+        & (k_pos[None, :] >= (q_pos[:, None] - (sliding_window - 1)))
+    )[None, None, :, :]
+    _WINDOW_MASK_CACHE[device] = {"params": params, "mask": mask}
+    return mask
+
+
 def run_attention(
     *, config: AttentionConfig, context: AttentionContext, Q: Tensor, K: Tensor, V: Tensor
 ) -> Tensor:
@@ -110,6 +306,28 @@ def run_attention(
     Varlen flash is preferred for packed batches as it avoids padding; xFormers
     and SDPA handle packing via a block-diagonal mask.
     """
+
+    # PrefixGrouper shared-prefix attention (GRPO dedup). Q/K/V here are [bsz, H, T, D];
+    # the kernel takes/returns [1, T, H, D], matching the other backends. The field is
+    # only set when the env gate is on and grouping succeeded; None keeps every backend
+    # byte-identical.
+    if context.prefix_seg_info is not None:
+        flex_shared_prefix_attention = _flex_shared_prefix_attention
+        if flex_shared_prefix_attention is None:
+            # gate flipped on after import (or one-time load failed): resolve lazily.
+            from ..utils.prefix_grouper_kernel import flex_shared_prefix_attention
+
+        scale = None
+        if config.flash_varlen_kwargs:
+            scale = config.flash_varlen_kwargs.get("softmax_scale")
+        A = flex_shared_prefix_attention(
+            Q.transpose(1, 2),
+            K.transpose(1, 2),
+            V.transpose(1, 2),
+            context.prefix_seg_info,
+            scale = scale,
+        )
+        return A  # [1, T, n_heads, head_dim]
 
     backend = config.backend
     if backend == FLASH_VARLEN and context.seq_info is None:
@@ -124,6 +342,51 @@ def run_attention(
     ):
         backend = SDPA
 
+    # Both varlen-capable backends land in the same flash-attn 2 backward kernel, so guard both
+    # before the int32 overflow aborts the process. Integer arithmetic only, no device sync.
+    if backend in (FLASH_VARLEN, XFORMERS) and not _VARLEN_INT32_GUARD_DISABLED:
+        # Both terms are needed. Q/K/V: a frozen hidden state feeding trainable LoRA q/k/v
+        # still yields a Q that requires grad, which context.requires_grad alone would miss.
+        # context.requires_grad: gradient checkpointing runs its FIRST forward under no_grad
+        # and recomputes with grad on, so keying only on the tensors would pick a different
+        # backend per pass and the backward would see activations the loss never came from.
+        # The hidden state keeps requires_grad = True across both passes; inference has it False.
+        will_backward = context.requires_grad or (
+            torch.is_grad_enabled() and (Q.requires_grad or K.requires_grad or V.requires_grad)
+        )
+        if will_backward:
+            seq_info = context.seq_info
+            # seq_info[0] is the per-document length tensor; .numel() needs no D2H copy.
+            n_seqs = seq_info[0].numel() if seq_info is not None else context.bsz
+            total_q = context.bsz * context.q_len
+            if _varlen_backward_overflows_int32(n_seqs, total_q, context.n_heads, context.head_dim):
+                # SDPA cannot apply logit softcapping, so rerouting a softcapped model (Gemma 2)
+                # would keep it training on wrong logits and gradients -- worse than the fault
+                # this guard avoids. Stop and name the ways out instead.
+                softcap = _configured_softcap(config)
+                if softcap:
+                    raise RuntimeError(
+                        f"Unsloth: A packed row holds {n_seqs} documents over {total_q} "
+                        f"tokens, so the {backend} backward kernel would index a "
+                        f"{_varlen_backward_dq_accum_elements(n_seqs, total_q, context.n_heads, context.head_dim):,}"
+                        f"-element buffer with int32 (limit {_INT32_ELEMENTS:,}) and fault "
+                        "with 'CUDA error: an illegal memory access was encountered'.\n"
+                        f"This model softcaps attention logits (softcap={softcap}), and the "
+                        "SDPA fallback cannot reproduce that, so falling back would silently "
+                        "train on wrong logits.\n"
+                        "Pack fewer documents per row: lower the packing length, or filter "
+                        "out very short documents so one row cannot collect thousands of them."
+                    )
+                _warn_varlen_int32_overflow_once(
+                    backend,
+                    n_seqs,
+                    total_q,
+                    _varlen_backward_dq_accum_elements(
+                        n_seqs, total_q, context.n_heads, context.head_dim
+                    ),
+                )
+                backend = SDPA
+
     flash_dense_kwargs = config.flash_dense_kwargs or {}
     flash_varlen_kwargs = config.flash_varlen_kwargs or {}
     sdpa_kwargs = config.sdpa_kwargs or {}
@@ -136,6 +399,36 @@ def run_attention(
     kv_seq_len = context.kv_seq_len
     requires_grad = context.requires_grad
     sliding_window = context.sliding_window
+    # A non-positive window means "no local attention", not "a window of nothing": a config
+    # spelling it 0 would otherwise put the mask's lower bound above its causal upper bound
+    # and hide every position from every other.
+    if sliding_window is not None and sliding_window <= 0:
+        sliding_window = None
+
+    # DoRA promotes q/k/v_proj outputs to fp32, which FlashAttention rejects (and so does
+    # the xformers flash-2 op on sm_100+, see _XFORMERS_FP32_UNSUPPORTED), so downcast any
+    # fp32 Q/K/V to a supported dtype (#1013).
+    if (
+        backend in (FLASH_DENSE, FLASH_VARLEN)
+        or (backend == XFORMERS and _XFORMERS_FP32_UNSUPPORTED)
+    ) and torch.float32 in (
+        Q.dtype,
+        K.dtype,
+        V.dtype,
+    ):
+        # Prefer the autocast dtype, else a non-fp32 input's dtype, then clamp.
+        if torch.is_autocast_enabled():
+            try:
+                downcast_dtype = torch.get_autocast_dtype("cuda")
+            except (AttributeError, TypeError):
+                downcast_dtype = torch.get_autocast_gpu_dtype()
+        else:
+            downcast_dtype = next(
+                (d for d in (Q.dtype, K.dtype, V.dtype) if d != torch.float32), None
+            )
+        if downcast_dtype not in (torch.float16, torch.bfloat16):
+            downcast_dtype = torch.bfloat16 if SUPPORTS_BFLOAT16 else torch.float16
+        Q, K, V = Q.to(downcast_dtype), K.to(downcast_dtype), V.to(downcast_dtype)
 
     if backend == FLASH_VARLEN:
         Q_f = Q.transpose(1, 2).reshape(bsz * q_len, n_heads, head_dim)
@@ -165,6 +458,7 @@ def run_attention(
             sliding_window = sliding_window,
             base_mask = context.causal_mask,
         )
+        attn_bias = move_xformers_attention_bias(attn_bias, Q.device)
 
         Q_t = Q.transpose(1, 2)
         K_t = K.transpose(1, 2)
@@ -270,6 +564,15 @@ def run_attention(
                     no_allowed = ~local_mask.any(dim = -1, keepdim = True)  # (bsz,1,q_len,1)
                     local_mask = local_mask | no_allowed
 
+            if local_mask is None and sliding_window is not None and k_len_local > sliding_window:
+                # SDPA's is_causal is FULL causal; it has no window. With no padding mask to
+                # hang the window off, a model whose config declares one attended its whole
+                # history whenever neither the xformers bias nor flash's window_size was the
+                # thing running.
+                local_mask = _windowed_causal_mask(
+                    q_len_local, k_len_local, sliding_window, Q.device
+                )
+
             is_causal_local = local_mask is None and q_len_local == k_len_local
 
         kwargs = dict(sdpa_kwargs)
@@ -318,5 +621,6 @@ __all__ = [
     "AttentionConfig",
     "AttentionContext",
     "select_attention_backend",
+    "resolve_prefix_seg_info",
     "run_attention",
 ]

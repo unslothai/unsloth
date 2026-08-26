@@ -1,3 +1,16 @@
+# tests/saving scripts run their whole body at import, so plain pytest
+# collection would download checkpoints and train. Skip unless opted in.
+import sys as _sys
+from pathlib import Path as _Path
+
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
+from tests.utils.os_utils import require_opt_in as _require_opt_in
+
+_require_opt_in(
+    "UNSLOTH_RUN_SAVING_SCRIPTS",
+    "GPU + Hub saving script; its body runs at import.",
+)
+
 from unsloth import FastLanguageModel, FastModel
 from transformers import CsmForConditionalGeneration
 import torch
@@ -140,7 +153,7 @@ prompts = [
     "Hey there my name is Elise, <giggles> and I'm a speech generation model that can sound like a person.",
 ]
 
-chosen_voice = None  # None for single-speaker
+chosen_voice = None  # single-speaker
 
 prompts_ = [(f"{chosen_voice}: " + p) if chosen_voice else p for p in prompts]
 

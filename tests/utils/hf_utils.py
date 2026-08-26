@@ -211,10 +211,7 @@ def setup_lora(
 
 
 def convert_weights_back_to_dtype(model, dtype):
-    """
-    SFTTrainer calls get_peft_model and prepare_model_for_kbit_training which converts all weights to float32.
-    This function converts the non-loraweights back to the original dtype.
-    """
+    """Convert non-LoRA weights back to the original dtype (SFTTrainer upcasts them to float32)."""
     for name, param in model.named_parameters():
         if any(s in name for s in ["norm", "embed"]):
             param.data = param.data.to(dtype)
@@ -225,7 +222,7 @@ def fix_llama3_tokenizer(tokenizer, padding_side = "right"):
     added_vocab = tokenizer.get_added_vocab()
     pad_token = [w for w in added_vocab if "pad" in w]
     assert len(pad_token) == 1
-    tokenizer.pad_token = pad_token[0]  # Load dataset from the hub
+    tokenizer.pad_token = pad_token[0]
     return tokenizer
 
 

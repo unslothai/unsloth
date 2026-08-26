@@ -3,10 +3,10 @@
 
 export type FormatFilterModelFormat =
   | "gguf"
-  | "mlx"
   | "safetensors"
   | "adapter"
   | "checkpoint"
+  | "mlx"
   | "unknown";
 
 export type FormatFilterValue = "all" | "gguf" | "checkpoint" | "mlx";
@@ -27,9 +27,6 @@ export function matchesFormat(
   return normalized === "safetensors" || normalized === "checkpoint";
 }
 
-// Discover results carry an isGguf flag plus HF tags/library. MLX repos are
-// tagged "mlx" or use library_name "mlx", so detect those before falling back
-// to safetensors.
 export function detectResultFormat(result: {
   isGguf: boolean;
   tags?: string[];

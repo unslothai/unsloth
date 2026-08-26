@@ -9,7 +9,10 @@ import {
   apiTransportStatusWithRetry,
   effectiveTransportMode,
 } from "./download-api-adapter";
-import type { DownloadRequest } from "./download-manager-types";
+import type {
+  DownloadRequest,
+  ManagedDownload,
+} from "./download-manager-types";
 import {
   findActiveJobForRepo,
   getState,
@@ -19,8 +22,9 @@ import {
   setConflict,
 } from "./download-manager-state";
 import { startJob } from "./poll-loop";
+import { currentRoute, showCallerToast } from "./start-toast";
 import { runtimeRegistry } from "./runtime-registry";
-import { getTransportMode } from "./transport-preference";
+import { resolveTransportMode } from "./transport-preference";
 import { ACTIVE_STATES, TRANSPORT_STATUS_TIMEOUT_MS } from "./download-manager-config";
 
 function reportConflictStartError(error: unknown): void {
@@ -80,25 +84,78 @@ async function activeSiblingTransport(
   return null;
 }
 
+// Outcome of a start request so callers can tell whether a transfer for this
+// exact request is actually live before telling the user it began. "started"
+// means a running/cancelling job exists for this key (a fresh start or an
+// already-active one). "conflict" means a transport partial conflict was
+// recorded and must be resolved from the Hub download card; "busy" means the
+// repo is occupied by a sibling variant/snapshot/pending start that is not this
+// transfer; "error" means the start failed or was refused.
+export type DownloadStartOutcome = "started" | "conflict" | "busy" | "error";
+
+// A start can no-op without throwing: the backend can refuse it (startJob
+// finalizes "error"), startJob's peer guard can skip it, or
+// hasActiveOrPendingStart can trip on a snapshot/peer/pending that is not this
+// request. Derive the outcome from the actual job state of this exact key so
+// callers never claim a download began when it did not.
+function isJobActiveFor(req: DownloadRequest): boolean {
+  const job = getState().jobs[jobKeyOf(req.kind, req.repoId, req.variant)];
+  if (!job || !ACTIVE_STATES.has(job.state)) return false;
+  return !scopedFileSetDiffers(job, req);
+}
+
+// Every file set of one repo rides the same scope slot, so a live job on this key counts as this request's transfer only when it is fetching the
+// same files: adopting a sibling quant's job would report ready for files nobody fetched. A job with no recorded list is adoptable only when the
+// request is unscoped; the old permissive answer let a second browser profile report "started" for a checkpoint nobody was fetching.
+function scopedFileSetDiffers(
+  job: ManagedDownload,
+  req: DownloadRequest,
+): boolean {
+  if (!req.files || req.files.length === 0) return false;
+  if (!job.scopedFiles) return true;
+  const live = [...new Set(job.scopedFiles)].sort();
+  const wanted = [...new Set(req.files)].sort();
+  return (
+    live.length !== wanted.length || live.some((f, i) => f !== wanted[i])
+  );
+}
+
 async function runWithPendingStartGuard(
   req: DownloadRequest,
-  action: () => Promise<void>,
-): Promise<void> {
+  action: () => Promise<DownloadStartOutcome>,
+): Promise<DownloadStartOutcome> {
   const startKey = pendingStartKey(req);
-  if (hasActiveOrPendingStart(req)) return;
+  // Already active or pending for the repo: only report "started" when this
+  // exact request is the live transfer; a peer/snapshot/pending start has not.
+  if (hasActiveOrPendingStart(req)) {
+    if (!isJobActiveFor(req)) return "busy";
+    // Returns "started" WITHOUT running the action, so startJob never announces;
+    // now the manager owns the message, this is the only feedback there is.
+    showCallerToast(
+      jobKeyOf(req.kind, req.repoId, req.variant),
+      req.callerToast,
+    );
+    return "started";
+  }
   runtimeRegistry.pendingStartRepoKeys.add(startKey);
   try {
-    await action();
+    return await action();
   } catch (error) {
     reportConflictStartError(error);
+    return "error";
   } finally {
     runtimeRegistry.pendingStartRepoKeys.delete(startKey);
   }
 }
 
-export async function requestStart(req: DownloadRequest): Promise<void> {
-  await runWithPendingStartGuard(req, async () => {
-    let mode: TransportMode = getTransportMode();
+export async function requestStart(
+  req: DownloadRequest,
+): Promise<DownloadStartOutcome> {
+  // Before the preflight below, which is two round trips the user can navigate
+  // during; read after them it would name the page they moved to.
+  const originRoute = currentRoute();
+  return runWithPendingStartGuard(req, async () => {
+    let mode: TransportMode = await resolveTransportMode();
     try {
       mode = await effectiveTransportMode(mode);
     } catch (err) {
@@ -119,7 +176,7 @@ export async function requestStart(req: DownloadRequest): Promise<void> {
               ? "This repository is currently downloading with Xet. Switch to Xet or wait for it to finish."
               : "This repository is currently downloading with HTTP. Switch to HTTP or wait for it to finish.",
         });
-        return;
+        return "busy";
       }
     } catch (err) {
       console.warn("Active download transport check failed.", err);
@@ -137,9 +194,11 @@ export async function requestStart(req: DownloadRequest): Promise<void> {
             next: mode,
             resumable: status.resumable,
           },
-          pending: req,
+          // Without the caller's line: resolved later from the Hub, where "it'll
+          // load automatically" is a promise chat cannot keep. The notice stands.
+          pending: { ...req, callerToast: undefined },
         });
-        return;
+        return "conflict";
       }
       if (status.has_partial && !status.last_transport) {
         toast.info("Restarting this download", {
@@ -152,8 +211,8 @@ export async function requestStart(req: DownloadRequest): Promise<void> {
         "Transport status check failed; starting without partial-conflict preflight.",
         err,
       );
-      // Fail safe: Xet purges any partial unconditionally, so when we couldn't
-      // verify the partial we downgrade this one start to HTTP (resumes an HTTP
+      // Fail safe: Xet purges any partial unconditionally, so when the partial
+      // can't be verified we downgrade this one start to HTTP (resumes an HTTP
       // partial, harmless for a fresh download); the Xet preference is kept for
       // next time. Only downgrade once we confirmed no sibling variant is
       // downloading, since a live sibling may be mid-transfer on Xet.
@@ -162,15 +221,16 @@ export async function requestStart(req: DownloadRequest): Promise<void> {
           description:
             "Starting with HTTP so an existing partial is not discarded. Switch transport to retry with Xet.",
         });
-        await startJob(req, { useXet: false });
-        return;
+        await startJob(req, { useXet: false, originRoute });
+        return isJobActiveFor(req) ? "started" : "error";
       }
       toast.warning("Couldn't verify existing partial download", {
         description:
           "Starting with the selected transport. If a partial from another transport exists, it may be restarted from the beginning.",
       });
     }
-    await startJob(req, { useXet: mode === TRANSPORT.XET });
+    await startJob(req, { useXet: mode === TRANSPORT.XET, originRoute });
+    return isJobActiveFor(req) ? "started" : "error";
   });
 }
 
@@ -178,22 +238,24 @@ export function resumeConflict(conflictKey: string): void {
   const entry = getState().conflicts[conflictKey];
   if (!entry) return;
   setConflict(conflictKey, null);
-  void runWithPendingStartGuard(entry.pending, () =>
-    startJob(entry.pending, {
+  void runWithPendingStartGuard(entry.pending, async () => {
+    await startJob(entry.pending, {
       useXet: entry.info.previous === TRANSPORT.XET,
-    }),
-  );
+    });
+    return "started";
+  });
 }
 
 export function restartConflict(conflictKey: string): void {
   const entry = getState().conflicts[conflictKey];
   if (!entry) return;
   setConflict(conflictKey, null);
-  void runWithPendingStartGuard(entry.pending, () =>
-    startJob(entry.pending, {
+  void runWithPendingStartGuard(entry.pending, async () => {
+    await startJob(entry.pending, {
       useXet: entry.info.next === TRANSPORT.XET,
-    }),
-  );
+    });
+    return "started";
+  });
 }
 
 export function cancelConflict(conflictKey: string): void {

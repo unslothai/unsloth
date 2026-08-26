@@ -1,28 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""Pinned-symbol compat check across PEFT PyPI minor versions
-unsloth + unsloth-zoo target. Catches API drift like:
-
-  - peft 0.18 finalised the LoraConfig public surface (+ MoE-aware
-    target_modules); unsloth uses target_modules + r + lora_alpha +
-    lora_dropout + bias.
-  - peft 0.19 introduced the LoraConfig.target_parameters extension;
-    unsloth-zoo's MoE LoRA extractor in saving_utils.py reads it via
-    getattr() so missing on older versions is OK but the attribute
-    shape must remain stable on >= 0.19.
-  - peft.tuners.lora package layout: LoraLayer / LoraConfig / Linear4bit
-    re-exports must keep working under both `from peft import X` and
-    `from peft.tuners.lora import X`.
-
-Strategy: for each tracked PEFT tag, fetch source from
-github.com/huggingface/peft (no pip install needed) and assert that
-every symbol unsloth + unsloth-zoo's PEFT touchpoints depend on is
-present.
-
-Versioning policy: cover the supported window declared in
-unsloth/pyproject.toml (`peft>=0.18.0,!=0.11.0`) plus `main`. The
-`!=0.11.0` exclusion is for the historical broken release; we don't
-test against it.
+"""Pinned-symbol compat check across PEFT minor versions unsloth + unsloth-zoo
+target. For each tracked tag, fetch source from github.com/huggingface/peft and
+assert every PEFT symbol unsloth touches is present, catching API drift.
+Versioning covers unsloth/pyproject.toml's `peft>=0.18.0,!=0.11.0` window + main.
 """
 
 from __future__ import annotations
@@ -45,9 +26,8 @@ PEFT_TAGS = [
 ]
 
 
-# Top-level public re-exports. unsloth/models/sentence_transformer.py:1948
-# does `from peft import LoraConfig, get_peft_model as peft_get_peft_model`.
-# unsloth_zoo's saving_utils + lora extractors hit `peft.PeftModel`.
+# Top-level re-exports: sentence_transformer.py:1948 does `from peft import
+# LoraConfig, get_peft_model`; unsloth_zoo saving_utils/lora extractors hit PeftModel.
 
 
 @pytest.mark.parametrize("tag", PEFT_TAGS)
@@ -92,8 +72,7 @@ def test_peft_lora_config_class(tag: str):
 
 @pytest.mark.parametrize("tag", PEFT_TAGS)
 def test_get_peft_model_function(tag: str):
-    """`def get_peft_model(...)` may live in mapping.py (older
-    layout) or mapping_func.py (peft 0.18+ split). Either is fine."""
+    """get_peft_model may live in mapping.py or mapping_func.py (0.18+ split)."""
     candidates = [
         "src/peft/mapping.py",
         "src/peft/mapping_func.py",
@@ -143,8 +122,7 @@ def test_peft_lora_bnb_integration(tag: str):
         src = fetch_text("huggingface/peft", tag, p)
         if src is None:
             continue
-        # The Linear4bit subclass naming is the contract -- either name
-        # is fine, but at least one bnb-flavoured Linear must exist.
+        # At least one bnb-flavoured Linear must exist (either name is fine).
         has_4bit = any(
             cls in src
             for cls in (

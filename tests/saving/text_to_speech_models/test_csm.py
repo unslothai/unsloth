@@ -1,3 +1,16 @@
+# tests/saving scripts run their whole body at import, so plain pytest
+# collection would download checkpoints and train. Skip unless opted in.
+import sys as _sys
+from pathlib import Path as _Path
+
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
+from tests.utils.os_utils import require_opt_in as _require_opt_in
+
+_require_opt_in(
+    "UNSLOTH_RUN_SAVING_SCRIPTS",
+    "GPU + Hub saving script; its body runs at import.",
+)
+
 from unsloth import FastLanguageModel, FastModel
 from transformers import CsmForConditionalGeneration
 import torch
@@ -27,10 +40,10 @@ print(f"{'='*80}")
 
 model, tokenizer = FastModel.from_pretrained(
     model_name = "unsloth/csm-1b",
-    max_seq_length = 2048,  # Choose any for long context!
-    dtype = None,  # Leave as None for auto-detection
+    max_seq_length = 2048,
+    dtype = None,
     auto_model = CsmForConditionalGeneration,
-    load_in_4bit = False,  # Select True for 4bit - reduces memory usage
+    load_in_4bit = False,
 )
 
 
@@ -39,7 +52,7 @@ base_model_class = model.__class__.__name__
 
 model = FastModel.get_peft_model(
     model,
-    r = 32,  # Choose any number > 0 ! Suggested 8, 16, 32, 64, 128
+    r = 32,
     target_modules = [
         "q_proj",
         "k_proj",
@@ -50,13 +63,12 @@ model = FastModel.get_peft_model(
         "down_proj",
     ],
     lora_alpha = 32,
-    lora_dropout = 0,  # Supports any, but = 0 is optimized
-    bias = "none",  # Supports any, but = "none" is optimized
-    # [NEW] "unsloth" uses 30% less VRAM, fits 2x larger batch sizes!
-    use_gradient_checkpointing = "unsloth",  # True or "unsloth" for very long context
+    lora_dropout = 0,
+    bias = "none",
+    use_gradient_checkpointing = "unsloth",
     random_state = 3407,
-    use_rslora = False,  # We support rank stabilized LoRA
-    loftq_config = None,  # And LoftQ
+    use_rslora = False,
+    loftq_config = None,
 )
 
 print("✅ Model and LoRA adapters loaded successfully!")
@@ -97,7 +109,7 @@ print("🔍 SECTION 4: Saving and Merging Model")
 print(f"{'='*80}")
 
 with warnings.catch_warnings():
-    warnings.simplefilter("error")  # Treat warnings as errors
+    warnings.simplefilter("error")  # treat warnings as errors so saving stays clean
     try:
         model.save_pretrained_merged("csm", tokenizer)
         print("✅ Model saved and merged successfully without warnings!")
@@ -111,10 +123,10 @@ print(f"{'='*80}")
 
 model, processor = FastModel.from_pretrained(
     model_name = "./csm",
-    max_seq_length = 2048,  # Choose any for long context!
-    dtype = None,  # Leave as None for auto-detection
+    max_seq_length = 2048,
+    dtype = None,
     auto_model = CsmForConditionalGeneration,
-    load_in_4bit = False,  # Select True for 4bit - reduces memory usage
+    load_in_4bit = False,
 )
 
 from transformers import AutoProcessor
@@ -139,7 +151,7 @@ try:
     inputs = processor(f"[{speaker_id}]{text}", add_special_tokens = True).to("cuda")
     audio_values = model.generate(
         **inputs,
-        max_new_tokens = 125,  # 125 tokens ~= 10 seconds of audio
+        max_new_tokens = 125,  # ~10 seconds of audio
         depth_decoder_temperature = 0.6,
         depth_decoder_top_k = 0,
         depth_decoder_top_p = 0.9,

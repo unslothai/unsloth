@@ -12,13 +12,17 @@ import {
   classifyUnslothSupport,
 } from "@/features/hub/hooks/use-hub-model-search";
 import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
-import { formatBytes, formatRelativeShort } from "@/features/hub/lib/format";
+import {
+  formatBytes,
+  formatRelativeShort,
+  formatShortDate,
+} from "@/features/hub/lib/format";
+import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn, formatCompact } from "@/lib/utils";
-import { confirmExternalLink } from "../stores/external-link-confirm";
-import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
 import {
   Calendar03Icon,
+  CalendarAdd01Icon,
   Copy01Icon,
   CpuIcon,
   CubeIcon,
@@ -27,6 +31,7 @@ import {
   FavouriteIcon,
   Globe02Icon,
   LayersLogoIcon,
+  LibraryIcon,
   LicenseIcon,
   PackageIcon,
   RamMemoryIcon,
@@ -34,33 +39,35 @@ import {
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
-import {
-  memo,
-  useDeferredValue,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { memo, useDeferredValue, useMemo } from "react";
+import { selectActiveJob, useDownloadManagerStore } from "../download-manager";
 import { useCopyFeedback } from "../hooks/use-copy-feedback";
 import { useDatasetSize } from "../hooks/use-dataset-size";
 import {
+  formatLibrary,
   formatLocalUpdated,
   formatPipelineTag,
   parseLanguageTags,
 } from "../lib/view-models";
+import { confirmExternalLink } from "../stores/external-link-confirm";
 import type { SelectedModelView } from "../types";
-import {
-  selectActiveJob,
-  useDownloadManagerStore,
-} from "../download-manager";
 import { DatasetDownloadSection } from "./dataset-download-section";
+import { taskForMediaPick } from "@/features/model-picker/components/model-selector/audio-picker-policy";
+import { routableToMediaPage } from "../lib/local-path";
+import { studioPageForTask } from "../lib/unsloth-support";
 import { DownloadSection } from "./download-section";
 import { LocalDatasetCard } from "./local-dataset-card";
 import { LocalOnDeviceCard } from "./local-on-device-card";
 import { ModelReadme } from "./model-readme";
 import { OwnerAvatar } from "./owner-avatar";
-import { CapabilityPill } from "./shared";
+import { AccessChip, CapabilityPill } from "./shared";
+
+// HF pipeline_tag values authoritative for embedding-only repos; capability
+// labels (code/vision/audio) can leak onto them via name or tags.
+const EMBEDDING_PIPELINE_TAGS: ReadonlySet<string> = new Set([
+  "feature-extraction",
+  "sentence-similarity",
+]);
 
 function ViewRepositoryButton({
   repoId,
@@ -72,9 +79,13 @@ function ViewRepositoryButton({
   const online = useOnlineStatus();
   const url = `https://huggingface.co/${isDataset ? "datasets/" : ""}${repoId}`;
   const baseClass =
-    "inline-flex size-7 shrink-0 items-center justify-center rounded-[8px] text-muted-foreground transition-colors";
+    "inline-flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors";
   const icon = (
-    <HugeiconsIcon icon={Share05Icon} strokeWidth={1.75} className="size-4" />
+    <HugeiconsIcon
+      icon={Share05Icon}
+      strokeWidth={1.75}
+      className="size-[13px]"
+    />
   );
   return (
     <Tooltip>
@@ -128,12 +139,12 @@ function CopyRepoButton({ repoId }: { repoId: string }) {
           type="button"
           aria-label="Copy repository ID"
           onClick={handleCopy}
-          className="inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-[8px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
         >
           <HugeiconsIcon
             icon={copied ? Tick02Icon : Copy01Icon}
             strokeWidth={1.75}
-            className="size-4"
+            className="size-[13px]"
           />
         </button>
       </TooltipTrigger>
@@ -148,15 +159,17 @@ function StatRow({
   label,
   value,
   icon,
+  tooltip,
 }: {
   label: string;
   value: string;
   icon: IconSvgElement;
+  tooltip?: React.ReactNode;
 }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild={true}>
-        <span className="hub-tag-meta inline-flex cursor-default items-center gap-1.5 px-2.5 py-1 text-[11.5px] text-muted-foreground transition-colors hover:text-foreground/80">
+        <span className="hub-tag-meta inline-flex cursor-default items-center gap-1.5 px-2.5 py-1 text-ui-11p5 text-muted-foreground transition-colors hover:text-foreground/80">
           <HugeiconsIcon
             icon={icon}
             strokeWidth={1.75}
@@ -165,7 +178,9 @@ function StatRow({
           <span className="font-medium tabular-nums">{value}</span>
         </span>
       </TooltipTrigger>
-      <TooltipContent className="tooltip-compact">{label}</TooltipContent>
+      <TooltipContent className="tooltip-compact">
+        {tooltip ?? label}
+      </TooltipContent>
     </Tooltip>
   );
 }
@@ -175,11 +190,7 @@ function StatGrid({ children }: { children: React.ReactNode }) {
 }
 
 function InspectorDownloadSlot({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="shrink-0 pl-6 pr-10 pt-3 sm:pr-14 lg:pr-[4.5rem] xl:pr-[5.5rem]">
-      {children}
-    </div>
-  );
+  return <div className="max-w-[680px] pt-3">{children}</div>;
 }
 
 function StatusChip({
@@ -200,7 +211,7 @@ function StatusChip({
   return (
     <span
       className={cn(
-        "inline-flex h-5 shrink-0 items-center whitespace-nowrap rounded-full border bg-transparent px-2 text-[11px] font-medium leading-none",
+        "inline-flex h-5 shrink-0 items-center whitespace-nowrap rounded-full border bg-transparent px-2 text-ui-11 font-medium leading-none",
         toneClass,
         className,
       )}
@@ -210,22 +221,78 @@ function StatusChip({
   );
 }
 
+function BaseModelSearchChip({
+  baseModel,
+  searchTerm,
+  onSearchHub,
+}: {
+  baseModel: string;
+  searchTerm: string;
+  onSearchHub?: (query: string) => void;
+}) {
+  const content = (
+    <>
+      <HugeiconsIcon
+        icon={LayersLogoIcon}
+        strokeWidth={1.75}
+        className="size-3.5 shrink-0 text-muted-foreground"
+      />
+      <span className="shrink-0 text-muted-foreground">Base</span>
+      <span className="min-w-0 truncate font-medium text-foreground">
+        {baseModel}
+      </span>
+    </>
+  );
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild={true}>
+        {onSearchHub ? (
+          <button
+            type="button"
+            onClick={() => onSearchHub(searchTerm)}
+            className="inline-flex h-6 max-w-full cursor-pointer items-center gap-1.5 rounded-full bg-muted px-2.5 text-ui-11p5 transition-colors hover:bg-muted/80 dark:bg-[rgba(255,255,255,0.04)]"
+          >
+            {content}
+          </button>
+        ) : (
+          <span className="inline-flex h-6 max-w-full items-center gap-1.5 rounded-full bg-muted px-2.5 text-ui-11p5 dark:bg-[rgba(255,255,255,0.04)]">
+            {content}
+          </span>
+        )}
+      </TooltipTrigger>
+      <TooltipContent side="bottom" className="tooltip-compact">
+        Search this base model in Hub
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 type VramInfo = { est: number; status: "fits" | "tight" | "exceeds" } | null;
 
 function ModelStatusChips({
   isDataset,
   isGguf,
+  chatOnly,
   unslothSupport,
   vramInfo,
 }: {
   isDataset: boolean;
   isGguf: boolean;
+  chatOnly: boolean;
   unslothSupport: UnslothSupport;
   vramInfo: VramInfo;
 }) {
-  const showUnsupported = !isDataset && unslothSupport.status === "unsupported";
+  // The Images/Video pages run these, so they are not "unsupported" to a user even though chat cannot load them.
+  const showUnsupported =
+    !isDataset &&
+    unslothSupport.status === "unsupported" &&
+    !unslothSupport.supportedIn;
+  // The format-unsupported chip already explains itself; this one covers the
+  // supported-format model a chat-only host still can't run.
+  const showChatOnly = !isDataset && !isGguf && chatOnly && !showUnsupported;
   const showVram = !isDataset && vramInfo && !isGguf;
-  if (!showUnsupported && !showVram) return null;
+  if (!showUnsupported && !showChatOnly && !showVram) return null;
 
   const vramTone = vramInfo
     ? vramInfo.status === "exceeds"
@@ -265,13 +332,32 @@ function ModelStatusChips({
           >
             This model may not be supported yet.
             {unslothSupport.reason && (
-              <span className="mt-1 block text-[10.5px] font-normal text-white/75">
+              <span className="mt-1 block text-ui-10p5 font-normal text-white/75">
                 {unslothSupport.reason}
               </span>
             )}
-            <span className="mt-1 block text-[10.5px] font-normal text-white/75">
-              Still downloadable to your Hugging Face cache, shared with every
-              framework that reads it.
+            <span className="mt-1 block text-ui-10p5 font-normal text-white/75">
+              Still downloadable to your Hugging Face cache.
+            </span>
+          </TooltipContent>
+        </Tooltip>
+      )}
+      {showChatOnly && (
+        <Tooltip>
+          <TooltipTrigger asChild={true}>
+            <span tabIndex={0} className="inline-flex outline-none">
+              <StatusChip tone="warning" label="GGUF-only device" />
+            </span>
+          </TooltipTrigger>
+          <TooltipContent
+            side="bottom"
+            sideOffset={6}
+            className="tooltip-compact max-w-xs"
+          >
+            This device has no supported GPU or usable MLX, so only GGUF models
+            can run here.
+            <span className="mt-1 block text-ui-10p5 font-normal text-white/75">
+              Still downloadable to your Hugging Face cache.
             </span>
           </TooltipContent>
         </Tooltip>
@@ -289,7 +375,7 @@ function ModelStatusChips({
             className="tooltip-compact max-w-xs"
           >
             Estimated 4-bit memory load is around {vramInfo.est} GB.
-            <span className="mt-1 block text-[10.5px] font-normal text-white/75">
+            <span className="mt-1 block text-ui-10p5 font-normal text-white/75">
               {vramDetail}
             </span>
           </TooltipContent>
@@ -320,14 +406,21 @@ export type ModelInspectorActions = {
     expectedBytes?: number;
   }) => void;
   onUseInChat: () => void;
+  onEject?: () => void;
   onTrain?: () => void;
   onInventoryChange?: () => void;
+  onSearchHub?: (query: string) => void;
+  /** Open settings with the quant the card resolved. */
+  onOpenSettings?: (ggufVariant: string | null) => void;
 };
 
 export const ModelInspector = memo(function ModelInspector({
   model,
   runtime,
   actions,
+  preferredGgufFile = null,
+
+  preferredGgufFileIntent = 0,
   isDataset = false,
   metadataUnavailable = false,
   selectionHiddenByFilters = false,
@@ -336,6 +429,9 @@ export const ModelInspector = memo(function ModelInspector({
   isDataset?: boolean;
   metadataUnavailable?: boolean;
   selectionHiddenByFilters?: boolean;
+  preferredGgufFile?: string | null;
+
+  preferredGgufFileIntent?: number;
   runtime: ModelInspectorRuntime;
   actions: ModelInspectorActions;
 }) {
@@ -349,17 +445,26 @@ export const ModelInspector = memo(function ModelInspector({
     gpuGb,
     systemRamGb,
   } = runtime;
-  const { onLoad, onLoadLocal, onUseInChat, onTrain, onInventoryChange } =
-    actions;
+  const {
+    onLoad,
+    onLoadLocal,
+    onUseInChat,
+    onEject,
+    onTrain,
+    onInventoryChange,
+    onSearchHub,
+    onOpenSettings,
+  } = actions;
   const deviceType = usePlatformStore((s) => s.deviceType);
+  const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const hfToken = useHfTokenStore((s) => s.token);
   const datasetRepoId = isDataset && model?.hubRepoId ? model.hubRepoId : null;
   const datasetSize = useDatasetSize(datasetRepoId, {
     token: hfToken || undefined,
   });
-  // Inventory rows are snapshots; the download manager is the live source of truth.
-  // When a download is in flight, route through the download-aware section so
-  // progress/cancel stays visible across refreshes.
+  // Inventory rows are snapshots; the download manager is the live source of
+  // truth. When a download is in flight, route through the download-aware section
+  // so progress/cancel stays visible across refreshes.
   const activeDownloadRepoId = model?.hubRepoId ?? null;
   const hasActiveHubDownload = useDownloadManagerStore((state) =>
     activeDownloadRepoId
@@ -403,43 +508,20 @@ export const ModelInspector = memo(function ModelInspector({
     supportTagsKey,
   ]);
 
-  const descScrollRef = useRef<HTMLDivElement | null>(null);
-  const descScrollKey = `${model?.id ?? ""}\0${readmeRepoId ?? ""}`;
   const deferredReadmeRepoId = useDeferredValue(readmeRepoId);
   const readmeReady = deferredReadmeRepoId === readmeRepoId;
-  const [descScrollState, setDescScrollState] = useState({
-    key: descScrollKey,
-    scrolled: false,
-  });
-  const descScrolled =
-    descScrollState.key === descScrollKey && descScrollState.scrolled;
-  useEffect(() => {
-    const el = descScrollRef.current;
-    if (!el) return;
-    el.scrollTop = 0;
-    const onScroll = () => {
-      const scrolled = el.scrollTop > 0;
-      setDescScrollState((current) =>
-        current.key === descScrollKey && current.scrolled === scrolled
-          ? current
-          : { key: descScrollKey, scrolled },
-      );
-    };
-    el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll);
-  }, [descScrollKey]);
 
   if (!model) {
     return (
-      <div className="flex h-full min-h-0 flex-1 flex-col items-center justify-center gap-3 px-6 py-10 text-center">
+      <div className="flex min-h-[60dvh] flex-col items-center justify-center gap-3 py-16 text-center">
         <div className="inline-flex size-12 items-center justify-center rounded-[14px] bg-muted text-muted-foreground">
           <HugeiconsIcon icon={CubeIcon} strokeWidth={1.5} className="size-5" />
         </div>
         <div className="space-y-1">
-          <p className="text-[15px] font-semibold tracking-tight text-foreground">
+          <p className="text-ui-15 font-semibold tracking-tight text-foreground">
             Select a {isDataset ? "dataset" : "model"}
           </p>
-          <p className="max-w-sm text-[12.5px] leading-5 text-muted-foreground">
+          <p className="max-w-sm text-ui-12p5 leading-5 text-muted-foreground">
             {isDataset
               ? "Choose a dataset from the catalog to inspect its download state and details."
               : "Choose an item from the catalog to inspect its runtime fit, download state, and model card."}
@@ -453,37 +535,85 @@ export const ModelInspector = memo(function ModelInspector({
     ? formatRelativeShort(model.updatedAt)
     : formatLocalUpdated(model.localUpdatedAt);
   const updatedLabel = updatedRaw === "Unknown update" ? "N/A" : updatedRaw;
+  const createdLabel = model.createdAt
+    ? formatShortDate(model.createdAt)
+    : null;
+  const libraryLabel = isDataset ? null : formatLibrary(model.libraryName);
+  const gatedAccess = model.gated !== false && model.gated !== undefined;
+  const downloadsTooltip =
+    model.downloadsAllTime != null ? (
+      <>
+        Downloads (30 days)
+        <span className="mt-1 block text-ui-10p5 font-normal text-white/75">
+          {formatCompact(model.downloadsAllTime)} all time
+        </span>
+      </>
+    ) : (
+      "Downloads"
+    );
   const taskLabel = formatPipelineTag(model.pipelineTag) ?? "General";
   const licenseLabel = model.license ?? "N/A";
+  const baseModelSearchTerm = model.baseModelHubId ?? model.baseModel ?? null;
   const paramsLabel = model.totalParams
     ? formatCompact(model.totalParams)
     : "N/A";
-  const trainingSupported = unslothSupport.status !== "unsupported";
+  const unslothSupported = unslothSupport.status !== "unsupported";
+  // Embedding-only non-GGUF repos have no generative head, so keep them out of
+  // the Run gate. Prefer the pipeline tag, else the capability heuristic.
+  const isEmbeddingOnly =
+    !model.isGguf &&
+    model.capabilities.some((c) => c.key === "embedding") &&
+    (EMBEDDING_PIPELINE_TAGS.has(model.pipelineTag?.toLowerCase() ?? "") ||
+      !model.capabilities.some(
+        (c) =>
+          c.key === "conversational" ||
+          c.key === "tools" ||
+          c.key === "reasoning" ||
+          c.key === "code" ||
+          c.key === "vision" ||
+          c.key === "audio",
+      ));
+  // An image / video model runs on its own page, which onLoad already routes to;
+  // the chat gates below would leave it greyed out as if it were unusable. Only when the
+  // row is one onLoad can actually route there: those pages resolve a routed `model` as a
+  // Hub id, so a filesystem row fails routableToMediaPage and the click falls through to
+  // the chat loader, which unloads the resident model for a load that can only fail.
+  const runsOnMediaPage =
+    studioPageForTask(
+      taskForMediaPick(model.pipelineTag, model.task) ?? undefined,
+    ) !== undefined &&
+    routableToMediaPage(model.kind, model.localSource);
+  // Chat-only hosts (no supported GPU / usable MLX) run inference only through
+  // llama.cpp, so only GGUF is loadable.
   const canRunModel =
-    !isDataset && (model.runtimeCapabilities?.canChat ?? true);
+    !isDataset &&
+    (runsOnMediaPage ||
+      ((model.runtimeCapabilities?.canChat ?? true) &&
+        !isEmbeddingOnly &&
+        (model.isGguf || (!chatOnly && unslothSupported))));
   const canTrainModel =
     !isDataset &&
     (model.runtimeCapabilities?.canTrain ?? false) &&
     model.modelFormat !== "gguf" &&
     model.modelFormat !== "adapter" &&
-    trainingSupported;
+    unslothSupported;
 
   const languages = parseLanguageTags(model.tags);
   const datasetSizeBytes =
     datasetSize?.numBytesParquet ?? datasetSize?.numBytesOriginal ?? null;
 
   return (
-    <div className="flex h-full min-h-0 flex-1 flex-col">
-      <div className="shrink-0 px-6 pb-2 pt-0">
-        <div className="flex items-center gap-3.5">
+    <div className="flex flex-col">
+      <div className="pb-2 pt-1">
+        <div className="flex items-center gap-4">
           <OwnerAvatar
             owner={model.owner}
             repoName={model.title}
-            className="size-[52px] rounded-[14px] text-[16px]"
+            className="size-[60px] rounded-[18px] text-ui-19"
           />
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-1.5">
-              <h2 className="truncate text-[22px] font-semibold leading-[28px] tracking-[-0.025em] text-foreground">
+              <h2 className="truncate text-ui-25 font-semibold leading-ui-31 tracking-normal text-foreground">
                 {model.title}
               </h2>
               {model.hubRepoId && (
@@ -496,12 +626,12 @@ export const ModelInspector = memo(function ModelInspector({
                 </div>
               )}
             </div>
-            <div className="mt-0.5 flex min-w-0 items-center gap-1 text-[14px] leading-[22px] text-muted-foreground">
+            <div className="mt-0.5 flex min-w-0 items-center gap-1 text-ui-15 leading-ui-24 text-muted-foreground">
               <span className="truncate">{model.owner}</span>
               {model.owner.toLowerCase() === "unsloth" && (
                 <span
                   aria-label="Verified Unsloth"
-                  className="hub-verified-badge size-4 shrink-0 text-primary"
+                  className="hub-verified-badge size-[18px] shrink-0 text-verified"
                 />
               )}
             </div>
@@ -510,12 +640,12 @@ export const ModelInspector = memo(function ModelInspector({
 
         <div className="mt-4 flex flex-wrap items-center gap-1.5">
           {isDataset && (
-            <span className="inline-flex shrink-0 items-center rounded-full border border-violet-500/40 bg-transparent px-2 py-0.5 text-[11.5px] font-medium text-violet-600 dark:text-violet-400">
+            <span className="inline-flex shrink-0 items-center rounded-full border border-violet-500/40 bg-transparent px-2 py-0.5 text-ui-11p5 font-medium text-violet-600 dark:text-violet-400">
               Dataset
             </span>
           )}
           {!isDataset && (
-            <span className="inline-flex h-6 items-center gap-1.5 rounded-full bg-muted px-2.5 text-[11.5px] font-medium text-foreground dark:bg-[rgba(255,255,255,0.04)]">
+            <span className="inline-flex h-6 items-center gap-1.5 rounded-full bg-muted px-2.5 text-ui-11p5 font-medium text-foreground dark:bg-[rgba(255,255,255,0.04)]">
               <HugeiconsIcon
                 icon={CubeIcon}
                 strokeWidth={1.75}
@@ -524,9 +654,18 @@ export const ModelInspector = memo(function ModelInspector({
               {taskLabel}
             </span>
           )}
+          {model.private && <AccessChip label="Private" />}
+          {gatedAccess && <AccessChip label="Gated" />}
           {model.capabilities.map((capability) => (
             <CapabilityPill key={capability.key} capability={capability} />
           ))}
+          {!isDataset && model.baseModel && baseModelSearchTerm && (
+            <BaseModelSearchChip
+              baseModel={model.baseModel}
+              searchTerm={baseModelSearchTerm}
+              onSearchHub={onSearchHub}
+            />
+          )}
         </div>
       </div>
 
@@ -539,6 +678,7 @@ export const ModelInspector = memo(function ModelInspector({
               isDownloaded={model.isDownloaded}
               isPartial={model.isPartial ?? false}
               partialTransport={model.partialTransport ?? null}
+              partialResumable={model.partialResumable === true}
               cachePath={model.path}
               knownBytes={model.cachedBytes}
               onTrain={onTrain}
@@ -581,17 +721,22 @@ export const ModelInspector = memo(function ModelInspector({
               loadingPhase={loadingPhase}
               gpuGb={gpuGb}
               systemRamGb={systemRamGb}
+
+              preferredFile={preferredGgufFile}
+              preferredFileIntent={preferredGgufFileIntent}
               unsupportedReason={
-                unslothSupport.status === "unsupported"
+                unslothSupport.status === "unsupported" && !unslothSupport.supportedIn
                   ? (unslothSupport.reason ?? "Unsupported format")
                   : null
               }
               onLoad={onLoadLocal}
               onUseInChat={onUseInChat}
+              onEject={onEject}
               onTrain={
                 model.isDownloaded && canTrainModel ? onTrain : undefined
               }
               onChange={onInventoryChange}
+              onOpenSettings={onOpenSettings}
             />
           ) : (
             <DownloadSection
@@ -600,10 +745,14 @@ export const ModelInspector = memo(function ModelInspector({
               isDownloaded={model.isDownloaded}
               isPartial={model.isPartial ?? false}
               partialTransport={model.partialTransport ?? null}
+              partialResumable={model.partialResumable === true}
               modelFormat={model.modelFormat}
               canRun={canRunModel}
               isActive={isActive}
               activeQuant={isActive ? (activeGgufVariant ?? null) : null}
+              preferredGgufFile={preferredGgufFile}
+
+              preferredGgufFileIntent={preferredGgufFileIntent}
               isLoadingThisModel={isLoadingThisModel}
               gpuGb={gpuGb}
               systemRamGb={systemRamGb}
@@ -611,6 +760,7 @@ export const ModelInspector = memo(function ModelInspector({
               knownBytes={model.cachedBytes}
               onLoad={model.isLocal ? onLoadLocal : onLoad}
               onUseInChat={onUseInChat}
+              onEject={onEject}
               onTrain={
                 model.isDownloaded && canTrainModel ? onTrain : undefined
               }
@@ -620,22 +770,30 @@ export const ModelInspector = memo(function ModelInspector({
         </InspectorDownloadSlot>
       )}
 
-      <div className="shrink-0 px-6 pb-5 pt-5">
+      <div className="pb-5 pt-5">
         {selectionHiddenByFilters && (
-          <p className="mb-3 rounded-[8px] border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11.5px] leading-snug text-muted-foreground">
+          <p className="mb-3 rounded-[8px] border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-ui-11p5 leading-snug text-muted-foreground">
             Current selection is hidden by the active filters or search.
           </p>
         )}
         {metadataUnavailable && (
-          <p className="mb-3 text-[11.5px] leading-snug text-muted-foreground">
+          <p className="mb-3 text-ui-11p5 leading-snug text-muted-foreground">
             Couldn't load full details from Hugging Face. Some fields may be
             incomplete.
           </p>
         )}
         <StatGrid>
           <StatRow label="Updated" value={updatedLabel} icon={Calendar03Icon} />
+          {createdLabel && (
+            <StatRow
+              label="Created"
+              value={createdLabel}
+              icon={CalendarAdd01Icon}
+            />
+          )}
           <StatRow
             label="Downloads"
+            tooltip={downloadsTooltip}
             value={
               model.downloads !== undefined
                 ? formatCompact(model.downloads)
@@ -652,6 +810,9 @@ export const ModelInspector = memo(function ModelInspector({
           />
           {!isDataset && (
             <StatRow label="Parameters" value={paramsLabel} icon={CpuIcon} />
+          )}
+          {libraryLabel && (
+            <StatRow label="Library" value={libraryLabel} icon={LibraryIcon} />
           )}
           {!isDataset && (
             <StatRow
@@ -683,7 +844,7 @@ export const ModelInspector = memo(function ModelInspector({
                 icon={LayersLogoIcon}
               />
             )}
-          {isDataset && languages.length > 0 && (
+          {languages.length > 0 && (
             <StatRow
               label="Languages"
               value={
@@ -699,24 +860,13 @@ export const ModelInspector = memo(function ModelInspector({
         <ModelStatusChips
           isDataset={isDataset}
           isGguf={model.isGguf}
+          chatOnly={chatOnly}
           unslothSupport={unslothSupport}
           vramInfo={vramInfo}
         />
       </div>
 
-      <div
-        aria-hidden="true"
-        className={cn(
-          "mx-6 shrink-0 border-t transition-colors",
-          descScrolled ? "border-border" : "border-transparent",
-        )}
-      />
-
-      <div
-        ref={descScrollRef}
-        data-hub-scroll="true"
-        className="min-h-0 flex-1 space-y-4 overflow-y-auto pl-6 pr-4 pt-5 pb-0 [scrollbar-gutter:stable] [scrollbar-width:thin]"
-      >
+      <div className="max-w-[var(--hub-readme-measure)] space-y-4 pt-4">
         {readmeReady && readmeRepoId && (
           <ModelReadme
             repoId={readmeRepoId}

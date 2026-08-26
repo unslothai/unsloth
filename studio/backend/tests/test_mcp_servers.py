@@ -134,7 +134,10 @@ def test_execute_tool_malformed_mcp_name():
 def test_execute_tool_unknown_server(tmp_path, monkeypatch):
     _reset_db(tmp_path, monkeypatch)
     from core.inference.tools import execute_tool
-    assert execute_tool("mcp__missing__do_thing", {}) == "Error: MCP server 'missing' not found"
+    assert (
+        execute_tool("mcp__missing__do_thing", {})
+        == "Error: MCP server for tool 'do_thing' not found"
+    )
 
 
 def test_execute_tool_disabled_server(tmp_path, monkeypatch):
@@ -147,7 +150,7 @@ def test_execute_tool_disabled_server(tmp_path, monkeypatch):
     )
     from core.inference.tools import execute_tool
 
-    assert execute_tool("mcp__srv1__do_thing", {}) == "Error: MCP server 'srv1' is disabled"
+    assert execute_tool("mcp__srv1__do_thing", {}) == "Error: MCP server 'A' is disabled"
 
 
 def test_mcp_specs_skip_invalid_openai_function_names():
@@ -175,6 +178,85 @@ def test_mcp_specs_skip_empty_tool_name():
     assert specs == []
 
 
+def test_mcp_specs_skip_app_only_tools():
+    """MCP Apps tools marked _meta.ui.visibility without "model" are for the
+    server's rendered widget, not the LLM; keep them out of the schema set."""
+    from core.inference.tools import _mcp_specs_for_server
+
+    server = {"id": "srv", "display_name": "S"}
+    tools = [
+        {"name": "shown"},
+        {"name": "widget_only", "meta": {"ui": {"visibility": ["app"]}}},
+        {"name": "both", "meta": {"ui": {"visibility": ["app", "model"]}}},
+        {"name": "flat_key", "meta": {"ui/visibility": ["app"]}},
+        {"name": "underscore_meta", "_meta": {"ui": {"visibility": ["app"]}}},
+        {"name": "unrelated_meta", "meta": {"ui": {"resourceUri": "ui://x"}}},
+    ]
+    specs = _mcp_specs_for_server(server, tools)
+    names = {s["function"]["name"] for s in specs}
+    assert names == {"mcp__srv__shown", "mcp__srv__both", "mcp__srv__unrelated_meta"}
+
+
+def test_mcp_specs_read_visibility_from_either_meta_spelling():
+    """A "meta" holding unrelated keys must not mask an app-only "_meta"."""
+    from core.inference.tools import _mcp_specs_for_server
+
+    server = {"id": "srv", "display_name": "S"}
+    tools = [
+        {
+            "name": "widget_only",
+            "meta": {"vendor": "x"},
+            "_meta": {"ui": {"visibility": ["app"]}},
+        },
+        {"name": "shown", "meta": {"vendor": "x"}, "_meta": {"ui": {"visibility": ["model"]}}},
+    ]
+    specs = _mcp_specs_for_server(server, tools)
+    assert {s["function"]["name"] for s in specs} == {"mcp__srv__shown"}
+
+
+@pytest.mark.parametrize(
+    "visibility, visible",
+    [
+        (["model"], True),
+        (["app"], False),
+        ([], False),  # "visible to nobody" reads as hidden
+        ("model", True),  # not a list: unrecognised shape stays visible
+        (None, True),
+        (["Model"], False),  # spec values are lowercase
+    ],
+)
+def test_mcp_specs_visibility_shapes(visibility, visible):
+    from core.inference.tools import _mcp_specs_for_server
+
+    tool = {"name": "t", "meta": {"ui": {"visibility": visibility}}}
+    specs = _mcp_specs_for_server({"id": "srv", "display_name": "S"}, [tool])
+    assert bool(specs) is visible
+
+
+@pytest.mark.parametrize("schema_key", ["inputSchema", "input_schema"])
+def test_mcp_specs_keep_the_tool_arguments(schema_key):
+    """Reading one spelling only would leave every tool argument-less after an
+    mcp 2.x bump."""
+    from core.inference.tools import _mcp_specs_for_server
+
+    schema = {"type": "object", "properties": {"q": {"type": "string"}}}
+    tool = {"name": "search", "description": "d", schema_key: schema}
+    specs = _mcp_specs_for_server({"id": "srv", "display_name": "S"}, [tool])
+    assert specs[0]["function"]["parameters"] == schema
+
+
+def test_mcp_specs_match_the_installed_sdk_dump():
+    """Whichever spelling the pinned SDK emits, the arguments must survive."""
+    from mcp.types import Tool
+
+    from core.inference.tools import _mcp_specs_for_server
+
+    schema = {"type": "object", "properties": {"q": {"type": "string"}}}
+    dumped = Tool(name = "search", description = "d", inputSchema = schema).model_dump(exclude_none = True)
+    specs = _mcp_specs_for_server({"id": "srv", "display_name": "S"}, [dumped])
+    assert specs[0]["function"]["parameters"] == schema
+
+
 def test_mcp_specs_drops_duplicate_names():
     """Duplicate tool names from one server -> OpenAI rejects; drop before forwarding."""
     from core.inference.tools import _mcp_specs_for_server
@@ -198,7 +280,12 @@ def test_call_tool_sync_respects_pre_set_cancel_event(monkeypatch):
         async def __aexit__(self, *args):
             return False
 
-        async def call_tool(self, name, args):
+        async def call_tool(
+            self,
+            name,
+            args,
+            raise_on_error = True,
+        ):
             import asyncio as _asyncio
             await _asyncio.sleep(30)  # never finishes during the test
 
@@ -423,6 +510,46 @@ def test_tool_healing_strip_handles_hyphenated_function_names():
     assert out == "before  after"
 
 
+def test_tool_healing_strip_handles_gemma_native_tool_call():
+    from core.tool_healing import strip_tool_call_markup
+    out = strip_tool_call_markup(
+        'before <|tool_call>call:mcp__srv__list-issues{repo:"octocat/hello"}<tool_call|> after'
+    )
+    assert out == "before  after"
+
+
+def test_tool_healing_strip_handles_gemma_close_only_marker():
+    from core.tool_healing import strip_tool_call_markup
+    assert strip_tool_call_markup("before <tool_call|> after") == "before  after"
+    assert strip_tool_call_markup("before <tool_call|> after", final = True) == "before  after"
+
+
+def test_tool_healing_parser_handles_gemma_native_windows_path():
+    from core.tool_healing import parse_tool_calls_from_text
+    import json as _json
+
+    calls = parse_tool_calls_from_text(
+        r'<|tool_call>call:ls{path:<|"|>C:\Users\wasim\repo<|"|>}<tool_call|>'
+    )
+    assert len(calls) == 1
+    assert calls[0]["function"]["name"] == "ls"
+    assert _json.loads(calls[0]["function"]["arguments"]) == {"path": r"C:\Users\wasim\repo"}
+
+
+def test_tool_healing_json_parser_preserves_literal_gemma_quote_token():
+    from core.tool_healing import parse_tool_calls_from_text
+    import json as _json
+
+    text = (
+        "<tool_call>"
+        + _json.dumps({"name": "python", "arguments": {"code": "print('<|\"|>')"}})
+        + "</tool_call>"
+    )
+    calls = parse_tool_calls_from_text(text, allow_incomplete = False)
+    assert len(calls) == 1
+    assert _json.loads(calls[0]["function"]["arguments"]) == {"code": "print('<|\"|>')"}
+
+
 def test_gguf_allow_list_blocks_unadvertised_tool(monkeypatch):
     """A tool call not in the per-request list must be refused by the GGUF
     agentic loop (mirroring the safetensors path)."""
@@ -480,7 +607,12 @@ def test_call_tool_sync_short_circuits_on_pre_set_cancel(monkeypatch):
         async def __aexit__(self, *args):
             return False
 
-        async def call_tool(self, name, args):
+        async def call_tool(
+            self,
+            name,
+            args,
+            raise_on_error = True,
+        ):
             return "ran"
 
     monkeypatch.setattr(mcp_client, "_client", lambda *a, **kw: _StubClient())
@@ -527,7 +659,7 @@ def test_clear_oauth_tokens_swallows_constructor_errors(tmp_path, monkeypatch):
 
 def test_tool_xml_parser_handles_hyphenated_function_names():
     """Hyphenated tool names like `mcp__srv__list-issues` must parse, else the
-    model can call the tool but Studio can't dispatch."""
+    model can call the tool but Unsloth can't dispatch."""
     from core.inference.tool_call_parser import parse_tool_calls_from_text
 
     calls = parse_tool_calls_from_text(
@@ -547,10 +679,14 @@ def test_tool_xml_strip_handles_hyphenated_function_names():
     import re as _re
     from pathlib import Path
 
-    src = (Path(__file__).resolve().parent.parent / "routes/inference.py").read_text()
+    from core.inference.tool_call_parser import _DEEPSEEK_OPEN_RE_SRC as _DS_OPEN_SRC
+
+    src = (Path(__file__).resolve().parent.parent / "routes/inference.py").read_text(
+        encoding = "utf-8"
+    )
     m = _re.search(r"_TOOL_XML_RE = _re\.compile\((.*?)\n\)", src, _re.DOTALL)
     assert m, "could not extract _TOOL_XML_RE"
-    ns: dict = {"_re": _re}
+    ns: dict = {"_re": _re, "_DS_OPEN_SRC": _DS_OPEN_SRC}
     exec(f"_TOOL_XML_RE = _re.compile({m.group(1)})", ns)
     rx = ns["_TOOL_XML_RE"]
     stripped = rx.sub(
@@ -743,6 +879,68 @@ def test_update_display_name_keeps_tool_cache(tmp_path, monkeypatch):
         routes_mcp.update_mcp_server("s1", McpServerUpdate(display_name = "B"), current_subject = "u")
     )
     assert mcp_client.get_cached_tools("s1") == cached
+
+
+def test_update_rename_keeps_stdio_session(tmp_path, monkeypatch):
+    """The edit dialog resends url/headers/oauth unchanged on a rename, so gating
+    the close on field presence would drop the live stdio session. Only a real
+    endpoint/auth change may close it."""
+    import asyncio
+    import json
+
+    _reset_db(tmp_path, monkeypatch)
+    from models.mcp_servers import McpServerUpdate
+    import routes.mcp_servers as routes_mcp
+
+    closed: list = []
+    monkeypatch.setattr(routes_mcp, "stdio_mcp_enabled", lambda: True)
+    monkeypatch.setattr(routes_mcp, "close_stdio_sessions", lambda *a, **k: closed.append(a))
+    mcp_servers_db.create_server(
+        id = "s1",
+        display_name = "A",
+        url = "npx demo-server",
+        headers_json = json.dumps({"API_KEY": "x"}),
+        is_enabled = True,
+    )
+    asyncio.run(
+        routes_mcp.update_mcp_server(
+            "s1",
+            McpServerUpdate(
+                display_name = "B",
+                url = "npx demo-server",
+                headers = {"API_KEY": "x"},
+                use_oauth = False,
+            ),
+            current_subject = "u",
+        )
+    )
+    assert closed == []
+    assert mcp_servers_db.get_server("s1")["display_name"] == "B"
+
+
+def test_update_stdio_command_change_closes_session(tmp_path, monkeypatch):
+    """A real command change must still close the old stdio session."""
+    import asyncio
+
+    _reset_db(tmp_path, monkeypatch)
+    from models.mcp_servers import McpServerUpdate
+    import routes.mcp_servers as routes_mcp
+
+    closed: list = []
+    monkeypatch.setattr(routes_mcp, "stdio_mcp_enabled", lambda: True)
+    monkeypatch.setattr(routes_mcp, "close_stdio_sessions", lambda *a, **k: closed.append(a))
+    mcp_servers_db.create_server(
+        id = "s1",
+        display_name = "A",
+        url = "npx demo-server",
+        is_enabled = True,
+    )
+    asyncio.run(
+        routes_mcp.update_mcp_server(
+            "s1", McpServerUpdate(url = "npx other-server"), current_subject = "u"
+        )
+    )
+    assert len(closed) == 1
 
 
 def test_update_disable_evicts_tool_cache(tmp_path, monkeypatch):
@@ -1209,3 +1407,109 @@ def test_oauth_probe_failure_in_chat_path_uses_long_cooloff(tmp_path, monkeypatc
     # branch (use_oauth=True) fired -- not the 60 s default.
     remaining = mcp_client._probe_cooloff_until["s1"] - time.monotonic()
     assert remaining > mcp_client.FAILED_PROBE_COOLOFF_SECONDS
+
+
+# ── MCP display names in status text and provenance ─────────────────
+
+
+def test_status_for_tool_uses_mcp_display_name(tmp_path, monkeypatch):
+    _reset_db(tmp_path, monkeypatch)
+    mcp_servers_db.create_server(id = "srv1", display_name = "GitHub", url = "https://a/m")
+    from core.inference.tool_loop_controller import status_for_tool
+
+    assert status_for_tool("mcp__srv1__create_issue", {}) == "Calling: GitHub · create_issue"
+
+
+def test_status_for_tool_unknown_mcp_server_keeps_raw_name(tmp_path, monkeypatch):
+    _reset_db(tmp_path, monkeypatch)
+    from core.inference.tool_loop_controller import status_for_tool
+    assert status_for_tool("mcp__missing__x", {}) == "Calling: mcp__missing__x"
+
+
+def test_awaiting_approval_status_uses_mcp_display_name(tmp_path, monkeypatch):
+    _reset_db(tmp_path, monkeypatch)
+    mcp_servers_db.create_server(id = "srv1", display_name = "GitHub", url = "https://a/m")
+    from core.inference.tool_loop_controller import awaiting_approval_status
+
+    assert (
+        awaiting_approval_status("mcp__srv1__create_issue")
+        == "Waiting for approval: GitHub · create_issue"
+    )
+
+
+def test_prepare_call_stamps_mcp_server_provenance(tmp_path, monkeypatch):
+    _reset_db(tmp_path, monkeypatch)
+    mcp_servers_db.create_server(id = "srv1", display_name = "GitHub", url = "https://a/m")
+    from core.inference.tool_loop_controller import ToolLoopController
+
+    controller = ToolLoopController(tools = None)
+    decision = controller.prepare_call(
+        {"function": {"name": "mcp__srv1__create_issue", "arguments": {}}}
+    )
+    assert decision.provenance["mcp_server"] == "GitHub"
+
+    plain = controller.prepare_call({"function": {"name": "python", "arguments": {}}})
+    assert "mcp_server" not in plain.provenance
+
+
+def test_provisional_tool_provenance_stamps_mcp_display_name(tmp_path, monkeypatch):
+    _reset_db(tmp_path, monkeypatch)
+    mcp_servers_db.create_server(id = "srv1", display_name = "GitHub", url = "https://a/m")
+    from core.inference.tool_loop_controller import provisional_tool_provenance
+
+    prov = provisional_tool_provenance("mcp__srv1__create_issue")
+    assert prov["provisional"] is True
+    assert prov["mcp_server"] == "GitHub"
+
+    assert "mcp_server" not in provisional_tool_provenance("python")
+    assert "mcp_server" not in provisional_tool_provenance("mcp__missing__x")
+
+
+def test_display_names_never_reach_the_callable_tool_name(tmp_path, monkeypatch):
+    """Routing, approvals and replay all key off mcp__<serverId>__<tool>, so the
+    display name must stay presentation only."""
+    _reset_db(tmp_path, monkeypatch)
+    mcp_servers_db.create_server(id = "srv1", display_name = "GitHub", url = "https://a/m")
+    from core.inference.tool_loop_controller import (
+        mcp_display_parts,
+        provisional_tool_provenance,
+    )
+    from core.inference.tools import _mcp_specs_for_server
+
+    specs = _mcp_specs_for_server(
+        {"id": "srv1", "display_name": "GitHub"}, [{"name": "create_issue"}]
+    )
+    assert specs[0]["function"]["name"] == "mcp__srv1__create_issue"
+    # Allowed in the description and the provenance stamp.
+    assert "GitHub" in specs[0]["function"]["description"]
+    assert provisional_tool_provenance("mcp__srv1__create_issue")["mcp_server"] == "GitHub"
+    assert mcp_display_parts("mcp__srv1__create_issue") == ("GitHub", "create_issue")
+
+
+def test_two_servers_sharing_a_display_name_stay_separately_routable(tmp_path, monkeypatch):
+    """Duplicate display names must not collapse two servers into one route."""
+    _reset_db(tmp_path, monkeypatch)
+    for sid in ("srv1", "srv2"):
+        mcp_servers_db.create_server(id = sid, display_name = "GitHub", url = f"https://{sid}/m")
+    from core.inference.tools import _mcp_specs_for_server
+
+    names = {
+        _mcp_specs_for_server({"id": sid, "display_name": "GitHub"}, [{"name": "run"}])[0][
+            "function"
+        ]["name"]
+        for sid in ("srv1", "srv2")
+    }
+    assert names == {"mcp__srv1__run", "mcp__srv2__run"}
+
+
+@pytest.mark.parametrize(
+    "display",
+    ["line\nbreak", "**bold**", "<script>", "‮gnitseT", "x" * 1000],
+)
+def test_adversarial_display_names_do_not_break_provenance(tmp_path, monkeypatch, display):
+    _reset_db(tmp_path, monkeypatch)
+    mcp_servers_db.create_server(id = "srv1", display_name = display, url = "https://a/m")
+    from core.inference.tool_loop_controller import provisional_tool_provenance
+
+    # Stored verbatim; escaping is the renderer's job.
+    assert provisional_tool_provenance("mcp__srv1__run")["mcp_server"] == display

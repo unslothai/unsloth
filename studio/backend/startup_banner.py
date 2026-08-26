@@ -1,15 +1,27 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Terminal banner for Studio startup.
+"""Terminal banner for Unsloth startup.
 
-Stdlib only — safe to import without the rest of the backend.
+Stdlib only -- safe to import without the rest of the backend.
 """
 
 from __future__ import annotations
 
 import os
 import sys
+
+
+def _safe_print(text: str) -> None:
+    """Print text without crashing on terminals that cannot encode Unicode."""
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        encoding = getattr(sys.stdout, "encoding", None) or "ascii"
+        try:
+            print(text.encode(encoding, errors = "replace").decode(encoding))
+        except LookupError:
+            print(text.encode("ascii", errors = "replace").decode("ascii"))
 
 
 def stdout_supports_color() -> bool:
@@ -28,9 +40,9 @@ def print_port_in_use_notice(original_port: int, new_port: int) -> None:
     """Message when the requested port is taken and another is chosen."""
     msg = f"Port {original_port} is in use, using port {new_port} instead."
     if stdout_supports_color():
-        print(f"\033[38;5;245m{msg}\033[0m")
+        _safe_print(f"\033[38;5;245m{msg}\033[0m")
     else:
-        print(msg)
+        _safe_print(msg)
 
 
 def print_studio_stop_hint() -> None:
@@ -44,15 +56,15 @@ def print_studio_stop_hint() -> None:
     def style(text: str, code: str) -> str:
         return f"{code}{text}{reset}" if use_color else text
 
-    print(
+    _safe_print(
         "\n".join(
             [
                 "",
                 style(
-                    "  To stop Unsloth Studio: press Ctrl+C in this terminal.",
+                    "  To stop Unsloth Studio: press Ctrl+C "
+                    "(Control+C, not Command+C, on macOS).",
                     stop_hint_style,
                 ),
-                style("  (On macOS this is Control+C, not Command+C.)", dim),
                 style("─" * 52, dim),
                 "",
             ]
@@ -66,10 +78,16 @@ def print_studio_access_banner(
     bind_host: str,
     display_host: str,
     include_stop_hint: bool = True,
+    lan_addresses: "tuple[str, ...]" = (),
 ) -> None:
     """Pretty-print URLs once the server is listening. Set
     ``include_stop_hint=False`` to omit the trailing stop block; pair with
-    :func:`print_studio_stop_hint` after inserting your own content."""
+    :func:`print_studio_stop_hint` after inserting your own content.
+
+    ``lan_addresses`` are the addresses a runtime LAN listener (Settings > LAN
+    access) is already serving on. A loopback launch that carries one is not
+    reachable on this machine only, so the banner must say where else it answers.
+    """
     use_color = stdout_supports_color()
     dim = "\033[38;5;245m"
     title = "\033[38;5;150m"
@@ -101,7 +119,6 @@ def print_studio_access_banner(
     # Use the loopback URL only when reachable on loopback; otherwise show
     # the actual bound address.
     primary_url = loopback_url if listen_all or loopback_bind else external_url
-    tip_url = alt_local if listen_all or loopback_bind else external_url
     api_base = primary_url
 
     lines: list[str] = [
@@ -145,38 +162,37 @@ def print_studio_access_banner(
             style(f"    {api_base}/api", secondary),
             style(f"    {api_base}/api/health", secondary),
             style("─" * 52, dim),
-            style(
-                f"  Tip: if you are on this computer, open {tip_url}/ in your browser.",
-                dim,
-            ),
         ]
     )
 
     if loopback_bind and not listen_all:
-        lines.extend(
-            [
-                "",
-                style(
-                    "  Studio is only reachable on this machine (bound to 127.0.0.1).",
-                    secondary,
-                ),
-                style(
-                    "  To deploy and access globally:",
-                    secondary,
-                ),
-                style(
-                    "    1. press Ctrl+C to stop Studio",
-                    secondary,
-                ),
-                style(
-                    f"    2. relaunch with:  unsloth studio -H 0.0.0.0 -p {port}",
-                    secondary,
-                ),
-                style(
-                    "  Only do this on trusted networks -- it exposes the API on every interface.",
-                    secondary,
-                ),
-            ]
+        if lan_addresses:
+            lines.append("")
+            lines.append(
+                style("  LAN access is on -- also reachable on your network at:", secondary)
+            )
+            lines.extend(style(f"    http://{a}:{port}", secondary) for a in lan_addresses)
+            lines.append(style("  Turn it off in Settings > Remote & LAN > LAN access.", secondary))
+        else:
+            lines.extend(
+                [
+                    "",
+                    style(
+                        "  Reachable on this machine only (bound to 127.0.0.1).",
+                        secondary,
+                    ),
+                    style(
+                        "  To expose it, turn on Settings > Remote & LAN > LAN access, or "
+                        f"relaunch with:  unsloth studio -H 0.0.0.0 -p {port}",
+                        secondary,
+                    ),
+                ]
+            )
+        lines.append(
+            style(
+                "  Only on trusted networks -- anyone who reaches this machine can use Unsloth.",
+                secondary,
+            )
         )
 
     if include_stop_hint:
@@ -184,13 +200,13 @@ def print_studio_access_banner(
             [
                 "",
                 style(
-                    "  To stop Unsloth Studio: press Ctrl+C in this terminal.",
+                    "  To stop Unsloth Studio: press Ctrl+C "
+                    "(Control+C, not Command+C, on macOS).",
                     stop_hint_style,
                 ),
-                style("  (On macOS this is Control+C, not Command+C.)", dim),
                 style("─" * 52, dim),
                 "",
             ]
         )
 
-    print("\n".join(lines))
+    _safe_print("\n".join(lines))
