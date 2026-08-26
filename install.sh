@@ -1036,17 +1036,24 @@ _smart_apt_install() {
 # app (is_valid_studio_root_id). Nothing else is an id: no backend reports it,
 # and the launcher holds it in a single-quoted assignment, so a planted value
 # with a quote in it would be launcher code.
-_css_install_id_is_valid() {
+# Subshell bodies so LC_ALL=C is scoped to the check: the character classes
+# below must mean the same bytes whatever locale the installer inherits, and
+# the contract is pure ASCII.
+_css_install_id_is_valid() (
+    LC_ALL=C
+    export LC_ALL
     case "${1:-}" in
         "" | *[!0123456789abcdef]*) return 1 ;;
     esac
     [ "${#1}" -eq 64 ]
-}
+)
 
 # Echoes the id at $1 when it satisfies the contract, nothing otherwise.
 # Returns 1 when the path could not be READ, a different answer: a failed read
 # may still be sitting on a valid id.
-_css_read_valid_install_id() {
+_css_read_valid_install_id() (
+    LC_ALL=C
+    export LC_ALL
     # Regular files only: a FIFO here (or a symlink to one, or to a device)
     # would park the installer on the open, waiting for a writer forever.
     [ -f "$1" ] || return 0
@@ -1074,8 +1081,7 @@ _css_read_valid_install_id() {
     if _css_install_id_is_valid "$_cvi_id"; then
         printf '%s' "$_cvi_id"
     fi
-    unset _cvi_id
-}
+)
 
 # ── Helper: create desktop shortcuts and launcher script ──
 # Usage: create_studio_shortcuts <unsloth_exe> <os>

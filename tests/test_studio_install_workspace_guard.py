@@ -20,9 +20,30 @@ def _install_id_helpers() -> str:
     """The shipped _css_install_id_is_valid / _css_read_valid_install_id bodies,
     sliced out of install.sh so the shell tests below run the real validator."""
     src = INSTALL_SH.read_text(encoding = "utf-8")
-    start = src.index("_css_install_id_is_valid() {")
+    start = src.index("_css_install_id_is_valid() ")
     end = src.index("# ── Helper: create desktop shortcuts", start)
     return src[start:end]
+
+
+def _extract_create_studio_shortcuts() -> str:
+    """The shipped helpers plus the whole create_studio_shortcuts body.
+
+    The function contains heredocs with their own `}` at column 0, so the real
+    end is found by asking `sh -n` which candidate close brace parses.
+    """
+    src = INSTALL_SH.read_text(encoding = "utf-8")
+    lines = src.splitlines()
+    start = next(i for i, l in enumerate(lines) if l.startswith("_css_install_id_is_valid() "))
+    fn = next(i for i, l in enumerate(lines) if l.startswith("create_studio_shortcuts() {"))
+    eof = next(i for i, l in enumerate(lines) if i > fn and l == "LAUNCHER_EOF")
+    for i, line in enumerate(lines):
+        if i <= eof or line != "}":
+            continue
+        candidate = "\n".join(lines[start : i + 1]) + "\n"
+        if subprocess.run(["sh", "-n"], input = candidate, text = True,
+                          capture_output = True).returncode == 0:
+            return candidate
+    raise AssertionError("could not slice create_studio_shortcuts from install.sh")
 
 
 # Stub the rollback helper with a move. The directory predicate is extracted
@@ -1000,6 +1021,58 @@ def test_install_sh_never_reads_a_non_regular_id_path(tmp_path):
     assert res.returncode == 0, res.stderr
     assert "OUT=[]" in res.stdout, f"a FIFO must read as no id, got {res.stdout!r}"
 
+
+
+@pytest.mark.skipif(os.name != "posix", reason = "runs the POSIX installer function")
+def test_create_studio_shortcuts_end_to_end_never_embeds_a_planted_id(tmp_path):
+    """The REAL create_studio_shortcuts, not a reconstruction of it.
+
+    The helper-level tests above cannot catch a caller that validates and then
+    embeds something else, so this runs the shipped function over a planted id
+    and inspects the launcher it actually writes.
+    """
+    home = tmp_path / "home"
+    studio_home = tmp_path / "studio"
+    data_dir = tmp_path / "data"
+    for d in (home, studio_home / "share", data_dir, tmp_path / "bin"):
+        d.mkdir(parents = True)
+    marker = tmp_path / "PWNED"
+    (studio_home / "share" / "studio_install_id").write_text(
+        f"x'; touch {marker}; exit 0 #", encoding = "utf-8")
+    exe = tmp_path / "bin" / "unsloth"
+    exe.write_text("#!/bin/sh\nexit 0\n", encoding = "utf-8")
+    exe.chmod(0o755)
+
+    script = (
+        "set -e\n"
+        "download() { : ; }\n"
+        "substep() { : ; }\n"
+        '_LOCK_KEY="testkey"\n'
+        f'STUDIO_HOME="{studio_home}"\nDATA_DIR="{data_dir}"\n'
+        "_STUDIO_HOME_REDIRECT=default\n"
+        + _extract_create_studio_shortcuts()
+        + f'\ncreate_studio_shortcuts "{exe}" "linux"\n'
+    )
+    res = subprocess.run(
+        ["sh", "-c", script], text = True, capture_output = True, timeout = 300,
+        env = dict(os.environ, HOME = str(home)), cwd = str(tmp_path),
+    )
+    assert res.returncode == 0, f"installer step failed: {res.stderr[-400:]}"
+
+    launcher = data_dir / "launch-studio.sh"
+    assert launcher.is_file(), "no launcher was written"
+    m = re.search(r"^_EXPECTED_STUDIO_ROOT_ID='(.*)'$", launcher.read_text(), re.M)
+    assert m, "launcher has no id assignment"
+    baked = m.group(1)
+    assert re.fullmatch(r"[0-9a-f]{64}", baked), f"planted id reached the launcher: {baked!r}"
+
+    # The launcher must agree with what the backend would report from the file.
+    on_disk = (studio_home / "share" / "studio_install_id").read_text().strip()
+    assert baked == on_disk, "the launcher and the id file disagree"
+    assert subprocess.run(["bash", "-n", str(launcher)]).returncode == 0
+
+    subprocess.run(["sh", "-c", f". {launcher}"], capture_output = True, timeout = 60)
+    assert not marker.exists(), "the planted id executed as launcher code"
 
 def test_install_sh_never_bakes_a_planted_id_into_the_launcher(tmp_path):
     """A pre-planted studio_install_id must be regenerated, not embedded.
