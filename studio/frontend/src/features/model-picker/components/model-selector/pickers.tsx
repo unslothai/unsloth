@@ -766,12 +766,12 @@ const META_COLUMN = {
   // Fits "UD-Q4_K_XL"; a hard cap, so longer quants clip.
   quant: "min-[560px]:w-[7.2em]",
   // The badge slot holds capability glyphs (18px), the vision badge (24px) and the Hub lists'
-  // "on disk" mark (12px), gap-1 between them. Each width below is the widest set its scope can
+  // "on disk" mark (14px), gap-1 between them. Each width below is the widest set its scope can
   // draw, since anything wider makes min-w-min expand the slot and shift every column after it.
   // Scope draws no glyph: the vision badge alone, or the disk mark alone.
   badge: "min-w-min min-[560px]:w-[24px]",
-  // One glyph plus the disk mark (18 + 4 + 12).
-  badgeMid: "min-w-min min-[560px]:w-[34px]",
+  // One glyph plus the disk mark (18 + 4 + 14).
+  badgeMid: "min-w-min min-[560px]:w-[36px]",
   // Unscoped chat: a generation glyph and audio, plus whichever of vision (On Device rows) or the
   // disk mark (Hub rows) that list carries -- the two never appear on the same row (18+4+18+4+24).
   badgeWide: "min-w-min min-[560px]:w-[68px]",

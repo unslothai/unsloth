@@ -26,7 +26,7 @@ test("a downloaded row is marked the way the Hub marks one", () => {
   assert.match(badge, /size-\[5px\] rounded-full bg-status-success/);
   assert.match(badge, /aria-label="On device"/);
   assert.ok(
-    MODELS_TABLE.includes('bg-status-success'),
+    MODELS_TABLE.includes("bg-status-success"),
     "and the Hub still uses that dot, so the two agree",
   );
 });
@@ -34,6 +34,13 @@ test("a downloaded row is marked the way the Hub marks one", () => {
 test("the download glyph is gone from the picker entirely", () => {
   // Left behind, it would still be imported for nothing.
   assert.ok(!PICKERS.includes("Download01Icon"));
+});
+
+test("the scoped badge column reserves the wider on-device marker", () => {
+  // Video can show one 18px capability, a 4px gap and the 14px marker. If the
+  // fixed width remains 34px, min-w-min expands only those rows and shifts all
+  // metadata columns after the badge slot.
+  assert.ok(PICKERS.includes('badgeMid: "min-w-min min-[560px]:w-[36px]"'));
 });
 
 test("every select-model surface shares that one badge", () => {
@@ -60,22 +67,48 @@ test("every select-model surface shares that one badge", () => {
 test("list header actions end where a hovered row's action does", () => {
   // A row action is `right-0 pr-1.5` inside a pill the list inset by
   // scrollRowPadding: 12px in normally, 11px under the desktop titlebar.
-  assert.match(CSS, /\.sidebar-row-action \{\n\t\t@apply absolute top-0 bottom-0 right-0[^;]*pr-1\.5/);
+  assert.match(
+    CSS,
+    /\.sidebar-row-action \{\n\t\t@apply absolute top-0 bottom-0 right-0[^;]*pr-1\.5/,
+  );
   const label = CSS.slice(CSS.indexOf(".sidebar-sticky-label {"));
   assert.match(label.slice(0, 400), /pl-\[16px\] pr-3 /);
 
-  assert.match(SIDEBAR, /const scrollRowPadding = usesDesktopTitlebar \? "px-\[5px\]" : "px-1\.5";/);
-  assert.match(SIDEBAR, /const headerRightPadding = usesDesktopTitlebar \? "pr-\[11px\]" : null;/);
+  assert.ok(
+    CSS.includes(
+      ".sidebar-sticky-label.sidebar-sticky-label-desktop {\n\t\tpadding-right: 11px;",
+    ),
+  );
+  assert.ok(
+    CSS.includes(
+      ".sidebar-sticky-label.sidebar-sticky-label-desktop-recents {\n\t\tpadding-right: 13px;",
+    ),
+  );
+
+  assert.match(
+    SIDEBAR,
+    /const scrollRowPadding = usesDesktopTitlebar \? "px-\[5px\]" : "px-1\.5";/,
+  );
+  assert.ok(
+    SIDEBAR.includes(
+      'const headerRightPadding = usesDesktopTitlebar\n    ? "sidebar-sticky-label-desktop"\n    : null;',
+    ),
+  );
   // Recents is nudged 2px right there and carries its padding with it.
-  assert.match(SIDEBAR, /const recentsHeaderRightPadding = usesDesktopTitlebar \? "pr-\[13px\]" : null;/);
+  assert.ok(
+    SIDEBAR.includes(
+      'const recentsHeaderRightPadding = usesDesktopTitlebar\n    ? "sidebar-sticky-label-desktop-recents"\n    : null;',
+    ),
+  );
 });
 
 test("all three list headers take the same alignment", () => {
   // Pinned and Projects share one class string; Recents has its own because of
   // the translate. Two of the first, one of the second.
-  const shared = SIDEBAR.split(
-    '"sidebar-sticky-label sidebar-sticky-label-following group/sidebar-header gap-1", headerRightPadding,',
-  ).length - 1;
+  const shared =
+    SIDEBAR.split(
+      '"sidebar-sticky-label sidebar-sticky-label-following group/sidebar-header gap-1", headerRightPadding,',
+    ).length - 1;
   assert.equal(shared, 2, "Pinned and Projects");
   assert.ok(
     SIDEBAR.includes("recentsHeaderRightPadding,"),

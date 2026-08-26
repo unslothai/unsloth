@@ -1915,10 +1915,13 @@ export function AppSidebar() {
 
   // Header actions end where a hovered row's "…" does: scrollRowPadding + the
   // action's own pr-1.5. 12px normally (the pr-3 class default), 11px here.
-  const headerRightPadding = usesDesktopTitlebar ? "pr-[11px]" : null;
+  const headerRightPadding = usesDesktopTitlebar
+    ? "sidebar-sticky-label-desktop"
+    : null;
   // Recents alone is nudged 2px right there, and carries its padding with it.
-  const recentsHeaderRightPadding = usesDesktopTitlebar ? "pr-[13px]" : null;
-
+  const recentsHeaderRightPadding = usesDesktopTitlebar
+    ? "sidebar-sticky-label-desktop-recents"
+    : null;
 
   // One definition per row, so pinned rows and the flyout can't drift apart.
   const navRows: Record<SidebarNavItemId, NavRowDef> = {

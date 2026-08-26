@@ -1207,6 +1207,15 @@ html[data-chat-font] .aui-root {
 		color: #80868b;
 		letter-spacing: 0;
 	}
+	/* These compound selectors must beat the base label's pr-3 declaration.
+	   Tailwind emits utility classes before this components block, so putting
+	   pr-[11px]/pr-[13px] on the element would lose the cascade. */
+	.sidebar-sticky-label.sidebar-sticky-label-desktop {
+		padding-right: 11px;
+	}
+	.sidebar-sticky-label.sidebar-sticky-label-desktop-recents {
+		padding-right: 13px;
+	}
 	.sidebar-sticky-label-following {
 		@apply pt-[21px];
 	}
