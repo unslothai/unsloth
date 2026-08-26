@@ -146,10 +146,17 @@ def _plan(
 # ------------------------------------------------------------------ the gate
 
 
-def test_the_planner_is_off_by_default():
-    """No env, no plan. An old install cannot change behaviour by upgrading."""
-    assert smart_offload_enabled({}) is False
-    assert _Stub()._planned_tensor_spill(_inputs(), env = {}) is None
+def test_the_planner_is_on_by_default():
+    """No env, a plan. The flag is now opt-OUT: an install that sets nothing gets
+    the planner, which is the whole point of making it the default."""
+    assert smart_offload_enabled({}) is True
+    # A load that fits is still PLANNED, it just spills nothing.
+    roomy = _Stub()._planned_tensor_spill(_inputs(), env = {})
+    assert roomy is not None and not roomy.spills_anything
+
+    # A load that does not fit gets a real plan with no env set at all.
+    tight = _Stub()._planned_tensor_spill(_inputs(free_mib = 14 * 1024), env = {})
+    assert tight is not None and tight.spills_anything
 
 
 @pytest.mark.parametrize("value", ["1", "on", "true", "yes", "enabled", "ON", " 1 "])
@@ -157,8 +164,21 @@ def test_the_gate_accepts_the_usual_spellings(value):
     assert smart_offload_enabled({"UNSLOTH_SMART_OFFLOAD": value}) is True
 
 
-@pytest.mark.parametrize("value", ["0", "off", "", "no", "nope"])
-def test_the_gate_rejects_everything_else(value):
+@pytest.mark.parametrize("value", ["0", "off", "", "no", "disabled", "false"])
+def test_an_explicit_off_still_disables(value):
+    """The escape hatch has to keep working, or a user with a load the planner
+    mishandles has nothing to reach for."""
+    assert smart_offload_enabled({"UNSLOTH_SMART_OFFLOAD": value}) is False
+    assert _Stub()._planned_tensor_spill(
+        _inputs(), env = {"UNSLOTH_SMART_OFFLOAD": value}
+    ) is None
+
+
+@pytest.mark.parametrize("value", ["nope", "flase", "onn", "2"])
+def test_an_unrecognised_value_disables_rather_than_enables(value):
+    """For an opt-OUT flag the two typos are not symmetric. `flase` meaning off
+    must not hand back the very thing it was trying to switch off; fumbling an
+    on-spelling only keeps the previous behaviour."""
     assert smart_offload_enabled({"UNSLOTH_SMART_OFFLOAD": value}) is False
 
 
