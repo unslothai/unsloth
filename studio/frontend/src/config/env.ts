@@ -108,12 +108,18 @@ const HARDWARE_DETECT_POLL_MS = 200;
 // The bounded wait above is spent at most once per page load: see fetchDeviceType.
 let hardwareWaitSpent = false;
 
+// Forced reads bypass the cache and always write, so they race each other: a slow one
+// landing after a later one restores what that one replaced. Only the newest may write.
+let forcedRead = 0;
+
 // `force` re-reads /api/health even if cached, to pick up a late-arriving tunnel URL.
 export async function fetchDeviceType(options?: {
   force?: boolean;
 }): Promise<DeviceType> {
   const { fetched } = usePlatformStore.getState();
   if (fetched && !options?.force) return usePlatformStore.getState().deviceType;
+  const read = options?.force ? ++forcedRead : 0;
+  const superseded = () => read !== 0 && read !== forcedRead;
 
   try {
     // /api/health only reports the server's device_type to authed callers.
@@ -173,7 +179,7 @@ export async function fetchDeviceType(options?: {
       // later forced refresh already picked up device_type and the tunnel
       // fields; writing either would reset device type or null the tunnel
       // fields. Forced refreshes are explicit re-reads, so they still write.
-      if (shouldKeepAuthoritativePlatform(options?.force)) {
+      if (shouldKeepAuthoritativePlatform(options?.force) || superseded()) {
         return usePlatformStore.getState().deviceType;
       }
       const previous = usePlatformStore.getState();
@@ -194,6 +200,14 @@ export async function fetchDeviceType(options?: {
         data,
         previous,
       );
+      // Authed-only, so they ride with device_type on the same terms: an expired token
+      // gets the unauthenticated body, which carries none of them, and nulling a live
+      // tunnel there leaves every copied preview link pointing at this machine.
+      const cloudflareUrl =
+        data.cloudflare_url ?? (keepPlatform ? previous.cloudflareUrl : null);
+      const serverUrl =
+        data.server_url ?? (keepPlatform ? previous.serverUrl : null);
+      const secure = data.secure ?? (keepPlatform ? previous.secure : false);
       // Cache only a server-reported platform. Unauthenticated responses fall
       // back to the browser platform, which can differ from the host (WSL,
       // SSH); keeping fetched=false retries once a token exists.
@@ -203,9 +217,9 @@ export async function fetchDeviceType(options?: {
         chatOnly,
         chatOnlyReason,
         chatOnlyDetail,
-        cloudflareUrl: data.cloudflare_url ?? null,
-        serverUrl: data.server_url ?? null,
-        secure: data.secure ?? false,
+        cloudflareUrl,
+        serverUrl,
+        secure,
         fetched: data.device_type !== undefined || keepPlatform,
         detectionDeferred: isDetectionDeferred(data),
       });
@@ -216,7 +230,7 @@ export async function fetchDeviceType(options?: {
     // on initial load (important for macOS). Keep fetched=false so a later
     // call retries against the backend. But a late non-forced failure must not
     // wipe an authoritative platform that already resolved.
-    if (shouldKeepAuthoritativePlatform(options?.force)) {
+    if (shouldKeepAuthoritativePlatform(options?.force) || superseded()) {
       return usePlatformStore.getState().deviceType;
     }
     const deviceType = detectLocalPlatform();
