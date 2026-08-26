@@ -78,3 +78,46 @@ test("ordinary code spans and fences are unchanged", () => {
     );
   }
 });
+
+test("escaped inline math from local models is recovered inside lists", () => {
+  const input = [
+    String.raw`- \$v_s\$ is the velocity of the bubble,`,
+    String.raw`- \$f(r_s)\$ is a shape function, with \$f \to 0\$ far away and \$f \to 1\$ inside,`,
+    String.raw`- \$r_s\$ is the radial coordinate.`,
+  ].join("\n");
+  const expected = [
+    "- $v_s$ is the velocity of the bubble,",
+    "- $f(r_s)$ is a shape function, with $f \\to 0$ far away and $f \\to 1$ inside,",
+    "- $r_s$ is the radial coordinate.",
+  ].join("\n");
+
+  assert.equal(preprocessLaTeX(input), expected);
+});
+
+test("escaped math recovery preserves literal and non-math dollars", () => {
+  const cases: [string, string][] = [
+    [
+      String.raw`\$5\$ is intentionally literal currency`,
+      String.raw`\$5\$ is intentionally literal currency`,
+    ],
+    [String.raw`\$5 to 10\$ is prose`, String.raw`\$5 to 10\$ is prose`],
+    [
+      String.raw`\$5\$ + \$10\$ and \$v_s\$`,
+      String.raw`\$5\$ + \$10\$ and $v_s$`,
+    ],
+    ["$ v_s $ already works", "$ v_s $ already works"],
+    ["$5 to $10 is a price range", "\\$5 to \\$10 is a price range"],
+    ["`\\$v_s\\$` is code", "`\\$v_s\\$` is code"],
+    [
+      String.raw`[\$v_s\$](https://example.com/\$literal\$)`,
+      String.raw`[$v_s$](https://example.com/\$literal\$)`,
+    ],
+    ["$$\n v_s \n$$", "$$\n v_s \n$$"],
+    [String.raw`\$v_s is incomplete`, String.raw`\$v_s is incomplete`],
+    ["\\$a\nb\\$ crosses a line", "\\$a\nb\\$ crosses a line"],
+  ];
+
+  for (const [input, expected] of cases) {
+    assert.equal(preprocessLaTeX(input), expected, input);
+  }
+});

@@ -243,6 +243,77 @@ function hasInlineMathCloser(
   return false;
 }
 
+/** True when Markdown treats the dollar at `offset` as escaped. */
+function isEscapedDollar(content: string, offset: number): boolean {
+  if (content[offset] !== "$") return false;
+  let slashes = 0;
+  for (let i = offset - 1; i >= 0 && content[i] === "\\"; i -= 1) {
+    slashes += 1;
+  }
+  return slashes % 2 === 1;
+}
+
+/**
+ * Recover math-looking spans whose dollar delimiters were escaped by a model.
+ *
+ * Local models sometimes emit `\$v_s\$`. Markdown correctly treats those as
+ * literal dollars, so the UI shows `$v_s$` even while a `$$...$$` equation in
+ * the same reply renders. Only paired, same-line, math-looking spans are
+ * recovered. Currency, code, link destinations, even-backslash runs and
+ * incomplete spans remain literal; the bounded closer scan stays linear.
+ */
+function normalizeEscapedInlineMath(content: string): string {
+  if (!content.includes("\\$")) return content;
+
+  const skipRegions = mergeRegions(
+    findCodeBlockRegions(content),
+    findLinkDestinationRegions(content),
+  );
+  const parts: string[] = [];
+  let last = 0;
+
+  for (let opening = 0; opening < content.length; opening += 1) {
+    if (
+      content[opening] !== "$" ||
+      !isEscapedDollar(content, opening) ||
+      content[opening - 1] === "$" ||
+      content[opening + 1] === "$" ||
+      isInRegion(opening, skipRegions)
+    ) {
+      continue;
+    }
+
+    const limit = Math.min(content.length, opening + 202);
+    for (let closing = opening + 1; closing < limit; closing += 1) {
+      if (content[closing] === "\n" || content[closing] === "\r") break;
+      if (content[closing] !== "$" || !isEscapedDollar(content, closing)) {
+        continue;
+      }
+      if (content[closing + 1] === "$" || isInRegion(closing, skipRegions)) {
+        break;
+      }
+
+      const body = content.slice(opening + 1, closing - 1);
+      const trimmed = body.trim();
+      if (!looksLikeMathBody(trimmed)) {
+        // This is the opener's matching literal closer. Do not reconsider it
+        // as an opener and accidentally pair across two currency spans.
+        opening = closing;
+        break;
+      }
+
+      parts.push(content.slice(last, opening - 1), `$${trimmed}$`);
+      last = closing + 1;
+      opening = closing;
+      break;
+    }
+  }
+
+  if (parts.length === 0) return content;
+  parts.push(content.slice(last));
+  return parts.join("");
+}
+
 /**
  * Matches a `\[...\]` (display) or `\(...\)` (inline) LaTeX span. Non-greedy so
  * the first closer wins; dotall so display spans can wrap lines. `(?<!\\)` on
@@ -370,7 +441,8 @@ function convertLatexDelimiters(content: string): {
  * - Currency inside code blocks/spans is untouched
  */
 export function preprocessLaTeX(content: string): string {
-  const { text, mathRegions } = convertLatexDelimiters(content);
+  const normalized = normalizeEscapedInlineMath(content);
+  const { text, mathRegions } = convertLatexDelimiters(normalized);
 
   if (!text.includes("$")) return text;
 
