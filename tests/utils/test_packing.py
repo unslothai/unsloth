@@ -944,9 +944,7 @@ def test_patch_mamba2_varlen_wraps_shared_kernel_once_per_model(monkeypatch):
         def __init__(self):
             super().__init__()
             self.mixer = _SharedNemotronHMamba2Mixer()
-            self.layers = torch.nn.ModuleList(
-                [_SharedNemotronHMamba2Mixer() for _ in range(24)]
-            )
+            self.layers = torch.nn.ModuleList([_SharedNemotronHMamba2Mixer() for _ in range(24)])
 
     model = _ManyLayerModel()
     assert patch_hybrid_linear_attention_varlen(model) is True
