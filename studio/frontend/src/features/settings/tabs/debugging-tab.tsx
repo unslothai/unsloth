@@ -399,12 +399,18 @@ export function DebuggingTab() {
             data-testid="debug-log-actions"
             className="flex flex-wrap items-center justify-between gap-3 border-t border-border/50 pt-4 dark:border-white/[0.08]"
           >
-            <p className="max-w-md text-ui-11 leading-relaxed text-muted-foreground">
-              {t("settings.debugging.exportPrivacyNote")}
-            </p>
+            <div className="grid gap-0.5">
+              <p className="text-xs font-medium text-foreground">
+                {t("settings.debugging.actions")}
+              </p>
+              <p className="max-w-md text-ui-11 leading-relaxed text-muted-foreground">
+                {t("settings.debugging.exportPrivacyNote")}
+              </p>
+            </div>
             <div className="flex flex-wrap items-center gap-2">
               <Button
                 size="sm"
+                variant="outline"
                 disabled={sources.length === 0 || exporting}
                 onClick={() => void onExport()}
               >

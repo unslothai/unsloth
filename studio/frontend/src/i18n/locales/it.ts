@@ -214,11 +214,11 @@ export const it = {
     },
     debugging: {
       logSection: "File di log",
-      source: "Origine",
+      source: "Log da visualizzare",
       sourceHint: "I runner dei modelli scrivono i propri log, quindi un caricamento o una generazione non riusciti sono spesso spiegati lì anziché nel log del server.",
       path: "Posizione",
       pathCopy: "Copia il percorso",
-      actions: "Azioni",
+      actions: "Tutti i log",
       exportLogs: "Esporta tutti i log (.zip)",
       exportingLogs: "Esportazione...",
       exportError: "Impossibile esportare i log",

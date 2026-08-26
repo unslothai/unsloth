@@ -248,11 +248,11 @@ export const ja = {
     },
     debugging: {
       logSection: "ログファイル",
-      source: "ソース",
+      source: "プレビューするログ",
       sourceHint: "モデルランナーはそれぞれ独自のログを書き出すため、読み込みや生成の失敗の理由は、サーバーログではなくそちらに記録されていることがよくあります。",
       path: "場所",
       pathCopy: "パスをコピー",
-      actions: "操作",
+      actions: "すべてのログ",
       exportLogs: "すべてのログをエクスポート (.zip)",
       exportingLogs: "エクスポート中...",
       exportError: "ログをエクスポートできませんでした",

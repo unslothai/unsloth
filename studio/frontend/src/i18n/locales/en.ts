@@ -246,11 +246,11 @@ export const en = {
     },
     debugging: {
       logSection: "Log file",
-      source: "Source",
+      source: "Log to preview",
       sourceHint: "The model runners write their own logs, so a failed load or generation is often explained there rather than in the server log.",
       path: "Location",
       pathCopy: "Copy path",
-      actions: "Actions",
+      actions: "All logs",
       exportLogs: "Export all logs (.zip)",
       exportingLogs: "Exporting...",
       exportError: "Couldn't export the logs",

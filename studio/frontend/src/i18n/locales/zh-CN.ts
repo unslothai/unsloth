@@ -244,11 +244,11 @@ export const zhCN = {
     },
     debugging: {
       logSection: "日志文件",
-      source: "来源",
+      source: "要预览的日志",
       sourceHint: "模型运行器会各自写入日志，因此加载或生成失败的原因通常记录在那里，而不是服务器日志中。",
       path: "位置",
       pathCopy: "复制路径",
-      actions: "操作",
+      actions: "所有日志",
       exportLogs: "导出所有日志 (.zip)",
       exportingLogs: "正在导出...",
       exportError: "无法导出日志",

@@ -197,7 +197,7 @@ _QUOTED_AUTH_RE = re.compile(
 )
 _UNQUOTED_AUTH_RE = re.compile(
     r"(?i)(?P<key>(?:proxy-)?authorization)(?P<sep>[\"']?\s*[:=]\s*)"
-    r"(?P<val>[^\"'\s}\]][^\"'\r\n}\]]*)"
+    r"(?P<val>[^\"'\s}\]][^\"',;\r\n}\]]*)"
 )
 # Bearer is not an English word that shows up in a log on its own, so it keeps
 # a header-less rule; the shape guard still spares "Bearer credentials expired".

@@ -246,11 +246,11 @@ export const ko = {
     },
     debugging: {
       logSection: "로그 파일",
-      source: "소스",
+      source: "미리 볼 로그",
       sourceHint: "모델 러너는 각자 자체 로그를 기록하므로, 로드나 생성이 실패한 이유는 서버 로그가 아니라 그쪽에 남아 있는 경우가 많습니다.",
       path: "위치",
       pathCopy: "경로 복사",
-      actions: "작업",
+      actions: "모든 로그",
       exportLogs: "모든 로그 내보내기 (.zip)",
       exportingLogs: "내보내는 중...",
       exportError: "로그를 내보낼 수 없습니다",

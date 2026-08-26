@@ -250,11 +250,11 @@ export const de = {
     },
     debugging: {
       logSection: "Protokolldatei",
-      source: "Quelle",
+      source: "Protokollvorschau",
       sourceHint: "Die Modell-Runner schreiben eigene Protokolle. Ein fehlgeschlagener Ladevorgang oder eine fehlgeschlagene Generierung wird deshalb oft dort erklärt und nicht im Server-Protokoll.",
       path: "Speicherort",
       pathCopy: "Pfad kopieren",
-      actions: "Aktionen",
+      actions: "Alle Protokolle",
       exportLogs: "Alle Protokolle exportieren (.zip)",
       exportingLogs: "Wird exportiert...",
       exportError: "Protokolle konnten nicht exportiert werden",

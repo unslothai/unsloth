@@ -250,11 +250,11 @@ export const fr = {
     },
     debugging: {
       logSection: "Fichier journal",
-      source: "Source",
+      source: "Journal à prévisualiser",
       sourceHint: "Les exécuteurs de modèles écrivent leurs propres journaux : un chargement ou une génération en échec y est donc souvent expliqué plutôt que dans le journal du serveur.",
       path: "Emplacement",
       pathCopy: "Copier le chemin",
-      actions: "Actions",
+      actions: "Tous les journaux",
       exportLogs: "Exporter tous les journaux (.zip)",
       exportingLogs: "Exportation...",
       exportError: "Impossible d'exporter les journaux",

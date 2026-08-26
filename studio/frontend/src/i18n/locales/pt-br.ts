@@ -248,11 +248,11 @@ export const ptBR = {
     },
     debugging: {
       logSection: "Arquivo de log",
-      source: "Fonte",
+      source: "Log para visualizar",
       sourceHint: "Os executores de modelos gravam os próprios logs, então uma falha ao carregar ou ao gerar costuma ser explicada ali, e não no log do servidor.",
       path: "Local",
       pathCopy: "Copiar caminho",
-      actions: "Ações",
+      actions: "Todos os logs",
       exportLogs: "Exportar todos os logs (.zip)",
       exportingLogs: "Exportando...",
       exportError: "Não foi possível exportar os logs",

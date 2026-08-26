@@ -226,6 +226,10 @@ def test_a_real_cookie_pair_is_still_masked(line, secret):
             '{"Authorization":"Bearer abcdef123456","x-request-id":"req-42"}',
             '{"Authorization":"Bearer <redacted>","x-request-id":"req-42"}',
         ),
+        (
+            "Authorization: Bearer abcdef123456, status=401; request_id=req-42",
+            "Authorization: Bearer <redacted>, status=401; request_id=req-42",
+        ),
         ("authorization: 'Basic dXNlcjpwdw=='", "authorization: 'Basic <redacted>'"),
         (
             'headers={"Cookie": "session=abc123def456xyz", "accept": "*/*"}',

@@ -249,11 +249,11 @@ export const es = {
     },
     debugging: {
       logSection: "Archivo de registro",
-      source: "Origen",
+      source: "Registro para previsualizar",
       sourceHint: "Los ejecutores de modelos escriben sus propios registros, así que un fallo al cargar o al generar suele explicarse ahí y no en el registro del servidor.",
       path: "Ubicación",
       pathCopy: "Copiar ruta",
-      actions: "Acciones",
+      actions: "Todos los registros",
       exportLogs: "Exportar todos los registros (.zip)",
       exportingLogs: "Exportando...",
       exportError: "No se pudieron exportar los registros",
