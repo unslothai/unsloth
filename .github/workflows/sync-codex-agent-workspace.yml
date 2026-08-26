@@ -13,13 +13,14 @@ permissions:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Check out feature branch
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Merge current upstream main
+      - name: Merge current upstream main and resolve the audited conflict
         id: merge
         shell: bash
         run: |
@@ -35,18 +36,74 @@ jobs:
           set -e
 
           if [ "$merge_rc" -ne 0 ]; then
-            echo "conflicted=true" >> "$GITHUB_OUTPUT"
+            mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
+            printf '%s\n' "${conflicts[@]}" | tee /tmp/conflicted-files.txt
+            if [ "${#conflicts[@]}" -ne 1 ] || [ "${conflicts[0]}" != "studio/frontend/src/features/chat/api/chat-adapter.ts" ]; then
+              echo "Unexpected merge conflicts; refusing automatic resolution."
+              tar --exclude=.git -czf /tmp/codex-agent-merge-conflicts.tar.gz .
+              echo "conflicted=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            python - <<'PY'
+          from pathlib import Path
+
+          path = Path("studio/frontend/src/features/chat/api/chat-adapter.ts")
+          source = path.read_text(encoding="utf-8")
+          conflict = '''<<<<<<< HEAD
+          import type { ChatModelSummary } from "../types/runtime";
+          =======
+          import { modelReadsSamplingSeed, type ChatModelRow } from "../types/runtime";
+          import { loadFallbackNotice } from "../utils/mmproj-fallback";
+          >>>>>>> upstream/main'''
+          replacement = '''import {
+            modelReadsSamplingSeed,
+            type ChatModelRow,
+            type ChatModelSummary,
+          } from "../types/runtime";'''
+          if source.count(conflict) != 1:
+              raise SystemExit("Expected audited chat-adapter import conflict was not found exactly once")
+          source = source.replace(conflict, replacement)
+          path.write_text(source, encoding="utf-8")
+          PY
+            git add studio/frontend/src/features/chat/api/chat-adapter.ts
+          fi
+
+          if git diff --name-only --diff-filter=U | grep -q .; then
             git diff --name-only --diff-filter=U | tee /tmp/conflicted-files.txt
             tar --exclude=.git -czf /tmp/codex-agent-merge-conflicts.tar.gz .
+            echo "conflicted=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           echo "conflicted=false" >> "$GITHUB_OUTPUT"
+
+      - name: Install frontend dependencies
+        if: steps.merge.outputs.conflicted == 'false'
+        working-directory: studio/frontend
+        run: npm ci --no-fund --no-audit
+
+      - name: Validate merged frontend integration
+        if: steps.merge.outputs.conflicted == 'false'
+        working-directory: studio/frontend
+        run: |
+          npm run typecheck
+          node --experimental-strip-types --test \
+            tests/project-folder-workspace.test.ts \
+            tests/project-slash-commands.test.ts \
+            tests/agent-workspace-ui.test.ts
+
+      - name: Commit and push the upstream merge
+        if: steps.merge.outputs.conflicted == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
           git rm .github/workflows/sync-codex-agent-workspace.yml
+          git diff --check
           git commit -m "Merge upstream main into Codex agent workspace"
           git push origin HEAD:feat/codex-agent-workspace
 
-      - name: Upload conflict workspace
+      - name: Upload unexpected conflict workspace
         if: steps.merge.outputs.conflicted == 'true'
         uses: actions/upload-artifact@v4
         with:
