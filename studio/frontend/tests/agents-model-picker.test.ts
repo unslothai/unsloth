@@ -94,6 +94,7 @@ test("the agent feed excludes classifier and reranker models", () => {
     "text-classification",
     "token-classification",
     "zero-shot-classification",
+    "text-ranking",
   ]) {
     assert.equal(isClassifierOrRerankerHubModel({ pipelineTag }), true);
   }

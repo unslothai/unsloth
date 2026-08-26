@@ -51,7 +51,10 @@ export function isClassifierOrRerankerHubModel(
   model: HubModelTaskMetadata,
 ): boolean {
   const pipeline = normalize(model.pipelineTag);
-  if (pipeline && CLASSIFIER_TASKS.has(pipeline)) {
+  if (
+    pipeline &&
+    (CLASSIFIER_TASKS.has(pipeline) || RERANKER_TAGS.has(pipeline))
+  ) {
     return true;
   }
   if (RERANKER_ID_PATTERN.test(model.id ?? "")) {
