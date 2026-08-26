@@ -66,6 +66,27 @@ NOT_EXERCISED = "not_exercised"
 #: "this measurement does not apply here", and so `derive_unstable` counts neither as evidence.
 NOT_APPLICABLE = "not_applicable"
 
+#: A KEY ON A NOT_COMPARABLE RESULT, not a fifth verdict.
+#:
+#: `compare` has one refusal that ALSO carries a complete positive reading: the scaffold, every
+#: overlay, the mounted message set and every message not being written at capture time all
+#: agreed, and the only leftover is the subtree of a reply that was mid-tail. It stays a refusal
+#: because a half-arrived digest names a point in a stream rather than a rendering, and it must
+#: never be a pass on the A/B result side: a treatment build whose live message renders wrongly
+#: sits in exactly that shape, and `structural_report` files it under `blind`.
+#:
+#: THE VERDICT DOES NOT MOVE; only `derive_unstable` reads this. The result asks "did this build
+#: change the UI", the null asks "does this action differ against ITSELF", and for the second
+#: question a pair where everything readable agreed is an observation of non-difference rather
+#: than a blank. Calling it blank is what left `keystroke` and `send_turn` permanently undecided
+#: at 100K on a runner where the in-flight tail landed 24 characters apart.
+#:
+#: AND IT CAN ONLY NARROW THE EXCUSE SET: the observation is a NON-difference, so `differed`
+#: cannot grow and nothing can be marked unstable on its strength. The worst case is calling an
+#: action stable that nothing measured as differing, which costs a loud false alarm on the
+#: result and never a silenced regression.
+SETTLED_MATCH = "settled_match"
+
 # Actions whose rendered result legitimately differs between two runs of the SAME build, so a
 # digest mismatch there carries no information about the pull request under test.
 #
@@ -845,7 +866,14 @@ def compare(base: Optional[dict], treat: Optional[dict]) -> dict:
                 f"msg{i}({bm[i].get('role', '?')}):{bm[i].get('chars')}->{tm[i].get('chars')}c"
                 for i in unsettled[:4]
             )
-            return {
+            # A ROW WHOSE ROLE CHANGED IS NOT SOMETHING THIS PAIR AGREED ON, and `_any_moved`
+            # cannot see it: the role sits beside the digest, and an in-flight digest is withheld.
+            # `settled_messages_moved` reports a role change even in flight -- how far a reply has
+            # arrived says nothing about whose message it is -- and the two readings must not
+            # disagree. The verdict is the refusal either way; this only decides whether the
+            # refusal ALSO carries a positive reading, and a role disagreement carries none.
+            roles_agree = all(bm[i].get("role") == tm[i].get("role") for i in set(bm) & set(tm))
+            out = {
                 "verdict": NOT_COMPARABLE,
                 "reason": (
                     f"the settled thread is identical on both arms and the only difference is in "
@@ -862,6 +890,14 @@ def compare(base: Optional[dict], treat: Optional[dict]) -> dict:
                 "style_verdict": style_verdict,
                 "style_reason": style_reason,
             }
+            if roles_agree:
+                # THE ONE REFUSAL THAT ALSO CARRIES A POSITIVE READING. See `SETTLED_MATCH` for
+                # why this flag exists and what it is and is not allowed to move. It is set here
+                # and nowhere else, because this is the only branch reached with `_any_moved`
+                # already false: the scaffold agreed, every overlay agreed, the two arms mounted
+                # the same set of messages, and every message that was NOT being written agreed.
+                out[SETTLED_MATCH] = True
+            return out
         return {
             "verdict": MATCH,
             "reason": "",
@@ -1038,19 +1074,40 @@ def derive_unstable(
     `min_observations` guards the obvious trap: one repetition of an action that happened to
     differ once is not evidence that it is unstable, and treating it as evidence would let a
     single flake permanently silence a real signal.
+
+    A SETTLED-MATCH REFUSAL IS AN OBSERVATION, and the only refusal that is. `SETTLED_MATCH` has
+    the argument; the short version is that this function asks whether an action differs against
+    ITSELF, and a pair whose scaffold, overlays, message set and every settled row agreed has
+    answered that. What it withheld cannot produce a DIFFER on the result side either, so nothing
+    is excused that anything was going to ask about.
+
+    Counting it as blind is not conservative here, it is unreachable: both arms are driven through
+    one film at wall-clock offsets, so on the packed 100K rungs every action landing inside a live
+    turn reaches this branch whenever the two tails land a chunk apart. Measured on the payload
+    that raised this, `keystroke@r100K` scored 0 observations from 2 pairs and `send_turn@r100K`
+    1 from 2, and `audit_null` returned UNDECIDED on a run in which nothing had moved.
     """
     seen: dict[str, int] = collections.Counter()
     differ: dict[str, int] = collections.Counter()
     blind: dict[str, int] = collections.Counter()
+    settled: dict[str, int] = collections.Counter()
     for action, result in pairs:
-        if result.get("verdict") not in (MATCH, DIFFER):
+        verdict = result.get("verdict")
+        if verdict not in (MATCH, DIFFER):
+            if verdict == NOT_COMPARABLE and result.get(SETTLED_MATCH):
+                # Everything this pair could read agreed: an observation of NON-difference, so
+                # `differed` cannot grow and nothing can be called unstable on its strength.
+                # Tallied separately so a reader can see how much of a decision rests on it.
+                seen[action] += 1
+                settled[action] += 1
+                continue
             # Not comparable and not exercised are both "no reading", and neither may be counted
             # as an observation of stability. An action derived as stable from four pairs that
             # never ran would be permanently trusted on the strength of nothing.
             blind[action] += 1
             continue
         seen[action] += 1
-        if result.get("verdict") == DIFFER:
+        if verdict == DIFFER:
             differ[action] += 1
     out: dict[str, dict] = {}
     for action in sorted(set(seen) | set(blind)):
@@ -1059,10 +1116,24 @@ def derive_unstable(
             "observations": n,
             "differed": d,
             "not_comparable": blind[action],
+            # How many of `observations` came from a settled-match refusal rather than a MATCH.
+            # Reported rather than folded in: an action decided entirely this way was decided on
+            # the settled thread only, which is the weaker reading.
+            SETTLED_MATCH: settled[action],
             # Unstable only with enough observations to mean it. Below that the honest answer is
             # "not enough evidence", which is not the same as "stable" and is not reported as it.
-            "unstable": bool(d and n >= min_observations),
-            "undetermined": n < min_observations,
+            #
+            # FROM THE COMPLETE COMPARISONS ONLY: a settled-match refusal can decide an action
+            # and never help CLASSIFY one as unstable. One DIFFER beside one settled match is one
+            # differing comparison, and letting the refusal supply the second would mint an
+            # exemption from a reading that never saw the live subtree.
+            "unstable": bool(d and (n - settled[action]) >= min_observations),
+            # THE SAME COUNT `unstable` WAS DECIDED ON, once anything has differed. On the raw
+            # total the mixed state -- one DIFFER beside one settled match -- read as "decided and
+            # stable", so `cross_check` filed a declared action under `declared_stable_in_practice`
+            # ("the null never saw it differ") on a run where it differed once. With nothing
+            # differing there is no classification to make and the total is the right count.
+            "undetermined": (n - settled[action] if d else n) < min_observations,
         }
     return out
 
