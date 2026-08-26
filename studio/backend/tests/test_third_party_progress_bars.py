@@ -315,7 +315,7 @@ def test_bars_stay_registered_once_the_worker_takes_them_back(monkeypatch, capfd
 
 
 def test_an_operator_who_turned_bars_off_keeps_them_off(monkeypatch):
-    # Only Studio's own default is ever taken back.
+    # Only Unsloth's own default is ever taken back.
     monkeypatch.setattr(log_config, "_BARS_RESTORED", False)
     monkeypatch.setenv(_HUB, "1")
     monkeypatch.delenv(log_config._PROGRESS_BARS_DEFAULTED, raising = False)

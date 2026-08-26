@@ -239,7 +239,7 @@ def remote_access_status(app_state) -> dict:
         "can_stop": can_stop,
         "block_reason": block_reason,
         "password_pending": password_pending,
-        # Plain GET/EventSource support, not Studio's own streams, which use POST.
+        # Plain GET/EventSource support, not Unsloth's own streams, which use POST.
         # Measured on three quick tunnels: a streamed GET delivers nothing until it
         # closes, and no response header changes that.
         "streaming_supported": status["url"] is None,

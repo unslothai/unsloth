@@ -570,7 +570,7 @@ test("missingListSubjects leaves out what the model already fetched", () => {
   assert.deepEqual(missingListSubjects("Just prose.", [{ type: "text" }]), []);
 });
 
-test("thumbnails load from Studio's own endpoint, which the img policy allows", () => {
+test("thumbnails load from Unsloth's own endpoint, which the img policy allows", () => {
   const path = searchImagePath(ENTRY.id);
   assert.equal(path, "/api/inference/search-images/0123456789ab");
   const imgNode = { tagName: "img" } as Parameters<typeof safeMarkdownUrl>[2];

@@ -147,7 +147,7 @@ def _run_preexec(monkeypatch, *, owner_pid, getppid):
 
 
 def test_pdeathsig_keeps_child_whose_parent_is_pid_1(monkeypatch):
-    # Studio as a container entrypoint runs as pid 1, so a healthy child sees
+    # Unsloth as a container entrypoint runs as pid 1, so a healthy child sees
     # getppid() == 1; killing it took down every llama-server spawn (#7886).
     _run_preexec(monkeypatch, owner_pid = 1, getppid = 1)
 

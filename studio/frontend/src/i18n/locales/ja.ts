@@ -851,9 +851,9 @@ export const ja = {
           "以下はすべてご自身の履歴から集計しています。収集も Unsloth への送信も行いません。",
         retry: "再試行",
         privacyNote:
-          "統計は、お使いの Unsloth が保持しているチャットとトレーニングの履歴から計算されます。データの収集は行わず、Unsloth や第三者への送信も行いません。",
+          "統計は、お使いの Unsloth にあるローカルのチャット、API 利用、トレーニング履歴から計算されます。統計用に API のプロンプト、応答、キーを保存することはありません。Unsloth や第三者への送信も行いません。",
         emptyChats:
-          "チャットがまだありません。会話を始めると、ここに統計が表示されます。",
+          "チャットまたは API の利用履歴がまだありません。会話を始めるか、認証済みのローカル API リクエストを実行してください。",
         lifetimeTokens: "累計トークン",
         peakTokens: "トークン最多の日",
         longestChat: "最長のチャット",
@@ -875,6 +875,9 @@ export const ja = {
         totalMessages: "メッセージ総数",
         tokensIn: "送信トークン",
         tokensOut: "生成トークン",
+        totalTokens: "合計トークン",
+        studioChatTokens: "Unsloth Chat トークン",
+        apiTokens: "API トークン",
         cachedTokens: "キャッシュされたトークン",
         cachedValue: "{tokens} (入力の {percent}%)",
         avgTokensPerChat: "チャットあたりの平均トークン",
@@ -1324,7 +1327,7 @@ export const ja = {
         title: "ウェブ検索",
         images: "ウェブ検索の画像を表示",
         imagesDescription:
-          "ウェブ検索で画像も取得し、回答に列挙された項目ごとに1枚ずつ探します。サムネイルは Studio が取得して縮小するため、ブラウザが画像ホストに接続することはありません。",
+          "ウェブ検索で画像も取得し、回答に列挙された項目ごとに1枚ずつ探します。サムネイルは Unsloth が取得して縮小するため、ブラウザが画像ホストに接続することはありません。",
       },
       artifacts: {
         title: "Canvas",
@@ -1344,7 +1347,7 @@ export const ja = {
       exportingAction: "エクスポート中...",
       exportConversations: "履歴とプロジェクトをエクスポート",
       exportConversationsDescription:
-        "履歴、または履歴とプロジェクトのチャットを、Raw JSONL、CSV、ShareGPT JSONL のいずれかで、一括またはチャットごとにダウンロードします。",
+        "履歴、または履歴とプロジェクトのチャットを、Training JSONL、CSV、ShareGPT JSONL のいずれかで、一括またはチャットごとにダウンロードします。Message JSONL はチャットごとのみ利用できます。",
       exportConversationsAction: "エクスポート",
       exportScopeRecents: "履歴",
       exportScopeAll: "履歴 + プロジェクト",

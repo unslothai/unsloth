@@ -193,7 +193,7 @@ def test_custom_provider_registry_is_hidden():
     """Hidden entries stay filtered by default and are opt-in via include_hidden.
 
     They used to be dropped from /registry unconditionally, which is why the UI
-    could never learn that the self-hosted presets run Studio tools. Exposing
+    could never learn that the self-hosted presets run Unsloth tools. Exposing
     them by default would instead make a cached pre-change bundle render them as
     duplicate dropdown rows, since that bundle filters on a hardcoded name set
     rather than on ``hidden``. So the default is unchanged and the current UI

@@ -43,7 +43,7 @@ both satisfy, and none of which a half-built one can:
               window sits. Gated in `windowed` mode only, and waived for a thread that is fully
               mounted and publishes no ordinals at all, which is what the shipped build does.
   ANCHORED    the viewport is at the bottom, read from the app's OWN state rather than from
-              arithmetic: Studio disables assistant-ui's autoscroll and runs
+              arithmetic: Unsloth disables assistant-ui's autoscroll and runs
               `use-intent-aware-autoscroll`, which pins to the bottom on `thread.initialize` and
               hides `.aui-thread-scroll-to-bottom` with `invisible` exactly when it considers
               itself at the bottom. The scrollTop arithmetic is kept as a corroborating reading,
@@ -52,7 +52,7 @@ both satisfy, and none of which a half-built one can:
               message is mounted whatever the scroll position, so gating on it would add a way to
               fail that has nothing to do with readiness.
 
-A NOTE ON WHAT THIS ASKS OF THE ARM. Studio ships no virtualization and no ordinal attributes:
+A NOTE ON WHAT THIS ASKS OF THE ARM. Unsloth ships no virtualization and no ordinal attributes:
 there is no `aria-setsize`, no `aria-posinset` and no `data-message-index` anywhere in the chat
 thread today, and `@tanstack/react-virtual` is used only by the hub's model catalog. So TOTAL is
 not a signal that exists and is being read; it is a CONTRACT THE VIRTUALIZATION ARM MUST MEET.
@@ -512,7 +512,7 @@ async ([toTop, steps, stepPx]) => {
   const vp = D.viewport();
   if (!vp) return { ran: false, reason: "no thread viewport" };
   // STEPPED, AND WITH A WHEEL EVENT ON EVERY STEP. A single `scrollTo({top: 0})` from the bottom
-  // does not work on this app and the reason is already documented in scene/actions.py: Studio
+  // does not work on this app and the reason is already documented in scene/actions.py: Unsloth
   // replaces assistant-ui's autoscroll with an intent-aware one that reads a jump as programmatic
   // and snaps it straight back to the bottom. The first version of this probe did exactly that,
   // and reported "scrolling to the top never mounted the first message" -- which reads as the arm

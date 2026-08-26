@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 _BACKEND = Path(__file__).resolve().parents[1]
@@ -24,6 +26,7 @@ from routes.chat_history import (  # noqa: E402
     ChatThreadPatch,
     ChatThreadSettings,
     _settings_write_from_patch,
+    readable_thread_settings,
     thread_from_row,
 )
 from storage import studio_db  # noqa: E402
@@ -202,7 +205,7 @@ def test_settings_column_is_added_to_an_existing_database(tmp_path, monkeypatch)
     assert studio_db.get_chat_thread("thread-1")["settings"] == SETTINGS
 
 
-# A snapshot on disk outlives the build that wrote it. A newer Studio adding a
+# A snapshot on disk outlives the build that wrote it. A newer Unsloth adding a
 # setting, widening an enum or raising a bound writes a blob this build has never
 # seen, and it reaches the response model rather than the request one, so refusing
 # it 500s the chat on open and takes the whole history export with it. The wire
@@ -668,3 +671,63 @@ def test_an_older_build_drops_only_the_sampling_it_cannot_read():
         {"toolsEnabled": True, "temperature": 0.3, "somethingNewer": "?"}
     )
     assert kept == {"toolsEnabled": True, "temperature": 0.3}
+
+
+def test_a_chat_carries_its_own_sampling_seed():
+    """The seed sits with the sliders the snapshot already carries, so without it a pin
+    taken in one chat fixes the draw for every other chat on the same model."""
+    assert ChatThreadSettings.model_validate({"seed": 3407}).seed == 3407
+    assert ChatThreadSettings.model_validate({"seed": 0}).seed == 0
+    assert ChatThreadSettings.model_validate({"seed": 2**32 - 2}).seed == 2**32 - 2
+
+
+@pytest.mark.parametrize(
+    "seed",
+    [
+        # bool subclasses int, so lax mode would store either as a pin the user never set.
+        True,
+        False,
+        -1,
+        2**32 - 1,  # llama.cpp's "draw one" sentinel, not a value a pin can name.
+        2**32,
+        1.5,
+    ],
+)
+def test_a_thread_seed_takes_the_same_range_as_the_installation_copy(seed):
+    with pytest.raises(ValidationError):
+        ChatThreadSettings.model_validate({"seed": seed})
+
+
+def test_a_cleared_seed_stays_in_the_stored_snapshot():
+    """null is the clear, not an absence: dropping the key would let the installation pin
+    come back for the one chat the user deliberately unpinned."""
+    assert readable_thread_settings({"seed": None}) == {"seed": None}
+    assert ChatThreadSettings.model_validate({"seed": None}).seed is None
+
+
+def _thread_row(settings):
+    row = {"id": "thread-1", "modelType": "base", "createdAt": 0}
+    return row if settings is None else {**row, "settings": settings}
+
+
+@pytest.mark.parametrize(
+    "stored, expected",
+    [
+        # Written before the seed existed. Absent, so the chat takes the pin it inherits.
+        ({"temperature": 0.3}, {"temperature": 0.3}),
+        # Written by a build that has it, with the pin cleared. null is the chat's choice.
+        ({"temperature": 0.3, "seed": None}, {"temperature": 0.3, "seed": None}),
+        ({"temperature": 0.3, "seed": 3407}, {"temperature": 0.3, "seed": 3407}),
+    ],
+)
+def test_the_response_says_absent_for_a_key_the_snapshot_never_held(stored, expected):
+    """The default dump spells every unset field as null, and the client drops those, so
+    a pre-seed snapshot would read as a chat that had cleared the pin."""
+    app = FastAPI()
+
+    @app.get("/thread", response_model = ChatThread)
+    def _read():
+        return thread_from_row(_thread_row(stored))
+
+    with TestClient(app) as client:
+        assert client.get("/thread").json()["settings"] == expected

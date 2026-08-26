@@ -1353,7 +1353,7 @@ def audit_null(
 
     UNDECIDED IS NOT ALWAYS A DEFECT. `derive_unstable` counts a pair that was not comparable or
     not exercised as blind rather than as an observation, so an action this fixture cannot perform
-    at all -- `image_upload`, whose attachments button Studio never mounts without a model -- is
+    at all -- `image_upload`, whose attachments button Unsloth never mounts without a model -- is
     permanently undecided for an honest reason. Those names are excused by `allow_undecided`, and
     every one of them is a hole, so they are printed.
 
