@@ -1288,8 +1288,12 @@ export function ModelsPage() {
   const { vramInfo, minMemory } = useHubModelVram(selectedModel, gpu);
 
   const gpuLabel = gpu.available
-    ? `${Math.round(gpu.memoryTotalGb)} GiB`
+    ? `${Math.round(gpu.memoryDedicatedGb)} GiB`
     : "Unavailable";
+  const gpuSharedLabel =
+    gpu.available && gpu.memorySharedGb > 0
+      ? `${Math.round(gpu.memorySharedGb)} GiB`
+      : null;
   const ramLabel =
     gpu.systemRamTotalGb > 0
       ? `${Math.round(gpu.systemRamTotalGb)} GiB`
@@ -1931,6 +1935,7 @@ export function ModelsPage() {
           localCount={visibleLocalCount}
           isDataset={isDatasetMode}
           gpuLabel={gpuLabel}
+          gpuSharedLabel={gpuSharedLabel}
           ramLabel={ramLabel}
           coreLabel={coreLabel}
           activeCheckpoint={activeCheckpoint}
