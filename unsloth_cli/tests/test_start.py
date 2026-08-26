@@ -2862,12 +2862,12 @@ def test_start_studio_server_forwards_tool_flags_via_command_and_env(monkeypatch
     monkeypatch.delenv("UNSLOTH_DISABLE_TOOL_CALL_HEALING", raising = False)
     monkeypatch.delenv("UNSLOTH_TOOL_CALL_NUDGE", raising = False)
 
-    # Default start: tools off (passthrough), healing + nudging on.
+    # Default start: tools off (passthrough), model-template reasoning, healing + nudging on.
     start._start_studio_server("http://127.0.0.1:8888", "unsloth/M-GGUF", start.LoadOptions())
     cmd, env = captured["command"], captured["kwargs"]["env"]
     assert "--disable-tools" in cmd and "--enable-tools" not in cmd
     assert "--reasoning" not in cmd
-    assert env["LLAMA_ARG_REASONING"] == "off"
+    assert env["LLAMA_ARG_REASONING"] == "auto"
     assert "--gpu-memory-mode" not in cmd
     assert env["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] == "0"
     assert env["UNSLOTH_TOOL_CALL_NUDGE"] == "1"
@@ -3047,7 +3047,9 @@ def test_start_studio_server_forwards_reasoning_effort(monkeypatch):
         start.LoadOptions(),
         start.ServerOptions(reasoning_effort = "medium"),
     )
-    assert captured["kwargs"]["env"]["LLAMA_ARG_REASONING_EFFORT"] == "medium"
+    env = captured["kwargs"]["env"]
+    assert env["LLAMA_ARG_REASONING"] == "auto"
+    assert env["LLAMA_ARG_REASONING_EFFORT"] == "medium"
 
 
 def test_start_studio_server_overrides_inherited_reasoning_effort(monkeypatch):
@@ -3660,7 +3662,7 @@ def test_start_studio_server_builds_command_and_waits(monkeypatch, capsys):
     assert cmd[1] == "run"
     assert "--disable-tools" in cmd and "--no-cloudflare" in cmd
     assert "--reasoning" not in cmd
-    assert captured["kwargs"]["env"]["LLAMA_ARG_REASONING"] == "off"
+    assert captured["kwargs"]["env"]["LLAMA_ARG_REASONING"] == "auto"
     assert cmd[cmd.index("--model") + 1] == "unsloth/Qwen3-1.7B-GGUF:UD-Q4_K_XL"
     assert cmd[cmd.index("--gguf-variant") + 1] == "UD-Q4_K_XL"
     assert cmd[cmd.index("--context-length") + 1] == "8192"
