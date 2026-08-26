@@ -118,12 +118,12 @@ _UNTERMINATED_QUOTED_KV_RE = re.compile(
 )
 _PLAIN_SCALAR_KV_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
-    r"(?P<sep>[\"']?\s*:\s*)(?P<val>[^\"'\s|>,}\]][^\"'\r\n,}\]]*)"
+    r"(?P<sep>[\"']?\s*[:=]\s*)(?P<val>[^\"'\s|>,}\]][^\"'\r\n,}\]]*)"
 )
 _ESCAPED_QUOTED_KV_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
     r"(?P<sep>\\(?P<key_quote>[\"'])\s*[:=]\s*\\(?P<quote>[\"']))"
-    r"(?P<val>(?:(?!\\(?P=quote))[^\r\n])*)(?P<close>\\(?P=quote))"
+    r"(?P<rest>[^\r\n]*)"
 )
 _KV_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
@@ -182,7 +182,8 @@ _OMITTED_QUOTED_START_RE = re.compile(
 # it: for "Authorization: Basic dXNlcjpwdw==" the value it captures is "Basic",
 # leaving the credential behind it. Same for a Cookie, which for Studio is the
 # UI session that gates these very endpoints.
-_SCHEMES = ("bearer", "basic", "digest", "token", "apikey")
+_SCHEMES = ("bearer", "basic", "digest", "token", "apikey", "aws4-hmac-sha256")
+_PARAMETERIZED_AUTH_SCHEMES = frozenset({"digest", "aws4-hmac-sha256"})
 # A scheme word only introduces a credential when an Authorization header put it
 # there. Bare "digest sha256:..." and "token hf_..." are ordinary log content,
 # and firing on the word alone blanked the digest a user came here to read.
@@ -197,8 +198,9 @@ _QUOTED_AUTH_RE = re.compile(
 )
 _UNQUOTED_AUTH_RE = re.compile(
     r"(?i)(?P<key>(?:proxy-)?authorization)(?P<sep>[\"']?\s*[:=]\s*)"
-    r"(?P<val>[^\"'\s}\]][^\"',;\r\n}\]]*)"
+    r"(?P<val>[^\"'\s}\]][^\r\n}\]]*)"
 )
+_AUTH_ADJACENT_FIELD_RE = re.compile(r"[,;]\s*[A-Za-z_][\w-]*\s*[:=]")
 # Bearer is not an English word that shows up in a log on its own, so it keeps
 # a header-less rule; the shape guard still spares "Bearer credentials expired".
 _SCHEME_RE = re.compile(r"(?i)\b(Bearer)(\s+)(" + _CREDENTIAL + r")")
@@ -251,8 +253,6 @@ def _redact_kv(match: re.Match[str]) -> str:
 
 def _redact_quoted_kv(match: re.Match[str]) -> str:
     value = match.group("val")
-    if value.lower() in _NON_SECRET_SENTINELS:
-        return match.group(0)
     scheme, sep, rest = value.partition(" ")
     masked = (
         f"{scheme}{sep}{REDACTED}"
@@ -269,7 +269,27 @@ def _redact_unterminated_quoted_kv(match: re.Match[str]) -> str:
 
 
 def _redact_escaped_quoted_kv(match: re.Match[str]) -> str:
-    return f"{match.group('key')}{match.group('sep')}{REDACTED}{match.group('close')}"
+    rest = match.group("rest")
+    quote = match.group("quote")
+    for index, char in enumerate(rest):
+        if char != quote:
+            continue
+        slash_count = 0
+        cursor = index - 1
+        while cursor >= 0 and rest[cursor] == "\\":
+            slash_count += 1
+            cursor -= 1
+        # One serialization layer turns 1, 5, 9, ... backslashes before a
+        # quote into an unescaped nested quote. Runs of 3, 7, 11, ... encode a
+        # quote inside the credential and must remain part of the masked value.
+        if slash_count % 4 == 1:
+            return (
+                f"{match.group('key')}{match.group('sep')}{REDACTED}"
+                f"\\{quote}{rest[index + 1:]}"
+            )
+    # An exact secret key with an unterminated serialized value is still
+    # sensitive. Mask the remainder rather than leaking it for malformed logs.
+    return f"{match.group('key')}{match.group('sep')}{REDACTED}"
 
 
 def _redact_shaped(match: re.Match[str]) -> str:
@@ -284,9 +304,18 @@ def _redact_auth_assignment(match: re.Match[str]) -> str:
     scheme, sep, rest = value.partition(" ")
     if not sep and scheme.lower() in _SCHEMES:
         return match.group(0)
-    masked = f"{scheme}{sep}{REDACTED}" if scheme.lower() in _SCHEMES and rest.strip() else REDACTED
     quote = match.groupdict().get("quote") or ""
-    return f"{match.group('key')}{match.group('sep')}{quote}{masked}{quote}"
+    tail = ""
+    if not quote and sep and scheme.lower() not in _PARAMETERIZED_AUTH_SCHEMES:
+        boundary = _AUTH_ADJACENT_FIELD_RE.search(rest)
+        if boundary is not None:
+            rest, tail = rest[: boundary.start()].rstrip(), rest[boundary.start() :]
+    masked = (
+        f"{scheme}{sep}{REDACTED}"
+        if scheme.lower() in _SCHEMES and rest.strip()
+        else REDACTED
+    )
+    return f"{match.group('key')}{match.group('sep')}{quote}{masked}{quote}{tail}"
 
 
 # A cookie header is name=value pairs. _COOKIE_RE takes the rest of the line, so

@@ -230,6 +230,14 @@ def test_a_real_cookie_pair_is_still_masked(line, secret):
             "Authorization: Bearer abcdef123456, status=401; request_id=req-42",
             "Authorization: Bearer <redacted>, status=401; request_id=req-42",
         ),
+        (
+            "Authorization: Digest username=alice, realm=secret, nonce=abcdef, response=deadbeef",
+            "Authorization: Digest <redacted>",
+        ),
+        (
+            "Authorization: AWS4-HMAC-SHA256 Credential=AKID/20260826/eu-west-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=deadbeef",
+            "Authorization: AWS4-HMAC-SHA256 <redacted>",
+        ),
         ("authorization: 'Basic dXNlcjpwdw=='", "authorization: 'Basic <redacted>'"),
         (
             'headers={"Cookie": "session=abc123def456xyz", "accept": "*/*"}',
@@ -238,6 +246,22 @@ def test_a_real_cookie_pair_is_still_masked(line, secret):
     ],
 )
 def test_the_fields_after_a_masked_header_survive(line, expected):
+    assert redact_log_text(line) == expected
+
+
+@pytest.mark.parametrize(
+    "line,expected",
+    [
+        (
+            r'payload="{\"password\":\"abc\\\"defSECRET\"}"',
+            r'payload="{\"password\":\"<redacted>\"}"',
+        ),
+        ("password=correct horse battery staple", "password=<redacted>"),
+        ('{"password":"null"}', '{"password":"<redacted>"}'),
+        ("password='None'", "password='<redacted>'"),
+    ],
+)
+def test_credential_boundaries_do_not_leak_suffixes(line, expected):
     assert redact_log_text(line) == expected
 
 
