@@ -113,7 +113,7 @@ def test_runtime_st_failure_is_planned_as_a_managed_gguf_download(client, monkey
     from core.rag import embeddings
 
     monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "auto")
-    monkeypatch.setattr(embeddings, "_forced_backend_key", None)
+    monkeypatch.setattr(embeddings, "_forced_backends", {})
     monkeypatch.setattr(
         embeddings,
         "_resolve_auto_for_model",

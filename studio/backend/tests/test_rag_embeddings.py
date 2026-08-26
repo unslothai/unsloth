@@ -584,24 +584,22 @@ def test_replacing_a_llama_backend_shuts_it_down(monkeypatch):
 
 def test_explicit_llama_backend_disallows_st_resolution(monkeypatch):
     monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "llama-server")
-    monkeypatch.setattr(embeddings, "_forced_backend_key", None)
+    monkeypatch.setattr(embeddings, "_forced_backends", {})
     assert embeddings.sentence_transformers_fallback_allowed() is False
 
     monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "auto")
     assert embeddings.sentence_transformers_fallback_allowed() is True
-    monkeypatch.setattr(embeddings, "_forced_backend_key", "llama-server")
     monkeypatch.setattr(
         embeddings,
-        "_forced_backend_model",
-        embeddings.config.effective_embedding_model(),
+        "_forced_backends",
+        {embeddings.config.effective_embedding_model(): "llama-server"},
     )
     assert embeddings.sentence_transformers_fallback_allowed() is False
 
 
 def test_forced_llama_fallback_is_scoped_to_the_model_that_failed(monkeypatch):
     monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "auto")
-    monkeypatch.setattr(embeddings, "_forced_backend_key", "llama-server")
-    monkeypatch.setattr(embeddings, "_forced_backend_model", "org/failed")
+    monkeypatch.setattr(embeddings, "_forced_backends", {"org/failed": "llama-server"})
     monkeypatch.setattr(
         embeddings,
         "_resolve_auto_for_model",
@@ -616,7 +614,7 @@ def test_forced_llama_fallback_is_scoped_to_the_model_that_failed(monkeypatch):
 
 def test_runtime_preflight_predicts_the_supported_llama_fallback(monkeypatch):
     monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "auto")
-    monkeypatch.setattr(embeddings, "_forced_backend_key", None)
+    monkeypatch.setattr(embeddings, "_forced_backends", {})
     monkeypatch.setattr(
         embeddings,
         "_resolve_auto_for_model",
@@ -630,7 +628,7 @@ def test_runtime_preflight_predicts_the_supported_llama_fallback(monkeypatch):
 
 def test_runtime_preflight_keeps_st_when_no_fallback_exists(monkeypatch):
     monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "auto")
-    monkeypatch.setattr(embeddings, "_forced_backend_key", None)
+    monkeypatch.setattr(embeddings, "_forced_backends", {})
     monkeypatch.setattr(
         embeddings,
         "_resolve_auto_for_model",
@@ -689,7 +687,7 @@ def test_st_encode_runtime_failure_switches_to_llama(monkeypatch):
     # published backend became llama rather than an ST wrapper.
     assert embeddings._model is None
     assert embeddings._name is None
-    assert embeddings._forced_backend_model == embeddings.config.effective_embedding_model()
+    assert embeddings.config.effective_embedding_model() in embeddings._forced_backends
     # Switch is process-wide: later calls keep using llama, not ST.
     assert isinstance(embeddings._get_backend(), _SentinelLlamaBackend)
     # It outranks what the saved model would otherwise resolve to, so a model that
@@ -698,7 +696,7 @@ def test_st_encode_runtime_failure_switches_to_llama(monkeypatch):
     assert isinstance(embeddings._get_backend(), _SentinelLlamaBackend)
     # An explicit unload is a fresh start, so the pin does not outlive it.
     embeddings._reset_backend()
-    assert embeddings._forced_backend_key is None
+    assert embeddings._forced_backends == {}
 
 
 def test_st_encode_failure_without_llama_binary_reraises(monkeypatch):
@@ -877,7 +875,7 @@ def test_a_local_gguf_selects_llama_even_on_a_gpu_box(monkeypatch, tmp_path):
     gguf = tmp_path / "embed.gguf"
     gguf.write_bytes(b"GGUF")
     monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "auto")
-    monkeypatch.setattr(embeddings, "_forced_backend_key", None)
+    monkeypatch.setattr(embeddings, "_forced_backends", {})
     # The hardware default that used to win.
     monkeypatch.setattr(embeddings, "_resolve_auto", lambda: "sentence-transformers")
 
@@ -910,7 +908,7 @@ def test_an_explicit_backend_is_not_overridden_by_a_local_gguf(monkeypatch, tmp_
     gguf = tmp_path / "embed.gguf"
     gguf.write_bytes(b"GGUF")
     monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "sentence-transformers")
-    monkeypatch.setattr(embeddings, "_forced_backend_key", None)
+    monkeypatch.setattr(embeddings, "_forced_backends", {})
     monkeypatch.setattr(embeddings, "sentence_transformers_runtime_available", lambda: True)
 
     assert embeddings.resolved_backend_for_model(str(gguf)) == "sentence-transformers"
@@ -928,8 +926,7 @@ def test_the_st_probe_warms_the_pinned_model_not_the_live_setting(monkeypatch):
 
     monkeypatch.setattr(embeddings, "_SentenceTransformersBackend", _Probe)
     monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "sentence-transformers")
-    monkeypatch.setattr(embeddings, "_forced_backend_key", None)
-    monkeypatch.setattr(embeddings, "_forced_backend_model", None)
+    monkeypatch.setattr(embeddings, "_forced_backends", {})
     embeddings._reset_backend()
     try:
         embeddings._get_backend("org/pinned")
@@ -1033,3 +1030,50 @@ def test_a_dead_llama_process_is_not_reported_as_loaded(monkeypatch):
     assert embeddings.backend_is_loaded("org/resident") is False
     # And the unqualified question, which is what gates the Unload control.
     assert embeddings.backend_is_loaded() is False
+
+
+def test_two_models_can_each_hold_their_own_llama_fallback_pin(monkeypatch):
+    """One (key, model) pair meant a second failing model erased the first one's
+    pin, so a job still running under A forgot it had swapped to llama-server and
+    retried ST. If the original failure was transient that ingestion splits its
+    own results across two vector spaces."""
+    monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "auto")
+    monkeypatch.setattr(embeddings, "_forced_backends", {})
+    monkeypatch.setattr(
+        embeddings, "_resolve_auto_for_model", lambda model = None: "sentence-transformers"
+    )
+
+    embeddings._forced_backends["org/a"] = "llama-server"
+    embeddings._forced_backends["org/b"] = "llama-server"
+
+    assert embeddings.resolved_backend_for_model("org/a") == "llama-server"
+    assert embeddings.resolved_backend_for_model("org/b") == "llama-server"
+    assert embeddings.sentence_transformers_fallback_allowed("org/a") is False
+    assert embeddings.sentence_transformers_fallback_allowed("org/b") is False
+    # A model that never failed is untouched by either pin.
+    assert embeddings.resolved_backend_for_model("org/c") == "sentence-transformers"
+    assert embeddings.sentence_transformers_fallback_allowed("org/c") is True
+
+
+def test_the_forced_backend_probe_does_not_wait_on_a_model_load(monkeypatch):
+    """_get_backend holds _backend_lock across a whole model load, so a resolver
+    probe taking it made GET/PUT on this setting hang for the download rather than
+    for the 20s Hub budget that is supposed to bound them."""
+    import threading
+
+    monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "auto")
+    monkeypatch.setattr(embeddings, "_forced_backends", {"org/pinned": "llama-server"})
+    answered = threading.Event()
+    result = {}
+
+    with embeddings._backend_lock:
+
+        def _probe():
+            result["resolved"] = embeddings.resolved_backend_for_model("org/pinned")
+            result["fallback"] = embeddings.sentence_transformers_fallback_allowed("org/pinned")
+            answered.set()
+
+        threading.Thread(target = _probe, daemon = True).start()
+        assert answered.wait(timeout = 5), "the resolver probe blocked on the construction lock"
+
+    assert result == {"resolved": "llama-server", "fallback": False}

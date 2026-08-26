@@ -634,14 +634,17 @@ class _SentenceTransformersBackend:
 _backend_lock = threading.Lock()
 _backend = None
 _backend_key: str | None = None
-# Set when an ST encode failed at runtime and the process swapped to llama-server.
-# It pins the resolved choice so the swap survives the next rebuild; cleared only
-# by a reset or an explicit unload, both of which are a fresh start.
-_forced_backend_key: str | None = None
-# The runtime/load failure pin applies only to the model that failed. A later
-# safetensors-only selection must be allowed to build ST instead of inheriting
-# another model's llama fallback.
-_forced_backend_model: str | None = None
+# Per model: an ST runtime/load failure pins llama-server for THAT model, so the
+# swap survives the next rebuild while a later safetensors-only selection can
+# still build ST. Keyed by model because one (key, model) pair let a second
+# failing model erase the first one's pin and send a still-running job back to ST.
+# Cleared only by a reset or an explicit unload, both of which are a fresh start.
+#
+# Read WITHOUT _backend_lock throughout: _get_backend holds that lock across a
+# whole model load, and every reader here is a probe the resolver's own budget is
+# supposed to bound. dict.get is atomic, and a pin that lands mid-probe is
+# answered on the next call.
+_forced_backends: dict[str, str] = {}
 
 _ST_ALIASES = frozenset({"sentence-transformers", "sentence_transformers", "st"})
 _LLAMA_ALIASES = frozenset(
@@ -747,8 +750,7 @@ def _llama_server_runtime_available() -> bool:
 def resolved_backend_for_model(model_name: str) -> str:
     """Backend a fresh operation for ``model_name`` would actually select."""
     raw = _raw_backend()
-    with _backend_lock:
-        forced = _forced_backend_key if _forced_backend_model == model_name else None
+    forced = _forced_backends.get(model_name)
     key = forced or (_resolve_auto_for_model(model_name) if raw in _AUTO_ALIASES else raw)
     if key in _ST_ALIASES and not sentence_transformers_runtime_available():
         # Match _build_st_backend_or_fallback before Settings commits an
@@ -811,7 +813,7 @@ def _switch_to_llama_fallback(err, model_name: str | None = None):
     process embedder to llama-server so every later encode stays in one space, and
     return it (None if no binary). Vectors written before the swap were ST, so any
     KB already embedded with ST should be reindexed."""
-    global _backend, _backend_key, _forced_backend_key, _forced_backend_model
+    global _backend, _backend_key
     failed_model = model_name or config.effective_embedding_model()
     old = None
     with _backend_lock:
@@ -827,8 +829,7 @@ def _switch_to_llama_fallback(err, model_name: str | None = None):
             err,
         )
         old, _backend = _backend, fallback
-        _forced_backend_key = "llama-server"
-        _forced_backend_model = failed_model
+        _forced_backends[failed_model] = "llama-server"
         _backend_key = _backend_cache_key(_raw_backend(), "llama-server")
     # The failed ST wrapper is no longer published, but its module-level model
     # would otherwise survive even a later unload of the llama replacement.
@@ -849,10 +850,7 @@ def sentence_transformers_fallback_allowed(model_name: str | None = None) -> boo
     """
     raw = _raw_backend()
     model = model_name or config.effective_embedding_model()
-    with _backend_lock:
-        forced = _forced_backend_key
-        forced_model = _forced_backend_model
-    if forced in _LLAMA_ALIASES and forced_model == model:
+    if _forced_backends.get(model) in _LLAMA_ALIASES:
         return False
     return raw in _AUTO_ALIASES or raw in _ST_ALIASES
 
@@ -861,8 +859,9 @@ def _current_backend_key() -> str:
     """The cache key the backend in use should carry right now. Tests that install a
     stub backend set ``_backend_key`` from this so it is not rebuilt under them."""
     raw = _raw_backend()
-    if _forced_backend_key and _forced_backend_model == config.effective_embedding_model():
-        return _backend_cache_key(raw, _forced_backend_key)
+    forced = _forced_backends.get(config.effective_embedding_model())
+    if forced:
+        return _backend_cache_key(raw, forced)
     key = _resolve_auto_for_model() if raw in _AUTO_ALIASES else raw
     return _backend_cache_key(raw, key)
 
@@ -904,13 +903,13 @@ def _get_backend(model_name: str | None = None):
     instead would let a Settings change mid-job build the NEW model's backend while
     ``encode_with_identity`` goes on labelling the vectors with the pinned one.
     """
-    global _backend, _backend_key, _forced_backend_key, _forced_backend_model
+    global _backend, _backend_key
     raw = _raw_backend()
     old = None
     new = None
     with _backend_lock:
         model = model_name or config.effective_embedding_model()
-        forced = _forced_backend_key if _forced_backend_model == model else None
+        forced = _forced_backends.get(model)
         key = forced or (_resolve_auto_for_model(model) if raw in _AUTO_ALIASES else raw)
         if _backend is not None and _backend_key == _backend_cache_key(raw, key):
             return _backend
@@ -931,8 +930,7 @@ def _get_backend(model_name: str | None = None):
             # The ST warm probe fell back before producing vectors. Pin that
             # actual backend for this model, but let a different model retry ST.
             key = "llama-server"
-            _forced_backend_key = key
-            _forced_backend_model = model
+            _forced_backends[model] = key
         _backend_key = _backend_cache_key(raw, key)
     # A llama shutdown can wait for an in-flight encode, so keep that wait out
     # of the global publication lock. New callers already see ``new``.
@@ -942,10 +940,9 @@ def _get_backend(model_name: str | None = None):
 
 def _reset_backend() -> None:
     """Drop the cached backend (test teardown / re-init)."""
-    global _backend, _backend_key, _forced_backend_key, _forced_backend_model
+    global _backend, _backend_key
     with _backend_lock:
-        _forced_backend_key = None
-        _forced_backend_model = None
+        _forced_backends.clear()
         _backend = None
         _backend_key = None
 
@@ -990,12 +987,11 @@ def release_backend() -> bool:
 
     Safe mid-ingestion: the next embed rebuilds, and the llama backend's own POST
     retry already covers a server that went away under it."""
-    global _backend, _backend_key, _forced_backend_key, _forced_backend_model
+    global _backend, _backend_key
     with _backend_lock:
         # Unload is an explicit fresh start, so a past runtime fallback stops pinning
         # the choice and the saved model picks its backend again.
-        _forced_backend_key = None
-        _forced_backend_model = None
+        _forced_backends.clear()
         backend, _backend, _backend_key = _backend, None, None
     if backend is None:
         return False
@@ -1068,7 +1064,7 @@ def _identity_backend_is_llama(name: str) -> bool:
         with _backend_lock:
             backend = _backend
             cached_key = _backend_key
-            forced = _forced_backend_key if _forced_backend_model == name else None
+        forced = _forced_backends.get(name)
         resolved = forced or (_resolve_auto_for_model(name) if raw in _AUTO_ALIASES else raw)
         expected_key = _backend_cache_key(raw, resolved)
         if backend is None or cached_key == expected_key:

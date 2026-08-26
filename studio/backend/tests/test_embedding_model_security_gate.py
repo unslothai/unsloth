@@ -619,3 +619,82 @@ def test_unload_is_offered_while_another_model_is_still_resident(client, monkeyp
     body = c.get("/embedding-model").json()
     assert body["loaded"] is False
     assert body["backend_loaded"] is False
+
+
+def test_the_resolved_repo_is_what_gets_verified_and_scanned(client, monkeypatch):
+    """A slashless alias resolves under sentence-transformers/, but the PUT ran
+    is_embedding_model and the malware scan against the literal name: a repo that
+    usually does not exist (fail-open, or a forceable 409) or, worse, a different
+    top-level repo that does."""
+    c, saved = client
+    seen = {}
+
+    def _subdirs(name, token = None):
+        seen["subdirs"] = name
+        return ()
+
+    def _scan(name, **_kwargs):
+        seen["scanned"] = name
+        return _Decision(False)
+
+    def _is_embedding(name, **_kwargs):
+        seen["verified"] = name
+        return True
+
+    mod = _types.ModuleType("utils.security")
+    mod.security_load_subdirs = _subdirs
+    mod.evaluate_file_security = _scan
+    monkeypatch.setitem(sys.modules, "utils.security", mod)
+    import utils.models as models
+
+    monkeypatch.setattr(models, "is_embedding_model", _is_embedding)
+    monkeypatch.setattr(
+        settings,
+        "_resolve_embedding_model_plan",
+        lambda model, token: settings.EmbeddingModelResolveResponse(
+            embedding_model = model,
+            backend = "sentence-transformers",
+            download_repo = "sentence-transformers/all-MiniLM-L6-v2",
+        ),
+    )
+
+    r = c.put("/embedding-model", json = {"embedding_model": "all-MiniLM-L6-v2"})
+    assert r.status_code == 200
+    # The setting keeps what the user picked...
+    assert saved["model"] == "all-MiniLM-L6-v2"
+    # ...but every check ran against the repo the loader will open.
+    assert seen["scanned"] == "sentence-transformers/all-MiniLM-L6-v2"
+    assert seen["subdirs"] == "sentence-transformers/all-MiniLM-L6-v2"
+    assert seen["verified"] == "sentence-transformers/all-MiniLM-L6-v2"
+
+
+def test_a_llama_download_repo_is_not_used_as_the_scan_target(client, monkeypatch):
+    """Only the ST path may diverge: a llama download_repo is the GGUF companion,
+    which is not the repo whose pickles this gate is about."""
+    c, _saved = client
+    seen = {}
+
+    def _scan(name, **_kwargs):
+        seen["scanned"] = name
+        return _Decision(False)
+
+    mod = _types.ModuleType("utils.security")
+    mod.security_load_subdirs = lambda name, token = None: ()
+    mod.evaluate_file_security = _scan
+    monkeypatch.setitem(sys.modules, "utils.security", mod)
+    import utils.models as models
+
+    monkeypatch.setattr(models, "is_embedding_model", lambda *a, **k: True)
+    monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: True)
+    monkeypatch.setattr(
+        settings,
+        "_resolve_embedding_model_plan",
+        lambda model, token: settings.EmbeddingModelResolveResponse(
+            embedding_model = model, backend = "llama", download_repo = f"{model}-GGUF"
+        ),
+    )
+
+    r = c.put("/embedding-model", json = {"embedding_model": "acme/embedder"})
+    assert r.status_code == 200
+    # The llama path does not scan the ST repo at all, so nothing was scanned.
+    assert "scanned" not in seen

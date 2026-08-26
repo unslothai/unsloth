@@ -2547,6 +2547,14 @@ def update_embedding_model(
             detail = "The embedding download repository was not validated for this model.",
         )
     destination_is_llama = plan.backend == "llama"
+    # Verify and scan the repo the loader will actually open. A slashless alias
+    # resolves under sentence-transformers/, so checking the literal name scanned a
+    # repo that usually does not exist (failing open, or a forceable 409) or, worse,
+    # a different top-level repo that does. Only the ST path can diverge: a llama
+    # download_repo is the GGUF companion, which is not what is scanned here.
+    verify_target = model
+    if not destination_is_llama and plan.download_repo and plan.download_repo != model:
+        verify_target = plan.download_repo
     # The env/default model needs no verification; saving it is a no-op override.
     # A local GGUF on the llama-server backend is accepted as-is: it is exactly
     # what the backend loads, and HF metadata cannot verify a local path.
@@ -2580,13 +2588,13 @@ def update_embedding_model(
             load_subdirs = tuple(
                 dict.fromkeys(
                     (
-                        *security_load_subdirs(model, scan_token),
-                        *_st_module_subdirs(model, scan_token),
+                        *security_load_subdirs(verify_target, scan_token),
+                        *_st_module_subdirs(verify_target, scan_token),
                     )
                 )
             )
         if evaluate_file_security(
-            model,
+            verify_target,
             hf_token = scan_token,
             load_subdirs = load_subdirs,
             local_only_load = local_only_load,
@@ -2613,7 +2621,7 @@ def update_embedding_model(
         # GGUF is available (below) rather than the ST embedding-metadata gate,
         # which would wrongly 409 a valid online GGUF embedder.
         gguf_named = destination_is_llama and rag_config._names_gguf(model)
-        if not gguf_named and not is_embedding_model(model, hf_token = hf_token):
+        if not gguf_named and not is_embedding_model(verify_target, hf_token = hf_token):
             # Offline, is_embedding_model can only confirm the ST layout (modules.json); a
             # transformers-native embedder (e.g. gte-modernbert) is unverifiable without Hub
             # metadata. If already cached and loadable, accept it rather than raising a 409 that
@@ -2622,7 +2630,7 @@ def update_embedding_model(
 
             # Require a genuinely loadable cache (config + weights), not just a resolved refs/main,
             # so a metadata-only partial cache still gets the forceable 409.
-            offline_cached = local_only_load and hf_cache_snapshot_is_loadable(model)
+            offline_cached = local_only_load and hf_cache_snapshot_is_loadable(verify_target)
             if not offline_cached:
                 raise HTTPException(
                     status_code = 409,

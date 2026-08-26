@@ -120,8 +120,7 @@ def test_re_resolved_backend_reindexes_before_the_stale_backend_is_rebuilt(
         "_resolve_auto_for_model",
         lambda model_name = None: choice["backend"],
     )
-    monkeypatch.setattr(embeddings, "_forced_backend_key", None)
-    monkeypatch.setattr(embeddings, "_forced_backend_model", None)
+    monkeypatch.setattr(embeddings, "_forced_backends", {})
     monkeypatch.setattr(embeddings, "_backend", embeddings._SentenceTransformersBackend())
     monkeypatch.setattr(
         embeddings,
