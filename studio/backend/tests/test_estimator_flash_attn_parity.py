@@ -211,11 +211,15 @@ def test_a_cpu_only_manual_launch_is_not_charged_for_a_pinned_card(monkeypatch, 
     Driven through the route, because the defect was in what the route HANDS the
     device count, not in the device count itself. Asserting the two helpers in
     isolation passes on the unfixed tree."""
-    one = ri._gguf_runtime_bytes(qwen3_shaped_gguf, 32768, None, 4, "f16", False, None, None, n_devices = 1)
-    two = ri._gguf_runtime_bytes(qwen3_shaped_gguf, 32768, None, 4, "f16", False, None, None, n_devices = 2)
-    assert two.compute_bytes > one.compute_bytes, (
-        "a second device has to cost something, or this test proves nothing"
+    one = ri._gguf_runtime_bytes(
+        qwen3_shaped_gguf, 32768, None, 4, "f16", False, None, None, n_devices = 1
     )
+    two = ri._gguf_runtime_bytes(
+        qwen3_shaped_gguf, 32768, None, 4, "f16", False, None, None, n_devices = 2
+    )
+    assert (
+        two.compute_bytes > one.compute_bytes
+    ), "a second device has to cost something, or this test proves nothing"
 
     seen = {}
 
@@ -228,9 +232,14 @@ def test_a_cpu_only_manual_launch_is_not_charged_for_a_pinned_card(monkeypatch, 
         ri,
         "_cached_estimate_config",
         lambda *a, **kw: SimpleNamespace(
-            identifier = "local", gguf_file = qwen3_shaped_gguf, is_gguf = True,
-            gguf_variant = None, gguf_mmproj_file = None, gguf_mtp_file = None,
-            gguf_dspark_file = None, gguf_dflash_file = None,
+            identifier = "local",
+            gguf_file = qwen3_shaped_gguf,
+            is_gguf = True,
+            gguf_variant = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
         ),
     )
     for layers, expected in ((0, 1), (40, 2)):
@@ -268,14 +277,18 @@ def test_an_inherited_gpu_layer_count_is_read_in_auto(monkeypatch, qwen3_shaped_
         assert ri._gguf_offloaded_layer_fraction("auto", None, 27, None) == 1.0
 
 
-def test_an_explicit_ngl_in_the_extras_still_beats_the_inherited_count(monkeypatch, qwen3_shaped_gguf):
+def test_an_explicit_ngl_in_the_extras_still_beats_the_inherited_count(
+    monkeypatch, qwen3_shaped_gguf
+):
     """argv is parsed after the environment and wins, so an extras -ngl is the answer
     whatever the env says."""
     monkeypatch.setenv("LLAMA_ARG_N_GPU_LAYERS", "0")
     assert ri._gguf_offloaded_layer_fraction("auto", None, 27, ["-ngl", "999"]) == 1.0
 
 
-def test_pass_through_adapters_are_charged_and_follow_the_base_placement(tmp_path, qwen3_shaped_gguf):
+def test_pass_through_adapters_are_charged_and_follow_the_base_placement(
+    tmp_path, qwen3_shaped_gguf
+):
     """llama.cpp loads every --lora / --control-vector into resident tensors on top of
     the base model, on the base tensor's buffer type. The files term prices only the
     target and its companions, so without this an adapter load was a fit on the base
@@ -294,9 +307,14 @@ def test_pass_through_adapters_are_charged_and_follow_the_base_placement(tmp_pat
     # The helper pre-dates this; what is new is that the panel asks it. Driven through
     # the breakdown so the test fails on a tree where the term is computed and dropped.
     config = SimpleNamespace(
-        identifier = "local", gguf_file = qwen3_shaped_gguf, is_gguf = True,
-        gguf_variant = None, gguf_mmproj_file = None, gguf_mtp_file = None,
-        gguf_dspark_file = None, gguf_dflash_file = None,
+        identifier = "local",
+        gguf_file = qwen3_shaped_gguf,
+        is_gguf = True,
+        gguf_variant = None,
+        gguf_mmproj_file = None,
+        gguf_mtp_file = None,
+        gguf_dspark_file = None,
+        gguf_dflash_file = None,
     )
     bare = ri._gguf_memory_breakdown(config, qwen3_shaped_gguf, n_ctx = 4096)
     with_lora = ri._gguf_memory_breakdown(
@@ -304,8 +322,7 @@ def test_pass_through_adapters_are_charged_and_follow_the_base_placement(tmp_pat
     )
     assert bare is not None and with_lora is not None
     assert with_lora.weights_bytes - bare.weights_bytes == size, (
-        f"a {size}-byte adapter moved weights by "
-        f"{with_lora.weights_bytes - bare.weights_bytes}"
+        f"a {size}-byte adapter moved weights by " f"{with_lora.weights_bytes - bare.weights_bytes}"
     )
     assert with_lora.total_bytes - bare.total_bytes == size
     assert not with_lora.adapters_unsized
@@ -316,6 +333,6 @@ def test_pass_through_adapters_are_charged_and_follow_the_base_placement(tmp_pat
         n_ctx = 4096,
         llama_extra_args = ["--lora", str(tmp_path / "missing.gguf")],
     )
-    assert missing is not None and missing.adapters_unsized, (
-        "an unsizable adapter has to mark the total a floor rather than vanish"
-    )
+    assert (
+        missing is not None and missing.adapters_unsized
+    ), "an unsizable adapter has to mark the total a floor rather than vanish"

@@ -421,6 +421,53 @@ _GQA_FIELDS = {
 _WEIGHTS_BYTES = 3 * _GIB
 _PROJECTOR_BYTES = 600 * 1024 * 1024
 _DRAFTER_BYTES = 400 * 1024 * 1024
+# What "costs no disk" is worth on the runner that does not agree. POSIX gives a hole
+# for free; NTFS allocates and zero-fills every byte unless the file is marked sparse
+# FIRST, so twelve of these filled a Windows runner's disk and every cell in this file
+# errored with ENOSPC. The flag is asked for below; this is what the fixture falls back
+# to when it cannot be set, which keeps the shapes GB-scale without the 34 GB.
+_DENSE_PAD_DIVISOR = 12
+
+
+def _try_make_sparse(handle) -> bool:
+    """Mark an open file sparse. True on any filesystem that needs no marking.
+
+    Windows only: FSCTL_SET_SPARSE has to be issued before the file is extended, or
+    the extension is already committed. Everything else holes-punches on truncate().
+    """
+    # FORCE_DENSE_PAD is how the fallback below gets exercised at all: it is the arm
+    # only Windows takes, and a POSIX box would otherwise never run the code that this
+    # file's own ENOSPC on a Windows runner is the reason for.
+    if os.name != "nt" and not os.environ.get("FORCE_DENSE_PAD"):
+        return True
+    try:
+        import ctypes
+        import msvcrt
+
+        _FSCTL_SET_SPARSE = 0x000900C4
+        returned = ctypes.c_ulong(0)
+        return bool(
+            ctypes.windll.kernel32.DeviceIoControl(
+                ctypes.c_void_p(msvcrt.get_osfhandle(handle.fileno())),
+                _FSCTL_SET_SPARSE,
+                None,
+                0,
+                None,
+                0,
+                ctypes.byref(returned),
+                None,
+            )
+        )
+    except Exception:
+        return False
+
+
+def _pad_to(path: Path, pad: int) -> None:
+    """Extend `path` to `pad` bytes without paying for them where that is possible."""
+    with open(path, "r+b") as handle:
+        if not _try_make_sparse(handle):
+            pad = max(len(handle.read()), pad // _DENSE_PAD_DIVISOR)
+        handle.truncate(pad)
 
 
 def _write_gguf(directory: Path, name: str, arch: str, fields: dict, *, pad: int) -> str:
@@ -429,8 +476,7 @@ def _write_gguf(directory: Path, name: str, arch: str, fields: dict, *, pad: int
     path = directory / name
     path.write_bytes(_make_gguf_bytes(arch, kv))
     if pad:
-        with open(path, "r+b") as handle:
-            handle.truncate(pad)
+        _pad_to(path, pad)
     return str(path)
 
 
@@ -576,8 +622,7 @@ def shapes(tmp_path_factory):
     # caller must still produce a well-formed answer rather than a partial number.
     truncated = root / "truncated.gguf"
     truncated.write_bytes(b"GGUF\x03\x00\x00\x00 truncated, nothing further is readable")
-    with open(truncated, "r+b") as handle:
-        handle.truncate(_WEIGHTS_BYTES)
+    _pad_to(truncated, _WEIGHTS_BYTES)
     built["truncated_header"] = (str(truncated), _config(str(truncated)))
 
     return built

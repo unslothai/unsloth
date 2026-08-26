@@ -663,14 +663,10 @@ with sync_playwright() as p:
         row is unreachable by role", and a single locator that answers no to both
         cannot.
         """
-        found = _first_visible(
-            page.get_by_role("button", name = ESTIMATE_LABEL), "role=button"
-        )
+        found = _first_visible(page.get_by_role("button", name = ESTIMATE_LABEL), "role=button")
         if found is not None:
             return found
-        return _first_visible(
-            page.locator("button").filter(has_text = ESTIMATE_LABEL), "button+text"
-        )
+        return _first_visible(page.locator("button").filter(has_text = ESTIMATE_LABEL), "button+text")
 
     def estimate_visible() -> bool:
         return estimate_button() is not None

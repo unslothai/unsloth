@@ -8157,9 +8157,7 @@ def _gguf_runtime_bytes(
         except Exception as _fa_exc:
             logger.debug("flash-attention capability probe failed: %s", _fa_exc)
         flash_attn = (
-            _flash_attn_enabled_from_args(
-                llama_extra_args, default = _fa_default, env = os.environ
-            )
+            _flash_attn_enabled_from_args(llama_extra_args, default = _fa_default, env = os.environ)
             or v_forces_flash_attn
         )
         kv = probe._estimate_kv_cache_bytes(
@@ -8887,7 +8885,6 @@ def _gguf_offloaded_layer_fraction(
         # this since the placement gate at llama_cpp.py:9156; the panel did not, and
         # answered 1.0 for a launch running a prefix of the weights out of host RAM.
         from core.inference.llama_cpp import _env_fixes_gpu_layers
-
         if not _env_fixes_gpu_layers(os.environ):
             return 1.0
         try:
