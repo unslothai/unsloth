@@ -966,6 +966,33 @@ def test_patch_mamba2_varlen_wraps_shared_kernel_once_per_model(monkeypatch):
     assert fused.calls[-1].tolist() == [[0, 0, 1, 2, 2, 2]]
 
 
+def test_patch_mamba2_varlen_skips_stale_seq_idx_after_training(monkeypatch):
+    # generate() reaches the decoder without the wrapped model.forward, so the
+    # mixers still held the training step's seq_idx and the kernel rejected it
+    # with "seq_idx must have shape (batch_size, seqlen)".
+    monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
+
+    class _GeneratingModel(_FakeMamba2Model):
+        def generate(self, hidden_states):
+            return self.mixer(hidden_states)
+
+    model = _GeneratingModel()
+    fused_orig = model.mixer.mamba2_split_conv1d_scan_combined
+    assert patch_hybrid_linear_attention_varlen(model) is True
+
+    model(
+        input_ids = torch.zeros(1, 6, dtype = torch.long),
+        packed_seq_lengths = torch.tensor([2, 1, 3], dtype = torch.int32),
+        use_cache = False,
+    )
+    assert fused_orig.calls[-1].tolist() == [[0, 0, 1, 2, 2, 2]]
+
+    # A shorter prompt must not inherit the 6-token packed boundaries.
+    fused_orig.calls.clear()
+    model.generate(torch.zeros(1, 3, 4))
+    assert fused_orig.calls == [None]
+
+
 def test_patch_mamba2_varlen_no_fused_dispatch_aborts(monkeypatch):
     monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
 

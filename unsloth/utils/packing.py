@@ -744,6 +744,35 @@ def _hybrid_varlen_dispatched(module) -> bool:
     )
 
 
+def _varlen_seq_idx_applies(seq_idx, args, kwargs) -> bool:
+    """True when ``seq_idx`` covers exactly the tokens this kernel call sees.
+
+    ``generate()`` bypasses the wrapped ``model.forward``, so mixers can still
+    hold the last training step's boundaries while the kernel is handed a
+    prompt of a different length. Injecting then trips the kernel's own
+    ``seq_idx must have shape (batch_size, seqlen)`` check.
+    """
+    if seq_idx is None:
+        return False
+    total = seq_idx.shape[-1]
+    tensor = None
+    for name in ("x", "hidden_states", "zxbcdt"):
+        candidate = kwargs.get(name)
+        if isinstance(candidate, torch.Tensor):
+            tensor = candidate
+            break
+    if tensor is None:
+        for arg in args:
+            if isinstance(arg, torch.Tensor):
+                tensor = arg
+                break
+    if tensor is None or tensor.dim() < 2:
+        return False
+    # Fused/scan kernels take (batch, seqlen, ...); causal_conv1d_fn takes
+    # (batch, dim, seqlen).
+    return total in (tensor.shape[1], tensor.shape[-1])
+
+
 def _wrap_mamba2_seq_idx_call(
     orig,
     mixers,
@@ -765,11 +794,13 @@ def _wrap_mamba2_seq_idx_call(
     def wrapped(*args, **kwargs):
         varlen = varlen_slot[0] if varlen_slot else None
         if varlen is None:
+            # Gradient-checkpoint recompute runs during backward, outside the
+            # model.forward wrapper, so the per-mixer stash is the only source.
             donors = [m for m in mixers if getattr(m, "_unsloth_varlen", None) is not None]
             if donors:
                 varlen = donors[0]._unsloth_varlen
         if varlen is not None:
-            if kwargs.get("seq_idx") is None:
+            if kwargs.get("seq_idx") is None and _varlen_seq_idx_applies(varlen[1], args, kwargs):
                 kwargs["seq_idx"] = varlen[1]
             if kwargs.get("seq_idx") is not None:
                 for mixer in mixers:
@@ -901,7 +932,7 @@ def _wrap_mamba2_mixer_forward(module, varlen_getter = None):
     def mixer_forward(*args, **kwargs):
         varlen = _packed()
         if varlen is not None:
-            if kwargs.get("seq_idx") is None:
+            if kwargs.get("seq_idx") is None and _varlen_seq_idx_applies(varlen[1], args, kwargs):
                 kwargs["seq_idx"] = varlen[1]
             return _call_as_packed_mamba2_prefill(forward_orig, args, kwargs)
         return forward_orig(*args, **kwargs)
@@ -1210,7 +1241,30 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
 
         model.forward = forward_with_varlen
         model._unsloth_varlen_forward_wrapped = True
+
+    _wrap_generate_clears_varlen(model, hybrid_modules)
     return True
+
+
+def _wrap_generate_clears_varlen(model, hybrid_modules) -> None:
+    """Drop the packed boundaries for the duration of ``generate()``.
+
+    ``generate()`` reaches the decoder without going through the wrapped
+    ``model.forward``, so the per-mixer stash would otherwise still hold the
+    last training step's ``seq_idx`` while the kernels see a prompt.
+    """
+    generate_orig = getattr(model, "generate", None)
+    if not callable(generate_orig) or getattr(model, "_unsloth_varlen_generate_wrapped", False):
+        return
+
+    @wraps(generate_orig)
+    def generate_without_varlen(*args, **kwargs):
+        for module in hybrid_modules:
+            module._unsloth_varlen = None
+        return generate_orig(*args, **kwargs)
+
+    model.generate = generate_without_varlen
+    model._unsloth_varlen_generate_wrapped = True
 
 
 def get_packed_info_from_kwargs(
