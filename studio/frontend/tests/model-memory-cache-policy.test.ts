@@ -173,7 +173,12 @@ test("ordinary pass-through args do not suppress the bar", () => {
   assert.equal(extraArgsOwnPlacement(undefined), false);
   assert.equal(extraArgsOwnPlacement([]), false);
   assert.equal(extraArgsOwnPlacement(["--temp", "0.7", "--verbose"]), false);
-  // A near-miss must not match on a prefix.
+  // A near-miss must not match on a prefix. `--device-draft` is not a spelling
+  // any parser accepts, so it stays out.
   assert.equal(extraArgsOwnPlacement(["--device-draft"]), false);
-  assert.equal(extraArgsOwnPlacement(["--gpu-layers-draft"]), false);
+  // `--gpu-layers-draft` used to be listed here as a near-miss, which was wrong:
+  // it is in the backend's _DRAFT_GPU_LAYER_FLAGS and does own placement, just
+  // the drafter's rather than the target's. A drafter pinned off the GPU is host
+  // memory the bar would otherwise charge to the card.
+  assert.equal(extraArgsOwnPlacement(["--gpu-layers-draft"]), true);
 });

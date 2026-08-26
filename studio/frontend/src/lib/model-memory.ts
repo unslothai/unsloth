@@ -248,22 +248,42 @@ export function computeModelMemory(
  * does for the equivalent structured controls.
  */
 export const PLACEMENT_OWNING_ARGS = [
+  // _GPU_LAYER_FLAGS and _FIT_FLAGS
   "--gpu-layers",
   "-ngl",
   "--n-gpu-layers",
+  "--fit",
+  "-fit",
+  // _DEVICE_FLAGS -- all four spellings. `-dev cuda0` on a multi-GPU host
+  // confines the load while the bar was still comparing it with aggregate VRAM.
   "--device",
+  "-dev",
+  "--main-gpu",
+  "-mg",
   "--tensor-split",
   "-ts",
   "--split-mode",
   "-sm",
+  // _MOE_OFFLOAD_FLAGS -- the --cpu-moe pair as well as the -ncmoe one
   "--n-cpu-moe",
+  "-ncmoe",
+  "--cpu-moe",
   "-cmoe",
   "--override-tensor",
   "-ot",
   "--no-kv-offload",
   "-nkvo",
-  "--main-gpu",
-  "-mg",
+  // _DRAFT_GPU_LAYER_FLAGS and the drafter's own device pin. A drafter pinned
+  // to the CPU is host memory the bar would otherwise charge to the card.
+  "--spec-draft-ngl",
+  "-ngld",
+  "--gpu-layers-draft",
+  "--n-gpu-layers-draft",
+  "--spec-draft-device",
+  // _MMPROJ_OFFLOAD_FLAGS: either spelling is the user taking ownership of
+  // where the projector lands.
+  "--mmproj-offload",
+  "--no-mmproj-offload",
 ];
 
 /**
@@ -291,9 +311,22 @@ export const KV_SHAPING_ARGS = [
   // head. The request carries only the structured mode, so the draft KV and the
   // target rollback state would both be missing from the total.
   "--spec-type",
+  "--spec-default",
+  // Draft depth in llama.cpp's spellings as well as Unsloth's: a recurrent
+  // target keeps one rollback state per drafted token, so --draft-max 16 is a
+  // materially different reservation from the structured default.
   "--spec-draft-n-max",
+  "--draft-max",
+  "--draft-min",
+  // _SPEC_DRAFT_CACHE_K_FLAGS / _SPEC_DRAFT_CACHE_V_FLAGS, every alias. The
+  // structured control sets one dtype for both, so an inherited pair that split
+  // K from V describes a cache this estimate never priced.
   "--spec-draft-type-k",
+  "--cache-type-k-draft",
+  "-ctkd",
   "--spec-draft-type-v",
+  "--cache-type-v-draft",
+  "-ctvd",
   "--kv-unified",
   "-kvu",
   "--ctx-size",
@@ -309,6 +342,9 @@ export const KV_SHAPING_ARGS = [
   "--cache-type-v",
   "-ctv",
   "--ctx-checkpoints",
+  // _CTX_CHECKPOINTS_FLAGS: --swa-checkpoints is upstream's older spelling.
+  "-ctxcp",
+  "--swa-checkpoints",
 ];
 
 /**

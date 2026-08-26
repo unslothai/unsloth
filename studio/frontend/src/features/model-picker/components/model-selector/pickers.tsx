@@ -4941,12 +4941,24 @@ export function HubModelPicker({
             )}
             meta={`GGUF · ${formatBytes(variant.size_bytes)}`}
             quantChip={ggufQuantChipLabel(variant.quant)}
-            memory={{
-              repoId: c.repo_id,
-              quant: variant.quant,
-              sizeBytes: variant.size_bytes,
-              loadId: c.load_id,
-            }}
+            // Only for models the llama.cpp path actually loads. The Images and
+            // Video pickers deliberately keep diffusion GGUFs listed, and those
+            // run on the diffusion planner with different runtime buffers, on a
+            // single torch device rather than the aggregate inference pool. The
+            // KV estimator has nothing to say about them, and when it returns
+            // unsized the bar falls back to the file size and draws a
+            // weights-only verdict anyway -- a confident number about the wrong
+            // runtime, which is the failure this bar exists to avoid.
+            memory={
+              mediaPageForTask(c.task)
+                ? undefined
+                : {
+                    repoId: c.repo_id,
+                    quant: variant.quant,
+                    sizeBytes: variant.size_bytes,
+                    loadId: c.load_id,
+                  }
+            }
             gpuGb={inferenceGpu.memoryTotalGb}
             showVision={c.has_vision || sole.hasVision}
             selected={isSelected}
