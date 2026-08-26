@@ -1131,8 +1131,7 @@ def test_a_recurrent_hybrid_stays_on_the_abstain_path():
         n_layers = 4,
         n_attention_layers = 1,
         blocks = tuple(
-            BlockLayout(index = i, spillable_bytes = GIB, resident_bytes = GIB // 4)
-            for i in range(4)
+            BlockLayout(index = i, spillable_bytes = GIB, resident_bytes = GIB // 4) for i in range(4)
         ),
         lm_head_bytes = GIB // 2,
         kv_bytes_per_token_f16 = 65536,
@@ -1180,8 +1179,8 @@ def test_flash_disabled_v_padding_reaches_the_layer_weights():
     # Exactly the estimator's own per-layer arithmetic, f16 both axes.
     full_cells, swa_cells = 131072, 1024 + 512
     pad = 8 * 256
-    glob = (8 * 128 * 2 + pad * 2) * full_cells      # layer 0: global
-    swa = (8 * 256 * 2 + pad * 2) * swa_cells        # layer 1: sliding window
+    glob = (8 * 128 * 2 + pad * 2) * full_cells  # layer 0: global
+    swa = (8 * 256 * 2 + pad * 2) * swa_cells  # layer 1: sliding window
     assert off[0] == glob and off[1] == swa
 
     # A quantised K cache floors bpe_v at f16 on the same branch, and with V
