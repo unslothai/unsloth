@@ -138,6 +138,16 @@ def test_page_renders_reasoning_stream(client):
     assert "Reply cut off at the preview length limit." in text
 
 
+def test_page_keeps_assistant_turn_for_reasoning_only_reply(client):
+    # A reasoning-only reply must still push an assistant turn. Without one the
+    # next prompt is a second consecutive user message, which format_chat_prompt
+    # drops to keep roles alternating -- the visitor's follow-up is answered as
+    # if it had never been sent.
+    text = client.get(f"/p/demorun?k={_sig('demorun')}").text
+    assert "if (acc || reasoning)" in text
+    assert "reply.reasoning_content = reasoning" in text
+
+
 def test_page_escapes_title(tmp_path, monkeypatch, captured):
     outputs = tmp_path / "outputs"
     # Run dir name carries an HTML-special char; the page must escape it.

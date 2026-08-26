@@ -452,13 +452,22 @@
               } catch (_) {}
             }
           }
-          if (acc) {
-            msgs.push({ role: "assistant", content: acc });
-          } else if (truncated) {
-            body.className = "cutoff";
-            body.textContent = "Reply cut off at the preview length limit.";
-          } else {
-            body.textContent = "";
+          // Keep the assistant turn even when the reply was reasoning-only.
+          // Dropping it leaves two consecutive user messages, and the next
+          // prompt is then discarded to keep roles alternating; reasoning_content
+          // rides along for the templates that replay it.
+          if (acc || reasoning) {
+            const reply = { role: "assistant", content: acc };
+            if (reasoning) reply.reasoning_content = reasoning;
+            msgs.push(reply);
+          }
+          if (!acc) {
+            if (truncated) {
+              body.className = "cutoff";
+              body.textContent = "Reply cut off at the preview length limit.";
+            } else {
+              body.textContent = "";
+            }
           }
         } catch (err) {
           // Keep any streamed text, flag the break, restore the prompt for retry.
