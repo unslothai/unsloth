@@ -20787,10 +20787,8 @@ class LlamaCppBackend:
                 # Clear first, or a swap into a model without video inherits
                 # the previous server's answer.
                 self._has_video_input = False
-                # The explicit override, not resolve_requested_ctx's field
-                # fallback: only a pass-through flag emitted after Studio's own
-                # -c can make the child allocate MORE than the fit chose, so the
-                # ceiling that guards the upward adopt has to be the flag itself.
+                # The explicit override, not the field fallback: only a flag after
+                # Studio's own -c can allocate past the fit, so it is the ceiling.
                 self._reconcile_effective_ctx_with_server(ctx_override or 0)
                 if self._kv_cache_context_total is not None:
                     self._n_ubatch = min(
@@ -23082,18 +23080,15 @@ class LlamaCppBackend:
         pre-launch VRAM-fit estimate; publish that confirmed allocation without
         advertising beyond the user's resolved explicit request.
 
-        ``requested_n_ctx`` is the EXPLICIT pass-through override only (0 when
-        there is none), not ``resolve_requested_ctx``'s field fallback. Only a
-        flag emitted after Studio's own ``-c`` can make the child allocate more
-        than the fit chose, so gating on the flag is what confines the raise to
-        the case this reads back -- and keeps llama.cpp's own context padding
-        from being reported as a user override that does not exist.
+        ``requested_n_ctx`` is the EXPLICIT pass-through override (0 when absent),
+        not ``resolve_requested_ctx``'s field fallback: only a flag emitted after
+        Studio's own ``-c`` can allocate past the fit, so gating on the flag keeps
+        llama.cpp's context padding from being published as an override that does
+        not exist.
 
-        ``_max_context_length`` is deliberately left alone: /props confirms what
-        llama-server ALLOCATED, not that it fits VRAM without spilling to system
-        RAM. Unlike the measured Apple ceiling raise there is no measurement
-        behind this number, so the "may use system RAM" warning is the correct
-        outcome and ``max_context_length < context_length`` is a legal state.
+        ``_max_context_length`` deliberately stays put: /props confirms what was
+        ALLOCATED, not that it fits VRAM without spilling, so the "may use system
+        RAM" warning is right and ``max_context_length < context_length`` is legal.
         """
         actual_n_ctx = self._query_server_n_ctx()
         if not actual_n_ctx or actual_n_ctx <= 0:
@@ -23102,8 +23097,8 @@ class LlamaCppBackend:
         self._kv_cache_context_total = actual_n_ctx * slots
         effective_n_ctx = self._effective_context_length
         if not effective_n_ctx:
-            # Same ceiling as the raise below: nothing may be advertised past an
-            # explicit request just because Studio had no seeded value to compare.
+            # Same ceiling as the raise below, or a missing seed would advertise
+            # past the explicit request.
             self._effective_context_length = (
                 min(actual_n_ctx, requested_n_ctx) if requested_n_ctx > 0 else actual_n_ctx
             )

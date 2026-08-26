@@ -732,10 +732,8 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
         # explicit decision to run beyond the estimated safe threshold, and the
         # server's /props readback will publish what was actually allocated. A
         # stale or malformed flag is still stripped so it cannot outrank a newly
-        # saved Context Length. The test lives in llama_server_args beside the
-        # stripper, for the same reason the stripper itself is imported rather
-        # than mirrored: /load's inheritance path asks the same question, and the
-        # two must not drift over which flag survives which reload.
+        # saved Context Length. The test lives beside the stripper, and for the
+        # same reason: /load's inheritance path asks it too and must not drift.
         matching_explicit_ctx = matches_explicit_ctx_override(
             kwargs["llama_extra_args"], kwargs.get("max_seq_length")
         )
