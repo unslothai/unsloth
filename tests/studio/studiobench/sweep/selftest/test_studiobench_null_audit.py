@@ -1400,26 +1400,23 @@ def test_a_missing_composer_is_not_exempt_just_because_send_turn_can_be_queued(t
 
 # ── the reply that was still arriving is not a blind capture ──────────
 #
-# WHAT TURNED RED. On a wave of `studiobench UI parity` the audit came back UNDECIDED with 13
-# decided, 0 differed and 2 undecided: `keystroke@r100K` and `send_turn@r100K`, both "never
-# reached min_observations" despite `--min-reps 2` and both actions having run on both arms in
-# both repetitions. They are exactly the two actions whose slot lands INSIDE a live turn on the
-# packed 100K film, and the payload says so -- `streaming: true`, `in_flight: [19]` and `[22]`,
-# with the in-flight message 18,277 characters on one arm and 18,253 on the other.
+# WHAT TURNED RED. A wave of `studiobench UI parity` audited UNDECIDED with 13 decided, 0 differed
+# and 2 undecided: `keystroke@r100K` and `send_turn@r100K`, both "never reached min_observations"
+# despite `--min-reps 2` and both having run on both arms in both repetitions. They are the two
+# actions whose slot lands INSIDE a live turn on the packed 100K film, and the payload says so:
+# `streaming: true`, `in_flight: [19]` and `[22]`, the in-flight message 18,277 characters on one
+# arm and 18,253 on the other.
 #
-# WHERE IT CAME FROM. Before #9575 that pair scored DIFFER, which is wrong but is an OBSERVATION,
-# so the null decided the action and the audit passed. #9575 correctly demoted it to
-# NOT_COMPARABLE -- a mid-stream digest names a point in a stream, not a rendering -- and
-# `derive_unstable` files every NOT_COMPARABLE under `blind`, which is zero observations. Replayed
-# against the real payload from that job: pre-#9575 keystroke scores 2 observations and post-#9575
-# it scores 0.
+# WHERE IT CAME FROM. Pre-#9575 that pair scored DIFFER, which is wrong but is an OBSERVATION, so
+# the null decided the action and the audit passed. #9575 correctly demoted it to NOT_COMPARABLE,
+# and `derive_unstable` files every NOT_COMPARABLE under `blind`, which is zero observations.
+# Replayed against the real payload: keystroke scores 2 observations pre-#9575 and 0 after.
 #
 # So the refusal is right and the accounting behind it was not. `SETTLED_MATCH` is the narrow
-# repair: that one branch is reached only when the scaffold, the overlays, the message SET and
-# every settled message row have already agreed, so it is a complete reading of everything the
-# pair could read, and for "does this action differ against itself" that is an observation.
+# repair: that branch is reached only once the scaffold, overlays, message set and every settled
+# row have agreed, so it is a complete reading of everything the pair could read.
 #
-# Held here in both directions, because a fix that makes the audit easier to pass is worth nothing
+# Held in both directions, because a fix that makes the audit easier to pass is worth nothing
 # without the control that shows it still fails.
 
 
@@ -1439,12 +1436,12 @@ def streaming_pair_rows(
     """A base/treatment pair captured with message 1 STILL BEING WRITTEN on both arms.
 
     Modelled on the real `keystroke@r100K` rows from the failing run: both arms streaming, both
-    naming the same message in flight, both rendering the same composer control, and the settled
-    half of the thread byte-identical. `base_tail`/`treat_tail` are the digest of the message that
-    was still arriving, which is the only thing wall clock gets to move.
+    naming the same message in flight, the same composer control, and the settled half of the
+    thread byte-identical. `base_tail`/`treat_tail` are the digest of the still-arriving message,
+    the only thing wall clock gets to move.
 
-    `treat_settled`, `treat_scaffold` and `treat_role` exist so the negative controls can move
-    something the stream provably cannot reach, and watch the branch decline to fire.
+    `treat_settled`, `treat_scaffold` and `treat_role` let the negative controls move something
+    the stream provably cannot reach, and watch the branch decline to fire.
     """
 
     def side(
@@ -1506,10 +1503,9 @@ def streaming_null(tmp_path: Path, name: str, cells: list[list[dict]]) -> Path:
 
 
 def test_a_mid_stream_tail_is_still_a_refusal_and_never_a_pass():
-    # FIRST, the thing that must not change. The verdict stays NOT_COMPARABLE. A treatment build
-    # whose live message renders wrongly sits in exactly this shape, `structural_report` files a
-    # refusal under `blind` and takes its exit code without it, so promoting this to MATCH would
-    # hide a real regression. The repair is in what the NULL counts, not in what the result says.
+    # FIRST, the thing that must not change: the verdict stays NOT_COMPARABLE. A treatment build
+    # whose live message renders wrongly sits in exactly this shape, so promoting it to MATCH
+    # would hide a regression. The repair is in what the NULL counts, not in what the result says.
     rows = streaming_pair_rows(
         "r100K.base.rep0",
         "r100K.treatment.rep0",
@@ -1546,9 +1542,9 @@ def test_a_refusal_that_read_the_settled_thread_is_an_observation():
 
 
 def test_an_ordinary_refusal_is_still_blind():
-    # THE CONTROL. Without this the change reads as "count NOT_COMPARABLE as an observation",
-    # which would let an action that never rendered at all be derived as stable and trusted
-    # forever. A capture that failed carries no settled reading and must stay at zero.
+    # THE CONTROL. Without it the change reads as "count NOT_COMPARABLE as an observation", which
+    # would derive an action that never rendered at all as stable. A failed capture carries no
+    # settled reading and stays at zero.
     blind = {"verdict": P.NOT_COMPARABLE, "reason": "threadRoot is not a function"}
     row = P.derive_unstable([("keystroke", blind), ("keystroke", blind)])["keystroke"]
     assert row["observations"] == 0
@@ -1558,9 +1554,8 @@ def test_an_ordinary_refusal_is_still_blind():
 
 
 def test_a_settled_message_that_moved_is_a_difference_not_an_observation():
-    # The other control, one layer down: the flag is only set when everything OUTSIDE the live
-    # message agreed. Move a settled row and the pair is a DIFFER, so the null records real
-    # instability exactly as before.
+    # One layer down: the flag is only set when everything OUTSIDE the live message agreed. Move
+    # a settled row and the pair is a DIFFER, so real instability is recorded as before.
     rows = streaming_pair_rows(
         "r100K.base.rep0",
         "r100K.treatment.rep0",
@@ -1575,9 +1570,9 @@ def test_a_settled_message_that_moved_is_a_difference_not_an_observation():
 
 
 def test_a_scaffold_that_moved_is_a_difference_not_an_observation():
-    # And the scaffold half of the same claim. Both arms agree they are streaming and agree about
-    # the composer control, so this is not the generation-disagreement refusal: it is a thread
-    # scaffolding change on a pair that was otherwise identical, and it stays a finding.
+    # The scaffold half of the same claim. Both arms agree on streaming and on the composer
+    # control, so this is not the generation-disagreement refusal but a scaffolding change on an
+    # otherwise identical pair, and it stays a finding.
     rows = streaming_pair_rows(
         "r100K.base.rep0",
         "r100K.treatment.rep0",
@@ -1592,12 +1587,11 @@ def test_a_scaffold_that_moved_is_a_difference_not_an_observation():
 
 
 def test_a_live_row_whose_role_changed_carries_no_positive_reading():
-    # The control that is NOT reachable through `_any_moved`, which is what makes it worth
-    # asserting. The role is captured beside the digest, and the digest of an in-flight row is
-    # withheld, so a row that is `assistant` on one arm and `user` on the other passes the
-    # digest comparison untouched and the pair still reads as "everything settled agreed".
-    # `settled_messages_moved` calls that a structural change even in flight -- how far a reply
-    # has arrived says nothing about whose message it is -- so the flag must not fire here.
+    # The control `_any_moved` cannot reach, which is what makes it worth asserting. The role
+    # sits beside the digest and an in-flight digest is withheld, so `assistant` on one arm and
+    # `user` on the other passes the digest comparison untouched and the pair still reads as
+    # "everything settled agreed". `settled_messages_moved` calls that a structural change even
+    # in flight, so the flag must not fire here.
     rows = streaming_pair_rows(
         "r100K.base.rep0",
         "r100K.treatment.rep0",
@@ -1619,10 +1613,9 @@ def test_a_live_row_whose_role_changed_carries_no_positive_reading():
 
 
 def test_the_audit_decides_an_action_whose_only_leftover_was_the_live_reply(tmp_path):
-    # END TO END, and this is the case that turned the job red. Two repetitions of `keystroke`,
-    # both inside a live turn, the settled thread identical on every arm and only the in-flight
-    # tail landing a chunk apart. Nothing structural moved on this build against itself, and the
-    # audit must be able to say so.
+    # END TO END, the case that turned the job red: two repetitions of `keystroke` inside a live
+    # turn, the settled thread identical on every arm and only the in-flight tail a chunk apart.
+    # Nothing structural moved on this build against itself, and the audit must be able to say so.
     null = streaming_null(
         tmp_path,
         "inflight",
@@ -1653,9 +1646,9 @@ def test_the_audit_decides_an_action_whose_only_leftover_was_the_live_reply(tmp_
 
 
 def test_the_audit_still_fails_when_the_capture_itself_was_blind(tmp_path):
-    # THE PAIRED FAILURE. Same scope, same two repetitions, but the arms could not place the
-    # stream at all -- `in_flight_unplaced`, which is the `data-status` hook having gone quiet.
-    # There is no settled reading behind that refusal and the audit must stay red on it.
+    # THE PAIRED FAILURE. Same scope and repetitions, but the arms could not place the stream at
+    # all (`in_flight_unplaced`: the `data-status` hook went quiet). No settled reading sits
+    # behind that refusal, so the audit stays red.
     cells = []
     for rep, tails in (("rep0", ("T1", "T2")), ("rep1", ("T3", "T4"))):
         cell = streaming_pair_rows(
@@ -1676,11 +1669,9 @@ def test_the_audit_still_fails_when_the_capture_itself_was_blind(tmp_path):
 
 
 def test_a_settled_match_can_never_grow_the_excuse_set(tmp_path):
-    # THE SAFETY DIRECTION, asserted rather than argued. The observation this adds is a
-    # NON-difference, so no action can be called unstable on its strength and the derived excuse
-    # set can only ever narrow. A null control made entirely of settled-match refusals derives an
-    # EMPTY measured set, which means a corroborated difference in the result gets no excuse from
-    # it -- the loud direction, never the silent one.
+    # THE SAFETY DIRECTION, asserted rather than argued. The observation is a NON-difference, so
+    # the derived excuse set can only narrow: a null made entirely of settled-match refusals
+    # derives an EMPTY measured set, so a corroborated difference gets no excuse from it.
     null = streaming_null(
         tmp_path,
         "narrow",
