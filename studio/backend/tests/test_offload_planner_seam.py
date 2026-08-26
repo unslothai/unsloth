@@ -42,6 +42,24 @@ def _discrete_host(monkeypatch):
     monkeypatch.setattr(utils.hardware, "is_apple_silicon", lambda: False)
 
 
+@pytest.fixture(scope = "session")
+def sparse_adapter(tmp_path_factory):
+    """A 3 GiB adapter file that costs neither RAM nor (on ext4/APFS) disk.
+
+    ``_sidecar_adapter_bytes`` reads ``os.stat().st_size`` and nothing else, so
+    the fixture only has to be the right SIZE. Materialising it as real zeros
+    spiked RSS by 3 GiB per test and left up to 9 GiB in the session's tmp dir
+    (pytest keeps every test's directory for the whole run), which the 14 GB
+    runner disk does not have to spare. ``truncate`` sets the length without
+    writing: a hole on ext4/APFS, and on NTFS space that is reserved but never
+    zero-filled. One file for the session, since every caller only stats it.
+    """
+    path = tmp_path_factory.mktemp("adapters") / "adapter.gguf"
+    with open(path, "wb") as handle:
+        handle.truncate(3 * GIB)
+    return path
+
+
 class _Stub:
     """Only what the seam touches."""
 
@@ -881,13 +899,12 @@ def test_an_explicit_fit_target_declines_the_plan(extra_args, env):
     assert _plan(_Stub()) is not None, "not vacuous"
 
 
-def test_a_pass_through_adapter_is_charged_as_resident_vram(tmp_path, monkeypatch):
+def test_a_pass_through_adapter_is_charged_as_resident_vram(sparse_adapter, monkeypatch):
     """LoRA and control-vector sidecars are GPU-resident and in NO other term
     here: they are created on the base layer's buffer type (llama-adapter.cpp:335,
     :67) and neither mmaps (:407). `model_size` is the base GGUF alone, so an
     unpriced adapter is a plan claiming a fit that is not there."""
-    adapter = tmp_path / "adapter.gguf"
-    adapter.write_bytes(b"\0" * (3 * GIB))
+    adapter = sparse_adapter
 
     # Sized so the base load fits with room to spare and the adapter is what
     # tips it over: the term has to be load-bearing, not merely present.
@@ -908,19 +925,20 @@ def test_a_pass_through_adapter_is_charged_as_resident_vram(tmp_path, monkeypatc
     # rejects outright (`parts.size() != 2` -> throw, common/arg.cpp:2944-2946).
     # Pricing a token that never starts a child would be the wrong answer, so the
     # test asks for the reading that exists on every platform.
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.chdir(adapter.parent)
     scaled = _plan(stub, free_mib = free, extra_args = ["--lora-scaled", "adapter.gguf:0.5"])
     assert scaled.spilled_blocks == with_lora.spilled_blocks
 
 
-def test_a_drive_lettered_scaled_adapter_is_skipped_rather_than_priced(tmp_path):
+def test_a_drive_lettered_scaled_adapter_is_skipped_rather_than_priced():
     """The other half of the same syntax. string_split on ':' gives three parts for
     `C:\\dir\\adapter.gguf:0.5`, so upstream throws and the child never starts;
     there is no placement to misprice, and guessing which colon was the separator
-    would price a launch that cannot happen. Skipped, not sized, not abstained."""
-    adapter = tmp_path / "adapter.gguf"
-    adapter.write_bytes(b"\0" * (3 * GIB))
-    drive_lettered = f"C:\\dir\\adapter.gguf:0.5"
+    would price a launch that cannot happen. Skipped, not sized, not abstained.
+
+    No file is created: the drive-lettered form names a path that exists on no
+    runner, and the point is that it is never stat'd."""
+    drive_lettered = "C:\\dir\\adapter.gguf:0.5"
 
     stub = _Stub()
     free = 17 * 1024
@@ -993,7 +1011,7 @@ class _FlatAttentionStub(_Stub):
         )
 
 
-def test_a_multi_gpu_adapter_declines_rather_than_booking_it_all_on_device_0(tmp_path):
+def test_a_multi_gpu_adapter_declines_rather_than_booking_it_all_on_device_0(sparse_adapter):
     """Adapter bytes are not a device-0 lump on a layer split.
 
     A LoRA tensor is allocated on its BASE tensor's buffer
@@ -1006,8 +1024,7 @@ def test_a_multi_gpu_adapter_declines_rather_than_booking_it_all_on_device_0(tmp
     runs to catch the overflow. The base GGUF's layout carries no adapter tensor
     table, so the split cannot be derived; abstain instead.
     """
-    adapter = tmp_path / "adapter.gguf"
-    adapter.write_bytes(b"\0" * (3 * GIB))
+    adapter = sparse_adapter
 
     stub = _FlatAttentionStub()
     # 10 + 3 GiB free with a 3 GiB adapter: the deficit needs EVERY block spilled,
