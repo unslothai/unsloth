@@ -169,9 +169,7 @@ def test_an_explicit_off_still_disables(value):
     """The escape hatch has to keep working, or a user with a load the planner
     mishandles has nothing to reach for."""
     assert smart_offload_enabled({"UNSLOTH_SMART_OFFLOAD": value}) is False
-    assert _Stub()._planned_tensor_spill(
-        _inputs(), env = {"UNSLOTH_SMART_OFFLOAD": value}
-    ) is None
+    assert _Stub()._planned_tensor_spill(_inputs(), env = {"UNSLOTH_SMART_OFFLOAD": value}) is None
 
 
 @pytest.mark.parametrize("value", ["nope", "flase", "onn", "2"])
