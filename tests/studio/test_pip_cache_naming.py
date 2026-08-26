@@ -3,19 +3,17 @@
 
 """Every installing job must own its pip cache key, and no two may share one.
 
-Two failures hide behind a shared key, and neither shows up as red.
+Five jobs did share one, and neither consequence showed up as red.
 
-pip-cache-save is gated on `cache-hit != 'true'`. When five jobs resolved to the
-same key -- which they did, all passing `pyproject.toml` + `studio/backend/
-requirements/*.txt` -- whichever finished first on main wrote the cache and the
-other four restored it EXACTLY, installed their own extra wheels, and never
-saved them. Those extras were re-downloaded on every run of main, forever.
+pip-cache-save is gated on `cache-hit != 'true'`, so whichever job finished
+first on main wrote the cache and the other four restored it EXACTLY, installed
+their own extra wheels, and never saved them -- re-downloading those on every
+run of main, forever.
 
-And a shared prefix cannot be ranked. `cache-janitor.yml` prunes by generation
-within a key prefix; with five live jobs under `pip-<os>-<arch>-py<ver>-` there
-is no way to tell five live caches from five generations of one, so the family
-could not be pruned at all. 57 entries were still resident on 2026-08-26, last
-read a day or more earlier, against a repo at 41.4 of 50 GiB.
+And a shared prefix cannot be ranked. cache-janitor.yml prunes by generation
+within a prefix, and five live jobs under `pip-<os>-<arch>-py<ver>-` are
+indistinguishable from five generations of one, so the family could not be
+pruned at all: 57 stale entries on 2026-08-26, against 41.4 of 50 GiB.
 
 `name` fixes both, and only stays fixed if nothing silently reuses one.
 """
@@ -40,8 +38,7 @@ def _jobs(path):
 
 
 def _restores(steps):
-    # The path differs between workflows: jobs that check the repo out into a
-    # subdirectory say ./unsloth/.github/actions/..., so match on the suffix.
+    # Suffix match: jobs checking out into a subdirectory say ./unsloth/.github/...
     return [s for s in steps if str(s.get("uses", "")).endswith(RESTORE_SUFFIX)]
 
 
@@ -92,9 +89,8 @@ def test_no_two_jobs_share_a_cache_name():
 
 
 def test_jobs_sharing_key_files_still_have_distinct_names():
-    # The regression that produced the original defect: two jobs given the same
-    # key-files are the ones most likely to be given the same name, and that is
-    # exactly the case that must not collapse.
+    # Jobs given the same key-files are the likeliest to be given the same name,
+    # which is the exact case that produced the original defect.
     by_files = {}
     for path in WORKFLOWS:
         for job, steps in _jobs(path):
