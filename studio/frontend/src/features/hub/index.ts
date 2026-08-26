@@ -77,7 +77,6 @@ export {
   localSourceLabel,
   normalizeCapabilities,
   normalizeModelFormat,
-  normalizeRuntime,
   normalizeTimestamp,
   removeScanFolder,
   resolveInventoryResource,

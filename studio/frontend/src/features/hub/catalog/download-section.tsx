@@ -13,7 +13,6 @@ export function DownloadSection({
   partialTransport = null,
   partialResumable = false,
   modelFormat,
-  canRun = true,
   isActive,
   activeQuant,
   preferredGgufFile = null,
@@ -24,10 +23,6 @@ export function DownloadSection({
   systemRamGb,
   cachePath,
   knownBytes,
-  onLoad,
-  onUseInChat,
-  onEject,
-  onTrain,
   onChange,
 }: {
   repoId: string;
@@ -37,7 +32,6 @@ export function DownloadSection({
   partialTransport?: string | null;
   partialResumable?: boolean;
   modelFormat?: ModelInventoryFormat | null;
-  canRun?: boolean;
   isActive: boolean;
   activeQuant: string | null;
   preferredGgufFile?: string | null;
@@ -48,10 +42,6 @@ export function DownloadSection({
   systemRamGb?: number;
   cachePath?: string | null;
   knownBytes?: number | null;
-  onLoad: (opts: { ggufVariant?: string; expectedBytes?: number }) => void;
-  onUseInChat?: () => void;
-  onEject?: () => void;
-  onTrain?: () => void;
   onChange?: () => void;
 }) {
   if (isGguf || preferredGgufFile) {
@@ -61,16 +51,12 @@ export function DownloadSection({
         isActive={isActive}
         activeQuant={activeQuant}
         preferredFile={preferredGgufFile}
-
         preferredFileIntent={preferredGgufFileIntent}
         isLoadingThisModel={isLoadingThisModel}
         gpuGb={gpuGb}
         systemRamGb={systemRamGb}
         cachePath={cachePath}
         isPartial={isPartial}
-        onLoad={onLoad}
-        onUseInChat={onUseInChat}
-        onEject={onEject}
         onChange={onChange}
       />
     );
@@ -83,15 +69,10 @@ export function DownloadSection({
       partialTransport={partialTransport}
       partialResumable={partialResumable}
       modelFormat={modelFormat}
-      canRun={canRun}
       isActive={isActive}
       isLoadingThisModel={isLoadingThisModel}
       cachePath={cachePath}
       knownBytes={knownBytes}
-      onLoad={onLoad}
-      onUseInChat={onUseInChat}
-      onEject={onEject}
-      onTrain={onTrain}
       onChange={onChange}
     />
   );

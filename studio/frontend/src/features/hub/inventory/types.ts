@@ -10,12 +10,6 @@ export type ModelInventoryFormat =
   | "adapter"
   | "checkpoint"
   | "unknown";
-export type ModelInventoryRuntime =
-  | "llama_cpp"
-  | "transformers"
-  | "adapter"
-  | "unknown";
-
 export interface ModelInventoryCapabilities {
   canTrain: boolean;
   canChat: boolean;
@@ -42,7 +36,6 @@ export interface CachedInventoryRow {
   repo: string;
   isGguf: boolean;
   modelFormat: ModelInventoryFormat;
-  runtime: ModelInventoryRuntime;
   formatVariant?: string | null;
   capabilities: ModelInventoryCapabilities;
   bytes: number;
@@ -85,7 +78,6 @@ export interface LocalInventoryRow {
   path: string;
   isGguf: boolean;
   modelFormat: ModelInventoryFormat;
-  runtime: ModelInventoryRuntime;
   formatVariant?: string | null;
   capabilities: ModelInventoryCapabilities;
   baseModel?: string | null;

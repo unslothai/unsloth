@@ -140,14 +140,6 @@ test("the picker's Loaded badge asks residency, not the selection", () => {
   );
 });
 
-test("the hub cards ask residency before saying Loaded", () => {
-  const hub = readFileSync(
-    new URL("../src/features/hub/hub-page.tsx", import.meta.url),
-    "utf8",
-  );
-  assert.match(hub, /residentCheckpoint !== null\s*\n?\s*\? checkpoint/);
-});
-
 // Nothing in the chat runtime polls /status: refresh runs on mount and when the
 // model lists change, never on a timer. So an eviction caused by the Images
 // page was never observed and residentCheckpoint stayed undefined, which reads

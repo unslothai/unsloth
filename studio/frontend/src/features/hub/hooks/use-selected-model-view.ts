@@ -12,7 +12,6 @@ import type {
   CachedInventoryRow,
   DiscoverRow,
   LocalInventoryRow,
-  SelectedResourceRef,
   SelectedModelView,
 } from "../types";
 
@@ -25,54 +24,6 @@ function detectViewCapabilities(
 ) {
   const modelId = identifiers.filter(Boolean).join(" ");
   return detectCapabilities(tags, pipelineTag, modelId);
-}
-
-function cachedResource(row: CachedInventoryRow): SelectedResourceRef {
-  return {
-    repoId: row.repoId,
-    localPath: row.cachePath ?? null,
-    source: "hub_cache",
-    cacheState: row.partial ? "partial" : "cached",
-    runId: row.loadId,
-    trainId: row.loadId,
-  };
-}
-
-function localResource(
-  row: LocalInventoryRow,
-  repoId: string | null = row.repoId,
-): SelectedResourceRef {
-  const cacheState = row.partial
-    ? "partial"
-    : row.source === "hf_cache"
-      ? "cached"
-      : "local";
-  const id =
-    row.source === "hf_cache" &&
-    row.activeCache !== false &&
-    repoId &&
-    !row.partial
-      ? repoId
-      : row.loadId;
-  return {
-    repoId,
-    localPath: row.path,
-    source: row.source,
-    cacheState,
-    runId: id,
-    trainId: id,
-  };
-}
-
-function remoteResource(row: DiscoverRow): SelectedResourceRef {
-  return {
-    repoId: row.result.id,
-    localPath: null,
-    source: "huggingface",
-    cacheState: row.isPartialOnDevice ? "partial" : "remote",
-    runId: row.result.id,
-    trainId: row.result.id,
-  };
 }
 
 function localFormatLabel(row: LocalInventoryRow): string {
@@ -103,14 +54,9 @@ export function useSelectedModelView({
         selectedLocalRow &&
         selectedLocalRow.source !== "hf_cache"
       ) {
-        const resource = localResource(
-          selectedLocalRow,
-          selectedDiscoverRow.result.id,
-        );
         return {
-          id: resource.runId,
+          id: selectedLocalRow.loadId,
           kind: "local",
-          resource,
           displayId: selectedDiscoverRow.id,
           hubRepoId: selectedDiscoverRow.result.id,
           owner: selectedDiscoverRow.owner,
@@ -139,7 +85,6 @@ export function useSelectedModelView({
           isPartial: selectedLocalRow.partial ?? false,
           partialTransport: selectedLocalRow.partialTransport ?? null,
           partialResumable: selectedLocalRow.partialResumable === true,
-          runtimeCapabilities: selectedLocalRow.capabilities,
           capabilities: selectedDiscoverRow.capabilities,
           license: detectLicense(selectedDiscoverRow.result.tags),
           pipelineTag: selectedDiscoverRow.result.pipelineTag,
@@ -161,14 +106,14 @@ export function useSelectedModelView({
 
       const onDevicePath =
         selectedCachedRow?.cachePath ?? selectedLocalRow?.path ?? null;
-      const resource = selectedCachedRow
-        ? cachedResource(selectedCachedRow)
+      const isResolvedPartial = selectedCachedRow
+        ? Boolean(selectedCachedRow.partial)
         : selectedLocalRow?.source === "hf_cache"
-          ? localResource(selectedLocalRow, selectedDiscoverRow.result.id)
-          : remoteResource(selectedDiscoverRow);
-      const isResolvedPartial = resource.cacheState === "partial";
-      const isResolvedOnDevice =
-        resource.cacheState === "cached" || resource.cacheState === "local";
+          ? Boolean(selectedLocalRow.partial)
+          : selectedDiscoverRow.isPartialOnDevice;
+      const isResolvedOnDevice = selectedCachedRow
+        ? !selectedCachedRow.partial
+        : selectedLocalRow?.source === "hf_cache" && !selectedLocalRow.partial;
       const resolvedModelFormat =
         selectedCachedRow?.modelFormat ??
         (selectedLocalRow?.modelFormat &&
@@ -180,7 +125,6 @@ export function useSelectedModelView({
       return {
         id: selectedDiscoverRow.id,
         kind: "discover",
-        resource,
         displayId: selectedDiscoverRow.id,
         hubRepoId: selectedDiscoverRow.result.id,
         owner: selectedDiscoverRow.owner,
@@ -215,8 +159,6 @@ export function useSelectedModelView({
           null,
         partialResumable:
           (selectedCachedRow ?? selectedLocalRow)?.partialResumable === true,
-        runtimeCapabilities:
-          selectedCachedRow?.capabilities ?? selectedLocalRow?.capabilities,
         capabilities: selectedDiscoverRow.capabilities,
         license: detectLicense(selectedDiscoverRow.result.tags),
         pipelineTag: selectedDiscoverRow.result.pipelineTag,
@@ -241,7 +183,6 @@ export function useSelectedModelView({
     }
 
     if (selectedCachedRow) {
-      const resource = cachedResource(selectedCachedRow);
       const cachedSummary = isDatasetMode
         ? "Cached dataset, ready to use."
         : selectedCachedRow.isGguf
@@ -264,7 +205,6 @@ export function useSelectedModelView({
       return {
         id: selectedCachedRow.repoId,
         kind: "cache",
-        resource,
         displayId: selectedCachedRow.repoId,
         hubRepoId: selectedCachedRow.repoId,
         owner: selectedCachedRow.owner,
@@ -285,7 +225,6 @@ export function useSelectedModelView({
         isPartial: selectedCachedRow.partial ?? false,
         partialTransport: selectedCachedRow.partialTransport ?? null,
         partialResumable: selectedCachedRow.partialResumable === true,
-        runtimeCapabilities: selectedCachedRow.capabilities,
         capabilities: detectViewCapabilities(
           mergedTags,
           mergedPipelineTag,
@@ -315,7 +254,6 @@ export function useSelectedModelView({
     if (selectedLocalRow) {
       const localHubRepoId =
         selectedLocalRow.source === "hf_cache" ? selectedLocalRow.repoId : null;
-      const resource = localResource(selectedLocalRow, localHubRepoId);
       const localDisplayId = selectedLocalRow.repoId ?? selectedLocalRow.loadId;
       const isPartialHubCache =
         selectedLocalRow.source === "hf_cache" &&
@@ -344,7 +282,6 @@ export function useSelectedModelView({
         return {
           id: selectedLocalRow.repoId,
           kind: "cache",
-          resource,
           displayId: selectedLocalRow.repoId,
           hubRepoId: selectedLocalRow.repoId,
           owner: selectedLocalRow.owner,
@@ -362,7 +299,6 @@ export function useSelectedModelView({
           isPartial: true,
           partialTransport: selectedLocalRow.partialTransport ?? null,
           partialResumable: selectedLocalRow.partialResumable === true,
-          runtimeCapabilities: selectedLocalRow.capabilities,
           capabilities: detectViewCapabilities(
             mergedTags,
             mergedPipelineTag,
@@ -393,7 +329,6 @@ export function useSelectedModelView({
       return {
         id: selectedLocalRow.loadId,
         kind: "local",
-        resource,
         displayId: localDisplayId,
         hubRepoId: localHubRepoId,
         owner: selectedLocalRow.owner,
@@ -415,7 +350,6 @@ export function useSelectedModelView({
         adapterType: selectedLocalRow.adapterType ?? null,
         trainingMethod: selectedLocalRow.trainingMethod ?? null,
         isDownloaded: true,
-        runtimeCapabilities: selectedLocalRow.capabilities,
         capabilities: detectViewCapabilities(
           mergedTags,
           mergedPipelineTag,

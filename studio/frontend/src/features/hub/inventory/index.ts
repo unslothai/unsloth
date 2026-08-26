@@ -48,7 +48,6 @@ export {
   localSourceLabel,
   normalizeCapabilities,
   normalizeModelFormat,
-  normalizeRuntime,
   normalizeTimestamp,
 } from "./view-models";
 export {
