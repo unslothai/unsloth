@@ -1794,6 +1794,26 @@ class ChatCompletionRequest(BaseModel):
             "Both truncation policies preserve system messages and tool-call groups."
         ),
     )
+    context_policy: Optional[Literal["checkpoint", "rolling"]] = Field(
+        None,
+        description = (
+            "[x-unsloth] How a local GGUF chat compacts once context_overflow is "
+            "truncate_oldest. 'checkpoint' resets to the latest turn plus standing "
+            "instructions (Studio default). 'rolling' drops oldest complete turns. "
+            "Unset uses UNSLOTH_CONTEXT_POLICY."
+        ),
+    )
+    compaction_headroom_ratio: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 0.9,
+        description = (
+            "[x-unsloth] Extra share of the prompt budget to drop when a rolling "
+            "compaction fires, so the boundary can stay put for a stretch of turns. "
+            "0.25 is the process default (ROLLING_COMPACTION_HEADROOM_RATIO). Ignored "
+            "for checkpoint compaction. Unset keeps the process default."
+        ),
+    )
     max_tool_calls_per_message: Optional[int] = Field(
         25,
         ge = 0,

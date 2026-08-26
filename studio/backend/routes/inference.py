@@ -719,6 +719,23 @@ def _rolling_context_policy(payload) -> Optional[str]:
     return policy if policy == "truncate_oldest" else None
 
 
+def _request_context_policy(payload) -> Optional[str]:
+    requested = getattr(payload, "context_policy", None)
+    if isinstance(requested, str):
+        value = requested.strip().lower()
+        if value in ("checkpoint", "rolling"):
+            return value
+    return None
+
+
+def _request_compaction_headroom_ratio(payload) -> Optional[float]:
+    from core.inference.context_window import clamp_compaction_headroom_ratio
+
+    return clamp_compaction_headroom_ratio(
+        getattr(payload, "compaction_headroom_ratio", None)
+    )
+
+
 def _overflow_truncation_requested(payload) -> bool:
     """True when the request (or the UNSLOTH_CONTEXT_OVERFLOW server default,
     for clients that cannot send custom fields) opted into truncation."""
@@ -16669,6 +16686,8 @@ async def openai_chat_completions(
                     permission_mode = payload.permission_mode,
                     perf_callback = _gguf_perf_callback,
                     context_overflow = _rolling_context_policy(payload),
+                    context_policy = _request_context_policy(payload),
+                    compaction_headroom_ratio = _request_compaction_headroom_ratio(payload),
                 )
 
             _tool_admission_mode = "chat_tool_stream" if payload.stream else "chat_tool_nonstream"
@@ -17388,6 +17407,8 @@ async def openai_chat_completions(
                 seed = _seed,
                 perf_callback = _gguf_perf_callback,
                 context_overflow = _rolling_context_policy(payload),
+                context_policy = _request_context_policy(payload),
+                compaction_headroom_ratio = _request_compaction_headroom_ratio(payload),
                 thread_id = payload.thread_id,
                 # These requests suppress the tool loop AND are excluded from the checkpoint
                 # repair above, so search_conversation is offered neither now nor on the

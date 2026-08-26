@@ -477,6 +477,13 @@ class ChatSettingsPayload(BaseModel):
     expandQuantizations: Optional[bool] = None
     showAllQuantizations: Optional[bool] = None
     fitOnDeviceOnly: Optional[bool] = None
+    # Local GGUF auto-compaction. Off omits context_overflow so a full window
+    # errors instead of silently dropping history. contextPolicy/headroom are
+    # the per-request overrides for UNSLOTH_CONTEXT_POLICY and
+    # ROLLING_COMPACTION_HEADROOM_RATIO.
+    autoCompactEnabled: Optional[bool] = None
+    contextPolicy: Optional[Literal["checkpoint", "rolling"]] = None
+    compactionHeadroomRatio: Optional[float] = Field(default = None, ge = 0.0, le = 0.9)
 
     @field_validator("researchModelTimeoutSeconds", mode = "before")
     @classmethod

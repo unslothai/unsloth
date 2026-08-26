@@ -201,6 +201,23 @@ def _archive_is_degraded() -> bool:
         return False
 
 
+def _compaction_fit_kwargs(
+    context_policy: Optional[str] = None,
+    compaction_headroom_ratio: Optional[float] = None,
+) -> dict:
+    """Per-request overrides the four rolling-fit call sites share.
+
+    Unset values keep the process defaults (UNSLOTH_CONTEXT_POLICY and
+    ROLLING_COMPACTION_HEADROOM_RATIO) so an older client is unaffected.
+    """
+    extra: dict = {}
+    if context_policy in ("checkpoint", "rolling"):
+        extra["context_policy"] = context_policy
+    if compaction_headroom_ratio is not None:
+        extra["headroom_ratio"] = compaction_headroom_ratio
+    return extra
+
+
 def _fit_context(messages, **kwargs):
     """The context policy in one place, so the five call sites do not each pick one.
 
@@ -208,11 +225,22 @@ def _fit_context(messages, **kwargs):
     reachable via `UNSLOTH_CONTEXT_POLICY=rolling` as the A/B arm and the escape hatch for
     a misbehaving template family. A request that may not reset (see `_can_reset_epoch`)
     silently keeps rolling, which is why the two fits share a signature.
+
+    ``context_policy`` on the request overrides the process default so Studio can offer
+    a sliding window without restarting the server.
     """
     can_reset = bool(kwargs.pop("can_reset", False))
+    requested_policy = kwargs.pop("context_policy", None)
+    if requested_policy not in ("checkpoint", "rolling"):
+        requested_policy = None
     try:
         from core.inference import checkpoint
-        if not can_reset and checkpoint.enabled() and int(kwargs.get("sticky_dropped") or 0) > 0:
+        use_checkpoint = (
+            checkpoint.enabled()
+            if requested_policy is None
+            else requested_policy == "checkpoint"
+        )
+        if not can_reset and use_checkpoint and int(kwargs.get("sticky_dropped") or 0) > 0:
             # An epoch is in force but THIS request may not reset. Falling straight through
             # to rolling was the worst of both: it replays the checkpoint-sized (near-total)
             # eviction WITHOUT rebuilding the block that made it survivable. Measured on a
@@ -229,7 +257,7 @@ def _fit_context(messages, **kwargs):
             # A checkpoint boundary means nothing to rolling, which cannot rebuild what it
             # assumed. Recomputing loses the epoch: an un-compacted window tells no lie.
             kwargs.pop("sticky_dropped", None)
-        if can_reset and checkpoint.enabled():
+        if can_reset and use_checkpoint:
             # A degraded archive downgrades reset to REPLAY rather than closing the door.
             # Refusing outright sent the request to rolling, which replays the same boundary
             # WITHOUT rebuilding the block, so a thread with an epoch silently lost its
@@ -25045,6 +25073,8 @@ class LlamaCppBackend:
         perf_callback: Optional[Callable[[dict], None]] = None,
         reasoning_provenance: Optional[dict] = None,
         context_overflow: Optional[str] = None,
+        context_policy: Optional[str] = None,
+        compaction_headroom_ratio: Optional[float] = None,
         thread_id: Optional[str] = None,
         tools_withheld: bool = False,
         _allow_respawn_retry: bool = True,
@@ -25138,6 +25168,7 @@ class LlamaCppBackend:
                         _backend_supports_tools(self),
                         tools_withheld = tools_withheld,
                     ),
+                    **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
                 )
                 if truncation:
                     # Inline, not a forged tool exchange: this path sends no tools array,
@@ -25384,6 +25415,8 @@ class LlamaCppBackend:
                     perf_callback = perf_callback,
                     reasoning_provenance = reasoning_provenance,
                     context_overflow = retry_context_overflow,
+                    context_policy = context_policy,
+                    compaction_headroom_ratio = compaction_headroom_ratio,
                     # The retry refits for the replacement window and can evict more than
                     # the first attempt did. Without the thread those extra turns are
                     # archived nowhere and no reserve or boundary applies, on the one path
@@ -25440,6 +25473,8 @@ class LlamaCppBackend:
         perf_callback: Optional[Callable[[dict], None]] = None,
         reasoning_provenance: Optional[dict] = None,
         context_overflow: Optional[str] = None,
+        context_policy: Optional[str] = None,
+        compaction_headroom_ratio: Optional[float] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -25817,6 +25852,7 @@ class LlamaCppBackend:
                             if _sticky_boundary_applied
                             else _sticky_compaction_boundary(thread_id, _request_branch)
                         ),
+                        **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
                     )
                     # Accounted for in this request now, whatever the fit decided.
                     _sticky_boundary_applied = True
@@ -25975,6 +26011,7 @@ class LlamaCppBackend:
                             _backend_supports_tools(self),
                             tools_withheld = _memory_tool_withheld(thread_id, tools),
                         ),
+                        **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
                     )
                     # Recorded here, not left to the forwarding below. That list is
                     # drained from INSIDE the reopened stream, so a replacement server
@@ -27453,6 +27490,7 @@ class LlamaCppBackend:
                         if _sticky_boundary_applied
                         else _sticky_compaction_boundary(thread_id, _request_branch)
                     ),
+                    **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
                 )
                 _sticky_boundary_applied = True
                 if truncation:
@@ -27575,6 +27613,7 @@ class LlamaCppBackend:
                         # The final pass again, so again no tools array is sent.
                         tools_withheld = True,
                     ),
+                    **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
                 )
                 if truncation:
                     # Archive only; see the iteration respawn refit above.

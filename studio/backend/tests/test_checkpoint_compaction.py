@@ -1185,6 +1185,52 @@ def test_only_truncate_oldest_is_a_policy_that_can_reset(requested, expected, mo
     assert routes_mod._rolling_context_policy(payload) == expected
 
 
+def test_a_request_can_force_rolling_when_checkpoint_is_the_process_default(monkeypatch):
+    """Studio's sliding-window control must not need UNSLOTH_CONTEXT_POLICY=rolling."""
+    from core.inference import llama_cpp
+
+    seen = {}
+
+    def _rolling(messages, **kwargs):
+        seen["rolling"] = True
+        seen["headroom"] = kwargs.get("headroom_ratio")
+        return messages, None
+
+    monkeypatch.setattr("core.inference.checkpoint.enabled", lambda: True)
+    monkeypatch.setattr(llama_cpp, "fit_rolling_context", _rolling)
+    llama_cpp._fit_context(
+        [{"role": "user", "content": "hi"}],
+        context_length = 4096,
+        max_tokens = 128,
+        count_tokens = count,
+        can_reset = True,
+        context_policy = "rolling",
+        headroom_ratio = 0.0,
+    )
+
+    assert seen == {"rolling": True, "headroom": 0.0}
+
+
+def test_request_compaction_overrides_are_optional():
+    import types
+
+    import routes.inference as routes_mod
+
+    empty = types.SimpleNamespace()
+    assert routes_mod._request_context_policy(empty) is None
+    assert routes_mod._request_compaction_headroom_ratio(empty) is None
+
+    payload = types.SimpleNamespace(
+        context_policy = "rolling",
+        compaction_headroom_ratio = 0.1,
+    )
+    assert routes_mod._request_context_policy(payload) == "rolling"
+    assert routes_mod._request_compaction_headroom_ratio(payload) == 0.1
+    assert routes_mod._request_context_policy(
+        types.SimpleNamespace(context_policy = "nope")
+    ) is None
+
+
 def test_a_degraded_archive_stops_the_block_promising_a_lookup_that_returns_nothing(monkeypatch):
     """`degraded()` is the verdict on the last write, and the write runs AFTER the fit.
 

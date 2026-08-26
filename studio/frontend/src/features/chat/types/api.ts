@@ -664,6 +664,10 @@ export interface OpenAIChatCompletionsRequest {
   nudge_tool_calls?: boolean;
   /** Local GGUF overflow policy. Rolling mode preserves the transcript but omits oldest turns. */
   context_overflow?: "error" | "truncate_middle" | "truncate_oldest";
+  /** Override UNSLOTH_CONTEXT_POLICY for this local GGUF request. */
+  context_policy?: "checkpoint" | "rolling";
+  /** Extra share of the prompt budget to drop when a rolling compaction fires. */
+  compaction_headroom_ratio?: number;
   max_tool_calls_per_message?: number;
   tool_call_timeout?: number;
   session_id?: string;

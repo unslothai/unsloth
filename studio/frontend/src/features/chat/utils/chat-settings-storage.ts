@@ -259,6 +259,16 @@ function sanitizeChatSettings(value: unknown): PersistedChatSettings {
   );
   const autoHealToolCalls = sanitizeBool(value.autoHealToolCalls);
   const nudgeToolCalls = sanitizeBool(value.nudgeToolCalls);
+  const autoCompactEnabled = sanitizeBool(value.autoCompactEnabled);
+  const contextPolicy =
+    value.contextPolicy === "checkpoint" || value.contextPolicy === "rolling"
+      ? value.contextPolicy
+      : undefined;
+  const compactionHeadroomRatio =
+    typeof value.compactionHeadroomRatio === "number" &&
+    Number.isFinite(value.compactionHeadroomRatio)
+      ? Math.max(0, Math.min(0.9, value.compactionHeadroomRatio))
+      : undefined;
   const maxToolCallsPerMessage = sanitizeInt(value.maxToolCallsPerMessage, 1);
   const toolCallTimeout = sanitizeInt(value.toolCallTimeout, 1);
 
@@ -289,6 +299,13 @@ function sanitizeChatSettings(value: unknown): PersistedChatSettings {
   }
   if (nudgeToolCalls !== undefined) {
     settings.nudgeToolCalls = nudgeToolCalls;
+  }
+  if (autoCompactEnabled !== undefined) {
+    settings.autoCompactEnabled = autoCompactEnabled;
+  }
+  if (contextPolicy) settings.contextPolicy = contextPolicy;
+  if (compactionHeadroomRatio !== undefined) {
+    settings.compactionHeadroomRatio = compactionHeadroomRatio;
   }
   if (maxToolCallsPerMessage !== undefined) {
     settings.maxToolCallsPerMessage = maxToolCallsPerMessage;
@@ -354,6 +371,9 @@ export function isEmptyChatSettings(settings: PersistedChatSettings): boolean {
     settings.allowArtifactNetworkAccess === undefined &&
     settings.autoHealToolCalls === undefined &&
     settings.nudgeToolCalls === undefined &&
+    settings.autoCompactEnabled === undefined &&
+    settings.contextPolicy === undefined &&
+    settings.compactionHeadroomRatio === undefined &&
     settings.maxToolCallsPerMessage === undefined &&
     settings.toolCallTimeout === undefined &&
     hasNoMirroredSettings(settings)
