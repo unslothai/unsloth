@@ -9496,10 +9496,9 @@ def _resolve_inherited_extra_args(
         # so strip the inherited --chat-template-file then too -- else the stale arg
         # (appended last) shadows the bundled template while Unsloth reports its caps.
         fields_set = getattr(request, "model_fields_set", set())
-        # A MATCHING inherited -c/--ctx-size is the user's standing opt-in to run
-        # past the VRAM-fit estimate, not a stale shadow, so it survives here as it
-        # does on auto-switch. Stripping it made an Apply that set max_seq_length
-        # alongside another field relaunch at the fit estimate, silently collapsing
+        # A MATCHING inherited -c/--ctx-size is the user's opt-in to exceed the
+        # VRAM-fit estimate, so it survives here as it does on auto-switch.
+        # Stripping it relaunched an Apply at the fit estimate, silently collapsing
         # the confirmed context while the stored override still said otherwise.
         from core.inference.llama_server_args import matches_explicit_ctx_override
 

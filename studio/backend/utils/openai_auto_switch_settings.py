@@ -726,14 +726,11 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
             strip_shadowing_flags,
         )
 
-        # Context is the one first-class field whose load-time value is still a
-        # VRAM-fit target rather than an unconditional llama-server allocation.
-        # Keep a matching pass-through -c/--ctx-size: it records the user's
-        # explicit decision to run beyond the estimated safe threshold, and the
-        # server's /props readback will publish what was actually allocated. A
-        # stale or malformed flag is still stripped so it cannot outrank a newly
-        # saved Context Length. The test lives beside the stripper, and for the
-        # same reason: /load's inheritance path asks it too and must not drift.
+        # Context's load-time value is a VRAM-fit target, not an allocation, so a
+        # MATCHING -c/--ctx-size is the user's opt-in to exceed the safe threshold
+        # and survives; /props then publishes what was really allocated. Stale and
+        # malformed flags are still stripped. The test lives beside the stripper
+        # because /load's inheritance path asks it too and must not drift.
         matching_explicit_ctx = matches_explicit_ctx_override(
             kwargs["llama_extra_args"], kwargs.get("max_seq_length")
         )
