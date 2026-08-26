@@ -1630,9 +1630,7 @@ def test_warming_one_model_cannot_respawn_under_another_models_request(monkeypat
     def _lock_is_free() -> bool:
         # Ownership is per thread for an RLock, so ask from another one.
         seen = []
-        probe = threading.Thread(
-            target = lambda: seen.append(b._serve_lock.acquire(timeout = 0.5))
-        )
+        probe = threading.Thread(target = lambda: seen.append(b._serve_lock.acquire(timeout = 0.5)))
         probe.start()
         probe.join()
         if seen[0]:
