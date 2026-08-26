@@ -14,7 +14,7 @@ const SOURCE = readFileSync(
 );
 
 const VALIDATION = SOURCE.slice(
-  SOURCE.indexOf("if (validation.mlx_loads_base_model)"),
+  SOURCE.indexOf("const validation = await validateModel"),
   SOURCE.indexOf("// Upgrade consent runs before the security dialogs"),
 );
 const DOWNLOAD_POLL = SOURCE.slice(
@@ -38,6 +38,15 @@ test("MLX base substitution tracks every downloaded repository", () => {
     /progressModelIdsAtRequest\.map\(\(progressModelId\) =>/,
   );
   assert.match(DOWNLOAD_POLL, /getDownloadProgress\(progressModelId\)/);
+});
+
+test("validated LoRA status controls download tracking", () => {
+  assert.match(SOURCE, /let isLora =/);
+  assert.match(VALIDATION, /isLora = validation\.is_lora \?\? isLora;/);
+  assert.ok(
+    VALIDATION.indexOf("isLora = validation.is_lora ?? isLora;") <
+      VALIDATION.indexOf("if (validation.mlx_loads_base_model)"),
+  );
 });
 
 test("a pre-substitution progress response cannot complete the base download", () => {

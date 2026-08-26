@@ -1004,7 +1004,7 @@ export function useChatModelRuntime() {
           nativePathToken != null ||
           model?.isGguf === true);
       const loraIsAdapter = lora?.exportType === "lora";
-      const isLora =
+      let isLora =
         explicitIsLora ?? model?.isLora ?? loraIsAdapter ?? false;
       const displayName = model?.name || lora?.name || modelId;
       const toastDisplayName = shortModelLabel(displayName);
@@ -1378,6 +1378,7 @@ export function useChatModelRuntime() {
                   }
                 : {}),
             });
+            isLora = validation.is_lora ?? isLora;
             // The loader swaps the repo silently, and the download that follows is the
             // base model's, not the one the user picked. Say so before it starts.
             if (validation.mlx_loads_base_model) {
