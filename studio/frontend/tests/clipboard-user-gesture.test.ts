@@ -109,8 +109,12 @@ test("refreshes do not stack when /api/health is slow", () => {
     HISTORY.indexOf("const refreshLinkBase = () => {"),
   );
   assert.ok(
-    effect.includes("if (inFlight)"),
+    effect.includes("pollingSince"),
     "a forced read always writes, so a slow answer would restore the old URL",
+  );
+  assert.ok(
+    effect.includes("LINK_BASE_STALL_MS"),
+    "fetchDeviceType has no timeout: a read that never settles must not hold the guard",
   );
 });
 
@@ -119,6 +123,11 @@ test("the cached path is dropped when the inventory moves", () => {
     GGUF,
     /const pathKey = [^\n]*inventoryVersion/,
     "a re-download moves the snapshot the cached path points at",
+  );
+  assert.match(
+    GGUF,
+    /if \(menuOpen\) \{\s*prefetchCachedPath\(\);/,
+    "dropping it under an open menu must start the next one, not wait for an event",
   );
 });
 

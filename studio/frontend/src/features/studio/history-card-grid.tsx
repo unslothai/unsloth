@@ -58,6 +58,8 @@ const PAGE_SIZE = 12;
 const RUNNING_POLL_INTERVAL_MS = 5000;
 // One GET: fetchDeviceType spends its hardware wait once per page load, not per call.
 const LINK_BASE_POLL_MS = 15000;
+// When a read is written off as stalled and a fresh one may take the guard.
+const LINK_BASE_STALL_MS = 30000;
 
 const statusBadge: Record<string, { className: string }> = {
   completed: {
@@ -261,15 +263,22 @@ export function HistoryCardGrid({
   // published late (DNS, then a public probe) and can die without warning.
   useEffect(() => {
     // Skipped while one is outstanding: a forced read always writes the store, so a
-    // slow answer landing after a later one would put the old tunnel URL back.
-    let inFlight = false;
+    // slow answer landing after a later one would put the old tunnel URL back. Bounded
+    // the way the sidebar's poll bounds its own, because fetchDeviceType has no timeout
+    // and a read that never settles would otherwise hold the guard for good. Only the
+    // owner clears it, or an abandoned read would free a guard it no longer holds.
+    let pollingSince = 0;
+    let pollOwner = 0;
     const refreshLinkBase = () => {
-      if (inFlight) {
+      if (pollingSince && Date.now() - pollingSince < LINK_BASE_STALL_MS) {
         return;
       }
-      inFlight = true;
+      const owned = ++pollOwner;
+      pollingSince = Date.now();
       void fetchDeviceType({ force: true }).finally(() => {
-        inFlight = false;
+        if (owned === pollOwner) {
+          pollingSince = 0;
+        }
       });
     };
     refreshLinkBase();

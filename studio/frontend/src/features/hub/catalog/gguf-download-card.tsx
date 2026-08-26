@@ -318,6 +318,15 @@ export function QuantOptionsMenu({
       })
       .catch(() => undefined);
   }, [downloaded, repoId, quant, pathKey]);
+  // An inventory bump while the menu is open changes the key under it, and no pointer
+  // or open event is coming to notice: prefetchCachedPath's identity moves with the
+  // key, so this re-runs and the copy still finds a path waiting for it.
+  const [menuOpen, setMenuOpen] = useState(false);
+  useEffect(() => {
+    if (menuOpen) {
+      prefetchCachedPath();
+    }
+  }, [menuOpen, prefetchCachedPath]);
   const handleCopyPath = useCallback(async () => {
     try {
       // Safari drops the click's clipboard permission after any other await.
@@ -350,7 +359,7 @@ export function QuantOptionsMenu({
   }, [repoId, quant]);
 
   return (
-    <DropdownMenu onOpenChange={(open) => open && prefetchCachedPath()}>
+    <DropdownMenu onOpenChange={setMenuOpen}>
       <DropdownMenuTrigger asChild={true}>
         <button
           type="button"
