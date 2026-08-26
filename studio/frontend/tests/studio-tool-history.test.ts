@@ -68,6 +68,76 @@ test("only studio-owned tool history emits the request marker", () => {
   );
 });
 
+function hostedServerSearchCall() {
+  return {
+    role: "assistant",
+    content: [
+      {
+        type: "tool-call",
+        toolName: "web_search",
+        toolCallId: "call_search",
+        args: { _server_tool: true, query: "news" },
+        result: { text: "hits" },
+        provenance: { source: "external" },
+      },
+    ],
+  };
+}
+
+test("ownership ignores hosted builtins that OpenAI replay drops", () => {
+  const mixed = [
+    hostedServerSearchCall(),
+    assistantToolCall({ source: "local" }),
+  ];
+  assert.deepEqual(studioToolHistoryRequestFields(mixed), {});
+  assert.deepEqual(
+    studioToolHistoryRequestFields(mixed, {
+      toolCallSurvives: (part) => {
+        const args = part.args;
+        return !(
+          args &&
+          typeof args === "object" &&
+          !Array.isArray(args) &&
+          (args as { _server_tool?: unknown })._server_tool === true
+        );
+      },
+    }),
+    { studio_tool_history: true },
+  );
+});
+
+test("the live request and token-count paths mark ownership after replay", () => {
+  const adapter = readFileSync(
+    fileURLToPath(
+      new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
+    ),
+    "utf8",
+  );
+  const helper = adapter.indexOf(
+    "function studioToolHistoryRequestFieldsAfterReplay",
+  );
+  const surviveFn = adapter.indexOf(
+    "function toolCallPartSurvivesOpenAIReplay",
+  );
+  const serializeGate = adapter.indexOf(
+    "serializeAssistantToolCallPart",
+    surviveFn,
+  );
+  const first = adapter.indexOf("...studioToolHistoryRequestFieldsAfterReplay(");
+  const second = adapter.indexOf(
+    "...studioToolHistoryRequestFieldsAfterReplay(",
+    first + 1,
+  );
+  assert.ok(helper >= 0);
+  assert.ok(surviveFn >= 0 && surviveFn < helper);
+  assert.ok(serializeGate > surviveFn);
+  assert.ok(first >= 0 && second > first);
+  assert.equal(
+    adapter.indexOf("...studioToolHistoryRequestFields(survivingMessages)"),
+    -1,
+  );
+});
+
 test("the context recount forwards the tool-history request fields", () => {
   const source = readFileSync(
     fileURLToPath(

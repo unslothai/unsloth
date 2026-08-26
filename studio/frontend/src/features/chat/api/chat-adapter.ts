@@ -62,7 +62,10 @@ import {
 } from "../utils/pre-stream-run-reservation";
 import { readThreadCreationClaim } from "../utils/chat-thread-creation-claim";
 import { ggufCompactionRequestFields } from "../utils/auto-compaction";
-import { studioToolHistoryRequestFields } from "../utils/studio-tool-history";
+import {
+  studioToolHistoryRequestFields,
+  type ToolHistoryMessage,
+} from "../utils/studio-tool-history";
 import {
   newDeepResearchHandoff,
   readDeepResearchToolEvent,
@@ -1170,6 +1173,26 @@ function canReplayToolCallWithoutRoleTool(part: ToolCallMessagePart): boolean {
   return getToolPartReplayMetadata(part).isServerSideBuiltin;
 }
 
+function toolCallPartSurvivesOpenAIReplay(part: ToolCallMessagePart): boolean {
+  if (!serializeAssistantToolCallPart(part)) return false;
+  if (
+    !serializeToolResultPart(part) &&
+    !canReplayToolCallWithoutRoleTool(part)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function studioToolHistoryRequestFieldsAfterReplay(
+  messages: readonly ToolHistoryMessage[],
+): { studio_tool_history?: true } {
+  return studioToolHistoryRequestFields(messages, {
+    toolCallSurvives: (part) =>
+      toolCallPartSurvivesOpenAIReplay(part as unknown as ToolCallMessagePart),
+  });
+}
+
 function sanitizeAssistantReplayText(text: string): string {
   // Same reason as the tool result above: the tokens the model wrote last turn
   // are renderer markup scoped to that message, not prose it should repeat.
@@ -1801,7 +1824,9 @@ export async function buildLocalTokenCountHistory(
 
   return {
     messages: outboundMessages as OpenAIChatMessage[],
-    ...studioToolHistoryRequestFields(survivingMessages),
+    ...studioToolHistoryRequestFieldsAfterReplay(
+      survivingMessages as unknown as ToolHistoryMessage[],
+    ),
   };
 }
 
@@ -5788,7 +5813,9 @@ export function createOpenAIStreamAdapter(
             messages: outboundMessages,
             stream: true,
             ...(continuation ? { continue_final_message: true } : {}),
-            ...studioToolHistoryRequestFields(survivingMessages),
+            ...studioToolHistoryRequestFieldsAfterReplay(
+              survivingMessages as unknown as ToolHistoryMessage[],
+            ),
             // Opt into the trailing usage chunk so the context-usage bar
             // and tok/s readout populate (backend gates it on include_usage).
             stream_options: { include_usage: true },
