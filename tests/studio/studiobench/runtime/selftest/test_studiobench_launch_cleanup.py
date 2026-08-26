@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A Studio this harness launched and could not reach is terminated, not abandoned.
+"""An Unsloth this harness launched and could not reach is terminated, not abandoned.
 
 THE PROCESS WE LAUNCH IS NOT THE PROCESS WE SPAWN. `launch_studio` runs the server under
 `setsid -f`, which always forks and whose parent exits without waiting, so `Popen.pid` belongs to a
@@ -10,17 +10,17 @@ cannot reach. `pgrep` is the only handle on it -- and it used to be taken AFTER 
 so a server that started and stayed unhealthy raised with `install.pid` still None and
 `stop_studio` had nothing to kill.
 
-That leak is not idle. It holds the requested port, and Studio's own launcher aborts rather than
+That leak is not idle. It holds the requested port, and Unsloth's own launcher aborts rather than
 binding when it finds one of its own servers there (`studio/backend/run.py`, `_resolve_port` with
 `avoid_own_studio`), so the next attempt's server exits and `wait_for_healthz` takes its 200 from
 the STALE one -- which by then has finished starting. The run then measures the build the previous
 attempt installed and records the ref this one asked for.
 
-AND THE PORT CAN BE OCCUPIED WITHOUT ANYTHING HAVING FAILED. `--keep-studio` asks for a Studio to
+AND THE PORT CAN BE OCCUPIED WITHOUT ANYTHING HAVING FAILED. `--keep-studio` asks for an Unsloth to
 be LEFT RUNNING, so no cleanup reaches it by design and the next run walks into exactly the same
 launch: `_discover_pid` pgreps `unsloth studio.*-p <port>` and finds the older process, `/healthz`
 answers 200 from it, and `authenticate` retries with `BENCH_PASSWORD` -- which a previous
-studiobench run has already rotated that Studio to -- so the login succeeds as well. Nothing
+studiobench run has already rotated that Unsloth to -- so the login succeeds as well. Nothing
 downstream can tell which build answered, so an occupied port is refused before anything is
 launched rather than reported afterwards.
 """
@@ -113,7 +113,7 @@ def test_a_studio_that_never_started_at_all_still_raises(launched):
 
 
 def test_a_healthy_studio_is_returned_with_its_pid_and_is_not_signalled(launched):
-    """The control that matters: the ordinary launch must still hand back a running Studio."""
+    """The control that matters: the ordinary launch must still hand back a running Unsloth."""
 
     launched["healthy"] = True
 

@@ -949,7 +949,7 @@ def patch_datasets():
 # reads a 4.5 GHz M4 Pro back as 4 MHz (unslothai/unsloth#8519). Upstream fix is
 # giampaolo/psutil#2824, merged and unreleased; its heuristics are mirrored here.
 #
-# Studio's backend keeps the same correction in
+# Unsloth's backend keeps the same correction in
 # studio/backend/utils/hardware/hardware.py, since the API server never imports
 # unsloth. Keep both in sync; delete both once a fixed psutil is our floor.
 #

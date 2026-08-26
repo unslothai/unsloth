@@ -536,7 +536,7 @@ def test_api_monitor_clear_is_scoped_to_one_subject():
 
 
 def test_api_monitor_records_whether_the_caller_used_an_api_key():
-    # Studio's chat hits these endpoints on a JWT, and the panel auto-opens off this flag.
+    # Unsloth's chat hits these endpoints on a JWT, and the panel auto-opens off this flag.
     monitor = ApiMonitor(max_entries = 4)
     ui = monitor.start(
         endpoint = "/api/inference/chat",

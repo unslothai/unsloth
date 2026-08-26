@@ -889,7 +889,7 @@ export const ko = {
         tokensIn: "보낸 토큰",
         tokensOut: "생성된 토큰",
         totalTokens: "전체 토큰",
-        studioChatTokens: "Studio Chat 토큰",
+        studioChatTokens: "Unsloth Chat 토큰",
         apiTokens: "API 토큰",
         cachedTokens: "캐시된 토큰",
         cachedValue: "{tokens}(입력의 {percent}%)",

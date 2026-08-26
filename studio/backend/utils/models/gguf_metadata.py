@@ -630,21 +630,116 @@ def is_mmproj_by_metadata(meta: Optional[Dict[str, str]]) -> Optional[bool]:
     return t.lower() == "mmproj"
 
 
+def _normalize_url(url: str) -> Optional[str]:
+    value = (url or "").strip().rstrip("/")
+    if not value:
+        return None
+    if value.lower().endswith(".git"):
+        value = value[:-4]
+    lower = value.lower()
+    has_url_host = False
+    for scheme in ("https://", "http://"):
+        if lower.startswith(scheme):
+            value = value[len(scheme) :]
+            has_url_host = True
+            break
+    if not has_url_host:
+        return value
+    host, separator, path = value.partition("/")
+    return host.lower() + (separator + path if separator else "")
+
+
+def _repo_path_from_url(url: str) -> Optional[str]:
+    value = _normalize_url(url)
+    if not value:
+        return None
+    lower = (url or "").strip().lower()
+    if lower.startswith(("https://", "http://")):
+        _, separator, path = value.partition("/")
+        return path if separator and path else None
+    return value
+
+
+def _same_repo_reference(left: str, right: str) -> bool:
+    left_normalized = _normalize_url(left)
+    right_normalized = _normalize_url(right)
+    if left_normalized == right_normalized:
+        return True
+    left_is_url = (left or "").strip().lower().startswith(("https://", "http://"))
+    right_is_url = (right or "").strip().lower().startswith(("https://", "http://"))
+    if left_is_url == right_is_url:
+        return False
+    hosted = left_normalized if left_is_url else right_normalized
+    host, _, _ = hosted.partition("/")
+    return host == "huggingface.co" and _repo_path_from_url(left) == _repo_path_from_url(right)
+
+
+def _hf_repo_slug_from_url(url: str) -> Optional[str]:
+    value = _repo_path_from_url(url)
+    if not value:
+        return None
+    parts = [part for part in value.split("/") if part]
+    if len(parts) < 2:
+        return None
+    return parts[-1]
+
+
+def _slug_extends_base(derived: str, base: str) -> bool:
+    if derived == base or not derived.startswith(base):
+        return False
+    if derived[len(base)] not in "-_.":
+        return False
+    suffix = derived[len(base) :].lstrip("-_.").lower()
+    if not suffix:
+        return False
+    qualifier = suffix.split("-", 1)[0].split("_", 1)[0].split(".", 1)[0]
+    return qualifier in {
+        "gguf",
+        "quant",
+        "quantized",
+        "qat",
+        "awq",
+        "gptq",
+        "mlx",
+        "unsloth",
+        "bnb",
+        "4bit",
+        "8bit",
+    }
+
+
+def _weight_url_looks_like_derivative_of_projector(weight_url: str, projector_url: str) -> bool:
+    weight_slug = _hf_repo_slug_from_url(weight_url)
+    projector_slug = _hf_repo_slug_from_url(projector_url)
+    if not weight_slug or not projector_slug:
+        return False
+    return _slug_extends_base(weight_slug, projector_slug)
+
+
 def pairing_score(
     weight_meta: Optional[Dict[str, str]], mmproj_meta: Optional[Dict[str, str]]
 ) -> int:
-    """Pairing confidence: 100 = base_model URL match, 80 = basename + org,
-    60 = basename, -1 = definitive mismatch, 0 = decide from filename."""
+    """Pairing confidence: 100 = base_model URL match, 90 = derivative URL,
+    80 = basename + org, 60 = basename, -1 = definitive mismatch,
+    0 = decide from filename."""
     if not weight_meta or not mmproj_meta:
         return 0
 
     w_url = weight_meta.get("general.base_model.0.repo_url")
     p_url = mmproj_meta.get("general.base_model.0.repo_url")
-    if w_url and p_url:
-        return 100 if w_url.strip().rstrip("/") == p_url.strip().rstrip("/") else -1
-
     w_base = weight_meta.get("general.basename")
     p_base = mmproj_meta.get("general.basename")
+    if w_url and p_url:
+        if _same_repo_reference(w_url, p_url):
+            return 100
+        if _weight_url_looks_like_derivative_of_projector(w_url, p_url):
+            if not (w_base and p_base):
+                return -1
+            if w_base.lower() != p_base.lower():
+                return -1
+            return 90
+        return -1
+
     w_org = weight_meta.get("general.base_model.0.organization") or weight_meta.get(
         "general.organization"
     )

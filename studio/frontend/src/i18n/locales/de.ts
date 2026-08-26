@@ -916,7 +916,7 @@ export const de = {
         tokensIn: "Gesendete Tokens",
         tokensOut: "Erzeugte Tokens",
         totalTokens: "Tokens insgesamt",
-        studioChatTokens: "Studio-Chat-Tokens",
+        studioChatTokens: "Unsloth-Chat-Tokens",
         apiTokens: "API-Tokens",
         cachedTokens: "Zwischengespeicherte Tokens",
         cachedValue: "{tokens} ({percent} % der Eingabe)",
@@ -1375,7 +1375,7 @@ export const de = {
         title: "Websuche",
         images: "Bilder aus der Websuche anzeigen",
         imagesDescription:
-          "Lässt die Websuche Bilder liefern und holt eines für jeden Punkt, den eine Antwort auflistet. Vorschaubilder lädt und verkleinert Studio, der Browser kontaktiert keine Bildhosts.",
+          "Lässt die Websuche Bilder liefern und holt eines für jeden Punkt, den eine Antwort auflistet. Vorschaubilder lädt und verkleinert Unsloth, der Browser kontaktiert keine Bildhosts.",
       },
       artifacts: {
         title: "Canvas",

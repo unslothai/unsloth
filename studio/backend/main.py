@@ -225,7 +225,7 @@ if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
     _MANAGED_LLAMA_CPP_PATH = _STUDIO_ROOT_RESOLVED / "llama.cpp"
     if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
         os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_MANAGED_LLAMA_CPP_PATH)
-    # A CLI/desktop launcher may already have exported Studio's own install path.
+    # A CLI/desktop launcher may already have exported Unsloth's own install path.
     # Classify by the canonical value so that inherited default remains editable.
     from utils.llama_cpp_path_settings import mark_managed_llama_cpp_path
 
@@ -995,7 +995,7 @@ app.add_middleware(SecurityHeadersMiddleware)
 # Swagger UI and ReDoc, on FastAPI's own paths but served entirely from this origin.
 # FastAPI's built-in pages load ~2.3 MB of JavaScript from cdn.jsdelivr.net and start it with
 # an inline script. localStorage is origin-scoped, not path-scoped, so anything running on
-# /docs can read the Studio tokens session.ts keeps there and call the API as that user. The
+# /docs can read the Unsloth tokens session.ts keeps there and call the API as that user. The
 # bundles are vendored under assets/docs_ui (pinned + digest-checked by
 # tests/test_docs_ui_assets.py) and the inline init runs off the same per-response nonce the
 # bootstrap script uses, so script-src stays 'self' and works offline as a bonus.
@@ -1386,7 +1386,7 @@ app.include_router(inference_router, prefix = "/api/inference", tags = ["inferen
 # Unsloth-only inference endpoints (cancel, etc.) are not on the /v1 OpenAI-compat prefix.
 app.include_router(inference_studio_router, prefix = "/api/inference", tags = ["inference"])
 
-# Studio-only text-to-video endpoints; not exposed on the /v1 OpenAI-compat prefix.
+# Unsloth-only text-to-video endpoints; not exposed on the /v1 OpenAI-compat prefix.
 app.include_router(video_router, prefix = "/api/inference", tags = ["inference"])
 
 # OpenAI-compatible: mount the inference router at /v1 for external tools.
@@ -1725,7 +1725,7 @@ async def health_check(request: Request):
         "desktop_manageability_version": 2,
         "supports_desktop_auth": True,
         "supports_desktop_backend_ownership": True,
-        # Opaque per-install id; launchers reject sibling Studios on the same port.
+        # Opaque per-install id; launchers reject sibling Unsloth instances on the same port.
         "studio_root_id": _studio_root_id(),
         "native_path_leases_supported": native_path_leases_supported(),
         **({"desktop_owner": owner} if (owner := _desktop_owner()) else {}),

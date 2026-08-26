@@ -525,7 +525,7 @@ def test_a_heterogeneous_pair_is_ranked_before_the_projector_is_charged(tmp_path
 
 def test_a_remembered_mmproj_auto_does_not_survive_the_vision_switch(tmp_path):
     """--mmproj-auto asks llama-server to find the adjacent projector on its own, so
-    suppressing Studio's --mmproj and the env vars is not enough: vision would come
+    suppressing Unsloth's --mmproj and the env vars is not enough: vision would come
     back on a load that reports it off and never charged the projector's VRAM.
     llama.cpp is last-wins on the pair, so the disable form has to follow the extras."""
     backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 8_192)])
@@ -652,7 +652,7 @@ def test_the_download_interlock_is_not_relaxed_by_the_vision_switch(tmp_path):
 def test_a_user_pinned_projector_is_not_charged_against_vram(tmp_path):
     """--no-mmproj-offload puts the projector in host RAM, so its bytes are not on
     the card. Charging them anyway shrank the context and spilled layers to make
-    room for VRAM nothing occupies, which is worse placement than Studio's own."""
+    room for VRAM nothing occupies, which is worse placement than Unsloth's own."""
     backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 8_192)])
 
     cmd = _launch(backend, gguf, extra_args = ["--no-mmproj-offload"])["cmd"]
@@ -982,15 +982,15 @@ def test_the_negative_environment_spelling_pins_on_presence_alone(tmp_path, monk
 )
 def test_the_resolved_placement_follows_arg_cpps_own_precedence(extras, env, expected):
     """Environment first, argv on top, the negative spelling short-circuiting on
-    presence. Anything else and Studio budgets for a placement the child does not
+    presence. Anything else and Unsloth budgets for a placement the child does not
     run."""
     assert _resolved_mmproj_offload(extras, env) is expected
 
 
 def test_an_unparseable_environment_value_is_still_the_callers_placement(tmp_path, monkeypatch):
-    """No side to budget for, but the variable is set, so Studio must not append its
+    """No side to budget for, but the variable is set, so Unsloth must not append its
     own spelling on top: common_params_parse throws on the value and the load fails
-    naming the caller's variable, not a Studio flag they never chose."""
+    naming the caller's variable, not an Unsloth flag they never chose."""
     monkeypatch.setenv("LLAMA_ARG_MMPROJ_OFFLOAD", "yes")
     backend, gguf = _backend(tmp_path, memory = [(0, 8_692, 16_384)])
 
@@ -1357,7 +1357,7 @@ def test_studios_own_projector_outranks_the_inherited_one_in_the_estimate(tmp_pa
 
 def test_a_suppressed_image_projector_hands_the_budget_to_the_inherited_one(tmp_path, monkeypatch):
     """The combination that slipped through: the CONFIGURED projector is
-    image-capable, so the switch drops it and Studio emits no --mmproj at all, while
+    image-capable, so the switch drops it and Unsloth emits no --mmproj at all, while
     the inherited one is audio-only and is kept. argv only beats the environment when
     there IS argv, so the inherited projector is what loads, and it is what has to be
     charged."""
@@ -1394,7 +1394,7 @@ def test_a_suppressed_image_projector_hands_the_budget_to_the_inherited_one(tmp_
 
 
 def test_the_extras_opt_out_does_not_excuse_an_inherited_projector(tmp_path, monkeypatch):
-    """--no-mmproj sets params.no_mmproj, which stops Studio resolving one of its own
+    """--no-mmproj sets params.no_mmproj, which stops Unsloth resolving one of its own
     and stops the HF download, but server-context.cpp gates the load on a non-empty
     mmproj.path and never reads that field. The inherited projector loads straight
     through the opt-out, so the guard has to keep charging it."""
@@ -1413,7 +1413,7 @@ def test_the_extras_opt_out_does_not_excuse_an_inherited_projector(tmp_path, mon
 
 
 def test_the_extras_opt_out_moves_the_charge_to_the_inherited_projector(tmp_path, monkeypatch):
-    """--no-mmproj makes llama_cpp.py skip the resolve, so Studio emits no --mmproj
+    """--no-mmproj makes llama_cpp.py skip the resolve, so Unsloth emits no --mmproj
     and the configured projector never loads. It does not unset an inherited path,
     which then loads unopposed. The estimate has to move with the launch: drop the
     configured file, charge the inherited one.

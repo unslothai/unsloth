@@ -183,7 +183,7 @@ def test_an_offline_miss_is_not_reprobed_on_every_poll(monkeypatch, tmp_path):
 
 def test_the_offline_miss_expires_so_a_later_download_is_seen(monkeypatch):
     """Bounded, not permanent: the base may be downloaded, or a training run may finish
-    writing the tokenizer it was missing, and neither restarts Studio."""
+    writing the tokenizer it was missing, and neither restarts Unsloth."""
     from utils.models import model_config
 
     monkeypatch.setattr(model_config, "_audio_detection_cache", {})

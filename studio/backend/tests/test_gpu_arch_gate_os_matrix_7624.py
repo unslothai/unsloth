@@ -2115,7 +2115,7 @@ class TestHsaOverrideGfxVersion:
 
 
 class TestAnInstallFromBeforeThisPr:
-    """An install written by an older Studio has no ``mapped_targets``, and the
+    """An install written by an older Unsloth has no ``mapped_targets``, and the
     fingerprint deliberately does not cover the field, so it is never refreshed for
     that reason alone. Such a host must behave EXACTLY as it did before the PR: the
     fix arrives with the next llama.cpp update, and until then nothing may change,

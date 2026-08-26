@@ -887,7 +887,7 @@ export const en = {
         tokensIn: "Tokens sent",
         tokensOut: "Tokens generated",
         totalTokens: "Total tokens",
-        studioChatTokens: "Studio Chat tokens",
+        studioChatTokens: "Unsloth Chat tokens",
         apiTokens: "API tokens",
         cachedTokens: "Cached tokens",
         cachedValue: "{tokens} ({percent}% of input)",
@@ -1340,7 +1340,7 @@ export const en = {
         title: "Web search",
         images: "Show images from web search",
         imagesDescription:
-          "Let web search return pictures, and fetch one for each thing an answer lists. Thumbnails are downloaded and resized by Studio, so the browser never contacts image hosts.",
+          "Let web search return pictures, and fetch one for each thing an answer lists. Thumbnails are downloaded and resized by Unsloth, so the browser never contacts image hosts.",
       },
       artifacts: {
         title: "Canvas",
