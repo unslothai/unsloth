@@ -6057,11 +6057,18 @@ def _target_accepts_audio_input(load_path: str) -> bool:
     """Whether a local non-GGUF checkpoint accepts audio input (ASR or an audio VLM).
 
     Read from the repo's own tokenizer special tokens, offline: the resolver only
-    yields local paths, and a detection failure must not block a swap.
+    yields local paths, and a detection failure must not block a swap. The ambient
+    HF token goes through for the same reason as the vision probe above.
     """
     from utils.models.model_config import detect_audio_type, is_audio_input_type
     try:
-        return is_audio_input_type(detect_audio_type(load_path, local_files_only = True))
+        return is_audio_input_type(
+            detect_audio_type(
+                load_path,
+                hf_token = os.environ.get("HF_TOKEN"),
+                local_files_only = True,
+            )
+        )
     except Exception as exc:
         logger.debug("auto-switch: audio probe failed for %s: %s", load_path, exc)
         return True
