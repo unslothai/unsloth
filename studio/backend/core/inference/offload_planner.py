@@ -791,20 +791,16 @@ def smart_offload_enabled(env: Optional[Mapping[str, str]] = None) -> bool:
     """Whether the launch path may plan a spill. ON unless explicitly disabled.
 
     It shipped opt-in "until it has run on more than one machine". It has: 118
-    paired runs across T4, L4, RTX PRO 6000 and A100 at VRAM budgets forced from
-    4 GiB to each card's own size, plus a B200 and a real gfx1151 APU. Faster on
-    generation in 111 of 118, and in all 83 runs where the layer-count arm split
-    the KV cache to host RAM it kept 100% of the cache on the GPU.
+    paired runs across T4, L4, RTX PRO 6000, A100, B200 and a real gfx1151 APU,
+    faster on generation in 111, and 100% KV cache retention in all 83 runs
+    where the layer-count arm would have split the cache to host RAM.
 
     Default does not mean it places every load: it abstains often, and every
-    abstain falls through to ``--fit on``. That fallback is the planner
-    declining, not the disabled path, and it stays -- emitting a plan where the
-    planner declined is the defect that once put ``-ngl -1 --fit off`` on loads
-    it had just said do not fit.
+    abstain still falls through to ``--fit on``.
 
-    An UNRECOGNISED value disables. For an opt-OUT flag the typos are not
-    symmetric: ``flase`` meaning off must not hand back the thing it was trying
-    to switch off, while fumbling an on-spelling only keeps the old behaviour.
+    An UNRECOGNISED value disables. The typos are not symmetric for an opt-OUT
+    flag: ``flase`` meaning off must not hand back the thing it was switching
+    off, while fumbling an on-spelling only keeps the old behaviour.
     """
     raw = (os.environ if env is None else env).get("UNSLOTH_SMART_OFFLOAD")
     if raw is None:

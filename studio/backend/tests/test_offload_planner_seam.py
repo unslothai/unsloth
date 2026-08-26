@@ -147,8 +147,7 @@ def _plan(
 
 
 def test_the_planner_is_on_by_default():
-    """No env, a plan. The flag is now opt-OUT: an install that sets nothing gets
-    the planner, which is the whole point of making it the default."""
+    """No env, a plan. The flag is now opt-OUT."""
     assert smart_offload_enabled({}) is True
     # A load that fits is still PLANNED, it just spills nothing.
     roomy = _Stub()._planned_tensor_spill(_inputs(), env = {})
@@ -166,17 +165,16 @@ def test_the_gate_accepts_the_usual_spellings(value):
 
 @pytest.mark.parametrize("value", ["0", "off", "", "no", "disabled", "false"])
 def test_an_explicit_off_still_disables(value):
-    """The escape hatch has to keep working, or a user with a load the planner
-    mishandles has nothing to reach for."""
+    """The escape hatch has to keep working."""
     assert smart_offload_enabled({"UNSLOTH_SMART_OFFLOAD": value}) is False
     assert _Stub()._planned_tensor_spill(_inputs(), env = {"UNSLOTH_SMART_OFFLOAD": value}) is None
 
 
 @pytest.mark.parametrize("value", ["nope", "flase", "onn", "2"])
 def test_an_unrecognised_value_disables_rather_than_enables(value):
-    """For an opt-OUT flag the two typos are not symmetric. `flase` meaning off
-    must not hand back the very thing it was trying to switch off; fumbling an
-    on-spelling only keeps the previous behaviour."""
+    """The typos are not symmetric for an opt-OUT flag: `flase` meaning off must
+    not hand back the thing it was switching off, while fumbling an on-spelling
+    only keeps the previous behaviour."""
     assert smart_offload_enabled({"UNSLOTH_SMART_OFFLOAD": value}) is False
 
 
@@ -830,14 +828,11 @@ def test_a_pass_through_parallel_that_grows_the_cache_declines_the_plan():
     ],
 )
 def test_an_rpc_device_declines_the_plan(extra_args, env):
-    """--rpc registers REMOTE devices and llama.cpp puts them at the FRONT of the
-    device list -- `model->devices.insert(model->devices.begin(), rpc_servers...)`
-    (llama.cpp:275), fed by add_rpc_devices (common/arg.cpp:1163-1180, 2649-2655).
-    The free-memory row split then hands the first slice of layers to a card this
-    planner never saw: every number it has comes from Studio's LOCAL gpus
-    snapshot. Crediting local VRAM for layers that went to another host and then
-    pinning it with --fit off is a per-device shortfall with nothing left to catch
-    it. _launch_host_shortfall_message already abstains for exactly this."""
+    """--rpc devices are REMOTE and llama.cpp puts them at the FRONT of the device
+    list (llama.cpp:275), so the row split hands the first slice of layers to a
+    card this planner never saw: every number it has comes from Studio's LOCAL
+    gpus snapshot. Crediting local VRAM for layers that went to another host and
+    then pinning it with --fit off has nothing left to catch it."""
     assert _plan(_Stub(), extra_args = extra_args, env = env) is None
     assert _plan(_Stub()) is not None, "not vacuous: the same load plans without it"
 
@@ -852,26 +847,20 @@ def test_an_rpc_device_declines_the_plan(extra_args, env):
     ],
 )
 def test_an_explicit_fit_target_declines_the_plan(extra_args, env):
-    """--fit-target is VRAM the user told the fitter it may not spend: it fills
-    fit_params_target (common/arg.cpp:2869-2892), which becomes `margins` and then
-    `targets.push_back(dmds_full[id].free - margins[id])` (common/fit.cpp:282-288,
-    649). This planner credits that same VRAM and emits --fit off, so
-    common_params_fit_impl never runs and the reservation is silently dropped.
-    Studio's own load-mode fit already honours it through fit_target_margin_in, so
-    spending it here is the two arms disagreeing -- and this is the arm holding the
-    --fit off pin."""
+    """--fit-target is VRAM the user told the fitter it may not spend: it becomes
+    `targets.push_back(dmds_full[id].free - margins[id])` (common/fit.cpp:282-288).
+    This planner credits that same VRAM and emits --fit off, so
+    common_params_fit_impl never runs and the reservation is silently dropped
+    while Studio's own load-mode fit still honours it."""
     assert _plan(_Stub(), extra_args = extra_args, env = env) is None
     assert _plan(_Stub()) is not None, "not vacuous"
 
 
 def test_a_pass_through_adapter_is_charged_as_resident_vram(tmp_path):
     """LoRA and control-vector sidecars are GPU-resident and in NO other term
-    here. llama.cpp creates LoRA tensors on the BASE tensor's buffer type
-    (llama-adapter.cpp:335) and a control vector on model.select_buft(il)
-    (llama-adapter.cpp:67), so they land on the card holding the layer this plan
-    just placed; neither mmaps (ggml_backend_tensor_set, llama-adapter.cpp:407).
-    `model_size` is the base GGUF alone, so an unpriced adapter is a plan claiming
-    a fit that is not there, pinned with --fit off."""
+    here: they are created on the base layer's buffer type (llama-adapter.cpp:335,
+    :67) and neither mmaps (:407). `model_size` is the base GGUF alone, so an
+    unpriced adapter is a plan claiming a fit that is not there."""
     adapter = tmp_path / "adapter.gguf"
     adapter.write_bytes(b"\0" * (3 * GIB))
 
@@ -893,8 +882,7 @@ def test_a_pass_through_adapter_is_charged_as_resident_vram(tmp_path):
 
 
 def test_an_unreadable_adapter_abstains():
-    """The "engaged but unsized" case: os.stat fails, so the bytes cannot be
-    priced. Abstain rather than plan a footprint that is short by an unknown
-    amount -- the same answer _fits_without_paging gives."""
+    """Engaged but unsized: os.stat fails, so abstain rather than plan a footprint
+    short by an unknown amount. Same answer _fits_without_paging gives."""
     assert _plan(_Stub(), extra_args = ["--lora", "/no/such/adapter.gguf"]) is None
     assert _plan(_Stub()) is not None, "not vacuous"
