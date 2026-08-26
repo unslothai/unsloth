@@ -3817,6 +3817,17 @@ async def get_kv_cache_estimate(
             if n_parallel is None:
                 state = getattr(getattr(request, "app", None), "state", None)
                 n_parallel = getattr(state, "llama_parallel_slots", 1) or 1
+            # What the launch will actually serve, not what was asked for. A build
+            # without --kv-unified splits the window per slot, so load_model falls
+            # back to one; pricing a four-slot default against such a build
+            # inflates the cache several times over and can warn OOM about a
+            # command that would never launch that way. Same resolution
+            # /estimate-memory applies, so the two cannot disagree.
+            try:
+                from routes.inference import _effective_parallel_slots
+                n_parallel = _effective_parallel_slots(n_parallel, diffusion_kind = False)
+            except Exception as e:
+                logger.debug(f"slot clamp unavailable for '{repo_id}' {quant}: {e}")
 
             n_ctx = n_ctx or be._context_length
             if not n_ctx or n_ctx < 1:
@@ -3922,7 +3933,22 @@ async def get_kv_cache_estimate(
                     from core.inference.llama_cpp import LlamaCppBackend as _Be
                     from utils.models.model_config import detect_mmproj_file
 
-                    mmproj = detect_mmproj_file(path, search_root = repo_id if is_local else None)
+                    # A cached HF layout puts the weights under a quant subdir
+                    # (snapshot/Q4_K_M/model.gguf) and the projector at the
+                    # snapshot ROOT, so scanning the weights' own directory finds
+                    # nothing. Anchored the same way the drafter lookup is, and
+                    # the same way the loader's _download_mmproj anchors on
+                    # near_path.
+                    from core.inference.llama_cpp import (
+                        _companion_snapshot_sibling,
+                        _pick_mmproj,
+                        _snapshot_dir_of,
+                    )
+
+                    if _snapshot_dir_of(path) is not None:
+                        mmproj = _companion_snapshot_sibling(path, _pick_mmproj)
+                    else:
+                        mmproj = detect_mmproj_file(path, search_root = repo_id if is_local else None)
                     if mmproj:
                         projector = int(_Be._get_gguf_size_bytes(mmproj) * _Be._MMPROJ_VRAM_SAFETY)
                 except Exception as e:
@@ -4003,6 +4029,22 @@ async def get_kv_cache_estimate(
                         # which exists for the context-linear part of the cache,
                         # cannot swallow a fixed overage no shorter context fixes.
                         spec_fixed = int(drafter_bytes or 0) or None
+                        _effective_draft_n_max = spec_draft_n_max
+                        if _effective_draft_n_max is None:
+                            try:
+                                from routes.inference import (
+                                    _cached_estimate_config,
+                                    _estimate_draft_n_max,
+                                )
+                                _effective_draft_n_max = _estimate_draft_n_max(
+                                    _cached_estimate_config(repo_id, quant, None, False),
+                                    drafter_path or "",
+                                    requested = None,
+                                    extras = [],
+                                )
+                            except Exception as e:
+                                logger.debug(f"draft depth default failed: {e}")
+                                _effective_draft_n_max = 0
                         spec = be._estimate_mtp_overhead_bytes(
                             n_ctx,
                             # Draft K/V types are independent of the main cache and
@@ -4018,7 +4060,14 @@ async def get_kv_cache_estimate(
                             # else here: on a 4-slot model at 32k the reserve is
                             # 0.125 GiB at the zero default and 6.944 GiB at a
                             # depth of 16, so omitting it is a 55x understatement.
-                            spec_draft_n_max = spec_draft_n_max or 0,
+                            # Blank is not zero. _build_speculative_flags emits
+                            # its own default when the field is unset (2 with a
+                            # GPU, 3 without), and the rollback state is
+                            # multiplied by it, so pricing zero dropped the
+                            # dominant allocation on a Hybrid Mamba target
+                            # outright. An explicit 0 is still honoured, since
+                            # that is a real request to draft nothing.
+                            spec_draft_n_max = _effective_draft_n_max,
                         )
                 except Exception as e:
                     logger.debug(f"mtp overhead estimate failed for '{repo_id}' {quant}: {e}")
@@ -4055,8 +4104,19 @@ async def get_kv_cache_estimate(
                 # factor of however many cards the launch would use. Only consulted
                 # in tensor mode: a layer split does not replicate them the same
                 # way, and this is the same count the load panel derives.
+                # The effective mode, not the request boolean: the planner turns
+                # tensor mode on for an inherited LLAMA_ARG_SPLIT_MODE=tensor even
+                # when the per-model toggle is off, and it replicates the compute
+                # buffers per device when it does. Reading the toggle alone left
+                # n_devices at one for exactly that launch.
+                _effective_tp = tensor_parallel
+                try:
+                    from core.inference.llama_server_args import _effective_tensor_parallel
+                    _effective_tp = _effective_tensor_parallel(None, bool(tensor_parallel))
+                except Exception as e:
+                    logger.debug(f"tensor mode resolution failed for '{repo_id}': {e}")
                 _planner_devices = 1
-                if tensor_parallel:
+                if _effective_tp:
                     from routes.inference import (
                         _cached_inference_devices,
                         _guard_device_count,

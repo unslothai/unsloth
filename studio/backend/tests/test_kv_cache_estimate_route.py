@@ -391,26 +391,35 @@ class TestTheEstimateMatchesTheConfiguredLoad:
             "nextn_predict_layers": 1,
         }
         gguf = _write_gguf(tmp_path / "mamba-Q4_K_M.gguf", fields)
-        shallow = _call_route(
-            monkeypatch,
-            path = gguf,
-            weights_bytes = 4096,
-            repo_id = "org/mamba",
-            speculative_type = "mtp",
-            n_parallel = 4,
-        )
-        deep = _call_route(
-            monkeypatch,
-            path = gguf,
-            weights_bytes = 4096,
-            repo_id = "org/mamba",
-            speculative_type = "mtp",
-            n_parallel = 4,
-            spec_draft_n_max = 16,
-        )
+
+        def at(depth):
+            return _call_route(
+                monkeypatch,
+                path = gguf,
+                weights_bytes = 4096,
+                repo_id = "org/mamba",
+                speculative_type = "mtp",
+                n_parallel = 4,
+                spec_draft_n_max = depth,
+            )
+
+        none = at(None)
+        zero = at(0)
+        deep = at(16)
         assert (
-            deep["spec_bytes"] > shallow["spec_bytes"] * 10
+            deep["spec_bytes"] > zero["spec_bytes"] * 10
         ), "spec_draft_n_max did not reach the MTP estimator"
+        # A blank field is NOT zero: _build_speculative_flags emits its own
+        # default (2 with a GPU, 3 without) and the rollback state is multiplied
+        # by it, so pricing an unset field as zero dropped the dominant
+        # allocation on this exact model shape. An explicit zero still means
+        # zero, which is what separates the two calls below.
+        assert (
+            none["spec_bytes"] > zero["spec_bytes"]
+        ), "an unset draft depth was priced as zero, dropping every rollback copy"
+        assert (
+            none["spec_bytes"] < deep["spec_bytes"]
+        ), "the default depth should sit between drafting nothing and a depth of 16"
 
     def test_a_split_drafter_is_billed_for_every_shard(self, tmp_path):
         snap = TestDrafterDiscoveryMatchesTheLoader._snapshot(tmp_path)

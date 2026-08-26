@@ -419,12 +419,21 @@ export function useModelMemory(
   // Keyed on primitives rather than the object: callers build the source inline,
   // so a fresh identity each render would loop forever.
   const plan = useMemo(() => {
-    if (!enabled || !repoId || !quant) return null;
-    const config = configFor({ repoId, quant });
+    // A direct .gguf selection has no quant label and does not need one: the
+    // path names the weights outright and the route resolves such a file to
+    // itself. Requiring a label here suppressed the bar for exactly the custom
+    // and LM Studio models the direct-file support was added for.
+    const isDirectGgufFile = (loadId ?? "").toLowerCase().endsWith(".gguf");
+    if (!enabled || !repoId || (!quant && !isDirectGgufFile)) return null;
+    // Empty rather than undefined past this point: a direct file legitimately
+    // has no label, and the route resolves such a path without one, but every
+    // consumer below wants a string it can key and send.
+    const quantLabel = quant ?? "";
+    const config = configFor({ repoId, quant: quantLabel });
     const nCtx = pinnedContext(config);
     const cacheKey = estimateCacheKey({
       repoId: loadId || repoId,
-      quant,
+      quant: quantLabel,
       sizeBytes,
       nCtx,
       kvCacheDtype: config?.kvCacheDtype,
@@ -441,7 +450,7 @@ export function useModelMemory(
     return {
       // Identity for the request is the row's own load target; the saved config
       // is still looked up by repo id, which is how it is keyed.
-      source: { repoId: loadId || repoId, quant },
+      source: { repoId: loadId || repoId, quant: quantLabel },
       config,
       nCtx,
       cacheKey,

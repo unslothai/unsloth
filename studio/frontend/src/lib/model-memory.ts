@@ -216,7 +216,29 @@ export function computeModelMemory(
 
   // Uncapped: widths clamp to the track, but pressure still needs to tell
   // "just full" from "twice over".
-  const fillPct = (totalGb / budgetGb) * 100;
+  //
+  // For an unpinned row the total is priced at the model's NATIVE context while
+  // the loader will reduce that context to fit, so this number is an upper bound
+  // on a length the load would never open. Suppressing only the textual verdict
+  // and leaving the picture alone gave a model that loads perfectly well a full
+  // destructive-red bar and an over-budget readout, which says "this will not
+  // work" louder than the words did. The floor is what the launch cannot avoid
+  // reserving, so it is the honest figure to draw pressure from; when the
+  // planner did not give one, the fill is capped at the budget rather than
+  // invented, since the true fitted total is not known here.
+  const autoFitted = Boolean(input.contextIsAutoFitted);
+  const pressureGb =
+    autoFitted && input.gpuFloorBytes != null
+      ? // The floor alone. Auto-fit sizes the cache to whatever is left, so the
+        // useful signal is how much of the budget is spoken for before the
+        // context gets any: capping the native total at the budget instead just
+        // pins every such row at exactly 100%, which reads as critical for a
+        // load that is fine.
+        Math.min(irreducibleGb, totalGb)
+      : autoFitted
+        ? Math.min(totalGb, budgetGb)
+        : totalGb;
+  const fillPct = (pressureGb / budgetGb) * 100;
   const pressure: ModelMemoryPressure =
     fillPct >= PRESSURE_CRITICAL_PCT
       ? "critical"

@@ -557,6 +557,7 @@ export function GgufDownloadCard({
   onLoad,
   onEject,
   onChange,
+  showMemoryBar = true,
 }: {
   repoId: string;
   isActive: boolean;
@@ -575,6 +576,13 @@ export function GgufDownloadCard({
   onUseInChat?: () => void;
   onEject?: () => void;
   onChange?: () => void;
+  /** False for diffusion / audio / video GGUFs. They load through a different
+   *  planner onto a single torch device rather than the aggregate inference
+   *  pool, so the llama.cpp estimator has nothing to say about them -- and when
+   *  it returns unsized the bar falls back to the file size and draws a
+   *  weights-only verdict anyway, which is a confident number about the wrong
+   *  runtime. The picker suppresses these rows for the same reason. */
+  showMemoryBar?: boolean;
 }) {
   const hfToken = useHfTokenStore((s) => s.token);
   const online = useOnlineStatus();
@@ -1169,7 +1177,7 @@ export function GgufDownloadCard({
       </DownloadCard>
       {/* Only a quant actually on disk gets charted: an undownloaded one has no
           weights to measure, and the fit badge already tiers those. */}
-      {selected?.downloaded ? (
+      {selected?.downloaded && showMemoryBar ? (
         <ModelMemoryBarFor
           repoId={repoId}
           quant={selected.quant}

@@ -159,3 +159,38 @@ test("KV-shaping recognises the flags that override structured settings", () => 
   assert.equal(extraArgsShapeKvCache(["--spec-type", "draft-mtp"]), true);
   assert.equal(extraArgsShapeKvCache(["--spec-draft-n-max=8"]), true);
 });
+
+test("an auto-fitted row does not paint red for a context it will not open", () => {
+  // Priced at the native context, which the loader will reduce. The textual
+  // verdict was already suppressed; the bar itself was not, so a model that
+  // loads fine showed a full destructive bar and an over-budget readout.
+  const segments = computeModelMemory({
+    weightsBytes: 8 * GB,
+    kvBytes: 40 * GB,
+    gpuFloorBytes: 9 * GB,
+    gpuGb: 24,
+    budgetFraction: 0.9,
+    contextIsAutoFitted: true,
+  });
+  assert.equal(segments.status, "fits");
+  assert.ok(
+    segments.fillPct <= 100,
+    `auto-fitted pressure read ${segments.fillPct}% of budget`,
+  );
+  assert.notEqual(segments.pressure, "critical");
+});
+
+test("a pinned row still reports the pressure it really has", () => {
+  // The counterpart: with a context the user pinned there is no fitting to come,
+  // so an over-budget total must still read as over budget.
+  const segments = computeModelMemory({
+    weightsBytes: 8 * GB,
+    kvBytes: 40 * GB,
+    gpuGb: 24,
+    budgetFraction: 0.9,
+    contextIsAutoFitted: false,
+  });
+  assert.equal(segments.status, "context-exceeds");
+  assert.ok(segments.fillPct > 100);
+  assert.equal(segments.pressure, "critical");
+});

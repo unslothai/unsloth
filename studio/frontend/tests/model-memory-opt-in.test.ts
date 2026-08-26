@@ -47,8 +47,12 @@ test("a disabled bar issues no estimate request", () => {
   // The first statement of the memo, so no request is even described when the
   // feature is off. Searched from the memo rather than from the top of the
   // file, since the budget effect above it carries its own enabled guard.
+  // Widened from 200 characters: the guard is still the memo's first statement,
+  // but it now carries a comment explaining the direct-.gguf case above it, and
+  // a window sized to the code alone fails on the prose rather than on the
+  // property. Still bounded, so a check buried after real work does not pass.
   assert.match(
-    HOOK.slice(plan, plan + 200),
+    HOOK.slice(plan, plan + 600),
     /if \(!enabled\b/,
     "the plan memo does not stand down when the bar is disabled",
   );
@@ -75,5 +79,24 @@ test("the settings request is gated on a row that will draw a bar", () => {
   assert.ok(
     effect,
     "the vram budget request is not gated on the row having a plan",
+  );
+});
+
+test("Reset All clears the memory-bar opt-in", () => {
+  // The feature's default is off, so a reset that leaves the key behind leaves
+  // the bar switched on while telling the user it restored defaults.
+  const GENERAL_TAB = readFileSync(
+    new URL("features/settings/tabs/general-tab.tsx", SRC),
+    "utf8",
+  );
+  const key = STORE.match(/CHAT_SHOW_MEMORY_BAR_KEY\s*=\s*"([^"]+)"/);
+  assert.ok(key, "no CHAT_SHOW_MEMORY_BAR_KEY");
+  // The reset list spells the key out because importing it would hit an import
+  // cycle and read the constant in its temporal dead zone. That makes drift
+  // possible, which is what this pins.
+  assert.match(
+    GENERAL_TAB,
+    new RegExp(`PREFS_KEYS[\\s\\S]*?"${key[1]}"`),
+    `Reset All does not clear ${key[1]}`,
   );
 });
