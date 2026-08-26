@@ -1,19 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The sibling invariants file asserts on source TEXT. That pins which calls are PRESENT, and
-// where they sit relative to each other, but not how they are COMBINED -- and in this effect
-// the combinator is the invariant. Changing the inner `Promise.all` to `Promise.race` is one
-// token, it leaves every call present and every index in the same order, and it reinstates
-// exactly the race the gate was added to close: the settings GET then fires as soon as EITHER
-// prerequisite settles, so on a first send it can still overtake the row write, find no row,
-// and release the chat's held edits into the installation defaults.
+// The sibling invariants file asserts on source TEXT, which pins which calls are present and
+// in what order but not how they COMBINE -- and here the combinator is the invariant. Turning
+// the inner `Promise.all` into `Promise.race` is one token, leaves every call present and
+// every index unmoved, and reinstates the race the gate closed: the GET then fires as soon as
+// EITHER prerequisite settles, so a first send can still overtake the row write, find no row,
+// and release the chat's held edits into the installation defaults. Measured on the parent
+// commit, that edit passes the whole suite, 4045 of 4045.
 //
-// Measured on this file's parent commit: that edit passes the whole suite, 4045 of 4045.
-//
-// So these assertions walk the syntax tree instead. Kept out of the text-based file on
-// purpose, like tsx-ast.ts and module-stubs.ts: only the few tests that need the TypeScript
-// compiler should pay for loading it.
+// So these walk the syntax tree. Kept out of the text-based file like tsx-ast.ts and
+// module-stubs.ts: only tests that need the TypeScript compiler should pay to load it.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -138,14 +135,10 @@ test("the read hangs off the prerequisites rather than running beside them", () 
 });
 
 test("the whole attempt, waits included, sits inside one deadline", () => {
-  // Neither wait is bounded on its own: the settings chain is a PATCH, and
-  // awaitStoredChatThreadWrites settles the row write through settleCurrent, which is
-  // Promise.allSettled over work that opens with an unbounded getStoredChatThread. Outside
-  // the deadline their time is uncounted, THREAD_PAIRING_WAIT_MS stops bounding the chain it
-  // was sized against, and a stalled write becomes "the message was not sent".
-  //
-  // The structural form of the sibling file's index check: the deadline must CONTAIN the
-  // prerequisites, not merely appear before them in the text.
+  // Neither wait is bounded on its own, so outside the deadline their time is uncounted,
+  // THREAD_PAIRING_WAIT_MS stops bounding the chain it was sized against, and a stalled write
+  // becomes "the message was not sent". The structural form of the sibling file's index
+  // check: the deadline must CONTAIN the prerequisites, not just precede them in the text.
   const gate = prerequisites();
   const races = collect(syncBody(), (node) => isCombinator(node, "race"));
   assert.ok(races.length >= 1, "the per-attempt deadline is gone");

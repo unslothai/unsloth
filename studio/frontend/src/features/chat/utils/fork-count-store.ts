@@ -52,17 +52,13 @@ let listening = false;
 async function refresh(threadId: string): Promise<void> {
   const entry = entries.get(threadId);
   if (!entry) return;
-  // A temporary chat is the one thread whose forks really cannot exist: ensureThreadRecord
-  // marks it and returns without writing a row, while assistant-ui still publishes its id as
-  // the remoteId, so the answer is known before asking. The row is what decides that, not
-  // the id -- a `__LOCALID_` prefix belongs to every chat the app creates, saved ones
-  // included.
+  // A temporary chat is the one thread whose forks cannot exist: ensureThreadRecord marks it
+  // and returns without a row. The row decides that, not the id -- a `__LOCALID_` prefix
+  // belongs to every chat the app creates, saved ones included.
   //
-  // Known, not an error: fork_counts_for_thread GROUPs chat_threads by
-  // forked_from_message_id and never looks the source thread up, so an unknown thread is
-  // answered 200 with an empty map, not 404. Only GET /threads/{id} 404s. The request is
-  // skipped because its result is already the empty map the entry holds, not to dodge a
-  // failure.
+  // Skipped because the answer is already the empty map the entry holds, not to dodge a
+  // failure: fork_counts_for_thread GROUPs chat_threads and never looks the source up, so an
+  // unknown thread is answered 200 with an empty map. Only GET /threads/{id} 404s.
   if (isThreadIncognito(threadId)) return;
   const seq = ++entry.seq;
   let counts: Counts;

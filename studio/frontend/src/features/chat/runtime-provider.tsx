@@ -1720,11 +1720,10 @@ function ThreadScopedSettingsSync({
 
   useEffect(() => {
     const { applyThreadScopedSettings } = useChatRuntimeStore.getState();
-    // A chat that has not been sent to yet has no row, so its read can only 404. Opening a
-    // pairing window for it holds every edit behind a round trip that is certain to say "no
-    // snapshot", which is how an edit made on a fresh /chat stopped reaching the installation
-    // defaults straight away. The id keeps its `__LOCALID_` prefix for good, so only the
-    // runtime's pending-new-thread id tells the two apart.
+    // A chat not yet sent to has no row, so its read can only 404, and pairing it would hold
+    // every edit behind a round trip certain to say "no snapshot" -- which is how an edit on
+    // a fresh /chat stopped reaching the installation defaults. The `__LOCALID_` prefix stays
+    // on the id for good, so only the runtime's pending-new-thread id tells the two apart.
     if (activeThreadId !== null && activeThreadId === pendingNewThreadId) {
       applyThreadScopedSettings(null, null);
       return;
@@ -1796,35 +1795,23 @@ function ThreadScopedSettingsSync({
       // over the values the user set and is written out again by the next edit.
       const read = new AbortController();
       reads.add(read);
-      // Bounded, because this attempt is what holds sends back: anything here that never
-      // settles parks every send in the chat behind "Loading this chat's settings" with
-      // nothing to release it, and leaves the request open besides.
-      //
-      // The deadline covers the WAITS as well as the read. Neither wait has a bound of its
-      // own -- the settings chain is a PATCH, and awaitStoredChatThreadWrites settles a row
-      // write that opens with an unbounded getStoredChatThread GET -- so in front of the
-      // deadline their time was uncounted, and the budget THREAD_PAIRING_WAIT_MS was sized
-      // against (THREAD_READ_RETRIES + 1 reads plus their spacing) no longer bounded the
-      // chain. Past that budget the gate is still shut, so awaitThreadScopedPairing gives
-      // up and the adapter refuses the user's send: a stalled write turned into "the
-      // message was not sent" on a path meant only for a chat left mid-read. Inside the
-      // deadline a stall is just a failed attempt, which retryThreadRead already handles.
+      // The deadline covers the WAITS as well as the read, because neither wait is bounded
+      // on its own: the settings chain is a PATCH, and awaitStoredChatThreadWrites settles a
+      // row write that opens with an unbounded getStoredChatThread GET. In front of the
+      // deadline their time went uncounted, so the chain could outlast THREAD_PAIRING_WAIT_MS
+      // with the gate still shut, and awaitThreadScopedPairing would give up and refuse the
+      // user's send. Inside it, a stall is one failed attempt, which retryThreadRead handles.
       void Promise.race([
         Promise.all([
-          // Settle this chat's own PATCH first. Edit a chat, leave, come straight back and
-          // the read can overtake the write and return the pre-edit snapshot, which then
-          // goes back over the values the user set and is written out by the next edit.
+          // This chat's own PATCH first: a read that overtakes it returns the pre-edit
+          // snapshot, which then goes back over the values the user just set.
           awaitThreadScopedSettingsWrite(activeThreadId),
-          // And this chat's row itself, which may not exist yet. initialize() resolves as
-          // soon as the id is minted and leaves the row's POST tracked in the background,
-          // so on the first send a read can overtake it, find no row, and release the edits
-          // held for this chat into the installation defaults -- the same leak this pairing
-          // exists to stop, in the window just after the send. Settles at once when nothing
-          // is tracked, so a chat opened from the sidebar waits for nothing.
+          // And its row, which may not exist yet. initialize() resolves as soon as the id is
+          // minted and leaves the POST tracked, so on a first send a read can overtake it,
+          // find no row, and release this chat's held edits into the installation defaults.
+          // Settles at once when nothing is tracked, so an existing chat waits for nothing.
           awaitStoredChatThreadWrites(activeThreadId),
         ]).then(() =>
-          // The fetch carries THIS attempt's deadline and its controller too, so a stall
-          // ends the request rather than leaving it running while the retry opens the next.
           getStoredChatThreadReadResult(activeThreadId, {
             timeoutMs: THREAD_READ_TIMEOUT_MS,
             signal: read.signal,
@@ -1832,8 +1819,8 @@ function ThreadScopedSettingsSync({
         ),
         new Promise<never>((_, reject) =>
           setTimeout(() => {
-            // The waits can expire before the fetch is even issued, and the controller is
-            // the only thing that stops one issued a moment later from outliving them.
+            // The waits can expire before the fetch is issued; the controller is the only
+            // thing stopping one issued a moment later from outliving them.
             read.abort();
             reject(new Error("thread settings read timed out"));
           }, THREAD_READ_TIMEOUT_MS),

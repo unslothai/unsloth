@@ -1,16 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// ThreadScopedSettingsSync now decides "this chat has no row yet" from
-// `threads.newThreadId`. That is only a valid discriminator while assistant-ui clears
-// the field on the new -> regular transition. Upstream has already shipped versions
-// where it was never cleared (assistant-ui issue #2292, 0.10.35 / 0.10.36), and if that
-// recurs on a dependency bump the guard becomes permanently true and Studio reverts to
-// exactly the bug this PR fixes: every app-created chat unpaired from its own settings,
-// with its edits leaking into the installation defaults.
-//
-// The PR's own tests are source-text regexes over runtime-provider.tsx, so they would
-// stay green through that. This drives the real reducer out of node_modules instead.
+// ThreadScopedSettingsSync reads "this chat has no row yet" off `threads.newThreadId`, which
+// only discriminates while assistant-ui clears that field on new -> regular. Upstream has
+// shipped versions where it never was (assistant-ui issue #2292, 0.10.35 / 0.10.36); a bump
+// that brings it back makes the guard permanently true and silently restores the bug this PR
+// fixes. The sibling tests are source-text regexes and would stay green through that, so this
+// drives the shipped reducer instead.
 
 import assert from "node:assert/strict";
 import test from "node:test";

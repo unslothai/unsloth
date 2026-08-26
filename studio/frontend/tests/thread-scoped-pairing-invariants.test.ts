@@ -36,10 +36,9 @@ test("the read waits for this chat's own write before it can be believed", () =>
   // returns the pre-edit snapshot, which is then applied over what the user set.
   const sync = slice(provider, "const sync = () => {", "// The read did not answer");
   assert.match(sync, /awaitThreadScopedSettingsWrite\(activeThreadId\)/);
-  // And the row's own creation. initialize() resolves as soon as the id is minted and leaves
-  // the POST tracked, so on the first send a read can overtake it, see no row, and release
-  // this chat's held edits into the installation defaults -- the leak the pairing exists to
-  // stop, narrowed to the window after the send rather than removed.
+  // And the row's own creation: initialize() resolves as soon as the id is minted and leaves
+  // the POST tracked, so a first send's read can overtake it, see no row, and release this
+  // chat's held edits into the installation defaults.
   assert.match(sync, /awaitStoredChatThreadWrites\(activeThreadId\)/);
   // and the read only happens after it, not alongside
   assert.ok(
@@ -59,17 +58,13 @@ function syncCode(): string {
 }
 
 test("both waits sit inside the attempt's deadline, not in front of it", () => {
-  // Neither wait is bounded on its own. The settings chain is a PATCH; and
-  // awaitStoredChatThreadWrites settles the row write through
-  // ThreadRecordWriteCoordinator.settleCurrent, which is Promise.allSettled over work
-  // that opens with getStoredChatThread -- a GET given no timeoutMs, so timeout = null.
-  //
-  // In front of the deadline their time is uncounted, and THREAD_PAIRING_WAIT_MS stops
-  // bounding the chain it was sized against. Past it the gate is still shut, so
-  // awaitThreadScopedPairing gives up and chat-adapter refuses the user's send with
-  // "This chat's settings could not be loaded" -- a message meant only for a chat left
-  // mid-read. Inside the deadline the same stall is one failed attempt, and
-  // retryThreadRead already knows what to do with that.
+  // Neither wait is bounded on its own: the settings chain is a PATCH, and
+  // awaitStoredChatThreadWrites settles the row write through settleCurrent, a
+  // Promise.allSettled over work opening with getStoredChatThread -- a GET given no
+  // timeoutMs, so timeout = null. In front of the deadline their time goes uncounted,
+  // THREAD_PAIRING_WAIT_MS stops bounding the chain it was sized against, and the gate stays
+  // shut until awaitThreadScopedPairing gives up and chat-adapter refuses the user's send.
+  // Inside it, the same stall is one failed attempt, which retryThreadRead handles.
   const sync = syncCode();
   const race = sync.indexOf("Promise.race");
   assert.ok(race !== -1, "the per-attempt deadline is gone");
@@ -522,11 +517,11 @@ test("a fork stops when the chat's settings could not be saved", () => {
 });
 
 test("an unsaved chat's edit reaches the installation defaults without a round trip", () => {
-  // Holding edits behind a read that is certain to 404 is what stopped a pill clicked on
-  // a fresh /chat from reaching localStorage straight away, which playwright_chat_ui
-  // asserts. The chat is unsaved only until its first send, so the test is the runtime's
-  // pending-new-thread id, not the `__LOCALID_` prefix: that prefix stays on the id for
-  // good and gated every app-created chat out of its own settings (#8686).
+  // Holding edits behind a read certain to 404 is what stopped a pill clicked on a fresh
+  // /chat from reaching localStorage at once, which playwright_chat_ui asserts. A chat is
+  // unsaved only until its first send, so the test is the runtime's pending-new-thread id:
+  // the `__LOCALID_` prefix stays for good and gated every app-created chat out of its own
+  // settings (#8686).
   const effect = slice(
     provider,
     "const { applyThreadScopedSettings } = useChatRuntimeStore.getState();",
