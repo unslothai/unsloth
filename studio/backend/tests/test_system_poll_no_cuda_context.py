@@ -1029,15 +1029,44 @@ def test_rocm_apu_keeps_the_carve_out_when_the_driver_total_fails(monkeypatch):
     assert inventory["shared_memory"] is False
 
 
-@pytest.mark.parametrize("system", ["Linux", "Windows"])
-def test_rocm_apu_equal_driver_total_is_shared(monkeypatch, system):
+@pytest.mark.parametrize(("system", "expected_shared"), [("Linux", False), ("Windows", True)])
+def test_rocm_apu_equal_driver_total_scope_is_platform_specific(
+    monkeypatch, system, expected_shared
+):
     mod = _apu_mod(gtt_total = _APU_GTT_TOTAL, carve_out = _APU_GTT_TOTAL)
     monkeypatch.setattr(hw, "IS_ROCM", True)
     monkeypatch.setattr(hw.platform, "system", lambda: system)
     monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
     inventory = hw._torch_get_device_inventory([0])[0]
     assert inventory["total_gb"] == 100.0
-    assert inventory["shared_memory"] is True
+    assert inventory["shared_memory"] is expected_shared
+
+
+@pytest.mark.parametrize(
+    ("torch_total", "sysfs_total", "expected_shared"),
+    [(_APU_GTT_TOTAL, _APU_CARVE_OUT, True), (_APU_CARVE_OUT, _APU_CARVE_OUT, False)],
+)
+def test_linux_rocm_apu_uses_sysfs_to_confirm_equal_total_scope(
+    monkeypatch, torch_total, sysfs_total, expected_shared
+):
+    mod = _apu_mod(gtt_total = torch_total, carve_out = torch_total)
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
+    monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: [0])
+    monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
+    monkeypatch.setattr(hw, "_rocm_visibility_mask_active", lambda: False)
+    monkeypatch.setattr(hw, "_rocm_kfd_gpu_pci_ids", lambda: {0: "0000:03:00.0"})
+    monkeypatch.setattr(
+        hw,
+        "_rocm_linux_sysfs_vram_by_pci_gb",
+        lambda: {"0000:03:00.0": (1.0, sysfs_total / (1024**3))},
+    )
+
+    result = hw.get_backend_visible_gpu_info()
+
+    assert result["devices"][0]["memory_total_gb"] == torch_total / (1024**3)
+    assert result["devices"][0]["shared_memory"] is expected_shared
 
 
 def test_rocm_apu_sysfs_overlay_still_declines_against_the_gtt_total(monkeypatch):

@@ -1581,7 +1581,13 @@ def _torch_get_device_inventory(device_indices: list[int]) -> list[Dict[str, Any
                     # too, and a total below props.total_memory would hide models
                     # this device can hold.
                     driver_total_bytes = int(mod.mem_get_info(ordinal)[1])
-                    shared_memory = known_unified and driver_total_bytes >= int(total_bytes)
+                    shared_memory = known_unified and (
+                        driver_total_bytes > int(total_bytes)
+                        or (
+                            platform.system() == "Windows"
+                            and driver_total_bytes == int(total_bytes)
+                        )
+                    )
                     total_bytes = max(driver_total_bytes, int(total_bytes))
             except Exception as e:
                 # Keep the carve-out rather than dropping the device: an
@@ -1595,6 +1601,7 @@ def _torch_get_device_inventory(device_indices: list[int]) -> list[Dict[str, Any
                     "total_gb": round(total_bytes / (1024**3), 2),
                     "used_gb": None,
                     "shared_memory": shared_memory,
+                    "_rocm_known_unified": known_unified,
                 }
             )
         except Exception as e:
@@ -3213,27 +3220,12 @@ def _rocm_visibility_mask_active() -> bool:
     return False
 
 
-def _rocm_system_wide_vram_by_index(
+def _rocm_linux_sysfs_vram_by_index(
     devices: list[Dict[str, Any]],
 ) -> Dict[int, tuple[float, float]]:
-    """Decide the system-wide overlay without applying it.
-
-    Returns ``{physical index: (used_gb, total_gb)}`` for every device sysfs can
-    speak for, and omits the ones it cannot. Split out from
-    _overlay_system_wide_vram so a caller can ask whether sysfs covers the whole
-    visible set BEFORE paying torch for occupancy it would then discard. Reads
-    only ``vram_total_gb`` off ``devices``; it never mutates them.
-    """
+    """Map safe physical ROCm indices to their raw Linux sysfs VRAM readings."""
     if not devices or platform.system() != "Linux":
         return {}
-    # Match by PCI identity, never list position: index N in KFD topology is ROCm
-    # physical device N and carries its PCI address, which DRM sysfs keys on too.
-    # The two gates below verify ``index`` really is a host-physical ordinal
-    # (torch exposes no PCI id to check directly):
-    #   * No visibility mask -- any mask makes ``index`` container/ROCR-relative
-    #     rather than a host ordinal.
-    #   * Device count == host GPU count -- rules out a device-cgroup container
-    #     that sets no env var yet compacts torch's indices from zero.
     pci_by_ordinal = _rocm_kfd_gpu_pci_ids()
     if not pci_by_ordinal:
         return {}
@@ -3248,6 +3240,28 @@ def _rocm_system_wide_vram_by_index(
         entry = vram_by_pci.get(pci_by_ordinal[index].lower())
         if entry is None:
             continue
+        resolved[index] = entry
+    return resolved
+
+
+def _rocm_system_wide_vram_by_index(
+    devices: list[Dict[str, Any]],
+) -> Dict[int, tuple[float, float]]:
+    """Decide the system-wide overlay without applying it.
+
+    Returns ``{physical index: (used_gb, total_gb)}`` for every device sysfs can
+    speak for, and omits the ones it cannot. Split out from
+    _overlay_system_wide_vram so a caller can ask whether sysfs covers the whole
+    visible set BEFORE paying torch for occupancy it would then discard. Reads
+    only ``vram_total_gb`` off ``devices``; it never mutates them.
+    """
+    raw = _rocm_linux_sysfs_vram_by_index(devices)
+    resolved: Dict[int, tuple[float, float]] = {}
+    for dev in devices:
+        index = dev.get("index")
+        entry = raw.get(index)
+        if entry is None:
+            continue
         used, total = entry
         dev_total = dev.get("vram_total_gb") or 0.0
         # Overlay only a device that maps 1:1 to the whole card: torch total must
@@ -3260,6 +3274,24 @@ def _rocm_system_wide_vram_by_index(
             continue
         resolved[index] = (used, total)
     return resolved
+
+
+def _rocm_linux_shared_pool_indices(devices: list[Dict[str, Any]]) -> set[int]:
+    """Return known APUs whose torch total exceeds the reserved sysfs heap."""
+    raw = _rocm_linux_sysfs_vram_by_index(devices)
+    shared: set[int] = set()
+    for dev in devices:
+        if not dev.get("_rocm_known_unified"):
+            continue
+        index = dev.get("index")
+        entry = raw.get(index)
+        if entry is None:
+            continue
+        _used, sysfs_total = entry
+        torch_total = dev.get("total_gb") or 0.0
+        if sysfs_total > 0 and torch_total - sysfs_total > 0.1 * torch_total:
+            shared.add(index)
+    return shared
 
 
 def _apply_system_wide_vram(
@@ -4465,6 +4497,11 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
         # there is nothing here worth a permanent driver context.
         torch_devices = _torch_get_device_inventory(torch_indices)
         if torch_devices:
+            if IS_ROCM and platform.system() == "Linux":
+                shared_indices = _rocm_linux_shared_pool_indices(torch_devices)
+                for td in torch_devices:
+                    if td["index"] in shared_indices:
+                        td["shared_memory"] = True
             devices = [
                 {
                     "index": td["index"],
