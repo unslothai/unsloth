@@ -1302,8 +1302,16 @@ export interface KvCacheEstimate {
    *  model ships none or vision is disabled. */
   projector_bytes: number | null;
   /** True when the configured speculative mode attaches a drafter the route did
-   *  not price (dspark/dflash). The total is then a floor, not an answer. */
+   *  not price (dspark/dflash, and Auto where it promotes to one). The total is
+   *  then a floor, not an answer. */
   spec_unpriced: boolean;
+  /** The share of kv_bytes llama.cpp keeps in HOST heap rather than on the card:
+   *  the SWA checkpoint snapshots. Included in kv_bytes, so a VRAM figure has to
+   *  subtract it; the planner's own GPU total does exactly that. */
+  kv_checkpoint_bytes: number | null;
+  /** The share of spec_bytes no shorter context can reduce, being the separate
+   *  drafter's resident weights. Auto-fit softening must not cover it. */
+  spec_fixed_bytes: number | null;
 }
 
 export interface KvCacheEstimateOptions {

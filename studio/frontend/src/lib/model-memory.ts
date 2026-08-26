@@ -25,6 +25,8 @@ export interface ModelMemoryInput {
   kvBytes?: number | null;
   /** MTP draft reserve; null for ngram (which is free) or a model without one. */
   specBytes?: number | null;
+  /** The share of specBytes a shorter context cannot reduce (drafter weights). */
+  specFixedBytes?: number | null;
   /** Total VRAM of the GPU the model would load onto. */
   gpuGb?: number | null;
   /** Context the KV figure was measured at, for the per-token rate. */
@@ -138,8 +140,16 @@ export function computeModelMemory(
   // term is a reservation the loader is free to shrink when nothing pinned it,
   // so an unpinned row that only tips over because of KV reports "fits" rather
   // than warning about a length the load would never have opened.
+  //
+  // The speculative segment is not wholly context-linear though: a separate
+  // drafter's own weights are resident whatever the context, and no auto-fit can
+  // shrink them. So the hard floor is the weights plus that fixed share -- if
+  // target and drafter weights together do not fit, saying "fits" because the
+  // context is unpinned describes a load that cannot open at any length.
+  const specFixedGb = toGb(input.specFixedBytes);
+  const irreducibleGb = modelGb + specFixedGb;
   const status: ModelMemoryStatus =
-    modelGb > budgetGb
+    irreducibleGb > budgetGb
       ? "model-exceeds"
       : totalGb > budgetGb && !input.contextIsAutoFitted
         ? "context-exceeds"
@@ -208,6 +218,48 @@ export const PLACEMENT_OWNING_ARGS = [
   "--main-gpu",
   "-mg",
 ];
+
+/**
+ * Pass-through args that change the SIZE of the KV cache rather than where it
+ * sits.
+ *
+ * The bar prices the cache from the structured controls alone, so any of these
+ * in the box means the launch reserves something other than what was priced.
+ * `--swa-full` is the sharp one: on a sliding-window model it replaces the
+ * compact window with a full-context cache, which the loader honours at
+ * `_estimate_kv_cache_bytes` via `_swa_full_from_args_or_env`. Pricing the
+ * window and reporting a fit for a launch that allocates the full context is the
+ * exact false "fits" this bar exists to prevent, so it abstains instead.
+ */
+export const KV_SHAPING_ARGS = [
+  "--swa-full",
+  "--kv-unified",
+  "-kvu",
+  "--ctx-size",
+  "-c",
+  "--parallel",
+  "-np",
+  "--batch-size",
+  "-b",
+  "--ubatch-size",
+  "-ub",
+  "--cache-type-k",
+  "-ctk",
+  "--cache-type-v",
+  "-ctv",
+  "--ctx-checkpoints",
+];
+
+/** Whether pass-through args resize the KV cache, so the priced figure stops applying. */
+export function extraArgsShapeKvCache(
+  args: string[] | null | undefined,
+): boolean {
+  if (!args || args.length === 0) return false;
+  return args.some((arg) => {
+    const token = String(arg ?? "").split("=")[0].trim();
+    return KV_SHAPING_ARGS.includes(token);
+  });
+}
 
 /** Whether pass-through args decide placement, so the GPU total stops applying. */
 export function extraArgsOwnPlacement(

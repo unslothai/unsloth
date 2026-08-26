@@ -64,6 +64,21 @@ _MLA_NO_HEAD = {
 }
 
 
+# A sliding-window model, which is the only shape where --ctx-checkpoints costs
+# anything: each checkpoint is an SWA snapshot per slot.
+_SWA_MODEL = {
+    "context_length": 131072,
+    "block_count": 32,
+    "attention.head_count": 32,
+    "attention.head_count_kv": 8,
+    "embedding_length": 4096,
+    "attention.key_length": 128,
+    "attention.value_length": 128,
+    "attention.sliding_window": 4096,
+    "attention.sliding_window_pattern": 6,
+}
+
+
 def _write_gguf(
     path: Path,
     fields: dict,
@@ -462,3 +477,50 @@ class TestTheEstimateMatchesTheConfiguredLoad:
             is_local = True,
         )
         assert out["projector_bytes"] is None
+
+
+class TestHostMemoryIsNotChargedToTheCard:
+    """Context checkpoints live in host heap, so a VRAM bar must be able to
+    exclude them. The load planner's own GPU figure is
+    ``kv_bytes - kv_checkpoint_bytes``; without the second term reported the bar
+    warns OOM over memory that never reaches the GPU."""
+
+    def test_checkpoints_are_reported_as_their_own_share(self, monkeypatch, tmp_path):
+        gguf = _write_gguf(tmp_path / "swa-model-Q4_K_M.gguf", _SWA_MODEL)
+        with_checkpoints = _call_route(
+            monkeypatch,
+            path = gguf,
+            weights_bytes = 4096,
+            repo_id = "org/swa",
+            speculative_type = None,
+            ctx_checkpoints = 8,
+        )
+        without = _call_route(
+            monkeypatch,
+            path = gguf,
+            weights_bytes = 4096,
+            repo_id = "org/swa",
+            speculative_type = None,
+            ctx_checkpoints = 0,
+        )
+        share = with_checkpoints["kv_checkpoint_bytes"]
+        assert share, "checkpoints were requested but no host share was reported"
+        # By difference against the same call with none, which is how the load
+        # planner derives it -- asking one function twice cannot drift from it.
+        assert share == with_checkpoints["kv_bytes"] - without["kv_bytes"]
+        # And it is a SHARE of kv_bytes, not a figure beside it: the field
+        # shipped meaning the whole cache and an existing caller still reads it
+        # that way.
+        assert share < with_checkpoints["kv_bytes"]
+
+    def test_no_checkpoints_means_no_host_share(self, monkeypatch, tmp_path):
+        gguf = _write_gguf(tmp_path / "swa-model-Q4_K_M.gguf", _SWA_MODEL)
+        out = _call_route(
+            monkeypatch,
+            path = gguf,
+            weights_bytes = 4096,
+            repo_id = "org/swa",
+            speculative_type = None,
+            ctx_checkpoints = None,
+        )
+        assert out["kv_checkpoint_bytes"] is None

@@ -3735,6 +3735,8 @@ async def get_kv_cache_estimate(
             "n_ctx": None,
             "projector_bytes": None,
             "spec_unpriced": False,
+            "kv_checkpoint_bytes": None,
+            "spec_fixed_bytes": None,
         }
         try:
             from utils.models.model_config import is_local_path
@@ -3795,6 +3797,24 @@ async def get_kv_cache_estimate(
                 ctx_checkpoints = ctx_checkpoints or 0,
             )
 
+            # The checkpoint share of that cache, by difference rather than by
+            # re-deriving the SWA layer walk -- the snapshots are the only term that
+            # separates the two calls, so asking the same function twice cannot drift
+            # from it. This is the same derivation the load planner uses at
+            # routes/inference.py, and it is reported separately because llama.cpp
+            # keeps these snapshots in HOST heap: the planner's GPU figure is
+            # kv_bytes - kv_checkpoint_bytes. Folded into the bar's VRAM total they
+            # warn OOM over memory that never touches the card.
+            kv_checkpoint = 0
+            if ctx_checkpoints:
+                _kv_without = be._estimate_kv_cache_bytes(
+                    n_ctx,
+                    cache_type_kv,
+                    n_parallel = n_parallel,
+                    ctx_checkpoints = 0,
+                )
+                kv_checkpoint = max(0, int(kv) - int(_kv_without))
+
             # DSpark and DFlash attach a separate draft GGUF with its own weights
             # and KV context, and Auto promotes to either ahead of MTP. Pricing
             # them means reproducing the loader's whole sidecar precedence, which
@@ -3802,7 +3822,40 @@ async def get_kv_cache_estimate(
             # opens. A DSpark sidecar alone runs to about 11 GB, so reporting a
             # comfortable fit that omits it is the worst of the options: say the
             # reserve is unpriced and let the caller draw nothing instead.
-            spec_unpriced = (speculative_type or "").lower() in ("dspark", "dflash")
+            _spec_mode = (speculative_type or "").lower()
+            spec_unpriced = _spec_mode in ("dspark", "dflash")
+            # Auto is not a mode that declines a sidecar: the load planner promotes it
+            # to DSpark or DFlash whenever the repo ships one and the binary supports
+            # it, ahead of MTP. Reading the explicit modes alone left the largest
+            # single allocation this route can miss -- a DSpark sidecar is about 11 GB
+            # -- silently absent from an Auto row, which is the case that reports a
+            # comfortable fit and then fails to load. Gated on the binary's own
+            # capability for the same reason the planner gates on it: charging (or
+            # here, abstaining over) a sidecar the launch never opens would blank the
+            # bar on hosts whose llama-server cannot run one.
+            if not spec_unpriced and _spec_mode == "auto":
+                try:
+                    from core.inference.llama_cpp import (
+                        _is_dflash_drafter_path,
+                        _pick_dspark,
+                    )
+
+                    def _pick_dflash(candidates: list[str]) -> Optional[str]:
+                        hits = sorted(f for f in candidates if _is_dflash_drafter_path(f))
+                        return hits[0] if hits else None
+
+                    if _snapshot_dir_of(path) is not None:
+                        _caps = be.probe_server_capabilities() or {}
+                        if _caps.get("supports_dspark") and _companion_snapshot_sibling(
+                            path, _pick_dspark
+                        ):
+                            spec_unpriced = True
+                        elif _caps.get("supports_dflash") and _companion_snapshot_sibling(
+                            path, _pick_dflash
+                        ):
+                            spec_unpriced = True
+                except Exception as e:
+                    logger.debug(f"auto sidecar probe failed for '{repo_id}' {quant}: {e}")
 
             # A vision GGUF launches with its mmproj resident unless the user
             # turned vision off, and the projector is charged at a worst-case
@@ -3827,6 +3880,7 @@ async def get_kv_cache_estimate(
             # and a model it can't size should still get its KV bar rather than
             # dropping the whole response to nulls.
             spec = None
+            spec_fixed = None
             if (speculative_type or "").lower() in ("mtp", "mtp+ngram", "auto"):
                 try:
                     from core.inference.llama_cpp import (
@@ -3889,6 +3943,12 @@ async def get_kv_cache_estimate(
                     ):
                         pass
                     else:
+                        # The drafter's own weights: resident for as long as the
+                        # drafter is open and not reducible by shortening context.
+                        # Reported separately so the caller's auto-fit softening,
+                        # which exists for the context-linear part of the cache,
+                        # cannot swallow a fixed overage no shorter context fixes.
+                        spec_fixed = int(drafter_bytes or 0) or None
                         spec = be._estimate_mtp_overhead_bytes(
                             n_ctx,
                             # Draft K/V types are independent of the main cache and
@@ -3920,6 +3980,13 @@ async def get_kv_cache_estimate(
                 # not price. The caller draws nothing rather than a fit that is
                 # missing the launch's largest single allocation.
                 "spec_unpriced": spec_unpriced,
+                # The part of kv_bytes that llama.cpp keeps in host heap rather than
+                # on the card, so a VRAM bar can subtract it. Included in kv_bytes,
+                # not beside it: the field shipped meaning the whole cache and an
+                # existing caller still reads it that way.
+                "kv_checkpoint_bytes": kv_checkpoint or None,
+                # The part of spec_bytes a shorter context cannot reduce.
+                "spec_fixed_bytes": spec_fixed if spec else None,
             }
         except Exception as e:
             logger.debug(f"kv-cache-estimate failed for '{repo_id}' {quant}: {e}")

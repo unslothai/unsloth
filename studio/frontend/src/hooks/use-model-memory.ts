@@ -38,6 +38,7 @@ import {
   estimateCacheKey,
   estimateIsUnsized,
   extraArgsOwnPlacement,
+  extraArgsShapeKvCache,
 } from "@/lib/model-memory";
 import { useInferenceGpuInfo } from "./use-gpu-info";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
@@ -68,6 +69,10 @@ interface Estimate {
   nCtx: number;
   /** Vision projector footprint, resident alongside the weights. */
   projectorBytes: number | null;
+  /** The host-heap share of kvBytes (SWA checkpoint snapshots), never on the card. */
+  kvCheckpointBytes: number | null;
+  /** The share of specBytes no shorter context can reduce (the drafter's weights). */
+  specFixedBytes: number | null;
   /** The configured drafter could not be priced, so the total is a floor. */
   specUnpriced: boolean;
 }
@@ -125,6 +130,8 @@ const MISS: Estimate = {
   specBytes: null,
   nCtx: 0,
   projectorBytes: null,
+  kvCheckpointBytes: null,
+  specFixedBytes: null,
   specUnpriced: false,
 };
 
@@ -261,6 +268,11 @@ function budgetIsMeaningful(config: PerModelConfig | undefined): boolean {
   // structured fields left the bar charting a CPU-offloaded run against every
   // GPU on the host.
   if (extraArgsOwnPlacement(config.llamaExtraArgs)) return false;
+  // Same reasoning one term over: these do not move the cache, they resize it.
+  // The estimate is built from the structured controls, so a --swa-full in the
+  // box has the launch reserve a full-context cache while the bar priced the
+  // compact sliding window, and the row reads as a comfortable fit.
+  if (extraArgsShapeKvCache(config.llamaExtraArgs)) return false;
   return (
     config.selectedGpuIds == null &&
     (config.gpuLayers == null || config.gpuLayers < 0) &&
@@ -305,6 +317,8 @@ async function fetchEstimate(
         specBytes: r.spec_bytes,
         nCtx: r.n_ctx ?? 0,
         projectorBytes: r.projector_bytes ?? null,
+        kvCheckpointBytes: r.kv_checkpoint_bytes ?? null,
+        specFixedBytes: r.spec_fixed_bytes ?? null,
         specUnpriced: r.spec_unpriced === true,
       };
       // A 200 that could size nothing arrives down the success path, so
@@ -437,6 +451,15 @@ export function useModelMemory(
     };
   }, [plan]);
 
+  // The dedicated aggregate is the only figure that is VRAM beside system RAM.
+  // Falls back to the supplied total when the inventory reports no shared device
+  // at all, which is the ordinary discrete-card host and the two agree there.
+  const budgetGb =
+    inferenceGpu.dedicatedMemoryTotalGb > 0 &&
+    inferenceGpu.dedicatedMemoryTotalGb < inferenceGpu.memoryTotalGb
+      ? inferenceGpu.dedicatedMemoryTotalGb
+      : gpuGb;
+
   return useMemo(() => {
     if (!plan?.trustBudget) return computeModelMemory({});
     const estimate = entry?.key === plan.cacheKey ? entry.estimate : undefined;
@@ -450,10 +473,24 @@ export function useModelMemory(
       // segment rather than as a fourth sliver the eye cannot resolve.
       weightsBytes:
         weights == null ? weights : weights + (estimate?.projectorBytes ?? 0),
-      kvBytes: estimate?.kvBytes,
+      // Context checkpoints are part of the cache, but llama.cpp keeps those
+      // snapshots in host heap: the load planner's GPU figure is
+      // kv_bytes - kv_checkpoint_bytes. Charged against a VRAM bar they warn OOM
+      // over memory that never reaches the card.
+      kvBytes:
+        estimate?.kvBytes == null
+          ? estimate?.kvBytes
+          : Math.max(0, estimate.kvBytes - (estimate.kvCheckpointBytes ?? 0)),
       specBytes: estimate?.specBytes,
+      specFixedBytes: estimate?.specFixedBytes,
       nCtx: estimate?.nCtx,
-      gpuGb,
+      // The dedicated-only aggregate, never the combined one. On a discrete card
+      // beside a Vulkan iGPU the combined total adds the iGPU's allowance, which
+      // is a capped view of free system RAM, so a model would be judged against
+      // 24 GiB of real VRAM plus whatever the desktop happened not to be using.
+      // `sharedMemory` cannot carry this: it is every(), so a mixed host reads
+      // false and the gate above lets exactly this case through.
+      gpuGb: budgetGb,
       budgetFraction,
       // With no pinned context the estimate is sized at the model's native
       // length, but a default load sends 0 and the loader auto-reduces to the
@@ -462,5 +499,5 @@ export function useModelMemory(
       // verdict softens and only the weights can still fail outright.
       contextIsAutoFitted: plan.nCtx == null,
     });
-  }, [plan, entry, source?.sizeBytes, gpuGb, budgetFraction]);
+  }, [plan, entry, source?.sizeBytes, budgetGb, budgetFraction]);
 }
