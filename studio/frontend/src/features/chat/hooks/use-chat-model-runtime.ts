@@ -1056,7 +1056,7 @@ export function useChatModelRuntime() {
       const abortCtrl = new AbortController();
       loadAbortRef.current = abortCtrl;
       const postLoadRefresh = { needed: false };
-      let progressModelId = modelId;
+      let progressModelIds = [modelId];
       let downloadComplete = isDownloaded || isCachedLora;
       let cpuFallbackReason: CpuFallbackReason | null = null;
       let mmprojFallbackReason: MmprojFallbackReason | null = null;
@@ -1384,7 +1384,9 @@ export function useChatModelRuntime() {
               const mlxBaseDescription = isLora
                 ? `Loading the adapter with ${validation.mlx_loads_base_model} in place of its bitsandbytes base, downloading it first if needed.`
                 : `Loading ${validation.mlx_loads_base_model} instead, downloading it first if needed.`;
-              progressModelId = validation.mlx_loads_base_model;
+              progressModelIds = isLora
+                ? [modelId, validation.mlx_loads_base_model]
+                : [validation.mlx_loads_base_model];
               downloadComplete = false;
               loadingDescription = [
                 currentCheckpoint ? "Switching models." : null,
@@ -2183,13 +2185,48 @@ export function useChatModelRuntime() {
             return;
           }
           try {
-            const progressModelIdAtRequest = progressModelId;
-            const prog =
+            const progressModelIdsAtRequest = [...progressModelIds];
+            const progressResponses =
               ggufVariant && expectedBytes > 0
-                ? await getGgufDownloadProgress(modelId, ggufVariant, expectedBytes)
-                : await getDownloadProgress(progressModelIdAtRequest);
+                ? [
+                    await getGgufDownloadProgress(
+                      modelId,
+                      ggufVariant,
+                      expectedBytes,
+                    ),
+                  ]
+                : await Promise.all(
+                    progressModelIdsAtRequest.map((progressModelId) =>
+                      getDownloadProgress(progressModelId),
+                    ),
+                  );
             if (!loadingModelRef.current) return;
-            if (progressModelIdAtRequest !== progressModelId) return;
+            if (
+              progressModelIdsAtRequest.length !== progressModelIds.length ||
+              progressModelIdsAtRequest.some(
+                (progressModelId, index) =>
+                  progressModelId !== progressModelIds[index],
+              )
+            ) {
+              return;
+            }
+            const allDownloadsComplete = progressResponses.every(
+              ({ progress }) => progress >= 1,
+            );
+            const firstProgress = progressResponses[0];
+            if (!firstProgress) return;
+            const prog =
+              progressResponses.find(
+                ({ progress }) => progress > 0 && progress < 1,
+              ) ??
+              progressResponses.find(
+                ({ downloaded_bytes, expected_bytes, progress }) =>
+                  downloaded_bytes > 0 &&
+                  expected_bytes === 0 &&
+                  progress === 0,
+              ) ??
+              progressResponses.find(({ progress }) => progress < 1) ??
+              firstProgress;
 
             if (prog.progress > 0 && prog.progress < 1) {
               hasShownProgress = true;
@@ -2246,8 +2283,11 @@ export function useChatModelRuntime() {
                 });
               }
             } else if (
-              prog.progress >= 1 &&
-              (hasShownProgress || progressModelId !== modelId)
+              allDownloadsComplete &&
+              (hasShownProgress ||
+                progressModelIds.some(
+                  (progressModelId) => progressModelId !== modelId,
+                ))
             ) {
               downloadComplete = true;
               if (loadToastDismissedRef.current) {

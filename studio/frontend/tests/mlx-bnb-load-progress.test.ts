@@ -22,34 +22,48 @@ const DOWNLOAD_POLL = SOURCE.slice(
   SOURCE.indexOf("const pollLoad = async () =>"),
 );
 
-test("MLX base substitution resets progress to the downloaded repository", () => {
+test("MLX base substitution tracks every downloaded repository", () => {
   assert.match(
     VALIDATION,
-    /progressModelId = validation\.mlx_loads_base_model;/,
+    /progressModelIds = isLora/,
   );
+  assert.match(
+    VALIDATION,
+    /\[modelId, validation\.mlx_loads_base_model\]/,
+  );
+  assert.match(VALIDATION, /\[validation\.mlx_loads_base_model\]/);
   assert.match(VALIDATION, /downloadComplete = false;/);
   assert.match(
     DOWNLOAD_POLL,
-    /getDownloadProgress\(progressModelIdAtRequest\)/,
+    /progressModelIdsAtRequest\.map\(\(progressModelId\) =>/,
   );
-  assert.doesNotMatch(DOWNLOAD_POLL, /getDownloadProgress\(modelId\)/);
+  assert.match(DOWNLOAD_POLL, /getDownloadProgress\(progressModelId\)/);
 });
 
 test("a pre-substitution progress response cannot complete the base download", () => {
   assert.match(
     DOWNLOAD_POLL,
-    /const progressModelIdAtRequest = progressModelId;/,
+    /const progressModelIdsAtRequest = \[\.\.\.progressModelIds\];/,
   );
   assert.match(
     DOWNLOAD_POLL,
-    /if \(progressModelIdAtRequest !== progressModelId\) return;/,
+    /progressModelIdsAtRequest\.length !== progressModelIds\.length/,
+  );
+  assert.match(
+    DOWNLOAD_POLL,
+    /progressModelIdsAtRequest\.some\(/,
   );
 });
 
-test("a cached substituted base advances directly to model startup", () => {
+test("all substituted downloads must finish before model startup", () => {
   assert.match(
     DOWNLOAD_POLL,
-    /hasShownProgress \|\| progressModelId !== modelId/,
+    /const allDownloadsComplete = progressResponses\.every\(/,
+  );
+  assert.match(DOWNLOAD_POLL, /allDownloadsComplete &&/);
+  assert.match(
+    DOWNLOAD_POLL,
+    /progressModelIds\.some\(/,
   );
 });
 
