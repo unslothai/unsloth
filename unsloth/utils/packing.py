@@ -421,6 +421,94 @@ def _iter_fused_load_globals(module):
         yield raw, globs
 
 
+_MAMBA2_NAMESPACE_SUBSTR = (
+    "unsloth_compiled",
+    "nemotron",
+    "mamba_ssm",
+    "modeling_nemotron",
+)
+
+
+def _force_install_mamba2_fused(namespace, wrapped) -> None:
+    """Overwrite fused names in a module/function dict, including stale compile-time imports.
+
+    Unsloth's compiler does ``from modeling import mamba_split_conv1d_scan_combined``
+    when it writes ``unsloth_compiled_cache``. That binding is whatever the
+    modeling module had *at compile import*, often ``None`` or a hub stub, while
+    mixer ``__init__`` later stores the real kernel only on the modeling module.
+    Compiled ``cuda_kernels_forward`` still LOAD_GLOBALs the stale copy.
+    """
+    if wrapped is None or not isinstance(namespace, dict):
+        return
+    for name in _MAMBA2_FUSED_NAMES:
+        namespace[name] = wrapped
+    if "is_fast_path_available" in namespace:
+        namespace["is_fast_path_available"] = True
+    for value in list(namespace.values()):
+        inner = getattr(value, "__dict__", None)
+        if not isinstance(inner, dict):
+            continue
+        for name in _MAMBA2_FUSED_NAMES:
+            if name in inner:
+                inner[name] = wrapped
+
+
+def _iter_mamba2_install_namespaces(mamba2_modules):
+    seen: set[int] = set()
+
+    def take(ns):
+        if isinstance(ns, dict) and id(ns) not in seen:
+            seen.add(id(ns))
+            return True
+        return False
+
+    for module in mamba2_modules:
+        for _fn, globs in _iter_fused_load_globals(module):
+            if take(globs):
+                yield globs
+        modeling = inspect.getmodule(type(module))
+        ns = getattr(modeling, "__dict__", None)
+        if take(ns):
+            yield ns
+    for name, mod in list(sys.modules.items()):
+        lname = (name or "").lower()
+        if not any(s in lname for s in _MAMBA2_NAMESPACE_SUBSTR):
+            continue
+        ns = getattr(mod, "__dict__", None)
+        if take(ns):
+            yield ns
+
+
+def _mamba2_handshake_debug(modules) -> str:
+    """Short dump of the live mixer call so a failed handshake is diagnosable."""
+    lines = []
+    for module in modules[:1]:
+        cls = type(module)
+        lines.append(f"cls={cls.__name__} module={getattr(cls, '__module__', None)}")
+        for attr in _MAMBA2_MIXER_KERNEL_ATTRS:
+            fn = getattr(module, attr, None)
+            if not callable(fn):
+                continue
+            try:
+                raw = inspect.unwrap(getattr(fn, "__func__", fn))
+            except Exception:
+                raw = fn
+            code = getattr(raw, "__code__", None)
+            globs = getattr(raw, "__globals__", {})
+            keys = sorted(
+                k
+                for k in (globs or {})
+                if "mamba" in k.lower() or "split" in k.lower() or "fast_path" in k.lower()
+            )
+            lines.append(f"{attr} co_names={getattr(code, 'co_names', None)}")
+            lines.append(f"{attr} glob_keys={keys}")
+            try:
+                lines.append(inspect.getsource(raw)[:600])
+            except Exception as exc:
+                lines.append(f"{attr} source={exc}")
+    return "\n".join(lines)
+
+
 def _rebind_dict_referrers(orig, wrapped) -> None:
     """Replace ``orig`` with ``wrapped`` in every dict that still holds it."""
     if orig is None or wrapped is orig:
@@ -880,7 +968,11 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
             )
         except Exception:
             _ssm_fused = None
-        _ensure_mamba2_fused_wrapped(_ssm_fused)
+        wrapped_real = _ensure_mamba2_fused_wrapped(_ssm_fused)
+        if wrapped_real is None:
+            wrapped_real = wrapped
+        for ns in _iter_mamba2_install_namespaces(mamba2_modules):
+            _force_install_mamba2_fused(ns, wrapped_real)
 
     # Refresh the boundary stash on the outermost forward (once per step, outside
     # gradient-checkpoint recompute, so it stays valid for recomputed inner
@@ -934,7 +1026,11 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
                         "Unsloth: experimental hybrid packing cannot continue because the "
                         "varlen conv/scan wrappers were not both invoked for "
                         f"{sorted(set(missing))}. Unset UNSLOTH_EXPERIMENTAL_HYBRID_PACKING "
-                        "to train these models on the padded path."
+                        "to train these models on the padded path.\n"
+                        + _mamba2_handshake_debug(
+                            [m for m in hybrid_modules if type(m).__name__.endswith("Mamba2Mixer")]
+                            or hybrid_modules
+                        )
                     )
             return out
 

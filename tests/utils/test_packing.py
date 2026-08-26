@@ -706,6 +706,59 @@ def NemotronHMamba2Mixer_cuda_kernels_forward(self, hidden_states, cache_params=
         sys.modules.pop(compiled.__name__, None)
 
 
+def test_patch_mamba2_varlen_overwrites_stale_compiled_import(monkeypatch):
+    # Compiler imports mamba_split_conv1d_scan_combined into unsloth_compiled_cache
+    # before mixer __init__ stores the real kernel on the modeling module.
+    monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
+    import sys
+    import types
+
+    def stale(*args, seq_idx = None, **kwargs):
+        stale.calls.append(seq_idx)
+        return args[0] if args else None
+
+    stale.calls = []
+    real = _make_fake_mamba2_fused()
+    compiled = types.ModuleType("unsloth_compiled_cache.NemotronHMamba2Mixer")
+    compiled.mamba_split_conv1d_scan_combined = stale
+    sys.modules[compiled.__name__] = compiled
+
+    class _StaleNemotronHMamba2Mixer(_FakeNemotronHMamba2Mixer):
+        def __init__(self):
+            super().__init__()
+            self.mamba2_split_conv1d_scan_combined = real
+
+        def cuda_kernels_forward(self, hidden_states, cache_params = None, attention_mask = None):
+            return compiled.mamba_split_conv1d_scan_combined(hidden_states, seq_idx = None)
+
+        def forward(self, hidden_states, **kwargs):
+            return self.cuda_kernels_forward(hidden_states)
+
+    _StaleNemotronHMamba2Mixer.__module__ = compiled.__name__
+
+    class _StaleModel(_FakeMamba2Model):
+        def __init__(self):
+            super().__init__()
+            self.mixer = _StaleNemotronHMamba2Mixer()
+
+    try:
+        model = _StaleModel()
+        assert patch_hybrid_linear_attention_varlen(model) is True
+        real.calls.clear()
+        stale.calls.clear()
+        model(
+            input_ids = torch.zeros(1, 6, dtype = torch.long),
+            packed_seq_lengths = torch.tensor([2, 1, 3], dtype = torch.int32),
+            use_cache = False,
+        )
+        assert stale.calls == []
+        assert real.calls[-1] is not None
+        assert real.calls[-1].tolist() == [[0, 0, 1, 2, 2, 2]]
+        assert compiled.mamba_split_conv1d_scan_combined is not stale
+    finally:
+        sys.modules.pop(compiled.__name__, None)
+
+
 def test_patch_mamba2_varlen_no_fused_dispatch_aborts(monkeypatch):
     monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
 
