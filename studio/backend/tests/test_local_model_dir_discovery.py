@@ -28,9 +28,7 @@ def fake_home(monkeypatch, tmp_path):
 def _write_settings(home: Path, downloads: Path, *, bom: bool) -> None:
     (home / ".lmstudio").mkdir(parents = True, exist_ok = True)
     payload = json.dumps({"downloadsFolder": str(downloads)}).encode("utf-8")
-    (home / ".lmstudio" / "settings.json").write_bytes(
-        (b"\xef\xbb\xbf" if bom else b"") + payload
-    )
+    (home / ".lmstudio" / "settings.json").write_bytes((b"\xef\xbb\xbf" if bom else b"") + payload)
 
 
 def test_hub_and_picker_share_one_implementation():
