@@ -1048,6 +1048,13 @@ _css_read_valid_install_id() {
     # Regular files only: a FIFO here (or a symlink to one, or to a device)
     # would park the installer on the open, waiting for a writer forever.
     [ -f "$1" ] || return 0
+    # A NUL cannot live in a shell variable, so command substitution drops it:
+    # <32 hex>\0<32 hex> would read back as a perfectly valid token while the
+    # backend, which keeps the byte, still reports "". Catch it before it
+    # disappears, by mapping NULs to a character a variable can hold.
+    if [ -n "$({ tr -dc '\000' < "$1" | tr '\000' 'N'; } 2>/dev/null)" ]; then
+        return 0
+    fi
     # Group the redirect, or the shell's own "cannot open" escapes 2>/dev/null.
     _cvi_id=$({ cat "$1"; } 2>/dev/null || true)
     # Trim what the backend's .strip() trims, the SURROUNDING whitespace only.

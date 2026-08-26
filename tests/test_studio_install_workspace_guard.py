@@ -832,6 +832,34 @@ def test_install_sh_trims_only_surrounding_whitespace_in_an_existing_id(tmp_path
             assert got == "a" * 64, f"surrounding whitespace must be trimmed, got {got!r}"
 
 
+def test_install_sh_rejects_an_id_holding_a_nul_byte(tmp_path):
+    """A NUL must be caught before the shell silently drops it.
+
+    Command substitution cannot carry a NUL, so `<32 hex>\\0<32 hex>` reads back
+    as a valid token, while the backend keeps the byte and reports "". The
+    launcher would then hold an id its own backend never reports.
+    """
+    src = INSTALL_SH.read_text(encoding = "utf-8")
+    assert (
+        """tr -dc '\\000' < "$1" | tr '\\000' 'N'""" in src
+    ), "install.sh must detect NUL bytes before reading the id into a variable"
+
+    id_file = tmp_path / "studio_install_id"
+    probe = _install_id_helpers() + f'printf "OUT=[%s]\\n" "$(_css_read_valid_install_id "{id_file}")"\n'
+    for content in [
+        b"a" * 32 + b"\x00" + b"a" * 32,
+        b"b" * 64 + b"\x00",
+        b"\x00" + b"c" * 64,
+    ]:
+        id_file.write_bytes(content)
+        res = subprocess.run(["sh", "-c", probe], text = True, capture_output = True)
+        assert res.returncode == 0, res.stderr
+        assert "OUT=[]" in res.stdout, f"{content!r} must not read as an id, got {res.stdout!r}"
+    id_file.write_bytes(b"d" * 64)
+    res = subprocess.run(["sh", "-c", probe], text = True, capture_output = True)
+    assert "OUT=[" + "d" * 64 + "]" in res.stdout, "a clean id must still be reused"
+
+
 @pytest.mark.skipif(os.geteuid() == 0, reason = "root reads regardless of mode bits")
 def test_install_sh_refuses_an_unreadable_existing_id(tmp_path):
     """An id we cannot READ must not be treated as malformed and replaced.
